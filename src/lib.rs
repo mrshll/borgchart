@@ -4,6 +4,7 @@
 
 pub mod bus;
 pub mod cli;
+pub mod composer;
 pub mod deploy;
 pub mod diag;
 pub mod exec;
@@ -20,4 +21,5 @@ pub mod team;
 pub mod tmux;
 pub mod tui;
 pub mod validate;
+pub mod wake;
 pub mod yaml;
