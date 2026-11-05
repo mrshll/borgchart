@@ -258,6 +258,15 @@ mod tests {
     }
 
     #[test]
+    fn codex_update_dialog_is_blocked() {
+        // Recorded from codex-cli 0.165.0 at startup; the title is the host name.
+        let screen = include_str!("../tests/fixtures/screens/codex-update.txt");
+        let reading = codex().read("example-host", screen);
+        assert_eq!(reading.state, State::Blocked);
+        assert_eq!(reading.rule.as_deref(), Some("update-dialog"));
+    }
+
+    #[test]
     fn nothing_matching_is_unknown() {
         assert_eq!(claude().read("bash", "$ ls\n").state, State::Unknown);
     }

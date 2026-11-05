@@ -326,6 +326,14 @@ pub fn member_launch(
                     ]);
                 }
             }
+            // A member runs unattended, so it must not stop at Codex's
+            // "Update available" prompt. The deployment's `args` can say otherwise.
+            if !extra_args
+                .iter()
+                .any(|a| a.contains("check_for_update_on_startup"))
+            {
+                argv.extend(["-c".into(), "check_for_update_on_startup=false".into()]);
+            }
             if posture == Posture::Locked {
                 argv.extend([
                     "-a".into(),

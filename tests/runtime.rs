@@ -641,6 +641,37 @@ fn launch_arguments_follow_posture() {
         beta.iter().any(|a| a == "model_reasoning_effort=\"low\""),
         "{beta:?}"
     );
+    // An unattended Codex member must not stop at the update prompt.
+    assert!(
+        beta.windows(2)
+            .any(|w| w[0] == "-c" && w[1] == "check_for_update_on_startup=false"),
+        "{beta:?}"
+    );
+}
+
+#[test]
+fn deployment_args_can_turn_codex_update_checks_back_on() {
+    let env = Env::new();
+    env.write(
+        "team/borgchart.yaml",
+        "schema: 1\nplugins:\n  pager:\n    env: {PAGER_ROOM: R0000EXAMPLE}\nmembers:\n  beta:\n    args: [-c, check_for_update_on_startup=true]\n",
+    );
+    env.up();
+    let beta: Vec<String> = env
+        .events("beta")
+        .into_iter()
+        .find(|e| e["event"] == "start")
+        .unwrap()["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    let set: Vec<&String> = beta
+        .iter()
+        .filter(|a| a.contains("check_for_update_on_startup"))
+        .collect();
+    assert_eq!(set, ["check_for_update_on_startup=true"], "{beta:?}");
 }
 
 fn trust_env(deploy: &str) -> Env {
