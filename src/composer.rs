@@ -182,16 +182,32 @@ pub enum VimMode {
     Normal,
 }
 
+/// The pane's width and cursor, read with the capture. Without them the
+/// readings that depend on them fail closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Geometry {
+    pub width: usize,
+    pub cursor_x: usize,
+    pub cursor_y: usize,
+}
+
 /// What the input box shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct View {
     /// The box's lines, without the prompt marker or continuation indent.
+    /// Leading spaces are kept; trailing spaces can't be seen in a capture
+    /// (the cursor stands in for them).
     pub lines: Vec<String>,
     /// The single line is the vendor's dim placeholder.
     pub placeholder: bool,
     /// The vendor marks a running turn on the box itself.
     pub busy: bool,
     pub vim: Option<VimMode>,
+    /// The cursor as (box line, column after the indent), if it is in the box.
+    pub cursor: Option<(usize, usize)>,
+    /// Columns available to text on each box line.
+    pub text_width: Option<usize>,
+    vendor: Vendor,
 }
 
 /// The reading the wake decides on.
@@ -208,29 +224,65 @@ impl View {
         if self.busy {
             return Reading::Busy;
         }
-        let empty = self.placeholder || (self.lines.len() == 1 && self.lines[0].trim().is_empty());
-        if empty {
-            Reading::Empty
-        } else {
-            Reading::Draft
+        if self.placeholder {
+            return Reading::Empty;
+        }
+        if self.lines.len() != 1 || !self.lines[0].trim().is_empty() {
+            return Reading::Draft;
+        }
+        match self.vendor {
+            // Codex draws its placeholder only while the box is empty, so a
+            // blank box without it holds typed whitespace.
+            Vendor::Codex => Reading::Draft,
+            // Claude has no placeholder; typed spaces look like nothing. In
+            // insert mode they move the cursor; in normal mode a single
+            // space leaves it where an empty box would.
+            Vendor::Claude => match (self.vim, self.cursor) {
+                (_, Some((0, x))) if x > 0 => Reading::Draft,
+                (Some(VimMode::Insert), Some((0, 0))) => Reading::Empty,
+                (Some(VimMode::Normal), _) => Reading::Unknown(
+                    "in vim normal mode an empty input box looks like one holding a space".into(),
+                ),
+                _ => Reading::Unknown("the cursor isn't where an empty input box puts it".into()),
+            },
         }
     }
 
-    /// The box holds exactly `text`, allowing for the vendor wrapping it
-    /// across lines.
+    /// The box holds exactly `text`. A line break is accepted only where the
+    /// vendor must have wrapped (the next word could not have fitted), and
+    /// the cursor must sit right after the text, so trailing spaces show.
     pub fn holds(&self, text: &str) -> bool {
         if self.placeholder || self.busy {
             return false;
         }
-        let squash = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
-        let first = self.lines.first().map(|l| l.as_str()).unwrap_or("");
-        first.starts_with(text.split_whitespace().next().unwrap_or(""))
-            && squash(&self.lines.join(" ")) == squash(text)
+        let (Some(width), Some(cursor)) = (self.text_width, self.cursor) else {
+            return false;
+        };
+        let last = self.lines.len() - 1;
+        if cursor != (last, self.lines[last].chars().count()) {
+            return false;
+        }
+        let mut joined = self.lines[0].clone();
+        for pair in self.lines.windows(2) {
+            let (line, next) = (&pair[0], &pair[1]);
+            let word = next.split(' ').next().unwrap_or("");
+            let soft = !line.is_empty()
+                && !line.ends_with(' ')
+                && !next.starts_with(' ')
+                && !word.is_empty()
+                && line.chars().count() + 1 + word.chars().count() > width;
+            if !soft {
+                return false;
+            }
+            joined.push(' ');
+            joined.push_str(next);
+        }
+        joined == text
     }
 }
 
 /// Read the input box from a styled capture.
-pub fn view(vendor: Vendor, capture: &str) -> Result<View, String> {
+pub fn view(vendor: Vendor, capture: &str, geometry: Option<Geometry>) -> Result<View, String> {
     let mut lines = parse(capture);
     if lines.len() < MIN_ROWS {
         return Err(format!(
@@ -241,15 +293,23 @@ pub fn view(vendor: Vendor, capture: &str) -> Result<View, String> {
     while lines.last().is_some_and(Line::is_blank) {
         lines.pop();
     }
-    match vendor {
-        Vendor::Claude => claude_view(&lines),
-        Vendor::Codex => codex_view(&lines),
+    let (first, mut view) = match vendor {
+        Vendor::Claude => claude_view(&lines)?,
+        Vendor::Codex => codex_view(&lines)?,
+    };
+    if let Some(g) = geometry {
+        view.text_width = Some(g.width.saturating_sub(2));
+        let row = g.cursor_y.checked_sub(first);
+        view.cursor = row
+            .filter(|&r| r < view.lines.len() && g.cursor_x >= 2)
+            .map(|r| (r, g.cursor_x - 2));
     }
+    Ok(view)
 }
 
 /// Read the input box straight to a decision.
-pub fn read(vendor: Vendor, capture: &str) -> Reading {
-    match view(vendor, capture) {
+pub fn read(vendor: Vendor, capture: &str, geometry: Option<Geometry>) -> Reading {
+    match view(vendor, capture, geometry) {
         Ok(v) => v.reading(),
         Err(why) => Reading::Unknown(why),
     }
@@ -261,16 +321,26 @@ fn is_rule(line: &Line) -> bool {
     t.chars().count() >= 10 && t.starts_with("──") && t.ends_with("──")
 }
 
+/// Text after the first `n` cells, without the padding at the end.
+fn text_after(line: &Line, n: usize) -> String {
+    line.cells_from(n)
+        .iter()
+        .map(|c| c.ch)
+        .collect::<String>()
+        .trim_end()
+        .to_string()
+}
+
 /// Continuation lines are indented two spaces (or blank).
 fn continuation(line: &Line) -> Option<String> {
-    let t = line.text();
     if line.is_blank() {
         return Some(String::new());
     }
-    t.strip_prefix("  ").map(|s| s.trim_end().to_string())
+    line.text().starts_with("  ").then(|| text_after(line, 2))
 }
 
-fn claude_view(lines: &[Line]) -> Result<View, String> {
+/// The box's first screen row and its view (geometry not yet applied).
+fn claude_view(lines: &[Line]) -> Result<(usize, View), String> {
     let n = lines.len();
     let bottom = (n.saturating_sub(4)..n)
         .rev()
@@ -298,15 +368,7 @@ fn claude_view(lines: &[Line]) -> Result<View, String> {
         (Fg::Indexed(246), _) | (_, true) => true,
         _ => return Err("the prompt has an unfamiliar colour".into()),
     };
-    let mut text = vec![
-        first
-            .cells_from(2)
-            .iter()
-            .map(|c| c.ch)
-            .collect::<String>()
-            .trim_end()
-            .to_string(),
-    ];
+    let mut text = vec![text_after(first, 2)];
     for row in &rows[1..] {
         text.push(continuation(row).ok_or("an input box line isn't indented")?);
     }
@@ -317,15 +379,21 @@ fn claude_view(lines: &[Line]) -> Result<View, String> {
     } else {
         Some(VimMode::Normal)
     };
-    Ok(View {
-        lines: text,
-        placeholder: false,
-        busy,
-        vim,
-    })
+    Ok((
+        top + 1,
+        View {
+            lines: text,
+            placeholder: false,
+            busy,
+            vim,
+            cursor: None,
+            text_width: None,
+            vendor: Vendor::Claude,
+        },
+    ))
 }
 
-fn codex_view(lines: &[Line]) -> Result<View, String> {
+fn codex_view(lines: &[Line]) -> Result<(usize, View), String> {
     let n = lines.len();
     let status = (n.saturating_sub(3)..n)
         .rev()
@@ -355,26 +423,28 @@ fn codex_view(lines: &[Line]) -> Result<View, String> {
     if !matches!(first.0.get(1).map(|c| c.ch), Some(' ') | None) {
         return Err("no space after the prompt".into());
     }
-    let content = first.cells_from(2);
-    let visible: Vec<&Cell> = content.iter().filter(|c| !c.ch.is_whitespace()).collect();
-    let mut text = vec![
-        content
-            .iter()
-            .map(|c| c.ch)
-            .collect::<String>()
-            .trim_end()
-            .to_string(),
-    ];
+    let visible: Vec<&Cell> = first
+        .cells_from(2)
+        .iter()
+        .filter(|c| !c.ch.is_whitespace())
+        .collect();
+    let mut text = vec![text_after(first, 2)];
     for row in &lines[start + 1..=last] {
         text.push(continuation(row).ok_or("an input box line isn't indented")?);
     }
     let placeholder = text.len() == 1 && !visible.is_empty() && visible.iter().all(|c| c.style.dim);
-    Ok(View {
-        lines: text,
-        placeholder,
-        busy: false,
-        vim: Some(vim),
-    })
+    Ok((
+        start,
+        View {
+            lines: text,
+            placeholder,
+            busy: false,
+            vim: Some(vim),
+            cursor: None,
+            text_width: None,
+            vendor: Vendor::Codex,
+        },
+    ))
 }
 
 #[cfg(test)]
@@ -411,18 +481,27 @@ mod tests {
         let rule = "─".repeat(40);
         let labelled = format!("─── History 1/1 {}", "─".repeat(30));
         let s = screen(&[&labelled, "❯\u{a0}recalled text", &rule, "  -- INSERT --"]);
-        assert_eq!(read(Vendor::Claude, &s), Reading::Draft);
+        assert_eq!(read(Vendor::Claude, &s, None), Reading::Draft);
         let s = screen(&[&rule, "! ls", &rule, "  footer"]);
-        assert!(matches!(read(Vendor::Claude, &s), Reading::Unknown(_)));
+        assert!(matches!(
+            read(Vendor::Claude, &s, None),
+            Reading::Unknown(_)
+        ));
         let s = screen(&[&rule, "\x1b[31m❯\x1b[39m ", &rule, "  footer"]);
-        assert!(matches!(read(Vendor::Claude, &s), Reading::Unknown(_)));
+        assert!(matches!(
+            read(Vendor::Claude, &s, None),
+            Reading::Unknown(_)
+        ));
     }
 
     #[test]
     fn short_panes_are_unknown() {
         let rule = "─".repeat(40);
         let s = format!("{rule}\n❯ \n{rule}\n  -- INSERT --\n");
-        assert!(matches!(read(Vendor::Claude, &s), Reading::Unknown(_)));
+        assert!(matches!(
+            read(Vendor::Claude, &s, None),
+            Reading::Unknown(_)
+        ));
     }
 
     #[test]
@@ -432,17 +511,17 @@ mod tests {
             "",
             "  m · d  Vim: Insert",
         ]);
-        assert_eq!(read(Vendor::Codex, &s), Reading::Empty);
+        assert_eq!(read(Vendor::Codex, &s, None), Reading::Empty);
         // Not bold: some other `›` line.
         let s = screen(&["› \x1b[2mAsk anything\x1b[0m", "", "  m · d  Vim: Insert"]);
-        assert!(matches!(read(Vendor::Codex, &s), Reading::Unknown(_)));
+        assert!(matches!(read(Vendor::Codex, &s, None), Reading::Unknown(_)));
         // Placeholder partly normal text is a draft.
         let s = screen(&[
             "\x1b[1m›\x1b[0m hi \x1b[2mAsk\x1b[0m",
             "",
             "  m · d  Vim: Insert",
         ]);
-        assert_eq!(read(Vendor::Codex, &s), Reading::Draft);
+        assert_eq!(read(Vendor::Codex, &s, None), Reading::Draft);
         // A popup between the box and the status line.
         let s = screen(&[
             "\x1b[1m›\x1b[0m /mo",
@@ -450,25 +529,72 @@ mod tests {
             "",
             "  m  Vim: Insert",
         ]);
-        assert_eq!(read(Vendor::Codex, &s), Reading::Draft);
+        assert_eq!(read(Vendor::Codex, &s, None), Reading::Draft);
         let s = screen(&["\x1b[1m›\x1b[0m ", "", "  m · d"]);
-        assert!(matches!(read(Vendor::Codex, &s), Reading::Unknown(_)));
+        assert!(matches!(read(Vendor::Codex, &s, None), Reading::Unknown(_)));
+    }
+
+    fn view_of(lines: &[&str], width: usize) -> View {
+        let last = lines.len() - 1;
+        View {
+            lines: lines.iter().map(|l| l.to_string()).collect(),
+            placeholder: false,
+            busy: false,
+            vim: Some(VimMode::Insert),
+            cursor: Some((last, lines[last].chars().count())),
+            text_width: Some(width),
+            vendor: Vendor::Claude,
+        }
     }
 
     #[test]
-    fn holding_text_allows_wrapping_only() {
-        let v = View {
-            lines: vec!["brg: one two".into(), "three".into()],
-            placeholder: false,
-            busy: false,
-            vim: None,
-        };
-        assert!(v.holds("brg: one two three"));
-        assert!(!v.holds("brg: one two three four"));
-        let v = View {
-            lines: vec!["x brg: one two three".into()],
-            ..v
-        };
-        assert!(!v.holds("brg: one two three"));
+    fn holding_text_is_exact_but_for_soft_wraps() {
+        let text = "brg: one two three";
+        assert!(view_of(&[text], 40).holds(text));
+        // Wrapped where "three" could not have fitted on the first line.
+        assert!(view_of(&["brg: one two", "three"], 14).holds(text));
+        // A break where "three" would have fitted is a typed newline.
+        assert!(!view_of(&["brg: one two", "three"], 40).holds(text));
+        // Changed spacing, extra text, leading text.
+        assert!(!view_of(&["brg: one  two three"], 40).holds(text));
+        assert!(!view_of(&["brg: onetwo three"], 40).holds(text));
+        assert!(!view_of(&["brg: one two three four"], 40).holds(text));
+        assert!(!view_of(&[" brg: one two three"], 40).holds(text));
+        assert!(!view_of(&["brg: one two", " three"], 14).holds(text));
+        // Trailing spaces show only through the cursor.
+        let mut v = view_of(&[text], 40);
+        v.cursor = Some((0, text.len() + 1));
+        assert!(!v.holds(text));
+        v.cursor = None;
+        assert!(!v.holds(text));
+        v.cursor = Some((0, text.len()));
+        v.text_width = None;
+        assert!(!v.holds(text));
+    }
+
+    #[test]
+    fn claude_blank_box_needs_the_cursor() {
+        let mut v = view_of(&[""], 40);
+        v.cursor = Some((0, 0));
+        assert_eq!(v.reading(), Reading::Empty);
+        // Typed spaces moved the cursor.
+        v.cursor = Some((0, 3));
+        assert_eq!(v.reading(), Reading::Draft);
+        // Normal mode: one space would leave the cursor at 0.
+        v.cursor = Some((0, 0));
+        v.vim = Some(VimMode::Normal);
+        assert!(matches!(v.reading(), Reading::Unknown(_)));
+        v.vim = Some(VimMode::Insert);
+        v.cursor = None;
+        assert!(matches!(v.reading(), Reading::Unknown(_)));
+    }
+
+    #[test]
+    fn codex_blank_box_without_placeholder_is_a_draft() {
+        let mut v = view_of(&[""], 40);
+        v.vendor = Vendor::Codex;
+        assert_eq!(v.reading(), Reading::Draft);
+        v.placeholder = true;
+        assert_eq!(v.reading(), Reading::Empty);
     }
 }

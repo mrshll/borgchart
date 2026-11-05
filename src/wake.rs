@@ -27,7 +27,7 @@ use std::time::{Duration, Instant, SystemTime};
 use serde::{Deserialize, Serialize};
 
 use crate::bus::manifest::PaneIdentity;
-use crate::composer::{self, Reading};
+use crate::composer::{self, Geometry, Reading};
 use crate::rules::{self, State};
 use crate::state::{self, StateDir};
 use crate::team::Vendor;
@@ -85,6 +85,10 @@ pub struct LaunchFacts {
     pub suggestions: Option<bool>,
     /// Settings files that were read, for diagnosis.
     pub sources: Vec<PathBuf>,
+    /// Why the effective settings are unknown (a file that exists but can't
+    /// be read or parsed, an unsupported option), if they are.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,6 +99,12 @@ pub enum Qualification {
 
 /// Whether the guarded wake may type into this member at all.
 pub fn qualification(vendor: Vendor, launch: &LaunchFacts) -> Qualification {
+    if let Some(problem) = &launch.problem {
+        return Qualification::Unqualified(format!(
+            "{}'s settings are unknown: {problem}",
+            vendor.as_str()
+        ));
+    }
     let Some(version) = launch.vendor_version.as_deref() else {
         return Qualification::Unqualified(format!("{} version unknown", vendor.as_str()));
     };
@@ -134,17 +144,36 @@ pub fn qualification(vendor: Vendor, launch: &LaunchFacts) -> Qualification {
     Qualification::Qualified
 }
 
-fn read_json(path: &Path, sources: &mut Vec<PathBuf>) -> Option<serde_json::Value> {
-    let text = std::fs::read_to_string(path).ok()?;
-    sources.push(path.to_path_buf());
-    serde_json::from_str(&text).ok()
+/// A settings file's text: `Ok(None)` only when it doesn't exist.
+fn read_text(path: &Path, sources: &mut Vec<PathBuf>) -> Result<Option<String>, String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => {
+            sources.push(path.to_path_buf());
+            Ok(Some(text))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("cannot read {}: {e}", path.display())),
+    }
+}
+
+fn read_json(path: &Path, sources: &mut Vec<PathBuf>) -> Result<Option<serde_json::Value>, String> {
+    let Some(text) = read_text(path, sources)? else {
+        return Ok(None);
+    };
+    match serde_json::from_str::<serde_json::Value>(&text) {
+        Ok(v) if v.is_object() => Ok(Some(v)),
+        Ok(_) => Err(format!("{} is not a JSON object", path.display())),
+        Err(e) => Err(format!("{} is not valid JSON: {e}", path.display())),
+    }
 }
 
 /// `[section] key = value` from a TOML file, for the few plain keys needed
-/// (no TOML dependency: tables written inline or dotted read as unknown).
-fn toml_bool(text: &str, section: &str, key: &str) -> Option<bool> {
+/// (no TOML dependency). `Ok(None)`: the key isn't set. `Err`: it may be set
+/// in a way this reader doesn't follow (inline table, odd value).
+fn toml_bool(text: &str, section: &str, key: &str) -> Result<Option<bool>, String> {
     let mut current = String::new();
     let mut found = None;
+    let dotted = format!("{section}.{key}");
     for line in text.lines() {
         let line = line.split('#').next().unwrap_or("").trim();
         if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
@@ -152,29 +181,34 @@ fn toml_bool(text: &str, section: &str, key: &str) -> Option<bool> {
             continue;
         }
         let Some((k, v)) = line.split_once('=') else {
+            if line.contains(key) {
+                return Err(format!("unreadable line mentioning `{key}`"));
+            }
             continue;
         };
         let (k, v) = (k.trim(), v.trim());
-        let dotted = format!("{section}.{key}");
         if (current == section && k == key) || (current.is_empty() && k == dotted) {
             found = match v {
                 "true" => Some(true),
                 "false" => Some(false),
-                _ => return None,
+                _ => return Err(format!("`{key} = {v}` is not true or false")),
             };
-        }
-        if current.is_empty() && k == section {
-            // `tui = { … }`: not read here.
-            return None;
+        } else if current.is_empty() && k == section {
+            return Err(format!("`{section}` is written inline"));
+        } else if k == key || k.ends_with(&format!(".{key}")) || v.contains(key) {
+            return Err(format!(
+                "`{key}` is set somewhere this reader doesn't follow"
+            ));
         }
     }
-    found
+    Ok(found)
 }
 
 impl LaunchFacts {
     /// Measure a member's launch facts: its argv plus the settings files the
     /// vendor will read from `cwd` and the member's environment (`HOME`,
-    /// `CODEX_HOME`).
+    /// `CODEX_HOME`). A file that is missing counts as unset; one that exists
+    /// but can't be read or parsed leaves the facts with a `problem`.
     pub fn measure(
         vendor: Vendor,
         vendor_version: Option<String>,
@@ -182,95 +216,131 @@ impl LaunchFacts {
         cwd: &Path,
         env: &BTreeMap<String, String>,
     ) -> LaunchFacts {
-        let home = env.get("HOME").map(PathBuf::from);
         let mut facts = LaunchFacts {
             vendor_version,
             argv: argv.to_vec(),
             ..LaunchFacts::default()
         };
-        match vendor {
-            Vendor::Claude => {
-                // Lowest precedence first; later files win.
-                let mut files: Vec<PathBuf> = Vec::new();
-                if let Some(h) = &home {
-                    files.push(h.join(".claude.json"));
-                    files.push(h.join(".claude/settings.json"));
-                }
-                files.push(cwd.join(".claude/settings.json"));
-                files.push(cwd.join(".claude/settings.local.json"));
-                let mut values: Vec<serde_json::Value> = files
-                    .iter()
-                    .filter_map(|f| read_json(f, &mut facts.sources))
-                    .collect();
-                if let Some(i) = argv.iter().position(|a| a == "--settings")
-                    && let Some(arg) = argv.get(i + 1)
-                {
-                    let v = if arg.trim_start().starts_with('{') {
-                        serde_json::from_str(arg).ok()
-                    } else {
-                        read_json(Path::new(arg), &mut facts.sources)
-                    };
-                    match v {
-                        Some(v) => values.push(v),
-                        // Unreadable settings could say anything.
-                        None => return facts,
-                    }
-                }
-                values.extend(read_json(
-                    Path::new("/etc/claude-code/managed-settings.json"),
-                    &mut facts.sources,
-                ));
-                // The CLI default when nothing sets them.
-                let mut editor = Some("normal".to_string());
-                let mut suggestions = Some(true);
-                for v in &values {
-                    if let Some(e) = v.get("editorMode") {
-                        editor = e.as_str().map(str::to_string);
-                    }
-                    if let Some(s) = v.get("promptSuggestionEnabled") {
-                        suggestions = s.as_bool();
-                    }
-                }
-                facts.editor = editor;
-                facts.suggestions = suggestions;
-            }
-            Vendor::Codex => {
-                if argv.iter().any(|a| a == "-p" || a == "--profile") {
-                    return facts;
-                }
-                let codex_home = env
-                    .get("CODEX_HOME")
-                    .map(PathBuf::from)
-                    .or_else(|| home.as_ref().map(|h| h.join(".codex")));
-                let mut vim = Some(false);
-                for file in codex_home
-                    .map(|h| h.join("config.toml"))
-                    .into_iter()
-                    .chain([cwd.join(".codex/config.toml")])
-                {
-                    if let Ok(text) = std::fs::read_to_string(&file) {
-                        facts.sources.push(file.clone());
-                        if text.contains("vim_mode_default") {
-                            vim = toml_bool(&text, "tui", "vim_mode_default");
-                        }
-                    }
-                }
-                for pair in argv.windows(2) {
-                    if (pair[0] == "-c" || pair[0] == "--config")
-                        && pair[1].trim_start().starts_with("tui")
-                    {
-                        vim = match pair[1].replace(' ', "").as_str() {
-                            "tui.vim_mode_default=true" => Some(true),
-                            "tui.vim_mode_default=false" => Some(false),
-                            _ => None,
-                        };
-                    }
-                }
-                facts.editor = vim.map(|v| if v { "vim" } else { "normal" }.to_string());
-            }
+        let result = match vendor {
+            Vendor::Claude => claude_settings(&mut facts, argv, cwd, env),
+            Vendor::Codex => codex_settings(&mut facts, argv, cwd, env),
+        };
+        if let Err(problem) = result {
+            facts.editor = None;
+            facts.suggestions = None;
+            facts.problem = Some(problem);
         }
         facts
     }
+}
+
+fn claude_settings(
+    facts: &mut LaunchFacts,
+    argv: &[String],
+    cwd: &Path,
+    env: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    // Lowest precedence first; later files win.
+    let mut files: Vec<PathBuf> = Vec::new();
+    let home = env.get("HOME").ok_or("HOME is not set")?;
+    let home = Path::new(home);
+    files.push(home.join(".claude.json"));
+    files.push(home.join(".claude/settings.json"));
+    files.push(cwd.join(".claude/settings.json"));
+    files.push(cwd.join(".claude/settings.local.json"));
+    let mut values: Vec<serde_json::Value> = Vec::new();
+    for f in &files {
+        values.extend(read_json(f, &mut facts.sources)?);
+    }
+    let settings: Vec<&String> = argv
+        .iter()
+        .enumerate()
+        .filter(|(i, a)| *a == "--settings" && *i + 1 < argv.len())
+        .map(|(i, _)| &argv[i + 1])
+        .collect();
+    if argv.iter().any(|a| a.starts_with("--settings=")) {
+        return Err("`--settings=…` is not followed".into());
+    }
+    for arg in settings {
+        if arg.trim_start().starts_with('{') {
+            let v: serde_json::Value = serde_json::from_str(arg)
+                .map_err(|e| format!("the --settings argument is not valid JSON: {e}"))?;
+            values.push(v);
+        } else {
+            let v = read_json(Path::new(arg), &mut facts.sources)?
+                .ok_or_else(|| format!("the --settings file {arg} does not exist"))?;
+            values.push(v);
+        }
+    }
+    values.extend(read_json(
+        Path::new("/etc/claude-code/managed-settings.json"),
+        &mut facts.sources,
+    )?);
+    // The CLI defaults when nothing sets them.
+    let mut editor = Some("normal".to_string());
+    let mut suggestions = Some(true);
+    for v in &values {
+        if let Some(e) = v.get("editorMode") {
+            editor = Some(
+                e.as_str()
+                    .ok_or("`editorMode` is not a string")?
+                    .to_string(),
+            );
+        }
+        if let Some(s) = v.get("promptSuggestionEnabled") {
+            suggestions = Some(
+                s.as_bool()
+                    .ok_or("`promptSuggestionEnabled` is not a boolean")?,
+            );
+        }
+    }
+    facts.editor = editor;
+    facts.suggestions = suggestions;
+    Ok(())
+}
+
+fn codex_settings(
+    facts: &mut LaunchFacts,
+    argv: &[String],
+    cwd: &Path,
+    env: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    if argv.iter().any(|a| a == "-p" || a.starts_with("--profile")) {
+        return Err("a `--profile` is not followed".into());
+    }
+    let codex_home = match env.get("CODEX_HOME") {
+        Some(h) => PathBuf::from(h),
+        None => PathBuf::from(env.get("HOME").ok_or("HOME is not set")?).join(".codex"),
+    };
+    let mut vim = false;
+    for file in [
+        codex_home.join("config.toml"),
+        cwd.join(".codex/config.toml"),
+    ] {
+        if let Some(text) = read_text(&file, &mut facts.sources)?
+            && let Some(v) = toml_bool(&text, "tui", "vim_mode_default")
+                .map_err(|e| format!("{}: {e}", file.display()))?
+        {
+            vim = v;
+        }
+    }
+    for (i, arg) in argv.iter().enumerate() {
+        let value = if arg == "-c" || arg == "--config" {
+            argv.get(i + 1).map(String::as_str)
+        } else {
+            arg.strip_prefix("--config=")
+        };
+        let Some(value) = value else { continue };
+        if value.contains("vim_mode_default") || value.trim_start().starts_with("tui") {
+            vim = match value.replace(' ', "").as_str() {
+                "tui.vim_mode_default=true" => true,
+                "tui.vim_mode_default=false" => false,
+                _ => return Err(format!("`-c {value}` is not followed")),
+            };
+        }
+    }
+    facts.editor = Some(if vim { "vim" } else { "normal" }.to_string());
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -302,21 +372,30 @@ pub enum WakeResult {
     NotRunning,
 }
 
-/// One snapshot of the pane: identity, title and styled screen.
-struct Snapshot {
-    title: String,
-    screen: String,
+/// One snapshot of the pane: title, styled screen and geometry.
+pub struct Snapshot {
+    pub title: String,
+    pub screen: String,
+    pub geometry: Geometry,
+    /// tmux copy mode (or another mode) is showing over the program.
+    pub in_mode: bool,
 }
 
-fn snapshot(tmux: &Tmux, expect: &PaneIdentity) -> Option<Snapshot> {
-    let format =
-        "#{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{session_name}\t#{window_name}\t#{pane_title}";
+/// A tmux client for the server the incarnation's pane lives on: an
+/// absolute socket path is used as is (`-S`), a bare name as `-L`.
+fn server(tmux: &Tmux, expect: &PaneIdentity) -> Tmux {
+    tmux.with_socket(&expect.socket)
+}
+
+/// Read the pane if it is still the incarnation's own.
+pub fn snapshot(tmux: &Tmux, expect: &PaneIdentity) -> Option<Snapshot> {
+    let format = "#{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{session_name}\t#{window_name}\t#{pane_in_mode}\t#{pane_width}\t#{cursor_x}\t#{cursor_y}\t#{pane_title}";
     let out = tmux
         .ok(&["display-message", "-p", "-t", &expect.pane_id, format])
         .ok()?;
     let line = out.lines().next()?;
-    let f: Vec<&str> = line.splitn(6, '\t').collect();
-    if f.len() < 6
+    let f: Vec<&str> = line.splitn(10, '\t').collect();
+    if f.len() < 10
         || f[0] != expect.pane_id
         || f[1] != expect.pane_pid.to_string()
         || f[2] != "0"
@@ -325,24 +404,26 @@ fn snapshot(tmux: &Tmux, expect: &PaneIdentity) -> Option<Snapshot> {
     {
         return None;
     }
+    let geometry = Geometry {
+        width: f[6].parse().ok()?,
+        cursor_x: f[7].parse().ok()?,
+        cursor_y: f[8].parse().ok()?,
+    };
     let screen = tmux
         .ok(&["capture-pane", "-p", "-e", "-t", &expect.pane_id])
         .ok()?;
     Some(Snapshot {
-        title: f[5].to_string(),
+        title: f[9].to_string(),
         screen,
+        geometry,
+        in_mode: f[5] != "0",
     })
 }
 
-/// The pre-paste decision for one screen: `None` means type the reminder.
-pub fn before_paste(
-    vendor: Vendor,
-    rules: &rules::RuleSet,
-    title: &str,
-    screen: &str,
-) -> Option<WakeResult> {
-    let lines = composer::parse(screen);
-    let reading = rules.read(title, &composer::plain(&lines));
+/// The pre-paste decision for one snapshot: `None` means type the reminder.
+pub fn before_paste(vendor: Vendor, rules: &rules::RuleSet, snap: &Snapshot) -> Option<WakeResult> {
+    let lines = composer::parse(&snap.screen);
+    let reading = rules.read(&snap.title, &composer::plain(&lines));
     match reading.state {
         State::Blocked => {
             return Some(WakeResult::Blocked(
@@ -352,7 +433,12 @@ pub fn before_paste(
         State::Working => return Some(WakeResult::Deferred(Defer::Busy)),
         State::Idle | State::Unknown => {}
     }
-    match composer::read(vendor, screen) {
+    if snap.in_mode {
+        return Some(WakeResult::Deferred(Defer::Uncertain(
+            "the pane is in tmux copy mode".into(),
+        )));
+    }
+    match composer::read(vendor, &snap.screen, Some(snap.geometry)) {
         Reading::Busy => Some(WakeResult::Deferred(Defer::Busy)),
         Reading::Draft => Some(WakeResult::Deferred(Defer::Draft)),
         Reading::Unknown(why) => Some(WakeResult::Deferred(Defer::Uncertain(why))),
@@ -363,22 +449,20 @@ pub fn before_paste(
     }
 }
 
-/// Why Enter may not be pressed on this screen, or `None` if it may.
-pub fn before_enter(
-    vendor: Vendor,
-    rules: &rules::RuleSet,
-    title: &str,
-    screen: &str,
-) -> Option<String> {
-    let lines = composer::parse(screen);
-    let reading = rules.read(title, &composer::plain(&lines));
+/// Why Enter may not be pressed on this snapshot, or `None` if it may.
+pub fn before_enter(vendor: Vendor, rules: &rules::RuleSet, snap: &Snapshot) -> Option<String> {
+    let lines = composer::parse(&snap.screen);
+    let reading = rules.read(&snap.title, &composer::plain(&lines));
     if reading.state == State::Blocked {
         return Some(format!(
             "a prompt appeared after the paste ({}); Enter was not pressed",
             reading.rule.unwrap_or_default()
         ));
     }
-    match composer::view(vendor, screen) {
+    if snap.in_mode {
+        return Some("the pane went into tmux copy mode; Enter was not pressed".into());
+    }
+    match composer::view(vendor, &snap.screen, Some(snap.geometry)) {
         Ok(v) if v.holds(REMINDER) => None,
         Ok(v) if v.busy => Some("a turn started after the paste; Enter was not pressed".into()),
         Ok(_) => {
@@ -387,6 +471,24 @@ pub fn before_enter(
         Err(why) => Some(format!(
             "the input box can't be read after the paste ({why}); Enter was not pressed"
         )),
+    }
+}
+
+/// After Enter: `Ok` once the input box reads as empty (a turn may be running), so
+/// the reminder left it; otherwise why the outcome isn't known.
+pub fn after_enter(vendor: Vendor, snap: Option<&Snapshot>) -> Result<(), String> {
+    let snap = snap.ok_or("the pane changed or exited after Enter")?;
+    if snap.in_mode {
+        return Err("the pane is in tmux copy mode after Enter".into());
+    }
+    let view = composer::view(vendor, &snap.screen, Some(snap.geometry))
+        .map_err(|why| format!("the input box can't be read after Enter ({why})"))?;
+    if view.placeholder || view.lines.iter().all(|l| l.trim().is_empty()) {
+        Ok(())
+    } else if view.holds(REMINDER) {
+        Err("Enter was pressed but the reminder is still in the input box".into())
+    } else {
+        Err("the input box isn't empty after Enter".into())
     }
 }
 
@@ -415,10 +517,12 @@ fn take_lock(state: &StateDir, member: &str) -> Result<File, WakeResult> {
 
 /// Make one guarded wake attempt on `member`'s incarnation pane `expect`.
 ///
-/// `before_input` runs after every pre-paste check has passed and before the
-/// first byte is typed; if it fails nothing is typed. After it has run the
-/// result is `Submitted` or `HumanRequired`, except `Deferred(Uncertain)`
-/// when tmux refused the reminder before anything reached the pane.
+/// `tmux` supplies the environment and config; the pane is addressed on the
+/// server `expect.socket` names. `before_input` runs after every pre-paste
+/// check has passed and before the first byte is typed; if it fails nothing
+/// is typed. After it has run the result is `Submitted` or `HumanRequired`,
+/// except `Deferred(Uncertain)` when tmux refused the reminder before
+/// anything reached the pane.
 pub fn attempt(
     tmux: &Tmux,
     state: &StateDir,
@@ -431,9 +535,7 @@ pub fn attempt(
     if let Qualification::Unqualified(why) = qualification(vendor, launch) {
         return WakeResult::AlertOnly(why);
     }
-    if tmux.socket() != expect.socket {
-        return WakeResult::NotRunning;
-    }
+    let tmux = &server(tmux, expect);
     if let Some(meta) = state::read_meta(state)
         && meta
             .members
@@ -456,7 +558,7 @@ pub fn attempt(
     let Some(snap) = snapshot(tmux, expect) else {
         return WakeResult::NotRunning;
     };
-    if let Some(result) = before_paste(vendor, &rules, &snap.title, &snap.screen) {
+    if let Some(result) = before_paste(vendor, &rules, &snap) {
         return result;
     }
     if let Err(e) = before_input() {
@@ -491,43 +593,34 @@ pub fn attempt(
 
     // Wait for the reminder to show, then check the screen once more.
     let start = Instant::now();
-    let why = loop {
+    loop {
         std::thread::sleep(POLL);
-        let Some(snap) = snapshot(tmux, expect) else {
-            break "the pane changed or exited after the paste".to_string();
+        let why = match snapshot(tmux, expect) {
+            None => "the pane changed or exited after the paste".to_string(),
+            Some(snap) => match before_enter(vendor, &rules, &snap) {
+                None => break,
+                Some(why) => why,
+            },
         };
-        match before_enter(vendor, &rules, &snap.title, &snap.screen) {
-            None => {
-                if let Err(e) = tmux.ok(&["send-keys", "-t", &expect.pane_id, "Enter"]) {
-                    return WakeResult::HumanRequired(format!(
-                        "the reminder was pasted but Enter failed: {e}"
-                    ));
-                }
-                break String::new();
-            }
-            Some(why) if start.elapsed() >= RENDER_WAIT => break why,
-            Some(_) => {}
+        if start.elapsed() >= RENDER_WAIT {
+            return WakeResult::HumanRequired(why);
         }
-    };
-    if !why.is_empty() {
-        return WakeResult::HumanRequired(why);
+    }
+    if let Err(e) = tmux.ok(&["send-keys", "-t", &expect.pane_id, "Enter"]) {
+        return WakeResult::HumanRequired(format!("the reminder was pasted but Enter failed: {e}"));
     }
 
-    // Enter was pressed: the reminder should leave the input box.
+    // Only an empty input box, seen, confirms the submission.
     let start = Instant::now();
     loop {
         std::thread::sleep(POLL);
-        let held = snapshot(tmux, expect)
-            .and_then(|s| composer::view(vendor, &s.screen).ok())
-            .is_some_and(|v| v.holds(REMINDER));
-        if !held {
-            drop(lock);
-            return WakeResult::Submitted;
-        }
-        if start.elapsed() >= SUBMIT_WAIT {
-            return WakeResult::HumanRequired(
-                "Enter was pressed but the reminder is still in the input box".into(),
-            );
+        match after_enter(vendor, snapshot(tmux, expect).as_ref()) {
+            Ok(()) => {
+                drop(lock);
+                return WakeResult::Submitted;
+            }
+            Err(why) if start.elapsed() >= SUBMIT_WAIT => return WakeResult::HumanRequired(why),
+            Err(_) => {}
         }
     }
 }
@@ -570,41 +663,20 @@ mod tests {
 
     #[test]
     fn toml_reading_is_narrow() {
-        assert_eq!(
-            toml_bool(
-                "[tui]\nvim_mode_default = true\n",
-                "tui",
-                "vim_mode_default"
-            ),
-            Some(true)
-        );
-        assert_eq!(
-            toml_bool("tui.vim_mode_default = false\n", "tui", "vim_mode_default"),
-            Some(false)
-        );
-        assert_eq!(
-            toml_bool(
-                "tui = { vim_mode_default = true }\n",
-                "tui",
-                "vim_mode_default"
-            ),
-            None
-        );
-        assert_eq!(
-            toml_bool(
-                "[other]\nvim_mode_default = true\n",
-                "tui",
-                "vim_mode_default"
-            ),
-            None
-        );
+        let read = |t: &str| toml_bool(t, "tui", "vim_mode_default");
+        assert_eq!(read("[tui]\nvim_mode_default = true\n"), Ok(Some(true)));
+        assert_eq!(read("tui.vim_mode_default = false\n"), Ok(Some(false)));
+        assert_eq!(read("model = \"m\"\n"), Ok(None));
+        // Anything this reader can't follow fails closed.
+        assert!(read("tui = { vim_mode_default = true }\n").is_err());
+        assert!(read("[other]\nvim_mode_default = true\n").is_err());
+        assert!(read("[tui]\nvim_mode_default = \"yes\"\n").is_err());
+        assert!(read("[profiles.x]\ntui.vim_mode_default = true\n").is_err());
     }
 
-    #[test]
-    fn launch_facts_follow_settings_precedence() {
-        let dir = tempfile::tempdir().unwrap();
-        let home = dir.path().join("home");
-        let cwd = dir.path().join("work");
+    fn claude_env(dir: &Path) -> (PathBuf, PathBuf, BTreeMap<String, String>) {
+        let home = dir.join("home");
+        let cwd = dir.join("work");
         std::fs::create_dir_all(home.join(".claude")).unwrap();
         std::fs::create_dir_all(cwd.join(".claude")).unwrap();
         std::fs::write(
@@ -613,10 +685,26 @@ mod tests {
         )
         .unwrap();
         let env = BTreeMap::from([("HOME".to_string(), home.display().to_string())]);
+        (home, cwd, env)
+    }
+
+    fn qualified_claude(f: LaunchFacts) -> bool {
+        let f = LaunchFacts {
+            vendor_version: Some("2.1.318 (Claude Code)".into()),
+            ..f
+        };
+        qualification(Vendor::Claude, &f) == Qualification::Qualified
+    }
+
+    #[test]
+    fn launch_facts_follow_settings_precedence() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_, cwd, env) = claude_env(dir.path());
         let argv = vec!["claude".to_string()];
         let f = LaunchFacts::measure(Vendor::Claude, None, &argv, &cwd, &env);
         assert_eq!(f.editor.as_deref(), Some("vim"));
         assert_eq!(f.suggestions, Some(false));
+        assert!(qualified_claude(f));
         std::fs::write(
             cwd.join(".claude/settings.local.json"),
             r#"{"editorMode":"normal"}"#,
@@ -631,19 +719,52 @@ mod tests {
         ];
         let f = LaunchFacts::measure(Vendor::Claude, None, &argv, &cwd, &env);
         assert_eq!(f.editor, None);
+        assert!(!qualified_claude(f));
     }
 
     #[test]
-    fn codex_launch_facts() {
-        let dir = tempfile::tempdir().unwrap();
-        let home = dir.path().join("home");
+    fn unreadable_or_malformed_claude_settings_are_unqualified() {
+        let argv = vec!["claude".to_string()];
+        type Make<'a> = &'a dyn Fn(&Path);
+        let bad: [(&str, Make); 4] = [
+            ("a directory where a file should be", &|p| {
+                std::fs::create_dir_all(p).unwrap()
+            }),
+            ("malformed JSON", &|p| {
+                std::fs::write(p, "{not json").unwrap()
+            }),
+            ("not an object", &|p| std::fs::write(p, "[1]").unwrap()),
+            ("a wrongly typed value", &|p| {
+                std::fs::write(p, r#"{"editorMode": 1}"#).unwrap()
+            }),
+        ];
+        for (what, make) in bad {
+            for rel in [".claude/settings.json", ".claude/settings.local.json"] {
+                let dir = tempfile::tempdir().unwrap();
+                let (_, cwd, env) = claude_env(dir.path());
+                make(&cwd.join(rel));
+                let f = LaunchFacts::measure(Vendor::Claude, None, &argv, &cwd, &env);
+                assert!(f.problem.is_some(), "{what} at {rel}");
+                assert!(!qualified_claude(f), "{what} at {rel}");
+            }
+        }
+    }
+
+    fn codex_env(dir: &Path) -> BTreeMap<String, String> {
+        let home = dir.join("home");
         std::fs::create_dir_all(home.join(".codex")).unwrap();
         std::fs::write(
             home.join(".codex/config.toml"),
             "model = \"m\"\n[tui]\nvim_mode_default = true\n",
         )
         .unwrap();
-        let env = BTreeMap::from([("HOME".to_string(), home.display().to_string())]);
+        BTreeMap::from([("HOME".to_string(), home.display().to_string())])
+    }
+
+    #[test]
+    fn codex_launch_facts() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = codex_env(dir.path());
         let argv = vec!["codex".to_string()];
         let f = LaunchFacts::measure(Vendor::Codex, None, &argv, dir.path(), &env);
         assert_eq!(f.editor.as_deref(), Some("vim"));
@@ -652,8 +773,49 @@ mod tests {
             .to_vec();
         let f = LaunchFacts::measure(Vendor::Codex, None, &argv, dir.path(), &env);
         assert_eq!(f.editor.as_deref(), Some("normal"));
-        let argv: Vec<String> = ["codex", "--profile", "x"].map(String::from).to_vec();
+        for argv in [
+            vec!["codex", "--profile", "x"],
+            vec!["codex", "-c", "tui={vim_mode_default=true}"],
+        ] {
+            let argv: Vec<String> = argv.into_iter().map(String::from).collect();
+            let f = LaunchFacts::measure(Vendor::Codex, None, &argv, dir.path(), &env);
+            assert_eq!(f.editor, None);
+            assert!(f.problem.is_some());
+        }
+    }
+
+    #[test]
+    fn unreadable_or_malformed_codex_settings_are_unqualified() {
+        let argv = vec!["codex".to_string()];
+        let qualified = |f: LaunchFacts| {
+            let f = LaunchFacts {
+                vendor_version: Some("codex-cli 0.165.0".into()),
+                ..f
+            };
+            qualification(Vendor::Codex, &f) == Qualification::Qualified
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let env = codex_env(dir.path());
+        assert!(qualified(LaunchFacts::measure(
+            Vendor::Codex,
+            None,
+            &argv,
+            dir.path(),
+            &env
+        )));
+        // The project file outranks the user one.
+        std::fs::create_dir_all(dir.path().join(".codex/config.toml")).unwrap();
         let f = LaunchFacts::measure(Vendor::Codex, None, &argv, dir.path(), &env);
-        assert_eq!(f.editor, None);
+        assert!(f.problem.is_some());
+        assert!(!qualified(f));
+        std::fs::remove_dir(dir.path().join(".codex/config.toml")).unwrap();
+        std::fs::write(
+            dir.path().join(".codex/config.toml"),
+            "[tui]\nvim_mode_default = maybe\n",
+        )
+        .unwrap();
+        let f = LaunchFacts::measure(Vendor::Codex, None, &argv, dir.path(), &env);
+        assert!(f.problem.is_some());
+        assert!(!qualified(f));
     }
 }

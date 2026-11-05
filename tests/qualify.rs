@@ -30,7 +30,7 @@ use borgchart::rules;
 use borgchart::state::StateDir;
 use borgchart::team::Vendor;
 use borgchart::tmux::{self, Tmux};
-use borgchart::wake::{self, Defer, LaunchFacts, Qualification, WakeResult};
+use borgchart::wake::{self, Defer, LaunchFacts, Qualification, REMINDER, Snapshot, WakeResult};
 
 const SESSION: &str = "brg-qualify";
 const WINDOW: &str = "member";
@@ -214,22 +214,13 @@ impl Run {
             .unwrap_or_default()
     }
 
-    fn title(&self) -> String {
-        self.tmux
-            .ok(&[
-                "display-message",
-                "-p",
-                "-t",
-                &self.target(),
-                "#{pane_title}",
-            ])
-            .unwrap_or_default()
-            .trim()
-            .to_string()
+    fn snap(&self) -> Snapshot {
+        wake::snapshot(&self.tmux, &self.pane()).expect("the pane is gone")
     }
 
     fn reading(&self) -> Reading {
-        composer::read(self.vendor, &self.screen())
+        let s = self.snap();
+        composer::read(self.vendor, &s.screen, Some(s.geometry))
     }
 
     fn save(&self, case: &str) {
@@ -272,7 +263,16 @@ impl Run {
     }
 
     fn record(&mut self, case: &str, want: &str, got: String) {
-        let ok = if want.split('|').any(|w| got.starts_with(w)) {
+        self.record_checked(case, want, got, &[]);
+    }
+
+    /// Record a row that also fails if any invariant is false.
+    fn record_checked(&mut self, case: &str, want: &str, got: String, invariants: &[(&str, bool)]) {
+        let got = invariants
+            .iter()
+            .filter(|(_, held)| !held)
+            .fold(got, |g, (what, _)| format!("{g} ({what} violated)"));
+        let ok = if evaluate(want, &got, invariants) {
             "ok"
         } else {
             "FAIL"
@@ -287,27 +287,79 @@ impl Run {
     /// An attempt on a draft must defer and leave the draft as it was.
     fn draft_case(&mut self, case: &str) {
         std::thread::sleep(Duration::from_millis(500));
-        let before = self.screen();
+        let before = self.snap();
         let (r, calls) = if self.qualified {
             self.attempt()
         } else {
             let rules = rules::load(self.vendor).unwrap();
-            let r = wake::before_paste(self.vendor, &rules, &self.title(), &before);
+            let r = wake::before_paste(self.vendor, &rules, &before);
             (r.unwrap_or(WakeResult::Submitted), 0)
         };
         std::thread::sleep(Duration::from_millis(300));
-        let untouched = composer::view(self.vendor, &before).ok().map(|v| v.lines)
-            == composer::view(self.vendor, &self.screen())
+        let after = self.snap();
+        let lines = |s: &Snapshot| {
+            composer::view(self.vendor, &s.screen, None)
                 .ok()
-                .map(|v| v.lines);
+                .map(|v| v.lines)
+        };
+        let untouched = lines(&before) == lines(&after)
+            && (before.geometry.cursor_x, before.geometry.cursor_y)
+                == (after.geometry.cursor_x, after.geometry.cursor_y);
         self.save(case);
-        let got = format!(
-            "{}{}{}",
+        self.record_checked(
+            case,
+            "deferred:draft",
             show(&r),
-            if calls > 0 { " (intent recorded!)" } else { "" },
-            if untouched { "" } else { " (screen changed!)" }
+            &[
+                ("no intent recorded", calls == 0),
+                ("input box untouched", untouched),
+            ],
         );
-        self.record(case, "deferred:draft", got);
+    }
+
+    /// A whitespace draft may read as a draft or as uncertain, never as empty.
+    fn draft_or_uncertain(&mut self, case: &str) {
+        std::thread::sleep(Duration::from_millis(500));
+        let rules = rules::load(self.vendor).unwrap();
+        let s = self.snap();
+        self.save(case);
+        let got = match wake::before_paste(self.vendor, &rules, &s) {
+            None => "would paste".to_string(),
+            Some(r) => show(&r),
+        };
+        self.record(case, "deferred:draft|deferred:uncertain", got);
+    }
+
+    /// Paste text by hand (bracketed), the way the wake does, without Enter.
+    fn paste(&self, text: &str) {
+        self.tmux
+            .run_with_stdin(&["load-buffer", "-b", "qualify", "-"], text.as_bytes())
+            .unwrap();
+        self.tmux
+            .ok(&[
+                "paste-buffer",
+                "-p",
+                "-d",
+                "-b",
+                "qualify",
+                "-t",
+                &self.target(),
+            ])
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(800));
+    }
+
+    fn enter_case(&mut self, case: &str, want: &str) {
+        std::thread::sleep(Duration::from_millis(300));
+        let rules = rules::load(self.vendor).unwrap();
+        let s = self.snap();
+        self.save(case);
+        let g = s.geometry;
+        let got = match wake::before_enter(self.vendor, &rules, &s) {
+            None => format!("would press Enter (cursor {},{})", g.cursor_x, g.cursor_y),
+            Some(why) => format!("withheld: {why}"),
+        };
+        self.record(case, want, got);
     }
 
     /// Wait for a turn to end: an empty idle box, or a prompt (left alone).
@@ -316,7 +368,7 @@ impl Run {
         let rules = rules::load(self.vendor).unwrap();
         while start.elapsed() < Duration::from_secs(180) {
             std::thread::sleep(Duration::from_secs(2));
-            match wake::before_paste(self.vendor, &rules, &self.title(), &self.screen()) {
+            match wake::before_paste(self.vendor, &rules, &self.snap()) {
                 None => return "idle".into(),
                 Some(WakeResult::Blocked(rule)) => {
                     return format!("blocked:{rule} (left unanswered)");
@@ -364,7 +416,7 @@ fn qualify(vendor: Vendor) -> Vec<[String; 4]> {
     run.start(200, 50);
     run.save("empty");
     let rules = rules::load(vendor).unwrap();
-    let got = match wake::before_paste(vendor, &rules, &run.title(), &run.screen()) {
+    let got = match wake::before_paste(vendor, &rules, &run.snap()) {
         None => "would paste".to_string(),
         Some(r) => show(&r),
     };
@@ -416,11 +468,33 @@ fn qualify(vendor: Vendor) -> Vec<[String; 4]> {
     run.draft_case("draft clears: first attempt");
     run.keys(&["C-u"]);
     std::thread::sleep(Duration::from_millis(500));
-    let got = match wake::before_paste(vendor, &rules, &run.title(), &run.screen()) {
+    let got = match wake::before_paste(vendor, &rules, &run.snap()) {
         None => "would paste".to_string(),
         Some(r) => show(&r),
     };
     run.record("draft clears: after clearing", "would paste", got);
+
+    // Whitespace-only drafts: never read as empty.
+    run.start(200, 50);
+    run.keys(&["-l", "   "]);
+    run.draft_or_uncertain("spaces-only draft (insert)");
+    run.start(200, 50);
+    run.keys(&["-l", " "]);
+    run.keys(&["Escape"]);
+    run.draft_or_uncertain("one space, then vim normal mode");
+
+    // The Enter check, with the reminder pasted by hand and never submitted.
+    run.start(200, 50);
+    run.paste(REMINDER);
+    run.enter_case("reminder pasted", "would press Enter");
+    run.keys(&["-l", " "]);
+    run.enter_case("reminder + a typed space", "withheld");
+    run.start(200, 50);
+    run.paste(&REMINDER.replace("brg inbox", "brginbox"));
+    run.enter_case("reminder with a space removed", "withheld");
+    run.start(60, 50);
+    run.paste(REMINDER);
+    run.enter_case("reminder wrapped at 60 columns", "would press Enter");
 
     // A persistent draft keeps deferring, with a resize and attached clients.
     run.start(200, 50);
@@ -499,8 +573,7 @@ fn qualify(vendor: Vendor) -> Vec<[String; 4]> {
     let r = if run.qualified {
         run.attempt().0
     } else {
-        let s = run.screen();
-        wake::before_paste(vendor, &rules, &run.title(), &s).unwrap_or(WakeResult::Submitted)
+        wake::before_paste(vendor, &rules, &run.snap()).unwrap_or(WakeResult::Submitted)
     };
     run.record("pane 100x12", "deferred:uncertain", show(&r));
     let _ = control.kill();
@@ -614,12 +687,17 @@ fn qualify(vendor: Vendor) -> Vec<[String; 4]> {
     run.start(200, 50);
     run.keys(&["Escape"]);
     std::thread::sleep(Duration::from_millis(500));
-    let mode = composer::view(vendor, &run.screen())
+    let mode = composer::view(vendor, &run.screen(), None)
         .ok()
         .and_then(|v| v.vim);
     run.record("normal mode shown", "Some(Normal)", format!("{mode:?}"));
     let (r, _) = run.attempt();
-    run.record("submit: vim normal", "submitted", show(&r));
+    // Claude can't tell an empty box from one space in normal mode, so it defers.
+    let want = match vendor {
+        Vendor::Claude => "deferred:uncertain",
+        Vendor::Codex => "submitted",
+    };
+    run.record("submit: vim normal", want, show(&r));
     let end = run.wait_turn();
     run.save("after-turn-2");
     run.record("turn 2 ended", "idle", end);
@@ -655,4 +733,31 @@ fn qualification_matrix() {
     }
     std::fs::write(root().join("matrix.md"), &md).unwrap();
     assert_eq!(failed, 0, "qualification failures:\n{md}");
+}
+
+/// A row passes when the result has one of the `|`-separated prefixes and
+/// every invariant held, whatever the result text says.
+fn evaluate(want: &str, got: &str, invariants: &[(&str, bool)]) -> bool {
+    want.split('|').any(|w| got.starts_with(w)) && invariants.iter().all(|(_, held)| *held)
+}
+
+#[test]
+fn rows_fail_on_any_broken_invariant() {
+    assert!(evaluate("deferred:draft", "deferred:draft", &[("a", true)]));
+    assert!(evaluate(
+        "submitted|deferred:uncertain",
+        "deferred:uncertain (x)",
+        &[]
+    ));
+    assert!(!evaluate("deferred:draft", "deferred:busy", &[]));
+    assert!(!evaluate(
+        "deferred:draft",
+        "deferred:draft",
+        &[("no intent recorded", false)]
+    ));
+    assert!(!evaluate(
+        "deferred:draft",
+        "deferred:draft",
+        &[("no intent recorded", true), ("input box untouched", false)]
+    ));
 }

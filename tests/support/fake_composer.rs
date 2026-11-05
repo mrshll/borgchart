@@ -9,7 +9,8 @@
 //!
 //! `$FAKE_COMPOSER_DIR/control` holds `key=value` lines, re-read while it
 //! runs: `mode=idle|working|dialog`, `enter=submit|ignore`,
-//! `on_paste=none|dialog|append:<text>` (a person typing during the paste).
+//! `on_paste=none|dialog|append:<text>` (a person typing during the paste),
+//! `after_enter=garbage` (an unreadable screen after Enter).
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -27,6 +28,8 @@ enum Mode {
     Idle,
     Working,
     Dialog,
+    /// Something unreadable instead of the input box.
+    Garbage,
 }
 
 struct Fake {
@@ -37,6 +40,7 @@ struct Fake {
     buffer: String,
     enter_submits: bool,
     on_paste: String,
+    after_enter: String,
     control: String,
     history: Vec<String>,
     width: usize,
@@ -73,6 +77,7 @@ impl Fake {
                 }
                 "enter" => self.enter_submits = v != "ignore",
                 "on_paste" => self.on_paste = v.to_string(),
+                "after_enter" => self.after_enter = v.to_string(),
                 _ => {}
             }
         }
@@ -103,7 +108,13 @@ impl Fake {
         let mut lines: Vec<String> = self.history.iter().map(|h| format!("> {h}")).collect();
         lines.push(String::new());
         let title;
+        // Where the cursor goes: the end of the input box, as the real CLIs do.
+        let mut cursor = (0, 0);
         match (self.vendor, self.mode) {
+            (_, Mode::Garbage) => {
+                title = "fake";
+                lines.push("$ ".into());
+            }
             (Vendor::Claude, Mode::Dialog) => {
                 title = "\u{2733} fake";
                 lines.extend(
@@ -141,6 +152,7 @@ impl Fake {
                 };
                 lines.push(rule.clone());
                 for (i, l) in self.box_lines().iter().enumerate() {
+                    cursor = (lines.len(), 2 + l.chars().count());
                     lines.push(if i == 0 {
                         format!("{marker}{l}")
                     } else {
@@ -165,9 +177,11 @@ impl Fake {
                     lines.push(String::new());
                 }
                 if self.buffer.is_empty() {
+                    cursor = (lines.len(), 2);
                     lines.push("\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anything\x1b[0m".into());
                 } else {
                     for (i, l) in self.box_lines().iter().enumerate() {
+                        cursor = (lines.len(), 2 + l.chars().count());
                         lines.push(if i == 0 {
                             format!("\x1b[1m›\x1b[0m {l}")
                         } else {
@@ -191,6 +205,13 @@ impl Fake {
         }
         let mut out = format!("\x1b[2J\x1b[H\x1b]0;{title}\x07");
         out.push_str(&lines.join("\r\n"));
+        // Vim normal mode puts the cursor on the last character.
+        let col = if self.insert {
+            cursor.1
+        } else {
+            cursor.1.saturating_sub(1).max(2)
+        };
+        out.push_str(&format!("\x1b[{};{}H", cursor.0 + 1, col + 1));
         let mut stdout = std::io::stdout();
         let _ = stdout.write_all(out.as_bytes());
         let _ = stdout.flush();
@@ -214,6 +235,9 @@ impl Fake {
             let text = std::mem::take(&mut self.buffer);
             self.log(serde_json::json!({"event": "submit", "text": text}));
             self.history.push(text);
+        }
+        if self.after_enter == "garbage" {
+            self.mode = Mode::Garbage;
         }
     }
 }
@@ -245,6 +269,7 @@ fn main() {
         buffer: String::new(),
         enter_submits: true,
         on_paste: String::new(),
+        after_enter: String::new(),
         control: String::new(),
         history: Vec::new(),
         width: width(),
