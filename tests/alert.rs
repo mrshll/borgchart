@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use borgchart::alert::{self, AlertOutcome, AlertRequest, Limits, Reason};
 use borgchart::bus::layout::RunPaths;
 use borgchart::deploy::{AlertConfig, BusConfig};
-use borgchart::state::{MemberMeta, Meta, PluginMeta, StateDir};
+use borgchart::state::{BusMeta, MemberMeta, Meta, PluginMeta, StateDir};
 
 const NOTIFY_TOKEN: &str = "notify-not-a-real-token-77aa";
 const SLACK_SECRET: &str = "xoxb-not-a-real-token-41f3";
@@ -95,20 +95,22 @@ impl Fixture {
                 )]),
             },
         );
+        let bus = BusConfig {
+            root: dir.path().join("runs"),
+            run: "example-run-1".into(),
+            alert: Some(AlertConfig {
+                plugin: "notify".into(),
+                action: "alert".into(),
+            }),
+            continues: None,
+            warn_age_days: 7,
+            max_age_days: 14,
+        };
+        meta.bus = Some(BusMeta::of(&bus));
         let fx = Fixture {
             state,
             meta,
-            bus: BusConfig {
-                root: dir.path().join("runs"),
-                run: "example-run-1".into(),
-                alert: Some(AlertConfig {
-                    plugin: "notify".into(),
-                    action: "alert".into(),
-                }),
-                continues: None,
-                warn_age_days: 7,
-                max_age_days: 14,
-            },
+            bus,
             dir,
         };
         fx.write_values("notify", &[("NOTIFY_TOKEN", NOTIFY_TOKEN)]);
@@ -450,6 +452,7 @@ plugins:
     env: [NOTIFY_TOKEN, NOTIFY_ROOM]
     actions:
       alert: notify alert --quiet <id> <member> <reason> <pending>
+      other: notify other <id> <member> <reason> <pending>
   slack:
     path: plugins/slack
     env: [SLACK_BOT_TOKEN]
@@ -479,16 +482,18 @@ members:
     }
 
     fn deploy_file(&self, room: &str, alert: bool) {
-        let alert_line = if alert {
-            "  alert: {plugin: notify, action: alert}\n"
-        } else {
-            ""
-        };
+        self.deploy_with(room, "runs", "example-run-1", alert.then_some("alert"));
+    }
+
+    fn deploy_with(&self, room: &str, root: &str, run: &str, action: Option<&str>) {
+        let alert_line = action
+            .map(|a| format!("  alert: {{plugin: notify, action: {a}}}\n"))
+            .unwrap_or_default();
         self.write(
             "team/borgchart.yaml",
             &format!(
-                "schema: 1\nplugins:\n  notify:\n    env: {{NOTIFY_ROOM: {room}}}\nbus:\n  root: {}\n  run: example-run-1\n{alert_line}",
-                self.path("runs").display()
+                "schema: 1\nplugins:\n  notify:\n    env: {{NOTIFY_ROOM: {room}}}\nbus:\n  root: {}\n  run: {run}\n{alert_line}",
+                self.path(root).display()
             ),
         );
     }
@@ -834,4 +839,190 @@ fn corrupt_alert_messages_never_echo_file_contents() {
     let err = alert::store::list(&paths).unwrap_err();
     assert_eq!(err.code, borgchart::bus::outcome::Code::Corrupt);
     assert!(!err.message.contains('\u{1b}'), "{:?}", err.message);
+}
+
+// ---- fix round: up-time binding, private trees, persisted IDs -------------
+
+#[test]
+fn cli_refuses_a_bus_changed_since_up() {
+    let d = Deploy::new(true);
+    d.up();
+    let (rc, json) = d.json(&["bus", "alert", "test", "--json"]);
+    assert_eq!(rc, 0, "{json}");
+    let id = json["alert"]["id"].as_str().unwrap().to_string();
+    fs::remove_file(d.path("out/argv")).unwrap();
+
+    for (root, run, action) in [
+        ("runs", "changed-run", Some("alert")),
+        ("runs", "example-run-1", Some("other")),
+        ("runs", "example-run-1", None),
+        ("other-runs", "example-run-1", Some("alert")),
+    ] {
+        d.deploy_with("R0000EXAMPLE", root, run, action);
+        let (rc, json) = d.json(&["bus", "alert", "test", "--json"]);
+        assert_eq!(rc, 4, "{root} {run} {action:?}: {json}");
+        assert_eq!(json["outcome"], "refused");
+        let (rc, _) = d.json(&["bus", "alerts", "--json"]);
+        assert_eq!(rc, 4, "{root} {run} {action:?}");
+        let (rc, _) = d.json(&["bus", "alert", "resolve", &id, "--json"]);
+        assert_eq!(rc, 4, "{root} {run} {action:?}");
+        assert!(!d.path("out/argv").exists(), "{root} {run} {action:?} ran");
+    }
+    assert!(!d.path("runs/changed-run").exists());
+    assert!(!d.path("other-runs").exists());
+
+    // Back to the up-time configuration: everything works again.
+    d.deploy_file("R0000EXAMPLE", true);
+    let (rc, json) = d.json(&["bus", "alert", "resolve", &id, "--json"]);
+    assert_eq!(rc, 0, "{json}");
+}
+
+#[test]
+fn invoke_refuses_a_bus_other_than_the_one_recorded_at_up() {
+    let fx = Fixture::new("");
+    write_script(
+        &fx.meta.plugins["notify"]
+            .dir
+            .clone()
+            .unwrap()
+            .join("notify"),
+        &recorder(&fx.out()),
+    );
+    let mut bus = fx.bus.clone();
+    bus.run = "changed-run".into();
+    let inv = alert::invoke(&fx.state, &fx.meta, &bus, &request(), &Limits::default());
+    assert!(
+        matches!(inv.outcome, AlertOutcome::Unavailable(_)),
+        "{inv:?}"
+    );
+    let mut meta = fx.meta.clone();
+    meta.bus = None;
+    let inv = alert::invoke(&fx.state, &meta, &fx.bus, &request(), &Limits::default());
+    assert!(
+        matches!(inv.outcome, AlertOutcome::Unavailable(_)),
+        "{inv:?}"
+    );
+    assert!(!fx.out().join("argv").exists());
+}
+
+#[test]
+fn cli_resolve_refuses_a_symlinked_or_shared_root() {
+    let d = Deploy::new(true);
+    d.up();
+    let (_, json) = d.json(&["bus", "alert", "test", "--json"]);
+    let id = json["alert"]["id"].as_str().unwrap().to_string();
+    let file = d.path(&format!("runs/example-run-1/attention/alerts/{id}.json"));
+    let before = fs::read(&file).unwrap();
+
+    fs::rename(d.path("runs"), d.path("actual-runs")).unwrap();
+    std::os::unix::fs::symlink(d.path("actual-runs"), d.path("runs")).unwrap();
+    let (rc, json) = d.json(&["bus", "alert", "resolve", &id, "--json"]);
+    assert_eq!(rc, 4, "{json}");
+    let (rc, _) = d.json(&["bus", "alert", "test", "--json"]);
+    assert_eq!(rc, 4);
+    assert_eq!(
+        fs::read(d.path(&format!(
+            "actual-runs/example-run-1/attention/alerts/{id}.json"
+        )))
+        .unwrap(),
+        before
+    );
+    fs::remove_file(d.path("runs")).unwrap();
+    fs::rename(d.path("actual-runs"), d.path("runs")).unwrap();
+
+    fs::set_permissions(d.path("runs"), fs::Permissions::from_mode(0o775)).unwrap();
+    let (rc, json) = d.json(&["bus", "alert", "resolve", &id, "--json"]);
+    assert_eq!(rc, 4, "{json}");
+    let (rc, _) = d.json(&["bus", "alerts", "--json"]);
+    assert_eq!(rc, 4);
+    assert_eq!(fs::read(&file).unwrap(), before);
+    fs::set_permissions(d.path("runs"), fs::Permissions::from_mode(0o700)).unwrap();
+    let (rc, json) = d.json(&["bus", "alert", "resolve", &id, "--json"]);
+    assert_eq!(rc, 0, "{json}");
+}
+
+#[test]
+fn store_writes_refuse_a_shared_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = run_paths(dir.path());
+    alert::store::open(&paths, &request()).unwrap();
+    let root = dir.path().join("runs");
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o777)).unwrap();
+    let inv = alert::Invocation {
+        outcome: AlertOutcome::Invoked,
+        output: String::new(),
+        elapsed_ms: 0,
+    };
+    assert!(alert::store::record_invocation(&paths, "a-example-1", &inv).is_err());
+    assert!(alert::store::resolve(&paths, "a-example-1", "operator").is_err());
+    let mut other = request();
+    other.id = "a-example-2".into();
+    assert!(alert::store::open(&paths, &other).is_err());
+    assert!(alert::store::list(&paths).is_err());
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+#[test]
+fn cli_resolve_never_follows_an_embedded_id() {
+    let d = Deploy::new(true);
+    d.up();
+    let (_, json) = d.json(&["bus", "alert", "test", "--json"]);
+    let id = json["alert"]["id"].as_str().unwrap().to_string();
+    let file = d.path(&format!("runs/example-run-1/attention/alerts/{id}.json"));
+    let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+    value["id"] = "../../escaped".into();
+    fs::write(&file, value.to_string()).unwrap();
+    let (rc, json) = d.json(&["bus", "alert", "resolve", &id, "--json"]);
+    assert_eq!(rc, 7, "{json}");
+    assert_eq!(json["outcome"], "corrupt");
+    assert!(!d.path("runs/example-run-1/escaped.json").exists());
+    assert!(!d.path("runs/example-run-1/attention/escaped.json").exists());
+}
+
+#[test]
+fn cli_alerts_never_render_control_characters_from_a_file() {
+    let d = Deploy::new(true);
+    d.up();
+    let (_, json) = d.json(&["bus", "alert", "test", "--json"]);
+    let id = json["alert"]["id"].as_str().unwrap().to_string();
+    let file = d.path(&format!("runs/example-run-1/attention/alerts/{id}.json"));
+    let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+    value["member"] = "lead\u{1b}]0;owned\u{7}".into();
+    fs::write(&file, value.to_string()).unwrap();
+    for args in [
+        &["bus", "alerts", "--all"][..],
+        &["bus", "alerts", "--all", "--json"][..],
+    ] {
+        let out = d.brg_cmd(args).output().unwrap();
+        assert_eq!(code(&out), 7, "{args:?}");
+        for stream in [&out.stdout, &out.stderr] {
+            assert!(
+                !stream.contains(&0x1b),
+                "{args:?}: {}",
+                String::from_utf8_lossy(stream)
+            );
+        }
+    }
+}
+
+#[test]
+fn a_value_cut_by_the_tail_never_shows_through() {
+    // The tail drops the start of the first copy; masking the second must
+    // not shorten the text so much that the first copy's end survives.
+    let fx = Fixture::new(
+        "#!/bin/sh\nprintf '%s%s%s' \"$LONG_VALUE\" \"$LONG_VALUE\" ffffffffffffffffffffffffffffff\n",
+    );
+    let value = "0123456789abcdefghijklmnopqrstuvwxyzABCD";
+    fx.write_values("notify", &[("LONG_VALUE", value)]);
+    let limits = Limits {
+        max_output: 50,
+        ..Limits::default()
+    };
+    let inv = fx.invoke(&limits);
+    assert_eq!(inv.outcome, AlertOutcome::Invoked, "{inv:?}");
+    assert!(inv.output.len() <= 50, "{}", inv.output);
+    for start in 0..value.len() - 3 {
+        let piece = &value[start..start + 4];
+        assert!(!inv.output.contains(piece), "{piece} in {:?}", inv.output);
+    }
 }

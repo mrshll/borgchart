@@ -210,6 +210,11 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
         team_dir: v.team.dir.canonicalize().unwrap_or(v.team.dir.clone()),
         brg: brg.clone(),
         base_env: base.clone(),
+        bus: v
+            .deployment
+            .as_ref()
+            .and_then(|d| d.bus.as_ref())
+            .map(state::BusMeta::of),
         ..Meta::default()
     };
     let mut missing = Vec::new();

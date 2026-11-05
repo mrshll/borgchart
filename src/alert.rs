@@ -26,7 +26,7 @@ use crate::deploy::BusConfig;
 use crate::exec::PluginEnv;
 use crate::names::is_valid_id;
 use crate::paths::{is_executable, resolve_within};
-use crate::state::{self, Meta, StateDir};
+use crate::state::{self, BusMeta, Meta, StateDir};
 
 /// Why a person is needed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -206,6 +206,11 @@ pub fn invoke(
     let Some(config) = &bus.alert else {
         return unavailable("no `bus.alert` is configured");
     };
+    if meta.bus.as_ref() != Some(&BusMeta::of(bus)) {
+        return unavailable(
+            "the bus root, run or alert action differs from the one recorded at `brg up`",
+        );
+    }
     if let Err(e) = req.check() {
         return unavailable(e);
     }
@@ -375,7 +380,10 @@ fn run_bounded(
 /// Lossy UTF-8 with `secrets` masked and control characters (other than
 /// newline and tab) replaced, trimmed to at most `cap` bytes on a character boundary.
 fn clean_output(bytes: &[u8], cap: usize, secrets: &[String]) -> String {
-    let text: String = String::from_utf8_lossy(&mask(bytes, secrets))
+    // Cut on the raw bytes (masking can shorten the text), with the mask
+    // computed over the whole buffer so a value crossing the cut is hidden.
+    let start = bytes.len().saturating_sub(cap);
+    let text: String = String::from_utf8_lossy(&mask(bytes, secrets, start))
         .chars()
         .map(|c| {
             if c.is_control() && c != '\n' && c != '\t' {
@@ -397,8 +405,8 @@ fn clean_output(bytes: &[u8], cap: usize, secrets: &[String]) -> String {
 
 /// Replace every byte covered by any occurrence of any secret, found in the
 /// original bytes (so overlapping values are masked as their union), with
-/// one `[redacted]` per masked run.
-fn mask(bytes: &[u8], secrets: &[String]) -> Vec<u8> {
+/// one `[redacted]` per masked run, emitting only bytes from `start` on.
+fn mask(bytes: &[u8], secrets: &[String], start: usize) -> Vec<u8> {
     let mut hidden = vec![false; bytes.len()];
     for secret in secrets.iter().map(String::as_bytes) {
         if secret.is_empty() || secret.len() > bytes.len() {
@@ -411,10 +419,10 @@ fn mask(bytes: &[u8], secrets: &[String]) -> Vec<u8> {
         }
     }
     let mut out = Vec::with_capacity(bytes.len());
-    for (i, b) in bytes.iter().enumerate() {
+    for (i, b) in bytes.iter().enumerate().skip(start) {
         if !hidden[i] {
             out.push(*b);
-        } else if i == 0 || !hidden[i - 1] {
+        } else if i == start || !hidden[i - 1] {
             out.extend_from_slice(b"[redacted]");
         }
     }
@@ -487,6 +495,30 @@ pub mod store {
     /// while running an action.
     struct StoreLock(#[allow(dead_code)] fs::File);
 
+    /// The bus root, run, `attention/` and `attention/alerts/` directories that
+    /// exist must be private ([`fsx::check_private_dir`]): real directories,
+    /// yours, not group- or other-writable. Writers also need the root and run
+    /// to exist already (created by `ensure_run_dir`).
+    pub fn check_tree(paths: &RunPaths, writing: bool) -> Result<(), Failure> {
+        let root = paths
+            .root
+            .parent()
+            .ok_or_else(|| Failure::new(Code::Error, "run directory has no parent"))?;
+        for (dir, required) in [
+            (root.to_path_buf(), writing),
+            (paths.root.clone(), writing),
+            (paths.attention_dir(), false),
+            (paths.alerts_dir(), false),
+        ] {
+            match fs::symlink_metadata(&dir) {
+                Err(e) if e.kind() == io::ErrorKind::NotFound && !required => continue,
+                _ => fsx::check_private_dir(&dir)
+                    .map_err(|e| Failure::new(Code::Refused, e.to_string()))?,
+            }
+        }
+        Ok(())
+    }
+
     fn lock(paths: &RunPaths) -> Result<StoreLock, Failure> {
         let path = paths.alerts_dir().join(".lock");
         let file = crate::state::open_lock(&path).map_err(|e| Failure::io("alerts lock", e))?;
@@ -554,16 +586,19 @@ pub mod store {
         Ok(())
     }
 
-    fn write(paths: &RunPaths, alert: &Alert) -> Result<(), Failure> {
+    /// Replace the alert file for `id` (the validated, requested ID; never one
+    /// read from a file).
+    fn write(paths: &RunPaths, id: &str, alert: &Alert) -> Result<(), Failure> {
         let bytes = serde_json::to_vec_pretty(alert)
             .map_err(|e| Failure::new(Code::Error, e.to_string()))?;
-        fsx::replace(&paths.alert(&alert.id), &bytes).map_err(|e| Failure::io("write alert", e))
+        fsx::replace(&paths.alert(id), &bytes).map_err(|e| Failure::io("write alert", e))
     }
 
     /// Open the alert for `req`. Opening an ID again with the same member and
     /// reason returns the existing alert; anything else is a conflict.
     pub fn open(paths: &RunPaths, req: &AlertRequest) -> Result<Alert, Failure> {
         req.check().map_err(|e| Failure::new(Code::Invalid, e))?;
+        check_tree(paths, true)?;
         let alert = Alert {
             schema: crate::bus::SCHEMA,
             id: req.id.clone(),
@@ -609,6 +644,10 @@ pub mod store {
         id: &str,
         inv: &Invocation,
     ) -> Result<Alert, Failure> {
+        check_tree(paths, true)?;
+        if !crate::bus::is_valid_run_id(id) {
+            return Err(Failure::new(Code::Invalid, "not an alert ID"));
+        }
         let _lock = lock(paths)?;
         let mut alert = read(paths, id)?
             .ok_or_else(|| Failure::new(Code::NotFound, format!("no alert `{id}`")))?;
@@ -630,12 +669,16 @@ pub mod store {
             alert.invocations.drain(..cut);
         }
         alert.invocation_count = alert.invocation_count.saturating_add(1);
-        write(paths, &alert)?;
+        write(paths, id, &alert)?;
         Ok(alert)
     }
 
     /// Mark an alert resolved by `by`. Resolving twice keeps the first.
     pub fn resolve(paths: &RunPaths, id: &str, by: &str) -> Result<Alert, Failure> {
+        check_tree(paths, true)?;
+        if !crate::bus::is_valid_run_id(id) {
+            return Err(Failure::new(Code::Invalid, "not an alert ID"));
+        }
         let _lock = lock(paths)?;
         let mut alert = read(paths, id)?
             .ok_or_else(|| Failure::new(Code::NotFound, format!("no alert `{id}`")))?;
@@ -645,12 +688,16 @@ pub mod store {
         alert.state = State::Resolved;
         alert.resolved_at = Some(utc_now());
         alert.resolved_by = Some(by.to_string());
-        write(paths, &alert)?;
+        write(paths, id, &alert)?;
         Ok(alert)
     }
 
     /// Every alert, oldest first.
     pub fn list(paths: &RunPaths) -> Result<Vec<Alert>, Failure> {
+        if !paths.root.exists() {
+            return Ok(Vec::new());
+        }
+        check_tree(paths, false)?;
         let dir = paths.alerts_dir();
         let entries = match fs::read_dir(&dir) {
             Ok(e) => e,
@@ -748,6 +795,15 @@ fn context(input: &crate::validate::Input) -> Result<Ctx, Failure> {
     })?;
     let state = crate::runtime::state_for(input).state;
     let meta = state::read_meta(&state);
+    // Once started, the deployment acts for the bus it was started with.
+    if let Some(meta) = &meta
+        && meta.bus.as_ref() != Some(&BusMeta::of(&bus))
+    {
+        return Err(Failure::new(
+            Code::Refused,
+            "the bus root, run or alert action in the deployment file differs from the one recorded at `brg up`; restore it, or run `brg down` and `brg up` again",
+        ));
+    }
     Ok(Ctx { state, meta, bus })
 }
 
@@ -827,8 +883,15 @@ fn cli_test(input: &crate::validate::Input, member: Option<&str>) -> CliResult {
             Some(json!({"outcome": ATTENTION_UNAVAILABLE})),
         ));
     }
-    let paths = crate::bus::layout::ensure_run_dir(&ctx.bus)
-        .map_err(|e| plain(Failure::io("run directory", e)))?;
+    // `ensure_run_dir` reports an unsafe tree (symlink, not yours, shared) as
+    // `Other`; anything else is an ordinary I/O error.
+    let paths = crate::bus::layout::ensure_run_dir(&ctx.bus).map_err(|e| {
+        plain(if e.kind() == std::io::ErrorKind::Other {
+            Failure::new(Code::Refused, format!("run directory: {e}"))
+        } else {
+            Failure::io("run directory", e)
+        })
+    })?;
     let req = AlertRequest {
         id: new_id("test"),
         member,
@@ -890,17 +953,7 @@ fn run_paths(
     if !paths.root.exists() {
         return Ok(None);
     }
-    for dir in [
-        ctx.bus.root.clone(),
-        paths.root.clone(),
-        paths.attention_dir(),
-        paths.alerts_dir(),
-    ] {
-        if dir.exists() {
-            crate::bus::fsx::check_private_dir(&dir)
-                .map_err(|e| Failure::new(Code::Refused, e.to_string()))?;
-        }
-    }
+    store::check_tree(&paths, false)?;
     Ok(Some(paths))
 }
 

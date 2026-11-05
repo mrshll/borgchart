@@ -148,6 +148,10 @@ pub struct Meta {
     pub base_env: BTreeMap<String, String>,
     pub members: BTreeMap<String, MemberMeta>,
     pub plugins: BTreeMap<String, PluginMeta>,
+    /// The bus identity and alert action as configured at `up`; bus commands
+    /// that act for the deployment use these and refuse a changed file.
+    #[serde(default)]
+    pub bus: Option<BusMeta>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -156,6 +160,27 @@ pub struct MemberMeta {
     pub posture: String,
     pub parent: Option<String>,
     pub vendor_version: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BusMeta {
+    pub root: PathBuf,
+    pub run: String,
+    /// `(plugin, action)` of `bus.alert`.
+    pub alert: Option<(String, String)>,
+}
+
+impl BusMeta {
+    pub fn of(config: &crate::deploy::BusConfig) -> Self {
+        BusMeta {
+            root: config.root.clone(),
+            run: config.run.clone(),
+            alert: config
+                .alert
+                .as_ref()
+                .map(|a| (a.plugin.clone(), a.action.clone())),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
