@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::bus::manifest::ConfigSnapshot;
+
 /// Overrides for tests and unusual setups.
 pub const ENV_STATE_HOME: &str = "BORGCHART_STATE_HOME";
 pub const ENV_TMUX_SOCKET: &str = "BORGCHART_TMUX_SOCKET";
@@ -129,6 +131,10 @@ impl StateDir {
     pub fn member_tmp(&self, member: &str) -> PathBuf {
         self.root.join("tmp").join(member)
     }
+    /// Held by `up`, `down` and `run rebind` while they change the deployment.
+    pub fn lifecycle_lock(&self) -> PathBuf {
+        self.root.join("lifecycle.lock")
+    }
     pub fn lock_file(&self, member: &str) -> PathBuf {
         self.root.join("locks").join(format!("{member}.lock"))
     }
@@ -142,12 +148,33 @@ impl StateDir {
 pub struct Meta {
     pub source: PathBuf,
     pub team_dir: PathBuf,
-    /// The absolute path of the `brg` that started the deployment.
+    /// The absolute path of the `brg` every window, shim and member control
+    /// call of the deployment runs: the run's pinned copy with a bus, else
+    /// the `brg` that started it.
     pub brg: PathBuf,
+    /// SHA-256 of the `brg` that started the deployment. Members started
+    /// into it later must come from the same binary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brg_sha256: Option<String>,
+    /// The configuration the deployment started with. Members started into
+    /// it later must see the same.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<ConfigSnapshot>,
+    /// The bus run this deployment is bound to, if it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<RunBinding>,
     /// The small environment every window and plugin starts from (no secrets).
     pub base_env: BTreeMap<String, String>,
     pub members: BTreeMap<String, MemberMeta>,
     pub plugins: BTreeMap<String, PluginMeta>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunBinding {
+    pub run: String,
+    /// The run directory, `<bus.root>/<run>`.
+    pub dir: PathBuf,
+    pub generation: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

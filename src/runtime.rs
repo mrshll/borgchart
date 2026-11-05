@@ -8,9 +8,14 @@ use std::time::{Duration, Instant, SystemTime};
 
 use serde::Serialize;
 
+use crate::bus::context;
+use crate::bus::layout::RunPaths;
+use crate::bus::manifest::Incarnation;
+use crate::bus::time::utc_now;
 use crate::deploy::Auth;
 use crate::exec::{ExecSpec, PluginEnv, identity_env};
 use crate::launch;
+use crate::lifecycle;
 use crate::rules::{self, State};
 use crate::state::{
     self, MemberMeta, Meta, PluginMeta, StateDir, shell_quote, write_private, write_script,
@@ -169,7 +174,66 @@ pub struct UpOutcome {
     pub failed: bool,
 }
 
+/// What a fresh start needs from your environment: each plugin's values,
+/// and the names that are missing.
+type PluginValues = BTreeMap<String, BTreeMap<String, String>>;
+
+fn plugin_values(v: &Validated) -> (PluginValues, Vec<String>) {
+    let mut all = BTreeMap::new();
+    let mut missing = Vec::new();
+    for (name, plugin) in &v.team.plugins {
+        let mut values = BTreeMap::new();
+        let configured = v.deployment.as_ref().and_then(|d| d.plugins.get(name));
+        for env_name in &plugin.env {
+            if let Some(value) = configured.and_then(|p| p.env.get(env_name)) {
+                values.insert(env_name.clone(), value.clone());
+            } else if let Ok(value) = std::env::var(env_name) {
+                values.insert(env_name.clone(), value);
+            } else {
+                missing.push(format!("{name}: {env_name}"));
+            }
+        }
+        all.insert(name.clone(), values);
+    }
+    (all, missing)
+}
+
+/// With `auth: api_key`, each starting member's key, from your environment.
+fn api_keys(v: &Validated, ids: &[String]) -> Result<BTreeMap<String, (String, String)>, String> {
+    let mut keys = BTreeMap::new();
+    if v.auth() != Auth::ApiKey {
+        return Ok(keys);
+    }
+    let mut missing = Vec::new();
+    for id in ids {
+        let key = match v.team.members[id].vendor {
+            Vendor::Claude => "ANTHROPIC_API_KEY",
+            Vendor::Codex => "OPENAI_API_KEY",
+        };
+        match std::env::var(key) {
+            Ok(value) => {
+                keys.insert(id.clone(), (key.to_string(), value));
+            }
+            Err(_) => missing.push(format!("{id}: {key}")),
+        }
+    }
+    if !missing.is_empty() {
+        return Err(format!(
+            "`auth: api_key` needs these in your environment; nothing was started: {}",
+            missing.join(", ")
+        ));
+    }
+    Ok(keys)
+}
+
 /// `brg up [--member ID]`.
+///
+/// Everything is checked before anything is written. Starting into a
+/// running deployment (its session exists and `deployment.json` is there)
+/// reuses the binary, base environment and plugin values it started with,
+/// and refuses a different binary or a changed configuration. The lifecycle
+/// locks are held while files are written and windows started, and released
+/// before waiting for gates and folder trust.
 pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
     let (report, validated) = validate(input);
     for diag in &report.diags {
@@ -184,9 +248,6 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
     let dep = state_for(input);
     let state = &dep.state;
     let session = state.session();
-    let brg = brg_path();
-    let base = base_env();
-    let tmux = tmux_for(state);
     if state
         .root
         .display()
@@ -199,59 +260,11 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             state.root.display()
         ));
     }
-    state::ensure_dir(&state.root)
-        .map_err(|e| format!("cannot create {}: {e}", state.root.display()))?;
-    tmux.write_config()
-        .map_err(|e| format!("cannot write tmux config: {e}"))?;
-
-    // Plugins: their values (secrets included) go to private files for the shims.
-    let mut meta = Meta {
-        source: dep.source.clone(),
-        team_dir: v.team.dir.canonicalize().unwrap_or(v.team.dir.clone()),
-        brg: brg.clone(),
-        base_env: base.clone(),
-        ..Meta::default()
-    };
-    let mut missing = Vec::new();
-    for (name, plugin) in &v.team.plugins {
-        let mut values = BTreeMap::new();
-        let configured = v.deployment.as_ref().and_then(|d| d.plugins.get(name));
-        for env_name in &plugin.env {
-            if let Some(value) = configured.and_then(|p| p.env.get(env_name)) {
-                values.insert(env_name.clone(), value.clone());
-            } else if let Ok(value) = std::env::var(env_name) {
-                values.insert(env_name.clone(), value);
-            } else {
-                missing.push(format!("{name}: {env_name}"));
-            }
-        }
-        let body = serde_json::to_vec(&PluginEnv { env: values }).map_err(|e| e.to_string())?;
-        write_private(&state.plugin_env_file(name), &body)
-            .map_err(|e| format!("cannot write plugin settings: {e}"))?;
-        state::ensure_dir(&state.plugin_dir(name)).map_err(|e| e.to_string())?;
-        meta.plugins.insert(
-            name.clone(),
-            PluginMeta {
-                dir: plugin_dir(&v, name),
-                has_process: plugin.process.is_some(),
-            },
-        );
-    }
-    if !missing.is_empty() {
-        return Err(format!(
-            "set these before `brg up` (in your environment, or non-secret ones in borgchart.yaml): {}",
-            missing.join(", ")
-        ));
-    }
-
-    let mut messages = Vec::new();
-    let mut failed = false;
-    let mut started: Vec<Started> = Vec::new();
-    for id in v.team.members.keys() {
-        state::open_lock(&state.lock_file(id))
-            .map_err(|e| format!("cannot create send lock: {e}"))?;
-    }
-
+    let caller = brg_path();
+    let caller_sha = lifecycle::sha256_file(&caller)
+        .map_err(|e| format!("cannot read this brg ({}): {e}", caller.display()))?;
+    let snapshot = v.config_snapshot();
+    let bus = v.deployment.as_ref().and_then(|d| d.bus.clone());
     let member_ids: Vec<String> = v
         .team
         .members
@@ -262,27 +275,128 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
         })
         .map(|m| m.id.clone())
         .collect();
+    let retry = match only {
+        Some(id) => format!("up --member {id}"),
+        None => "up".to_string(),
+    };
 
-    for (id, member) in &v.team.members {
-        let posture = v.posture(id);
-        meta.members.insert(
-            id.clone(),
-            MemberMeta {
-                vendor: member.vendor.as_str().into(),
-                posture: match posture {
-                    Posture::Vendor => "vendor".into(),
-                    Posture::Locked => "locked".into(),
-                },
-                parent: member.parent.clone(),
-                vendor_version: vendor_version(member.vendor, &base),
-            },
-        );
+    // Checks that need nothing written.
+    let (values, missing) = plugin_values(&v);
+    let keys = api_keys(&v, &member_ids)?;
+    let missing_error = || {
+        format!(
+            "set these before `brg up` (in your environment, or non-secret ones in borgchart.yaml); nothing was started: {}",
+            missing.join(", ")
+        )
+    };
+    let probe = tmux_for(state);
+    let looks_running = probe.has_session(&session) && state.meta_file().exists();
+    if !looks_running && !missing.is_empty() {
+        return Err(missing_error());
     }
-    write_private(
-        &state.meta_file(),
-        &serde_json::to_vec_pretty(&meta).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| format!("cannot write state: {e}"))?;
+
+    // Serialize lifecycle changes, then decide for real.
+    state::ensure_dir(&state.root)
+        .map_err(|e| format!("cannot create {}: {e}", state.root.display()))?;
+    let state_lock = lifecycle::lock_state(state)?;
+    let existing = state::read_meta(state).filter(|_| probe.has_session(&session));
+    let joining = existing.is_some();
+    match &existing {
+        Some(meta) => lifecycle::check_join(meta, &caller, &caller_sha, &snapshot, state, &retry)?,
+        None if !missing.is_empty() => return Err(missing_error()),
+        None => {}
+    }
+    let binding = match &bus {
+        Some(bus) => Some(lifecycle::bind_run(
+            &v,
+            bus,
+            state,
+            &dep.source,
+            &caller,
+            &caller_sha,
+            joining,
+        )?),
+        None => None,
+    };
+    // Every window, shim, gate hook and member control call runs this.
+    let brg = match (&binding, &existing) {
+        (Some(b), _) => b.generation.pinned.clone(),
+        (None, Some(meta)) => meta.brg.clone(),
+        (None, None) => caller.clone(),
+    };
+
+    let meta = match existing {
+        Some(meta) => meta,
+        None => {
+            let base = base_env();
+            Tmux::new(&state.tmux_conf(), base.clone())
+                .write_config()
+                .map_err(|e| format!("cannot write tmux config: {e}"))?;
+            let mut meta = Meta {
+                source: dep.source.clone(),
+                team_dir: v.team.dir.canonicalize().unwrap_or(v.team.dir.clone()),
+                brg: brg.clone(),
+                brg_sha256: Some(caller_sha.clone()),
+                config: Some(snapshot.clone()),
+                run: binding.as_ref().map(|b| state::RunBinding {
+                    run: b.run.clone(),
+                    dir: b.paths.root.clone(),
+                    generation: b.generation.n,
+                }),
+                base_env: base.clone(),
+                ..Meta::default()
+            };
+            // Plugins: their values (secrets included) go to private files for the shims.
+            for (name, plugin) in &v.team.plugins {
+                let body = serde_json::to_vec(&PluginEnv {
+                    env: values.get(name).cloned().unwrap_or_default(),
+                })
+                .map_err(|e| e.to_string())?;
+                write_private(&state.plugin_env_file(name), &body)
+                    .map_err(|e| format!("cannot write plugin settings: {e}"))?;
+                state::ensure_dir(&state.plugin_dir(name)).map_err(|e| e.to_string())?;
+                meta.plugins.insert(
+                    name.clone(),
+                    PluginMeta {
+                        dir: plugin_dir(&v, name),
+                        has_process: plugin.process.is_some(),
+                    },
+                );
+            }
+            for id in v.team.members.keys() {
+                state::open_lock(&state.lock_file(id))
+                    .map_err(|e| format!("cannot create send lock: {e}"))?;
+            }
+            for (id, member) in &v.team.members {
+                let posture = v.posture(id);
+                meta.members.insert(
+                    id.clone(),
+                    MemberMeta {
+                        vendor: member.vendor.as_str().into(),
+                        posture: match posture {
+                            Posture::Vendor => "vendor".into(),
+                            Posture::Locked => "locked".into(),
+                        },
+                        parent: member.parent.clone(),
+                        vendor_version: vendor_version(member.vendor, &base),
+                    },
+                );
+            }
+            write_private(
+                &state.meta_file(),
+                &serde_json::to_vec_pretty(&meta).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| format!("cannot write state: {e}"))?;
+            meta
+        }
+    };
+    let base = meta.base_env.clone();
+    let tmux = Tmux::new(&state.tmux_conf(), base.clone());
+    let socket = state::tmux_socket();
+
+    let mut messages = Vec::new();
+    let mut failed = false;
+    let mut started: Vec<Started> = Vec::new();
 
     for id in &member_ids {
         let member = &v.team.members[id];
@@ -297,7 +411,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
         let deploy_member = v.deployment.as_ref().and_then(|d| d.members.get(id));
         let granted = launch::granted(&v.team, member);
 
-        // Shims for granted commands.
+        // Shims for granted commands, and for brg itself.
         let shim_dir = state.member_bin(id);
         let _ = std::fs::remove_dir_all(&shim_dir);
         let mut help = BTreeMap::new();
@@ -313,6 +427,10 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             {
                 help.insert(command.clone(), text);
             }
+        }
+        for name in ["brg", "borgchart"] {
+            write_script(&shim_dir.join(name), &launch::brg_shim_script(&brg))
+                .map_err(|e| format!("cannot write shim: {e}"))?;
         }
 
         let settings_path = state.member_dir(id).join("claude-settings.json");
@@ -351,28 +469,14 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
         );
         env.insert("PATH".into(), path);
         env.insert("BORGCHART_DEPLOYMENT".into(), state.id.clone());
-        env.insert("BORGCHART_MEMBER".into(), id.clone());
+        env.insert(context::ENV_MEMBER.into(), id.clone());
+        env.insert(context::ENV_BIN.into(), brg.display().to_string());
         let tmp = state.member_tmp(id);
         state::ensure_dir(&tmp).map_err(|e| e.to_string())?;
         env.insert("TMPDIR".into(), tmp.display().to_string());
         env.insert(state::ENV_FILE.into(), dep.source.display().to_string());
-        if v.auth() == Auth::ApiKey {
-            let key = match member.vendor {
-                Vendor::Claude => "ANTHROPIC_API_KEY",
-                Vendor::Codex => "OPENAI_API_KEY",
-            };
-            match std::env::var(key) {
-                Ok(value) => {
-                    env.insert(key.into(), value);
-                }
-                Err(_) => {
-                    messages.push(format!(
-                        "{id}: not started: `auth: api_key` needs {key} in your environment"
-                    ));
-                    failed = true;
-                    continue;
-                }
-            }
+        if let Some((key, value)) = keys.get(id) {
+            env.insert(key.clone(), value.clone());
         }
         // Codex's sandbox can write its cwd, so a `locked` Codex member that
         // declares none starts in its own temp dir rather than the team dir.
@@ -394,8 +498,35 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             })
             .filter(|_| member.vendor == Vendor::Claude)
             .map(|c| c.canonicalize().unwrap_or_else(|_| c.clone()));
-        start_window(
+
+        // With a bus, each start is a new incarnation, recorded before its
+        // window exists and again once its pane is known.
+        let incarnation = match &binding {
+            Some(b) => {
+                let inc = Incarnation {
+                    member: id.clone(),
+                    incarnation: lifecycle::new_incarnation_id(&b.paths, id, b.generation.n),
+                    generation: b.generation.n,
+                    started_at: utc_now(),
+                    vendor_version: if joining {
+                        vendor_version(member.vendor, &base)
+                    } else {
+                        meta.members.get(id).and_then(|m| m.vendor_version.clone())
+                    },
+                    pane: None,
+                    ended_at: None,
+                    ended_reason: None,
+                };
+                lifecycle::begin_incarnation(&b.paths, &inc)?;
+                env.insert(context::ENV_RUN.into(), b.run.clone());
+                env.insert(context::ENV_INCARNATION.into(), inc.incarnation.clone());
+                Some((b, inc))
+            }
+            None => None,
+        };
+        let result = start_window(
             &tmux,
+            &brg,
             state,
             &session,
             id,
@@ -404,7 +535,17 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                 env,
                 cwd,
             },
-        )?;
+        );
+        if let Some((b, mut inc)) = incarnation {
+            if let Err(e) = result {
+                let _ = lifecycle::end_incarnation(&b.paths, id, lifecycle::ENDED_START_FAILED);
+                return Err(e);
+            }
+            inc.pane = lifecycle::pane_identity(&socket, &session, id);
+            lifecycle::complete_incarnation(&b.paths, &inc)?;
+        } else {
+            result?;
+        }
         started.push(Started {
             id: id.clone(),
             vendor: member.vendor,
@@ -422,7 +563,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
     if only.is_none() {
         for (name, plugin) in &v.team.plugins {
             let window = format!("_{name}");
-            let dir = meta.plugins[name].dir.clone();
+            let dir = meta.plugins.get(name).and_then(|p| p.dir.clone());
             let Some((argv, cwd)) = launch::process_argv(plugin, dir.as_deref()) else {
                 continue;
             };
@@ -446,6 +587,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             let cwd = cwd.unwrap_or_else(|| meta.team_dir.clone());
             start_window(
                 &tmux,
+                &brg,
                 state,
                 &session,
                 &window,
@@ -454,6 +596,12 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             messages.push(format!("plugin {name}: started"));
         }
     }
+
+    // Members may use the bus while they start up; another `up --member`
+    // may proceed too. The checks below only read screens and, for a
+    // `locked` member that fails its start-up check, stop that window.
+    drop(binding);
+    drop(state_lock);
 
     // Accept Claude's folder trust for a declared cwd, and make every locked
     // member prove its gate is active, or stop it.
@@ -564,6 +712,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
 
 fn start_window(
     tmux: &Tmux,
+    brg: &Path,
     state: &StateDir,
     session: &str,
     window: &str,
@@ -574,7 +723,7 @@ fn start_window(
         .map_err(|e| format!("cannot write launch file: {e}"))?;
     let command = format!(
         "{} _exec {} {}",
-        shell_quote(&brg_path().display().to_string()),
+        shell_quote(&brg.display().to_string()),
         shell_quote(&state.root.display().to_string()),
         shell_quote(window)
     );
@@ -582,13 +731,30 @@ fn start_window(
         .map_err(|e| format!("cannot start `{window}`: {e}"))
 }
 
-/// `brg down [--member ID]`.
+/// `brg down [--member ID]`. With a bus, the incarnations it stops are
+/// marked ended.
 pub fn down(input: &Input, only: Option<&str>) -> Result<Vec<String>, String> {
     let dep = state_for(input);
     let state = &dep.state;
     let session = state.session();
     let tmux = tmux_for(state);
+    let _state_lock = if state.root.is_dir() {
+        Some(lifecycle::lock_state(state)?)
+    } else {
+        None
+    };
+    let meta = state::read_meta(state);
+    let run = meta
+        .as_ref()
+        .and_then(|m| m.run.as_ref())
+        .map(|r| RunPaths::from_root(&r.dir))
+        .filter(|p| p.runtime_dir().is_dir());
+    let _run_lock = match &run {
+        Some(paths) => Some(lifecycle::lock_run(paths)?),
+        None => None,
+    };
     let mut messages = Vec::new();
+    let mut stopped: Vec<String> = Vec::new();
     match only {
         Some(id) => {
             if tmux.window(&session, id).is_some() {
@@ -600,6 +766,7 @@ pub fn down(input: &Input, only: Option<&str>) -> Result<Vec<String>, String> {
             let _ = std::fs::remove_file(state.gate_marker(id));
             let _ = std::fs::remove_file(state.member_dir(id).join("trust-accepted"));
             let _ = std::fs::remove_file(state.exec_file(id));
+            stopped.push(id.to_string());
         }
         None => {
             if tmux.has_session(&session) {
@@ -610,15 +777,21 @@ pub fn down(input: &Input, only: Option<&str>) -> Result<Vec<String>, String> {
             }
             // Remove the private files that held secrets and launch details.
             let _ = std::fs::remove_dir_all(state.root.join("exec"));
-            if let Some(meta) = state::read_meta(state) {
+            if let Some(meta) = &meta {
                 for name in meta.plugins.keys() {
                     let _ = std::fs::remove_file(state.plugin_env_file(name));
                 }
                 for id in meta.members.keys() {
                     let _ = std::fs::remove_file(state.gate_marker(id));
                     let _ = std::fs::remove_file(state.member_dir(id).join("trust-accepted"));
+                    stopped.push(id.clone());
                 }
             }
+        }
+    }
+    if let Some(paths) = &run {
+        for id in &stopped {
+            lifecycle::end_incarnation(paths, id, lifecycle::ENDED_STOPPED)?;
         }
     }
     Ok(messages)

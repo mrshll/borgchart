@@ -88,6 +88,15 @@ pub fn shim_script(
     )
 }
 
+/// The `brg` (and `borgchart`) a member finds first on its `PATH`: it runs
+/// the deployment's pinned binary, whatever else is installed.
+pub fn brg_shim_script(brg: &Path) -> String {
+    format!(
+        "#!/bin/sh\n# Written by brg: this deployment's own brg.\nexec {} \"$@\"\n",
+        shell_quote(&brg.display().to_string())
+    )
+}
+
 /// The member's opening prompt: its standing instruction, the deployment's
 /// extra task, and the commands it may run (shims by absolute path).
 pub fn opening_prompt(

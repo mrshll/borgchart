@@ -10,6 +10,7 @@ pub mod exec;
 pub mod frontmatter;
 pub mod gate;
 pub mod launch;
+pub mod lifecycle;
 pub mod names;
 pub mod paths;
 pub mod probe;
