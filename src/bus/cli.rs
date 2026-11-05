@@ -107,7 +107,7 @@ pub enum InboxCommand {
 
 #[derive(Subcommand)]
 pub enum BusCommand {
-    /// Summarize the run: members, per-recipient counts, recent records, store health.
+    /// Summarize the team's messages: members, per-recipient counts, recent records, store health.
     Inspect {
         /// How many recent record headers to show.
         #[arg(long, default_value_t = 10)]
@@ -115,7 +115,7 @@ pub enum BusCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Check the store and the run's age. Never writes.
+    /// Check the team's message storage and its age. Never writes.
     Check {
         #[arg(long)]
         json: bool,
@@ -307,7 +307,7 @@ fn target(bus: &Bus, who: &Who) -> Result<Target, Failure> {
         if !bus.manifest.members.contains_key(m) {
             return Err(Failure::new(
                 Code::Invalid,
-                format!("`{m}` is not a member of run `{}`", bus.config.run),
+                format!("`{m}` is not a member of team `{}`", bus.team),
             ));
         }
         return Ok(Target {
@@ -498,11 +498,8 @@ pub fn bus(input: &Input, command: BusCommand) -> ExitCode {
                 let snap = store::snapshot(&bus)?;
                 let v = store::inspect(&bus, &snap, last);
                 let mut text = format!(
-                    "run {} ({}), deployment {}, created {}\n",
-                    bus.config.run,
-                    bus.paths.root.display(),
-                    bus.manifest.deployment,
-                    bus.manifest.created_at
+                    "team {}, deployment {}, storage created {}\n",
+                    bus.team, bus.manifest.deployment, bus.manifest.created_at
                 );
                 text.push_str("members:\n");
                 for (id, m) in &bus.manifest.members {
@@ -581,7 +578,7 @@ pub fn bus(input: &Input, command: BusCommand) -> ExitCode {
                     report.records,
                     report
                         .age_days
-                        .map(|a| format!(", run age {a} days"))
+                        .map(|a| format!(", storage {a} days old"))
                         .unwrap_or_default()
                 );
             }

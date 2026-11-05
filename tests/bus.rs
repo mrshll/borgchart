@@ -1,5 +1,6 @@
-//! Record store tests: `brg msg`, `brg inbox` and `brg bus` against a run
-//! directory built from fixtures (a hand-written `run.json` and incarnations).
+//! Record store tests: `brg msg`, `brg inbox` and `brg bus` against a team's
+//! message storage built from fixtures (a hand-written `current`, `run.json`
+//! and incarnations).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -11,7 +12,11 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-const RUN: &str = "example-run-1";
+/// The team's internal current run. Users never see it: every command's
+/// output is checked for it (see [`output`]).
+const RUN: &str = "r41";
+/// The team's name in messages: its deployment directory's name.
+const TEAM: &str = "oncall";
 
 struct Fixture {
     dir: tempfile::TempDir,
@@ -28,12 +33,12 @@ struct Out {
 enum As {
     Operator,
     Member(&'static str),
-    /// A member with explicit run and incarnation values.
+    /// A member with explicit (internal) run and incarnation values.
     MemberWith(&'static str, &'static str, &'static str),
 }
 
 impl Fixture {
-    /// A deployment with a bus and a started run: `lead` (the root) with
+    /// A deployment with a bus and a started team: `lead` (the root) with
     /// children `helper` and `helper2`, and `sub` under `helper`.
     fn new() -> Self {
         let f = Fixture {
@@ -42,13 +47,11 @@ impl Fixture {
         fs::create_dir_all(f.dep_dir()).unwrap();
         fs::write(
             f.dep_file(),
-            format!(
-                "schema: 1\nbus:\n  root: {}\n  run: {RUN}\n",
-                f.root().display()
-            ),
+            format!("schema: 1\nbus:\n  root: {}\n", f.root().display()),
         )
         .unwrap();
         f.write_manifest(&borgchart::state::deployment_id(&f.dep_file()));
+        fs::write(f.store_dir().join("current"), format!("{RUN}\n")).unwrap();
         for m in ["lead", "helper", "helper2", "sub"] {
             f.write_incarnation(m, &format!("{m}-1"), false);
         }
@@ -56,19 +59,29 @@ impl Fixture {
     }
 
     fn dep_dir(&self) -> PathBuf {
-        self.dir.path().join("deploy")
+        self.dir.path().join(TEAM)
     }
     fn dep_file(&self) -> PathBuf {
         self.dep_dir().join("borgchart.yaml")
     }
     fn root(&self) -> PathBuf {
-        self.dir.path().join("runs")
+        self.dir.path().join("teams")
+    }
+    /// The deployment's message storage: `<root>/<deployment-id>/`.
+    fn store_dir(&self) -> PathBuf {
+        self.root()
+            .join(borgchart::state::deployment_id(&self.dep_file()))
     }
     fn run_dir(&self) -> PathBuf {
-        self.root().join(RUN)
+        self.store_dir().join(RUN)
     }
 
     fn write_manifest(&self, deployment: &str) {
+        self.write_manifest_for(RUN, deployment);
+    }
+
+    /// `run.json` for the internal run `run`.
+    fn write_manifest_for(&self, run: &str, deployment: &str) {
         let parents = [
             ("lead", None),
             ("helper", Some("lead")),
@@ -81,19 +94,35 @@ impl Fixture {
             .collect();
         let manifest = json!({
             "schema": 1,
-            "run": RUN,
+            "run": run,
             "created_at": borgchart::bus::time::utc_now(),
             "deployment": deployment,
             "source": self.dep_file(),
             "config": {"version": 1, "digest": "00", "inputs": {}},
             "members": members,
         });
-        self.write_private(&self.run_dir().join("run.json"), &manifest);
+        self.write_private(&self.store_dir().join(run).join("run.json"), &manifest);
+    }
+
+    /// How brg says to restart the team (from the tests' working directory).
+    fn restart(&self) -> String {
+        borgchart::state::restart_hint(&self.dep_file())
+    }
+
+    /// How brg says to start one member.
+    fn start_member(&self, member: &str) -> String {
+        let restart = self.restart();
+        let (_, up) = restart.split_once(" && ").unwrap();
+        format!("{up} --member {member}")
     }
 
     fn write_private(&self, path: &Path, v: &Value) {
         use std::os::unix::fs::PermissionsExt;
-        for dir in [self.root(), self.run_dir()] {
+        for dir in [
+            self.root(),
+            self.store_dir(),
+            path.parent().unwrap().to_path_buf(),
+        ] {
             fs::create_dir_all(&dir).unwrap();
             fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
         }
@@ -105,7 +134,6 @@ impl Fixture {
         let mut v = json!({
             "member": member,
             "incarnation": incarnation,
-            "generation": 1,
             "started_at": "2026-11-05T19:00:00.000Z",
         });
         if ended {
@@ -117,22 +145,6 @@ impl Fixture {
                 .run_dir()
                 .join(format!("runtime/incarnations/{member}.json")),
             &v,
-        );
-    }
-
-    fn write_generation(&self, sha: &str) {
-        self.write_private(
-            &self.run_dir().join("runtime/generations/000001.json"),
-            &json!({
-                "n": 1,
-                "at": "2026-11-05T19:00:00.000Z",
-                "binary": env!("CARGO_BIN_EXE_brg"),
-                "binary_sha256": sha,
-                "pinned": self.run_dir().join(format!("runtime/bin/{sha}/brg")),
-                "state_dir": self.dir.path().join("state"),
-                "socket": "borgchart-test",
-                "reason": "start",
-            }),
         );
     }
 
@@ -167,13 +179,7 @@ impl Fixture {
                 feed(&mut input, bytes);
             }
         }
-        let out = child.wait_with_output().unwrap();
-        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-        Out {
-            code: out.status.code().unwrap_or(-1),
-            json: serde_json::from_str(stdout.trim()).unwrap_or(Value::String(stdout)),
-            stderr: String::from_utf8_lossy(&out.stderr).to_string(),
-        }
+        output(child.wait_with_output().unwrap())
     }
 
     fn publish(&self, who: &As, key: &str, draft: &Value) -> Out {
@@ -220,6 +226,28 @@ impl Fixture {
         walk(self.dir.path(), &mut out);
         out
     }
+}
+
+/// What a finished `brg` printed, after checking it speaks only of teams
+/// and members.
+fn output(out: std::process::Output) -> Out {
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_team_words(&stdout);
+    assert_team_words(&stderr);
+    Out {
+        code: out.status.code().unwrap_or(-1),
+        json: serde_json::from_str(stdout.trim()).unwrap_or(Value::String(stdout)),
+        stderr,
+    }
+}
+
+/// Users see teams and members only: no run IDs and no "run" wording.
+fn assert_team_words(text: &str) {
+    assert!(
+        !borgchart::bus::mentions_runs(text),
+        "run wording in output: {text}"
+    );
 }
 
 /// Write a draft to brg's stdin. brg may refuse and exit before reading it
@@ -273,7 +301,7 @@ fn publish_retry_and_conflict() {
     assert_eq!(rec.code, 0);
     let r = &rec.json["record"];
     assert_eq!(r["actor"], json!({"type": "external", "name": "ops"}));
-    assert_eq!(r["run"], RUN);
+    assert!(r.get("run").is_none(), "{r}");
     assert_eq!(r["schema"], 1);
     assert_eq!(r["key"], "demo-1");
     assert_eq!(r["body"], "hello");
@@ -750,7 +778,7 @@ fn caller_context_is_checked() {
     assert_eq!(f.brg(&As::Operator, &["inbox", "--json"], None).code, 2);
 
     let fenced = [
-        As::MemberWith("helper", "example-run-0", "helper-1"),
+        As::MemberWith("helper", "r40", "helper-1"),
         As::MemberWith("helper", RUN, "helper-0"),
         As::MemberWith("stranger", RUN, "stranger-1"),
     ];
@@ -759,6 +787,7 @@ fn caller_context_is_checked() {
         assert_eq!(out.code, 8, "{:?}", out.json);
         assert_eq!(out.json["outcome"], "fenced");
         assert_eq!(f.brg(who, &["inbox", "--json"], None).code, 8);
+        assert_eq!(f.brg(who, &["msg", "ack", "m1", "--json"], None).code, 8);
     }
     f.write_incarnation("helper2", "helper2-1", true);
     assert_eq!(
@@ -775,7 +804,7 @@ fn caller_context_is_checked() {
     assert!(f.records().is_empty());
     // Reading someone's inbox by name needs no live identity.
     let out = f.brg(
-        &As::MemberWith("helper", "example-run-0", "x"),
+        &As::MemberWith("helper", "r40", "x"),
         &["inbox", "--member", "lead", "--json"],
         None,
     );
@@ -783,29 +812,246 @@ fn caller_context_is_checked() {
 }
 
 #[test]
-fn mutations_need_the_generation_binary() {
+fn a_member_from_before_a_restart_is_fenced_in_team_terms() {
     let f = Fixture::new();
-    f.write_generation(&"0".repeat(64));
-    let out = f.publish(&As::Operator, "k", &note("lead", "x"));
-    assert_eq!(out.code, 4, "{:?}", out.json);
-    assert_eq!(out.json["outcome"], "refused");
-    // Reads work from any brg.
+    // The team was restarted: `current` moved on, `helper` still has the old one.
+    let stale = As::MemberWith("helper", "r40", "helper-1");
+    let out = f.publish(&stale, "k", &note("lead", "x"));
+    assert_eq!(out.code, 8, "{:?}", out.json);
+    let msg = out.json["message"].as_str().unwrap();
     assert_eq!(
-        f.brg(&As::Operator, &["bus", "check", "--json"], None).code,
-        0
+        msg,
+        format!(
+            "oncall/helper is from before the team was restarted; restart it: {}",
+            f.start_member("helper")
+        )
     );
-
-    let sha = format!(
-        "{:x}",
-        Sha256::digest(fs::read(env!("CARGO_BIN_EXE_brg")).unwrap())
+    let text = f.brg(&stale, &["inbox"], None);
+    assert_eq!(text.code, 8);
+    assert!(
+        text.stderr.contains("oncall/helper is from before"),
+        "{}",
+        text.stderr
     );
-    f.write_generation(&sha);
-    let out = f.publish(&As::Operator, "k", &note("lead", "x"));
-    assert_eq!(out.code, 0, "{:?}", out.json);
+    // A member whose session was replaced, and one that was stopped.
+    let out = f.publish(
+        &As::MemberWith("helper", RUN, "helper-0"),
+        "k",
+        &note("lead", "x"),
+    );
+    assert!(
+        out.json["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("oncall/helper "),
+        "{:?}",
+        out.json
+    );
+    f.write_incarnation("helper2", "helper2-1", true);
+    let out = f.publish(&As::Member("helper2"), "k", &note("lead", "x"));
+    assert_eq!(out.code, 8);
+    assert!(
+        out.json["message"]
+            .as_str()
+            .unwrap()
+            .ends_with(&f.start_member("helper2")),
+        "{:?}",
+        out.json
+    );
 }
 
 #[test]
-fn deployment_and_run_must_match() {
+fn another_message_format_is_refused_with_the_restart_command() {
+    let f = Fixture::new();
+    assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
+    let manifest_path = f.run_dir().join("run.json");
+    let mut m: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    m["schema"] = json!(999);
+    fs::write(&manifest_path, serde_json::to_vec(&m).unwrap()).unwrap();
+    let before = f.tree();
+    let expected = format!(
+        "team `oncall`'s messages use format 999; this brg uses format 1.\nRestart the team to start fresh storage in the new format: {}\n(Open work in the old format isn't carried over; the old messages stay on disk.)",
+        f.restart()
+    );
+    let commands: Vec<(As, Vec<&str>)> = vec![
+        (
+            As::Operator,
+            vec!["msg", "publish", "--key", "k2", "--external", "ops"],
+        ),
+        (As::Member("lead"), vec!["msg", "ack", "m1"]),
+        (As::Member("lead"), vec!["inbox"]),
+        (As::Operator, vec!["inbox", "--member", "lead"]),
+        (As::Member("lead"), vec!["inbox", "wait", "--timeout", "1"]),
+        (As::Operator, vec!["msg", "read", "m1"]),
+        (As::Operator, vec!["bus", "inspect"]),
+        (As::Operator, vec!["bus", "check"]),
+    ];
+    let draft = serde_json::to_vec(&note("lead", "b")).unwrap();
+    for (who, args) in &commands {
+        let mut json_args = args.clone();
+        json_args.push("--json");
+        let out = f.brg(who, &json_args, Some(&draft));
+        assert_eq!(out.code, 4, "{args:?}: {:?}", out.json);
+        assert_eq!(out.json["outcome"], "refused", "{args:?}");
+        assert_eq!(out.json["message"], expected, "{args:?}");
+        let text = f.brg(who, args, Some(&draft));
+        assert_eq!(text.code, 4, "{args:?}");
+        assert_eq!(text.stderr, format!("brg: {expected}\n"), "{args:?}");
+    }
+    assert_eq!(f.tree(), before, "nothing written");
+}
+
+#[test]
+fn restart_hints_are_bare_in_the_team_folder() {
+    let f = Fixture::new();
+    let manifest_path = f.run_dir().join("run.json");
+    let mut m: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    m["schema"] = json!(999);
+    fs::write(&manifest_path, serde_json::to_vec(&m).unwrap()).unwrap();
+    let out = f
+        .command(&As::Operator, &["bus", "check"])
+        .current_dir(f.dep_dir())
+        .output()
+        .unwrap();
+    let out = output(out);
+    assert_eq!(out.code, 4);
+    assert!(
+        out.stderr.contains("new format: brg down && brg up\n"),
+        "{}",
+        out.stderr
+    );
+    // From elsewhere, the hint names the deployment file.
+    assert!(f.restart().contains("--file"), "{}", f.restart());
+}
+
+#[test]
+fn writers_follow_the_team_to_new_storage() {
+    let f = Fixture::new();
+    assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
+    // A rollover happens while a publish waits for the old storage's lock.
+    let lock = hold(&f.run_dir().join("bus/lock"));
+    let draft = serde_json::to_vec(&note("lead", "b")).unwrap();
+    let args = [
+        "msg",
+        "publish",
+        "--key",
+        "k2",
+        "--external",
+        "ops",
+        "--json",
+    ];
+    let child = spawn(&f, &As::Operator, &args, &draft);
+    std::thread::sleep(Duration::from_millis(500));
+    let id = borgchart::state::deployment_id(&f.dep_file());
+    f.write_manifest_for("r42", &id);
+    fs::write(f.run_dir().join("retired"), "").unwrap();
+    fs::write(f.store_dir().join("current"), "r42\n").unwrap();
+    drop(lock);
+    let out = finish_within(child, Duration::from_secs(15));
+    assert_eq!(out.code, 0, "{:?} {}", out.json, out.stderr);
+    assert_eq!(out.json["id"], "m1", "numbered in the new storage");
+    assert_eq!(f.records(), ["0000000001.json"], "nothing more in the old");
+    assert!(
+        f.store_dir()
+            .join("r42/bus/records/0000000001.json")
+            .exists()
+    );
+    // Acks follow too: m1 of the new storage.
+    let ack = f.brg(
+        &As::Operator,
+        &["msg", "ack", "m1", "--external", "ops", "--json"],
+        None,
+    );
+    assert_eq!(
+        ack.code, 4,
+        "m1 is the new storage's, addressed to lead: {:?}",
+        ack.json
+    );
+    // A retired current with nothing newer is damage, not a loop.
+    fs::write(f.store_dir().join("r42/retired"), "").unwrap();
+    let out = f.publish(&As::Operator, "k3", &note("lead", "c"));
+    assert_eq!(out.code, 7, "{:?}", out.json);
+}
+
+#[test]
+fn storage_without_current_is_damaged_not_new() {
+    let f = Fixture::new();
+    assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
+    fs::remove_file(f.store_dir().join("current")).unwrap();
+    let before = f.tree();
+    for args in [
+        vec!["bus", "check", "--json"],
+        vec!["inbox", "--member", "lead", "--json"],
+    ] {
+        let out = f.brg(&As::Operator, &args, None);
+        assert_eq!(out.code, 7, "{args:?}: {:?}", out.json);
+        let msg = out.json["message"].as_str().unwrap();
+        assert!(
+            msg.starts_with("team `oncall`'s message storage is damaged"),
+            "{msg}"
+        );
+    }
+    let out = f.publish(&As::Operator, "k2", &note("lead", "b"));
+    assert_eq!(out.code, 7, "{:?}", out.json);
+    assert_eq!(f.tree(), before, "nothing created");
+}
+
+#[test]
+fn a_record_in_another_format_is_still_corrupt() {
+    let f = Fixture::new();
+    assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
+    let path = f.run_dir().join("bus/records/0000000001.json");
+    let mut r: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    r["schema"] = json!(999);
+    fs::write(&path, serde_json::to_vec(&r).unwrap()).unwrap();
+    assert_eq!(f.publish(&As::Operator, "k2", &note("lead", "b")).code, 7);
+    let check = f.brg(&As::Operator, &["bus", "check", "--json"], None);
+    assert_eq!(check.code, 7, "{:?}", check.json);
+}
+
+#[test]
+fn a_team_not_started_yet_is_not_configured() {
+    let f = Fixture::new();
+    // The team's directory exists, but `up` never got as far as a first run.
+    fs::remove_dir_all(f.run_dir()).unwrap();
+    fs::remove_file(f.store_dir().join("current")).unwrap();
+    let before = f.tree();
+    let draft = serde_json::to_vec(&note("lead", "b")).unwrap();
+    let commands: Vec<(As, Vec<&str>)> = vec![
+        (
+            As::Operator,
+            vec![
+                "msg",
+                "publish",
+                "--key",
+                "k",
+                "--external",
+                "ops",
+                "--json",
+            ],
+        ),
+        (As::Member("lead"), vec!["msg", "ack", "m1", "--json"]),
+        (As::Operator, vec!["inbox", "--member", "lead", "--json"]),
+        (As::Operator, vec!["msg", "read", "m1", "--json"]),
+        (As::Operator, vec!["bus", "inspect", "--json"]),
+        (As::Operator, vec!["bus", "check", "--json"]),
+    ];
+    for (who, args) in &commands {
+        let out = f.brg(who, args, Some(&draft));
+        assert_eq!(out.code, 3, "{args:?}: {:?}", out.json);
+        assert_eq!(out.json["outcome"], "not-configured");
+        assert_eq!(out.json["message"], "team `oncall` hasn't been started yet");
+    }
+    assert_eq!(f.tree(), before, "nothing created");
+    // Nor when there is no storage for the team at all.
+    fs::remove_dir_all(f.root()).unwrap();
+    let out = f.brg(&As::Operator, &["bus", "check", "--json"], None);
+    assert_eq!(out.code, 3, "{:?}", out.json);
+    assert!(!f.root().exists());
+}
+
+#[test]
+fn deployment_and_storage_must_match() {
     let f = Fixture::new();
     f.write_manifest("someone-else-0000");
     let out = f.publish(&As::Operator, "k", &note("lead", "x"));
@@ -818,6 +1064,7 @@ fn deployment_and_run_must_match() {
 
     let g = Fixture::new();
     fs::remove_file(g.run_dir().join("run.json")).unwrap();
+    // `current` names storage that isn't there (yet).
     let out = g.brg(&As::Operator, &["bus", "check", "--json"], None);
     assert_eq!(out.code, 3);
     assert_eq!(out.json["outcome"], "not-configured");
@@ -830,7 +1077,7 @@ fn deployment_and_run_must_match() {
 #[test]
 fn read_only_commands_create_nothing() {
     let f = Fixture::new();
-    // A fresh run (no bus/ yet), then one with records.
+    // A fresh team (no bus/ yet), then one with records.
     for populated in [false, true] {
         if populated {
             f.publish(&As::Operator, "k1", &note("lead", "x"));
@@ -890,7 +1137,7 @@ fn external_recipient_flow() {
 }
 
 #[test]
-fn inspect_summarizes_the_run() {
+fn inspect_summarizes_the_team() {
     let f = Fixture::new();
     f.publish(&As::Operator, "k1", &note("lead", "a"));
     f.publish(&As::Member("lead"), "k2", &note("helper", "b"));
@@ -902,7 +1149,8 @@ fn inspect_summarizes_the_run() {
     );
     assert_eq!(out.code, 0);
     let v = &out.json;
-    assert_eq!(v["run"], RUN);
+    assert_eq!(v["team"], TEAM);
+    assert!(v.get("run").is_none(), "{v}");
     assert_eq!(v["members"]["sub"]["parent"], "helper");
     assert_eq!(v["records"], 2);
     assert_eq!(v["recent"].as_array().unwrap().len(), 1);
@@ -925,7 +1173,7 @@ fn inspect_summarizes_the_run() {
 }
 
 #[test]
-fn check_warns_and_fails_on_run_age() {
+fn check_warns_and_fails_on_storage_age() {
     let f = Fixture::new();
     let manifest_path = f.run_dir().join("run.json");
     let mut m: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
@@ -939,6 +1187,7 @@ fn check_warns_and_fails_on_run_age() {
     let out = f.brg(&As::Operator, &["bus", "check", "--json"], None);
     assert_eq!(out.code, 0, "{:?}", out.json);
     assert!(out.json["warnings"].to_string().contains("days old"));
+    assert_eq!(out.json["age_days"], 8.0);
     m["created_at"] = json!(days_ago(15));
     fs::write(&manifest_path, serde_json::to_vec(&m).unwrap()).unwrap();
     let out = f.brg(&As::Operator, &["bus", "check", "--json"], None);
@@ -983,13 +1232,7 @@ fn finish_within(mut child: std::process::Child, limit: Duration) -> Out {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    let out = child.wait_with_output().unwrap();
-    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-    Out {
-        code: out.status.code().unwrap_or(-1),
-        json: serde_json::from_str(stdout.trim()).unwrap_or(Value::String(stdout)),
-        stderr: String::from_utf8_lossy(&out.stderr).to_string(),
-    }
+    output(child.wait_with_output().unwrap())
 }
 
 #[test]
@@ -997,49 +1240,6 @@ fn authority_is_checked_again_under_the_locks() {
     let f = Fixture::new();
     assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
     let draft = serde_json::to_vec(&note("lead", "b")).unwrap();
-    let publish = [
-        "msg",
-        "publish",
-        "--key",
-        "k2",
-        "--external",
-        "ops",
-        "--json",
-    ];
-
-    // A new generation recorded while a publish waits for generation.lock.
-    let generation = hold(&f.run_dir().join("runtime/generation.lock"));
-    let child = spawn(&f, &As::Operator, &publish, &draft);
-    std::thread::sleep(Duration::from_millis(500));
-    f.write_generation(&"0".repeat(64));
-    drop(generation);
-    let out = finish_within(child, Duration::from_secs(15));
-    assert_eq!(out.code, 4, "{:?} {}", out.json, out.stderr);
-    fs::remove_dir_all(f.run_dir().join("runtime/generations")).unwrap();
-
-    // The same for a duplicate-key retry, which would repair the key index.
-    let generation = hold(&f.run_dir().join("runtime/generation.lock"));
-    let retry = [
-        "msg",
-        "publish",
-        "--key",
-        "k1",
-        "--external",
-        "ops",
-        "--json",
-    ];
-    let child = spawn(
-        &f,
-        &As::Operator,
-        &retry,
-        &serde_json::to_vec(&note("lead", "a")).unwrap(),
-    );
-    std::thread::sleep(Duration::from_millis(500));
-    f.write_generation(&"0".repeat(64));
-    drop(generation);
-    let out = finish_within(child, Duration::from_secs(15));
-    assert_eq!(out.code, 4, "{:?} {}", out.json, out.stderr);
-    fs::remove_dir_all(f.run_dir().join("runtime/generations")).unwrap();
 
     // An incarnation ended while an ack waits for bus/lock.
     let bus = hold(&f.run_dir().join("bus/lock"));

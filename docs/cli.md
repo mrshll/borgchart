@@ -16,8 +16,8 @@
 | `brg inbox wait … --timeout SECONDS` | Wait (up to 600 s) for a new unacknowledged record; exits 9 on timeout |
 | `brg msg read ID [--json]` | Show one record in full |
 | `brg msg ack ID… [--external NAME] [--json]` | Acknowledge records addressed to you; acking twice is a no-op |
-| `brg bus inspect [--last N] [--json]` | Summarize the run: members, inbox counts, recent records, store health |
-| `brg bus check [--json]` | Check the store (gaps, unreadable files, stray temporaries) and the run's age. Never writes |
+| `brg bus inspect [--last N] [--json]` | Summarize the team's messages: members, inbox counts, recent records, store health |
+| `brg bus check [--json]` | Check the store (gaps, unreadable files, stray temporaries) and the storage's age. Never writes |
 
 ## Runtime
 

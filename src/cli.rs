@@ -124,7 +124,7 @@ enum Command {
         #[command(flatten)]
         args: crate::bus::cli::InboxArgs,
     },
-    /// Inspect and check the run's record store.
+    /// Inspect and check the team's message storage.
     Bus {
         #[command(flatten)]
         target: Target,

@@ -1,20 +1,20 @@
 //! The record store: publish, list, read, acknowledge, check and inspect.
 //!
 //! Records are immutable files numbered from 1 with no gaps. Every mutation
-//! takes `runtime/generation.lock` shared and then `bus/lock` exclusive,
-//! rescans the store, and refuses (`corrupt`) if anything in it is
-//! unreadable or missing. Sequence numbers and operation-key idempotency
+//! takes `bus/lock` exclusive, rescans the store, and refuses (`corrupt`) if
+//! anything in it is unreadable or missing. Sequence numbers and operation-key idempotency
 //! come from the records themselves: the record is the commit point, and the
 //! key index beside it is a cache that is repaired when found missing.
 //!
-//! Reads take no lock and never create anything: a record only appears under
-//! its final name once it is complete.
+//! Everything works on the team's current run (internal: users never see
+//! runs, so messages here talk about the team and its members). Reads hold
+//! `bus/lock` shared and never create anything.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -26,8 +26,8 @@ use crate::state;
 use super::attention_hooks::{self, Attention};
 use super::context::Caller;
 use super::fsx::{self, TMP_PREFIX, Written};
-use super::layout::{self, RunPaths};
-use super::manifest::{self, RunManifest, hex};
+use super::layout::{RunPaths, TeamStore};
+use super::manifest::{self, ManifestError, RunManifest, hex};
 use super::outcome::{Code, Failure};
 use super::record::{
     self, Actor, Artifact, Draft, Kind, MAX_RECORD_BYTES, Recipient, Record, parse_record_id,
@@ -37,23 +37,29 @@ use super::time;
 
 /// Largest artifact brg will measure.
 pub const MAX_ARTIFACT_BYTES: u64 = 256 * 1024 * 1024;
-/// How long a mutation waits for `runtime/generation.lock`.
-pub const GENERATION_LOCK_WAIT: Duration = Duration::from_secs(10);
 pub const DEFAULT_PAGE: usize = 20;
 pub const MAX_PAGE: usize = 100;
 pub const MAX_WAIT_SECS: u64 = 600;
 pub const POLL: Duration = Duration::from_millis(250);
 
-/// An opened run: the deployment's bus configuration and the run manifest.
+/// A team's opened message storage: the deployment's bus configuration and
+/// its current run's manifest.
 #[derive(Debug, Clone)]
 pub struct Bus {
     pub deployment: Deployment,
     pub config: BusConfig,
+    /// The team's name in messages.
+    pub team: String,
+    /// How to restart the team, from where the caller is (`state::restart_hint`).
+    pub restart: String,
+    pub store: TeamStore,
+    /// The current run's ID (internal; never shown).
+    pub run: String,
     pub paths: RunPaths,
     pub manifest: RunManifest,
 }
 
-/// Open the deployment's current run, read-only. Creates nothing.
+/// Open the team's current run, read-only. Creates nothing.
 pub fn open(deployment: &Deployment) -> Result<Bus, Failure> {
     let config = deployment.bus.clone().ok_or_else(|| {
         Failure::new(
@@ -61,43 +67,85 @@ pub fn open(deployment: &Deployment) -> Result<Bus, Failure> {
             format!("{} has no `bus:` section", deployment.file.display()),
         )
     })?;
-    let paths = RunPaths::new(&config);
-    let manifest = manifest::load_manifest(&paths)
-        .map_err(|e| Failure::new(Code::Error, e))?
-        .ok_or_else(|| {
-            Failure::new(
-                Code::NotConfigured,
-                format!(
-                    "run `{}` hasn't started (no {})",
-                    config.run,
-                    paths.manifest().display()
-                ),
-            )
-        })?;
-    if manifest.run != config.run {
+    let team = state::team_name(&deployment.file);
+    let restart = state::restart_hint(&deployment.file);
+    let id = state::deployment_id(&deployment.file);
+    let store = TeamStore::new(&config, &id);
+    let unreadable =
+        |detail: &str| format!("team `{team}`'s message storage is unreadable ({detail})");
+    let not_started = || {
+        Failure::new(
+            Code::NotConfigured,
+            format!("team `{team}` hasn't been started yet"),
+        )
+    };
+    let run = store
+        .current()
+        .map_err(|e| {
+            let detail = if e.kind() == io::ErrorKind::Other {
+                "its current storage is not named properly".to_string()
+            } else {
+                e.to_string()
+            };
+            Failure::new(Code::Error, unreadable(&detail))
+        })?
+        .map_or_else(
+            || {
+                // Runs without `current`: not a first start, and never
+                // something to start over on top of.
+                match store.runs() {
+                    Ok(runs) if runs.is_empty() => Err(not_started()),
+                    Ok(_) => Err(Failure::new(
+                        Code::Corrupt,
+                        format!(
+                            "team `{team}`'s message storage is damaged: it holds messages but no longer says which are current. Repair it by hand; brg won't start the team over it"
+                        ),
+                    )),
+                    Err(e) => Err(Failure::new(Code::Error, unreadable(&e.to_string()))),
+                }
+            },
+            Ok,
+        )?;
+    let paths = store.run(&run);
+    let manifest = match manifest::load_manifest(&paths) {
+        Ok(Some(m)) => m,
+        // `current` names storage that isn't set up yet.
+        Ok(None) => return Err(not_started()),
+        Err(e @ ManifestError::Format { .. }) => {
+            return Err(Failure::new(Code::Refused, e.message(&team, &restart)));
+        }
+        Err(ManifestError::Unreadable(e)) => {
+            // Drop the path (it names the run): the reason is what matters.
+            let shown = paths.manifest().display().to_string();
+            let detail = e
+                .strip_prefix(&format!("{shown} is unreadable: "))
+                .or_else(|| e.strip_prefix(&format!("cannot read {shown}: ")))
+                .unwrap_or("its manifest can't be read");
+            return Err(Failure::new(Code::Error, unreadable(detail)));
+        }
+    };
+    if manifest.run != run {
         return Err(Failure::new(
             Code::Corrupt,
-            format!(
-                "{} names run `{}`, not `{}`",
-                paths.manifest().display(),
-                manifest.run,
-                config.run
-            ),
+            format!("team `{team}`'s message storage is inconsistent (its manifest is misplaced)"),
         ));
     }
-    let id = state::deployment_id(&deployment.file);
     if manifest.deployment != id {
         return Err(Failure::new(
             Code::Refused,
             format!(
-                "run `{}` belongs to deployment `{}`, not this one (`{id}`)",
-                config.run, manifest.deployment
+                "team `{team}`'s message storage belongs to another deployment (`{}`), not this one (`{id}`)",
+                manifest.deployment
             ),
         ));
     }
     Ok(Bus {
         deployment: deployment.clone(),
         config,
+        team,
+        restart,
+        store,
+        run,
         paths,
         manifest,
     })
@@ -128,129 +176,97 @@ pub fn actor_for(bus: &Bus, caller: &Caller) -> Result<Actor, Failure> {
     }
 }
 
+/// How to start one member, from where the caller is: the `up` half of the
+/// team's restart hint, with `--member`.
+fn member_hint(bus: &Bus, member: &str) -> String {
+    let up = bus
+        .restart
+        .split_once(" && ")
+        .map_or("brg up", |(_, up)| up);
+    format!("{up} --member {member}")
+}
+
 fn fence_member(bus: &Bus, member: &str, run: &str, incarnation: &str) -> Result<(), Failure> {
     let fenced = |m: String| Err(Failure::new(Code::Fenced, m));
-    if run != bus.config.run {
-        return fenced(format!(
-            "this member belongs to run `{run}`; the deployment is now on run `{}`",
-            bus.config.run
-        ));
-    }
+    let team = &bus.team;
+    let start = member_hint(bus, member);
     if !bus.manifest.members.contains_key(member) {
-        return fenced(format!("`{member}` is not a member of run `{run}`"));
+        return fenced(format!("`{member}` is not a member of team `{team}`"));
+    }
+    if run != bus.run {
+        return fenced(format!(
+            "{team}/{member} is from before the team was restarted; restart it: {start}"
+        ));
     }
     let current =
         manifest::load_incarnation(&bus.paths, member).map_err(|e| Failure::new(Code::Error, e))?;
     match current {
-        None => fenced(format!(
-            "`{member}` has no current incarnation in run `{run}`"
-        )),
+        None => fenced(format!("{team}/{member} isn't running; start it: {start}")),
         Some(inc) if inc.member != member || inc.incarnation != incarnation => fenced(format!(
-            "incarnation `{incarnation}` of `{member}` is not current (current: `{}`)",
-            inc.incarnation
+            "{team}/{member} was restarted after this session of it started; only its current session can do this"
         )),
         Some(inc) if inc.ended_at.is_some() => fenced(format!(
-            "incarnation `{incarnation}` of `{member}` has ended"
+            "{team}/{member} was stopped; start it again: {start}"
         )),
         Some(_) => Ok(()),
     }
 }
 
-/// Mutations must be run by the current runtime generation's binary, once
-/// the run has any generation recorded.
-pub fn check_binary(paths: &RunPaths) -> Result<(), Failure> {
-    let Some(latest) = latest_generation(paths)? else {
-        return Ok(());
-    };
-    let exe = std::env::current_exe().map_err(|e| Failure::io("cannot find this brg", e))?;
-    let (_, sha) = sha256_file(&exe, u64::MAX)
-        .map_err(|e| Failure::io(&format!("cannot read {}", exe.display()), e))?;
-    if sha != latest.binary_sha256 {
-        return Err(Failure::new(
-            Code::Refused,
-            format!(
-                "this brg ({}) is not the run's binary for generation {}; run {}",
-                exe.display(),
-                latest.n,
-                latest.pinned.display()
-            ),
-        ));
-    }
-    Ok(())
-}
+/// How many times a writer follows a rollover before giving up.
+const MAX_ROLLOVER_FOLLOWS: usize = 3;
 
-fn latest_generation(paths: &RunPaths) -> Result<Option<manifest::Generation>, Failure> {
-    let entries = match fs::read_dir(paths.generations_dir()) {
-        Ok(e) => e,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(Failure::io("cannot list runtime generations", e)),
-    };
-    let mut latest: Option<u64> = None;
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if let Some(n) = name
-            .strip_suffix(".json")
-            .and_then(|s| s.parse::<u64>().ok())
-        {
-            latest = latest.max(Some(n));
+/// Create the store if needed and take `bus/lock` exclusive. The lock is
+/// released when the returned file drops.
+///
+/// If the run was retired (the team's storage rolled over) by the time the
+/// lock is held, release it, re-resolve the team's current run and lock
+/// that instead, so nothing is written to storage that rollover has already
+/// carried from. Returns the run that is locked: the caller re-checks
+/// everything it checked before against it.
+fn lock_for_mutation(bus: &Bus) -> Result<(Bus, fs::File), Failure> {
+    let mut bus = bus.clone();
+    for _ in 0..MAX_ROLLOVER_FOLLOWS {
+        bus.store
+            .ensure_run(&bus.run)
+            .map_err(|e| Failure::io(&format!("team `{}`'s message storage", bus.team), e))?;
+        for dir in [bus.paths.runtime_dir(), bus.paths.bus_dir()] {
+            fsx::create_private_dirs(&dir)
+                .map_err(|e| Failure::io("cannot create the store", e))?;
         }
-    }
-    let Some(n) = latest else { return Ok(None) };
-    let generation = manifest::load_generation(paths, n)
-        .map_err(|e| Failure::new(Code::Refused, e))?
-        .ok_or_else(|| Failure::new(Code::Error, format!("generation {n} disappeared")))?;
-    Ok(Some(generation))
-}
-
-/// Locks held by a mutation, released in reverse order (fields drop in
-/// declaration order).
-struct MutationLocks {
-    _bus: fs::File,
-    _generation: fs::File,
-}
-
-fn lock_for_mutation(bus: &Bus) -> Result<MutationLocks, Failure> {
-    layout::ensure_run_dir(&bus.config).map_err(|e| Failure::io("run directory", e))?;
-    for dir in [bus.paths.runtime_dir(), bus.paths.bus_dir()] {
-        fsx::create_private_dirs(&dir).map_err(|e| Failure::io("cannot create the store", e))?;
-    }
-    let generation = state::open_lock(&bus.paths.generation_lock())
-        .map_err(|e| Failure::io("cannot open runtime/generation.lock", e))?;
-    let deadline = Instant::now() + GENERATION_LOCK_WAIT;
-    loop {
-        match generation.try_lock_shared() {
-            Ok(()) => break,
-            Err(fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            Err(fs::TryLockError::WouldBlock) => {
-                return Err(Failure::new(
-                    Code::Error,
-                    "timed out waiting for runtime/generation.lock (a rebind is running?)",
-                ));
-            }
-            Err(fs::TryLockError::Error(e)) => {
-                return Err(Failure::io("cannot lock runtime/generation.lock", e));
-            }
+        let lock = state::open_lock(&bus.paths.bus_lock())
+            .map_err(|e| Failure::io("cannot open bus/lock", e))?;
+        lock.lock()
+            .map_err(|e| Failure::io("cannot lock bus/lock", e))?;
+        if !bus.paths.retired().exists() {
+            return Ok((bus, lock));
         }
+        drop(lock);
+        let next = open(&bus.deployment)?;
+        if next.run == bus.run {
+            return Err(Failure::new(
+                Code::Corrupt,
+                format!(
+                    "team `{}`'s message storage is damaged: its current messages are marked as moved, but nothing replaced them",
+                    bus.team
+                ),
+            ));
+        }
+        bus = next;
     }
-    let lock = state::open_lock(&bus.paths.bus_lock())
-        .map_err(|e| Failure::io("cannot open bus/lock", e))?;
-    lock.lock()
-        .map_err(|e| Failure::io("cannot lock bus/lock", e))?;
-    Ok(MutationLocks {
-        _bus: lock,
-        _generation: generation,
-    })
+    Err(Failure::new(
+        Code::Error,
+        format!(
+            "team `{}`'s message storage kept changing (is the team being restarted?); try again",
+            bus.team
+        ),
+    ))
 }
 
-/// The authoritative caller and binary checks, made while holding the
-/// mutation locks: generations change only under `runtime/generation.lock`
-/// (exclusive) and incarnations only under `bus/lock`, so what is checked
-/// here holds until the write. The checks before the locks only reject early.
+/// The authoritative caller check, made while holding `bus/lock`:
+/// incarnations change only under it, so what is checked here holds until
+/// the write. The check before the lock only rejects early.
 fn recheck_authority(bus: &Bus, caller: &Caller) -> Result<(), Failure> {
-    actor_for(bus, caller)?;
-    check_binary(&bus.paths)
+    actor_for(bus, caller).map(|_| ())
 }
 
 /// Hold `bus/lock` shared while reading, so a scan never sees a record
@@ -275,7 +291,7 @@ fn read_lock(paths: &RunPaths) -> Result<Option<fs::File>, Failure> {
 /// A consistent read of the whole store, under `bus/lock` shared.
 pub fn snapshot(bus: &Bus) -> Result<Snapshot, Failure> {
     let _lock = read_lock(&bus.paths)?;
-    Ok(scan(&bus.paths, &bus.config.run))
+    Ok(scan(&bus.paths, &bus.run))
 }
 
 // --- the store on disk ---
@@ -413,7 +429,7 @@ pub fn scan(paths: &RunPaths, run: &str) -> Snapshot {
             Ok(r) if r.schema != super::SCHEMA => {
                 problems.push(format!("records/{name}: schema {}", r.schema))
             }
-            Ok(r) if r.run != run => problems.push(format!("records/{name}: run `{}`", r.run)),
+            Ok(r) if r.run != run => problems.push(format!("records/{name}: from other storage")),
             Ok(r) if r.seq != seq || r.id != record_id(seq) => {
                 problems.push(format!("records/{name}: holds `{}` (seq {})", r.id, r.seq))
             }
@@ -460,8 +476,9 @@ pub fn scan(paths: &RunPaths, run: &str) -> Snapshot {
             Ok(a) if a.schema != super::SCHEMA => {
                 problems.push(format!("acks/{name}: schema {}", a.schema))
             }
-            Ok(a) if a.run != run || a.id != record_id(seq) => {
-                problems.push(format!("acks/{name}: names `{}` in run `{}`", a.id, a.run))
+            Ok(a) if a.run != run => problems.push(format!("acks/{name}: from other storage")),
+            Ok(a) if a.id != record_id(seq) => {
+                problems.push(format!("acks/{name}: names `{}`", a.id))
             }
             // Only a well-formed ack by the record's recipient counts as consumption.
             Ok(a) => match s.records.get(&seq) {
@@ -513,7 +530,15 @@ pub fn scan(paths: &RunPaths, run: &str) -> Snapshot {
     }
     let _ = list_dir(&paths.bus_dir(), &mut Vec::new(), &mut strays);
     s.problems = problems;
-    s.strays = strays;
+    // Shown relative to the run, whose own path is internal.
+    s.strays = strays
+        .into_iter()
+        .map(|p| {
+            p.strip_prefix(&paths.root)
+                .map(Path::to_path_buf)
+                .unwrap_or(p)
+        })
+        .collect();
     s
 }
 
@@ -746,7 +771,7 @@ pub fn check_route(manifest: &RunManifest, actor: &Actor, to: &str) -> Result<()
     let to = Recipient::parse(to).ok_or_else(|| format!("`to`: `{to}` is not a recipient"))?;
     match (actor, &to) {
         (_, Recipient::Member(m)) if !manifest.members.contains_key(m) => {
-            Err(format!("`{m}` is not a member of run `{}`", manifest.run))
+            Err(format!("`{m}` is not a member of the team"))
         }
         (Actor::External { .. }, Recipient::Member(_)) => Ok(()),
         (Actor::External { .. }, Recipient::External(_)) => {
@@ -808,7 +833,6 @@ pub fn publish(
         ));
     }
     let actor = actor_for(bus, caller)?;
-    check_binary(&bus.paths)?;
     let draft = parse_draft(draft_bytes)?;
     check_route(&bus.manifest, &actor, &draft.to).map_err(|e| Failure::new(Code::Invalid, e))?;
     let artifacts = measure(&draft)?;
@@ -824,9 +848,11 @@ pub fn publish(
     });
     let slot = slot_of(&actor);
 
-    let locks = lock_for_mutation(bus)?;
+    let (bus, lock) = lock_for_mutation(bus)?;
+    let bus = &bus;
     recheck_authority(bus, caller)?;
-    let snap = scan(&bus.paths, &bus.config.run);
+    check_route(&bus.manifest, &actor, &draft.to).map_err(|e| Failure::new(Code::Invalid, e))?;
+    let snap = scan(&bus.paths, &bus.run);
     snap.require_healthy()?;
 
     if let Some(existing) = snap
@@ -845,7 +871,7 @@ pub fn publish(
         }
         write_key(&bus.paths, &slot, key, &existing.id, &digest)?;
         ensure_attention(bus);
-        drop(locks);
+        drop(lock);
         return Ok(Published {
             record: existing.clone(),
             duplicate: true,
@@ -862,7 +888,7 @@ pub fn publish(
     if let Some(missing) = refs.iter().find(|r| snap.get(r).is_none()) {
         return Err(Failure::new(
             Code::Invalid,
-            format!("`{missing}` is not a record in this run"),
+            format!("`{missing}` names no record"),
         ));
     }
 
@@ -870,7 +896,7 @@ pub fn publish(
     let seq = snap.records.len() as u64 + 1;
     let rec = Record {
         schema: super::SCHEMA,
-        run: bus.config.run.clone(),
+        run: bus.run.clone(),
         id: record_id(seq),
         seq,
         at: time::utc_now(),
@@ -909,7 +935,7 @@ pub fn publish(
         }
     }
     write_key(&bus.paths, &slot, key, &rec.id, &digest)?;
-    drop(locks);
+    drop(lock);
     let attention = attention_hooks::after_publish(&bus.paths, &bus.deployment, &rec);
     ensure_attention(bus);
     Ok(Published {
@@ -989,9 +1015,18 @@ pub fn observed(bus: &Bus, member: &str, incarnation: &str, page: &Page) {
     ensure_attention(bus);
 }
 
+/// A record as shown: everything but the run it was stored in (internal).
+fn shown(r: &Record) -> Value {
+    let mut v = serde_json::to_value(r).unwrap_or(Value::Null);
+    if let Some(map) = v.as_object_mut() {
+        map.remove("run");
+    }
+    v
+}
+
 /// A record's header: everything but its body and facts.
 pub fn header(r: &Record, acked: bool) -> Value {
-    let mut v = serde_json::to_value(r).unwrap_or(Value::Null);
+    let mut v = shown(r);
     if let Some(map) = v.as_object_mut() {
         map.remove("body");
         map.remove("facts");
@@ -1002,7 +1037,7 @@ pub fn header(r: &Record, acked: bool) -> Value {
 }
 
 pub fn full(r: &Record, acked: bool) -> Value {
-    let mut v = serde_json::to_value(r).unwrap_or(Value::Null);
+    let mut v = shown(r);
     if let Some(map) = v.as_object_mut() {
         map.insert("acked".into(), json!(acked));
     }
@@ -1045,10 +1080,10 @@ pub fn ack(
         })
         .collect::<Result<Vec<u64>, Failure>>()?;
     let actor = actor_for(bus, caller)?;
-    check_binary(&bus.paths)?;
-    let locks = lock_for_mutation(bus)?;
+    let (bus, lock) = lock_for_mutation(bus)?;
+    let bus = &bus;
     recheck_authority(bus, caller)?;
-    let snap = scan(&bus.paths, &bus.config.run);
+    let snap = scan(&bus.paths, &bus.run);
     snap.require_healthy()?;
     for (id, seq) in ids.iter().zip(&seqs) {
         let rec = snap
@@ -1074,7 +1109,7 @@ pub fn ack(
         }
         let a = Ack {
             schema: super::SCHEMA,
-            run: bus.config.run.clone(),
+            run: bus.run.clone(),
             id: id.clone(),
             by: actor.clone(),
             at: time::utc_now(),
@@ -1088,7 +1123,7 @@ pub fn ack(
         };
         out.push((id.clone(), outcome));
     }
-    drop(locks);
+    drop(lock);
     ensure_attention(bus);
     Ok(out)
 }
@@ -1101,7 +1136,7 @@ pub struct CheckReport {
     pub warnings: Vec<String>,
     pub records: usize,
     pub age_days: Option<f64>,
-    /// True when an error is about the store itself (rather than the run's age).
+    /// True when an error is about the store itself (rather than its age).
     pub corrupt: bool,
 }
 
@@ -1121,7 +1156,7 @@ pub fn check(bus: &Bus) -> Result<CheckReport, Failure> {
     }
     match time::parse_utc(&bus.manifest.created_at) {
         None => report.errors.push(format!(
-            "run.json: `created_at` is not a UTC time: {}",
+            "the storage's manifest: `created_at` is not a UTC time: {}",
             bus.manifest.created_at
         )),
         Some(created) => {
@@ -1131,15 +1166,17 @@ pub fn check(bus: &Bus) -> Result<CheckReport, Failure> {
                 .as_secs_f64()
                 / 86_400.0;
             report.age_days = Some((age * 10.0).round() / 10.0);
+            let team = &bus.team;
+            let restart = &bus.restart;
             if age >= bus.config.max_age_days as f64 {
                 report.errors.push(format!(
-                    "run `{}` is {age:.1} days old, past max_age_days ({}): continue in a new run",
-                    bus.config.run, bus.config.max_age_days
+                    "team `{team}`'s message storage is {age:.1} days old, past max_age_days ({}); restart the team to roll it over: {restart}",
+                    bus.config.max_age_days
                 ));
             } else if age >= bus.config.warn_age_days as f64 {
                 report.warnings.push(format!(
-                    "run `{}` is {age:.1} days old (warn_age_days {}, max_age_days {}): plan a new run",
-                    bus.config.run, bus.config.warn_age_days, bus.config.max_age_days
+                    "team `{team}`'s message storage is {age:.1} days old (warn_age_days {}); it rolls over at the first restart after {} days: {restart}",
+                    bus.config.warn_age_days, bus.config.max_age_days
                 ));
             }
         }
@@ -1147,7 +1184,7 @@ pub fn check(bus: &Bus) -> Result<CheckReport, Failure> {
     Ok(report)
 }
 
-/// A summary of the run and its store, for `brg bus inspect`.
+/// A summary of the team's messages and their store, for `brg bus inspect`.
 pub fn inspect(bus: &Bus, snap: &Snapshot, last: usize) -> Value {
     let mut recipients: BTreeMap<String, (usize, usize)> = BTreeMap::new();
     for m in bus.manifest.members.keys() {
@@ -1180,11 +1217,9 @@ pub fn inspect(bus: &Bus, snap: &Snapshot, last: usize) -> Value {
         .map(|r| header(r, snap.is_acked(r.seq)))
         .collect();
     json!({
-        "run": bus.config.run,
-        "root": bus.paths.root,
+        "team": bus.team,
         "deployment": bus.manifest.deployment,
         "created_at": bus.manifest.created_at,
-        "linked_from": bus.manifest.linked_from,
         "members": members,
         "recipients": recipients.iter().map(|(to, (total, unacked))| {
             json!({"to": to, "total": total, "unacked": unacked})
