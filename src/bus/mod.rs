@@ -5,12 +5,15 @@
 //! caller context, record envelope, outcome codes and the no-replace write
 //! primitive). See `docs/bus.md` for the contract each piece builds on.
 
+pub mod attention_hooks;
+pub mod cli;
 pub mod context;
 pub mod fsx;
 pub mod layout;
 pub mod manifest;
 pub mod outcome;
 pub mod record;
+pub mod store;
 pub mod time;
 
 /// The on-disk schema of run manifests and records written by this brg.

@@ -109,6 +109,28 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Publish, read and acknowledge bus records.
+    Msg {
+        #[command(flatten)]
+        target: Target,
+        #[command(subcommand)]
+        command: crate::bus::cli::MsgCommand,
+    },
+    /// List records addressed to you (or `--member`/`--external`), oldest first.
+    #[command(args_conflicts_with_subcommands = true)]
+    Inbox {
+        #[command(flatten)]
+        target: Target,
+        #[command(flatten)]
+        args: crate::bus::cli::InboxArgs,
+    },
+    /// Inspect and check the run's record store.
+    Bus {
+        #[command(flatten)]
+        target: Target,
+        #[command(subcommand)]
+        command: crate::bus::cli::BusCommand,
+    },
     #[command(name = "_exec", hide = true)]
     Exec { state: PathBuf, window: String },
     #[command(name = "_run", hide = true)]
@@ -299,6 +321,13 @@ pub fn main() -> ExitCode {
                     ExitCode::from(e.code())
                 }
             }
+        }
+        Command::Msg { target, command } => {
+            crate::bus::cli::msg(&target_or_exit!(&target), command)
+        }
+        Command::Inbox { target, args } => crate::bus::cli::inbox(&target_or_exit!(&target), args),
+        Command::Bus { target, command } => {
+            crate::bus::cli::bus(&target_or_exit!(&target), command)
         }
         Command::Exec { state, window } => crate::exec::exec_main(&state, &window),
         Command::Run {
