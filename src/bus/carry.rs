@@ -146,7 +146,7 @@ pub fn carry(bus: &Bus, from: &str) -> Result<Report, Failure> {
                 format!("no run `{from}` under {}", bus.config.root.display()),
             )
         })?;
-    let snap = store::scan(&old_paths, from);
+    let snap = store::snapshot_of(&old_paths, from)?;
     let through = tasks::prefix(&snap).last().map(|r| r.id.clone());
 
     let mut items = Vec::new();

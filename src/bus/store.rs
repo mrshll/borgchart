@@ -274,8 +274,13 @@ fn read_lock(paths: &RunPaths) -> Result<Option<fs::File>, Failure> {
 
 /// A consistent read of the whole store, under `bus/lock` shared.
 pub fn snapshot(bus: &Bus) -> Result<Snapshot, Failure> {
-    let _lock = read_lock(&bus.paths)?;
-    Ok(scan(&bus.paths, &bus.config.run))
+    snapshot_of(&bus.paths, &bus.config.run)
+}
+
+/// The same for any run's store (an earlier run being carried from).
+pub fn snapshot_of(paths: &RunPaths, run: &str) -> Result<Snapshot, Failure> {
+    let _lock = read_lock(paths)?;
+    Ok(scan(paths, run))
 }
 
 // --- the store on disk ---
@@ -803,7 +808,7 @@ pub fn publish(
 ) -> Result<Published, Failure> {
     check_key(key)?;
     let actor = actor_for(bus, caller)?;
-    publish_as(bus, actor, key, draft_bytes)
+    publish_actor(bus, Some(caller), actor, key, draft_bytes)
 }
 
 fn check_key(key: &str) -> Result<(), Failure> {
@@ -821,6 +826,18 @@ fn check_key(key: &str) -> Result<(), Failure> {
 /// [`Actor::Bus`] when it carries work into a linked run.
 pub fn publish_as(
     bus: &Bus,
+    actor: Actor,
+    key: &str,
+    draft_bytes: &[u8],
+) -> Result<Published, Failure> {
+    publish_actor(bus, None, actor, key, draft_bytes)
+}
+
+/// `caller` is rechecked under the locks; without one (brg's own records)
+/// only the binary is.
+fn publish_actor(
+    bus: &Bus,
+    caller: Option<&Caller>,
     actor: Actor,
     key: &str,
     draft_bytes: &[u8],
@@ -843,7 +860,10 @@ pub fn publish_as(
     let slot = slot_of(&actor);
 
     let locks = lock_for_mutation(bus)?;
-    recheck_authority(bus, caller)?;
+    match caller {
+        Some(caller) => recheck_authority(bus, caller)?,
+        None => check_binary(&bus.paths)?,
+    }
     let snap = scan(&bus.paths, &bus.config.run);
     snap.require_healthy()?;
 

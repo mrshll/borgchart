@@ -43,7 +43,7 @@ pub fn task(input: &Input, command: TaskCommand) -> ExitCode {
 
 fn list(input: &Input) -> Result<Output, Failure> {
     let bus = open_bus(input)?;
-    let snap = store::scan(&bus.paths, &bus.config.run);
+    let snap = store::snapshot(&bus)?;
     let fold = tasks::fold(&bus.manifest, &snap);
     let probe = |m: &str, i: &str| tasks::recorded_liveness(&bus.paths, m, i);
     let mut text = String::new();
@@ -105,7 +105,7 @@ fn list(input: &Input) -> Result<Output, Failure> {
 
 fn show(input: &Input, id: &str) -> Result<Output, Failure> {
     let bus = open_bus(input)?;
-    let snap = store::scan(&bus.paths, &bus.config.run);
+    let snap = store::snapshot(&bus)?;
     let fold = tasks::fold(&bus.manifest, &snap);
     let t = fold.tasks.get(id).ok_or_else(|| {
         Failure::new(
