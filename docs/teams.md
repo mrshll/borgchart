@@ -147,7 +147,23 @@ devteam
 
 Pending the test, the likely answer is (1) where the vendor supports it, with the watcher as the fallback and alarm.
 
-## What you never see
+## Secrets (proposed, not in this work)
+
+Today a plugin's secrets come from your environment when you run `brg up`, so they must be present at every start. The proposal is to register them with brg once, as Modal or Kubernetes do:
+
+```
+$ passh read op://vault/notify/token | brg secret add devteam NOTIFY_TOKEN
+$ brg secret ls devteam
+NOTIFY_TOKEN   added 2026-11-06
+$ brg secret rm devteam NOTIFY_TOKEN
+```
+
+- **`add`** reads the value from stdin. Paste it, or pipe it from a password manager; where it comes from is your business. It never appears in a command line, a prompt or a log.
+- **`ls`** shows names and dates, never values.
+- **Scope:** a secret belongs to one team. A secret shared by every team in a session is an open question.
+- **Persistence:** registered secrets survive restarts and reboots. Plugins receive them through brg's existing private-file mechanism, as declared in `env`; agents never see them.
+
+
 
 - **Storage.** No runs, run IDs, generations or storage paths in commands, output or errors. brg rolls a team's message storage over by itself when its configuration changes or the storage reaches its age limit, and carries open work across.
 - **brg versions.** Nothing is pinned: every call uses the installed `brg`. If an upgraded brg can't read a team's messages, it says exactly what to do:
@@ -173,4 +189,10 @@ Pending the test, the likely answer is (1) where the vendor supports it, with th
 - **Waking members:** self-wake, the watcher, or both (above).
 - **Sessions:** whether separate groups of teams (`--session`) are needed at all. They are kept minimal for now.
 - **Storage key:** messages are keyed by the deployment's location, so moving the team's folder starts empty. Should `name` be the key instead?
+- **Secrets:**
+  - whether secrets can also be shared across a session;
+  - how they're stored at rest (an OS keystore, systemd credentials, the macOS Keychain, or private files);
+  - rotation;
+  - which plugin or member may read which secret;
+  - how a deployed team maps them to a cloud secret manager.
 - **When renames land:** `prompt`, `message …` and the folded commands arrive in one follow-up change after the reworked pieces merge. Until then the commands under review keep today's names.
