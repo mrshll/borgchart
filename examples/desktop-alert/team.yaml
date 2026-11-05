@@ -1,0 +1,11 @@
+# A one-member team whose bus alerts reach you as a desktop notification
+# (when `notify-send` is installed) and always as a line in a log file.
+plugins:
+  notify:
+    path: plugins/notify
+    actions:
+      alert: notify alert <id> <member> <reason> <pending>
+members:
+  lead:
+    prompt: lead.md
+    start: false

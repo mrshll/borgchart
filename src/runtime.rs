@@ -234,6 +234,11 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             PluginMeta {
                 dir: plugin_dir(&v, name),
                 has_process: plugin.process.is_some(),
+                actions: plugin
+                    .actions
+                    .iter()
+                    .map(|(name, a)| (name.clone(), a.prefix.clone()))
+                    .collect(),
             },
         );
     }

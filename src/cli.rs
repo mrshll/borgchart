@@ -109,6 +109,13 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// The coordination bus.
+    Bus {
+        #[command(flatten)]
+        target: Target,
+        #[command(subcommand)]
+        command: BusCommand,
+    },
     #[command(name = "_exec", hide = true)]
     Exec { state: PathBuf, window: String },
     #[command(name = "_run", hide = true)]
@@ -126,6 +133,12 @@ enum Command {
         state: PathBuf,
         member: String,
     },
+}
+
+#[derive(Subcommand)]
+enum BusCommand {
+    #[command(flatten)]
+    Alerts(crate::alert::Commands),
 }
 
 fn resolve(target: &Target) -> Result<Input, ExitCode> {
@@ -298,6 +311,12 @@ pub fn main() -> ExitCode {
                     }
                     ExitCode::from(e.code())
                 }
+            }
+        }
+        Command::Bus { target, command } => {
+            let input = target_or_exit!(&target);
+            match command {
+                BusCommand::Alerts(c) => crate::alert::main(&input, c),
             }
         }
         Command::Exec { state, window } => crate::exec::exec_main(&state, &window),

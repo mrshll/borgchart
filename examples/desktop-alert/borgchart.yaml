@@ -1,0 +1,7 @@
+# One deployment of the desktop-alert example. Try it with
+# `brg up` then `brg bus alert test`.
+schema: 1
+bus:
+  root: ~/borgchart-runs
+  run: desktop-alert-1
+  alert: {plugin: notify, action: alert}

@@ -163,6 +163,10 @@ pub struct PluginMeta {
     /// The plugin's directory, or `None` when its commands come from `PATH`.
     pub dir: Option<PathBuf>,
     pub has_process: bool,
+    /// Each action's literal prefix (command first), as declared at `up`, so
+    /// brg-invoked actions (alerts) use the frozen declaration.
+    #[serde(default)]
+    pub actions: BTreeMap<String, Vec<String>>,
 }
 
 pub fn read_meta(state: &StateDir) -> Option<Meta> {
