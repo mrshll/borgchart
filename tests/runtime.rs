@@ -641,6 +641,58 @@ fn launch_arguments_follow_posture() {
         beta.iter().any(|a| a == "model_reasoning_effort=\"low\""),
         "{beta:?}"
     );
+    // An unattended Codex member must not stop at the update prompt.
+    assert!(
+        beta.windows(2)
+            .any(|w| w[0] == "-c" && w[1] == "check_for_update_on_startup=false"),
+        "{beta:?}"
+    );
+}
+
+#[test]
+fn deployment_args_decide_codex_update_checks() {
+    // (deployment args, the update-check arguments the launch should carry)
+    let cases: [(&str, &[&str]); 3] = [
+        (
+            "[-c, check_for_update_on_startup=true]",
+            &["check_for_update_on_startup=true"],
+        ),
+        (
+            "['--config=check_for_update_on_startup=false']",
+            &["--config=check_for_update_on_startup=false"],
+        ),
+        // A value that only mentions the key doesn't set it.
+        (
+            "[-c, 'developer_instructions=\"Explain check_for_update_on_startup\"']",
+            &[
+                "check_for_update_on_startup=false",
+                "developer_instructions=\"Explain check_for_update_on_startup\"",
+            ],
+        ),
+    ];
+    for (args, want) in cases {
+        let env = Env::new();
+        env.write(
+            "team/borgchart.yaml",
+            &format!("schema: 1\nplugins:\n  pager:\n    env: {{PAGER_ROOM: R0000EXAMPLE}}\nmembers:\n  beta:\n    args: {args}\n"),
+        );
+        env.up();
+        let beta: Vec<String> = env
+            .events("beta")
+            .into_iter()
+            .find(|e| e["event"] == "start")
+            .unwrap()["argv"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        let set: Vec<&String> = beta
+            .iter()
+            .filter(|a| a.contains("check_for_update_on_startup"))
+            .collect();
+        assert_eq!(set, want, "{args}: {beta:?}");
+    }
 }
 
 fn trust_env(deploy: &str) -> Env {

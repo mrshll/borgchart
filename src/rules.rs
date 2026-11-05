@@ -461,6 +461,38 @@ mod tests {
     }
 
     #[test]
+    fn codex_update_dialog_is_blocked() {
+        // Recorded from codex-cli 0.165.0 at startup; the title is the host name.
+        let screen = include_str!("../tests/fixtures/screens/codex-update.txt");
+        let reading = codex().read("example-host", screen);
+        assert_eq!(reading.state, State::Blocked);
+        assert_eq!(reading.rule.as_deref(), Some("update-dialog"));
+        // Each marker is needed.
+        for marker in [
+            "  Update available · 0.165.0 → 0.166.0",
+            "› 1. Update now",
+            "  enter continue · esc skip",
+        ] {
+            assert!(screen.contains(marker), "{marker}");
+            let without = screen.replace(marker, "");
+            assert_ne!(
+                codex().read("example-host", &without).state,
+                State::Blocked,
+                "without {marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn quoted_update_text_above_the_composer_is_not_the_dialog() {
+        let screen = include_str!("../tests/fixtures/screens/codex-update-quoted.txt");
+        assert_eq!(
+            codex().read("Wait for instructions", screen).state,
+            State::Idle
+        );
+    }
+
+    #[test]
     fn nothing_matching_is_unknown() {
         assert_eq!(claude().read("bash", "$ ls\n").state, State::Unknown);
     }
