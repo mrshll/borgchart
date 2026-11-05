@@ -4,7 +4,7 @@ borgchart runs teams of coding agents from plain files: describe each member's r
 
 ## Status
 
-Early. `brg validate` works today; the runtime (`up`, `down`, `status`, `attach`, `logs`, `send`) is in progress. See [docs/format.md](docs/format.md) for the team format.
+Early. `brg validate`, `up`, `down`, `status`, `attach`, `logs` and `send` work, on a private tmux server. The Slack example and the `status -i` screen are in progress. See [docs/format.md](docs/format.md) for the team format and [docs/cli.md](docs/cli.md) for the commands.
 
 ## Install
 
@@ -12,5 +12,5 @@ Early. `brg validate` works today; the runtime (`up`, `down`, `status`, `attach`
 cargo install --git https://github.com/mrshll/borgchart --locked
 ```
 
-This needs Rust 1.89 or newer. Nothing is published to crates.io yet.
+This needs Rust 1.89 or newer and tmux 3.2 or newer, plus the `claude` and/or `codex` CLIs. Nothing is published to crates.io yet.
 

@@ -1,0 +1,45 @@
+  touch /tmp/example/side/i2
+  Then say DONE.
+
+● Bash(slackbot read 42)
+  ⎿  slackbot ok: read 42
+
+● Bash(slackbot read 1; touch /tmp/example/side/i1)
+  ⎿  Error: PreToolUse:Bash hook error: [uv run --no-project python
+     /tmp/example/gate.py]: borgchart locked: not a granted command
+
+● Bash(touch /tmp/example/side/i2)
+  ⎿  Error: PreToolUse:Bash hook error: [uv run --no-project python
+     /tmp/example/gate.py]: borgchart locked: not a granted command
+
+● The first command ran, but the two touch commands were blocked by a PreToolUse hook.
+
+  - slackbot read 42: ran and returned slackbot ok: read 42.
+  - slackbot read 1; touch .../side/i1: the slackbot read 1 part was not run, because the hook rejected the whole command. The hook error was borgchart locked:
+    not a granted command from .../scratchpad/spike/gate.py.
+  - touch .../side/i2: blocked by the same hook with the same error.
+
+  I didn't retry or work around the gate. Marker files side/i1 and side/i2 were not created, and slackbot read 1 has not run.
+
+  I'm not saying DONE, since the task isn't complete. If you want the remaining steps to run, the borgchart gate needs to grant those commands, or you can run
+  them yourself with ! <command>.
+
+✻ Brewed for 11s · done 9:27 PM
+
+❯ Run slackbot read 100, then slackbot read 101, then slackbot read 102, one Bash call each, then say FIRST-DONE.
+
+● Bash(slackbot read 100)
+  ⎿  slackbot ok: read 100
+
+❯ Second message: run slackbot read 200 and say SECOND-DONE.
+
+· Embellishing… (2s · ↓ 82 tokens · thinking)
+  ⎿  Tip: Get pinged on your phone when long tasks finish · enable push notifications in /config
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⚠ Transcript saving is off — inherited CLAUDE_CODE_CHILD_SESSION marker · restart with CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 to keep future transcripts
+  ⏵⏵ don't ask on (shift+tab to cycle) · esc to interrupt
+
+

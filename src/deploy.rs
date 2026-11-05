@@ -28,6 +28,7 @@ struct DeploymentRaw {
     schema: u32,
     team: Option<String>,
     auth: Option<Auth>,
+    auto_trust: Option<bool>,
     plugins_dir: Option<String>,
     #[serde(default)]
     members: BTreeMap<String, MemberDeployRaw>,
@@ -57,6 +58,8 @@ pub struct Deployment {
     pub file: PathBuf,
     pub team_dir: PathBuf,
     pub auth: Auth,
+    /// Accept Claude's folder-trust dialog for a member's declared `cwd`.
+    pub auto_trust: bool,
     pub plugins_dir: Option<PathBuf>,
     pub members: BTreeMap<String, MemberDeploy>,
     pub plugins: BTreeMap<String, PluginDeploy>,
@@ -137,6 +140,7 @@ pub fn load(file: &Path, report: &mut Report) -> Option<Deployment> {
         file: file.to_path_buf(),
         team_dir,
         auth: raw.auth.unwrap_or_default(),
+        auto_trust: raw.auto_trust.unwrap_or(true),
         plugins_dir,
         members,
         plugins,

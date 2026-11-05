@@ -1,0 +1,27 @@
+# State rules for Codex, written from screens recorded through tmux
+# (codex-cli 0.165.0). Higher priority wins; no match means `unknown`.
+vendor: codex
+rules:
+  - id: approval-title
+    state: blocked
+    priority: 100
+    title: '^\[ \. \] Action Required'
+  - id: approval-footer
+    state: blocked
+    priority: 100
+    bottom: 8
+    any: ['^  Press enter to confirm or esc to cancel\s*$']
+  - id: working-title
+    state: working
+    priority: 50
+    title: '^[\x{2800}-\x{28FF}] '
+  - id: working-status
+    state: working
+    priority: 50
+    bottom: 12
+    any: ['^• Working \(.*esc to interrupt\)\s*$']
+  - id: idle-footer
+    state: idle
+    priority: 10
+    bottom: 3
+    any: ['^  (← for agents · )?\? for shortcuts']

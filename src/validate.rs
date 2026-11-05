@@ -215,25 +215,28 @@ fn cross_check(v: &Validated, report: &mut Report) {
                 }
             }
         }
+    }
 
-        // Granted commands that also exist elsewhere on PATH.
-        for plugin_name in member.grants.keys() {
-            let Some(plugin) = v.team.plugins.get(plugin_name) else {
-                continue;
-            };
-            if plugin.location.is_none() {
-                continue;
-            }
-            for command in plugin_commands(plugin) {
-                if let Some(other) = find_on_path(&command).first() {
-                    report.warning(
-                        team_file,
-                        format!(
-                            "plugin `{plugin_name}`: `{command}` also exists on PATH at {}; prompts use the shim's absolute path",
-                            other.display()
-                        ),
-                    );
-                }
+    // Granted commands that also exist elsewhere on PATH (once per plugin).
+    for plugin in v.team.plugins.values() {
+        let granted = v
+            .team
+            .members
+            .values()
+            .any(|m| m.grants.contains_key(&plugin.name));
+        if !granted || plugin.location.is_none() {
+            continue;
+        }
+        for command in plugin_commands(plugin) {
+            if let Some(other) = find_on_path(&command).first() {
+                report.warning(
+                    team_file,
+                    format!(
+                        "plugin `{}`: `{command}` also exists on PATH at {}; prompts use the shim's absolute path",
+                        plugin.name,
+                        other.display()
+                    ),
+                );
             }
         }
     }

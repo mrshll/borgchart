@@ -1,0 +1,29 @@
+# State rules for Claude Code, written from screens recorded through tmux
+# (Claude Code 2.1.318). Higher priority wins; no match means `unknown`.
+# Each rule needs positive evidence, anchored on the UI's own layout.
+vendor: claude
+rules:
+  - id: permission-dialog
+    state: blocked
+    priority: 100
+    bottom: 30
+    all: ['^ Do you want to proceed\?$']
+    any: ['^ Esc to cancel']
+  - id: trust-dialog
+    state: blocked
+    priority: 100
+    bottom: 30
+    all: ['^ +(❯ )?Yes, I trust this folder$', '^ Enter to confirm · Esc to cancel$']
+  - id: working-footer
+    state: working
+    priority: 50
+    bottom: 6
+    any: ['^  ⏵⏵ .*· esc to interrupt\s*$', '^  esc to interrupt\s*$']
+  - id: working-title
+    state: working
+    priority: 50
+    title: '^[\x{2800}-\x{28FF}\x{25D0}-\x{25D3}] '
+  - id: idle-title
+    state: idle
+    priority: 10
+    title: '^\x{2733} '
