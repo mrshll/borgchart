@@ -260,7 +260,17 @@ mod tests {
             ("claude-working-auto-agent.txt", State::Working),
             // Reduced motion, custom spinner verb, accept-edits mode, 80 columns.
             ("claude-working-reduced-motion-80.txt", State::Working),
+            // Auto mode, vim insert, 80x24, a 4-line and a 7-line draft (Claude
+            // caps the box height and scrolls inside it), and two pastes.
+            ("claude-working-composer-short-80.txt", State::Working),
+            ("claude-working-composer-tall-80.txt", State::Working),
+            ("claude-working-paste-80.txt", State::Working),
+            // The first frame of a turn, while a prompt hook runs.
+            ("claude-working-hook-plan.txt", State::Working),
             ("claude-idle-fresh.txt", State::Idle),
+            ("claude-idle-composer-tall-80.txt", State::Idle),
+            // Esc while thinking: the turn is dropped and the prompt restored.
+            ("claude-idle-interrupted-restored.txt", State::Idle),
             ("claude-idle-vim-insert-80.txt", State::Idle),
             ("claude-idle-plan.txt", State::Idle),
             ("claude-idle-auto.txt", State::Idle),
@@ -290,7 +300,7 @@ mod tests {
             ),
             // A quoted spinner inside a tool result is indented.
             format!(
-                "  ⎿  ✶ Thinking… (3s · ↓ 9 tokens)\n\n{rule}\n❯ \n{rule}\n  ? for shortcuts\n"
+                "● Read(notes.txt)\n  ⎿  ✶ Thinking… (3s · ↓ 9 tokens)\n\n{rule}\n❯ \n{rule}\n  ? for shortcuts\n"
             ),
         ];
         for screen in &screens {
@@ -300,6 +310,130 @@ mod tests {
                 "{screen}"
             );
         }
+    }
+
+    fn fixture(name: &str) -> String {
+        std::fs::read_to_string(format!(
+            "{}/tests/fixtures/screens/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap()
+    }
+
+    /// The screen with `n` more draft lines in its input box.
+    fn grow_composer(screen: &str, n: usize) -> String {
+        let lines: Vec<&str> = screen.lines().collect();
+        let at = lines.iter().rposition(|l| l.starts_with('❯')).unwrap();
+        let mut out: Vec<String> = lines[..=at].iter().map(|l| l.to_string()).collect();
+        out.extend((0..n).map(|i| format!("  continued draft {i}")));
+        out.extend(lines[at + 1..].iter().map(|l| l.to_string()));
+        out.join("\n") + "\n"
+    }
+
+    /// Only the last `rows` non-blank-trimmed lines, as a shorter pane shows.
+    fn clip(screen: &str, rows: usize) -> String {
+        let lines: Vec<&str> = screen.trim_end().lines().collect();
+        lines[lines.len().saturating_sub(rows)..].join("\n") + "\n"
+    }
+
+    #[test]
+    fn claude_footer_text_in_a_draft_is_not_the_footer() {
+        let rule = "─".repeat(80);
+        let screen = format!(
+            "✻ Worked for 3s · done 9:00 AM\n\n{rule}\n❯ Explain this UI text:\n  esc to interrupt · example\n{rule}\n  -- INSERT -- ⏸ manual mode on\n"
+        );
+        assert_eq!(claude().read("✳ Example", &screen).state, State::Idle);
+    }
+
+    #[test]
+    fn claude_real_footers_without_a_spinner_read_working() {
+        // Real footers with items after `esc to interrupt`; the spinner line
+        // is removed so only the footer can decide.
+        let manual = fixture("claude-working-manual.txt");
+        let footer = "  ⏸ manual mode on · esc to interrupt · ← 1 agent";
+        assert!(manual.contains(footer));
+        let screens = [
+            manual.clone(),
+            manual.replace(
+                footer,
+                "  ⏸ manual mode on · PR #42 · esc to interrupt · ← 1 agent",
+            ),
+            manual.replace(
+                footer,
+                "  ⏵⏵ accept edits on (shift+tab to cycle) · esc to interrupt",
+            ),
+            fixture("claude-working-vim-normal-plan.txt"),
+            fixture("claude-working-reduced-motion-80.txt"),
+        ];
+        for screen in screens {
+            let screen: String = screen
+                .lines()
+                .map(|l| {
+                    if l.contains('…') && !l.starts_with(' ') {
+                        ""
+                    } else {
+                        l
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let reading = claude().read("✳ Example", &screen);
+            assert_eq!(reading.state, State::Working, "{screen}");
+            assert_eq!(reading.rule.as_deref(), Some("working-footer"), "{screen}");
+        }
+    }
+
+    #[test]
+    fn claude_tall_composers() {
+        // Vim insert + auto mode, 120 and 80 columns; vim insert idle.
+        for (name, want) in [
+            ("claude-working-auto-agent.txt", State::Working),
+            ("claude-working-composer-short-80.txt", State::Working),
+            ("claude-idle-vim-insert-80.txt", State::Idle),
+        ] {
+            let short = fixture(name);
+            let tall = grow_composer(&short, 40);
+            assert_eq!(
+                claude().read("✳ Example", &short).state,
+                want,
+                "{name} short"
+            );
+            // The whole screen, as on a taller pane.
+            assert_eq!(claude().read("✳ Example", &tall).state, want, "{name} tall");
+            // A 40-row pane: the spinner/status line above the box is cut
+            // off, then the box's top rule too. Neither is proof of idle.
+            let rows_from_top_rule = tall.trim_end().lines().count()
+                - tall.lines().position(|l| l.starts_with('─')).unwrap();
+            for rows in [rows_from_top_rule, rows_from_top_rule - 1] {
+                assert_eq!(
+                    claude().read("✳ Example", &clip(&tall, rows)).state,
+                    State::Unknown,
+                    "{name} clipped to {rows}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn claude_reduced_motion_dot_needs_more_than_an_ellipsis() {
+        let rule = "─".repeat(80);
+        // A reply line that ends in `…`, then an interrupt, and no done line.
+        let interrupted = format!(
+            "❯ Check the logs\n\n● Let me check…\n  ⎿  Interrupted · What should Claude do instead?\n\n{rule}\n❯ \n{rule}\n  ⏸ manual mode on\n"
+        );
+        assert_eq!(
+            claude().read("✳ Example", &interrupted).state,
+            State::Unknown
+        );
+        // The first reduced-motion frame (no timer yet) without the footer
+        // hint is ambiguous too.
+        let early = fixture("claude-working-reduced-motion-80.txt")
+            .replace(
+                "● Pondering deeply… (1s · ↓ 2 tokens)",
+                "● Pondering deeply…",
+            )
+            .replace(" · esc to interrupt", "");
+        assert_eq!(claude().read("✳ Example", &early).state, State::Unknown);
     }
 
     #[test]
