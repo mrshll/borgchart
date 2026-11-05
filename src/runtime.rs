@@ -281,6 +281,17 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
     };
 
     // Checks that need nothing written.
+    for id in &member_ids {
+        let granted = launch::granted(&v.team, &v.team.members[id]);
+        if let Some((plugin, command)) = launch::shim_commands(&granted)
+            .into_iter()
+            .find(|(_, c)| launch::RESERVED_SHIMS.contains(&c.as_str()))
+        {
+            return Err(format!(
+                "plugin `{plugin}`'s command `{command}` would hide brg's own `{command}` in member `{id}`; rename it. Nothing was started"
+            ));
+        }
+    }
     let (values, missing) = plugin_values(&v);
     let keys = api_keys(&v, &member_ids)?;
     let missing_error = || {
@@ -428,7 +439,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                 help.insert(command.clone(), text);
             }
         }
-        for name in ["brg", "borgchart"] {
+        for name in launch::RESERVED_SHIMS {
             write_script(&shim_dir.join(name), &launch::brg_shim_script(&brg))
                 .map_err(|e| format!("cannot write shim: {e}"))?;
         }

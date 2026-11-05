@@ -88,6 +88,10 @@ pub fn shim_script(
     )
 }
 
+/// Shim names brg writes for itself in every member's `bin`; plugin
+/// commands may not use them.
+pub const RESERVED_SHIMS: [&str; 2] = ["brg", "borgchart"];
+
 /// The `brg` (and `borgchart`) a member finds first on its `PATH`: it runs
 /// the deployment's pinned binary, whatever else is installed.
 pub fn brg_shim_script(brg: &Path) -> String {

@@ -912,3 +912,30 @@ fn a_new_run_can_continue_an_earlier_one() {
             .is_some()
     );
 }
+
+#[test]
+fn a_plugin_command_may_not_hide_brg() {
+    let env = Env::new(false);
+    env.write(
+        "team/team.yaml",
+        &TEAM.replace(
+            "read: pager read <id>",
+            "read: pager read <id>\n      run: brg send <id>",
+        ),
+    );
+    env.write(
+        "team/team.yaml",
+        &fs::read_to_string(env.path("team/team.yaml"))
+            .unwrap()
+            .replace("plugins: {pager: [read]}", "plugins: {pager: [read, run]}"),
+    );
+    env.script("team/plugins/pager/brg", "#!/bin/sh\necho plugin\n");
+    let out = env.brg(&["up"]);
+    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
+    assert!(
+        both(&out).contains("would hide brg's own `brg`"),
+        "{}",
+        both(&out)
+    );
+    assert!(!env.path("state").exists());
+}

@@ -76,7 +76,7 @@ Immutable files are written with a unique temporary sibling, flushed, then hard-
 - A member's `BORGCHART_RUN` must be the deployment's `bus.run`, and its `BORGCHART_INCARNATION` must be the member's current, not-ended incarnation; otherwise mutations are `fenced`. A run whose `run.json` names a different deployment is refused.
 - Operation keys are scoped by slot: the member name, or `external.<name>`.
 
-**Pinned binary.** Each runtime generation keeps its own copy of the `brg` binary under the run, and every window, shim and worker of that generation runs the copy, so rebuilding or reinstalling the original changes nothing. Members get `BORGCHART_BIN` (the pinned copy's absolute path) and a `brg` first on their `PATH` that runs it. Every mutating bus command checks that it *is* the current generation's binary (by SHA-256) and is `refused` otherwise; read-only commands work from any compatible `brg`. Outside callers should call the pinned path too; `brg run show` prints it.
+**Pinned binary.** Each runtime generation keeps its own copy of the `brg` binary under the run, and every window, shim and worker of that generation runs the copy, so rebuilding or reinstalling the original changes nothing. Members get `BORGCHART_BIN` (the pinned copy's absolute path) and `brg`/`borgchart` shims first on their `PATH` that run it. Every mutating bus command checks that it *is* the current generation's binary (by SHA-256) and is `refused` otherwise; read-only commands work from any compatible `brg`. Outside callers should call the pinned path too; `brg run show` prints it.
 
 ## Records
 
@@ -144,13 +144,41 @@ brg bus check [--json]
 
 Folds task records into per-task state: assigned, accepted or declined, result claimed, verified, released, cancel requested and confirmed, reopened as a new attempt, plus open questions and their decisions. Authority mutations (`assign`, `verify`, `release`, `cancel-request`, `reopen`, `decision`) must come from the recipient's parent's current incarnation, or from an external caller for a member with no parent; anything else is `fenced`. A member holds at most one unresolved task. Releasing never frees a checkout while its writer may be alive (`Liveness` other than `gone`). A run nearing `max_age_days`, or recovering from a corrupt store, continues in a new run (`continues:`) into which unresolved tasks, open questions and unacknowledged records are carried explicitly; the old run is left untouched.
 
-## Lifecycle and runtime binding (planned)
+## Lifecycle and runtime binding
 
-- Every start validates fully before changing anything; lifecycle changes are serialized by `runtime/lifecycle.lock` (and, without a bus, a lock in brg's state directory).
-- Starting one member into a running deployment reuses the deployment's original binary, base environment and plugin values rather than the caller's, and refuses a different binary or changed configuration without touching the running deployment.
-- With a bus, `up` creates `run.json` on the run's first start and refuses a configuration that no longer matches it. It records a runtime generation (pinning the binary) and gives each member start a new incarnation: before the window starts, then with its pane identity (`%N` pane ID, PID, window, socket) and vendor version once known. `down` marks the incarnations it stops as ended.
-- Moving the run to another binary is an explicit rebind, allowed only when the deployment is stopped, `runtime/generation.lock` can be taken exclusively (no worker or bus mutation running) and `attention/inflight/` is empty. Rollback is another rebind. The schema never changes within a run.
-- `brg run show` prints the run, its current generation and pinned binary, and each member's incarnation and liveness.
+**Checks before changes.** `brg up` works out everything a start needs (plugin values, `auth: api_key` keys, the run's identity and generation, whether the deployment is already running) before it writes anything. A refused start leaves the state directory and the run directory as they were.
+
+**Serialized.** `up`, `up --member`, `down`, `down --member` and `run rebind` take a lock in brg's state directory (`<state>/lifecycle.lock`) and then, with a bus, `runtime/lifecycle.lock`. `up` holds them while it writes files and starts windows, and releases them before it waits for `locked` gates and Claude's folder trust, so members can already use the bus and another `up --member` isn't held up. Two `up --member helper` at once start it once; the other reports `already running`.
+
+**Starting into a running deployment.** When the deployment's session exists and its `deployment.json` is there, `up` (with or without `--member`) joins it instead of starting afresh. It uses the binary, base environment and plugin values recorded at the first `up`, never your current shell's: nothing from your `PATH`, `TMPDIR` or other variables reaches the new member, and you don't need the plugin secrets set again. It doesn't rewrite `deployment.json`, plugin value files or other members' files. It refuses, changing nothing, when:
+
+- it is a different binary from the one that started the deployment (by SHA-256): the message names the binary to use instead;
+- any configuration input changed since the deployment started (the same snapshot as `run.json`): the message names the changed inputs. Undo the change, or stop the team and start it again (with a bus, in a new run).
+
+**Pinned runtime.** Every window, plugin shim, gate hook and plugin process runs one binary, and each member gets it as `BORGCHART_BIN` plus `brg` and `borgchart` shims first on its `PATH`. With a bus that is the generation's pinned copy; without one, the `brg` that started the deployment. A plugin command may not be called `brg` or `borgchart`.
+
+**Run identity.** With a bus, the run's first `up` writes `run.json`: the deployment ID, schema, frozen topology and configuration snapshot, and with `continues:` a link `{run, root, reason: "continues"}` to the earlier run, whose `run.json` must exist under the same root. Later starts refuse a run whose `run.json` names another deployment, or whose configuration digest differs (start a new `run:`). The schema never changes within a run.
+
+**Generations.** The first `up` also records generation 1 (`reason: start`): the binary's path and SHA-256, its pinned copy at `runtime/bin/<sha256>/brg` (0700, written once, hash checked after copying), the state directory and the tmux socket. A start from a binary, state directory or socket that differs from the latest generation's is refused: *rebind needed*.
+
+**Incarnations.** Each member start is a new incarnation, with an ID `<member>.<generation>.<UTC yyyymmddhhmmssmmm>.<4 hex>` that is unique in the run. Its current file is written before the window starts, then again with the pane's identity (`%N` pane ID, PID, window, session, socket) and the vendor version measured at this start; the same record then goes into the history (`runtime/incarnations/<member>/<id>.json`). The member gets `BORGCHART_RUN` and `BORGCHART_INCARNATION`. `down` and `down --member` mark the incarnations they stop ended (`ended_at`, `ended_reason: "stopped"`); a window that fails to start is ended as `start-failed`.
+
+**Liveness.** An incarnation is `alive` when its recorded pane still exists with the same ID and PID and isn't dead; `gone` when the pane or its tmux server is gone, the pane is dead or another process, or the incarnation ended; `unknown` when no pane was recorded or tmux can't be asked (treat as possibly alive).
+
+**`brg run show [--json]`** prints the run, its configuration digest and link, the current generation with its pinned binary, the exact command that stops the deployment with that binary, and each member's incarnation and liveness. It never writes. `--json` adds every generation; `pinned` and `stop` are top-level fields.
+
+**`brg run rebind --reason TEXT [--json]`** moves the run to the `brg` running it (and its state directory and tmux socket). It is `refused` while the deployment's session exists (on the current or the generation's socket) or a member's incarnation is alive, while `runtime/generation.lock` is held (a bus command or the attention worker), or while `attention/inflight/` has anything in it. It writes generation n+1 (with `previous`) and pins the new binary; old pins, generations and every bus record stay. Rebinding to the same binary, state directory and socket changes nothing (`unchanged`). The run's identity and schema never change; a different configuration needs a new run.
+
+**Upgrading brg.** Checkpoint the team (let members reach a stopping point), stop it with the run's own binary, rebind with the new one, and start again:
+
+```
+brg run show                          # prints "stop with: '<pinned>' --file … down"
+'<pinned>' --file borgchart.yaml down
+/path/to/new/brg run rebind --reason "upgrade"
+/path/to/new/brg up
+```
+
+Rolling back is the same rebind run with the old binary; its pinned copy is still there.
 
 ## Attention worker (planned)
 
