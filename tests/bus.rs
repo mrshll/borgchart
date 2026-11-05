@@ -934,3 +934,221 @@ fn check_warns_and_fails_on_run_age() {
     assert_eq!(out.code, 1, "{:?}", out.json);
     assert!(out.json["errors"].to_string().contains("max_age_days"));
 }
+
+/// Hold `path` (created if missing) with an exclusive flock.
+fn hold(path: &Path) -> fs::File {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .unwrap();
+    file.lock().unwrap();
+    file
+}
+
+/// Start `brg` with a draft on stdin, without waiting for it.
+fn spawn(f: &Fixture, who: &As, args: &[&str], stdin: &[u8]) -> std::process::Child {
+    let mut child = f
+        .command(who, args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(stdin).unwrap();
+    child
+}
+
+/// Wait for a child at most `limit`, killing it (and failing) past that.
+fn finish_within(mut child: std::process::Child, limit: Duration) -> Out {
+    let deadline = Instant::now() + limit;
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() > deadline {
+            child.kill().unwrap();
+            panic!("brg did not finish within {limit:?}");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let out = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    Out {
+        code: out.status.code().unwrap_or(-1),
+        json: serde_json::from_str(stdout.trim()).unwrap_or(Value::String(stdout)),
+        stderr: String::from_utf8_lossy(&out.stderr).to_string(),
+    }
+}
+
+#[test]
+fn authority_is_checked_again_under_the_locks() {
+    let f = Fixture::new();
+    assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
+    let draft = serde_json::to_vec(&note("lead", "b")).unwrap();
+    let publish = [
+        "msg",
+        "publish",
+        "--key",
+        "k2",
+        "--external",
+        "ops",
+        "--json",
+    ];
+
+    // A new generation recorded while a publish waits for generation.lock.
+    let generation = hold(&f.run_dir().join("runtime/generation.lock"));
+    let child = spawn(&f, &As::Operator, &publish, &draft);
+    std::thread::sleep(Duration::from_millis(500));
+    f.write_generation(&"0".repeat(64));
+    drop(generation);
+    let out = finish_within(child, Duration::from_secs(15));
+    assert_eq!(out.code, 4, "{:?} {}", out.json, out.stderr);
+    fs::remove_dir_all(f.run_dir().join("runtime/generations")).unwrap();
+
+    // The same for a duplicate-key retry, which would repair the key index.
+    let generation = hold(&f.run_dir().join("runtime/generation.lock"));
+    let retry = [
+        "msg",
+        "publish",
+        "--key",
+        "k1",
+        "--external",
+        "ops",
+        "--json",
+    ];
+    let child = spawn(
+        &f,
+        &As::Operator,
+        &retry,
+        &serde_json::to_vec(&note("lead", "a")).unwrap(),
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    f.write_generation(&"0".repeat(64));
+    drop(generation);
+    let out = finish_within(child, Duration::from_secs(15));
+    assert_eq!(out.code, 4, "{:?} {}", out.json, out.stderr);
+    fs::remove_dir_all(f.run_dir().join("runtime/generations")).unwrap();
+
+    // An incarnation ended while an ack waits for bus/lock.
+    let bus = hold(&f.run_dir().join("bus/lock"));
+    let child = spawn(
+        &f,
+        &As::Member("lead"),
+        &["msg", "ack", "m1", "--json"],
+        b"",
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    f.write_incarnation("lead", "lead-1", true);
+    drop(bus);
+    let out = finish_within(child, Duration::from_secs(15));
+    assert_eq!(out.code, 8, "{:?} {}", out.json, out.stderr);
+    assert!(!f.run_dir().join("bus/acks/m1.json").exists());
+
+    // A member replaced while its publish waits for bus/lock.
+    let bus = hold(&f.run_dir().join("bus/lock"));
+    let args = ["msg", "publish", "--key", "h1", "--json"];
+    let child = spawn(&f, &As::Member("helper"), &args, &draft);
+    std::thread::sleep(Duration::from_millis(500));
+    f.write_incarnation("helper", "helper-2", false);
+    drop(bus);
+    let out = finish_within(child, Duration::from_secs(15));
+    assert_eq!(out.code, 8, "{:?} {}", out.json, out.stderr);
+    assert_eq!(f.records().len(), 1);
+}
+
+#[test]
+fn reads_wait_for_a_writer() {
+    let f = Fixture::new();
+    assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
+    let bus = hold(&f.run_dir().join("bus/lock"));
+    let mut child = spawn(&f, &As::Operator, &["bus", "check", "--json"], b"");
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "check waits for bus/lock"
+    );
+    drop(bus);
+    let out = finish_within(child, Duration::from_secs(15));
+    assert_eq!(out.code, 0, "{:?}", out.json);
+}
+
+#[test]
+fn a_huge_record_number_is_a_bounded_gap() {
+    let f = Fixture::new();
+    for k in ["k1", "k2"] {
+        assert_eq!(f.publish(&As::Operator, k, &note("lead", k)).code, 0);
+    }
+    fs::write(f.run_dir().join("bus/records/9999999999.json"), "{}").unwrap();
+    let start = Instant::now();
+    let check = f.brg(&As::Operator, &["bus", "check", "--json"], None);
+    assert_eq!(check.code, 7, "{:?} {}", check.json, check.stderr);
+    let errors = check.json["errors"].to_string();
+    assert!(errors.contains("gap") && errors.contains("m3"), "{errors}");
+    assert!(start.elapsed() < Duration::from_secs(10));
+    assert_eq!(
+        f.inbox(&As::Operator, &["--member", "lead"])["store"],
+        "incomplete"
+    );
+    assert_eq!(f.publish(&As::Operator, "k3", &note("lead", "x")).code, 7);
+}
+
+#[test]
+fn a_fifo_artifact_is_invalid_not_a_hang() {
+    let f = Fixture::new();
+    let fifo = f.dir.path().join("pipe");
+    assert!(
+        Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let draft = json!({"to": "lead", "kind": "note", "artifacts": [{"path": fifo}]});
+    let child = spawn(
+        &f,
+        &As::Operator,
+        &[
+            "msg",
+            "publish",
+            "--key",
+            "fifo",
+            "--external",
+            "ops",
+            "--json",
+        ],
+        &serde_json::to_vec(&draft).unwrap(),
+    );
+    let out = finish_within(child, Duration::from_secs(10));
+    assert_eq!(out.code, 5, "{:?} {}", out.json, out.stderr);
+    assert!(f.records().is_empty());
+    // A symlink to a regular file is still measured as that file.
+    let real = f.dir.path().join("real.md");
+    fs::write(&real, "ok").unwrap();
+    let link = f.dir.path().join("link.md");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let draft = json!({"to": "lead", "kind": "note", "artifacts": [{"path": link}]});
+    assert_eq!(f.publish(&As::Operator, "link", &draft).code, 0);
+}
+
+#[test]
+fn an_ack_with_another_schema_is_corrupt() {
+    let f = Fixture::new();
+    assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
+    assert_eq!(
+        f.brg(&As::Member("lead"), &["msg", "ack", "m1"], None).code,
+        0
+    );
+    let path = f.run_dir().join("bus/acks/m1.json");
+    let mut ack: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    ack["schema"] = json!(999);
+    fs::write(&path, serde_json::to_vec(&ack).unwrap()).unwrap();
+    let check = f.brg(&As::Operator, &["bus", "check", "--json"], None);
+    assert_eq!(check.code, 7, "{:?}", check.json);
+    assert!(check.json["errors"].to_string().contains("schema"));
+    assert_eq!(f.publish(&As::Operator, "k2", &note("lead", "b")).code, 7);
+    // Not counted as consumption.
+    let inbox = f.inbox(&As::Operator, &["--member", "lead"]);
+    assert_eq!(ids(&inbox), ["m1"]);
+    assert_eq!(inbox["store"], "incomplete");
+}

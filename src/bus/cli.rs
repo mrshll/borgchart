@@ -259,7 +259,7 @@ pub fn msg(input: &Input, command: MsgCommand) -> ExitCode {
                         format!("`{id}` is not a record ID"),
                     ));
                 }
-                let snap = store::scan(&bus.paths, &bus.config.run);
+                let snap = store::snapshot(&bus)?;
                 let rec = snap
                     .get(&id)
                     .ok_or_else(|| Failure::new(Code::NotFound, format!("no record `{id}`")))?;
@@ -435,7 +435,7 @@ pub fn inbox(input: &Input, args: InboxArgs) -> ExitCode {
                 let after = parse_after(args.after.as_deref())?;
                 let bus = open_bus(input)?;
                 let t = target(&bus, &args.who)?;
-                let snap = store::scan(&bus.paths, &bus.config.run);
+                let snap = store::snapshot(&bus)?;
                 let page = store::list(&snap, &t.recipient, after, limit, args.all);
                 if let Some((m, i)) = &t.own {
                     store::observed(&bus, m, i, &page);
@@ -467,7 +467,7 @@ pub fn inbox(input: &Input, args: InboxArgs) -> ExitCode {
                 let t = target(&bus, &who)?;
                 let deadline = Instant::now() + Duration::from_secs(timeout);
                 loop {
-                    let snap = store::scan(&bus.paths, &bus.config.run);
+                    let snap = store::snapshot(&bus)?;
                     let page = store::list(&snap, &t.recipient, after, limit, false);
                     if !page.records.is_empty() {
                         if let Some((m, i)) = &t.own {
@@ -495,7 +495,8 @@ pub fn bus(input: &Input, command: BusCommand) -> ExitCode {
             json,
             (|| {
                 let bus = open_bus(input)?;
-                let v = store::inspect(&bus, last);
+                let snap = store::snapshot(&bus)?;
+                let v = store::inspect(&bus, &snap, last);
                 let mut text = format!(
                     "run {} ({}), deployment {}, created {}\n",
                     bus.config.run,
@@ -523,7 +524,6 @@ pub fn bus(input: &Input, command: BusCommand) -> ExitCode {
                         r["total"]
                     ));
                 }
-                let snap = store::scan(&bus.paths, &bus.config.run);
                 text.push_str(&format!("records: {}\n", snap.records.len()));
                 for r in snap.records.values().rev().take(last).rev() {
                     text.push_str(&render(r, snap.is_acked(r.seq), false));
@@ -543,7 +543,7 @@ pub fn bus(input: &Input, command: BusCommand) -> ExitCode {
             })(),
         ),
         BusCommand::Check { json } => {
-            let result = open_bus(input).map(|bus| store::check(&bus));
+            let result = open_bus(input).and_then(|bus| store::check(&bus));
             let report = match result {
                 Ok(r) => r,
                 Err(f) => return finish(json, Err(f)),

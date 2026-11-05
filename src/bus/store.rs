@@ -244,6 +244,40 @@ fn lock_for_mutation(bus: &Bus) -> Result<MutationLocks, Failure> {
     })
 }
 
+/// The authoritative caller and binary checks, made while holding the
+/// mutation locks: generations change only under `runtime/generation.lock`
+/// (exclusive) and incarnations only under `bus/lock`, so what is checked
+/// here holds until the write. The checks before the locks only reject early.
+fn recheck_authority(bus: &Bus, caller: &Caller) -> Result<(), Failure> {
+    actor_for(bus, caller)?;
+    check_binary(&bus.paths)
+}
+
+/// Hold `bus/lock` shared while reading, so a scan never sees a record
+/// mid-publication without its key or ack. Opens the lock read-only and
+/// creates nothing: with no lock file there is no store to read yet.
+fn read_lock(paths: &RunPaths) -> Result<Option<fs::File>, Failure> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = match fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .open(paths.bus_lock())
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(Failure::io("cannot open bus/lock", e)),
+    };
+    file.lock_shared()
+        .map_err(|e| Failure::io("cannot lock bus/lock", e))?;
+    Ok(Some(file))
+}
+
+/// A consistent read of the whole store, under `bus/lock` shared.
+pub fn snapshot(bus: &Bus) -> Result<Snapshot, Failure> {
+    let _lock = read_lock(&bus.paths)?;
+    Ok(scan(&bus.paths, &bus.config.run))
+}
+
 // --- the store on disk ---
 
 /// A recipient's acknowledgement of one record: `bus/acks/<id>.json`.
@@ -388,17 +422,25 @@ pub fn scan(paths: &RunPaths, run: &str) -> Snapshot {
             }
         }
     }
+    // Never enumerate the missing numbers: a stray high-numbered file would
+    // make that unbounded.
     if let Some(&highest) = seqs.last() {
-        let missing: Vec<u64> = (1..=highest).filter(|n| !seqs.contains(n)).collect();
-        if let Some(first) = missing.first() {
+        let missing = highest - seqs.len() as u64;
+        if missing > 0 {
+            let first = seqs
+                .iter()
+                .zip(1u64..)
+                .find(|(seq, expected)| **seq != *expected)
+                .map(|(_, expected)| expected)
+                .unwrap_or(highest);
             problems.push(format!(
                 "gap: {} missing (first: {})",
-                if missing.len() == 1 {
+                if missing == 1 {
                     "1 record is".to_string()
                 } else {
-                    format!("{} records are", missing.len())
+                    format!("{missing} records are")
                 },
-                record_id(*first)
+                record_id(first)
             ));
         }
     }
@@ -415,23 +457,26 @@ pub fn scan(paths: &RunPaths, run: &str) -> Snapshot {
         });
         match parsed {
             Err(e) => problems.push(format!("acks/{name}: {e}")),
+            Ok(a) if a.schema != super::SCHEMA => {
+                problems.push(format!("acks/{name}: schema {}", a.schema))
+            }
             Ok(a) if a.run != run || a.id != record_id(seq) => {
                 problems.push(format!("acks/{name}: names `{}` in run `{}`", a.id, a.run))
             }
-            Ok(a) => {
-                match s.records.get(&seq) {
-                    None if !seqs.contains(&seq) => {
-                        problems.push(format!("acks/{name}: no such record"))
-                    }
-                    Some(r) if !is_recipient(&a.by, r) => problems.push(format!(
-                        "acks/{name}: by {}, but the record is addressed to {}",
-                        actor_label(&a.by),
-                        r.to
-                    )),
-                    _ => {}
+            // Only a well-formed ack by the record's recipient counts as consumption.
+            Ok(a) => match s.records.get(&seq) {
+                None if !seqs.contains(&seq) => {
+                    problems.push(format!("acks/{name}: no such record"))
                 }
-                s.acks.insert(seq, a);
-            }
+                Some(r) if !is_recipient(&a.by, r) => problems.push(format!(
+                    "acks/{name}: by {}, but the record is addressed to {}",
+                    actor_label(&a.by),
+                    r.to
+                )),
+                _ => {
+                    s.acks.insert(seq, a);
+                }
+            },
         }
     }
 
@@ -502,7 +547,17 @@ fn key_hash(key: &str) -> String {
 
 /// Size and SHA-256 of a regular file, refusing anything over `limit` bytes.
 pub fn sha256_file(path: &Path, limit: u64) -> io::Result<(u64, String)> {
-    let mut file = fs::File::open(path)?;
+    use std::os::unix::fs::OpenOptionsExt;
+    // Refuse a FIFO or device before opening it (opening a FIFO blocks), and
+    // open without blocking in case the path is swapped for one meanwhile;
+    // the descriptor is checked again below. Symlinks to files are followed.
+    if !fs::metadata(path)?.is_file() {
+        return Err(io::Error::other("not a regular file"));
+    }
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32)
+        .open(path)?;
     let meta = file.metadata()?;
     if !meta.is_file() {
         return Err(io::Error::other("not a regular file"));
@@ -770,6 +825,7 @@ pub fn publish(
     let slot = slot_of(&actor);
 
     let locks = lock_for_mutation(bus)?;
+    recheck_authority(bus, caller)?;
     let snap = scan(&bus.paths, &bus.config.run);
     snap.require_healthy()?;
 
@@ -991,6 +1047,7 @@ pub fn ack(
     let actor = actor_for(bus, caller)?;
     check_binary(&bus.paths)?;
     let locks = lock_for_mutation(bus)?;
+    recheck_authority(bus, caller)?;
     let snap = scan(&bus.paths, &bus.config.run);
     snap.require_healthy()?;
     for (id, seq) in ids.iter().zip(&seqs) {
@@ -1048,8 +1105,8 @@ pub struct CheckReport {
     pub corrupt: bool,
 }
 
-pub fn check(bus: &Bus) -> CheckReport {
-    let snap = scan(&bus.paths, &bus.config.run);
+pub fn check(bus: &Bus) -> Result<CheckReport, Failure> {
+    let snap = snapshot(bus)?;
     let mut report = CheckReport {
         records: snap.records.len(),
         corrupt: !snap.healthy(),
@@ -1087,12 +1144,11 @@ pub fn check(bus: &Bus) -> CheckReport {
             }
         }
     }
-    report
+    Ok(report)
 }
 
 /// A summary of the run and its store, for `brg bus inspect`.
-pub fn inspect(bus: &Bus, last: usize) -> Value {
-    let snap = scan(&bus.paths, &bus.config.run);
+pub fn inspect(bus: &Bus, snap: &Snapshot, last: usize) -> Value {
     let mut recipients: BTreeMap<String, (usize, usize)> = BTreeMap::new();
     for m in bus.manifest.members.keys() {
         recipients.insert(m.clone(), (0, 0));

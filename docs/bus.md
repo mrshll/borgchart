@@ -17,7 +17,7 @@ The bus is enabled per deployment, in `borgchart.yaml`:
 ```yaml
 schema: 1
 bus:
-  root: ~/borgchart-runs        # absolute (or ~/); holds one directory per run
+  root: /tmp/brg-runs-1000      # absolute (or ~/); holds one directory per run
   run: example-run-1            # this deployment's run ID: [a-z0-9][a-z0-9._-]{0,63}
   continues: example-run-0      # optional: the earlier run (same root) this one carries on
   alert: {plugin: notify, action: alert}   # optional: how brg alerts a person
@@ -137,12 +137,13 @@ Every command takes the deployment as other commands do (`-f`, `$BORGCHART_FILE`
 
 **`msg publish`** reads a draft (from `--record FILE`, or stdin for `-` or no `--record`) and publishes it as the caller: a member from its environment, or `--external NAME`. An operator (neither) is `refused`. In order, it:
 
-1. checks the caller: a member's run, membership and current, not-ended incarnation (`fenced`), and, once the run has a runtime generation, that this is the generation's binary (`refused`);
-2. checks the key, the draft's shape, its kind's required facts and its recipient against the run's frozen topology (`invalid`);
-3. measures each artifact: a regular file up to 256 MiB, recording `bytes` and `sha256` (`invalid` if missing or too big);
-4. takes `runtime/generation.lock` shared (waiting up to 10 s, then `error`) and `bus/lock`, and rescans the store (`corrupt` if anything is unreadable or missing);
-5. if the caller's slot already used the key: the same draft and artifact contents return the original record (`duplicate`), anything else is a `conflict`;
-6. checks every `reply_to` ID (and a `verify`'s `facts.result`) names a record (`invalid`), then writes the record and its key index entry.
+1. checks the key, the draft's shape, its kind's required facts and its recipient against the run's frozen topology (`invalid`), with an early check of the caller (below) to fail fast;
+2. measures each artifact: a regular file (a symlink to one is followed) up to 256 MiB, recording `bytes` and `sha256` (`invalid` if missing, not a regular file, or too big; a FIFO or device is refused without opening it);
+3. takes `runtime/generation.lock` shared (waiting up to 10 s, then `error`) and `bus/lock` exclusive;
+4. holding both, checks the caller authoritatively: a member's run, membership and current, not-ended incarnation (`fenced`), and, once the run has a runtime generation, that this is the generation's binary (`refused`). Generations change only under `runtime/generation.lock` exclusive and incarnations only under `bus/lock`, so this holds until the write;
+5. rescans the store (`corrupt` if anything is unreadable or missing);
+6. if the caller's slot already used the key: the same draft and artifact contents return the original record (`duplicate`, repairing a missing key index entry), anything else is a `conflict`;
+7. checks every `reply_to` ID (and a `verify`'s `facts.result`) names a record (`invalid`), then writes the record and its key index entry.
 
 ```console
 $ brg msg publish --external ops --key demo-1 --record demo.json --json
@@ -175,7 +176,7 @@ $ brg msg publish --external ops --key demo-1 --record demo.json --json
 
 **`msg read ID`** prints one record in full, with `acked`, to anyone. It never acknowledges, and never counts as the recipient having seen it. An unknown ID is `not-found`.
 
-**`msg ack ID…`** records that the recipient has consumed records: a member for its own records, or `--external NAME` for `external:NAME`'s. Every ID is checked first (`not-found`; `refused` if any isn't addressed to the caller), then each gets `bus/acks/<id>.json`. Each result is `acked`, or `already` when it was acknowledged before, which changes nothing.
+**`msg ack ID…`** records that the recipient has consumed records: a member for its own records, or `--external NAME` for `external:NAME`'s. Every ID is checked first (`not-found`; `refused` if any isn't addressed to the caller), then each gets `bus/acks/<id>.json`. Like publish, ack checks the caller again while holding both locks. Each result is `acked`, or `already` when it was acknowledged before, which changes nothing.
 
 ```json
 {"ok": true, "code": 0, "outcome": "ok", "acked": [{"id": "m1", "outcome": "acked"}, {"id": "m2", "outcome": "already"}]}
@@ -190,7 +191,7 @@ $ brg msg publish --external ops --key demo-1 --record demo.json --json
 
 It exits `ok` with warnings only, `corrupt` when the store has errors, and `error` when only the run's age does.
 
-**Read-only.** `inbox`, `inbox wait`, `msg read`, `bus inspect` and `bus check` take no lock and never create or change a file. Records only appear under their final name once complete, so reading without the lock is safe.
+**Read-only.** `inbox`, `inbox wait`, `msg read`, `bus inspect` and `bus check` never create or change a file. Each read of the store holds `bus/lock` shared (opened read-only; with no lock file there is nothing to read yet), so it never sees a record without its key index entry or ack mid-write. An ack that is unreadable, has another schema or isn't by the record's recipient is a store problem and doesn't count as consumption.
 
 **Corrupt store.** An unreadable record, key or ack, or a gap, stops every mutation (`corrupt`) until a person repairs the store or the work continues in a new run; reads and inspection still work and say the store is incomplete.
 
