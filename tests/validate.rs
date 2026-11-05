@@ -520,7 +520,9 @@ fn parse_errors_name_the_file_once() {
         "{msg}"
     );
     assert!(!msg.contains("<input>"), "{msg}");
+}
 
+#[test]
 fn auto_trust_warns_about_project_settings_for_vendor_members() {
     let f = Fixture::new();
     f.edit(

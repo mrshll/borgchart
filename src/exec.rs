@@ -86,6 +86,17 @@ pub fn run_main(
         parent.as_deref(),
         plugin,
     ));
+    // A sandboxed member can't write uv's default cache; use its own temp dir.
+    if !env.contains_key("UV_CACHE_DIR") && !member.is_empty() {
+        env.insert(
+            "UV_CACHE_DIR".into(),
+            state
+                .member_tmp(member)
+                .join("uv-cache")
+                .display()
+                .to_string(),
+        );
+    }
 
     let (program, cwd) = match &plugin_meta.dir {
         Some(dir) => (dir.join(command), dir.clone()),

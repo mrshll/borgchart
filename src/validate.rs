@@ -104,6 +104,26 @@ fn cross_check(v: &Validated, report: &mut Report) {
             }
         }
         for (id, m) in &d.members {
+            if let Some(member) = v.team.members.get(id)
+                && member.vendor == Vendor::Codex
+                && v.posture(id) == Posture::Locked
+                && let Some(cwd) = &m.cwd
+            {
+                let cwd_real = cwd.canonicalize().unwrap_or_else(|_| cwd.clone());
+                let inside = |p: &Path| {
+                    let p = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+                    p.starts_with(&cwd_real)
+                };
+                if inside(&crate::state::state_home()) || inside(&v.team.dir) {
+                    report.warning(
+                        deploy_file,
+                        format!(
+                            "member `{id}`: a `locked` Codex member can write its cwd, and {} contains the team or brg's state; pick a narrower folder",
+                            cwd.display()
+                        ),
+                    );
+                }
+            }
             let vendor_claude = v
                 .team
                 .members

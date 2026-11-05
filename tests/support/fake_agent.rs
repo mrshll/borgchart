@@ -330,13 +330,12 @@ fn main() {
         .join("fake-agent")
         .join("no-hooks")
         .exists();
-    let trust_first = vendor == Vendor::Claude
-        && PathBuf::from(&home)
-            .join("fake-agent")
-            .join("trust")
-            .exists();
+    let flag = |name: &str| PathBuf::from(&home).join("fake-agent").join(name).exists();
+    let trust_first = vendor == Vendor::Claude && (flag("trust") || flag("trust-yes"));
+    // A prompt before the session starts: its SessionStart hook hasn't run.
+    let dialog_first = flag("dialog-first");
     let start_hooks = if skip_hooks { Vec::new() } else { start_hooks };
-    if !trust_first {
+    if !trust_first && !dialog_first {
         run_start_hooks(&log, &start_hooks);
     }
 
@@ -353,10 +352,16 @@ fn main() {
         vendor,
         log,
         pre_hooks: if skip_hooks { Vec::new() } else { pre_hooks },
-        mode: if trust_first { Mode::Trust } else { Mode::Idle },
+        mode: if trust_first {
+            Mode::Trust
+        } else if dialog_first {
+            Mode::Dialog
+        } else {
+            Mode::Idle
+        },
         work_until: None,
         lines: Vec::new(),
-        trust_choice: 0,
+        trust_choice: if flag("trust-yes") { 1 } else { 0 },
         start_hooks,
     };
     agent.draw();

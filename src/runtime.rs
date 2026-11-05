@@ -149,6 +149,12 @@ struct Started {
 
 /// The id of the rule that recognizes Claude's folder-trust dialog.
 const TRUST_RULE: &str = "trust-dialog";
+const TRUST_NO_SELECTED: &str = " ❯ No, exit";
+const TRUST_YES_SELECTED: &str = " ❯ Yes, I trust this folder";
+
+fn has_line(screen: &str, line: &str) -> bool {
+    screen.lines().any(|l| l.trim_end() == line)
+}
 
 /// The folder Claude's trust dialog names: the first non-blank line after "Accessing workspace:".
 pub fn trust_dialog_path(screen: &str) -> Option<PathBuf> {
@@ -181,6 +187,18 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
     let brg = brg_path();
     let base = base_env();
     let tmux = tmux_for(state);
+    if state
+        .root
+        .display()
+        .to_string()
+        .chars()
+        .any(char::is_whitespace)
+    {
+        return Err(format!(
+            "the state directory {} contains whitespace, which `locked` command rules can't match; set BORGCHART_STATE_HOME to a path without spaces",
+            state.root.display()
+        ));
+    }
     state::ensure_dir(&state.root)
         .map_err(|e| format!("cannot create {}: {e}", state.root.display()))?;
     tmux.write_config()
@@ -323,6 +341,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             .map_err(|e| e.to_string())?;
         }
         let _ = std::fs::remove_file(state.gate_marker(id));
+        let _ = std::fs::remove_file(state.member_dir(id).join("trust-accepted"));
 
         let mut env = base.clone();
         let path = format!(
@@ -355,9 +374,17 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                 }
             }
         }
+        // Codex's sandbox can write its cwd, so a `locked` Codex member that
+        // declares none starts in its own temp dir rather than the team dir.
         let cwd = deploy_member
             .and_then(|d| d.cwd.clone())
-            .unwrap_or_else(|| meta.team_dir.clone());
+            .unwrap_or_else(|| {
+                if posture == Posture::Locked && member.vendor == Vendor::Codex {
+                    state.member_tmp(id)
+                } else {
+                    meta.team_dir.clone()
+                }
+            });
         let trust_dir = deploy_member
             .and_then(|d| d.cwd.as_ref())
             .filter(|_| match v.deployment.as_ref().and_then(|d| d.auto_trust) {
@@ -459,26 +486,30 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             let accept = is_trust
                 && !trusted
                 && s.trust_dir.is_some()
-                && trust_dialog_path(&screen).as_deref() == s.trust_dir.as_deref();
+                && trust_dialog_path(&screen).as_deref() == s.trust_dir.as_deref()
+                && has_line(&screen, TRUST_NO_SELECTED);
             if accept {
                 let dir = s
                     .trust_dir
                     .as_ref()
                     .map(|d| d.display().to_string())
                     .unwrap_or_default();
-                // Down to "Yes, I trust this folder", then Enter. Nothing else is ever answered.
+                // Move to "Yes, I trust this folder", confirm it is now the
+                // highlighted choice on the same dialog, and only then press
+                // Enter. Nothing else is ever answered.
                 let t = target(&session, id);
-                tmux.ok(&[
-                    "send-keys",
-                    "-t",
-                    &t,
-                    "Down",
-                    ";",
-                    "send-keys",
-                    "-t",
-                    &t,
-                    "Enter",
-                ])?;
+                tmux.ok(&["send-keys", "-t", &t, "Down"])?;
+                std::thread::sleep(Duration::from_millis(250));
+                let after = tmux.capture(&session, id);
+                if !(has_line(&after, TRUST_YES_SELECTED)
+                    && trust_dialog_path(&after).as_deref() == s.trust_dir.as_deref())
+                {
+                    messages.push(format!(
+                        "{id}: the folder-trust dialog didn't look as expected, so it was left for you; run `brg attach {id}`"
+                    ));
+                    break;
+                }
+                tmux.ok(&["send-keys", "-t", &t, "Enter"])?;
                 let _ = write_private(
                     &state.member_dir(id).join("trust-accepted"),
                     format!("{dir}\n").as_bytes(),
@@ -489,9 +520,25 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                 continue;
             }
             match reading.map(|r| r.state) {
+                // Nothing runs before Claude's folder trust is answered, and the
+                // gate must still report in afterwards (`send` checks).
+                Some(State::Blocked) if is_trust => {
+                    messages.push(format!(
+                        "{id}: waiting at Claude's folder-trust prompt; run `brg attach {id}` to answer it"
+                    ));
+                    break;
+                }
+                Some(State::Blocked) if s.locked => {
+                    let _ = tmux.kill_window(&session, id);
+                    messages.push(format!(
+                        "{id}: stopped: it was at a prompt before its `locked` gate reported in"
+                    ));
+                    failed = true;
+                    break;
+                }
                 Some(State::Blocked) => {
                     messages.push(format!(
-                        "{id}: waiting at a prompt (folder trust?); run `brg attach {id}` to answer it"
+                        "{id}: waiting at a prompt; run `brg attach {id}` to answer it"
                     ));
                     break;
                 }
@@ -551,6 +598,7 @@ pub fn down(input: &Input, only: Option<&str>) -> Result<Vec<String>, String> {
                 messages.push(format!("{id}: not running"));
             }
             let _ = std::fs::remove_file(state.gate_marker(id));
+            let _ = std::fs::remove_file(state.member_dir(id).join("trust-accepted"));
             let _ = std::fs::remove_file(state.exec_file(id));
         }
         None => {
@@ -568,6 +616,7 @@ pub fn down(input: &Input, only: Option<&str>) -> Result<Vec<String>, String> {
                 }
                 for id in meta.members.keys() {
                     let _ = std::fs::remove_file(state.gate_marker(id));
+                    let _ = std::fs::remove_file(state.member_dir(id).join("trust-accepted"));
                 }
             }
         }
@@ -646,7 +695,10 @@ pub fn status(input: &Input) -> Result<Vec<StatusRow>, String> {
                     }
                 }
                 if posture == Posture::Locked && !state.gate_marker(id).exists() {
-                    row.detail = Some("gate not active".into());
+                    row.detail = Some("gate not active: gets no input".into());
+                    if row.state != "blocked" {
+                        row.state = "gate-inactive".into();
+                    }
                 }
             }
         }
@@ -697,9 +749,17 @@ pub fn status(input: &Input) -> Result<Vec<StatusRow>, String> {
     Ok(rows)
 }
 
+/// Drop control characters (terminal escapes) from plugin-written text.
+fn printable(text: &str) -> String {
+    text.chars().filter(|c| !c.is_control()).take(200).collect()
+}
+
 /// A plugin's `health.json`: `{ok, at, detail}`.
 fn health(dir: &Path) -> Option<String> {
     let path = dir.join("health.json");
+    if !std::fs::symlink_metadata(&path).ok()?.is_file() {
+        return Some("error: health.json is not a regular file".into());
+    }
     let text = std::fs::read_to_string(&path).ok()?;
     let value: serde_json::Value = serde_json::from_str(&text).ok()?;
     let age = std::fs::metadata(&path)
@@ -714,7 +774,7 @@ fn health(dir: &Path) -> Option<String> {
     } else if ok {
         "ok".to_string()
     } else {
-        format!("error: {detail}")
+        format!("error: {}", printable(detail))
     })
 }
 
@@ -824,7 +884,13 @@ pub fn check_text(text: &str) -> Result<(), SendError> {
 }
 
 /// `brg send <member> <text>`.
-pub fn send(input: &Input, member: &str, text: &str, force: bool) -> Result<String, SendError> {
+pub fn send(
+    input: &Input,
+    member: &str,
+    text: &str,
+    force: bool,
+    from: Option<&str>,
+) -> Result<String, SendError> {
     check_text(text)?;
     let dep = state_for(input);
     let state = &dep.state;
@@ -839,6 +905,19 @@ pub fn send(input: &Input, member: &str, text: &str, force: bool) -> Result<Stri
         _ => Vendor::Claude,
     };
     let locked = member_meta.posture == "locked";
+    if let Some(from) = from {
+        let parent = meta.members.get(from).and_then(|m| m.parent.as_deref());
+        if parent != Some(member) {
+            return Err(SendError::Refused(format!(
+                "`{from}` may only send to its parent, and `{member}` is not it"
+            )));
+        }
+    }
+    if locked && !state.gate_marker(member).exists() {
+        return Err(SendError::Refused(format!(
+            "`{member}` is `locked` but its gate is not active; it gets no input until it is (restart it with `brg up --member {member}`)"
+        )));
+    }
     let session = state.session();
     let tmux = tmux_for(state);
 

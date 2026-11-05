@@ -89,6 +89,10 @@ enum Command {
         /// Send even when the member's state is unknown.
         #[arg(long)]
         force: bool,
+        /// The sending member (for plugins relaying a member's message):
+        /// brg checks that the target is that member's parent.
+        #[arg(long)]
+        from: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -229,11 +233,12 @@ pub fn main() -> ExitCode {
             member,
             text,
             force,
+            from,
             json,
         } => {
             let input = target_or_exit!(&target);
             let text = text.join(" ");
-            let result = runtime::send(&input, &member, &text, force);
+            let result = runtime::send(&input, &member, &text, force, from.as_deref());
             if json {
                 let out = match &result {
                     Ok(m) => serde_json::json!({"ok": true, "code": 0, "message": m}),

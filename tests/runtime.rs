@@ -628,6 +628,11 @@ fn launch_arguments_follow_posture() {
     assert!(!prompt.contains("ping"));
 
     let beta = argv("beta");
+    assert_eq!(
+        beta[beta.len() - 2],
+        "--",
+        "the prompt must follow `--`: {beta:?}"
+    );
     assert!(
         !beta.iter().any(|a| a == "-a" || a == "--restricted"),
         "vendor posture passes no permission flags: {beta:?}"
@@ -697,7 +702,7 @@ fn folder_trust_is_left_alone_without_a_declared_cwd_or_when_turned_off() {
         let env = trust_env(deploy);
         let out = env.brg(&["up"]);
         assert!(
-            stdout(&out).contains("alpha: waiting at a prompt"),
+            stdout(&out).contains("alpha: waiting at Claude's folder-trust prompt"),
             "{}",
             stdout(&out)
         );
@@ -707,7 +712,75 @@ fn folder_trust_is_left_alone_without_a_declared_cwd_or_when_turned_off() {
                 .any(|e| e["event"].as_str().unwrap_or("").starts_with("trust-"))
         );
         assert_eq!(env.state_of("alpha"), "blocked");
+        // Its gate hasn't reported in, so it gets no input.
+        assert_eq!(
+            env.brg(&["send", "--force", "alpha", "hi"]).status.code(),
+            Some(5)
+        );
     }
+}
+
+#[test]
+fn folder_trust_is_left_alone_when_yes_is_already_highlighted() {
+    let env = trust_env(
+        "schema: 1\nmembers:\n  alpha: {cwd: WORK}\nplugins:\n  pager:\n    env: {PAGER_ROOM: R0}\n",
+    );
+    fs::remove_file(env.path("home/fake-agent/trust")).unwrap();
+    fs::write(env.path("home/fake-agent/trust-yes"), "").unwrap();
+    let out = env.brg(&["up"]);
+    assert!(
+        stdout(&out).contains("alpha: waiting at Claude's folder-trust prompt"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(
+        !env.events("alpha")
+            .iter()
+            .any(|e| e["event"] == "trust-accepted")
+    );
+}
+
+#[test]
+fn locked_member_at_a_prompt_before_its_gate_reports_is_stopped() {
+    let env = Env::new();
+    fs::create_dir_all(env.path("home/fake-agent")).unwrap();
+    fs::write(env.path("home/fake-agent/dialog-first"), "").unwrap();
+    let out = env.brg(&["up"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert!(
+        stdout(&out).contains("alpha: stopped: it was at a prompt"),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(env.state_of("alpha"), "stopped");
+    assert!(
+        !env.events("alpha")
+            .iter()
+            .any(|e| e["event"] == "dialog-answer")
+    );
+}
+
+#[test]
+fn send_from_must_target_the_senders_parent() {
+    let env = Env::new();
+    env.up();
+    assert!(
+        env.brg(&["send", "--from", "beta", "alpha", "note"])
+            .status
+            .success()
+    );
+    assert_eq!(
+        env.brg(&["send", "--from", "alpha", "beta", "note"])
+            .status
+            .code(),
+        Some(5)
+    );
+    assert_eq!(
+        env.brg(&["send", "--from", "gamma", "beta", "note"])
+            .status
+            .code(),
+        Some(5)
+    );
 }
 
 fn walk(root: &Path) -> Vec<PathBuf> {
