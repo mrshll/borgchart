@@ -646,8 +646,9 @@ pub fn possible_writers(paths: &RunPaths, t: &Task, named: Option<&str>) -> Vec<
 }
 
 /// The task checks for a draft about to be published as `actor`. Called
-/// by the store under `bus/lock`, after the healthy scan and before
-/// numbering, so the fold is exactly what the new record follows.
+/// by the store holding `runtime/generation.lock` and `bus/lock`, after it
+/// has rechecked the caller's incarnation and scanned a healthy store and
+/// before numbering, so the fold is exactly what the new record follows.
 pub fn check_publish(
     bus: &Bus,
     snap: &Snapshot,
@@ -661,25 +662,6 @@ pub fn check_publish(
     let manifest = &bus.manifest;
     let fold = fold(manifest, snap);
     let fact = Fact::of_draft(draft, actor);
-
-    // Under the lock, a member must still be its current incarnation.
-    if let Actor::Member {
-        member,
-        incarnation,
-    } = actor
-    {
-        let current = manifest::load_incarnation(&bus.paths, member)
-            .map_err(|e| Failure::new(Code::Error, e))?;
-        match current {
-            Some(c) if c.incarnation == *incarnation && c.ended_at.is_none() => {}
-            _ => {
-                return fail(
-                    Code::Fenced,
-                    format!("incarnation `{incarnation}` of `{member}` is no longer current"),
-                );
-            }
-        }
-    }
 
     if draft.kind == Kind::Decision {
         let open: BTreeMap<String, Question> = fold
