@@ -192,6 +192,36 @@ pub fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     fs::rename(&tmp, path)
 }
 
+/// Open (creating if needed) a member's send-lock file without following
+/// symlinks or truncating, and check it is a regular file.
+pub fn open_lock(path: &Path) -> std::io::Result<fs::File> {
+    let nofollow = rustix::fs::OFlags::NOFOLLOW.bits() as i32;
+    let file = match fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nofollow)
+        .open(path)
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(parent) = path.parent() {
+                ensure_dir(parent)?;
+            }
+            fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o600)
+                .custom_flags(nofollow)
+                .open(path)?
+        }
+        Err(e) => return Err(e),
+    };
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::other("lock path is not a regular file"));
+    }
+    Ok(file)
+}
+
 /// Write an executable script (not secret: it holds paths only).
 pub fn write_script(path: &Path, contents: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {

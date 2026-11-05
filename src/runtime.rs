@@ -1,7 +1,6 @@
 //! The tmux runtime: `up`, `down`, `status`, `attach`, `logs` and `send`.
 
 use std::collections::BTreeMap;
-use std::fs::File;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -230,7 +229,10 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
     let mut messages = Vec::new();
     let mut failed = false;
     let mut started: Vec<Started> = Vec::new();
-    state::ensure_dir(&state.root.join("locks")).map_err(|e| e.to_string())?;
+    for id in v.team.members.keys() {
+        state::open_lock(&state.lock_file(id))
+            .map_err(|e| format!("cannot create send lock: {e}"))?;
+    }
 
     let member_ids: Vec<String> = v
         .team
@@ -840,9 +842,10 @@ pub fn send(input: &Input, member: &str, text: &str, force: bool) -> Result<Stri
     let session = state.session();
     let tmux = tmux_for(state);
 
-    state::ensure_dir(&state.root.join("locks")).map_err(|e| SendError::Refused(e.to_string()))?;
-    let lock =
-        File::create(state.lock_file(member)).map_err(|e| SendError::Refused(e.to_string()))?;
+    // Lock files are created at `up`, outside any sandbox; inside one, `send`
+    // only opens its member's existing file read-only.
+    let lock = state::open_lock(&state.lock_file(member))
+        .map_err(|e| SendError::Refused(format!("cannot open the send lock: {e}")))?;
     lock.lock()
         .map_err(|e| SendError::Refused(format!("cannot lock: {e}")))?;
 

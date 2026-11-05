@@ -231,14 +231,13 @@ pub fn codex_hook_config(brg: &Path, state: &StateDir, member: &str) -> String {
 }
 
 /// What a sandboxed member's plugin commands may write: each granted plugin's
-/// own state directory, the send-lock directory and its own temp directory. Never the directories
+/// own state directory and its own temp directory. Never the directories
 /// holding gate rules, shims, launch files or plugin secrets.
 pub fn writable_roots(state: &StateDir, member: &str, granted: &[Granted]) -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = granted
         .iter()
         .map(|g| state.plugin_dir(&g.plugin))
         .collect();
-    roots.push(state.root.join("locks"));
     roots.push(state.member_tmp(member));
     roots.sort();
     roots.dedup();

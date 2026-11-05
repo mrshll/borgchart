@@ -27,12 +27,12 @@ path = "tests/support/fake_agent.rs"
 required-features = ["test-support"]
 
 [features]
-test-support = ["dep:rustix"]
+test-support = []
 
 [dependencies]
 clap = { version = "4.6", features = ["derive"] }
 regex = "1"
-rustix = { version = "1", features = ["termios", "stdio"], optional = true }
+rustix = { version = "1", features = ["fs", "termios", "stdio"] }
 serde = { version = "1", features = ["derive"] }
 serde-saphyr = { version = "2.1", default-features = false, features = ["deserialize"] }
 serde_json = "1"
