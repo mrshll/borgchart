@@ -246,6 +246,25 @@ impl Env {
     }
 }
 
+/// The directory holding the `tmux` the harness itself uses, so a caller
+/// PATH built for a test still finds it (e.g. /opt/homebrew/bin on macOS).
+fn tmux_dir() -> PathBuf {
+    let search = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&search)
+        .chain(
+            ["/usr/bin", "/bin", "/usr/local/bin", "/opt/homebrew/bin"]
+                .iter()
+                .map(PathBuf::from),
+        )
+        .find(|d| d.join("tmux").is_file())
+        .expect("tmux on PATH")
+}
+
+/// A minimal caller PATH: tmux's directory and the system directories.
+fn minimal_path(extra_first: &str) -> String {
+    format!("{extra_first}{}:/usr/bin:/bin", tmux_dir().display())
+}
+
 fn both(out: &Output) -> String {
     format!(
         "{}{}",
@@ -381,7 +400,7 @@ fn child_start_env(caller: impl Fn(&mut Command)) -> (Env, BTreeMap<String, Stri
 #[test]
 fn child_start_ignores_a_contaminated_caller_env() {
     let (_env, helper) = child_start_env(|cmd| {
-        cmd.env("PATH", "/contaminated/bin:/usr/bin:/bin")
+        cmd.env("PATH", minimal_path("/contaminated/bin:"))
             .env("TMPDIR", "/tmp/contaminated")
             .env("LANG", "xx_XX.UTF-8")
             .env("LEAKY_SETTING", "from-the-caller")
@@ -399,7 +418,8 @@ fn child_start_ignores_a_contaminated_caller_env() {
 #[test]
 fn child_start_ignores_a_scrubbed_caller_env() {
     let (env, helper) = child_start_env(|cmd| {
-        cmd.env_remove("PATH")
+        // Brg needs tmux on the caller's PATH; nothing else.
+        cmd.env("PATH", minimal_path(""))
             .env_remove("HOME")
             .env_remove("LANG")
             .env_remove("PAGER_TOKEN");
