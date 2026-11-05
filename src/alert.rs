@@ -130,7 +130,8 @@ impl AlertOutcome {
 pub struct Invocation {
     pub outcome: AlertOutcome,
     /// The tail of stdout then stderr, at most `Limits::max_output` bytes,
-    /// with control characters other than newline and tab replaced.
+    /// with control characters other than newline and tab replaced
+    /// and the plugin's own values masked as `[redacted]`.
     pub output: String,
     pub elapsed_ms: u64,
 }
@@ -144,6 +145,10 @@ fn unavailable(why: impl Into<String>) -> Invocation {
 }
 
 /// Identity variables a values file may not supply or override.
+/// Plugin values shorter than this are not masked in output (they would
+/// mask ordinary words).
+const MIN_REDACT: usize = 4;
+
 const RESERVED: &[&str] = &[
     "BORGCHART_MEMBER",
     "BORGCHART_PARENT",
@@ -157,7 +162,7 @@ fn action_env(
     meta: &Meta,
     bus: &BusConfig,
     plugin: &str,
-) -> Result<BTreeMap<String, String>, String> {
+) -> Result<(BTreeMap<String, String>, Vec<String>), String> {
     let text = std::fs::read_to_string(state.plugin_env_file(plugin)).map_err(|e| {
         format!(
             "cannot read plugin `{plugin}` values written at `brg up` ({e}); is the deployment up?"
@@ -165,6 +170,13 @@ fn action_env(
     })?;
     let values: PluginEnv = serde_json::from_str(&text)
         .map_err(|e| format!("plugin `{plugin}` values are unreadable: {e}"))?;
+    // Values long enough to recognize are masked in any output brg keeps.
+    let secrets: Vec<String> = values
+        .env
+        .values()
+        .filter(|v| v.len() >= MIN_REDACT)
+        .cloned()
+        .collect();
     let mut env = meta.base_env.clone();
     env.extend(values.env);
     for name in RESERVED {
@@ -179,7 +191,7 @@ fn action_env(
         "BORGCHART_STATE_DIR".into(),
         state.plugin_dir(plugin).display().to_string(),
     );
-    Ok(env)
+    Ok((env, secrets))
 }
 
 /// Run the deployment's alert action for `req`. Never panics or fails: every
@@ -222,8 +234,8 @@ pub fn invoke(
         Ok(p) => return unavailable(format!("{} is not executable", p.display())),
         Err(e) => return unavailable(format!("plugin `{plugin}`: {e}")),
     };
-    let env = match action_env(state, meta, bus, plugin) {
-        Ok(env) => env,
+    let (env, secrets) = match action_env(state, meta, bus, plugin) {
+        Ok(found) => found,
         Err(e) => return unavailable(e),
     };
 
@@ -240,7 +252,7 @@ pub fn invoke(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
-    run_bounded(cmd, &program, limits)
+    run_bounded(cmd, &program, limits, &secrets)
 }
 
 /// Keeps the last `cap` bytes written to it.
@@ -276,15 +288,23 @@ fn drain(mut reader: impl Read + Send + 'static, cap: usize) -> Arc<Mutex<Tail>>
     tail
 }
 
-fn run_bounded(mut cmd: Command, program: &std::path::Path, limits: &Limits) -> Invocation {
+fn run_bounded(
+    mut cmd: Command,
+    program: &std::path::Path,
+    limits: &Limits,
+    secrets: &[String],
+) -> Invocation {
     let start = Instant::now();
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return unavailable(format!("cannot run {}: {e}", program.display())),
     };
     let cap = limits.max_output;
-    let out = child.stdout.take().map(|r| drain(r, cap));
-    let err = child.stderr.take().map(|r| drain(r, cap));
+    // Keep a little more than `cap`, so a value cut by the tail is still
+    // recognized and masked before the final cut.
+    let keep = cap + secrets.iter().map(String::len).max().unwrap_or(0);
+    let out = child.stdout.take().map(|r| drain(r, keep));
+    let err = child.stderr.take().map(|r| drain(r, keep));
     let pgid = rustix::process::Pid::from_raw(child.id() as i32);
     let outcome = loop {
         match child.try_wait() {
@@ -319,7 +339,7 @@ fn run_bounded(mut cmd: Command, program: &std::path::Path, limits: &Limits) -> 
     if let Some(pgid) = pgid {
         let _ = rustix::process::kill_process_group(pgid, rustix::process::Signal::KILL);
     }
-    let settle = Instant::now() + Duration::from_millis(200);
+    let settle = Instant::now() + Duration::from_secs(1);
     let mut bytes = Vec::new();
     for tail in [out, err].into_iter().flatten() {
         while Arc::strong_count(&tail) > 1 && Instant::now() < settle {
@@ -329,20 +349,24 @@ fn run_bounded(mut cmd: Command, program: &std::path::Path, limits: &Limits) -> 
             bytes.extend_from_slice(&t.bytes);
         }
     }
-    if bytes.len() > cap {
-        bytes.drain(..bytes.len() - cap);
+    if bytes.len() > keep {
+        bytes.drain(..bytes.len() - keep);
     }
     Invocation {
         outcome,
-        output: clean_output(&bytes, cap),
+        output: clean_output(&bytes, cap, secrets),
         elapsed_ms: start.elapsed().as_millis() as u64,
     }
 }
 
-/// Lossy UTF-8 with control characters (other than newline and tab)
-/// replaced, trimmed to at most `cap` bytes on a character boundary.
-fn clean_output(bytes: &[u8], cap: usize) -> String {
-    let text: String = String::from_utf8_lossy(bytes)
+/// Lossy UTF-8 with `secrets` masked and control characters (other than
+/// newline and tab) replaced, trimmed to at most `cap` bytes on a character boundary.
+fn clean_output(bytes: &[u8], cap: usize, secrets: &[String]) -> String {
+    let mut text = String::from_utf8_lossy(bytes).to_string();
+    for secret in secrets {
+        text = text.replace(secret.as_str(), "[redacted]");
+    }
+    let text: String = text
         .chars()
         .map(|c| {
             if c.is_control() && c != '\n' && c != '\t' {
@@ -382,7 +406,7 @@ pub mod store {
     use crate::bus::fsx::{self, TMP_PREFIX, Written};
     use crate::bus::layout::RunPaths;
     use crate::bus::outcome::{Code, Failure};
-    use crate::bus::time::utc_now;
+    use crate::bus::time::{parse_utc, utc_now};
 
     /// How many invocations an alert keeps in full; `invocation_count` keeps
     /// counting past it.
@@ -439,15 +463,59 @@ pub mod store {
     fn read(paths: &RunPaths, id: &str) -> Result<Option<Alert>, Failure> {
         let path = paths.alert(id);
         match fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|e| {
-                Failure::new(
-                    Code::Corrupt,
-                    format!("{} is unreadable: {e}", path.display()),
-                )
-            }),
+            Ok(bytes) => {
+                let corrupt = |why: String| {
+                    Failure::new(
+                        Code::Corrupt,
+                        format!("{} is unreadable: {why}", path.display()),
+                    )
+                };
+                let alert: Alert =
+                    serde_json::from_slice(&bytes).map_err(|e| corrupt(e.to_string()))?;
+                check(&alert, id).map_err(corrupt)?;
+                Ok(Some(alert))
+            }
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(Failure::io(&path.display().to_string(), e)),
         }
+    }
+
+    /// An alert file holds only what brg writes: its own ID, plain-word
+    /// arguments, UTC timestamps and known outcomes. Anything else (a planted
+    /// or edited file) is refused rather than printed.
+    fn check(alert: &Alert, id: &str) -> Result<(), String> {
+        if alert.id != id {
+            return Err(format!("it names alert `{}`", alert.id));
+        }
+        AlertRequest {
+            id: alert.id.clone(),
+            member: alert.member.clone(),
+            reason: alert.reason,
+            pending: alert.pending,
+        }
+        .check()?;
+        let times = std::iter::once(&alert.opened_at)
+            .chain(alert.resolved_at.as_ref())
+            .chain(alert.invocations.iter().map(|i| &i.at));
+        for t in times {
+            if parse_utc(t).is_none() {
+                return Err("bad timestamp".into());
+            }
+        }
+        let outcomes = ["invoked", "failed", "timed-out", "unavailable"];
+        if alert
+            .invocations
+            .iter()
+            .any(|i| !outcomes.contains(&i.outcome.as_str()))
+        {
+            return Err("unknown invocation outcome".into());
+        }
+        if let Some(by) = &alert.resolved_by
+            && !crate::names::is_plain_word(by)
+        {
+            return Err("bad resolved_by".into());
+        }
+        Ok(())
     }
 
     fn write(paths: &RunPaths, alert: &Alert) -> Result<(), Failure> {
@@ -769,9 +837,29 @@ fn cli_test(input: &crate::validate::Input, member: Option<&str>) -> CliResult {
     }
 }
 
-fn run_paths(input: &crate::validate::Input) -> Result<crate::bus::layout::RunPaths, Failure> {
+/// The run's paths for reading alerts, or `None` if the run directory doesn't
+/// exist yet. The root, run and alert directories that exist must be
+/// private (see [`crate::bus::fsx::check_private_dir`]), as for writers.
+fn run_paths(
+    input: &crate::validate::Input,
+) -> Result<Option<crate::bus::layout::RunPaths>, Failure> {
     let ctx = context(input)?;
-    Ok(crate::bus::layout::RunPaths::new(&ctx.bus))
+    let paths = crate::bus::layout::RunPaths::new(&ctx.bus);
+    if !paths.root.exists() {
+        return Ok(None);
+    }
+    for dir in [
+        ctx.bus.root.clone(),
+        paths.root.clone(),
+        paths.attention_dir(),
+        paths.alerts_dir(),
+    ] {
+        if dir.exists() {
+            crate::bus::fsx::check_private_dir(&dir)
+                .map_err(|e| Failure::new(Code::Refused, e.to_string()))?;
+        }
+    }
+    Ok(Some(paths))
 }
 
 fn cli_resolve(input: &crate::validate::Input, id: &str) -> CliResult {
@@ -781,22 +869,20 @@ fn cli_resolve(input: &crate::validate::Input, id: &str) -> CliResult {
             format!("`{id}` is not an alert ID"),
         )));
     }
-    let paths = run_paths(input).map_err(plain)?;
-    crate::bus::fsx::check_private_dir(&paths.root).map_err(|e| {
-        plain(Failure::new(
-            Code::NotFound,
-            format!("no alert `{id}`: {e}"),
-        ))
-    })?;
+    let paths = run_paths(input)
+        .map_err(plain)?
+        .ok_or_else(|| plain(Failure::new(Code::NotFound, format!("no alert `{id}`"))))?;
     let alert = store::resolve(&paths, id, "operator").map_err(plain)?;
     let text = format!("alert {id}: resolved");
     Ok((ok_json("resolved", json!({"alert": alert})), text))
 }
 
 fn cli_list(input: &crate::validate::Input, all: bool) -> CliResult {
-    let paths = run_paths(input).map_err(plain)?;
-    let alerts: Vec<store::Alert> = store::list(&paths)
-        .map_err(plain)?
+    let listed = match run_paths(input).map_err(plain)? {
+        Some(paths) => store::list(&paths).map_err(plain)?,
+        None => Vec::new(),
+    };
+    let alerts: Vec<store::Alert> = listed
         .into_iter()
         .filter(|a| all || a.state == store::State::Open)
         .collect();

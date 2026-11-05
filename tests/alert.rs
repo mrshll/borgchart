@@ -758,3 +758,44 @@ fn desktop_alert_example_logs_the_alert() {
         "{log}"
     );
 }
+
+#[test]
+fn output_never_keeps_the_plugins_values() {
+    let fx = Fixture::new("#!/bin/sh\necho \"token is $NOTIFY_TOKEN\"\nexit 1\n");
+    let inv = fx.invoke(&Limits::default());
+    assert_eq!(inv.outcome, AlertOutcome::Failed { status: Some(1) });
+    assert!(!inv.output.contains(NOTIFY_TOKEN), "{}", inv.output);
+    assert!(inv.output.contains("token is [redacted]"), "{}", inv.output);
+}
+
+#[test]
+fn list_refuses_a_tampered_alert_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = run_paths(dir.path());
+    alert::store::open(&paths, &request()).unwrap();
+    let path = paths.alert("a-example-1");
+    let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    value["member"] = "lead\u{1b}]0;owned\u{7}".into();
+    fs::write(&path, value.to_string()).unwrap();
+    let err = alert::store::list(&paths).unwrap_err();
+    assert_eq!(err.code, borgchart::bus::outcome::Code::Corrupt, "{err}");
+
+    // An ID that doesn't match its file name is refused too.
+    value["member"] = "lead".into();
+    value["id"] = "a-other".into();
+    fs::write(&path, value.to_string()).unwrap();
+    assert!(alert::store::list(&paths).is_err());
+}
+
+#[test]
+fn cli_list_refuses_a_run_directory_others_can_write() {
+    let d = Deploy::new(true);
+    d.up();
+    let (rc, _) = d.json(&["bus", "alert", "test", "--json"]);
+    assert_eq!(rc, 0);
+    let run = d.path("runs/example-run-1");
+    fs::set_permissions(&run, fs::Permissions::from_mode(0o777)).unwrap();
+    let (rc, json) = d.json(&["bus", "alerts", "--json"]);
+    assert_ne!(rc, 0, "{json}");
+    fs::set_permissions(&run, fs::Permissions::from_mode(0o700)).unwrap();
+}
