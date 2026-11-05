@@ -1,0 +1,30 @@
+# An on-call pair for one Slack channel: a cheap triager reads every new
+# message and escalates the ones that matter to an always-on lead, who
+# triages and replies in the thread. Both read an open channel, so both are
+# `locked`: they can run only their granted slackbot commands.
+default: claude
+
+plugins:
+  slackbot:
+    path: plugins/slackbot
+    process: [./watch.py]
+    delivers_to: triager
+    env: [SLACK_BOT_TOKEN, SLACK_CHANNEL_ID]
+    actions:
+      read: slackbot read <ts>
+      thread: slackbot thread <ts>
+      reply: slackbot reply <thread_ts> <text>
+      escalate: slackbot escalate <ts> <severity> <reason>
+
+members:
+  triager:
+    prompt: triager.md
+    parent: lead
+    posture: locked
+    untrusted_input: true
+    plugins: {slackbot: [read, escalate]}
+  lead:
+    prompt: lead.md
+    posture: locked
+    untrusted_input: true
+    plugins: {slackbot: [read, thread, reply]}

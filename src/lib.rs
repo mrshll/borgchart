@@ -11,6 +11,7 @@ pub mod gate;
 pub mod launch;
 pub mod names;
 pub mod paths;
+pub mod probe;
 pub mod rules;
 pub mod runtime;
 pub mod state;

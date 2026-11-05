@@ -41,6 +41,10 @@ enum Command {
         /// Print the report as JSON.
         #[arg(long)]
         json: bool,
+        /// Also ask each vendor CLI which MCP connectors are configured. This
+        /// starts your MCP servers to health-check them.
+        #[arg(long)]
+        probe: bool,
     },
     /// Start the team, or one member (including a `start: false` one).
     Up {
@@ -146,7 +150,11 @@ macro_rules! target_or_exit {
 pub fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
-        Command::Validate { target, json } => run_validate(&target_or_exit!(&target), json),
+        Command::Validate {
+            target,
+            json,
+            probe,
+        } => run_validate(&target_or_exit!(&target), json, probe),
         Command::Up { target, member } => {
             let input = target_or_exit!(&target);
             match runtime::up(&input, member.as_deref()) {
@@ -279,8 +287,11 @@ pub fn main() -> ExitCode {
     }
 }
 
-fn run_validate(input: &Input, json: bool) -> ExitCode {
-    let (report, validated) = validate(input);
+fn run_validate(input: &Input, json: bool, probe: bool) -> ExitCode {
+    let (mut report, validated) = validate(input);
+    if probe && let Some(v) = &validated {
+        crate::probe::probe(v, &mut report);
+    }
     if json {
         let out = serde_json::json!({
             "ok": !report.has_errors(),

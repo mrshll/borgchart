@@ -4,7 +4,7 @@
 
 | Command | What it does |
 | --- | --- |
-| `brg validate [--json]` | Check the team and deployment without starting anything |
+| `brg validate [--json] [--probe]` | Check the team and deployment without starting anything; `--probe` also lists each vendor's MCP connectors (this starts your MCP servers) |
 | `brg up [--member ID]` | Start the team (members with `start: true` and plugin processes), or one member |
 | `brg down [--member ID]` | Stop the team, or one member |
 | `brg status [--json]` | Show each member and plugin process: state, posture, details |
