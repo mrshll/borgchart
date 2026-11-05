@@ -36,6 +36,10 @@ pub enum Actor {
 
 /// What a record says. Task kinds carry their details in `facts`; their
 /// transitions are checked when the task layer folds them.
+///
+/// Within schema 1 the envelope is closed (unknown fields are refused, and a
+/// record brg can't read stops mutations). `facts` is the only place new
+/// details may be added; readers ignore fact keys they don't know.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Kind {
@@ -99,11 +103,42 @@ pub struct Artifact {
     pub sha256: String,
 }
 
+/// Who a record is addressed to.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Recipient {
+    Member(String),
+    /// `external:<name>`: an outside caller, which reads and acks with
+    /// `--external <name>`. Only a member with no parent may address one.
+    External(String),
+}
+
+pub const EXTERNAL_PREFIX: &str = "external:";
+
+impl Recipient {
+    pub fn parse(to: &str) -> Option<Recipient> {
+        match to.strip_prefix(EXTERNAL_PREFIX) {
+            Some(name) if is_valid_id(name) => Some(Recipient::External(name.to_string())),
+            Some(_) => None,
+            None if is_valid_id(to) => Some(Recipient::Member(to.to_string())),
+            None => None,
+        }
+    }
+}
+
+impl std::fmt::Display for Recipient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Recipient::Member(m) => f.write_str(m),
+            Recipient::External(n) => write!(f, "{EXTERNAL_PREFIX}{n}"),
+        }
+    }
+}
+
 /// What a caller hands to `brg msg publish --record FILE|-`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Draft {
-    /// The recipient member.
+    /// The recipient: a member name, or `external:<name>` (see [`Recipient`]).
     pub to: String,
     pub kind: Kind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -187,8 +222,11 @@ impl Draft {
     /// Checks that need nothing but the draft itself. Topology, references
     /// and transitions are checked against the store at publication.
     pub fn check_shape(&self) -> Result<(), String> {
-        if !is_valid_id(&self.to) {
-            return Err(format!("`to`: `{}` is not a valid member name", self.to));
+        if Recipient::parse(&self.to).is_none() {
+            return Err(format!(
+                "`to`: `{}` is not a member name or `external:<name>`",
+                self.to
+            ));
         }
         if self.kind.is_task_kind() && self.task.is_none() {
             return Err(format!("a `{}` record needs `task`", self.kind.as_str()));
@@ -286,6 +324,27 @@ mod tests {
             "facts": {"agreement": {"path": "/x/agreement.md", "sha256": "ab"}}
         }))
         .unwrap();
+        d.check_shape().unwrap();
+    }
+
+    #[test]
+    fn recipients() {
+        assert_eq!(
+            Recipient::parse("lead"),
+            Some(Recipient::Member("lead".into()))
+        );
+        assert_eq!(
+            Recipient::parse("external:supervisor"),
+            Some(Recipient::External("supervisor".into()))
+        );
+        assert_eq!(Recipient::parse("external:"), None);
+        assert_eq!(Recipient::parse("external:Bad"), None);
+        assert_eq!(Recipient::parse("Lead"), None);
+        assert_eq!(
+            Recipient::External("ops".into()).to_string(),
+            "external:ops"
+        );
+        let d = draft(json!({"to": "external:ops", "kind": "question", "body": "ok?"})).unwrap();
         d.check_shape().unwrap();
     }
 

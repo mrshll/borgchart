@@ -43,6 +43,7 @@ struct BusRaw {
     root: String,
     run: String,
     alert: Option<AlertRaw>,
+    continues: Option<String>,
     warn_age_days: Option<u32>,
     max_age_days: Option<u32>,
 }
@@ -100,6 +101,9 @@ pub struct BusConfig {
     pub run: String,
     /// The plugin action brg invokes to alert a person (never a member's).
     pub alert: Option<AlertConfig>,
+    /// The earlier run (under the same `root`) this one continues, when a
+    /// run is rotated or recovered into a new one.
+    pub continues: Option<String>,
     pub warn_age_days: u32,
     pub max_age_days: u32,
 }
@@ -206,6 +210,14 @@ fn load_bus(raw: BusRaw, file: &Path, report: &mut Report) -> Option<BusConfig> 
             ),
         );
     }
+    if let Some(prev) = &raw.continues
+        && (!crate::bus::is_valid_run_id(prev) || *prev == raw.run)
+    {
+        report.error(
+            Some(file),
+            format!("bus: `continues: {prev}` must be another valid run ID"),
+        );
+    }
     if !(raw.root.starts_with('/') || raw.root.starts_with("~/")) {
         report.error(
             Some(file),
@@ -234,6 +246,7 @@ fn load_bus(raw: BusRaw, file: &Path, report: &mut Report) -> Option<BusConfig> 
             plugin: a.plugin,
             action: a.action,
         }),
+        continues: raw.continues,
         warn_age_days: warn,
         max_age_days: max,
     })

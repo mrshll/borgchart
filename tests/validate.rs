@@ -730,3 +730,34 @@ fn bus_refuses_locked_members() {
         errors(&report)
     );
 }
+
+#[test]
+fn config_snapshot_follows_file_bytes_not_paths() {
+    let (f, _) = bus_fixture();
+    let snap = |path: PathBuf| {
+        let (report, v) = validate(&Input::Deployment(path));
+        v.unwrap_or_else(|| panic!("{}", errors(&report)))
+            .config_snapshot()
+    };
+    let a = snap(f.path("team/borgchart.yaml"));
+    assert_eq!(a.version, 1);
+    assert!(a.inputs.contains_key("deployment"));
+    assert!(a.inputs.contains_key("members/helper/instruction"));
+
+    let alias = f.path("alias");
+    std::os::unix::fs::symlink(f.path("team"), &alias).unwrap();
+    assert_eq!(
+        snap(alias.join("borgchart.yaml")),
+        a,
+        "same bytes, other path"
+    );
+
+    f.edit("team/helper.md", "Help.", "Help more.");
+    let b = snap(f.path("team/borgchart.yaml"));
+    assert_ne!(a.digest, b.digest);
+    assert_ne!(
+        a.inputs["members/helper/prompt"],
+        b.inputs["members/helper/prompt"]
+    );
+    assert_eq!(a.inputs["team.yaml"], b.inputs["team.yaml"]);
+}

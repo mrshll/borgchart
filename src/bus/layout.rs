@@ -62,6 +62,10 @@ impl RunPaths {
     pub fn generation(&self, n: u64) -> PathBuf {
         self.generations_dir().join(format!("{n:06}.json"))
     }
+    /// The run's pinned copies of brg binaries, by SHA-256.
+    pub fn pinned_binary(&self, sha256: &str) -> PathBuf {
+        self.runtime_dir().join("bin").join(sha256).join("brg")
+    }
     /// A member's current incarnation (replaced at each start).
     pub fn current_incarnation(&self, member: &str) -> PathBuf {
         self.runtime_dir()
@@ -102,6 +106,11 @@ impl RunPaths {
     /// The acknowledgement of one record by its recipient.
     pub fn ack(&self, record_id: &str) -> PathBuf {
         self.acks_dir().join(format!("{record_id}.json"))
+    }
+    /// Shared by bus mutations and worker starts; exclusive for rebinds.
+    /// Lives beside the bus so members can take it shared.
+    pub fn generation_lock(&self) -> PathBuf {
+        self.runtime_dir().join("generation.lock")
     }
 
     // --- attention/: wake and alert worker ---
