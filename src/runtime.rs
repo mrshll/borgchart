@@ -155,10 +155,20 @@ struct Started {
 }
 
 /// Whether `s`'s window still runs the pane this `up` launched.
-fn still_launched(tmux: &Tmux, session: &str, s: &Started) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Launched {
+    Same,
+    /// Another pane or process: someone else's start. Leave it alone.
+    Replaced,
+    /// Its pane can't be read just now.
+    Unknown,
+}
+
+fn launched(tmux: &Tmux, session: &str, s: &Started) -> Launched {
     match (&s.pane, lifecycle::pane_identity(tmux, session, &s.id)) {
-        (Some(a), Some(b)) => a.pane_id == b.pane_id && a.pane_pid == b.pane_pid,
-        _ => false,
+        (Some(a), Some(b)) if a.pane_id == b.pane_id && a.pane_pid == b.pane_pid => Launched::Same,
+        (Some(_), Some(_)) => Launched::Replaced,
+        _ => Launched::Unknown,
     }
 }
 
@@ -564,6 +574,20 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
         }
         result?;
         let pane = lifecycle::pane_identity(&tmux, &session, id);
+        if pane.is_none() && posture == Posture::Locked {
+            // Without its pane, later checks couldn't tell this member from a
+            // replacement, so it couldn't be stopped safely if its gate never
+            // reported in. Stop it now, while the locks are held.
+            let _ = tmux.kill_window(&session, id);
+            if let Some((b, _)) = &incarnation {
+                let _ = lifecycle::end_incarnation(&b.paths, id, lifecycle::ENDED_START_FAILED);
+            }
+            messages.push(format!(
+                "{id}: stopped: brg couldn't read its pane, so its `locked` gate couldn't be checked"
+            ));
+            failed = true;
+            continue;
+        }
         if let Some((b, mut inc)) = incarnation {
             inc.pane = pane.clone();
             lifecycle::complete_incarnation(&b.paths, &inc)?;
@@ -650,12 +674,12 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
     let run_paths = binding.as_ref().map(|b| b.paths.clone());
     drop(binding);
     drop(state_lock);
-    let relock = |s: &Started| -> Result<Option<Vec<std::fs::File>>, String> {
+    let relock = |s: &Started| -> Result<(Launched, Vec<std::fs::File>), String> {
         let mut locks = vec![lifecycle::lock_state(state)?];
         if let Some(paths) = &run_paths {
             locks.push(lifecycle::lock_run(paths)?);
         }
-        Ok(still_launched(&tmux, &session, s).then_some(locks))
+        Ok((launched(&tmux, &session, s), locks))
     };
     let replaced = |id: &str| format!("{id}: replaced while starting; left alone");
 
@@ -674,8 +698,10 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                 failed = true;
                 break;
             };
-            if !still_launched(&tmux, &session, s) {
+            if launched(&tmux, &session, s) == Launched::Replaced {
                 messages.push(replaced(id));
+                // Its own gate never reported in to this `up`.
+                failed |= s.locked;
                 break;
             }
             let pane = s
@@ -710,10 +736,14 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                 // Move to "Yes, I trust this folder", confirm it is now the
                 // highlighted choice on the same dialog, and only then press
                 // Enter. Nothing else is ever answered.
-                let Some(_locks) = relock(s)? else {
-                    messages.push(replaced(id));
+                let (now, _locks) = relock(s)?;
+                if now != Launched::Same {
+                    messages.push(format!(
+                        "{id}: couldn't confirm it is still the member this `up` started, so the folder-trust dialog was left for you; run `brg attach {id}`"
+                    ));
+                    failed |= s.locked;
                     break;
-                };
+                }
                 let t = pane.as_str();
                 tmux.ok(&["send-keys", "-t", t, "Down"])?;
                 std::thread::sleep(Duration::from_millis(250));
@@ -746,11 +776,18 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                     break;
                 }
                 Some(State::Blocked) if s.locked => {
-                    let Some(_locks) = relock(s)? else {
+                    let (now, _locks) = relock(s)?;
+                    if now == Launched::Replaced {
                         messages.push(replaced(id));
+                        failed = true;
                         break;
+                    }
+                    // Its own pane, or one that can't be read: stop it, so a
+                    // `locked` member never runs without its gate.
+                    let _ = match now {
+                        Launched::Same => tmux.ok(&["kill-window", "-t", &pane]).map(|_| ()),
+                        _ => tmux.kill_window(&session, id),
                     };
-                    let _ = tmux.ok(&["kill-window", "-t", &pane]);
                     messages.push(format!(
                         "{id}: stopped: it was at a prompt before its `locked` gate reported in"
                     ));
@@ -768,11 +805,18 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             }
             if Instant::now() > deadline {
                 if s.locked {
-                    let Some(_locks) = relock(s)? else {
+                    let (now, _locks) = relock(s)?;
+                    if now == Launched::Replaced {
                         messages.push(replaced(id));
+                        failed = true;
                         break;
+                    }
+                    // Its own pane, or one that can't be read: stop it, so a
+                    // `locked` member never runs without its gate.
+                    let _ = match now {
+                        Launched::Same => tmux.ok(&["kill-window", "-t", &pane]).map(|_| ()),
+                        _ => tmux.kill_window(&session, id),
                     };
-                    let _ = tmux.ok(&["kill-window", "-t", &pane]);
                     messages.push(format!(
                         "{id}: stopped: its `locked` gate did not report in, so it would run unprotected"
                     ));
