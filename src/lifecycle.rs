@@ -33,23 +33,29 @@ pub const ENDED_START_FAILED: &str = "start-failed";
 // --- locks ---
 
 /// Take an exclusive lock on `path` (created if needed), waiting for it.
-fn lock_exclusive(path: &Path) -> Result<File, String> {
-    let file =
-        state::open_lock(path).map_err(|e| format!("cannot open {}: {e}", path.display()))?;
-    file.lock()
-        .map_err(|e| format!("cannot lock {}: {e}", path.display()))?;
+fn lock_file(path: &Path) -> io::Result<File> {
+    let file = state::open_lock(path)?;
+    file.lock()?;
     Ok(file)
 }
 
 /// The deployment's lifecycle lock in brg's state directory, held by `up`
 /// and `down` while they change anything.
 pub fn lock_state(state: &StateDir) -> Result<File, String> {
-    lock_exclusive(&state.lifecycle_lock())
+    let path = state.lifecycle_lock();
+    lock_file(&path).map_err(|e| format!("cannot lock {}: {e}", path.display()))
 }
 
-/// The run's `runtime/lifecycle.lock`, taken after [`lock_state`].
+/// The run's `runtime/lifecycle.lock`, taken after [`lock_state`]. Errors
+/// name no storage paths: they reach people.
 pub fn lock_run(paths: &RunPaths) -> Result<File, String> {
-    lock_exclusive(&paths.lifecycle_lock())
+    lock_file(&paths.lifecycle_lock())
+        .map_err(|e| format!("cannot lock the team's message storage: {e}"))
+}
+
+/// The run's `bus/lock`, held briefly (see [`with_bus_lock`]).
+fn lock_bus(paths: &RunPaths) -> Result<File, String> {
+    lock_file(&paths.bus_lock()).map_err(|e| format!("cannot lock the team's messages: {e}"))
 }
 
 // --- messages ---
@@ -152,8 +158,10 @@ pub const ROLL_AGE: &str = "age";
 /// Carry unfinished work (open tasks, unanswered questions, unread
 /// messages) from `old` into the new run `new`, before `new` becomes
 /// current. Called with `old`'s `bus/lock` held and its `retired` marker
-/// written. Task facts own this and wire it in a later change; until then
-/// a configuration or age rollover leaves unfinished work behind.
+/// written. It runs again when a later `up` finishes a rollover that was
+/// interrupted, so it must be idempotent. Task facts own this and wire it
+/// in a later change; until then a configuration or age rollover leaves
+/// unfinished work behind.
 pub fn carry_into(new: &RunPaths, old: &RunPaths) -> Result<(), String> {
     let _ = (new, old);
     Ok(())
@@ -177,26 +185,66 @@ fn record_count(paths: &RunPaths) -> usize {
         .unwrap_or(0)
 }
 
-/// The first member of `members` whose current incarnation in `paths` may
-/// still be running (`alive` or `unknown`). With `lenient`, an incarnation
-/// that can't be read (another message format) is skipped.
-fn maybe_running<'a>(
-    paths: &RunPaths,
-    members: impl Iterator<Item = &'a String>,
-    lenient: bool,
-) -> Option<&'a String> {
-    members
-        .into_iter()
-        .find(|id| match manifest::load_incarnation(paths, id) {
-            Ok(None) => false,
-            Ok(Some(inc)) => liveness(paths, id, &inc.incarnation) != Liveness::Gone,
-            Err(_) => !lenient,
-        })
+/// Check that every current incarnation recorded in `paths` (the old
+/// storage, whatever the new configuration's members are) is ended or
+/// `gone`. Anything that can't be read or listed refuses: the message names
+/// the member when it can.
+fn check_stopped(paths: &RunPaths, team: &str, restart: &str) -> Result<(), String> {
+    let refuse = |who: &str| {
+        Err(format!(
+            "brg can't tell that {who} has stopped, so the team can't start with fresh messages; stop the team and start it again: {restart}"
+        ))
+    };
+    let dir = paths.runtime_dir().join("incarnations");
+    let entries = match fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return refuse(&format!("every member of {team}")),
+    };
+    for entry in entries {
+        let Ok(entry) = entry else {
+            return refuse(&format!("every member of {team}"));
+        };
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with(fsx::TMP_PREFIX) {
+            continue;
+        }
+        // `<member>.json` is the current incarnation; `<member>/` its history.
+        let Some(member) = name.strip_suffix(".json") else {
+            continue;
+        };
+        let who = format!("{team}/{member}");
+        let is_file = entry.file_type().map(|t| t.is_file()).unwrap_or(false);
+        if !is_file {
+            return refuse(&who);
+        }
+        match manifest::load_incarnation(paths, member) {
+            Ok(Some(inc)) if inc.ended_at.is_some() => {}
+            Ok(Some(inc)) if liveness(paths, member, &inc.incarnation) == Liveness::Gone => {}
+            Ok(None) => {}
+            _ => return refuse(&who),
+        }
+    }
+    Ok(())
+}
+
+/// Where an interrupted rollover of `old` was going: its `retired` marker
+/// names a run that exists, belongs to this deployment and links back to
+/// `old`. Returns that run and the rollover's reason.
+fn successor(store: &TeamStore, old: &str, deployment: &str) -> Option<(String, String)> {
+    let next = fs::read_to_string(store.run(old).retired()).ok()?;
+    let next = next.trim();
+    if !store.runs().ok()?.iter().any(|r| r == next) {
+        return None;
+    }
+    let m = manifest::load_manifest(&store.run(next)).ok()??;
+    let link = m.linked_from?;
+    (m.deployment == deployment && link.run == old).then(|| (next.to_string(), link.reason))
 }
 
 enum Plan {
-    /// Use this run; write its manifest if it has none yet.
-    Reuse { id: String, write_manifest: bool },
+    /// Use this run as it is.
+    Reuse { id: String },
     /// Start a new run, linked to the previous one if there was one.
     New {
         previous: Option<(String, &'static str)>,
@@ -232,6 +280,42 @@ pub fn bind_run(
             "team `{team}` was started before but its messages are missing; nothing was started"
         )
     };
+    // Never start into retired storage. A full `up` finishes a rollover
+    // that was interrupted after retiring the old run (switching `current`
+    // to the run the marker names, carrying again) when that run is clearly
+    // its successor; anything else refuses.
+    let interrupted =
+        "an earlier start of team `{team}` was interrupted while moving to fresh messages";
+    let interrupted = interrupted.replace("{team}", &team);
+    let mut finish: Option<(String, String, String)> = None;
+    let current = match current {
+        Some(id) => match store.run(&id).retired().try_exists() {
+            Ok(false) => Some(id),
+            Ok(true) if joining || child => {
+                return Err(format!(
+                    "{interrupted}; start the whole team to finish it: {restart}"
+                ));
+            }
+            Ok(true) => match successor(&store, &id, &state.id) {
+                Some((next, _)) if store.run(&next).retired().try_exists().unwrap_or(true) => {
+                    return Err(format!(
+                        "{interrupted}, and brg can't tell how far it got; nothing was started"
+                    ));
+                }
+                Some((next, reason)) => {
+                    finish = Some((id, next.clone(), reason));
+                    Some(next)
+                }
+                None => {
+                    return Err(format!(
+                        "{interrupted}, and brg can't tell how far it got; nothing was started"
+                    ));
+                }
+            },
+            Err(_) => return Err(unreadable()),
+        },
+        None => None,
+    };
     let plan = match current {
         None if joining => return Err(missing()),
         // Runs without `current`: storage was damaged, not a first start.
@@ -256,15 +340,9 @@ pub fn bind_run(
                     previous: Some((id, ROLL_AGE)),
                 }
             }
-            Ok(Some(_)) => Plan::Reuse {
-                id,
-                write_manifest: false,
-            },
-            Ok(None) if joining => return Err(missing()),
-            Ok(None) => Plan::Reuse {
-                id,
-                write_manifest: true,
-            },
+            Ok(Some(_)) => Plan::Reuse { id },
+            // `current` names storage without its manifest: damaged.
+            Ok(None) => return Err(missing()),
             Err(ManifestError::Format { found }) if joining || child => {
                 return Err(manifest::format_mismatch(&team, found, &restart));
             }
@@ -274,32 +352,30 @@ pub fn bind_run(
             Err(ManifestError::Unreadable(_)) => return Err(unreadable()),
         },
     };
-    // A rollover needs every member positively stopped.
+    // A rollover needs every member of the old storage positively stopped.
     if let Plan::New {
-        previous: Some((prev, reason)),
+        previous: Some((prev, _)),
     } = &plan
-        && let Some(id) = maybe_running(
-            &store.run(prev),
-            v.team.members.keys(),
-            *reason == ROLL_FORMAT,
-        )
     {
-        return Err(format!(
-            "brg can't tell that {team}/{id} has stopped, so the team can't start with fresh messages; stop the team and start it again: {restart}"
-        ));
+        check_stopped(&store.run(prev), &team, &restart)?;
     }
 
     let storage_error = |e: io::Error| {
         format!("cannot use team `{team}`'s message storage ({e}); nothing was started")
     };
+    let team_error = |e: String| format!("cannot use team `{team}`'s message storage ({e})");
+    if let Some((old, next, reason)) = &finish {
+        let old = store.run(old);
+        let _old_bus = lock_bus(&old).map_err(team_error)?;
+        if reason != ROLL_FORMAT {
+            carry_into(&store.run(next), &old).map_err(team_error)?;
+        }
+        store.set_current(next).map_err(storage_error)?;
+    }
     match plan {
-        Plan::Reuse { id, write_manifest } => {
+        Plan::Reuse { id } => {
             let paths = store.ensure_run(&id).map_err(storage_error)?;
-            let lock = lock_run(&paths)?;
-            if write_manifest {
-                let m = manifest::manifest_for(v, &id, &state.id, source.to_path_buf(), utc_now());
-                write_json_new(&paths.manifest(), &m)?;
-            }
+            let lock = lock_run(&paths).map_err(team_error)?;
             Ok(Binding {
                 paths,
                 run: id,
@@ -310,21 +386,21 @@ pub fn bind_run(
         Plan::New { previous } => {
             let id = store.next_id().map_err(storage_error)?;
             let paths = store.ensure_run(&id).map_err(storage_error)?;
-            let lock = lock_run(&paths)?;
+            let lock = lock_run(&paths).map_err(team_error)?;
             let mut m = manifest::manifest_for(v, &id, &state.id, source.to_path_buf(), utc_now());
             m.linked_from = previous.as_ref().map(|(prev, reason)| LinkedRun {
                 run: prev.clone(),
                 root: store.dir.clone(),
                 reason: (*reason).to_string(),
             });
-            write_json_new(&paths.manifest(), &m)?;
+            write_json_new(&paths.manifest(), &m).map_err(team_error)?;
             let mut note = None;
             match &previous {
                 Some((prev, reason)) => {
                     // Writers re-check `retired` under `bus/lock`, so nothing
                     // published to the old run while this runs is stranded.
                     let old = store.run(prev);
-                    let _old_bus = lock_exclusive(&old.bus_lock())?;
+                    let _old_bus = lock_bus(&old).map_err(team_error)?;
                     fsx::write_new(&old.retired(), format!("{id}\n").as_bytes())
                         .map_err(storage_error)?;
                     if *reason == ROLL_FORMAT {
@@ -337,15 +413,11 @@ pub fn bind_run(
                             if n == 1 { "was" } else { "were" }
                         ));
                     } else {
-                        carry_into(&paths, &old)?;
+                        carry_into(&paths, &old).map_err(team_error)?;
                     }
-                    store
-                        .set_current(&id)
-                        .map_err(|e| format!("cannot record team `{team}`'s messages: {e}"))?;
+                    store.set_current(&id).map_err(storage_error)?;
                 }
-                None => store
-                    .set_current(&id)
-                    .map_err(|e| format!("cannot record team `{team}`'s messages: {e}"))?,
+                None => store.set_current(&id).map_err(storage_error)?,
             }
             Ok(Binding {
                 paths,
@@ -361,17 +433,16 @@ fn write_json_new<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), Str
     let body = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
     match fsx::write_new(path, &body) {
         Ok(Written::Created) => Ok(()),
-        Ok(Written::Exists) => Err(format!(
-            "{} already exists (another start got there first?)",
-            path.display()
-        )),
-        Err(e) => Err(format!("cannot write {}: {e}", path.display())),
+        Ok(Written::Exists) => {
+            Err("a record brg was writing already exists (another start got there first?)".into())
+        }
+        Err(e) => Err(format!("cannot write the team's records: {e}")),
     }
 }
 
 fn write_json_replace<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let body = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
-    fsx::replace(path, &body).map_err(|e| format!("cannot write {}: {e}", path.display()))
+    fsx::replace(path, &body).map_err(|e| format!("cannot write the team's records: {e}"))
 }
 
 // --- incarnations ---
@@ -408,7 +479,7 @@ pub fn new_incarnation_id(paths: &RunPaths, member: &str) -> String {
 /// sees either the old record or the new one. Lock order: lifecycle →
 /// bus.
 fn with_bus_lock<T>(paths: &RunPaths, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
-    let _lock = lock_exclusive(&paths.bus_lock())?;
+    let _lock = lock_bus(paths)?;
     f()
 }
 
@@ -427,7 +498,7 @@ pub fn complete_incarnation(paths: &RunPaths, inc: &Incarnation) -> Result<(), S
         let path = paths.incarnation_history(&inc.member, &inc.incarnation);
         fsx::write_new(&path, &body)
             .map(|_| ())
-            .map_err(|e| format!("cannot write {}: {e}", path.display()))
+            .map_err(|e| format!("cannot write the team's records: {e}"))
     })
 }
 
@@ -435,7 +506,9 @@ pub fn complete_incarnation(paths: &RunPaths, inc: &Incarnation) -> Result<(), S
 /// this only once its pane is known to have stopped.
 pub fn end_incarnation(paths: &RunPaths, member: &str, reason: &str) -> Result<bool, String> {
     with_bus_lock(paths, || {
-        let Some(mut inc) = manifest::load_incarnation(paths, member)? else {
+        let Some(mut inc) = manifest::load_incarnation(paths, member)
+            .map_err(|_| format!("{member}'s start record can't be read"))?
+        else {
             return Ok(false);
         };
         if inc.ended_at.is_some() {

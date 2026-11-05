@@ -1152,3 +1152,180 @@ fn a_plugin_command_may_not_hide_brg() {
     );
     assert!(!env.path("state").exists());
 }
+
+const UNKNOWN_HELPER: &str = r#"{"member":"helper","incarnation":"helper.20261105000000000.abcd","started_at":"2026-11-05T00:00:00.000Z"}"#;
+
+/// Run a refused full `up` and check it changed nothing and named
+/// `oncall/<member>` without run wording.
+fn assert_rollover_refused(env: &Env, member: &str) {
+    let before = env.snapshot();
+    let out = env.brg(&["up"]);
+    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
+    assert!(
+        both(&out).contains(&format!("brg can't tell that oncall/{member} has stopped")),
+        "{}",
+        both(&out)
+    );
+    assert!(!mentions_runs(&both(&out)), "{}", both(&out));
+    assert_unchanged(&before, &env.snapshot());
+    assert_eq!(env.tmux(&["list-sessions"]), "");
+}
+
+#[test]
+fn rollover_checks_members_the_new_configuration_dropped() {
+    let env = Env::new(true);
+    env.up();
+    env.ok(&["down"]);
+    fs::write(
+        env.run_dir().join("runtime/incarnations/helper.json"),
+        UNKNOWN_HELPER,
+    )
+    .unwrap();
+    // helper is removed from the team (and lead's file changes with it).
+    env.write(
+        "oncall/team.yaml",
+        TEAM.split("  helper:\n").next().unwrap(),
+    );
+    assert_rollover_refused(&env, "helper");
+}
+
+#[test]
+fn a_format_rollover_refuses_unreadable_incarnations() {
+    for bad in ["malformed", "unreadable"] {
+        let env = Env::new(true);
+        env.up();
+        env.ok(&["down"]);
+        let run = env.run_dir();
+        let mut m = read_json(&run.join("run.json"));
+        m["schema"] = 99.into();
+        fs::write(run.join("run.json"), serde_json::to_vec(&m).unwrap()).unwrap();
+        let inc = run.join("runtime/incarnations/helper.json");
+        if bad == "malformed" {
+            fs::write(&inc, "not json").unwrap();
+        } else {
+            // A directory where the record should be: reading it fails.
+            fs::create_dir_all(&inc).unwrap();
+        }
+        assert_rollover_refused(&env, "helper");
+    }
+}
+
+#[test]
+fn an_interrupted_rollover_is_finished_before_starting() {
+    let env = Env::new(true);
+    env.up();
+    env.ok(&["down"]);
+    env.write(
+        "oncall/lead.md",
+        &LEAD.replace("You are the lead.", "You are the lead, edited."),
+    );
+    env.up();
+    env.ok(&["down"]);
+    assert_eq!(env.current(), "r2");
+    // As if the rollover had stopped after retiring r1, before switching,
+    // and the person then reverted the change.
+    fs::write(env.store().join("current"), "r1\n").unwrap();
+    env.write("oncall/lead.md", LEAD);
+
+    // A child start doesn't finish it; it says how.
+    let before = env.snapshot();
+    let out = env.brg(&["up", "--member", "helper"]);
+    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
+    assert!(
+        both(&out).contains(
+            "an earlier start of team `oncall` was interrupted while moving to fresh messages"
+        ),
+        "{}",
+        both(&out)
+    );
+    assert!(!mentions_runs(&both(&out)), "{}", both(&out));
+    assert_unchanged(&before, &env.snapshot());
+
+    // A full `up` finishes the move, then rolls over for the reverted file.
+    let r1: BTreeMap<PathBuf, Vec<u8>> = walk(&env.store().join("r1"))
+        .into_iter()
+        .map(|p| (p.clone(), fs::read(&p).unwrap()))
+        .collect();
+    let out = env.up();
+    assert!(!mentions_runs(&both(&out)), "{}", both(&out));
+    assert_eq!(env.current(), "r3");
+    assert_eq!(
+        read_json(&env.run_dir().join("run.json"))["linked_from"]["run"],
+        "r2"
+    );
+    assert_eq!(
+        fs::read_to_string(env.store().join("r2/retired")).unwrap(),
+        "r3\n"
+    );
+    assert_eq!(env.starts("lead")[2]["env"]["BORGCHART_RUN"], "r3");
+    for (p, bytes) in &r1 {
+        assert_eq!(&fs::read(p).unwrap(), bytes, "{}", p.display());
+    }
+}
+
+#[test]
+fn retired_storage_with_no_successor_is_refused() {
+    let env = Env::new(true);
+    env.up();
+    env.ok(&["down"]);
+    fs::write(env.run_dir().join("retired"), "r2\n").unwrap();
+    for args in [&["up"][..], &["up", "--member", "helper"][..]] {
+        let before = env.snapshot();
+        let out = env.brg(args);
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {}", both(&out));
+        assert!(
+            both(&out).contains(
+                "an earlier start of team `oncall` was interrupted while moving to fresh messages"
+            ),
+            "{}",
+            both(&out)
+        );
+        assert!(!mentions_runs(&both(&out)), "{}", both(&out));
+        assert_unchanged(&before, &env.snapshot());
+        assert_eq!(env.tmux(&["list-sessions"]), "");
+    }
+}
+
+#[test]
+fn a_lost_manifest_is_damaged_storage() {
+    let env = Env::new(true);
+    env.up();
+    env.ok(&["down"]);
+    fs::remove_file(env.run_dir().join("run.json")).unwrap();
+    env.write(
+        "oncall/lead.md",
+        &LEAD.replace("You are the lead.", "You are the lead, edited."),
+    );
+    for args in [&["up"][..], &["up", "--member", "helper"][..]] {
+        let before = env.snapshot();
+        let out = env.brg(args);
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {}", both(&out));
+        assert!(
+            both(&out).contains("team `oncall` was started before but its messages are missing"),
+            "{}",
+            both(&out)
+        );
+        assert_unchanged(&before, &env.snapshot());
+        assert_eq!(env.tmux(&["list-sessions"]), "");
+    }
+}
+
+#[test]
+fn storage_errors_name_the_team_not_its_files() {
+    let env = Env::new(true);
+    env.up();
+    env.ok(&["down"]);
+    let lock = env.run_dir().join("runtime/lifecycle.lock");
+    fs::remove_file(&lock).unwrap();
+    fs::create_dir(&lock).unwrap();
+    let out = env.brg(&["up"]);
+    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
+    let text = both(&out);
+    assert!(text.contains("team `oncall`"), "{text}");
+    assert!(!mentions_runs(&text), "{text}");
+    assert!(
+        !text.contains(&env.path("teams").display().to_string())
+            && !text.contains("lifecycle.lock"),
+        "{text}"
+    );
+}

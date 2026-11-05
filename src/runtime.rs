@@ -1012,7 +1012,10 @@ pub fn down(input: &Input, only: Option<&str>) -> Result<Vec<String>, String> {
     };
     if let Some(paths) = &run {
         for id in &members {
-            let Some(inc) = crate::bus::manifest::load_incarnation(paths, id)? else {
+            let Some(inc) = crate::bus::manifest::load_incarnation(paths, id).map_err(|_| {
+                format!("{team}/{id}'s start record can't be read; nothing more was changed")
+            })?
+            else {
                 continue;
             };
             if inc.ended_at.is_some() {
