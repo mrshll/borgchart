@@ -16,10 +16,10 @@
 | `brg inbox wait … --timeout SECONDS` | Wait (up to 600 s) for a new unacknowledged record; exits 9 on timeout |
 | `brg msg read ID [--json]` | Show one record in full |
 | `brg msg ack ID… [--external NAME] [--json]` | Acknowledge records addressed to you; acking twice is a no-op |
-| `brg bus inspect [--last N] [--json]` | Summarize the run: members, inbox counts, recent records, store health |
-| `brg bus check [--json]` | Check the store (gaps, unreadable files, stray temporaries), the run's age and whether it was carried into a new run. Never writes |
-| `brg bus carry --from RUN [--json]` | Carry unresolved tasks, open questions and unacknowledged records from the run this one `continues`, as linked notes; the old run is only read. Idempotent; see [the bus](bus.md#commands--tasks) |
-| `brg task list [--json]` | List tasks (state, assignee, attempt, next step) and open questions, folded from the run's records |
+| `brg bus inspect [--last N] [--json]` | Summarize the team's messages: members, inbox counts, recent records, store health |
+| `brg bus check [--json]` | Check the store (gaps, unreadable files, stray temporaries), the storage's age and carries. Never writes |
+| `brg bus carry --from RUN [--json]` | Carry unresolved tasks, open questions and unacknowledged records from the run the current one is linked from, as linked notes; the old run is only read. Idempotent; see [the bus](bus.md#commands--tasks) |
+| `brg task list [--json]` | List tasks (state, assignee, attempt, next step) and open questions, folded from the team's messages |
 | `brg task show TASK [--json]` | Show one task: agreement, scope, checkout, each fact's record, writers and their liveness, history, next step, open questions |
 
 ## Runtime

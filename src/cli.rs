@@ -124,14 +124,14 @@ enum Command {
         #[command(flatten)]
         args: crate::bus::cli::InboxArgs,
     },
-    /// List and show tasks folded from the run's records.
+    /// List and show tasks folded from the team's messages.
     Task {
         #[command(flatten)]
         target: Target,
         #[command(subcommand)]
         command: crate::bus::task_cli::TaskCommand,
     },
-    /// Inspect and check the run's record store.
+    /// Inspect and check the team's message storage.
     Bus {
         #[command(flatten)]
         target: Target,

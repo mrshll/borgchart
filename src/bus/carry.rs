@@ -1,22 +1,28 @@
 //! Carrying work into a linked run.
 //!
-//! A run that is getting old, or whose store is damaged, is continued in a
-//! new run (`bus.continues: <old>`). `brg bus carry --from <old>`, run
-//! against the new run, reads the old one without changing anything and
-//! publishes, as `bus`, one `note` per piece of pending work: each
+//! When a team's storage rolls over, the new run's manifest is linked from
+//! the old one (`linked_from`). Carrying reads the old run without changing
+//! anything and publishes into the new one, as `bus`, one `note` per piece of pending work: each
 //! unresolved task (its assignment), each open question and each
 //! unacknowledged record, to the original's recipient, with
 //! `facts.carried_from: {run, id, sha256}` naming the original exactly. Keys
 //! derive from the source IDs, so carrying again changes nothing. A marker
-//! in the new run (`bus/carried/<old>.json`) lets `bus check` of either
-//! run say what happened.
+//! in the new run (`bus/carried/<old>.json`) lets `bus check` say what
+//! happened.
+//!
+//! [`carry`] serves `brg bus carry --from <old>` against the team's current
+//! run; [`carry_at_rollover`] is the lifecycle's entry point while it rolls
+//! the storage over.
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::layout::RunPaths;
+use crate::deploy::Deployment;
+use crate::state;
+
+use super::layout::{RunPaths, TeamStore};
 use super::manifest;
 use super::outcome::{Code, Failure};
 use super::record::{Actor, Kind, Recipient, Record};
@@ -119,34 +125,94 @@ pub fn pending(old: &manifest::RunManifest, snap: &store::Snapshot) -> Vec<(&'st
     out
 }
 
-/// Carry pending work from run `from` (under the same root) into `bus`'s run.
+/// Carry pending work from run `from` into `bus`'s run (`brg bus carry`).
+/// Only the run `bus`'s manifest is `linked_from` can be carried from.
 pub fn carry(bus: &Bus, from: &str) -> Result<Report, Failure> {
+    carry_linked(bus, from, OldLock::Take)
+}
+
+/// Carry pending work from run `from` into run `into` of the same team, for
+/// the lifecycle while it rolls the storage over: `into` need not be
+/// current yet, and its manifest must be `linked_from` `from`. The caller
+/// already holds `from`'s `bus/lock` exclusive (and has written its
+/// `retired` marker), so the old store is read without locking it again.
+pub fn carry_at_rollover(
+    deployment: &Deployment,
+    from: &str,
+    into: &str,
+) -> Result<Report, Failure> {
+    let bus = open_run(deployment, into)?;
+    carry_linked(&bus, from, OldLock::HeldByCaller)
+}
+
+/// How the old run's store is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OldLock {
+    /// Under its `bus/lock` shared, as other reads.
+    Take,
+    /// The caller holds its `bus/lock` exclusive.
+    HeldByCaller,
+}
+
+/// The team's run `run` (current or not), for publishing into it.
+fn open_run(deployment: &Deployment, run: &str) -> Result<Bus, Failure> {
+    let config = deployment.bus.clone().ok_or_else(|| {
+        Failure::new(
+            Code::NotConfigured,
+            format!("{} has no `bus:` section", deployment.file.display()),
+        )
+    })?;
+    let team = state::team_name(&deployment.file);
+    let restart = state::restart_hint(&deployment.file);
+    let id = state::deployment_id(&deployment.file);
+    let store = TeamStore::new(&config, &id);
+    let paths = store.run(run);
+    let manifest = manifest::load_manifest(&paths)
+        .map_err(|e| Failure::new(Code::Error, e.message(&team, &restart)))?
+        .ok_or_else(|| Failure::new(Code::NotFound, format!("no run `{run}`")))?;
+    if manifest.run != run || manifest.deployment != id {
+        return Err(Failure::new(
+            Code::Corrupt,
+            format!("run `{run}`'s manifest names another run or deployment"),
+        ));
+    }
+    Ok(Bus {
+        deployment: deployment.clone(),
+        config,
+        team,
+        restart,
+        store,
+        run: run.to_string(),
+        paths,
+        manifest,
+    })
+}
+
+fn carry_linked(bus: &Bus, from: &str, old_lock: OldLock) -> Result<Report, Failure> {
     let invalid = |m: String| Failure::new(Code::Invalid, m);
-    if bus.config.continues.as_deref() != Some(from) {
-        return Err(invalid(format!(
-            "run `{}` doesn't continue `{from}`: set `bus.continues: {from}` in {}",
-            bus.config.run,
-            bus.deployment.file.display()
-        )));
+    match &bus.manifest.linked_from {
+        Some(link) if link.run == from => {}
+        Some(link) => {
+            return Err(invalid(format!(
+                "run `{}` is linked from `{}`, not `{from}`",
+                bus.run, link.run
+            )));
+        }
+        None => {
+            return Err(invalid(format!(
+                "run `{}` isn't linked from another run, so there is nothing to carry from `{from}`",
+                bus.run
+            )));
+        }
     }
-    if let Some(link) = &bus.manifest.linked_from
-        && link.run != from
-    {
-        return Err(invalid(format!(
-            "run `{}` is linked from `{}`, not `{from}`",
-            bus.config.run, link.run
-        )));
-    }
-    let old_paths = RunPaths::from_root(&bus.config.root.join(from));
+    let old_paths = bus.store.run(from);
     let old = manifest::load_manifest(&old_paths)
-        .map_err(|e| Failure::new(Code::Error, e))?
-        .ok_or_else(|| {
-            Failure::new(
-                Code::NotFound,
-                format!("no run `{from}` under {}", bus.config.root.display()),
-            )
-        })?;
-    let snap = store::snapshot_of(&old_paths, from)?;
+        .map_err(|e| Failure::new(Code::Error, e.message(&bus.team, &bus.restart)))?
+        .ok_or_else(|| Failure::new(Code::NotFound, format!("no run `{from}`")))?;
+    let snap = match old_lock {
+        OldLock::Take => store::snapshot_of(&old_paths, from)?,
+        OldLock::HeldByCaller => store::scan(&old_paths, from),
+    };
     let through = tasks::prefix(&snap).last().map(|r| r.id.clone());
 
     let mut items = Vec::new();
@@ -163,7 +229,7 @@ pub fn carry(bus: &Bus, from: &str) -> Result<Report, Failure> {
             && !bus.manifest.members.contains_key(&m)
         {
             item.outcome = "skipped".into();
-            item.message = Some(format!("`{m}` is not a member of run `{}`", bus.config.run));
+            item.message = Some(format!("`{m}` is not a member of run `{}`", bus.run));
             items.push(item);
             continue;
         }
@@ -195,7 +261,7 @@ pub fn carry(bus: &Bus, from: &str) -> Result<Report, Failure> {
     let skipped = items.iter().any(|i| i.outcome == "skipped");
     let report = Report {
         from: from.to_string(),
-        into: bus.config.run.clone(),
+        into: bus.run.clone(),
         incomplete: !snap.healthy() || skipped,
         through,
         problems: snap.problems.clone(),
@@ -292,7 +358,7 @@ pub struct CheckNotes {
 
 /// `into` are the markers naming this run (from [`carried_into`]).
 pub fn check_notes(bus: &Bus, snap: &store::Snapshot, into: &[Marker]) -> CheckNotes {
-    let run = &bus.config.run;
+    let run = &bus.run;
     let mut warnings = Vec::new();
     let last = snap
         .records
@@ -325,10 +391,10 @@ pub fn check_notes(bus: &Bus, snap: &store::Snapshot, into: &[Marker]) -> CheckN
         ));
         retired |= m.complete && covers;
     }
-    if let Some(prev) = &bus.config.continues {
+    if let Some(prev) = bus.manifest.linked_from.as_ref().map(|l| &l.run) {
         match read_marker(&marker_path(&bus.paths, prev)) {
             None => warnings.push(format!(
-                "this run continues `{prev}`, but nothing has been carried from it yet: `brg bus carry --from {prev}`"
+                "this run is linked from `{prev}`, but nothing has been carried from it yet: `brg bus carry --from {prev}`"
             )),
             Some(m) if !m.complete => warnings.push(format!(
                 "the carry from `{prev}` was partial ({} skipped{}): reconcile, then `brg bus carry --from {prev}` again",

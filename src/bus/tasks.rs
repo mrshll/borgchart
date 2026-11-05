@@ -954,7 +954,7 @@ mod tests {
         let paths = RunPaths::from_root(dir.path());
         assert_eq!(recorded_liveness(&paths, "a", "a-1"), Liveness::Unknown);
         let inc = |ended: bool| {
-            json!({"member": "a", "incarnation": "a-1", "generation": 1,
+            json!({"member": "a", "incarnation": "a-1",
                 "started_at": "2026-11-05T19:00:00.000Z",
                 "ended_at": if ended { json!("2026-11-05T20:00:00.000Z") } else { Value::Null }})
         };

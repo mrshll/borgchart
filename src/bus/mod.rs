@@ -33,6 +33,17 @@ pub fn is_valid_run_id(id: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "._-".contains(c))
 }
 
+/// Whether user-facing text mentions runs: the word `run`/`runs` or a run
+/// ID like `r12`. ("running" and "rerun" are fine.) For tests that check
+/// messages talk only about teams and members.
+pub fn mentions_runs(text: &str) -> bool {
+    text.split(|c: char| !c.is_ascii_alphanumeric()).any(|w| {
+        w.eq_ignore_ascii_case("run")
+            || w.eq_ignore_ascii_case("runs")
+            || (w.len() > 1 && w.starts_with('r') && w[1..].bytes().all(|b| b.is_ascii_digit()))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -47,5 +58,15 @@ mod tests {
         assert!(!is_valid_run_id("a/b"));
         assert!(!is_valid_run_id(".."));
         assert!(!is_valid_run_id(&"a".repeat(65)));
+    }
+
+    #[test]
+    fn run_wording_is_detected() {
+        assert!(mentions_runs("start a new run"));
+        assert!(mentions_runs("storage r12 is old"));
+        assert!(mentions_runs("Runs: 3"));
+        assert!(!mentions_runs("helper: already running"));
+        assert!(!mentions_runs("not running; rerun brg up"));
+        assert!(!mentions_runs("brg down && brg up"));
     }
 }

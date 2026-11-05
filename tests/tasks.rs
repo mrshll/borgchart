@@ -1,6 +1,7 @@
 //! Task facts and recovery: the task fold, transition and authority checks
 //! at publication, `brg task list|show`, and carrying work into a linked run.
-//! Runs are built from fixtures (hand-written `run.json` and incarnations).
+//! Runs are built from fixtures (hand-written `run.json` and incarnations)
+//! in the team's storage (`<root>/<deployment-id>/rN`, named by `current`).
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -13,8 +14,8 @@ use borgchart::bus::manifest::Liveness;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-const RUN: &str = "example-run-1";
-const NEXT: &str = "example-run-2";
+const RUN: &str = "r1";
+const NEXT: &str = "r2";
 
 struct Fixture {
     dir: tempfile::TempDir,
@@ -45,8 +46,13 @@ impl Fixture {
             dir: tempfile::tempdir().unwrap(),
         };
         fs::create_dir_all(f.dep_file().parent().unwrap()).unwrap();
-        f.configure(RUN, None);
+        fs::write(
+            f.dep_file(),
+            format!("schema: 1\nbus:\n  root: {}\n", f.root().display()),
+        )
+        .unwrap();
         f.start_run(RUN, None);
+        f.configure(RUN, None);
         fs::write(f.agreement(), "Build the parser. Tests first.\n").unwrap();
         f
     }
@@ -57,8 +63,20 @@ impl Fixture {
     fn root(&self) -> PathBuf {
         self.dir.path().join("runs")
     }
+    /// The team's storage directory.
+    fn team_dir(&self) -> PathBuf {
+        self.root()
+            .join(borgchart::state::deployment_id(&self.dep_file()))
+    }
     fn run_dir(&self, run: &str) -> PathBuf {
-        self.root().join(run)
+        self.team_dir().join(run)
+    }
+    /// The team's current run, as `current` names it.
+    fn current(&self) -> String {
+        fs::read_to_string(self.team_dir().join("current"))
+            .unwrap()
+            .trim()
+            .to_string()
     }
     fn agreement(&self) -> PathBuf {
         self.dir.path().join("agreement.md")
@@ -67,16 +85,10 @@ impl Fixture {
         format!("{:x}", Sha256::digest(fs::read(self.agreement()).unwrap()))
     }
 
-    /// Point the deployment at `run` (optionally continuing another).
-    fn configure(&self, run: &str, continues: Option<&str>) {
-        let mut text = format!(
-            "schema: 1\nbus:\n  root: {}\n  run: {run}\n",
-            self.root().display()
-        );
-        if let Some(c) = continues {
-            text.push_str(&format!("  continues: {c}\n"));
-        }
-        fs::write(self.dep_file(), text).unwrap();
+    /// Make `run` the team's current storage, as rollover does (the link
+    /// to an earlier run is in its manifest: see `start_run`).
+    fn configure(&self, run: &str, _linked_from: Option<&str>) {
+        fs::write(self.team_dir().join("current"), format!("{run}\n")).unwrap();
     }
 
     fn start_run(&self, run: &str, linked_from: Option<&str>) {
@@ -118,7 +130,12 @@ impl Fixture {
         for dir in [self.root(), path.parent().unwrap().to_path_buf()] {
             fs::create_dir_all(&dir).unwrap();
         }
-        for dir in [self.root(), self.run_dir(RUN), self.run_dir(NEXT)] {
+        for dir in [
+            self.root(),
+            self.team_dir(),
+            self.run_dir(RUN),
+            self.run_dir(NEXT),
+        ] {
             if dir.exists() {
                 fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
             }
@@ -131,7 +148,6 @@ impl Fixture {
         let mut v = json!({
             "member": member,
             "incarnation": incarnation,
-            "generation": 1,
             "started_at": "2026-11-05T19:00:00.000Z",
         });
         if ended {
@@ -148,7 +164,6 @@ impl Fixture {
         let v = json!({
             "member": member,
             "incarnation": incarnation,
-            "generation": 1,
             "started_at": "2026-11-05T19:00:00.000Z",
             "ended_at": "2026-11-05T20:00:00.000Z",
             "ended_reason": "replaced",
@@ -169,11 +184,7 @@ impl Fixture {
             .args(args)
             .arg("-f")
             .arg(self.dep_file());
-        let run = fs::read_to_string(self.dep_file())
-            .unwrap()
-            .lines()
-            .find_map(|l| l.trim().strip_prefix("run: ").map(str::to_string))
-            .unwrap();
+        let run = self.current();
         match who {
             As::Ops => {
                 cmd.args(["--external", "ops"]);
@@ -908,12 +919,47 @@ fn carrying_from_a_corrupt_run_stops_at_the_first_bad_record() {
 #[test]
 fn carry_needs_the_linked_run() {
     let f = populated();
-    // The deployment doesn't continue RUN.
-    f.configure(NEXT, None);
+    // The current run isn't linked from RUN.
     f.start_run(NEXT, None);
+    f.configure(NEXT, None);
     assert_eq!(carry(&f).code, 5);
-    f.configure(NEXT, Some("example-run-0"));
+    f.start_run(NEXT, Some("r9"));
     assert_eq!(carry(&f).code, 5);
+}
+
+#[test]
+fn rollover_carries_while_holding_the_old_runs_lock() {
+    let f = populated();
+    let before = f.hashes(RUN);
+    // As lifecycle rolls over: the new run exists but isn't current yet,
+    // and the old run's `bus/lock` is held exclusive.
+    f.start_run(NEXT, Some(RUN));
+    let lock = borgchart::state::open_lock(&f.run_dir(RUN).join("bus/lock")).unwrap();
+    lock.lock().unwrap();
+    let mut report = borgchart::diag::Report::default();
+    let deployment = borgchart::deploy::load(&f.dep_file(), &mut report).unwrap();
+    let carried = borgchart::bus::carry::carry_at_rollover(&deployment, RUN, NEXT).unwrap();
+    assert!(carried.failure().is_none(), "{carried:?}");
+    assert_eq!(carried.into, NEXT);
+    assert!(!carried.carried.is_empty());
+    assert!(
+        carried.carried.iter().all(|i| i.outcome == "committed"),
+        "{carried:?}"
+    );
+    drop(lock);
+    assert_eq!(f.current(), RUN, "carrying doesn't switch storage");
+    assert_eq!(f.hashes(RUN), before);
+    // The carried notes are in the new run; carrying again is a no-op.
+    f.configure(NEXT, Some(RUN));
+    let again = carry(&f);
+    assert_eq!(again.code, 0, "{:?}", again.json);
+    let items = again.json["carried"].as_array().unwrap();
+    assert!(
+        items.iter().all(|i| i["outcome"] == "duplicate"),
+        "{items:?}"
+    );
+    // Only from the linked run.
+    assert!(borgchart::bus::carry::carry_at_rollover(&deployment, "r9", NEXT).is_err());
 }
 
 #[test]

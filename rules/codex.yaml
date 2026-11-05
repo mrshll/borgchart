@@ -11,6 +11,14 @@ rules:
     priority: 100
     bottom: 8
     any: ['^  Press enter to confirm or esc to cancel\s*$']
+  - id: update-dialog
+    # The startup "Update available" prompt. brg launches members with
+    # `check_for_update_on_startup=false`; this catches it if it shows anyway.
+    # Its footer must be the last line on screen, so quoted text can't match.
+    state: blocked
+    priority: 100
+    bottom: 12
+    all: ['^  Update available · \S+ → \S+\s*$', '^[› ] 1\. Update now', '^  enter continue · esc skip[ \t]*\z']
   - id: working-title
     state: working
     priority: 50

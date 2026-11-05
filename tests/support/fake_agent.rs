@@ -208,6 +208,11 @@ impl Agent {
         };
         let mut out = String::from("\x1b[2J\x1b[H");
         out.push_str(&format!("\x1b]0;{title}\x07"));
+        if self.vendor == Vendor::Claude && matches!(self.mode, Mode::Idle | Mode::Working) {
+            // Claude's banner: like the real one, a line at column 0 above
+            // the input box, which the idle rule needs to see.
+            out.push_str("▝▜██████▀  Fake Claude\r\n");
+        }
         let tail: Vec<&String> = self.lines.iter().rev().take(20).collect();
         for line in tail.into_iter().rev() {
             out.push_str(line);
