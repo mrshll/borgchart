@@ -1012,21 +1012,38 @@ fn window_name(tmux: &Tmux, session: &str, name: &str) -> Result<String, String>
     Err(format!("`{name}` is not running"))
 }
 
-/// `brg attach <member>`: replaces this process with a tmux client.
-pub fn attach(input: &Input, name: &str) -> Result<(), String> {
+fn attach_command(input: &Input, name: &str) -> Result<Command, String> {
     let dep = state_for(input);
     let session = dep.state.session();
     let tmux = tmux_for(&dep.state);
     let window = window_name(&tmux, &session, name)?;
-    let err = Command::new("tmux")
-        .arg("-L")
+    let mut cmd = Command::new("tmux");
+    cmd.arg("-L")
         .arg(state::tmux_socket())
         .arg("-f")
         .arg(dep.state.tmux_conf())
         .args(["attach-session", "-t", &target(&session, &window)])
-        .env_remove("TMUX")
-        .exec();
+        // Works from inside your own tmux too: brg's server is a separate one.
+        .env_remove("TMUX");
+    Ok(cmd)
+}
+
+/// `brg attach <member>`: replaces this process with a tmux client.
+pub fn attach(input: &Input, name: &str) -> Result<(), String> {
+    let err = attach_command(input, name)?.exec();
     Err(format!("cannot run tmux: {err}"))
+}
+
+/// Attach, and return when the client detaches (used by `status -i`).
+pub fn attach_and_wait(input: &Input, name: &str) -> Result<(), String> {
+    let status = attach_command(input, name)?
+        .status()
+        .map_err(|e| format!("cannot run tmux: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("tmux attach ended with {status}"))
+    }
 }
 
 #[cfg(test)]

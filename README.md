@@ -4,7 +4,7 @@ borgchart runs teams of coding agents from plain files: describe each member's r
 
 ## Status
 
-Early. `brg validate`, `up`, `down`, `status`, `attach`, `logs` and `send` work, on a private tmux server. [`examples/slack-devops`](examples/slack-devops) is an on-call pair for a Slack channel. The `status -w` / `-i` screens are in progress. See [docs/format.md](docs/format.md) for the team format and [docs/cli.md](docs/cli.md) for the commands.
+Early, and expected to change. `brg validate`, `up`, `down`, `status` (with `-w` and `-i`), `attach`, `logs` and `send` work, on a private tmux server. [`examples/slack-devops`](examples/slack-devops) is an on-call pair for a Slack channel. See [docs/format.md](docs/format.md) for the team format and [docs/cli.md](docs/cli.md) for the commands.
 
 ## Install
 

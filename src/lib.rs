@@ -17,5 +17,6 @@ pub mod runtime;
 pub mod state;
 pub mod team;
 pub mod tmux;
+pub mod tui;
 pub mod validate;
 pub mod yaml;

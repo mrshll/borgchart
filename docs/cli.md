@@ -7,7 +7,7 @@
 | `brg validate [--json] [--probe]` | Check the team and deployment without starting anything; `--probe` also lists each vendor's MCP connectors (this starts your MCP servers) |
 | `brg up [--member ID]` | Start the team (members with `start: true` and plugin processes), or one member |
 | `brg down [--member ID]` | Stop the team, or one member |
-| `brg status [--json]` | Show each member and plugin process: state, posture, details |
+| `brg status [--json \| -w \| -i]` | Show each member and plugin process: state, posture, details. `-w` refreshes the table every `--interval` seconds; `-i` is an interactive screen (j/k to move, Enter to attach, your tmux prefix then `d` to come back, `r` to refresh, `q` to quit) |
 | `brg attach <member>` | Open a member's live session; detach with your tmux prefix, then `d` (press the prefix twice inside your own tmux) |
 | `brg logs <member> [-n LINES]` | Show recent output of a member or plugin process |
 | `brg send <member> <text…> [--force] [--from MEMBER] [--json]` | Paste text into a member and press Enter, as one submission. `--from` (for plugins relaying a member's message) requires the target to be that member's parent |
