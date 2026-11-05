@@ -11,6 +11,9 @@
 | `brg attach <member>` | Open a member's live session; detach with your tmux prefix, then `d` (press the prefix twice inside your own tmux) |
 | `brg logs <member> [-n LINES]` | Show recent output of a member or plugin process |
 | `brg send <member> <text…> [--force] [--from MEMBER] [--json]` | Paste text into a member and press Enter, as one submission. `--from` (for plugins relaying a member's message) requires the target to be that member's parent |
+| `brg bus alert test [--member ID] [--json]` | Run the deployment's `bus.alert` action once with reason `test` and record the alert (see [bus.md](bus.md#alerts)) |
+| `brg bus alerts [--all] [--json]` | List open alerts (`--all` includes resolved ones) |
+| `brg bus alert resolve <id> [--json]` | Mark an alert resolved |
 
 ## Runtime
 

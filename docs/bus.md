@@ -160,9 +160,41 @@ One on-demand worker per run watches for records nobody has seen. Only a member 
 
 For a vendor, version and configuration that has passed qualification, the worker may paste one fixed reminder (never a payload) and press Enter. Before pasting it checks the pane's identity (against the incarnation), state, input box and dialogs; before Enter it checks the input box holds exactly the reminder and no dialog appeared. It never clears input, forces, answers a dialog or presses Enter after a crash. At most one paste per episode. A member at a prompt (`blocked`) gets nothing typed and an alert. A busy member, a draft in the input box or a transient uncertain reading defers the wake without spending it; a draft also raises an alert, and the wake goes ahead automatically once the draft clears, or becomes human-required at the deadline. An unqualified vendor or version gets alerts only.
 
-## Alerts (planned)
+## Alerts
 
-When a person is needed, the worker runs the deployment's `bus.alert` plugin action with fixed arguments `<alert-id> <member> <reason> <pending-count>` and nothing from any record. Reasons: `blocked`, `draft`, `human-required`, `unqualified`, `overdue`, `unacked`, `worker-unavailable`, `test`. The action runs with the base environment, its own plugin's values as frozen at `up`, `BORGCHART_ACTOR=bus` and the deployment/run identity: no member identity, nothing from the caller's environment and no other plugin's values. It is bounded in time and output. Exit zero means the alert was handed off, not that anyone saw it; the alert stays open until resolved (`brg bus alert resolve <id>`). With no `bus.alert`, attention is `attention-unavailable` and shows in status only.
+When a person is needed, brg runs the deployment's `bus.alert` plugin action. An alert names a member, a reason and how many records are waiting, and nothing from any record.
+
+```yaml
+# team.yaml
+plugins:
+  notify:
+    path: plugins/notify
+    env: [NOTIFY_TOKEN]
+    actions:
+      alert: notify alert <id> <member> <reason> <pending>
+# borgchart.yaml
+bus:
+  alert: {plugin: notify, action: alert}
+```
+
+- **Arguments.** The program is `<plugin dir>/<command>` (a plugin whose commands come from `PATH` can't be an alert action). Its arguments are the action line's literal words after the command and before the first placeholder (above: `alert`), then exactly `<alert-id> <member> <reason> <pending-count>`. Alert IDs match `[a-z0-9][a-z0-9._-]{0,63}`; member names are checked too, so every argument is a plain word.
+- **Reasons:** `blocked`, `draft`, `human-required`, `unqualified`, `overdue`, `unacked`, `worker-unavailable`, `test`.
+- **Environment.** Built from scratch: the base environment recorded at `up`, that plugin's own values as written at `up` (secrets included), `BORGCHART_ACTOR=bus`, `BORGCHART_DEPLOYMENT`, `BORGCHART_RUN`, `BORGCHART_FILE`, `BORGCHART_BIN` and `BORGCHART_STATE_DIR` (the plugin's data directory). Never `BORGCHART_MEMBER`, `BORGCHART_PARENT` or `BORGCHART_INCARNATION` (even if a values file names them), nothing from the caller's environment and no other plugin's values. Changing your shell or `borgchart.yaml` after `up` doesn't change what the action sees. The action line itself is also recorded at `up`.
+- **Bounds.** It runs in the plugin's directory with stdin closed, in its own process group. After 10 seconds the whole group is killed (`timed-out`). The last 4 KiB of its stdout and stderr are kept, with control characters other than newline and tab replaced.
+- **Outcomes.** `invoked` (exit zero: handed off, not proof anyone saw it), `failed` (non-zero exit or killed by a signal), `timed-out`, or `unavailable` when nothing could run: no `bus.alert`, the plugin or action wasn't recorded at `up`, the program is missing or not executable, or the plugin's values file is gone (after `brg down`).
+- **Store.** Each alert is one file, `attention/alerts/<id>.json`: `id`, `member`, `reason`, `pending`, `opened_at`, `state` (`open` or `resolved`), `invocation_count`, the last 10 `invocations` (`at`, `outcome`, `status`, `message`, `output_tail`, `elapsed_ms`) and `resolved_at`/`resolved_by`. Updates are serialized by `attention/alerts/.lock`, which is never held while an action runs. An alert stays open, whatever its invocations' outcomes, until someone resolves it. `invocation_count` shows how often it was already sent, so the attention worker can bound reminders.
+- With no `bus.alert`, attention is `attention-unavailable` and shows in status only.
+
+```
+brg bus alert test [--member ID] [--json]
+brg bus alerts [--all] [--json]
+brg bus alert resolve ID [--json]
+```
+
+- **test** opens an alert with reason `test` for the member (default: the team's root), runs the action once and records the invocation. Exit 0 `invoked`; 1 `alert-failed` or `alert-timed-out`; 3 `attention-unavailable` when there is no `bus.alert` (nothing is recorded) or the action is unavailable (the alert is recorded); 3 `not-configured` without `bus:` or before the first `brg up`; 5 `invalid` for an unknown member. The alert stays open either way.
+- **alerts** lists open alerts, oldest first (`--all` includes resolved ones). It never writes.
+- **resolve** marks an alert resolved by `operator`. Resolving twice keeps the first resolution; an unknown ID is `not-found`.
+- `examples/desktop-alert` is a one-member deployment whose action appends a line to its `alerts.log` and, when `notify-send` is installed, shows a desktop notification.
 
 ## Outcome codes
 
