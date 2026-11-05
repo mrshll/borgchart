@@ -104,6 +104,45 @@ fn cross_check(v: &Validated, report: &mut Report) {
             }
         }
         for (id, m) in &d.members {
+            if let Some(member) = v.team.members.get(id)
+                && member.vendor == Vendor::Codex
+                && v.posture(id) == Posture::Locked
+                && let Some(cwd) = &m.cwd
+            {
+                let cwd_real = cwd.canonicalize().unwrap_or_else(|_| cwd.clone());
+                let inside = |p: &Path| {
+                    let p = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+                    p.starts_with(&cwd_real)
+                };
+                if inside(&crate::state::state_home()) || inside(&v.team.dir) {
+                    report.warning(
+                        deploy_file,
+                        format!(
+                            "member `{id}`: a `locked` Codex member can write its cwd, and {} contains the team or brg's state; pick a narrower folder",
+                            cwd.display()
+                        ),
+                    );
+                }
+            }
+            let vendor_claude = v
+                .team
+                .members
+                .get(id)
+                .is_some_and(|t| t.vendor == Vendor::Claude);
+            if d.auto_trust == Some(true)
+                && vendor_claude
+                && v.posture(id) == Posture::Vendor
+                && let Some(cwd) = &m.cwd
+                && (cwd.join(".claude").exists() || cwd.join(".mcp.json").exists())
+            {
+                report.warning(
+                    deploy_file,
+                    format!(
+                        "member `{id}`: `auto_trust: true` will trust {}, which has project settings (`.claude/` or `.mcp.json`) that will load in `vendor` posture",
+                        cwd.display()
+                    ),
+                );
+            }
             if let Some(cwd) = &m.cwd
                 && !cwd.is_dir()
             {
@@ -215,25 +254,28 @@ fn cross_check(v: &Validated, report: &mut Report) {
                 }
             }
         }
+    }
 
-        // Granted commands that also exist elsewhere on PATH.
-        for plugin_name in member.grants.keys() {
-            let Some(plugin) = v.team.plugins.get(plugin_name) else {
-                continue;
-            };
-            if plugin.location.is_none() {
-                continue;
-            }
-            for command in plugin_commands(plugin) {
-                if let Some(other) = find_on_path(&command).first() {
-                    report.warning(
-                        team_file,
-                        format!(
-                            "plugin `{plugin_name}`: `{command}` also exists on PATH at {}; prompts use the shim's absolute path",
-                            other.display()
-                        ),
-                    );
-                }
+    // Granted commands that also exist elsewhere on PATH (once per plugin).
+    for plugin in v.team.plugins.values() {
+        let granted = v
+            .team
+            .members
+            .values()
+            .any(|m| m.grants.contains_key(&plugin.name));
+        if !granted || plugin.location.is_none() {
+            continue;
+        }
+        for command in plugin_commands(plugin) {
+            if let Some(other) = find_on_path(&command).first() {
+                report.warning(
+                    team_file,
+                    format!(
+                        "plugin `{}`: `{command}` also exists on PATH at {}; prompts use the shim's absolute path",
+                        plugin.name,
+                        other.display()
+                    ),
+                );
             }
         }
     }

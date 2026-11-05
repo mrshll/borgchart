@@ -130,6 +130,12 @@ How much a member may do is set per member, overridable per deployment.
   - Everything else is denied without asking: other tools, shell metacharacters, expansions, redirects.
 - **`untrusted_input: true`** marks a member that reads text from outside. Such a member must be `locked` unless it also says `accept_risk: true`.
 
+**What `locked` does and doesn't do.** The gate is the barrier: it decides every tool call.
+- **Claude:** `locked` has no sandbox. Granted plugin commands run with your full rights.
+- **Codex:** `locked` keeps network on, and Codex's sandbox lets commands read any file. Writes are limited to the granted plugins' data directories, the member's temp directory and its working directory. A `locked` Codex member without a declared `cwd` starts in its temp directory. Plugin programs that need to write elsewhere, such as `uv` writing its cache, fail inside the sandbox; give such a plugin a program that doesn't (e.g. plain `python3` for a standard-library script). brg doesn't move caches into member-writable directories, because a member could then plant code there.
+- **The tmux socket:** brg's tmux socket is a full capability. Anything that can reach it can type into, read or stop any member. That is why `locked` members get no general shell.
+- **Fail closed:** if a `locked` member's gate doesn't report in when it starts, it is stopped, or (behind Claude's folder-trust prompt) gets no input until the gate does report in.
+
 **What `brg validate` warns about.** A `vendor`-posture member that:
 
 - receives work from a plugin process (a `delivers_to` target);
@@ -164,6 +170,7 @@ members:
 schema: 1
 team: .                       # the team directory, relative to this file (default: .)
 auth: login                   # login (default) | api_key, for every member
+auto_trust: true              # accept Claude's folder trust for a declared cwd (default: locked members only)
 plugins_dir: ~/borgchart-plugins   # where shared:<name> plugins live
 
 members:
@@ -182,3 +189,9 @@ plugins:
 - **Trust:** treat this file as trusted, like the team: `posture` and `args` can widen an agent's permissions.
 - **`auth: login`:** brg passes no API-key variables, so a stray key in your shell can't replace your login.
 - **`auth: api_key`:** brg passes `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` by name.
+- **`auto_trust`:** when a Claude member's `cwd` is declared here, `brg up` answers Claude's folder-trust dialog for exactly that folder by sending keys through tmux. Declaring the folder is your consent.
+  - By default this applies to `locked` members only, because they ignore project settings. `auto_trust: true` extends it to every member; `brg validate` then warns if a declared folder has project settings (`.claude/`, `.mcp.json`), which would load.
+  - It acts only on the plain trust screen showing that folder; it never answers any other dialog.
+  - Each acceptance is printed and shown in `brg status --json` (`trust_accepted`).
+  - Trusting a folder lets its project settings load in `vendor` posture; `locked` members ignore project settings.
+  - Set `auto_trust: false` to attach and answer it yourself.

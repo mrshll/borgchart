@@ -523,6 +523,32 @@ fn parse_errors_name_the_file_once() {
 }
 
 #[test]
+fn auto_trust_warns_about_project_settings_for_vendor_members() {
+    let f = Fixture::new();
+    f.edit(
+        "team.yaml",
+        "    prompt: lead.md\n    posture: locked\n    untrusted_input: true\n",
+        "    prompt: lead.md\n    accept_risk: true\n    untrusted_input: true\n",
+    );
+    f.write("work/.mcp.json", "{}");
+    f.edit(
+        "borgchart.yaml",
+        "schema: 1\n",
+        &format!(
+            "schema: 1\nauto_trust: true\nmembers:\n  lead: {{cwd: {}}}\n",
+            f.path("work").display()
+        ),
+    );
+    let (report, validated) = f.run();
+    assert!(validated.is_some(), "{}", errors(&report));
+    assert!(
+        warnings(&report).contains("has project settings"),
+        "{}",
+        warnings(&report)
+    );
+}
+
+#[test]
 fn deployment_must_match_the_team() {
     let f = Fixture::new();
     f.edit(

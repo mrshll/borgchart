@@ -28,5 +28,5 @@ jobs:
       - name: Toolchain
         run: rustup show active-toolchain
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets --locked -- -D warnings
-      - run: cargo test --locked
+      - run: cargo clippy --all-targets --features test-support --locked -- -D warnings
+      - run: cargo test --features test-support --locked
