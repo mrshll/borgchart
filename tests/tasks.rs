@@ -428,6 +428,36 @@ fn invalid_transitions_are_refused() {
         &json!({"to": "helper", "kind": "decision", "reply_to": [res], "body": "x"}),
         5,
     );
+    // ...asked by the decision's recipient: helper2's question can't be
+    // closed by a decision sent to helper.
+    let q = f.ok(
+        As::Member("helper2"),
+        "q1",
+        &json!({"to": "lead", "kind": "question", "body": "which branch?"}),
+    );
+    f.refused(
+        As::Member("lead"),
+        "d0b",
+        &json!({"to": "helper", "kind": "decision", "reply_to": [q], "body": "main"}),
+        5,
+    );
+    assert_eq!(f.list()["questions"][0]["id"], q);
+    // An agreement that isn't a regular file is refused without opening it
+    // (a FIFO would block while the lock is held).
+    let fifo = f.dir.path().join("agreement.fifo");
+    assert!(
+        Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut piped = f.assign("helper2", "t-9", 1);
+    piped["facts"]["agreement"]["path"] = json!(fifo);
+    assert!(
+        f.refused(As::Member("lead"), "a9", &piped, 5)
+            .contains("regular file")
+    );
     // A declined task is resolved: the helper may take another.
     f.ok(As::Member("lead"), "a4", &f.assign("helper2", "t-3", 1));
     f.ok(

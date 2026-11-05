@@ -212,9 +212,9 @@ pub fn fold_records(manifest: &RunManifest, records: &[&Record]) -> Fold {
                     },
                 );
             }
-            Kind::Decision => match check_decision(manifest, &f, &fact, &questions) {
-                Ok(()) => {
-                    for id in &r.reply_to {
+            Kind::Decision => match check_decision(manifest, &fact, &questions) {
+                Ok(answered) => {
+                    for id in &answered {
                         questions.remove(id);
                     }
                 }
@@ -329,20 +329,35 @@ fn check_authority(
     )
 }
 
+/// Check a `decision` and return the open questions it answers: each must
+/// have been asked by the decision's recipient, whose authority decides.
 fn check_decision(
     manifest: &RunManifest,
-    _fold: &Fold,
     f: &Fact,
     open: &BTreeMap<String, Question>,
-) -> Result<(), Failure> {
+) -> Result<Vec<String>, Failure> {
     check_authority(manifest, f.actor, f.to, f.kind)?;
-    if !f.reply_to.iter().any(|id| open.contains_key(id)) {
+    let mut answered = Vec::new();
+    for id in f.reply_to {
+        let Some(q) = open.get(id) else { continue };
+        if q.from != f.to {
+            return fail(
+                Code::Invalid,
+                format!(
+                    "{id} was asked by {}; a `decision` answering it goes to them, not `{}`",
+                    q.from, f.to
+                ),
+            );
+        }
+        answered.push(id.clone());
+    }
+    if answered.is_empty() {
         return fail(
             Code::Invalid,
             "a `decision` must answer an open question named in `reply_to`",
         );
     }
-    Ok(())
+    Ok(answered)
 }
 
 fn is_assignee_kind(kind: Kind) -> bool {
@@ -672,7 +687,7 @@ pub fn check_publish(
             .iter()
             .map(|q| (q.id.clone(), q.clone()))
             .collect();
-        return check_decision(manifest, &fold, &fact, &open);
+        return check_decision(manifest, &fact, &open).map(|_| ());
     }
 
     let task = transition(manifest, &fold, &fact)?;
@@ -749,6 +764,18 @@ pub fn liveness_str(l: Liveness) -> &'static str {
 }
 
 fn check_agreement(a: &Agreement) -> Result<(), Failure> {
+    // This runs under `bus/lock`: refuse anything but a regular file before
+    // opening it, so a FIFO or device can't block the lock.
+    match std::fs::metadata(&a.path) {
+        Ok(m) if m.is_file() => {}
+        Ok(_) => {
+            return fail(
+                Code::Invalid,
+                format!("agreement {}: not a regular file", a.path),
+            );
+        }
+        Err(e) => return fail(Code::Invalid, format!("agreement {}: {e}", a.path)),
+    }
     let (_, sha) = store::sha256_file(std::path::Path::new(&a.path), store::MAX_ARTIFACT_BYTES)
         .map_err(|e| Failure::new(Code::Invalid, format!("agreement {}: {e}", a.path)))?;
     if !sha.eq_ignore_ascii_case(&a.sha256) {
