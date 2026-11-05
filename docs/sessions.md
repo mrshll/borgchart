@@ -107,7 +107,7 @@ Each team with a bus gets a hidden window, `_attention`, in its tmux session. It
 | Hung but alive | `status`/`check`/`ls` report a stale heartbeat. They never restart it. |
 | The whole tmux server gone (killed, reboot) | An outside caller's `message` finds the team registered but its session missing. It reports `attention-unavailable` and raises one `worker-unavailable` alert, through the alert action's isolated environment, not the caller's. Members can't hit this case. Nothing else notices until someone runs a command. |
 
-An operator's or supervisor's periodic `brg check` is the backstop for these cases.
+brg itself runs nothing periodic. For these cases the backstop is whatever watches the team from outside, such as a person, a monitoring job or a supervising agent running `brg check` on a schedule.
 
 **Stopping.** `brg down` stops the window with the session. It never creates a tmux session and never starts members.
 
