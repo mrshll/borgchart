@@ -22,6 +22,7 @@ use crate::state::{
 };
 use crate::team::{PluginLocation, Posture, Vendor};
 use crate::tmux::{Tmux, target};
+use crate::tree;
 use crate::validate::{Input, Validated, validate};
 
 /// Environment names copied from your shell into every window. Nothing else is.
@@ -189,8 +190,30 @@ pub fn trust_dialog_path(screen: &str) -> Option<PathBuf> {
     path.starts_with('/').then(|| PathBuf::from(path))
 }
 
+/// What `up` reports for a member another start replaced while this one
+/// waited on it.
+const REPLACED: &str = "replaced while starting; left alone";
+
+/// Record a member's outcome, replacing what was there.
+fn set(outcomes: &mut BTreeMap<String, String>, id: &str, text: String) {
+    outcomes.insert(id.to_string(), text);
+}
+
+/// Add to a member's outcome (`started; accepted folder trust for …`).
+fn append(outcomes: &mut BTreeMap<String, String>, id: &str, text: String) {
+    let entry = outcomes.entry(id.to_string()).or_default();
+    if !entry.is_empty() {
+        entry.push_str("; ");
+    }
+    entry.push_str(&text);
+}
+
 pub struct UpOutcome {
-    pub messages: Vec<String>,
+    /// The team as a tree, each member with what happened to it, then the
+    /// plugin processes.
+    pub tree: String,
+    /// Anything else to tell the person, after the tree.
+    pub notes: Vec<String>,
     pub failed: bool,
 }
 
@@ -249,9 +272,10 @@ fn api_keys(v: &Validated, ids: &[String]) -> Result<BTreeMap<String, (String, S
 /// `brg up [--member ID]`.
 ///
 /// Everything is checked before anything is written. Starting into a
-/// running deployment (its session exists and `deployment.json` is there)
-/// reuses the binary, base environment and plugin values it started with,
-/// and refuses a different binary or a changed configuration. The lifecycle
+/// running team (its session exists and `deployment.json` is there) reuses
+/// the base environment and plugin values it started with, and refuses a
+/// changed configuration. With a bus, a full `up` of a stopped team rolls
+/// its message storage over when the configuration or format changed. The lifecycle
 /// locks are held while files are written and windows started, and released
 /// before waiting for gates and folder trust.
 pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
@@ -280,9 +304,11 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             state.root.display()
         ));
     }
-    let caller = brg_path();
-    let caller_sha = lifecycle::sha256_file(&caller)
-        .map_err(|e| format!("cannot read this brg ({}): {e}", caller.display()))?;
+    // Every window, shim, gate hook and plugin process this `up` starts
+    // runs the brg running now, as in v0: brg isn't pinned.
+    let brg = brg_path();
+    let team = state::team_name(&dep.source);
+    let restart = state::restart_hint(&dep.source);
     let snapshot = v.config_snapshot();
     let bus = v.deployment.as_ref().and_then(|d| d.bus.clone());
     let member_ids: Vec<String> = v
@@ -295,20 +321,15 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
         })
         .map(|m| m.id.clone())
         .collect();
-    let retry = match only {
-        Some(id) => format!("up --member {id}"),
-        None => "up".to_string(),
-    };
-
     // Checks that need nothing written.
     for id in &member_ids {
         let granted = launch::granted(&v.team, &v.team.members[id]);
         if let Some((plugin, command)) = launch::shim_commands(&granted)
             .into_iter()
-            .find(|(_, c)| launch::RESERVED_SHIMS.contains(&c.as_str()))
+            .find(|(_, c)| launch::RESERVED_COMMANDS.contains(&c.as_str()))
         {
             return Err(format!(
-                "plugin `{plugin}`'s command `{command}` would hide brg's own `{command}` in member `{id}`; rename it. Nothing was started"
+                "plugin `{plugin}`'s command `{command}` would hide the installed `{command}` from {team}/{id}, so its message commands would call the plugin; rename it. Nothing was started"
             ));
         }
     }
@@ -333,7 +354,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
     let existing = state::read_meta(state).filter(|_| probe.has_session(&session));
     let joining = existing.is_some();
     match &existing {
-        Some(meta) => lifecycle::check_join(meta, &caller, &caller_sha, &snapshot, state, &retry)?,
+        Some(meta) => lifecycle::check_join(meta, &snapshot, state, &team, &restart)?,
         None if !missing.is_empty() => return Err(missing_error()),
         None => {}
     }
@@ -343,18 +364,16 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             bus,
             state,
             &dep.source,
-            &caller,
-            &caller_sha,
             joining,
+            only.is_some(),
         )?),
         None => None,
     };
-    // Every window, shim, gate hook and member control call runs this.
-    let brg = match (&binding, &existing) {
-        (Some(b), _) => b.generation.pinned.clone(),
-        (None, Some(meta)) => meta.brg.clone(),
-        (None, None) => caller.clone(),
-    };
+    let notes: Vec<String> = binding
+        .as_ref()
+        .and_then(|b| b.note.clone())
+        .into_iter()
+        .collect();
 
     let fresh = existing.is_none();
     let mut meta = match existing {
@@ -368,13 +387,11 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                 source: dep.source.clone(),
                 team_dir: v.team.dir.canonicalize().unwrap_or(v.team.dir.clone()),
                 brg: brg.clone(),
-                brg_sha256: Some(caller_sha.clone()),
                 socket: Some(state::tmux_socket()),
                 config: Some(snapshot.clone()),
                 run: binding.as_ref().map(|b| state::RunBinding {
                     run: b.run.clone(),
                     dir: b.paths.root.clone(),
-                    generation: b.generation.n,
                 }),
                 base_env: base.clone(),
                 ..Meta::default()
@@ -426,7 +443,8 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
     let base = meta.base_env.clone();
     let tmux = Tmux::new(&state.tmux_conf(), base.clone());
 
-    let mut messages = Vec::new();
+    let mut outcomes: BTreeMap<String, String> = BTreeMap::new();
+    let mut plugin_outcomes: Vec<(String, String)> = Vec::new();
     let mut failed = false;
     let mut started: Vec<Started> = Vec::new();
 
@@ -434,7 +452,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
         let member = &v.team.members[id];
         if let Some(w) = tmux.window(&session, id) {
             if !w.dead {
-                messages.push(format!("{id}: already running"));
+                set(&mut outcomes, id, "already running".into());
                 continue;
             }
             let _ = tmux.kill_window(&session, id);
@@ -443,7 +461,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
         let deploy_member = v.deployment.as_ref().and_then(|d| d.members.get(id));
         let granted = launch::granted(&v.team, member);
 
-        // Shims for granted commands, and for brg itself.
+        // Shims for granted commands.
         let shim_dir = state.member_bin(id);
         let _ = std::fs::remove_dir_all(&shim_dir);
         let mut help = BTreeMap::new();
@@ -459,10 +477,6 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             {
                 help.insert(command.clone(), text);
             }
-        }
-        for name in launch::RESERVED_SHIMS {
-            write_script(&shim_dir.join(name), &launch::brg_shim_script(&brg))
-                .map_err(|e| format!("cannot write shim: {e}"))?;
         }
 
         let settings_path = state.member_dir(id).join("claude-settings.json");
@@ -502,7 +516,6 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
         env.insert("PATH".into(), path);
         env.insert("BORGCHART_DEPLOYMENT".into(), state.id.clone());
         env.insert(context::ENV_MEMBER.into(), id.clone());
-        env.insert(context::ENV_BIN.into(), brg.display().to_string());
         let tmp = state.member_tmp(id);
         state::ensure_dir(&tmp).map_err(|e| e.to_string())?;
         env.insert("TMPDIR".into(), tmp.display().to_string());
@@ -537,8 +550,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             Some(b) => {
                 let inc = Incarnation {
                     member: id.clone(),
-                    incarnation: lifecycle::new_incarnation_id(&b.paths, id, b.generation.n),
-                    generation: b.generation.n,
+                    incarnation: lifecycle::new_incarnation_id(&b.paths, id),
                     started_at: utc_now(),
                     vendor_version: if joining {
                         vendor_version(member.vendor, &base)
@@ -582,9 +594,12 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             if let Some((b, _)) = &incarnation {
                 let _ = lifecycle::end_incarnation(&b.paths, id, lifecycle::ENDED_START_FAILED);
             }
-            messages.push(format!(
-                "{id}: stopped: brg couldn't read its pane, so its `locked` gate couldn't be checked"
-            ));
+            set(
+                &mut outcomes,
+                id,
+                "stopped: brg couldn't read its pane, so its `locked` gate couldn't be checked"
+                    .to_string(),
+            );
             failed = true;
             continue;
         }
@@ -599,11 +614,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             trust_dir,
             pane,
         });
-        messages.push(format!(
-            "{id}: started ({}, {})",
-            member.vendor.as_str(),
-            meta.members[id].posture
-        ));
+        set(&mut outcomes, id, "started".into());
     }
 
     // Plugin processes start with the whole team.
@@ -616,7 +627,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             };
             if let Some(w) = tmux.window(&session, &window) {
                 if !w.dead {
-                    messages.push(format!("plugin {name}: already running"));
+                    plugin_outcomes.push((name.clone(), "already running".into()));
                     continue;
                 }
                 let _ = tmux.kill_window(&session, &window);
@@ -640,11 +651,11 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                 &window,
                 &ExecSpec { argv, env, cwd },
             )?;
-            messages.push(format!("plugin {name}: started"));
+            plugin_outcomes.push((name.clone(), "started".into()));
         }
     }
 
-    // Record where the tmux server is, so `down`, `run rebind` and liveness
+    // Record where the tmux server is, so `down` and liveness
     // checks ask it directly, whatever the caller's tmux environment.
     if fresh {
         let path = started
@@ -681,7 +692,6 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
         }
         Ok((launched(&tmux, &session, s), locks))
     };
-    let replaced = |id: &str| format!("{id}: replaced while starting; left alone");
 
     // Accept Claude's folder trust for a declared cwd, and make every locked
     // member prove its gate is active, or stop it.
@@ -694,12 +704,12 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                 break;
             }
             let Some(w) = tmux.window(&session, id) else {
-                messages.push(format!("{id}: window disappeared"));
+                set(&mut outcomes, id, "failed: its window disappeared".into());
                 failed = true;
                 break;
             };
             if launched(&tmux, &session, s) == Launched::Replaced {
-                messages.push(replaced(id));
+                set(&mut outcomes, id, REPLACED.to_string());
                 // Its own gate never reported in to this `up`.
                 failed |= s.locked;
                 break;
@@ -710,10 +720,14 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                 .map(|p| p.pane_id.clone())
                 .unwrap_or_default();
             if w.dead {
-                messages.push(format!(
-                    "{id}: exited during start (status {})",
-                    w.dead_status.unwrap_or(-1)
-                ));
+                set(
+                    &mut outcomes,
+                    id,
+                    format!(
+                        "failed: exited during start (status {})",
+                        w.dead_status.unwrap_or(-1)
+                    ),
+                );
                 failed = true;
                 break;
             }
@@ -738,9 +752,13 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                 // Enter. Nothing else is ever answered.
                 let (now, _locks) = relock(s)?;
                 if now != Launched::Same {
-                    messages.push(format!(
-                        "{id}: couldn't confirm it is still the member this `up` started, so the folder-trust dialog was left for you; run `brg attach {id}`"
-                    ));
+                    append(
+                        &mut outcomes,
+                        id,
+                        format!(
+                            "couldn't confirm it is still the member this `up` started, so the folder-trust dialog was left for you; run `brg attach {id}`"
+                        ),
+                    );
                     failed |= s.locked;
                     break;
                 }
@@ -751,9 +769,13 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                 if !(has_line(&after, TRUST_YES_SELECTED)
                     && trust_dialog_path(&after).as_deref() == s.trust_dir.as_deref())
                 {
-                    messages.push(format!(
-                        "{id}: the folder-trust dialog didn't look as expected, so it was left for you; run `brg attach {id}`"
-                    ));
+                    append(
+                        &mut outcomes,
+                        id,
+                        format!(
+                            "the folder-trust dialog didn't look as expected, so it was left for you: brg attach {id}"
+                        ),
+                    );
                     break;
                 }
                 tmux.ok(&["send-keys", "-t", t, "Enter"])?;
@@ -761,7 +783,11 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                     &state.member_dir(id).join("trust-accepted"),
                     format!("{dir}\n").as_bytes(),
                 );
-                messages.push(format!("{id}: accepted folder trust for {dir}"));
+                append(
+                    &mut outcomes,
+                    id,
+                    format!("accepted folder trust for {dir}"),
+                );
                 trusted = true;
                 std::thread::sleep(Duration::from_millis(300));
                 continue;
@@ -770,15 +796,19 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                 // Nothing runs before Claude's folder trust is answered, and the
                 // gate must still report in afterwards (`send` checks).
                 Some(State::Blocked) if is_trust => {
-                    messages.push(format!(
-                        "{id}: waiting at Claude's folder-trust prompt; run `brg attach {id}` to answer it"
-                    ));
+                    append(
+                        &mut outcomes,
+                        id,
+                        format!(
+                            "waiting at Claude's folder-trust prompt; answer it with `brg attach {id}`"
+                        ),
+                    );
                     break;
                 }
                 Some(State::Blocked) if s.locked => {
                     let (now, _locks) = relock(s)?;
                     if now == Launched::Replaced {
-                        messages.push(replaced(id));
+                        set(&mut outcomes, id, REPLACED.to_string());
                         failed = true;
                         break;
                     }
@@ -788,16 +818,21 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                         Launched::Same => tmux.ok(&["kill-window", "-t", &pane]).map(|_| ()),
                         _ => tmux.kill_window(&session, id),
                     };
-                    messages.push(format!(
-                        "{id}: stopped: it was at a prompt before its `locked` gate reported in"
-                    ));
+                    set(
+                        &mut outcomes,
+                        id,
+                        "stopped: it was at a prompt before its `locked` gate reported in"
+                            .to_string(),
+                    );
                     failed = true;
                     break;
                 }
                 Some(State::Blocked) => {
-                    messages.push(format!(
-                        "{id}: waiting at a prompt; run `brg attach {id}` to answer it"
-                    ));
+                    append(
+                        &mut outcomes,
+                        id,
+                        format!("waiting at a prompt; answer it with `brg attach {id}`"),
+                    );
                     break;
                 }
                 Some(State::Idle) | Some(State::Working) if !s.locked => break,
@@ -807,7 +842,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                 if s.locked {
                     let (now, _locks) = relock(s)?;
                     if now == Launched::Replaced {
-                        messages.push(replaced(id));
+                        set(&mut outcomes, id, REPLACED.to_string());
                         failed = true;
                         break;
                     }
@@ -817,9 +852,12 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                         Launched::Same => tmux.ok(&["kill-window", "-t", &pane]).map(|_| ()),
                         _ => tmux.kill_window(&session, id),
                     };
-                    messages.push(format!(
-                        "{id}: stopped: its `locked` gate did not report in, so it would run unprotected"
-                    ));
+                    set(
+                        &mut outcomes,
+                        id,
+                        "stopped: its `locked` gate did not report in, so it would be unprotected"
+                            .to_string(),
+                    );
                     failed = true;
                 }
                 break;
@@ -828,7 +866,32 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
         }
     }
 
-    Ok(UpOutcome { messages, failed })
+    let nodes: Vec<tree::Node> = v
+        .team
+        .members
+        .values()
+        .map(|m| {
+            let outcome = match outcomes.get(&m.id) {
+                Some(o) => o.clone(),
+                None if only.is_none() && !m.start => "not started (start: false)".into(),
+                None => String::new(),
+            };
+            tree::Node {
+                id: m.id.clone(),
+                parent: m.parent.clone(),
+                cols: vec![tree::vendor_model(m), outcome],
+            }
+        })
+        .collect();
+    let plugins: Vec<(String, Vec<String>)> = plugin_outcomes
+        .into_iter()
+        .map(|(name, o)| (name, vec![o]))
+        .collect();
+    Ok(UpOutcome {
+        tree: tree::render(&team, &nodes, &plugins),
+        notes,
+        failed,
+    })
 }
 
 fn start_window(
@@ -863,6 +926,7 @@ pub fn down(input: &Input, only: Option<&str>) -> Result<Vec<String>, String> {
     let dep = state_for(input);
     let state = &dep.state;
     let session = state.session();
+    let team = state::team_name(&dep.source);
     if !state.root.is_dir() {
         return Ok(vec!["not running".into()]);
     }
@@ -876,7 +940,7 @@ pub fn down(input: &Input, only: Option<&str>) -> Result<Vec<String>, String> {
         && *name != caller_socket
     {
         return Err(format!(
-            "the deployment runs on tmux socket `{name}`, not `{caller_socket}`; run `brg down` with BORGCHART_TMUX_SOCKET={name}. Nothing was changed"
+            "team `{team}` is on tmux socket `{name}`, not `{caller_socket}`; stop it with BORGCHART_TMUX_SOCKET={name} brg down. Nothing was changed"
         ));
     }
     let server = lifecycle::Server::of(&meta);
@@ -895,7 +959,7 @@ pub fn down(input: &Input, only: Option<&str>) -> Result<Vec<String>, String> {
         Err(_) if meta.stopped_at.is_some() => Vec::new(),
         Err(e) => {
             return Err(format!(
-                "{e}; nothing was changed. If the deployment is really gone (for example after a reboot), `brg up` and then `brg down` clear it"
+                "{e}; nothing was changed. If team `{team}` is really gone (for example after a reboot), `brg up` and then `brg down` clear it"
             ));
         }
     };
@@ -966,8 +1030,7 @@ pub fn down(input: &Input, only: Option<&str>) -> Result<Vec<String>, String> {
                 lifecycle::end_incarnation(paths, id, lifecycle::ENDED_STOPPED)?;
             } else {
                 messages.push(format!(
-                    "{id}: incarnation {} may still be running elsewhere; it was left as is",
-                    inc.incarnation
+                    "{id}: may still be running on another tmux server; it was left as is"
                 ));
             }
         }
@@ -988,6 +1051,12 @@ pub struct StatusRow {
     pub name: String,
     pub kind: &'static str,
     pub vendor: Option<String>,
+    /// `"<model>"` or `"<model> <effort>"`, as declared.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The member's parent, if it has one: rows come in tree order.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
     pub posture: Option<String>,
     pub state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -999,6 +1068,15 @@ pub struct StatusRow {
     /// The folder `up` accepted Claude's trust dialog for, if it did.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trust_accepted: Option<String>,
+    /// With a bus: whether the member's current incarnation may still be
+    /// running (`alive`, `gone` or `unknown`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub liveness: Option<Liveness>,
+}
+
+/// The name a deployment's team goes by in messages.
+pub fn team_name(input: &Input) -> String {
+    state::team_name(&state_for(input).source)
 }
 
 /// One snapshot of the team.
@@ -1017,13 +1095,37 @@ pub fn status(input: &Input) -> Result<Vec<StatusRow>, String> {
     let tmux = tmux_for(state);
     let windows = tmux.windows(&session);
     let meta = state::read_meta(state).unwrap_or_default();
+    let run = meta.run.as_ref().map(|r| RunPaths::from_root(&r.dir));
+    let nodes: Vec<tree::Node> = v
+        .team
+        .members
+        .values()
+        .map(|m| tree::Node {
+            id: m.id.clone(),
+            parent: m.parent.clone(),
+            cols: Vec::new(),
+        })
+        .collect();
     let mut rows = Vec::new();
-    for (id, member) in &v.team.members {
+    for (i, _) in tree::order(&nodes) {
+        let id = &nodes[i].id;
+        let member = &v.team.members[id];
         let posture = v.posture(id);
         let mut row = StatusRow {
             name: id.clone(),
             kind: "member",
             vendor: Some(member.vendor.as_str().into()),
+            model: member.model.as_ref().map(|m| match &m.effort {
+                Some(e) => format!("{} {e}", m.name),
+                None => m.name.clone(),
+            }),
+            parent: member.parent.clone(),
+            liveness: run.as_ref().and_then(|paths| {
+                crate::bus::manifest::load_incarnation(paths, id)
+                    .ok()
+                    .flatten()
+                    .map(|inc| lifecycle::liveness(paths, id, &inc.incarnation))
+            }),
             posture: Some(match posture {
                 Posture::Vendor => "vendor".into(),
                 Posture::Locked => "locked".into(),
@@ -1072,6 +1174,9 @@ pub fn status(input: &Input) -> Result<Vec<StatusRow>, String> {
             name: name.clone(),
             kind: "plugin",
             vendor: None,
+            model: None,
+            parent: None,
+            liveness: None,
             posture: None,
             state: "stopped".into(),
             rule: None,
@@ -1144,43 +1249,44 @@ fn pending(dir: &Path) -> Option<String> {
     (n > 0).then(|| format!("{n} undelivered"))
 }
 
-pub fn render_table(rows: &[StatusRow]) -> String {
-    let headers = ["NAME", "KIND", "VENDOR", "POSTURE", "STATE", "DETAIL"];
-    let cells: Vec<[String; 6]> = rows
+/// `brg status` as text: the team's tree with each member's vendor, model,
+/// state and details, then the plugin processes.
+pub fn render_status(team: &str, rows: &[StatusRow]) -> String {
+    let nodes: Vec<tree::Node> = rows
         .iter()
+        .filter(|r| r.kind == "member")
         .map(|r| {
-            [
-                r.name.clone(),
-                r.kind.to_string(),
-                r.vendor.clone().unwrap_or_else(|| "-".into()),
-                r.posture.clone().unwrap_or_else(|| "-".into()),
-                r.state.clone(),
-                r.detail.clone().unwrap_or_default(),
-            ]
+            let mut detail = Vec::new();
+            if r.posture.as_deref() == Some("locked") {
+                detail.push("locked".to_string());
+            }
+            detail.extend(r.detail.clone());
+            tree::Node {
+                id: r.name.clone(),
+                parent: r.parent.clone(),
+                cols: vec![
+                    format!(
+                        "{} {}",
+                        r.vendor.as_deref().unwrap_or("-"),
+                        r.model.as_deref().unwrap_or("default")
+                    ),
+                    r.state.clone(),
+                    detail.join("; "),
+                ],
+            }
         })
         .collect();
-    let mut widths = headers.map(str::len);
-    for row in &cells {
-        for (i, c) in row.iter().enumerate() {
-            widths[i] = widths[i].max(c.chars().count());
-        }
-    }
-    let line = |cols: &[String]| {
-        cols.iter()
-            .enumerate()
-            .map(|(i, c)| format!("{c:<w$}", w = widths[i]))
-            .collect::<Vec<_>>()
-            .join("  ")
-            .trim_end()
-            .to_string()
-    };
-    let mut out = line(&headers.map(String::from));
-    out.push('\n');
-    for row in &cells {
-        out.push_str(&line(row));
-        out.push('\n');
-    }
-    out
+    let plugins: Vec<(String, Vec<String>)> = rows
+        .iter()
+        .filter(|r| r.kind == "plugin")
+        .map(|r| {
+            (
+                r.name.clone(),
+                vec![r.state.clone(), r.detail.clone().unwrap_or_default()],
+            )
+        })
+        .collect();
+    tree::render(team, &nodes, &plugins)
 }
 
 /// Why `send` refused, with its exit code.
@@ -1390,14 +1496,14 @@ fn attach_command(input: &Input, name: &str) -> Result<Command, String> {
 /// `brg attach <member>`: replaces this process with a tmux client.
 pub fn attach(input: &Input, name: &str) -> Result<(), String> {
     let err = attach_command(input, name)?.exec();
-    Err(format!("cannot run tmux: {err}"))
+    Err(format!("cannot start tmux: {err}"))
 }
 
 /// Attach, and return when the client detaches (used by `status -i`).
 pub fn attach_and_wait(input: &Input, name: &str) -> Result<(), String> {
     let status = attach_command(input, name)?
         .status()
-        .map_err(|e| format!("cannot run tmux: {e}"))?;
+        .map_err(|e| format!("cannot start tmux: {e}"))?;
     if status.success() {
         Ok(())
     } else {

@@ -1,0 +1,8 @@
+• The reported dialog says:
+  Update available · 0.165.0 → 0.166.0
+  1. Update now
+  enter continue · esc skip
+
+› Ask Codex to do anything
+
+  ? for shortcuts

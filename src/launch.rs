@@ -88,18 +88,11 @@ pub fn shim_script(
     )
 }
 
-/// Shim names brg writes for itself in every member's `bin`; plugin
-/// commands may not use them.
-pub const RESERVED_SHIMS: [&str; 2] = ["brg", "borgchart"];
-
-/// The `brg` (and `borgchart`) a member finds first on its `PATH`: it runs
-/// the deployment's pinned binary, whatever else is installed.
-pub fn brg_shim_script(brg: &Path) -> String {
-    format!(
-        "#!/bin/sh\n# Written by brg: this deployment's own brg.\nexec {} \"$@\"\n",
-        shell_quote(&brg.display().to_string())
-    )
-}
+/// Command names a plugin may not grant. A granted command's shim comes
+/// first on the member's `PATH`, so a plugin command called `brg` (or
+/// `borgchart`) would shadow the installed brg, and the member's bus calls
+/// would run the plugin instead.
+pub const RESERVED_COMMANDS: [&str; 2] = ["brg", "borgchart"];
 
 /// The member's opening prompt: its standing instruction, the deployment's
 /// extra task, and the commands it may run (shims by absolute path).
@@ -221,6 +214,25 @@ fn codex_hook_hash(event_label: &str, command: &str) -> String {
     )
 }
 
+/// Whether Codex arguments override config `key` (`-c key=…`, `--config key=…`,
+/// `-c=key=…`, `--config=key=…` or `-ckey=…`), judged by the text before `=`.
+fn codex_args_set(args: &[String], key: &str) -> bool {
+    let mut values: Vec<&str> = Vec::new();
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if arg == "-c" || arg == "--config" {
+            values.extend(it.next().map(String::as_str));
+        } else if let Some(v) = arg.strip_prefix("--config=") {
+            values.push(v);
+        } else if let Some(v) = arg.strip_prefix("-c") {
+            values.push(v.strip_prefix('=').unwrap_or(v));
+        }
+    }
+    values
+        .into_iter()
+        .any(|v| v.split_once('=').is_some_and(|(k, _)| k.trim() == key))
+}
+
 fn toml_string(value: &str) -> String {
     // TOML basic strings accept JSON string escapes for these characters.
     serde_json::to_string(value).unwrap_or_default()
@@ -339,6 +351,11 @@ pub fn member_launch(
                     ]);
                 }
             }
+            // A member runs unattended, so it must not stop at Codex's
+            // "Update available" prompt. The deployment's `args` can say otherwise.
+            if !codex_args_set(&extra_args, "check_for_update_on_startup") {
+                argv.extend(["-c".into(), "check_for_update_on_startup=false".into()]);
+            }
             if posture == Posture::Locked {
                 argv.extend([
                     "-a".into(),
@@ -427,5 +444,28 @@ mod tests {
             v.contains(r#""/<session-flags>/config.toml:pre_tool_use:0:0"={trusted_hash="sha256:"#)
         );
         assert!(v.contains("_gate start /s/dep-1 triager"));
+    }
+
+    #[test]
+    fn codex_config_key_is_found_only_as_a_config_override() {
+        let set = |args: &[&str]| {
+            codex_args_set(
+                &args.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+                "check_for_update_on_startup",
+            )
+        };
+        assert!(set(&["-c", "check_for_update_on_startup=true"]));
+        assert!(set(&["--config", " check_for_update_on_startup = false"]));
+        assert!(set(&["-c=check_for_update_on_startup=false"]));
+        assert!(set(&["--config=check_for_update_on_startup=true"]));
+        assert!(set(&["-ccheck_for_update_on_startup=true"]));
+        assert!(!set(&[
+            "-c",
+            "developer_instructions=\"Explain check_for_update_on_startup\""
+        ]));
+        assert!(!set(&["-c", "check_for_update_on_startup_extra=true"]));
+        assert!(!set(&["check_for_update_on_startup=true"]));
+        assert!(!set(&["--model", "check_for_update_on_startup=true"]));
+        assert!(!set(&["-c"]));
     }
 }

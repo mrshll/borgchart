@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.318
+▝▜██████▀  Haiku 5.5 · Claude Example
+ ▝▝   ▝▝   ~/example/work
+
+
+❯ Run the shell command sleep 6 with Bash, then reply ok.
+
+● Sleeping for 6 seconds
+  ⎿  $ sleep 6 (3s)
+     (ctrl+b ctrl+b (twice) to run in background)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+* Bootstrapping… (26s · ↓ 1.3k tokens · thought for 2s)
+                                                                                                    ◐ medium · /effort
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  -- INSERT -- ⏵⏵ auto mode on (shift+tab to cycle) · ← 1 agent

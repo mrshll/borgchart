@@ -1,52 +1,34 @@
-//! Safe lifecycle and runtime binding: the lifecycle locks, the checks a
-//! start makes before it changes anything, run identity (`run.json`),
-//! runtime generations and their pinned binaries, member incarnations and
-//! their liveness, and the `brg run show|rebind` commands.
+//! Safe lifecycle: the lifecycle locks, the checks a start makes before it
+//! changes anything, the team's message storage at `up` (which run is in
+//! use, and rolling it over), member incarnations and their liveness.
 //!
-//! A run's identity (ID, schema, frozen topology, configuration digest) never
-//! changes. Which binary, state directory and tmux socket serve it is a
-//! *generation*; moving to another is an explicit rebind while stopped.
+//! Runs are internal: users never see or name them, and messages talk
+//! about teams and members only. brg isn't pinned: every window, shim and
+//! plugin process runs the `brg` that started it.
 
-use std::fs::{self, File, TryLockError};
+use std::fs::{self, File};
 use std::io;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime};
 
-use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::bus::fsx::{self, TMP_PREFIX, Written};
-use crate::bus::layout::{self, RunPaths};
+use crate::bus::fsx::{self, Written};
+use crate::bus::layout::{RunPaths, TeamStore};
 use crate::bus::manifest::{
-    self, ConfigSnapshot, Generation, Incarnation, LinkedRun, Liveness, PaneIdentity, RunManifest,
-    hex,
+    self, ConfigSnapshot, Incarnation, LinkedRun, Liveness, ManifestError, PaneIdentity, hex,
 };
-use crate::bus::outcome::{Code, Failure, ok_json};
-use crate::bus::time::utc_now;
+use crate::bus::time::{parse_utc, utc_now};
 use crate::deploy::BusConfig;
-use crate::runtime::state_for;
-use crate::state::{self, Meta, StateDir, shell_quote};
-use crate::validate::{Input, Validated, validate};
+use crate::state::{self, Meta, StateDir};
+use crate::validate::Validated;
 
 /// `ended_reason` for an incarnation stopped by `brg down`.
 pub const ENDED_STOPPED: &str = "stopped";
 /// `ended_reason` for an incarnation whose window could not be started.
 pub const ENDED_START_FAILED: &str = "start-failed";
-
-pub fn sha256_file(path: &Path) -> io::Result<String> {
-    Ok(hex(&Sha256::digest(fs::read(path)?)))
-}
-
-/// The binary running this command.
-pub fn current_brg() -> PathBuf {
-    std::env::current_exe().unwrap_or_else(|_| PathBuf::from("brg"))
-}
-
-fn short(sha: &str) -> &str {
-    &sha[..sha.len().min(12)]
-}
 
 // --- locks ---
 
@@ -59,8 +41,8 @@ fn lock_exclusive(path: &Path) -> Result<File, String> {
     Ok(file)
 }
 
-/// The deployment's lifecycle lock in brg's state directory, held by `up`,
-/// `down` and `run rebind` while they change anything.
+/// The deployment's lifecycle lock in brg's state directory, held by `up`
+/// and `down` while they change anything.
 pub fn lock_state(state: &StateDir) -> Result<File, String> {
     lock_exclusive(&state.lifecycle_lock())
 }
@@ -70,305 +52,309 @@ pub fn lock_run(paths: &RunPaths) -> Result<File, String> {
     lock_exclusive(&paths.lifecycle_lock())
 }
 
-// --- child starts into a running deployment ---
+// --- messages ---
 
-/// Refuse to start members into a running deployment from a different
-/// binary or a changed configuration. Nothing has been written when this
-/// fails.
+/// What changed between two configuration snapshots, in team and member
+/// terms: "oncall/helper's instruction file changed since the team started;
+/// restart the team to apply it: brg down && brg up". `restart` comes from
+/// [`state::restart_hint`].
+pub fn changed_since_start(
+    team: &str,
+    restart: &str,
+    was: &ConfigSnapshot,
+    now: &ConfigSnapshot,
+) -> String {
+    let differs = |k: &String| was.inputs.get(k) != now.inputs.get(k);
+    let keys: Vec<&String> = was
+        .inputs
+        .keys()
+        .chain(now.inputs.keys().filter(|k| !was.inputs.contains_key(*k)))
+        .filter(|k| differs(k))
+        .collect();
+    let mut things: Vec<String> = Vec::new();
+    if keys.iter().any(|k| *k == "deployment") {
+        things.push(format!("{team}'s deployment file (borgchart.yaml)"));
+    }
+    if keys.iter().any(|k| *k == crate::team::TEAM_FILE) {
+        things.push(format!("{team}'s team file ({})", crate::team::TEAM_FILE));
+    }
+    for k in &keys {
+        if let Some(id) = k
+            .strip_prefix("members/")
+            .and_then(|rest| rest.split_once('/'))
+            .map(|(id, _)| id)
+        {
+            let thing = format!("{team}/{id}'s instruction file");
+            if !things.contains(&thing) {
+                things.push(thing);
+            }
+        }
+    }
+    if things.is_empty() {
+        // Only the digest's version differs: a brg that hashes differently.
+        things.push(format!("{team}'s configuration"));
+    }
+    let list = match things.as_slice() {
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+        [] => unreachable!(),
+    };
+    format!("{list} changed since the team started; restart the team to apply it: {restart}")
+}
+
+// --- child starts into a running team ---
+
+/// Refuse to start members into a running team whose configuration changed
+/// since it started (a full `up` of a running team too). Nothing has been
+/// written when this fails.
 pub fn check_join(
     meta: &Meta,
-    caller: &Path,
-    caller_sha: &str,
     snapshot: &ConfigSnapshot,
     state: &StateDir,
-    retry: &str,
+    team: &str,
+    restart: &str,
 ) -> Result<(), String> {
-    let Some(sha) = &meta.brg_sha256 else {
-        return Err(
-            "this deployment was started by an older brg that didn't record its binary; stop it (`brg down`) and start it again"
-                .into(),
-        );
-    };
-    if sha != caller_sha {
-        return Err(format!(
-            "this brg ({}, sha256 {}) is not the binary the running deployment started with (sha256 {}); nothing was changed. Use that one: {} {retry}",
-            caller.display(),
-            short(caller_sha),
-            short(sha),
-            shell_quote(&meta.brg.display().to_string()),
-        ));
-    }
     match &meta.config {
         Some(c) if c.digest == snapshot.digest => {}
-        Some(c) => {
-            let mut changed: Vec<&str> = snapshot
-                .inputs
-                .iter()
-                .filter(|(k, v)| c.inputs.get(*k) != Some(*v))
-                .map(|(k, _)| k.as_str())
-                .collect();
-            changed.extend(
-                c.inputs
-                    .keys()
-                    .filter(|k| !snapshot.inputs.contains_key(*k))
-                    .map(String::as_str),
-            );
-            return Err(format!(
-                "the configuration changed since the deployment started ({}); nothing was changed. Undo the change, or stop the team (`brg down`) and start it again{}",
-                changed.join(", "),
-                if meta.run.is_some() {
-                    " in a new run (`run:` in borgchart.yaml)"
-                } else {
-                    ""
-                }
-            ));
-        }
+        Some(c) => return Err(changed_since_start(team, restart, c, snapshot)),
         None => {
-            return Err(
-                "this deployment was started by an older brg that didn't record its configuration; stop it (`brg down`) and start it again"
-                    .into(),
-            );
+            return Err(format!(
+                "team `{team}` was started by an older brg; restart the team: {restart}"
+            ));
         }
     }
     for name in meta.plugins.keys() {
         if !state.plugin_env_file(name).exists() {
             return Err(format!(
-                "plugin `{name}`'s values from `brg up` are missing; stop the team (`brg down`) and start it again"
+                "plugin `{name}`'s values from the team's start are missing; restart the team: {restart}"
             ));
         }
     }
     Ok(())
 }
 
-// --- run identity and generations ---
+// --- the team's message storage ---
 
-/// The run a start is bound to, with its lifecycle lock held.
+/// The run a start uses, with its lifecycle lock held.
 pub struct Binding {
     pub paths: RunPaths,
     pub run: String,
-    pub generation: Generation,
     pub lock: File,
+    /// Something to tell the person (what a format change left behind).
+    pub note: Option<String>,
 }
 
-/// Every generation of the run, oldest first.
-pub fn generations(paths: &RunPaths) -> Result<Vec<Generation>, String> {
-    let dir = paths.generations_dir();
-    let entries = match fs::read_dir(&dir) {
-        Ok(e) => e,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(format!("cannot read {}: {e}", dir.display())),
-    };
-    let mut ns = Vec::new();
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with(TMP_PREFIX) {
-            continue;
-        }
-        let n = name
-            .strip_suffix(".json")
-            .and_then(|s| s.parse::<u64>().ok())
-            .ok_or_else(|| format!("unexpected file {}", entry.path().display()))?;
-        ns.push(n);
-    }
-    ns.sort();
-    let mut out = Vec::new();
-    for n in ns {
-        let g = manifest::load_generation(paths, n)?
-            .ok_or_else(|| format!("generation {n} disappeared"))?;
-        if g.n != n {
-            return Err(format!("generation file {n} says it is {}", g.n));
-        }
-        out.push(g);
-    }
-    Ok(out)
+/// Why `up` started a new run (recorded in `linked_from.reason`).
+pub const ROLL_CONFIG: &str = "config";
+pub const ROLL_FORMAT: &str = "format";
+pub const ROLL_AGE: &str = "age";
+
+/// Carry unfinished work (open tasks, unanswered questions, unread
+/// messages) from `old` into the new run `new`, before `new` becomes
+/// current. Called with `old`'s `bus/lock` held and its `retired` marker
+/// written. Task facts own this and wire it in a later change; until then
+/// a configuration or age rollover leaves unfinished work behind.
+pub fn carry_into(new: &RunPaths, old: &RunPaths) -> Result<(), String> {
+    let _ = (new, old);
+    Ok(())
 }
 
-/// Copy `binary` (whose bytes must hash to `sha`) to the run's pinned path
-/// for that hash, unless it is there already, and check the copy.
-pub fn pin_binary(paths: &RunPaths, binary: &Path, sha: &str) -> Result<PathBuf, String> {
-    let pinned = paths.pinned_binary(sha);
-    let bytes = fs::read(binary).map_err(|e| format!("cannot read {}: {e}", binary.display()))?;
-    if hex(&Sha256::digest(&bytes)) != sha {
-        return Err(format!(
-            "{} changed while it was being pinned; try again",
-            binary.display()
-        ));
-    }
-    let written = fsx::write_new(&pinned, &bytes)
-        .map_err(|e| format!("cannot write {}: {e}", pinned.display()))?;
-    if written == Written::Created {
-        fs::set_permissions(&pinned, fs::Permissions::from_mode(0o700))
-            .map_err(|e| format!("cannot make {} executable: {e}", pinned.display()))?;
-    }
-    let got = sha256_file(&pinned).map_err(|e| format!("cannot read {}: {e}", pinned.display()))?;
-    if got != sha {
-        return Err(format!(
-            "the pinned binary {} does not match its hash; the run's runtime directory is damaged",
-            pinned.display()
-        ));
-    }
-    Ok(pinned)
+fn aged(created_at: &str, max_age_days: u32) -> bool {
+    parse_utc(created_at)
+        .and_then(|t| SystemTime::now().duration_since(t).ok())
+        .is_some_and(|age| age >= Duration::from_secs(u64::from(max_age_days) * 86_400))
 }
 
-fn rebind_hint(latest: &Generation) -> String {
-    format!(
-        "use the run's binary ({}), or stop the team and run `brg run rebind --reason TEXT` with this one",
-        shell_quote(&latest.pinned.display().to_string())
-    )
+/// Records in a run, for saying what a format change left behind.
+fn record_count(paths: &RunPaths) -> usize {
+    fs::read_dir(paths.records_dir())
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| !e.file_name().to_string_lossy().starts_with(fsx::TMP_PREFIX))
+                .count()
+        })
+        .unwrap_or(0)
 }
 
-/// Check (and on a run's first start, create) the run's identity and
-/// generation for this start. Every check is made before anything is
-/// written; the run's lifecycle lock is held from the first write.
-#[allow(clippy::too_many_arguments)]
+/// The first member of `members` whose current incarnation in `paths` may
+/// still be running (`alive` or `unknown`). With `lenient`, an incarnation
+/// that can't be read (another message format) is skipped.
+fn maybe_running<'a>(
+    paths: &RunPaths,
+    members: impl Iterator<Item = &'a String>,
+    lenient: bool,
+) -> Option<&'a String> {
+    members
+        .into_iter()
+        .find(|id| match manifest::load_incarnation(paths, id) {
+            Ok(None) => false,
+            Ok(Some(inc)) => liveness(paths, id, &inc.incarnation) != Liveness::Gone,
+            Err(_) => !lenient,
+        })
+}
+
+enum Plan {
+    /// Use this run; write its manifest if it has none yet.
+    Reuse { id: String, write_manifest: bool },
+    /// Start a new run, linked to the previous one if there was one.
+    New {
+        previous: Option<(String, &'static str)>,
+    },
+}
+
+/// Pick (and on a full `up` of a stopped team, roll over) the run this
+/// start uses. Every check is made before anything is written.
+///
+/// - `joining`: the team is running; use its run as it is.
+/// - `child`: `up --member` of a stopped team; it never rolls over, so it
+///   refuses when the configuration or message format changed.
+/// - otherwise a full `up` of a stopped team: a new run, linked to the
+///   previous one, when the configuration or message format changed or the
+///   run reached `max_age_days`, but only once every member is positively
+///   stopped. A format change carries nothing.
 pub fn bind_run(
     v: &Validated,
     bus: &BusConfig,
     state: &StateDir,
     source: &Path,
-    caller: &Path,
-    caller_sha: &str,
     joining: bool,
+    child: bool,
 ) -> Result<Binding, String> {
-    let paths = RunPaths::new(bus);
-    // A link to an earlier run must point at a run that exists, checked
-    // before the new run's directory is made.
-    let linked = match &bus.continues {
-        Some(prev) if !paths.manifest().exists() => {
-            let prev_paths = RunPaths::from_root(&bus.root.join(prev));
-            match manifest::load_manifest(&prev_paths)? {
-                Some(_) => Some(LinkedRun {
-                    run: prev.clone(),
-                    root: bus.root.clone(),
-                    reason: "continues".into(),
-                }),
-                None => {
-                    return Err(format!(
-                        "bus: `continues: {prev}` names a run with no run.json under {}; nothing was started",
-                        bus.root.display()
-                    ));
+    let team = state::team_name(source);
+    let restart = state::restart_hint(source);
+    let store = TeamStore::new(bus, &state.id);
+    let unreadable = || format!("team `{team}`'s messages can't be read; nothing was started");
+    let current = store.current().map_err(|_| unreadable())?;
+    let snapshot = v.config_snapshot();
+    let missing = || {
+        format!(
+            "team `{team}` was started before but its messages are missing; nothing was started"
+        )
+    };
+    let plan = match current {
+        None if joining => return Err(missing()),
+        // Runs without `current`: storage was damaged, not a first start.
+        None if !store.runs().map_err(|_| unreadable())?.is_empty() => return Err(missing()),
+        None => Plan::New { previous: None },
+        Some(id) => match manifest::load_manifest(&store.run(&id)) {
+            Ok(Some(m)) if m.deployment != state.id => {
+                return Err(format!(
+                    "team `{team}`'s messages belong to another team; nothing was started"
+                ));
+            }
+            Ok(Some(m)) if m.config.digest != snapshot.digest => {
+                if joining || child {
+                    return Err(changed_since_start(&team, &restart, &m.config, &snapshot));
+                }
+                Plan::New {
+                    previous: Some((id, ROLL_CONFIG)),
                 }
             }
-        }
-        _ => None,
+            Ok(Some(m)) if !joining && !child && aged(&m.created_at, bus.max_age_days) => {
+                Plan::New {
+                    previous: Some((id, ROLL_AGE)),
+                }
+            }
+            Ok(Some(_)) => Plan::Reuse {
+                id,
+                write_manifest: false,
+            },
+            Ok(None) if joining => return Err(missing()),
+            Ok(None) => Plan::Reuse {
+                id,
+                write_manifest: true,
+            },
+            Err(ManifestError::Format { found }) if joining || child => {
+                return Err(manifest::format_mismatch(&team, found, &restart));
+            }
+            Err(ManifestError::Format { .. }) => Plan::New {
+                previous: Some((id, ROLL_FORMAT)),
+            },
+            Err(ManifestError::Unreadable(_)) => return Err(unreadable()),
+        },
     };
-    let paths = layout::ensure_run_dir(bus)
-        .map_err(|e| format!("cannot use the run directory {}: {e}", paths.root.display()))?;
-    let lock = lock_run(&paths)?;
-
-    let existing = manifest::load_manifest(&paths)?;
-    let snapshot = v.config_snapshot();
-    let new_manifest = match &existing {
-        Some(m) => {
-            if m.deployment != state.id {
-                return Err(format!(
-                    "run `{}` belongs to deployment `{}`, not this one (`{}`); give this deployment its own `run:`",
-                    bus.run, m.deployment, state.id
-                ));
-            }
-            if m.config.digest != snapshot.digest {
-                let changed: Vec<&str> = snapshot
-                    .inputs
-                    .iter()
-                    .filter(|(k, val)| m.config.inputs.get(*k) != Some(*val))
-                    .map(|(k, _)| k.as_str())
-                    .chain(
-                        m.config
-                            .inputs
-                            .keys()
-                            .filter(|k| !snapshot.inputs.contains_key(*k))
-                            .map(String::as_str),
-                    )
-                    .collect();
-                return Err(format!(
-                    "the configuration changed since run `{}` started ({}); a run's configuration is frozen. Undo the change, or start a new run (`run:` in borgchart.yaml, with `continues: {}` to carry on from this one)",
-                    bus.run,
-                    changed.join(", "),
-                    bus.run
-                ));
-            }
-            None
-        }
-        None if joining => {
-            return Err(format!(
-                "the deployment is running but run `{}` has no run.json; stop it (`brg down`) and start it again",
-                bus.run
-            ));
-        }
-        None => {
-            let mut m =
-                manifest::manifest_for(v, &bus.run, &state.id, source.to_path_buf(), utc_now());
-            m.linked_from = linked;
-            Some(m)
-        }
-    };
-
-    let gens = generations(&paths)?;
-    let socket = state::tmux_socket();
-    let current = match gens.last() {
-        Some(latest) => {
-            if latest.binary_sha256 != caller_sha {
-                return Err(format!(
-                    "rebind needed: run `{}` generation {} runs brg sha256 {}, this brg ({}) is sha256 {}; {}",
-                    bus.run,
-                    latest.n,
-                    short(&latest.binary_sha256),
-                    caller.display(),
-                    short(caller_sha),
-                    rebind_hint(latest)
-                ));
-            }
-            if latest.state_dir != state.root || latest.socket != socket {
-                return Err(format!(
-                    "rebind needed: run `{}` generation {} uses state directory {} and tmux socket `{}`, this brg uses {} and `{}`; stop the team and run `brg run rebind --reason TEXT`",
-                    bus.run,
-                    latest.n,
-                    latest.state_dir.display(),
-                    latest.socket,
-                    state.root.display(),
-                    socket
-                ));
-            }
-            Some(latest.clone())
-        }
-        None if joining => {
-            return Err(format!(
-                "the deployment is running but run `{}` has no generation; stop it (`brg down`) and start it again",
-                bus.run
-            ));
-        }
-        None => None,
-    };
-
-    // Every check passed: record the run and its first generation.
-    if let Some(m) = &new_manifest {
-        write_json_new(&paths.manifest(), m)?;
+    // A rollover needs every member positively stopped.
+    if let Plan::New {
+        previous: Some((prev, reason)),
+    } = &plan
+        && let Some(id) = maybe_running(
+            &store.run(prev),
+            v.team.members.keys(),
+            *reason == ROLL_FORMAT,
+        )
+    {
+        return Err(format!(
+            "brg can't tell that {team}/{id} has stopped, so the team can't start with fresh messages; stop the team and start it again: {restart}"
+        ));
     }
-    let generation = match current {
-        Some(g) => g,
-        None => {
-            let pinned = pin_binary(&paths, caller, caller_sha)?;
-            let g = Generation {
-                n: 1,
-                at: utc_now(),
-                binary: caller.to_path_buf(),
-                binary_sha256: caller_sha.to_string(),
-                pinned,
-                state_dir: state.root.clone(),
-                socket,
-                previous: None,
-                reason: "start".into(),
-            };
-            write_json_new(&paths.generation(1), &g)?;
-            g
-        }
+
+    let storage_error = |e: io::Error| {
+        format!("cannot use team `{team}`'s message storage ({e}); nothing was started")
     };
-    Ok(Binding {
-        paths,
-        run: bus.run.clone(),
-        generation,
-        lock,
-    })
+    match plan {
+        Plan::Reuse { id, write_manifest } => {
+            let paths = store.ensure_run(&id).map_err(storage_error)?;
+            let lock = lock_run(&paths)?;
+            if write_manifest {
+                let m = manifest::manifest_for(v, &id, &state.id, source.to_path_buf(), utc_now());
+                write_json_new(&paths.manifest(), &m)?;
+            }
+            Ok(Binding {
+                paths,
+                run: id,
+                lock,
+                note: None,
+            })
+        }
+        Plan::New { previous } => {
+            let id = store.next_id().map_err(storage_error)?;
+            let paths = store.ensure_run(&id).map_err(storage_error)?;
+            let lock = lock_run(&paths)?;
+            let mut m = manifest::manifest_for(v, &id, &state.id, source.to_path_buf(), utc_now());
+            m.linked_from = previous.as_ref().map(|(prev, reason)| LinkedRun {
+                run: prev.clone(),
+                root: store.dir.clone(),
+                reason: (*reason).to_string(),
+            });
+            write_json_new(&paths.manifest(), &m)?;
+            let mut note = None;
+            match &previous {
+                Some((prev, reason)) => {
+                    // Writers re-check `retired` under `bus/lock`, so nothing
+                    // published to the old run while this runs is stranded.
+                    let old = store.run(prev);
+                    let _old_bus = lock_exclusive(&old.bus_lock())?;
+                    fsx::write_new(&old.retired(), format!("{id}\n").as_bytes())
+                        .map_err(storage_error)?;
+                    if *reason == ROLL_FORMAT {
+                        // This brg can't read the old format, so it can't
+                        // carry from it; the old messages stay where they are.
+                        let n = record_count(&old);
+                        note = Some(format!(
+                            "team `{team}`'s messages were in another format, so it starts with fresh ones; {n} message{} in the old format {} left on disk, and open work in it wasn't carried over",
+                            if n == 1 { "" } else { "s" },
+                            if n == 1 { "was" } else { "were" }
+                        ));
+                    } else {
+                        carry_into(&paths, &old)?;
+                    }
+                    store
+                        .set_current(&id)
+                        .map_err(|e| format!("cannot record team `{team}`'s messages: {e}"))?;
+                }
+                None => store
+                    .set_current(&id)
+                    .map_err(|e| format!("cannot record team `{team}`'s messages: {e}"))?,
+            }
+            Ok(Binding {
+                paths,
+                run: id,
+                lock,
+                note,
+            })
+        }
+    }
 }
 
 fn write_json_new<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), String> {
@@ -393,8 +379,8 @@ fn write_json_replace<T: serde::Serialize>(path: &Path, value: &T) -> Result<(),
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A new incarnation ID for `member`, unique in the run:
-/// `<member>.<generation>.<utc yyyymmddhhmmssmmm>.<4 hex>`.
-pub fn new_incarnation_id(paths: &RunPaths, member: &str, generation: u64) -> String {
+/// `<member>.<utc yyyymmddhhmmssmmm>.<4 hex>`.
+pub fn new_incarnation_id(paths: &RunPaths, member: &str) -> String {
     let current = manifest::load_incarnation(paths, member)
         .ok()
         .flatten()
@@ -408,7 +394,7 @@ pub fn new_incarnation_id(paths: &RunPaths, member: &str, generation: u64) -> St
             std::time::SystemTime::now()
         );
         let tag = &hex(&Sha256::digest(seed.as_bytes()))[..4];
-        let id = format!("{member}.{generation}.{stamp}.{tag}");
+        let id = format!("{member}.{stamp}.{tag}");
         if current.as_deref() != Some(id.as_str())
             && !paths.incarnation_history(member, &id).exists()
         {
@@ -420,7 +406,7 @@ pub fn new_incarnation_id(paths: &RunPaths, member: &str, generation: u64) -> St
 /// Hold `bus/lock` (exclusive, briefly) while an incarnation changes, so a
 /// bus mutation checking a member's current incarnation under that lock
 /// sees either the old record or the new one. Lock order: lifecycle →
-/// generation → bus.
+/// bus.
 fn with_bus_lock<T>(paths: &RunPaths, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     let _lock = lock_exclusive(&paths.bus_lock())?;
     f()
@@ -527,7 +513,7 @@ impl Server {
                 "#{session_name}|#{window_name}|#{pane_id}|#{pane_pid}|#{pane_dead}",
             ])
             .output()
-            .map_err(|e| format!("cannot run tmux: {e}"))?;
+            .map_err(|e| format!("cannot start tmux: {e}"))?;
         if !out.status.success() {
             return Err(format!(
                 "cannot reach the {}: {}",
@@ -556,7 +542,7 @@ impl Server {
             .command()
             .args(args)
             .output()
-            .map_err(|e| format!("cannot run tmux: {e}"))?;
+            .map_err(|e| format!("cannot start tmux: {e}"))?;
         if out.status.success() {
             Ok(())
         } else {
@@ -652,366 +638,88 @@ pub fn liveness(paths: &RunPaths, member: &str, incarnation: &str) -> Liveness {
     }
 }
 
-// --- brg run show / rebind ---
-
-fn bus_for(input: &Input) -> Result<(Validated, BusConfig), Failure> {
-    let (report, validated) = validate(input);
-    let v = validated.ok_or_else(|| {
-        Failure::new(
-            Code::Invalid,
-            report
-                .errors()
-                .map(|d| d.to_string())
-                .collect::<Vec<_>>()
-                .join("\n"),
-        )
-    })?;
-    let bus = v
-        .deployment
-        .as_ref()
-        .and_then(|d| d.bus.clone())
-        .ok_or_else(|| Failure::new(Code::NotConfigured, "this deployment has no `bus:`"))?;
-    Ok((v, bus))
-}
-
-fn load_run(paths: &RunPaths, run: &str) -> Result<RunManifest, Failure> {
-    match manifest::load_manifest(paths) {
-        Ok(Some(m)) => Ok(m),
-        Ok(None) => Err(Failure::new(
-            Code::NotConfigured,
-            format!("run `{run}` hasn't started (no run.json); `brg up` starts it"),
-        )),
-        Err(e) if e.contains("schema") => Err(Failure::new(Code::Refused, e)),
-        Err(e) => Err(Failure::new(Code::Corrupt, e)),
-    }
-}
-
-/// The exact command that stops the run with its own binary.
-pub fn stop_command(pinned: &Path, source: &Path) -> String {
-    let flag = if source.is_dir() { "--team" } else { "--file" };
-    format!(
-        "{} {flag} {} down",
-        shell_quote(&pinned.display().to_string()),
-        shell_quote(&source.display().to_string())
-    )
-}
-
-/// `brg run show`: read-only.
-pub fn show(input: &Input) -> Result<Value, Failure> {
-    let (_, bus) = bus_for(input)?;
-    let paths = RunPaths::new(&bus);
-    let m = load_run(&paths, &bus.run)?;
-    let gens = generations(&paths).map_err(|e| Failure::new(Code::Corrupt, e))?;
-    let latest = gens.last();
-    let mut members = Vec::new();
-    for id in m.members.keys() {
-        let inc =
-            manifest::load_incarnation(&paths, id).map_err(|e| Failure::new(Code::Corrupt, e))?;
-        let live = inc.as_ref().map(|i| liveness(&paths, id, &i.incarnation));
-        members.push(json!({"member": id, "incarnation": inc, "liveness": live}));
-    }
-    Ok(ok_json(
-        "ok",
-        json!({
-            "run_dir": paths.root,
-            "run": m,
-            "generation": latest,
-            "generations": gens,
-            "pinned": latest.map(|g| g.pinned.clone()),
-            "stop": latest.map(|g| stop_command(&g.pinned, &m.source)),
-            "members": members,
-        }),
-    ))
-}
-
-/// `brg run show` as text.
-pub fn render_show(v: &Value) -> String {
-    let s = |v: &Value| v.as_str().unwrap_or("-").to_string();
-    let run = &v["run"];
-    let mut out = format!(
-        "run {}  (schema {}, deployment {}, created {})\n",
-        s(&run["run"]),
-        run["schema"],
-        s(&run["deployment"]),
-        s(&run["created_at"])
-    );
-    out.push_str(&format!("  dir      {}\n", s(&v["run_dir"])));
-    out.push_str(&format!("  config   {}\n", s(&run["config"]["digest"])));
-    if let Some(l) = run.get("linked_from").filter(|l| !l.is_null()) {
-        out.push_str(&format!(
-            "  {}  {} (in {})\n",
-            s(&l["reason"]),
-            s(&l["run"]),
-            s(&l["root"])
-        ));
-    }
-    let g = &v["generation"];
-    if g.is_null() {
-        out.push_str("generation: none yet\n");
-    } else {
-        out.push_str(&format!(
-            "generation {}  ({}, {})\n",
-            g["n"],
-            s(&g["reason"]),
-            s(&g["at"])
-        ));
-        out.push_str(&format!("  pinned   {}\n", s(&g["pinned"])));
-        out.push_str(&format!(
-            "  from     {} (sha256 {})\n",
-            s(&g["binary"]),
-            short(&s(&g["binary_sha256"]))
-        ));
-        out.push_str(&format!(
-            "  state    {}  socket {}\n",
-            s(&g["state_dir"]),
-            s(&g["socket"])
-        ));
-        out.push_str(&format!("stop with: {}\n", s(&v["stop"])));
-    }
-    out.push_str("members:\n");
-    for m in v["members"].as_array().into_iter().flatten() {
-        let inc = &m["incarnation"];
-        let line = if inc.is_null() {
-            format!("  {}  never started\n", s(&m["member"]))
-        } else {
-            let pane = &inc["pane"];
-            let pane = if pane.is_null() {
-                "no pane".to_string()
-            } else {
-                format!("pane {} pid {}", s(&pane["pane_id"]), pane["pane_pid"])
-            };
-            let ended = if inc["ended_at"].is_null() {
-                String::new()
-            } else {
-                format!(
-                    ", ended {} ({})",
-                    s(&inc["ended_at"]),
-                    s(&inc["ended_reason"])
-                )
-            };
-            format!(
-                "  {}  {}  {}  {}{}\n",
-                s(&m["member"]),
-                s(&inc["incarnation"]),
-                s(&m["liveness"]),
-                pane,
-                ended
-            )
-        };
-        out.push_str(&line);
-    }
-    out
-}
-
-/// `brg run rebind --reason TEXT`: move a stopped run to this binary (and
-/// this state directory and tmux socket). Rollback is a rebind with the old
-/// binary. Nothing is ever deleted.
-pub fn rebind(input: &Input, reason: &str) -> Result<Value, Failure> {
-    let reason = reason.trim();
-    if reason.is_empty() || reason.len() > 200 || reason.chars().any(char::is_control) {
-        return Err(Failure::new(
-            Code::Usage,
-            "--reason must be 1-200 characters of plain text",
-        ));
-    }
-    let (_, bus) = bus_for(input)?;
-    let dep = state_for(input);
-    let state = &dep.state;
-    let paths = RunPaths::new(&bus);
-    if !paths.manifest().exists() {
-        return Err(Failure::new(
-            Code::NotConfigured,
-            format!(
-                "run `{}` hasn't started (no run.json); `brg up` starts it",
-                bus.run
-            ),
-        ));
-    }
-    let paths = layout::ensure_run_dir(&bus).map_err(|e| Failure::io("run directory", e))?;
-    state::ensure_dir(&state.root).map_err(|e| Failure::io("state directory", e))?;
-    let _state_lock = lock_state(state).map_err(|e| Failure::new(Code::Error, e))?;
-    let _run_lock = lock_run(&paths).map_err(|e| Failure::new(Code::Error, e))?;
-
-    let m = load_run(&paths, &bus.run)?;
-    if m.deployment != state.id {
-        return Err(Failure::new(
-            Code::Refused,
-            format!(
-                "run `{}` belongs to deployment `{}`, not this one (`{}`)",
-                bus.run, m.deployment, state.id
-            ),
-        ));
-    }
-    let gens = generations(&paths).map_err(|e| Failure::new(Code::Corrupt, e))?;
-    let Some(latest) = gens.last() else {
-        return Err(Failure::new(
-            Code::NotConfigured,
-            format!(
-                "run `{}` has no generation yet; `brg up` records it",
-                bus.run
-            ),
-        ));
-    };
-    // Only a positively stopped run may move: its server answers without
-    // the session, or the last `down` recorded a confirmed stop; and every
-    // member's incarnation is gone.
-    let socket = state::tmux_socket();
-    let stop = stop_command(&latest.pinned, &m.source);
-    let ran = StateDir::from_root(&latest.state_dir);
-    let meta = state::read_meta(&ran);
-    let server = meta
-        .as_ref()
-        .map(Server::of)
-        .unwrap_or_else(|| Server::Name(latest.socket.clone()));
-    let running = |rows: &[PaneRow]| rows.iter().any(|r| r.session == ran.session());
-    match server.panes() {
-        Ok(rows) if running(&rows) => {
-            return Err(Failure::new(
-                Code::Refused,
-                format!(
-                    "the deployment is running ({}); stop it first: {stop}",
-                    server.describe()
-                ),
-            ));
-        }
-        Ok(_) => {}
-        Err(_) if meta.as_ref().is_some_and(|m| m.stopped_at.is_some()) => {}
-        Err(e) => {
-            return Err(Failure::new(
-                Code::Refused,
-                format!(
-                    "can't tell whether the deployment is stopped ({e}); stop it first: {stop}"
-                ),
-            ));
-        }
-    }
-    if Server::Name(socket.clone()) != server
-        && let Ok(rows) = Server::Name(socket.clone()).panes()
-        && rows.iter().any(|r| r.session == state.session())
-    {
-        return Err(Failure::new(
-            Code::Refused,
-            format!("the deployment is running (tmux socket `{socket}`); stop it first"),
-        ));
-    }
-    for id in m.members.keys() {
-        let inc = manifest::load_incarnation(&paths, id).map_err(|e| {
-            Failure::new(
-                Code::Refused,
-                format!("can't tell whether member `{id}` is stopped: {e}"),
-            )
-        })?;
-        let Some(inc) = inc else { continue };
-        match liveness(&paths, id, &inc.incarnation) {
-            Liveness::Gone => {}
-            Liveness::Alive => {
-                return Err(Failure::new(
-                    Code::Refused,
-                    format!(
-                        "member `{id}` ({}) is still running; stop it first: {stop}",
-                        inc.incarnation
-                    ),
-                ));
-            }
-            Liveness::Unknown => {
-                return Err(Failure::new(
-                    Code::Refused,
-                    format!(
-                        "can't tell whether member `{id}` ({}) is stopped: its tmux server can't be asked; stop it first: {stop}",
-                        inc.incarnation
-                    ),
-                ));
-            }
-        }
-    }
-    let gen_lock = state::open_lock(&paths.generation_lock())
-        .map_err(|e| Failure::io("generation lock", e))?;
-    match gen_lock.try_lock() {
-        Ok(()) => {}
-        Err(TryLockError::WouldBlock) => {
-            return Err(Failure::new(
-                Code::Refused,
-                "a bus command or the attention worker is using the run (runtime/generation.lock is held); try again when it is done",
-            ));
-        }
-        Err(TryLockError::Error(e)) => return Err(Failure::io("generation lock", e)),
-    }
-    let inflight: Vec<String> = match fs::read_dir(paths.inflight_dir()) {
-        Ok(entries) => entries
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().to_string())
-            .collect(),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
-        Err(e) => return Err(Failure::io("attention/inflight", e)),
-    };
-    if !inflight.is_empty() {
-        return Err(Failure::new(
-            Code::Refused,
-            format!(
-                "wake attempts are in flight ({}); resolve them first (`brg bus attention resolve <member>`)",
-                inflight.join(", ")
-            ),
-        ));
-    }
-
-    let caller = current_brg();
-    let caller_sha = sha256_file(&caller).map_err(|e| Failure::io("this brg", e))?;
-    if latest.binary_sha256 == caller_sha
-        && latest.state_dir == state.root
-        && latest.socket == socket
-    {
-        return Ok(ok_json(
-            "unchanged",
-            json!({
-                "message": format!("run `{}` is already bound to this brg (generation {})", bus.run, latest.n),
-                "generation": latest,
-            }),
-        ));
-    }
-    let pinned =
-        pin_binary(&paths, &caller, &caller_sha).map_err(|e| Failure::new(Code::Error, e))?;
-    let g = Generation {
-        n: latest.n + 1,
-        at: utc_now(),
-        binary: caller,
-        binary_sha256: caller_sha,
-        pinned,
-        state_dir: state.root.clone(),
-        socket,
-        previous: Some(latest.n),
-        reason: reason.to_string(),
-    };
-    write_json_new(&paths.generation(g.n), &g).map_err(|e| Failure::new(Code::Conflict, e))?;
-    drop(gen_lock);
-    Ok(ok_json(
-        "rebound",
-        json!({
-            "message": format!(
-                "run `{}`: generation {} (was {}), pinned {}",
-                bus.run, g.n, latest.n, g.pinned.display()
-            ),
-            "generation": g,
-        }),
-    ))
-}
-
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
 
     #[test]
     fn incarnation_ids_are_well_formed_and_distinct() {
         let dir = tempfile::tempdir().unwrap();
         let paths = RunPaths::from_root(dir.path());
-        let a = new_incarnation_id(&paths, "helper", 3);
-        let b = new_incarnation_id(&paths, "helper", 3);
+        let a = new_incarnation_id(&paths, "helper");
+        let b = new_incarnation_id(&paths, "helper");
         assert_ne!(a, b);
-        assert!(a.starts_with("helper.3."), "{a}");
+        let parts: Vec<&str> = a.split('.').collect();
+        assert_eq!(parts.len(), 3, "{a}");
+        assert_eq!(parts[0], "helper");
+        assert_eq!(parts[1].len(), 17, "{a}");
         assert!(
             a.chars()
                 .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "._-".contains(c)),
             "{a}"
         );
+    }
+
+    fn snapshot(inputs: &[(&str, &str)]) -> ConfigSnapshot {
+        ConfigSnapshot {
+            version: manifest::CONFIG_DIGEST_VERSION,
+            digest: format!("{inputs:?}"),
+            inputs: inputs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect::<BTreeMap<_, _>>(),
+        }
+    }
+
+    #[test]
+    fn changes_are_named_in_team_and_member_terms() {
+        let was = snapshot(&[
+            ("deployment", "d"),
+            ("team.yaml", "t"),
+            ("members/helper/prompt", "hp"),
+            ("members/helper/instruction", "hi"),
+            ("members/lead/prompt", "lp"),
+            ("members/lead/instruction", "li"),
+        ]);
+        let helper = snapshot(&[
+            ("deployment", "d"),
+            ("team.yaml", "t"),
+            ("members/helper/prompt", "hp2"),
+            ("members/helper/instruction", "hi2"),
+            ("members/lead/prompt", "lp"),
+            ("members/lead/instruction", "li"),
+        ]);
+        assert_eq!(
+            changed_since_start("oncall", "brg down && brg up", &was, &helper),
+            "oncall/helper's instruction file changed since the team started; restart the team to apply it: brg down && brg up"
+        );
+        let many = snapshot(&[
+            ("deployment", "d2"),
+            ("team.yaml", "t2"),
+            ("members/helper/prompt", "hp"),
+            ("members/helper/instruction", "hi"),
+            ("members/lead/prompt", "lp"),
+            ("members/lead/instruction", "li2"),
+            ("members/scout/prompt", "sp"),
+            ("members/scout/instruction", "si"),
+        ]);
+        let msg = changed_since_start("oncall", "brg down && brg up", &was, &many);
+        assert!(
+            msg.starts_with(
+                "oncall's deployment file (borgchart.yaml), oncall's team file (team.yaml), oncall/lead's instruction file and oncall/scout's instruction file changed since the team started"
+            ),
+            "{msg}"
+        );
+        assert!(!crate::bus::mentions_runs(&msg), "{msg}");
+    }
+
+    #[test]
+    fn age_counts_whole_days() {
+        assert!(aged("2000-01-01T00:00:00Z", 14));
+        assert!(!aged(&utc_now(), 14));
+        assert!(!aged("not a time", 14));
     }
 
     #[test]
@@ -1020,8 +728,7 @@ mod tests {
         let paths = RunPaths::from_root(dir.path());
         let mut inc = Incarnation {
             member: "lead".into(),
-            incarnation: "lead.1.1.abcd".into(),
-            generation: 1,
+            incarnation: "lead.1.abcd".into(),
             started_at: utc_now(),
             vendor_version: None,
             pane: None,
@@ -1029,7 +736,7 @@ mod tests {
             ended_reason: None,
         };
         begin_incarnation(&paths, &inc).unwrap();
-        assert_eq!(liveness(&paths, "lead", "lead.1.1.abcd"), Liveness::Unknown);
+        assert_eq!(liveness(&paths, "lead", "lead.1.abcd"), Liveness::Unknown);
         assert_eq!(liveness(&paths, "lead", "lead.other"), Liveness::Unknown);
         inc.pane = Some(PaneIdentity {
             socket: format!("/nonexistent/brg-no-such-socket-{}", std::process::id()),
@@ -1040,10 +747,10 @@ mod tests {
         });
         complete_incarnation(&paths, &inc).unwrap();
         // A server that can't be reached proves nothing.
-        assert_eq!(liveness(&paths, "lead", "lead.1.1.abcd"), Liveness::Unknown);
+        assert_eq!(liveness(&paths, "lead", "lead.1.abcd"), Liveness::Unknown);
         assert!(end_incarnation(&paths, "lead", ENDED_STOPPED).unwrap());
         assert!(!end_incarnation(&paths, "lead", ENDED_STOPPED).unwrap());
-        assert_eq!(liveness(&paths, "lead", "lead.1.1.abcd"), Liveness::Gone);
+        assert_eq!(liveness(&paths, "lead", "lead.1.abcd"), Liveness::Gone);
         let stored = manifest::load_incarnation(&paths, "lead").unwrap().unwrap();
         assert_eq!(stored.ended_reason.as_deref(), Some(ENDED_STOPPED));
     }
@@ -1067,22 +774,5 @@ mod tests {
             Server::Path("/tmp/x/sock".into())
         );
         assert_eq!(Server::from_recorded("name"), Server::Name("name".into()));
-    }
-
-    #[test]
-    fn pinning_copies_once_and_checks_the_hash() {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = RunPaths::from_root(&dir.path().join("run"));
-        let bin = dir.path().join("brg");
-        fs::write(&bin, b"binary-one").unwrap();
-        let sha = sha256_file(&bin).unwrap();
-        let pinned = pin_binary(&paths, &bin, &sha).unwrap();
-        assert_eq!(fs::read(&pinned).unwrap(), b"binary-one");
-        let mode = fs::metadata(&pinned).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o700);
-        assert_eq!(pin_binary(&paths, &bin, &sha).unwrap(), pinned);
-        assert!(pin_binary(&paths, &bin, "00").is_err());
-        fs::write(&pinned, b"tampered").unwrap();
-        assert!(pin_binary(&paths, &bin, &sha).is_err());
     }
 }

@@ -109,12 +109,6 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Show or rebind the deployment's bus run.
-    #[command(name = "run")]
-    RunCmd {
-        #[command(subcommand)]
-        action: RunAction,
-    },
     #[command(name = "_exec", hide = true)]
     Exec { state: PathBuf, window: String },
     #[command(name = "_run", hide = true)]
@@ -131,27 +125,6 @@ enum Command {
         event: String,
         state: PathBuf,
         member: String,
-    },
-}
-
-#[derive(Subcommand)]
-enum RunAction {
-    /// The run, its generations and pinned binary, and each member's incarnation and liveness.
-    Show {
-        #[command(flatten)]
-        target: Target,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Move the stopped run to this brg (or back to an earlier one).
-    Rebind {
-        #[command(flatten)]
-        target: Target,
-        /// Why (recorded in the new generation).
-        #[arg(long)]
-        reason: String,
-        #[arg(long)]
-        json: bool,
     },
 }
 
@@ -195,8 +168,9 @@ pub fn main() -> ExitCode {
             let input = target_or_exit!(&target);
             match runtime::up(&input, member.as_deref()) {
                 Ok(outcome) => {
-                    for m in &outcome.messages {
-                        println!("{m}");
+                    print!("{}", outcome.tree);
+                    for n in &outcome.notes {
+                        println!("{n}");
                     }
                     if outcome.failed {
                         ExitCode::from(1)
@@ -255,7 +229,10 @@ pub fn main() -> ExitCode {
                             serde_json::to_string_pretty(&rows).unwrap_or_default()
                         );
                     } else {
-                        print!("{}", runtime::render_table(&rows));
+                        print!(
+                            "{}",
+                            runtime::render_status(&runtime::team_name(&input), &rows)
+                        );
                     }
                     ExitCode::SUCCESS
                 }
@@ -327,24 +304,6 @@ pub fn main() -> ExitCode {
                 }
             }
         }
-        Command::RunCmd { action } => match action {
-            RunAction::Show { target, json } => {
-                let input = target_or_exit!(&target);
-                bus_result(crate::lifecycle::show(&input), json, |v| {
-                    print!("{}", crate::lifecycle::render_show(v))
-                })
-            }
-            RunAction::Rebind {
-                target,
-                reason,
-                json,
-            } => {
-                let input = target_or_exit!(&target);
-                bus_result(crate::lifecycle::rebind(&input, &reason), json, |v| {
-                    println!("{}", v["message"].as_str().unwrap_or("done"))
-                })
-            }
-        },
         Command::Exec { state, window } => crate::exec::exec_main(&state, &window),
         Command::Run {
             state,
@@ -358,32 +317,6 @@ pub fn main() -> ExitCode {
             state,
             member,
         } => crate::gate::hook_main(&event, &state, &member),
-    }
-}
-
-/// Print a bus-style result (`--json` or text) and exit with its code.
-fn bus_result(
-    result: Result<serde_json::Value, crate::bus::outcome::Failure>,
-    json: bool,
-    text: impl Fn(&serde_json::Value),
-) -> ExitCode {
-    match result {
-        Ok(v) => {
-            if json {
-                println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
-            } else {
-                text(&v);
-            }
-            ExitCode::SUCCESS
-        }
-        Err(f) => {
-            if json {
-                println!("{}", f.to_json());
-            } else {
-                eprintln!("brg: {}", f.message);
-            }
-            ExitCode::from(f.code.exit())
-        }
     }
 }
 

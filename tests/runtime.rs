@@ -280,7 +280,10 @@ fn up_status_send_logs_down() {
     assert!(stdout(&logs).contains("> hello there"), "{}", stdout(&logs));
 
     let table = env.brg(&["status"]);
-    assert!(stdout(&table).starts_with("NAME"), "{}", stdout(&table));
+    // The team's tree (named after its folder), then plugin processes.
+    let text = stdout(&table);
+    assert!(text.starts_with("team\n├─ alpha"), "{text}");
+    assert!(text.contains("\nplugin "), "{text}");
 
     let out = env.brg(&["up", "--member", "gamma"]);
     assert!(out.status.success());
@@ -307,7 +310,9 @@ fn up_twice_is_harmless() {
     let out = env.brg(&["up"]);
     assert!(out.status.success());
     assert!(
-        stdout(&out).contains("alpha: already running"),
+        stdout(&out)
+            .lines()
+            .any(|l| l.contains(" alpha ") && l.ends_with("  already running")),
         "{}",
         stdout(&out)
     );
@@ -641,6 +646,58 @@ fn launch_arguments_follow_posture() {
         beta.iter().any(|a| a == "model_reasoning_effort=\"low\""),
         "{beta:?}"
     );
+    // An unattended Codex member must not stop at the update prompt.
+    assert!(
+        beta.windows(2)
+            .any(|w| w[0] == "-c" && w[1] == "check_for_update_on_startup=false"),
+        "{beta:?}"
+    );
+}
+
+#[test]
+fn deployment_args_decide_codex_update_checks() {
+    // (deployment args, the update-check arguments the launch should carry)
+    let cases: [(&str, &[&str]); 3] = [
+        (
+            "[-c, check_for_update_on_startup=true]",
+            &["check_for_update_on_startup=true"],
+        ),
+        (
+            "['--config=check_for_update_on_startup=false']",
+            &["--config=check_for_update_on_startup=false"],
+        ),
+        // A value that only mentions the key doesn't set it.
+        (
+            "[-c, 'developer_instructions=\"Explain check_for_update_on_startup\"']",
+            &[
+                "check_for_update_on_startup=false",
+                "developer_instructions=\"Explain check_for_update_on_startup\"",
+            ],
+        ),
+    ];
+    for (args, want) in cases {
+        let env = Env::new();
+        env.write(
+            "team/borgchart.yaml",
+            &format!("schema: 1\nplugins:\n  pager:\n    env: {{PAGER_ROOM: R0000EXAMPLE}}\nmembers:\n  beta:\n    args: {args}\n"),
+        );
+        env.up();
+        let beta: Vec<String> = env
+            .events("beta")
+            .into_iter()
+            .find(|e| e["event"] == "start")
+            .unwrap()["argv"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        let set: Vec<&String> = beta
+            .iter()
+            .filter(|a| a.contains("check_for_update_on_startup"))
+            .collect();
+        assert_eq!(set, want, "{args}: {beta:?}");
+    }
 }
 
 fn trust_env(deploy: &str) -> Env {
@@ -668,7 +725,7 @@ fn folder_trust_is_accepted_for_a_declared_cwd() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        stdout(&out).contains("alpha: accepted folder trust for"),
+        stdout(&out).contains("started; accepted folder trust for"),
         "{}",
         stdout(&out)
     );
@@ -702,7 +759,7 @@ fn folder_trust_is_left_alone_without_a_declared_cwd_or_when_turned_off() {
         let env = trust_env(deploy);
         let out = env.brg(&["up"]);
         assert!(
-            stdout(&out).contains("alpha: waiting at Claude's folder-trust prompt"),
+            stdout(&out).contains("started; waiting at Claude's folder-trust prompt"),
             "{}",
             stdout(&out)
         );
@@ -729,7 +786,7 @@ fn folder_trust_is_left_alone_when_yes_is_already_highlighted() {
     fs::write(env.path("home/fake-agent/trust-yes"), "").unwrap();
     let out = env.brg(&["up"]);
     assert!(
-        stdout(&out).contains("alpha: waiting at Claude's folder-trust prompt"),
+        stdout(&out).contains("started; waiting at Claude's folder-trust prompt"),
         "{}",
         stdout(&out)
     );
@@ -748,7 +805,9 @@ fn locked_member_at_a_prompt_before_its_gate_reports_is_stopped() {
     let out = env.brg(&["up"]);
     assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
     assert!(
-        stdout(&out).contains("alpha: stopped: it was at a prompt"),
+        stdout(&out)
+            .lines()
+            .any(|l| l.contains(" alpha ") && l.contains("  stopped: it was at a prompt")),
         "{}",
         stdout(&out)
     );

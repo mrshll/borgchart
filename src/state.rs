@@ -36,6 +36,66 @@ pub fn tmux_socket() -> String {
     std::env::var(ENV_TMUX_SOCKET).unwrap_or_else(|_| DEFAULT_SOCKET.to_string())
 }
 
+/// How to restart a team, as a command line that works from where the
+/// person is: the bare commands in the deployment's own folder, otherwise
+/// with its `--file` (or `--team`).
+pub fn restart_hint(source: &Path) -> String {
+    let canonical = source
+        .canonicalize()
+        .unwrap_or_else(|_| source.to_path_buf());
+    let dir = canonical
+        .parent()
+        .filter(|_| canonical.is_file())
+        .unwrap_or(&canonical);
+    let here = std::env::current_dir()
+        .ok()
+        .and_then(|c| c.canonicalize().ok());
+    if here.as_deref() == Some(dir) {
+        return "brg down && brg up".to_string();
+    }
+    let flag = if canonical.is_file() {
+        "--file"
+    } else {
+        "--team"
+    };
+    let path = shell_quote(&canonical.display().to_string());
+    format!("brg down {flag} {path} && brg up {flag} {path}")
+}
+
+/// The name a team goes by in messages: its deployment's directory name,
+/// lowercased, with anything outside `[a-z0-9_-]` turned into `-`.
+pub fn team_name(source: &Path) -> String {
+    let canonical = source
+        .canonicalize()
+        .unwrap_or_else(|_| source.to_path_buf());
+    let dir = canonical
+        .parent()
+        .filter(|_| canonical.is_file())
+        .unwrap_or(&canonical);
+    let clean: String = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .chars()
+        .take(32)
+        .collect();
+    if clean.is_empty() {
+        "team".to_string()
+    } else {
+        clean
+    }
+}
+
 /// A stable id for a deployment: its directory name plus a short hash of its path.
 pub fn deployment_id(source: &Path) -> String {
     let canonical = source
@@ -131,7 +191,7 @@ impl StateDir {
     pub fn member_tmp(&self, member: &str) -> PathBuf {
         self.root.join("tmp").join(member)
     }
-    /// Held by `up`, `down` and `run rebind` while they change the deployment.
+    /// Held by `up` and `down` while they change the deployment.
     pub fn lifecycle_lock(&self) -> PathBuf {
         self.root.join("lifecycle.lock")
     }
@@ -148,26 +208,21 @@ impl StateDir {
 pub struct Meta {
     pub source: PathBuf,
     pub team_dir: PathBuf,
-    /// The absolute path of the `brg` every window, shim and member control
-    /// call of the deployment runs: the run's pinned copy with a bus, else
-    /// the `brg` that started it.
+    /// The absolute path of the `brg` that started the deployment (plugins
+    /// get it as `BORGCHART_BIN`).
     pub brg: PathBuf,
-    /// SHA-256 of the `brg` that started the deployment. Members started
-    /// into it later must come from the same binary.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub brg_sha256: Option<String>,
     /// The configuration the deployment started with. Members started into
     /// it later must see the same.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<ConfigSnapshot>,
-    /// The bus run this deployment is bound to, if it has one.
+    /// The run (internal) holding the team's messages, if it has a bus.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<RunBinding>,
     /// The tmux socket name the deployment was started on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub socket: Option<String>,
     /// The tmux server's absolute socket path, read from tmux once the
-    /// first window started. `down`, `run rebind` and liveness address the
+    /// first window started. `down` and liveness address the
     /// server by this, never by the caller's tmux environment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub socket_path: Option<PathBuf>,
@@ -186,7 +241,6 @@ pub struct RunBinding {
     pub run: String,
     /// The run directory, `<bus.root>/<run>`.
     pub dir: PathBuf,
-    pub generation: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -292,6 +346,30 @@ mod tests {
         assert_eq!(shell_quote("a b"), "'a b'");
         assert_eq!(shell_quote("it's"), r"'it'\''s'");
         assert_eq!(shell_quote(""), "''");
+    }
+
+    #[test]
+    fn restart_hints_work_from_elsewhere() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("borgchart.yaml");
+        std::fs::write(&file, "schema: 1\n").unwrap();
+        let real = file.canonicalize().unwrap();
+        let q = shell_quote(&real.display().to_string());
+        assert_eq!(
+            restart_hint(&file),
+            format!("brg down --file {q} && brg up --file {q}")
+        );
+    }
+
+    #[test]
+    fn team_names_come_from_the_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let team = dir.path().join("On Call");
+        std::fs::create_dir(&team).unwrap();
+        let file = team.join("borgchart.yaml");
+        std::fs::write(&file, "schema: 1\n").unwrap();
+        assert_eq!(team_name(&file), "on-call");
+        assert_eq!(team_name(&team), "on-call");
     }
 
     #[test]

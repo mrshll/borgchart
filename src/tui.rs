@@ -10,6 +10,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, TableState};
 
 use crate::runtime::{self, StatusRow};
+use crate::tree;
 use crate::validate::Input;
 
 const REFRESH: Duration = Duration::from_secs(2);
@@ -26,7 +27,7 @@ pub fn watch(input: &Input, interval: Duration) -> Result<(), String> {
         let _ = write!(
             out,
             "\x1b[H\x1b[2J{}\nrefreshed at {} (UTC epoch); Ctrl-C to stop\n",
-            runtime::render_table(&rows),
+            runtime::render_status(&runtime::team_name(input), &rows),
             now
         );
         let _ = out.flush();
@@ -53,11 +54,29 @@ fn draw(
         Layout::vertical([Constraint::Min(3), Constraint::Length(2)]).areas(frame.area());
     let header = Row::new(["NAME", "KIND", "VENDOR", "POSTURE", "STATE", "DETAIL"])
         .style(Style::default().add_modifier(Modifier::BOLD));
+    // Members show where they sit in the team's tree.
+    let nodes: Vec<tree::Node> = rows
+        .iter()
+        .filter(|r| r.kind == "member")
+        .map(|r| tree::Node {
+            id: r.name.clone(),
+            parent: r.parent.clone(),
+            cols: Vec::new(),
+        })
+        .collect();
+    let prefixes: std::collections::BTreeMap<String, String> = tree::order(&nodes)
+        .into_iter()
+        .map(|(i, p)| (nodes[i].id.clone(), p))
+        .collect();
     let body: Vec<Row> = rows
         .iter()
         .map(|r| {
+            let prefix = match r.kind {
+                "member" => prefixes.get(&r.name).cloned().unwrap_or_default(),
+                _ => String::new(),
+            };
             Row::new(vec![
-                Cell::from(r.name.clone()),
+                Cell::from(format!("{prefix}{}", r.name)),
                 Cell::from(r.kind),
                 Cell::from(r.vendor.clone().unwrap_or_else(|| "-".into())),
                 Cell::from(r.posture.clone().unwrap_or_else(|| "-".into())),
@@ -69,7 +88,7 @@ fn draw(
     let table = Table::new(
         body,
         [
-            Constraint::Length(14),
+            Constraint::Length(20),
             Constraint::Length(7),
             Constraint::Length(7),
             Constraint::Length(8),
