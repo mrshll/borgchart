@@ -41,9 +41,7 @@ struct DeploymentRaw {
 #[serde(deny_unknown_fields)]
 struct BusRaw {
     root: String,
-    run: String,
     alert: Option<AlertRaw>,
-    continues: Option<String>,
     warn_age_days: Option<u32>,
     max_age_days: Option<u32>,
 }
@@ -90,22 +88,17 @@ pub struct Deployment {
     pub bus: Option<BusConfig>,
 }
 
-/// Default age (days) at which `brg bus check` warns about a run.
+/// Default age (days) at which a team's message storage is reported as aging.
 pub const DEFAULT_WARN_AGE_DAYS: u32 = 7;
-/// Default age (days) past which a run must be rotated into a linked run.
+/// Default age (days) at which brg rolls a team's message storage over.
 pub const DEFAULT_MAX_AGE_DAYS: u32 = 14;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BusConfig {
-    /// The directory holding run directories (absolute).
+    /// The directory holding each team's message storage (absolute).
     pub root: PathBuf,
-    /// This deployment's run ID; records live in `<root>/<run>/`.
-    pub run: String,
     /// The plugin action brg invokes to alert a person (never a member's).
     pub alert: Option<AlertConfig>,
-    /// The earlier run (under the same `root`) this one continues, when a
-    /// run is rotated or recovered into a new one.
-    pub continues: Option<String>,
     pub warn_age_days: u32,
     pub max_age_days: u32,
 }
@@ -204,23 +197,6 @@ pub fn load(file: &Path, report: &mut Report) -> Option<Deployment> {
 
 fn load_bus(raw: BusRaw, file: &Path, report: &mut Report) -> Option<BusConfig> {
     let before = report.errors().count();
-    if !crate::bus::is_valid_run_id(&raw.run) {
-        report.error(
-            Some(file),
-            format!(
-                "bus: `run: {}` must match [a-z0-9][a-z0-9._-]{{0,63}}",
-                raw.run
-            ),
-        );
-    }
-    if let Some(prev) = &raw.continues
-        && (!crate::bus::is_valid_run_id(prev) || *prev == raw.run)
-    {
-        report.error(
-            Some(file),
-            format!("bus: `continues: {prev}` must be another valid run ID"),
-        );
-    }
     if !(raw.root.starts_with('/') || raw.root.starts_with("~/")) {
         report.error(
             Some(file),
@@ -244,12 +220,10 @@ fn load_bus(raw: BusRaw, file: &Path, report: &mut Report) -> Option<BusConfig> 
     let base = file.parent().unwrap_or(Path::new("."));
     Some(BusConfig {
         root: expand_home(base, &raw.root),
-        run: raw.run,
         alert: raw.alert.map(|a| AlertConfig {
             plugin: a.plugin,
             action: a.action,
         }),
-        continues: raw.continues,
         warn_age_days: warn,
         max_age_days: max,
     })

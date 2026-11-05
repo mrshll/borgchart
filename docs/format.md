@@ -188,6 +188,7 @@ plugins:
 - **`bus`:** optional; turns on the coordination bus for this deployment. See [bus.md](bus.md).
 - **Secrets** are never written here. They come by name from the environment `brg up` runs in. `brg validate` warns about a declared name that nothing supplies yet.
 - **Trust:** treat this file as trusted, like the team: `posture` and `args` can widen an agent's permissions.
+- **Codex updates:** brg starts Codex members with `-c check_for_update_on_startup=false`, so an unattended member doesn't stop at Codex's "Update available" prompt; update Codex yourself. A `-c check_for_update_on_startup=…` (or `--config`) in `args` overrides this.
 - **`auth: login`:** brg passes no API-key variables, so a stray key in your shell can't replace your login.
 - **`auth: api_key`:** brg passes `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` by name.
 - **`auto_trust`:** when a Claude member's `cwd` is declared here, `brg up` answers Claude's folder-trust dialog for exactly that folder by sending keys through tmux. Declaring the folder is your consent.

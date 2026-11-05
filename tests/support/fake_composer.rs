@@ -144,6 +144,9 @@ impl Fake {
             (Vendor::Claude, mode) => {
                 // The real title stays idle during a turn; the prompt turns grey.
                 title = "\u{2733} fake";
+                // The real banner starts at column 0; Claude's idle rule needs
+                // such a line as the nearest one above the box.
+                lines.insert(0, "▝▜█ Fake Claude v0.0.0".into());
                 let marker = if mode == Mode::Working {
                     lines.push("\x1b[38;5;174m✶ Working… (1s)\x1b[39m".into());
                     "\x1b[38;5;246m❯\u{a0}\x1b[39m"
