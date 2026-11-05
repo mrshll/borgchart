@@ -233,6 +233,75 @@ mod tests {
         assert_eq!(r.read("", CLAUDE_TRUST).state, State::Blocked);
     }
 
+    /// Real Claude Code 2.1.318 screens across settings. In this version the
+    /// title keeps `✳` during a turn, and the footer only sometimes says
+    /// `esc to interrupt`, so a turn must be read from the spinner line.
+    #[test]
+    fn claude_screens_across_configurations() {
+        let fixtures = |name: &str| {
+            std::fs::read_to_string(format!(
+                "{}/tests/fixtures/screens/{name}",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .unwrap()
+        };
+        let title = "✳ English number words one to one hundred twenty";
+        let cases = [
+            // Default (manual) mode, vim off, 120 columns.
+            ("claude-working-manual.txt", State::Working),
+            ("claude-working-manual-start.txt", State::Working),
+            // Vim insert mode, 80 columns: no `esc to interrupt`.
+            ("claude-working-vim-insert-80.txt", State::Working),
+            // Vim normal mode, plan mode, a live thinking line above.
+            ("claude-working-vim-normal-plan.txt", State::Working),
+            // Auto mode with vim insert: no `esc to interrupt`, a tool running.
+            ("claude-working-auto-tool.txt", State::Working),
+            // Auto mode, vim insert and a background agent, as first reported.
+            ("claude-working-auto-agent.txt", State::Working),
+            // Reduced motion, custom spinner verb, accept-edits mode, 80 columns.
+            ("claude-working-reduced-motion-80.txt", State::Working),
+            ("claude-idle-fresh.txt", State::Idle),
+            ("claude-idle-vim-insert-80.txt", State::Idle),
+            ("claude-idle-plan.txt", State::Idle),
+            ("claude-idle-auto.txt", State::Idle),
+            ("claude-idle-reduced-motion-80.txt", State::Idle),
+        ];
+        let r = claude();
+        for (name, want) in cases {
+            let reading = r.read(title, &fixtures(name));
+            assert_eq!(reading.state, want, "{name}");
+            if want == State::Working {
+                assert_eq!(reading.rule.as_deref(), Some("working-spinner"), "{name}");
+            }
+        }
+    }
+
+    #[test]
+    fn claude_text_ending_in_an_ellipsis_is_not_a_spinner() {
+        let rule = "─".repeat(40);
+        let screens = [
+            // A finished turn: the `done` line sits between reply and box.
+            format!(
+                "● Let me check…\n\n✻ Worked for 3s · done 9:00 AM\n\n{rule}\n❯ \n{rule}\n  ? for shortcuts\n"
+            ),
+            // A draft in the input box that ends in `…`.
+            format!(
+                "✻ Worked for 3s · done 9:00 AM\n\n{rule}\n❯ wait for it…\n{rule}\n  ? for shortcuts\n"
+            ),
+            // A quoted spinner inside a tool result is indented.
+            format!(
+                "  ⎿  ✶ Thinking… (3s · ↓ 9 tokens)\n\n{rule}\n❯ \n{rule}\n  ? for shortcuts\n"
+            ),
+        ];
+        for screen in &screens {
+            assert_eq!(
+                claude().read("✳ Example", screen).state,
+                State::Idle,
+                "{screen}"
+            );
+        }
+    }
+
     #[test]
     fn claude_message_text_cannot_fake_a_dialog() {
         // A Slack message quoting dialog text, shown inside a tool result.

@@ -14,11 +14,23 @@ rules:
     priority: 100
     bottom: 30
     all: ['^ +(❯ )?Yes, I trust this folder$', '^ Enter to confirm · Esc to cancel$']
+  - id: working-spinner
+    # The spinner line just above the input box: a glyph at column 0, a verb
+    # ending in `…`, then optionally `(12s · ↓ 1.3k tokens · …)`. It shows in
+    # every permission mode, editor mode and width, unlike the footer's
+    # `esc to interrupt` (absent in vim insert and auto mode) or a spinner
+    # title (2.1.318 keeps `✳`). Only indented or blank lines (tips, effort,
+    # todos) may sit between it and the box's top rule, so transcript text
+    # can't pass for it. `●` is the reduced-motion glyph.
+    state: working
+    priority: 50
+    bottom: 40
+    any: ['^[·✢✳✶✻✽*●] [^\s…][^…\n]*…(?: \([^)\n]*\))?[ \t]*\n(?:(?:[ \t][^\n]*)?\n){0,20}─{3,}']
   - id: working-footer
     state: working
     priority: 50
     bottom: 6
-    any: ['^  ⏵⏵ .*· esc to interrupt\s*$', '^  esc to interrupt\s*$']
+    any: ['^  (?:.* · )?esc to interrupt(?: · .*)?[ \t]*$']
   - id: working-title
     state: working
     priority: 50
