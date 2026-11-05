@@ -41,7 +41,7 @@ members:
   implementer:
     prompt: implementer.md
     parent: lead
-    start: false                       # the lead starts it when there's work
+    start: false                       # the lead starts it when there's work: brg up --member implementer
   reviewer:
     prompt: reviewer.md
     vendor: codex
@@ -50,7 +50,7 @@ members:
 ```
 
 - **Members** have a member file (`prompt`), an optional `vendor`, a `parent`, and `start`. `start: false` means the member is started on demand. They also have a `posture` (`vendor`, the default, or `locked` for members that read untrusted text) and plugin grants.
-- **`parent`** makes the org chart, and messages follow it: a member writes to its parent or its children.
+- **`parent`** makes the org chart, and messages follow it: a member writes to its parent or its children. The top member can also write to an outside caller (`external:NAME`).
 - **Plugins** are plain programs. brg runs only what `team.yaml` lists. A member can use only the actions it's granted; each granted action appears in its instruction with an absolute path. Secrets reach the plugin through a private file, never the agent's environment.
   - A plugin may also declare a long-running `process` (a watcher of some outside source) with `delivers_to: <member>`.
   - An action that brg runs itself, like `alert` above, gets fixed arguments and never any message text.
@@ -84,12 +84,12 @@ bus:                                   # turns messages on for this team
 members:
   lead:        {cwd: ~/work/project}
   implementer: {cwd: ~/work/project-impl}   # one checkout per writer
-  reviewer:    {cwd: ~/work/project-impl}
+  reviewer:    {cwd: ~/work/project-impl}   # reads the checkout; its tasks name no checkout
 plugins:
   notify: {env: {NOTIFY_ROOM: example-room}}
 ```
 
-- **`name`:** defaults to the folder's name. It must be unique among your running teams.
+- **`name`:** defaults to the folder's name. It must be unique among your teams; a second folder with the same name is refused.
 - **`bus`:** turns messages on. Without it, the team works as today: you drive it with `prompt`.
 - **Per member:** `cwd`, `task` (appended to the instruction), `posture` and extra vendor `args`.
 - **Secrets:** never written here. They come from your environment by name when you run `brg up`.
@@ -124,12 +124,12 @@ devteam
 | Command | What it does |
 | --- | --- |
 | `brg message send [team/]member TEXT` | Send a durable message (or a task record with `--record FILE`) |
-| `brg message inbox [[team/]member]` | List unread messages |
+| `brg message inbox [[team/]member]` | List messages not yet marked handled |
 | `brg message read [team/]ID` | Read one (or a task's history with `--task T`) |
 | `brg message ack [team/]ID…` | Mark as handled |
 | `brg message wait [[team/]member] --timeout S` | Wait for the next one |
 
-**Addressing.** `devteam/lead`, or just `lead` when that's unambiguous: inside a member (its own team), in the team's folder, or when only one running team has a `lead`. Otherwise brg asks you to name the team. An outside caller, for example a person's script or a coordinating agent, adds `--external NAME` and is answered at `external:NAME`.
+**Addressing.** `devteam/lead`, or just `lead` when that's unambiguous: inside a member (its own team), in the team's folder, or when only one running team has a `lead`. Otherwise brg asks you to name the team. An outside caller, for example a person's script or a coordinating agent, adds `--external NAME` (refused inside a member) and is answered at `external:NAME`.
 
 ## How members talk
 
@@ -140,29 +140,32 @@ devteam
   - Each member has one open task at a time.
   - A checkout is never released while the member writing it might still be running.
 
-**Getting a member's attention (Open).** A member with unread messages has to notice them. Two ways are on the table, being tested now on the real CLIs:
+**Getting a member's attention (Open).** A member with messages waiting has to notice them. Two ways are on the table, being tested now on the real CLIs:
 
 1. **The member waits for itself.** Before going idle it runs `brg message wait` in the background, and the CLI wakes it when a message arrives. Nothing is typed.
-2. **A watcher nudges it.** A hidden window per team types one fixed reminder ("new messages in your inbox") into an idle member, only when its input box is provably empty. Otherwise it alerts a person.
+2. **A watcher nudges it.** A hidden window per team types one fixed reminder ("new messages in your inbox") into an idle member whose input box is provably empty. It waits while the member is busy. It alerts a person when it can't type safely: a draft in the box, a dialog, or a CLI version that hasn't been tested.
 
-The likely answer is (1) where the vendor supports it, with the watcher as the fallback and alarm.
+Pending the test, the likely answer is (1) where the vendor supports it, with the watcher as the fallback and alarm.
 
 ## What you never see
 
-- **Storage.** No runs, run IDs, generations or storage paths in commands, output or errors. brg rolls a team's message storage over by itself when its configuration changes, and carries open work across.
+- **Storage.** No runs, run IDs, generations or storage paths in commands, output or errors. brg rolls a team's message storage over by itself when its configuration changes or the storage reaches its age limit, and carries open work across.
 - **brg versions.** Nothing is pinned: every call uses the installed `brg`. If an upgraded brg can't read a team's messages, it says exactly what to do:
 
   ```
   brg: team `devteam`'s messages use format 1; this brg uses format 2.
   Restart the team to start fresh storage in the new format: brg down devteam && brg up devteam
+  (Open work in the old format isn't carried over; the old messages stay on disk.)
   ```
+
+  So after such an upgrade, unfinished tasks have to be sent again.
 
 - **Configuration changes** take effect at the next `brg down`/`brg up`. Starting one member into a running team with changed files says so, in team and member terms.
 
 ## Limits
 
 - **Trusted, same-user operation.** Members can reach each other's terminals; nothing isolates them.
-- **A reboot stops every team.** Messages stored under `/tmp` may not survive it.
+- **A reboot stops every team.** Messages stored under `/tmp` may not survive it, so keep `max_age_days` under your system's temporary-file cleanup age.
 - **`locked` members can't use messages yet.**
 
 ## Open
