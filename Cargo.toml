@@ -31,6 +31,8 @@ test-support = []
 
 [dependencies]
 clap = { version = "4.6", features = ["derive"] }
+crossterm = "0.29"
+ratatui = "0.30"
 regex = "1"
 rustix = { version = "1", features = ["fs", "termios", "stdio"] }
 serde = { version = "1", features = ["derive"] }

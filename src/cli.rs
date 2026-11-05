@@ -64,8 +64,17 @@ enum Command {
     Status {
         #[command(flatten)]
         target: Target,
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["watch", "interactive"])]
         json: bool,
+        /// Refresh the table every few seconds.
+        #[arg(short, long, conflicts_with = "interactive")]
+        watch: bool,
+        /// Seconds between refreshes with --watch.
+        #[arg(long, default_value_t = 2)]
+        interval: u64,
+        /// An interactive screen: j/k to move, Enter to attach, q to quit.
+        #[arg(short, long)]
+        interactive: bool,
     },
     /// Open a member's live session (detach with your tmux prefix, then d).
     Attach {
@@ -189,8 +198,28 @@ pub fn main() -> ExitCode {
                 }
             }
         }
-        Command::Status { target, json } => {
+        Command::Status {
+            target,
+            json,
+            watch,
+            interval,
+            interactive,
+        } => {
             let input = target_or_exit!(&target);
+            if watch || interactive {
+                let result = if interactive {
+                    crate::tui::interactive(&input)
+                } else {
+                    crate::tui::watch(&input, std::time::Duration::from_secs(interval.max(1)))
+                };
+                return match result {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(e) => {
+                        eprintln!("brg: {e}");
+                        ExitCode::from(1)
+                    }
+                };
+            }
             match runtime::status(&input) {
                 Ok(rows) => {
                     if json {
