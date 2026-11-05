@@ -801,13 +801,31 @@ pub fn publish(
     key: &str,
     draft_bytes: &[u8],
 ) -> Result<Published, Failure> {
-    if !record::is_valid_key(key) {
-        return Err(Failure::new(
+    check_key(key)?;
+    let actor = actor_for(bus, caller)?;
+    publish_as(bus, actor, key, draft_bytes)
+}
+
+fn check_key(key: &str) -> Result<(), Failure> {
+    if record::is_valid_key(key) {
+        Ok(())
+    } else {
+        Err(Failure::new(
             Code::Invalid,
             "`--key`: 1–128 characters of [A-Za-z0-9._:/@#+=-]",
-        ));
+        ))
     }
-    let actor = actor_for(bus, caller)?;
+}
+
+/// Publish a draft as an already-checked actor. brg itself publishes as
+/// [`Actor::Bus`] when it carries work into a linked run.
+pub fn publish_as(
+    bus: &Bus,
+    actor: Actor,
+    key: &str,
+    draft_bytes: &[u8],
+) -> Result<Published, Failure> {
+    check_key(key)?;
     check_binary(&bus.paths)?;
     let draft = parse_draft(draft_bytes)?;
     check_route(&bus.manifest, &actor, &draft.to).map_err(|e| Failure::new(Code::Invalid, e))?;
@@ -865,6 +883,12 @@ pub fn publish(
             format!("`{missing}` is not a record in this run"),
         ));
     }
+    // Task transitions, authority and liveness, against exactly the
+    // records this one will follow.
+    let probe = |member: &str, incarnation: &str| {
+        super::tasks::recorded_liveness(&bus.paths, member, incarnation)
+    };
+    super::tasks::check_publish(bus, &snap, &actor, &draft, &probe)?;
 
     // A healthy store is contiguous from 1, so the next number is one past its size.
     let seq = snap.records.len() as u64 + 1;
@@ -1103,6 +1127,8 @@ pub struct CheckReport {
     pub age_days: Option<f64>,
     /// True when an error is about the store itself (rather than the run's age).
     pub corrupt: bool,
+    /// The linked runs this run's work was carried into.
+    pub carried_into: Vec<super::carry::Marker>,
 }
 
 pub fn check(bus: &Bus) -> Result<CheckReport, Failure> {
@@ -1119,6 +1145,27 @@ pub fn check(bus: &Bus) -> Result<CheckReport, Failure> {
             stray.display()
         ));
     }
+    report.carried_into = super::carry::carried_into(&bus.config.root, &bus.config.run);
+    for m in &report.carried_into {
+        report.warnings.push(format!(
+            "run `{}` was carried into `{}` at {}{}",
+            bus.config.run,
+            m.into,
+            m.at,
+            if m.complete {
+                ""
+            } else {
+                " (only its readable records)"
+            }
+        ));
+    }
+    if let Some(prev) = &bus.config.continues
+        && super::carry::read_marker(&super::carry::marker_path(&bus.paths, prev)).is_none()
+    {
+        report.warnings.push(format!(
+            "this run continues `{prev}`, but nothing has been carried from it yet: `brg bus carry --from {prev}`"
+        ));
+    }
     match time::parse_utc(&bus.manifest.created_at) {
         None => report.errors.push(format!(
             "run.json: `created_at` is not a UTC time: {}",
@@ -1131,7 +1178,13 @@ pub fn check(bus: &Bus) -> Result<CheckReport, Failure> {
                 .as_secs_f64()
                 / 86_400.0;
             report.age_days = Some((age * 10.0).round() / 10.0);
-            if age >= bus.config.max_age_days as f64 {
+            let retired = report.carried_into.iter().any(|m| m.complete);
+            if age >= bus.config.max_age_days as f64 && retired {
+                report.warnings.push(format!(
+                    "run `{}` is {age:.1} days old, past max_age_days ({}), and was carried into a new run",
+                    bus.config.run, bus.config.max_age_days
+                ));
+            } else if age >= bus.config.max_age_days as f64 {
                 report.errors.push(format!(
                     "run `{}` is {age:.1} days old, past max_age_days ({}): continue in a new run",
                     bus.config.run, bus.config.max_age_days

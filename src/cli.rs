@@ -124,6 +124,13 @@ enum Command {
         #[command(flatten)]
         args: crate::bus::cli::InboxArgs,
     },
+    /// List and show tasks folded from the run's records.
+    Task {
+        #[command(flatten)]
+        target: Target,
+        #[command(subcommand)]
+        command: crate::bus::task_cli::TaskCommand,
+    },
     /// Inspect and check the run's record store.
     Bus {
         #[command(flatten)]
@@ -326,6 +333,9 @@ pub fn main() -> ExitCode {
             crate::bus::cli::msg(&target_or_exit!(&target), command)
         }
         Command::Inbox { target, args } => crate::bus::cli::inbox(&target_or_exit!(&target), args),
+        Command::Task { target, command } => {
+            crate::bus::task_cli::task(&target_or_exit!(&target), command)
+        }
         Command::Bus { target, command } => {
             crate::bus::cli::bus(&target_or_exit!(&target), command)
         }

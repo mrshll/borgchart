@@ -343,7 +343,6 @@ fn changed_artifact_bytes_conflict() {
 fn invalid_drafts_write_nothing() {
     let f = Fixture::new();
     assert_eq!(f.publish(&As::Operator, "seed", &note("lead", "x")).code, 0);
-    let sha = "a".repeat(64);
     let cases: Vec<(&str, Value)> = vec![
         (
             "unknown field",
@@ -454,12 +453,20 @@ fn invalid_drafts_write_nothing() {
     assert_eq!(f.records(), vec!["0000000001.json"]);
 
     // A valid assign, and a verify that names a real result.
+    let agreement = f.dir.path().join("agreement.md");
+    fs::write(&agreement, "the parser").unwrap();
+    let sha = format!("{:x}", Sha256::digest(b"the parser"));
     let assign = json!({"to": "helper", "kind": "assign", "task": "t-1", "attempt": 1,
         "reply_to": ["m1"],
-        "facts": {"agreement": {"path": "/a.md", "sha256": sha}, "scope": "the parser"}});
+        "facts": {"agreement": {"path": agreement, "sha256": sha}, "scope": "the parser"}});
     assert_eq!(f.publish(&As::Member("lead"), "a-1", &assign).code, 0);
+    let accept = json!({"to": "lead", "kind": "accept", "task": "t-1"});
+    assert_eq!(f.publish(&As::Member("helper"), "c-1", &accept).code, 0);
+    let result = json!({"to": "lead", "kind": "result", "task": "t-1",
+        "facts": {"status": "partial"}});
+    assert_eq!(f.publish(&As::Member("helper"), "r-1", &result).code, 0);
     let verify = json!({"to": "helper", "kind": "verify", "task": "t-1",
-        "facts": {"result": "m2", "outcome": "rejected"}});
+        "facts": {"result": "m4", "outcome": "rejected"}});
     assert_eq!(f.publish(&As::Member("lead"), "v-1", &verify).code, 0);
 }
 

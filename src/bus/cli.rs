@@ -120,15 +120,23 @@ pub enum BusCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Carry pending work from the run this one continues (read-only there).
+    Carry {
+        /// The earlier run: must be this run's `bus.continues`.
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// What a command produced: JSON for `--json`, text otherwise.
-struct Output {
-    json: Value,
-    text: String,
+pub(crate) struct Output {
+    pub(crate) json: Value,
+    pub(crate) text: String,
 }
 
-fn finish(json: bool, result: Result<Output, Failure>) -> ExitCode {
+pub(crate) fn finish(json: bool, result: Result<Output, Failure>) -> ExitCode {
     match result {
         Ok(out) => {
             if json {
@@ -149,7 +157,7 @@ fn finish(json: bool, result: Result<Output, Failure>) -> ExitCode {
     }
 }
 
-fn open_bus(input: &Input) -> Result<Bus, Failure> {
+pub(crate) fn open_bus(input: &Input) -> Result<Bus, Failure> {
     let file = match input {
         Input::Team(_) => {
             return Err(Failure::new(
@@ -566,6 +574,7 @@ pub fn bus(input: &Input, command: BusCommand) -> ExitCode {
                         "age_days": report.age_days,
                         "errors": report.errors,
                         "warnings": report.warnings,
+                        "carried_into": report.carried_into,
                     })
                 );
             } else {
@@ -587,5 +596,6 @@ pub fn bus(input: &Input, command: BusCommand) -> ExitCode {
             }
             ExitCode::from(code.exit())
         }
+        BusCommand::Carry { from, json } => super::task_cli::carry(input, &from, json),
     }
 }
