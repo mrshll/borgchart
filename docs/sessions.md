@@ -161,16 +161,17 @@ brg itself runs nothing on a schedule. For these cases the backstop is whatever 
 
 ```
 brg: team `oncall`'s messages use format 1; this brg uses format 2.
-Restart the team to move them over: brg down oncall && brg up oncall
+Restart the team to start fresh storage in the new format: brg down oncall && brg up oncall
+(Open work in the old format isn't carried over; the old messages stay on disk.)
 ```
 
-**Restarting is the whole upgrade.** When `brg up` starts a team whose message format or configuration has changed, brg silently starts fresh storage for it and carries over its unfinished work: open tasks, unanswered questions and unread messages. You never name or manage this. It is internal, and nothing in `borgchart.yaml` refers to it: the `run:` and `continues:` settings in the current proposal (#7) are dropped. The same rollover happens when storage reaches its age limit, so `/tmp` cleanup can't catch a long-lived team unawares.
+**Restarting is the upgrade.** When `brg up` starts a team whose configuration has changed, or whose storage has reached its age limit, brg silently starts fresh storage for it and carries over its unfinished work: open tasks, unanswered questions and unread messages. You never name or manage this; it is internal, and nothing in `borgchart.yaml` refers to it (the `run:` and `continues:` settings in the current proposal, #7, are dropped). A message format change is the exception: a brg that can't read the old messages can't carry them, so it starts fresh storage, leaves the old messages on disk and says what was left behind. Moving brg between message formats without that gap is future work.
 
 **Configuration stays frozen while a team runs.** Changing, say, a member's model from medium to hard in the team file takes effect at the next `brg down`/`brg up`. Starting one member into a running team with changed files is refused, with the message shown above.
 
 **Long-running pieces.** The watcher restarts itself when the installed brg changes (above). Plugin processes keep running the code they started with until the team is restarted. They only read and write their own files, not the message storage.
 
-**Future work, not now:** moving a running team to a new message format without stopping it.
+**Future work, not now:** moving a team to a new message format without stopping it, and carrying its open work across. Until team names land, restart hints use the form that works today: `brg down && brg up` in the team's folder, `--file …` elsewhere.
 
 ## What this simplifies in the bus pieces
 
