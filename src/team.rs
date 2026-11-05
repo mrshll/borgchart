@@ -100,7 +100,10 @@ struct MemberRaw {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(untagged)]
+#[serde(
+    untagged,
+    expecting = "`connectors` must be a list of server names, or a map of server name to a list of tool names"
+)]
 enum ConnectorsRaw {
     Names(Vec<String>),
     Tools(BTreeMap<String, Vec<String>>),

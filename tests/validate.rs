@@ -487,6 +487,42 @@ fn shared_plugin_needs_plugins_dir() {
 }
 
 #[test]
+fn bad_connector_shape_has_a_clear_message() {
+    let f = Fixture::new();
+    f.edit(
+        "team.yaml",
+        "    plugins: {slackbot: [read, reply]}",
+        "    plugins: {slackbot: [read, reply]}\n    connectors: {srv: read}",
+    );
+    expect_error(&f, "list of server names, or a map");
+}
+
+#[test]
+fn member_and_plugin_names_must_differ() {
+    let f = Fixture::new();
+    f.edit("team.yaml", "  lead:\n", "  slackbot:\n");
+    f.edit("team.yaml", "parent: lead", "parent: slackbot");
+    expect_error(&f, "both a member and a plugin");
+}
+
+#[test]
+fn parse_errors_name_the_file_once() {
+    let f = Fixture::new();
+    f.edit(
+        "team.yaml",
+        "default: claude\n",
+        "default: claude\ndefault: codex\n",
+    );
+    let (report, _) = f.run();
+    let msg = errors(&report);
+    assert!(
+        msg.starts_with("error: ") && !msg.contains("error: error"),
+        "{msg}"
+    );
+    assert!(!msg.contains("<input>"), "{msg}");
+}
+
+#[test]
 fn deployment_must_match_the_team() {
     let f = Fixture::new();
     f.edit(

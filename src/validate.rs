@@ -65,6 +65,18 @@ pub fn validate(input: &Input) -> (Report, Option<Validated>) {
 fn cross_check(v: &Validated, report: &mut Report) {
     let team_file = v.team.dir.join(team::TEAM_FILE);
     let team_file = Some(team_file.as_path());
+
+    if v.team.members.is_empty() {
+        report.warning(team_file, "the team has no members");
+    }
+    for name in v.team.plugins.keys() {
+        if v.team.members.contains_key(name) {
+            report.error(
+                team_file,
+                format!("`{name}` is both a member and a plugin; give them different names"),
+            );
+        }
+    }
     let deploy_file = v.deployment.as_ref().map(|d| d.file.clone());
     let deploy_file = deploy_file.as_deref();
 

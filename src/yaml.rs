@@ -26,7 +26,17 @@ pub fn parse<T: DeserializeOwned>(text: &str) -> Result<T, String> {
     if text.len() > MAX_FILE_BYTES {
         return Err(format!("file is larger than {MAX_FILE_BYTES} bytes"));
     }
-    serde_saphyr::from_str_with_options(text, options()).map_err(|e| e.to_string())
+    serde_saphyr::from_str_with_options(text, options()).map_err(|e| tidy(&e.to_string()))
+}
+
+/// The parser's message without its own `error:` prefix or `<input>` snippet header.
+fn tidy(message: &str) -> String {
+    let first = message.lines().next().unwrap_or(message);
+    first
+        .strip_prefix("error: ")
+        .unwrap_or(first)
+        .trim()
+        .to_string()
 }
 
 #[cfg(test)]
