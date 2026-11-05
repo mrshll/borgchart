@@ -703,7 +703,7 @@ fn bus_root_must_be_absolute_and_outside_the_team() {
     let (report, validated) = run_bus(&f);
     assert!(validated.is_none());
     assert!(
-        errors(&report).contains("keep run records outside"),
+        errors(&report).contains("keep team messages outside"),
         "{}",
         errors(&report)
     );
@@ -785,7 +785,7 @@ fn missing_bus_root_through_a_symlink_is_placed_correctly() {
     let (report, validated) = run_bus(&f);
     assert!(validated.is_none());
     assert!(
-        errors(&report).contains("keep run records outside"),
+        errors(&report).contains("keep team messages outside"),
         "{}",
         errors(&report)
     );

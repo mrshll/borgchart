@@ -52,7 +52,7 @@ impl TeamStore {
         match std::fs::read_to_string(self.current_file()) {
             Ok(text) => {
                 let id = text.trim().to_string();
-                if super::is_valid_run_id(&id) {
+                if run_number(&id).is_some() {
                     Ok(Some(id))
                 } else {
                     Err(std::io::Error::other(format!(
@@ -103,7 +103,10 @@ impl TeamStore {
             .filter_map(|r| run_number(r))
             .max()
             .unwrap_or(0);
-        Ok(format!("r{}", n + 1))
+        let next = n
+            .checked_add(1)
+            .ok_or_else(|| std::io::Error::other("no more storage numbers left"))?;
+        Ok(format!("r{next}"))
     }
 
     /// Create `id`'s directory if needed and check that the root, the
@@ -262,7 +265,22 @@ mod tests {
         // A lost `current` never makes brg reuse an existing run.
         std::fs::remove_file(store.current_file()).unwrap();
         assert_eq!(store.next_id().unwrap(), "r11");
-        std::fs::write(store.current_file(), "../elsewhere\n").unwrap();
-        assert!(store.current().is_err());
+        for bad in [
+            "../elsewhere",
+            "other",
+            "r0",
+            "r007",
+            "r18446744073709551616",
+        ] {
+            std::fs::write(store.current_file(), format!("{bad}\n")).unwrap();
+            assert!(store.current().is_err(), "{bad}");
+        }
+        std::fs::write(store.current_file(), "r18446744073709551615\n").unwrap();
+        assert!(store.current().is_ok());
+        std::fs::create_dir(store.dir.join("r18446744073709551615")).unwrap();
+        assert!(
+            store.next_id().is_err(),
+            "exhausted numbering is an error, not a panic"
+        );
     }
 }

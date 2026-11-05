@@ -213,7 +213,7 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &std::path::Path) -> Result<Opt
 pub enum ManifestError {
     /// The run's messages use a format this brg doesn't read.
     Format {
-        found: u32,
+        found: u64,
     },
     Unreadable(String),
 }
@@ -234,7 +234,7 @@ impl ManifestError {
 /// Restarting starts fresh storage in this brg's format. Messages in the old
 /// format can't be read by this brg, so they are left where they are rather
 /// than carried over; `up` lists what was left behind.
-pub fn format_mismatch(team: &str, found: u32, restart: &str) -> String {
+pub fn format_mismatch(team: &str, found: u64, restart: &str) -> String {
     format!(
         "team `{team}`'s messages use format {found}; this brg uses format {}.\nRestart the team to start fresh storage in the new format: {restart}\n(Open work in the old format isn't carried over; the old messages stay on disk.)",
         super::SCHEMA
@@ -261,9 +261,7 @@ pub fn load_manifest(paths: &RunPaths) -> Result<Option<RunManifest>, ManifestEr
     if let Some(found) = schema
         && found != super::SCHEMA as u64
     {
-        return Err(ManifestError::Format {
-            found: found as u32,
-        });
+        return Err(ManifestError::Format { found });
     }
     serde_json::from_slice(&bytes).map(Some).map_err(|e| {
         ManifestError::Unreadable(format!("{} is unreadable: {e}", paths.manifest().display()))
@@ -318,6 +316,14 @@ mod tests {
         let err = load_manifest(&paths).unwrap_err();
         assert_eq!(err, ManifestError::Format { found: 2 });
         let msg = err.message("oncall", "brg down && brg up");
+        let big = RunPaths::from_root(&dir.path().join("big"));
+        std::fs::create_dir(&big.root).unwrap();
+        std::fs::write(big.manifest(), r#"{"schema": 4294967297}"#).unwrap();
+        let big_msg = load_manifest(&big).unwrap_err().message("oncall", "x");
+        assert!(
+            big_msg.contains("use format 4294967297; this brg uses format 1"),
+            "{big_msg}"
+        );
         assert!(
             msg.contains("team `oncall`'s messages use format 2; this brg uses format 1"),
             "{msg}"

@@ -158,13 +158,13 @@ Folds task records into per-task state: assigned, accepted or declined, result c
 ## Lifecycle and runtime binding (planned)
 
 - Every start validates fully before changing anything; lifecycle changes are serialized by `runtime/lifecycle.lock` (and, without a bus, a lock in brg's state directory).
-- Starting one member into a running deployment reuses the deployment's original binary, base environment and plugin values rather than the caller's, and refuses a different binary or changed configuration without touching the running deployment.
+- Starting one member into a running team reuses the team's original base environment and plugin values rather than the caller's, and refuses a changed configuration without touching the running team. Any brg can do it: brg isn't pinned.
 - With a bus, `up` creates the team's storage on first start, and rolls it over (see Configuration) when the configuration or message format changed. Each member start gets a new incarnation: recorded before the window starts, then with its pane identity (`%N` pane ID, PID, window, socket) and vendor version once known. `down` marks the incarnations it stops as ended.
 - `up` and `status` print the team as a tree, with each member's vendor, model and outcome or state. Messages talk about teams and members, never runs.
 
 ## Attention worker (planned)
 
-Replaced by the team's *watcher*, a hidden tmux window described in [sessions.md](sessions.md#the-watcher). The rules that carry over: only a member listing its own inbox marks records as observed; observation is separate from acknowledgement; new records after an observation start a new episode; the watcher never creates a tmux session; and a wake left in flight by a crash is never retried.
+Replaced by the team's *watcher*, a hidden tmux window described in the sessions design (`docs/sessions.md`, proposed in its own change). The rules that carry over: only a member listing its own inbox marks records as observed; observation is separate from acknowledgement; new records after an observation start a new episode; the watcher never creates a tmux session; and a wake left in flight by a crash is never retried.
 
 ## Guarded wake (planned)
 
