@@ -218,6 +218,17 @@ fn has_bad_control(text: &str) -> bool {
         .any(|c| (c.is_control() && c != '\n' && c != '\t') || c == '\u{7f}')
 }
 
+fn facts_have_bad_control(v: &Value) -> bool {
+    match v {
+        Value::String(s) => has_bad_control(s),
+        Value::Array(items) => items.iter().any(facts_have_bad_control),
+        Value::Object(map) => map
+            .iter()
+            .any(|(k, v)| has_bad_control(k) || facts_have_bad_control(v)),
+        _ => false,
+    }
+}
+
 impl Draft {
     /// Checks that need nothing but the draft itself. Topology, references
     /// and transitions are checked against the store at publication.
@@ -269,6 +280,9 @@ impl Draft {
             {
                 return Err(format!("artifact `{shown}`: bad label"));
             }
+        }
+        if facts_have_bad_control(&Value::Object(self.facts.clone())) {
+            return Err("`facts` contains a control character".into());
         }
         let facts = serde_json::to_vec(&self.facts).map_err(|e| e.to_string())?;
         if facts.len() > MAX_FACTS_BYTES {
@@ -324,6 +338,16 @@ mod tests {
             "facts": {"agreement": {"path": "/x/agreement.md", "sha256": "ab"}}
         }))
         .unwrap();
+        d.check_shape().unwrap();
+        for facts in [
+            json!({"nested": [{"text": "\u{1b}[2J"}]}),
+            json!({"k\u{7}": 1}),
+            json!({"a": {"b": ["ok", "\r"]}}),
+        ] {
+            let d = draft(json!({"to": "lead", "kind": "note", "facts": facts})).unwrap();
+            assert!(d.check_shape().is_err(), "{facts}");
+        }
+        let d = draft(json!({"to": "lead", "kind": "note", "facts": {"t": "a\nb\tc"}})).unwrap();
         d.check_shape().unwrap();
     }
 

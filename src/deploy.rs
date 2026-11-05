@@ -75,6 +75,8 @@ struct PluginDeployRaw {
 #[derive(Debug, Clone, Serialize)]
 pub struct Deployment {
     pub file: PathBuf,
+    /// SHA-256 of the file as it was read and parsed.
+    pub file_sha256: String,
     pub team_dir: PathBuf,
     pub auth: Auth,
     /// Accept Claude's folder-trust dialog for a member's declared `cwd`:
@@ -189,6 +191,7 @@ pub fn load(file: &Path, report: &mut Report) -> Option<Deployment> {
     }
     Some(Deployment {
         file: file.to_path_buf(),
+        file_sha256: crate::bus::manifest::sha256_hex(text.as_bytes()),
         team_dir,
         auth: raw.auth.unwrap_or_default(),
         auto_trust: raw.auto_trust,

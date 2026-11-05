@@ -23,39 +23,63 @@ pub fn format_utc(t: SystemTime) -> String {
     )
 }
 
-/// Parse `YYYY-MM-DDTHH:MM:SS[.fff]Z`. Only UTC (`Z`) is accepted.
+/// Parse exactly `YYYY-MM-DDTHH:MM:SS[.f…]Z` (one to nine fraction digits,
+/// UTC only, years 1970–9999). Impossible dates (`02-31`), leap seconds and
+/// anything else return `None`; nothing is normalized.
 pub fn parse_utc(s: &str) -> Option<SystemTime> {
-    let s = s.strip_suffix('Z')?;
-    let (date, clock) = s.split_once('T')?;
-    let mut dp = date.splitn(3, '-');
-    let y: i64 = dp.next()?.parse().ok()?;
-    let m: u32 = dp.next()?.parse().ok()?;
-    let d: u32 = dp.next()?.parse().ok()?;
-    let (hms, frac) = match clock.split_once('.') {
-        Some((a, b)) => (a, Some(b)),
-        None => (clock, None),
-    };
-    let mut cp = hms.splitn(3, ':');
-    let hh: u64 = cp.next()?.parse().ok()?;
-    let mm: u64 = cp.next()?.parse().ok()?;
-    let ss: u64 = cp.next()?.parse().ok()?;
-    if !(1..=12).contains(&m) || !(1..=31).contains(&d) || hh > 23 || mm > 59 || ss > 60 {
+    let b = s.as_bytes();
+    if b.len() < 20 || *b.last()? != b'Z' {
         return None;
     }
-    let millis: u64 = match frac {
-        Some(f) if !f.is_empty() && f.len() <= 9 && f.chars().all(|c| c.is_ascii_digit()) => {
-            let padded = format!("{f:0<3}");
-            padded[..3].parse().ok()?
+    let digits = |r: std::ops::Range<usize>| -> Option<u64> {
+        let part = s.get(r)?;
+        if part.bytes().all(|c| c.is_ascii_digit()) {
+            part.parse().ok()
+        } else {
+            None
         }
-        Some(_) => return None,
-        None => 0,
     };
-    let days = days_from_civil(y, m, d);
-    if days < 0 {
+    if b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || b[13] != b':' || b[16] != b':' {
         return None;
     }
-    let secs = days as u64 * 86_400 + hh * 3600 + mm * 60 + ss;
-    Some(UNIX_EPOCH + Duration::from_secs(secs) + Duration::from_millis(millis))
+    let y = digits(0..4)?;
+    let m = digits(5..7)? as u32;
+    let d = digits(8..10)? as u32;
+    let hh = digits(11..13)?;
+    let mm = digits(14..16)?;
+    let ss = digits(17..19)?;
+    let millis = match s.get(19..s.len() - 1)? {
+        "" => 0,
+        frac => {
+            let f = frac.strip_prefix('.')?;
+            if f.is_empty() || f.len() > 9 || !f.bytes().all(|c| c.is_ascii_digit()) {
+                return None;
+            }
+            format!("{f:0<3}")[..3].parse().ok()?
+        }
+    };
+    if !(1970..=9999).contains(&y) || hh > 23 || mm > 59 || ss > 59 {
+        return None;
+    }
+    if !(1..=12).contains(&m) || d == 0 || d > days_in_month(y as i64, m) {
+        return None;
+    }
+    let days = u64::try_from(days_from_civil(y as i64, m, d)).ok()?;
+    let secs = days
+        .checked_mul(86_400)?
+        .checked_add(hh * 3600 + mm * 60 + ss)?;
+    UNIX_EPOCH
+        .checked_add(Duration::from_secs(secs))?
+        .checked_add(Duration::from_millis(millis))
+}
+
+fn days_in_month(y: i64, m: u32) -> u32 {
+    match m {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        _ if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 => 29,
+        _ => 28,
+    }
 }
 
 // Howard Hinnant's civil-date algorithms.
@@ -105,5 +129,36 @@ mod tests {
         assert_eq!(parse_utc("2026-13-05T19:00:00Z"), None);
         assert_eq!(parse_utc("2026-11-05 19:00:00Z"), None);
         assert_eq!(parse_utc("2026-11-05T19:00:00.Z"), None);
+    }
+
+    #[test]
+    fn rejects_impossible_and_extreme_inputs() {
+        for bad in [
+            "2026-02-31T00:00:00Z",
+            "2026-04-31T00:00:00Z",
+            "2025-02-29T00:00:00Z",
+            "2026-11-05T23:59:60Z",
+            "2026-11-05T24:00:00Z",
+            "1969-12-31T23:59:59Z",
+            "9223372036854775807-01-01T00:00:00Z",
+            "+026-11-05T19:00:00Z",
+            "2026-1-05T19:00:00Z",
+            "2026-11-05T19:00:00.1234567890Z",
+            "2026-11-05T19:00:00.12aZ",
+            "",
+            "Z",
+            "2026-11-05T19:00:00.\u{e9}Z",
+            "2026-11-05T19:00:0\u{e9}Z",
+        ] {
+            assert_eq!(parse_utc(bad), None, "{bad}");
+        }
+        assert!(parse_utc("2000-02-29T00:00:00Z").is_some());
+        assert!(parse_utc("9999-12-31T23:59:59.999999999Z").is_some());
+        assert_eq!(
+            parse_utc("2026-11-05T19:00:00.5Z")
+                .map(format_utc)
+                .as_deref(),
+            Some("2026-11-05T19:00:00.500Z")
+        );
     }
 }

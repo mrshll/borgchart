@@ -357,7 +357,7 @@ fn check_bus(
             }
         }
     }
-    let root = bus.root.canonicalize().unwrap_or_else(|_| bus.root.clone());
+    let root = resolve_existing_prefix(&bus.root);
     for dir in [v.team.dir.clone(), crate::state::state_home()] {
         let dir = dir.canonicalize().unwrap_or(dir);
         if root.starts_with(&dir) {
@@ -382,6 +382,32 @@ fn check_bus(
             ),
         );
     }
+}
+
+/// `path` with its longest existing prefix canonicalized (following
+/// symlinks) and the missing rest appended, so a root that doesn't exist yet
+/// is still placed correctly. `..` in the missing rest is applied lexically.
+fn resolve_existing_prefix(path: &Path) -> PathBuf {
+    let mut existing = path.to_path_buf();
+    let mut rest = Vec::new();
+    while existing.canonicalize().is_err() {
+        match (existing.file_name(), existing.parent()) {
+            (Some(name), Some(parent)) => {
+                rest.push(name.to_os_string());
+                existing = parent.to_path_buf();
+            }
+            _ => break,
+        }
+    }
+    let mut out = existing.canonicalize().unwrap_or(existing);
+    for name in rest.into_iter().rev() {
+        if name == ".." {
+            out.pop();
+        } else if name != "." {
+            out.push(name);
+        }
+    }
+    out
 }
 
 fn plugin_commands(plugin: &Plugin) -> Vec<String> {

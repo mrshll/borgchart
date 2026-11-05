@@ -761,3 +761,37 @@ fn config_snapshot_follows_file_bytes_not_paths() {
     );
     assert_eq!(a.inputs["team.yaml"], b.inputs["team.yaml"]);
 }
+
+#[test]
+fn snapshot_describes_what_was_validated() {
+    let (f, _) = bus_fixture();
+    let (report, old) = run_bus(&f);
+    let old = old.unwrap_or_else(|| panic!("{}", errors(&report)));
+    let before = old.config_snapshot();
+    f.edit("team/team.yaml", "    parent: lead\n", "");
+    let (report, new) = run_bus(&f);
+    let new = new.unwrap_or_else(|| panic!("{}", errors(&report)));
+    assert_eq!(old.config_snapshot(), before, "nothing is re-read");
+    assert_ne!(new.config_snapshot().digest, before.digest);
+    fs::remove_file(f.path("team/team.yaml")).unwrap();
+    assert_eq!(old.config_snapshot(), before);
+}
+
+#[test]
+fn missing_bus_root_through_a_symlink_is_placed_correctly() {
+    let (f, runs) = bus_fixture();
+    std::os::unix::fs::symlink(f.path("team"), f.path("alias")).unwrap();
+    let sneaky = f.path("alias/not-created/yet");
+    f.edit(
+        "team/borgchart.yaml",
+        &runs.display().to_string(),
+        &sneaky.display().to_string(),
+    );
+    let (report, validated) = run_bus(&f);
+    assert!(validated.is_none());
+    assert!(
+        errors(&report).contains("keep run records outside"),
+        "{}",
+        errors(&report)
+    );
+}

@@ -13,8 +13,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::state::ensure_dir;
-
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Prefix of temporary files; readers skip names starting with it.
@@ -42,13 +40,32 @@ pub enum Written {
     Exists,
 }
 
+/// Create `dir` and any missing ancestors, each with mode 0700, syncing the
+/// directory that holds each new entry so the new names survive a crash.
+/// Existing directories are left as they are.
+pub fn create_private_dirs(dir: &Path) -> io::Result<()> {
+    if fs::symlink_metadata(dir).is_ok() {
+        return Ok(());
+    }
+    let parent = dir
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .ok_or_else(|| io::Error::other(format!("{} has no parent", dir.display())))?;
+    create_private_dirs(parent)?;
+    match fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => sync_dir(parent),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 /// Write `contents` to `path` (mode 0600) only if `path` does not exist yet.
-/// Parent directories are created with mode 0700.
+/// Missing parent directories are created as by [`create_private_dirs`].
 pub fn write_new(path: &Path, contents: &[u8]) -> io::Result<Written> {
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::other("path has no parent directory"))?;
-    ensure_dir(parent)?;
+    create_private_dirs(parent)?;
     let tmp = temp_sibling(path);
     let result = (|| {
         let mut file = fs::OpenOptions::new()
@@ -78,7 +95,7 @@ pub fn replace(path: &Path, contents: &[u8]) -> io::Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::other("path has no parent directory"))?;
-    ensure_dir(parent)?;
+    create_private_dirs(parent)?;
     let tmp = temp_sibling(path);
     let result = (|| {
         let mut file = fs::OpenOptions::new()
@@ -101,12 +118,14 @@ pub fn sync_dir(dir: &Path) -> io::Result<()> {
     fs::File::open(dir)?.sync_all()
 }
 
-/// Create `base` and `dir` (which must be inside `base`) with mode 0700 if
-/// they are missing, then check `base` and every directory from it down to
-/// `dir`: each must be a real directory (not a symlink), owned by you and not
-/// writable by group or others. Writers call this once before writing into
-/// a run, so a root under a shared directory such as `/tmp` can't have been
-/// planted or redirected by someone else.
+/// Make sure `base` and `dir` (which must be inside `base`) exist and are
+/// private: each of `base` and every directory from it down to `dir` must be
+/// a real directory (not a symlink), owned by you and not writable by group
+/// or others. Existing components are checked before anything is created
+/// beneath them; missing ones are created with mode 0700 (see
+/// [`create_private_dirs`]) and then checked. Writers call this before
+/// writing into a run, so a root under a shared directory such as `/tmp`
+/// can't have been planted or redirected by someone else.
 pub fn ensure_private_tree(base: &Path, dir: &Path) -> io::Result<()> {
     let rel = dir.strip_prefix(base).map_err(|_| {
         io::Error::other(format!(
@@ -115,14 +134,21 @@ pub fn ensure_private_tree(base: &Path, dir: &Path) -> io::Result<()> {
             base.display()
         ))
     })?;
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)?;
+    if rel
+        .components()
+        .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return Err(io::Error::other(format!(
+            "{} must not contain `.` or `..`",
+            dir.display()
+        )));
+    }
+    create_private_dirs(base)?;
     check_private_dir(base)?;
     let mut current = base.to_path_buf();
     for part in rel.components() {
         current.push(part);
+        create_private_dirs(&current)?;
         check_private_dir(&current)?;
     }
     Ok(())
@@ -219,7 +245,35 @@ mod tests {
         std::os::unix::fs::symlink(&elsewhere, &linked).unwrap();
         let err = ensure_private_tree(&linked, &linked.join("r1")).unwrap_err();
         assert!(err.to_string().contains("symlink"), "{err}");
+        assert!(
+            !elsewhere.join("r1").exists(),
+            "nothing is created under a refused symlink"
+        );
+        let hop = base.join("hop");
+        std::os::unix::fs::symlink(&elsewhere, &hop).unwrap();
+        assert!(ensure_private_tree(&base, &hop.join("r2")).is_err());
+        assert!(!elsewhere.join("r2").exists());
         assert!(ensure_private_tree(&base, &elsewhere).is_err());
+        assert!(ensure_private_tree(&base, &base.join("../x")).is_err());
+    }
+
+    #[test]
+    fn new_directories_are_private_at_every_level() {
+        use std::os::unix::fs::PermissionsExt;
+        let old = rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o002));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a/b/c/rec.json");
+        let result = write_new(&path, b"x");
+        rustix::process::umask(old);
+        result.unwrap();
+        for rel in ["a", "a/b", "a/b/c"] {
+            let mode = fs::metadata(dir.path().join(rel))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o700, "{rel}");
+        }
     }
 
     #[test]

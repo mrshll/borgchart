@@ -141,27 +141,24 @@ pub enum Liveness {
 }
 
 impl Validated {
-    /// The configuration snapshot: SHA-256 of each input file's bytes and of
-    /// each member's expanded instruction, combined under a versioned header.
+    /// The configuration snapshot: the SHA-256 of each input file's bytes as
+    /// they were read and validated, and of each member's expanded
+    /// instruction, combined under a versioned header. Nothing is re-read,
+    /// so the snapshot always describes this validated configuration.
     pub fn config_snapshot(&self) -> ConfigSnapshot {
-        let file_sha = |p: &std::path::Path| {
-            std::fs::read(p)
-                .map(|b| hex(&Sha256::digest(b)))
-                .unwrap_or_else(|_| "unreadable".to_string())
-        };
         let mut inputs = BTreeMap::new();
         if let Some(d) = &self.deployment {
-            inputs.insert("deployment".to_string(), file_sha(&d.file));
+            inputs.insert("deployment".to_string(), d.file_sha256.clone());
         }
         inputs.insert(
             crate::team::TEAM_FILE.to_string(),
-            file_sha(&self.team.dir.join(crate::team::TEAM_FILE)),
+            self.team.file_sha256.clone(),
         );
         for (id, m) in &self.team.members {
-            inputs.insert(format!("members/{id}/prompt"), file_sha(&m.prompt_file));
+            inputs.insert(format!("members/{id}/prompt"), m.prompt_sha256.clone());
             inputs.insert(
                 format!("members/{id}/instruction"),
-                hex(&Sha256::digest(m.instruction.as_bytes())),
+                sha256_hex(m.instruction.as_bytes()),
             );
         }
         let mut text = format!("borgchart config digest v{CONFIG_DIGEST_VERSION}\n");
@@ -170,10 +167,14 @@ impl Validated {
         }
         ConfigSnapshot {
             version: CONFIG_DIGEST_VERSION,
-            digest: hex(&Sha256::digest(text.as_bytes())),
+            digest: sha256_hex(text.as_bytes()),
             inputs,
         }
     }
+}
+
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    hex(&Sha256::digest(bytes))
 }
 
 pub fn hex(bytes: &[u8]) -> String {
