@@ -1,6 +1,6 @@
 # The coordination bus
 
-**Status: in progress.** This document is the shared contract for the bus work. The configuration, layout, caller context, envelope, record commands and outcome codes below exist in code. Each later section says *planned* until the change implementing it lands.
+**Status: in progress.** This document is the shared contract for the bus work. The configuration, layout, caller context, envelope, record commands, task facts and outcome codes below exist in code. Each later section says *planned* until the change implementing it lands.
 
 The bus lets members, and callers outside the team, hand each other durable records: assignments, results, questions, decisions and plain notes. A record is a file. Publishing one never types anything into a terminal. A separate attention worker may type one fixed, payload-free reminder into an idle member, under strict checks, or raise an alert instead.
 
@@ -53,6 +53,7 @@ Everything for one run lives in `<root>/<run>/` (mode 0700, files 0600). Each ar
 | `bus/records/<seq>.json` | records | Immutable records, numbered from 1 with no gaps (`m1`, `m2`, …). |
 | `bus/keys/<slot>/<sha256>.json` | records | Index of operation keys, per actor slot. |
 | `bus/acks/<id>.json` | records | The recipient's acknowledgement of one record. |
+| `bus/carried/<run>.json` | records | What `bus carry` brought into this run from an earlier one. Replaced on each carry. |
 | `attention/worker.lock`, `worker.json` | attention | The single attention worker and its state. |
 | `attention/observed/<member>/<incarnation>.json` | attention | What `inbox` has returned to that incarnation. |
 | `attention/inflight/<member>.json` | attention | A wake attempt whose intent is recorded and outcome not yet known. |
@@ -143,7 +144,7 @@ Every command takes the deployment as other commands do (`-f`, `$BORGCHART_FILE`
 4. holding both, checks the caller authoritatively: a member's run, membership and current, not-ended incarnation (`fenced`), and, once the run has a runtime generation, that this is the generation's binary (`refused`). Generations change only under `runtime/generation.lock` exclusive and incarnations only under `bus/lock`, so this holds until the write;
 5. rescans the store (`corrupt` if anything is unreadable or missing);
 6. if the caller's slot already used the key: the same draft and artifact contents return the original record (`duplicate`, repairing a missing key index entry), anything else is a `conflict`;
-7. checks every `reply_to` ID (and a `verify`'s `facts.result`) names a record (`invalid`), then writes the record and its key index entry.
+7. checks every `reply_to` ID (and a `verify`'s `facts.result`) names a record (`invalid`), and a task record or `decision` against the task fold ([below](#task-facts-and-recovery): `invalid`, `fenced` or `refused`), then writes the record and its key index entry.
 
 ```console
 $ brg msg publish --external ops --key demo-1 --record demo.json --json
@@ -187,7 +188,7 @@ $ brg msg publish --external ops --key demo-1 --record demo.json --json
 **`bus check`** reports `errors` and `warnings` and the run's `age_days`:
 
 - errors: an unreadable or misnamed record, key or ack; a record whose schema, run or number doesn't match; a gap; an ack for a missing record or by someone other than its recipient; a run older than `max_age_days`;
-- warnings: stray `.tmp-*` files (left by a crash, safe to remove); a run older than `warn_age_days`.
+- warnings: stray `.tmp-*` files (left by a crash, safe to remove); a run older than `warn_age_days`; a run that continues another but hasn't carried from it yet; the runs this one was carried into (also as `carried_into`), in which case being past `max_age_days` is a warning, not an error.
 
 It exits `ok` with warnings only, `corrupt` when the store has errors, and `error` when only the run's age does.
 
@@ -195,9 +196,89 @@ It exits `ok` with warnings only, `corrupt` when the store has errors, and `erro
 
 **Corrupt store.** An unreadable record, key or ack, or a gap, stops every mutation (`corrupt`) until a person repairs the store or the work continues in a new run; reads and inspection still work and say the store is incomplete.
 
-## Task facts and recovery (planned)
+## Task facts and recovery
 
-Folds task records into per-task state: assigned, accepted or declined, result claimed, verified, released, cancel requested and confirmed, reopened as a new attempt, plus open questions and their decisions. Authority mutations (`assign`, `verify`, `release`, `cancel-request`, `reopen`, `decision`) must come from the recipient's parent's current incarnation, or from an external caller for a member with no parent; anything else is `fenced`. A member holds at most one unresolved task. Releasing never frees a checkout while its writer may be alive (`Liveness` other than `gone`). A run nearing `max_age_days`, or recovering from a corrupt store, continues in a new run (`continues:`) into which unresolved tasks, open questions and unacknowledged records are carried explicitly; the old run is left untouched.
+Task records are folded, in order, into one state per task (`src/bus/tasks.rs`). `brg msg publish` checks every task record and every `decision` against that fold under `bus/lock`, after the store scan and before the record is numbered, so a record is only ever checked against exactly the records it follows.
+
+**Roles.** A task's *assignee* is the member its `assign` names; its *authority* is the assignee's parent, or any outside caller (`--external`) when the assignee is the team's root.
+
+| From | Kinds | To |
+| --- | --- | --- |
+| the authority's current incarnation | `assign`, `verify`, `release`, `cancel-request`, `reopen` | the assignee |
+| the assignee's current incarnation | `accept`, `decline`, `result`, `cancel-confirm` | the authority (its parent, or `external:<name>` for the root) |
+| the recipient's authority | `decision` | the member that asked |
+
+A task record from anyone else is `fenced`, and so is one from an incarnation that stopped being current while waiting for the lock. A record addressed to the wrong side is `invalid`. A `decision` can't go to `external:<name>` (an outside caller has no authority above it); answer an outside caller's question with a `note`.
+
+**States.**
+
+| State | Reached by | Next expected |
+| --- | --- | --- |
+| `assigned` | `assign` | assignee: `accept` or `decline` |
+| `accepted` | `accept` | assignee: `result` |
+| `declined` | `decline` | nothing (the authority may `release` or `reopen`) |
+| `result-claimed` | `result` (from `accepted` or `cancel-requested`) | authority: `verify` or `cancel-request` |
+| `verified` / `rejected` | `verify` with `outcome` `accepted` / `rejected` | authority: `release` or `reopen` |
+| `cancel-requested` | `cancel-request` (from `assigned`, `accepted`, `result-claimed`, `reopened`) | assignee: `cancel-confirm` (or a `result`) |
+| `cancelled` | `cancel-confirm` | authority: `release` or `reopen` |
+| `released` | `release` (from `verified`, `rejected`, `cancelled`, `declined`) | nothing |
+| `reopened` | `reopen` (from `verified`, `rejected`, `cancelled`, `declined`): attempt + 1 | assignee: `accept` or `decline`; or the authority re-pins it with an `assign` of the new attempt |
+
+Anything else is `invalid` (a `result` before an `accept`, a second `assign` of a task, a `release` of an accepted task, …). Further rules:
+
+- **Attempts.** A new task's `assign` is attempt 1; `reopen` starts the next. A record whose `attempt` is older than the task's is `fenced`; a later one is `invalid`; a record without `attempt` means the current one (for `reopen`, the next).
+- **Agreement.** `assign` needs `facts.agreement.path` to exist and hash to `facts.agreement.sha256` (`invalid` otherwise). The fold keeps the agreement, `scope`, `provenance`, `limits` and `checkout`.
+- **One task at a time.** A member holds at most one *unresolved* task (anything but `released` or `declined`): a second `assign`, or a `reopen` while it holds another, is `invalid`. So is an `assign` naming a `checkout` that another unresolved task holds.
+- **Verify** must name the current attempt's `result` record. A result is the assignee's claim; only a `verify` with `outcome: accepted` verifies it.
+- **Release never frees a checkout while a writer may survive.** The incarnations that may be writing are every assignee incarnation that accepted, claimed a result or confirmed a cancellation for the task, the assignee's current incarnation (unless the task was declined), and `facts.writer_incarnation` if given. Each must be `gone`; `alive` or `unknown` is `refused`, whatever the records say. Until lifecycle's pane probe is wired in, an incarnation is `gone` only once its incarnation file records `ended_at` (it stopped through brg), and `unknown` otherwise. `facts.checkout`, if given, must be the task's.
+- **Consumption is not acceptance.** Acknowledging an `assign` (`msg ack`) changes nothing; only `accept` does.
+- **Questions.** A `question` is open until a `decision` names it in `reply_to`; a `decision` must name at least one open question. Open questions, like tasks, live in the records, so a replacement lead sees them.
+- **Replacement.** State is per member, not per incarnation: a member's new incarnation carries on its predecessor's task (its old incarnation is `fenced`), and a new lead incarnation is the authority for tasks the old one assigned.
+- **A damaged store.** Mutations stop (`corrupt`) as for any record. The fold reads the records from `m1` up to the first missing or unreadable one, so `task list` and `task show` still show what is known, marked `incomplete`. Records that don't apply (written by hand, or before these checks) are skipped and listed as `anomalies`.
+
+## Commands — tasks
+
+```
+brg task list [--json]
+brg task show TASK [--json]
+brg bus carry --from RUN [--json]
+```
+
+**`task list`** and **`task show`** are read-only and need no identity. `list` gives every task (state, assignee, authority, attempt, agreement, scope, checkout, the record ID of each fact of the current attempt, writers with their liveness, and `next`) and every open question; `show` adds the task's full `history` and the open questions about it, and is `not-found` for an unknown task. Both report `through` (the last record folded) and `store` (`ok` or `incomplete`).
+
+```console
+$ brg task show t-1
+task t-1: verified (attempt 1)
+  assignee: helper
+  authority: lead
+  agreement: /work/agreement.md (sha256 901932a5…)
+  scope: the config parser
+  checkout: /work/checkout
+  writer: helper-1 (unknown, current)
+  m1  assign  #1  lead
+  m2  accept  #1  helper
+  m4  result  #1  helper
+  m5  verify  #1  lead
+  next: lead (release or reopen)
+  open question m3 from helper
+```
+
+**`bus carry --from RUN`** continues work from an earlier run. Rotate *before* `max_age_days` (`bus check` warns from `warn_age_days`), or when a store is damaged: start a new run with `run: <new>` and `continues: <old>`, then run `brg bus carry --from <old>` against it. It:
+
+1. requires `bus.continues` to be `RUN` (and the new `run.json`'s `linked_from`, if set, to name it) (`invalid` otherwise);
+2. reads the old run without locking or writing anything in it. If its store is damaged it uses the records up to the first bad one and says so (outcome `partial`, `incomplete: true`, `through`);
+3. publishes into the new run, as actor `bus`, one `note` per piece of pending work, to the original's recipient: the latest `assign` of each unresolved task, each open question, and each unacknowledged record not belonging to a resolved task. Each has `facts.carried_from: {run, id, sha256}` (the SHA-256 of the original record file), `facts.kind` and, for task records, `facts.task`. A recipient that isn't a member of the new run is `skipped`;
+4. uses the key `carry:<RUN>:<id>`, so running it again returns `duplicate` for everything already carried;
+5. writes `bus/carried/<RUN>.json` in the new run.
+
+Carried work is a pointer, not a transfer: the new run has no tasks until the authority assigns them again. `bus check` of the new run warns until a carry has run; `bus check` of the old run (with the deployment pointed back at it) lists `carried_into`, and a run past `max_age_days` that was carried completely is a warning rather than an error.
+
+```console
+$ brg bus carry --from demo-run-1
+m3 (open-question) -> lead: m1 committed
+m7 (unacked) -> helper: m2 committed
+carried 2 item(s) from `demo-run-1` into `demo-run-2`
+```
 
 ## Lifecycle and runtime binding (planned)
 
