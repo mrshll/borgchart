@@ -13,7 +13,7 @@ use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
 use borgchart::alert::{self, AlertOutcome, AlertRequest, Limits, Reason};
-use borgchart::bus::layout::RunPaths;
+use borgchart::bus::layout::{RunPaths, TeamStore};
 use borgchart::deploy::{AlertConfig, BusConfig};
 use borgchart::state::{BusMeta, MemberMeta, Meta, PluginMeta, StateDir};
 
@@ -97,12 +97,10 @@ impl Fixture {
         );
         let bus = BusConfig {
             root: dir.path().join("runs"),
-            run: "example-run-1".into(),
             alert: Some(AlertConfig {
                 plugin: "notify".into(),
                 action: "alert".into(),
             }),
-            continues: None,
             warn_age_days: 7,
             max_age_days: 14,
         };
@@ -202,13 +200,15 @@ fn env_is_built_from_scratch() {
             ("NOTIFY_TOKEN", NOTIFY_TOKEN),
             ("BORGCHART_MEMBER", "lead"),
             ("BORGCHART_ACTOR", "member"),
+            ("BORGCHART_RUN", "r9"),
         ],
     );
     let inv = fx.invoke(&Limits::default());
     assert_eq!(inv.outcome, AlertOutcome::Invoked, "{inv:?}");
     let env = read_env(&fx.out().join("env"));
     assert_eq!(env["BORGCHART_ACTOR"], "bus");
-    assert_eq!(env["BORGCHART_RUN"], "example-run-1");
+    // Storage runs are internal: the action never sees one.
+    assert!(!env.contains_key("BORGCHART_RUN"), "{env:?}");
     assert_eq!(env["BORGCHART_DEPLOYMENT"], "example-1234");
     assert_eq!(env["BORGCHART_BIN"], "/opt/example/brg");
     assert_eq!(env["BORGCHART_FILE"], fx.meta.source.display().to_string());
@@ -388,13 +388,13 @@ fn defaults_are_bounded() {
 fn run_paths(dir: &Path) -> RunPaths {
     let bus = BusConfig {
         root: dir.join("runs"),
-        run: "example-run-1".into(),
         alert: None,
-        continues: None,
         warn_age_days: 7,
         max_age_days: 14,
     };
-    borgchart::bus::layout::ensure_run_dir(&bus).unwrap()
+    TeamStore::new(&bus, "example-1234")
+        .ensure_run("r1")
+        .unwrap()
 }
 
 #[test]
@@ -489,17 +489,17 @@ members:
     }
 
     fn deploy_file(&self, room: &str, alert: bool) {
-        self.deploy_with(room, "runs", "example-run-1", alert.then_some("alert"));
+        self.deploy_with(room, "runs", alert.then_some("alert"));
     }
 
-    fn deploy_with(&self, room: &str, root: &str, run: &str, action: Option<&str>) {
+    fn deploy_with(&self, room: &str, root: &str, action: Option<&str>) {
         let alert_line = action
             .map(|a| format!("  alert: {{plugin: notify, action: {a}}}\n"))
             .unwrap_or_default();
         self.write(
             "team/borgchart.yaml",
             &format!(
-                "schema: 1\nplugins:\n  notify:\n    env: {{NOTIFY_ROOM: {room}}}\nbus:\n  root: {}\n  run: {run}\n{alert_line}",
+                "schema: 1\nplugins:\n  notify:\n    env: {{NOTIFY_ROOM: {room}}}\nbus:\n  root: {}\n{alert_line}",
                 self.path(root).display()
             ),
         );
@@ -540,12 +540,44 @@ members:
             "{}",
             String::from_utf8_lossy(&out.stderr)
         );
+        seed_current_run(&self.path("runs"), &self.path("state"));
+    }
+
+    /// The current run's directory (relative), as `seed_current_run` made it.
+    fn run_dir(&self) -> String {
+        format!("runs/{}/r1", deployment_id(&self.path("state")))
     }
 
     fn json(&self, args: &[&str]) -> (i32, serde_json::Value) {
         let out = self.brg_cmd(args).output().unwrap();
         (code(&out), parse(&out))
     }
+}
+
+/// The one deployment started under `state_home`.
+fn deployment_id(state_home: &Path) -> String {
+    let ids: Vec<String> = fs::read_dir(state_home)
+        .unwrap()
+        .map(|e| e.unwrap())
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(ids.len(), 1, "{ids:?}");
+    ids[0].clone()
+}
+
+/// Give the started deployment a current run `r1`, as the lifecycle does at
+/// `up`.
+fn seed_current_run(root: &Path, state_home: &Path) {
+    let bus = BusConfig {
+        root: root.to_path_buf(),
+        alert: None,
+        warn_age_days: 7,
+        max_age_days: 14,
+    };
+    let store = TeamStore::new(&bus, &deployment_id(state_home));
+    store.ensure_run("r1").unwrap();
+    store.set_current("r1").unwrap();
 }
 
 fn code(out: &Output) -> i32 {
@@ -588,7 +620,7 @@ fn cli_test_alert_isolates_the_action_from_the_caller() {
 
     let env = read_env(&d.path("out/env"));
     assert_eq!(env["BORGCHART_ACTOR"], "bus");
-    assert_eq!(env["BORGCHART_RUN"], "example-run-1");
+    assert!(!env.contains_key("BORGCHART_RUN"), "{env:?}");
     assert_eq!(env["NOTIFY_TOKEN"], NOTIFY_TOKEN);
     assert_eq!(env["NOTIFY_ROOM"], "R0000EXAMPLE");
     for name in [
@@ -686,6 +718,10 @@ fn cli_refusals() {
     let (rc, json) = d.json(&["bus", "alert", "test", "--json"]);
     assert_eq!(rc, 3, "{json}");
     assert_eq!(json["outcome"], "not-configured");
+    assert_eq!(
+        json["message"],
+        "team `team` hasn't been started; start it with: brg up"
+    );
     d.up();
     let (rc, json) = d.json(&["bus", "alert", "test", "--member", "nobody", "--json"]);
     assert_eq!(rc, 5, "{json}");
@@ -753,6 +789,10 @@ fn desktop_alert_example_logs_the_alert() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
+    seed_current_run(
+        &dir.path().join("home/borgchart-runs"),
+        &dir.path().join("state"),
+    );
     let out = brg(&["bus", "alert", "test", "--json"]);
     let json = parse(&out);
     assert_eq!(json["outcome"], "invoked", "{json}");
@@ -765,9 +805,7 @@ fn desktop_alert_example_logs_the_alert() {
     assert_eq!(states.len(), 1);
     let log = fs::read_to_string(states[0].path().join("plugins/notify/alerts.log")).unwrap();
     assert!(
-        log.contains(&format!(
-            "run=desktop-alert-1 id={id} member=lead reason=test pending=0"
-        )),
+        log.contains(&format!(" id={id} member=lead reason=test pending=0")),
         "{log}"
     );
 }
@@ -806,7 +844,7 @@ fn cli_list_refuses_a_run_directory_others_can_write() {
     d.up();
     let (rc, _) = d.json(&["bus", "alert", "test", "--json"]);
     assert_eq!(rc, 0);
-    let run = d.path("runs/example-run-1");
+    let run = d.path(&d.run_dir());
     fs::set_permissions(&run, fs::Permissions::from_mode(0o777)).unwrap();
     let (rc, json) = d.json(&["bus", "alerts", "--json"]);
     assert_ne!(rc, 0, "{json}");
@@ -859,29 +897,91 @@ fn cli_refuses_a_bus_changed_since_up() {
     let id = json["alert"]["id"].as_str().unwrap().to_string();
     fs::remove_file(d.path("out/argv")).unwrap();
 
-    for (root, run, action) in [
-        ("runs", "changed-run", Some("alert")),
-        ("runs", "example-run-1", Some("other")),
-        ("runs", "example-run-1", None),
-        ("other-runs", "example-run-1", Some("alert")),
+    for (root, action) in [
+        ("runs", Some("other")),
+        ("runs", None),
+        ("other-runs", Some("alert")),
     ] {
-        d.deploy_with("R0000EXAMPLE", root, run, action);
+        d.deploy_with("R0000EXAMPLE", root, action);
         let (rc, json) = d.json(&["bus", "alert", "test", "--json"]);
-        assert_eq!(rc, 4, "{root} {run} {action:?}: {json}");
+        assert_eq!(rc, 4, "{root} {action:?}: {json}");
         assert_eq!(json["outcome"], "refused");
+        let msg = json["message"].as_str().unwrap_or("");
+        assert!(!borgchart::bus::mentions_runs(msg), "no run wording: {msg}");
+        assert!(
+            msg.ends_with("restart the team to apply it: brg down && brg up"),
+            "{msg}"
+        );
         let (rc, _) = d.json(&["bus", "alerts", "--json"]);
-        assert_eq!(rc, 4, "{root} {run} {action:?}");
+        assert_eq!(rc, 4, "{root} {action:?}");
         let (rc, _) = d.json(&["bus", "alert", "resolve", &id, "--json"]);
-        assert_eq!(rc, 4, "{root} {run} {action:?}");
-        assert!(!d.path("out/argv").exists(), "{root} {run} {action:?} ran");
+        assert_eq!(rc, 4, "{root} {action:?}");
+        assert!(!d.path("out/argv").exists(), "{root} {action:?} ran");
     }
-    assert!(!d.path("runs/changed-run").exists());
     assert!(!d.path("other-runs").exists());
 
     // Back to the up-time configuration: everything works again.
     d.deploy_file("R0000EXAMPLE", true);
     let (rc, json) = d.json(&["bus", "alert", "resolve", &id, "--json"]);
     assert_eq!(rc, 0, "{json}");
+}
+
+#[test]
+fn cli_without_current_storage_is_as_if_not_started() {
+    let d = Deploy::new(true);
+    let out = d
+        .brg_cmd(&["up"])
+        .env("NOTIFY_TOKEN", NOTIFY_TOKEN)
+        .env("SLACK_BOT_TOKEN", SLACK_SECRET)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // `up` ran, but the team has no current storage yet.
+    let (rc, json) = d.json(&["bus", "alert", "test", "--json"]);
+    assert_eq!(rc, 3, "{json}");
+    assert_eq!(json["outcome"], "not-configured");
+    assert_eq!(
+        json["message"],
+        "team `team` has no message storage yet; start the team to create it: brg up"
+    );
+    assert!(!d.path("out/argv").exists());
+    let (rc, listed) = d.json(&["bus", "alerts", "--json"]);
+    assert_eq!(rc, 0, "{listed}");
+    assert_eq!(listed["alerts"].as_array().unwrap().len(), 0);
+    let (rc, json) = d.json(&["bus", "alert", "resolve", "a-nope", "--json"]);
+    assert_eq!(rc, 10, "{json}");
+    assert!(
+        !d.path("runs")
+            .join(deployment_id(&d.path("state")))
+            .exists()
+    );
+}
+
+#[test]
+fn cli_refuses_storage_that_lost_its_current_file() {
+    let d = Deploy::new(true);
+    d.up();
+    let (rc, json) = d.json(&["bus", "alert", "test", "--json"]);
+    assert_eq!(rc, 0, "{json}");
+    let id = json["alert"]["id"].as_str().unwrap().to_string();
+    let current = d.path(&format!("runs/{}/current", deployment_id(&d.path("state"))));
+    fs::remove_file(current).unwrap();
+    for args in [
+        &["bus", "alert", "test", "--json"][..],
+        &["bus", "alerts", "--json"][..],
+        &["bus", "alert", "resolve", &id, "--json"][..],
+    ] {
+        let (rc, json) = d.json(args);
+        assert_eq!(rc, 4, "{args:?}: {json}");
+        assert_eq!(json["outcome"], "refused");
+        let msg = json["message"].as_str().unwrap();
+        assert!(msg.starts_with("team `team`'s message storage"), "{msg}");
+        assert!(!borgchart::bus::mentions_runs(msg), "{msg}");
+    }
 }
 
 #[test]
@@ -896,7 +996,7 @@ fn invoke_refuses_a_bus_other_than_the_one_recorded_at_up() {
         &recorder(&fx.out()),
     );
     let mut bus = fx.bus.clone();
-    bus.run = "changed-run".into();
+    bus.root = fx.out().join("other-runs");
     let inv = alert::invoke(&fx.state, &fx.meta, &bus, &request(), &Limits::default());
     assert!(
         matches!(inv.outcome, AlertOutcome::Unavailable(_)),
@@ -918,7 +1018,7 @@ fn cli_resolve_refuses_a_symlinked_or_shared_root() {
     d.up();
     let (_, json) = d.json(&["bus", "alert", "test", "--json"]);
     let id = json["alert"]["id"].as_str().unwrap().to_string();
-    let file = d.path(&format!("runs/example-run-1/attention/alerts/{id}.json"));
+    let file = d.path(&format!("{}/attention/alerts/{id}.json", d.run_dir()));
     let before = fs::read(&file).unwrap();
 
     fs::rename(d.path("runs"), d.path("actual-runs")).unwrap();
@@ -929,7 +1029,8 @@ fn cli_resolve_refuses_a_symlinked_or_shared_root() {
     assert_eq!(rc, 4);
     assert_eq!(
         fs::read(d.path(&format!(
-            "actual-runs/example-run-1/attention/alerts/{id}.json"
+            "actual-{}/attention/alerts/{id}.json",
+            d.run_dir()
         )))
         .unwrap(),
         before
@@ -975,15 +1076,18 @@ fn cli_resolve_never_follows_an_embedded_id() {
     d.up();
     let (_, json) = d.json(&["bus", "alert", "test", "--json"]);
     let id = json["alert"]["id"].as_str().unwrap().to_string();
-    let file = d.path(&format!("runs/example-run-1/attention/alerts/{id}.json"));
+    let file = d.path(&format!("{}/attention/alerts/{id}.json", d.run_dir()));
     let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
     value["id"] = "../../escaped".into();
     fs::write(&file, value.to_string()).unwrap();
     let (rc, json) = d.json(&["bus", "alert", "resolve", &id, "--json"]);
     assert_eq!(rc, 7, "{json}");
     assert_eq!(json["outcome"], "corrupt");
-    assert!(!d.path("runs/example-run-1/escaped.json").exists());
-    assert!(!d.path("runs/example-run-1/attention/escaped.json").exists());
+    assert!(!d.path(&format!("{}/escaped.json", d.run_dir())).exists());
+    assert!(
+        !d.path(&format!("{}/attention/escaped.json", d.run_dir()))
+            .exists()
+    );
 }
 
 #[test]
@@ -992,7 +1096,7 @@ fn cli_alerts_never_render_control_characters_from_a_file() {
     d.up();
     let (_, json) = d.json(&["bus", "alert", "test", "--json"]);
     let id = json["alert"]["id"].as_str().unwrap().to_string();
-    let file = d.path(&format!("runs/example-run-1/attention/alerts/{id}.json"));
+    let file = d.path(&format!("{}/attention/alerts/{id}.json", d.run_dir()));
     let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
     value["member"] = "lead\u{1b}]0;owned\u{7}".into();
     fs::write(&file, value.to_string()).unwrap();

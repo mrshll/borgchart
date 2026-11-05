@@ -34,6 +34,66 @@ pub fn tmux_socket() -> String {
     std::env::var(ENV_TMUX_SOCKET).unwrap_or_else(|_| DEFAULT_SOCKET.to_string())
 }
 
+/// How to restart a team, as a command line that works from where the
+/// person is: the bare commands in the deployment's own folder, otherwise
+/// with its `--file` (or `--team`).
+pub fn restart_hint(source: &Path) -> String {
+    let canonical = source
+        .canonicalize()
+        .unwrap_or_else(|_| source.to_path_buf());
+    let dir = canonical
+        .parent()
+        .filter(|_| canonical.is_file())
+        .unwrap_or(&canonical);
+    let here = std::env::current_dir()
+        .ok()
+        .and_then(|c| c.canonicalize().ok());
+    if here.as_deref() == Some(dir) {
+        return "brg down && brg up".to_string();
+    }
+    let flag = if canonical.is_file() {
+        "--file"
+    } else {
+        "--team"
+    };
+    let path = shell_quote(&canonical.display().to_string());
+    format!("brg down {flag} {path} && brg up {flag} {path}")
+}
+
+/// The name a team goes by in messages: its deployment's directory name,
+/// lowercased, with anything outside `[a-z0-9_-]` turned into `-`.
+pub fn team_name(source: &Path) -> String {
+    let canonical = source
+        .canonicalize()
+        .unwrap_or_else(|_| source.to_path_buf());
+    let dir = canonical
+        .parent()
+        .filter(|_| canonical.is_file())
+        .unwrap_or(&canonical);
+    let clean: String = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .chars()
+        .take(32)
+        .collect();
+    if clean.is_empty() {
+        "team".to_string()
+    } else {
+        clean
+    }
+}
+
 /// A stable id for a deployment: its directory name plus a short hash of its path.
 pub fn deployment_id(source: &Path) -> String {
     let canonical = source
@@ -165,7 +225,6 @@ pub struct MemberMeta {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BusMeta {
     pub root: PathBuf,
-    pub run: String,
     /// `(plugin, action)` of `bus.alert`.
     pub alert: Option<(String, String)>,
 }
@@ -174,7 +233,6 @@ impl BusMeta {
     pub fn of(config: &crate::deploy::BusConfig) -> Self {
         BusMeta {
             root: config.root.clone(),
-            run: config.run.clone(),
             alert: config
                 .alert
                 .as_ref()
@@ -282,6 +340,30 @@ mod tests {
         assert_eq!(shell_quote("a b"), "'a b'");
         assert_eq!(shell_quote("it's"), r"'it'\''s'");
         assert_eq!(shell_quote(""), "''");
+    }
+
+    #[test]
+    fn restart_hints_work_from_elsewhere() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("borgchart.yaml");
+        std::fs::write(&file, "schema: 1\n").unwrap();
+        let real = file.canonicalize().unwrap();
+        let q = shell_quote(&real.display().to_string());
+        assert_eq!(
+            restart_hint(&file),
+            format!("brg down --file {q} && brg up --file {q}")
+        );
+    }
+
+    #[test]
+    fn team_names_come_from_the_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let team = dir.path().join("On Call");
+        std::fs::create_dir(&team).unwrap();
+        let file = team.join("borgchart.yaml");
+        std::fs::write(&file, "schema: 1\n").unwrap();
+        assert_eq!(team_name(&file), "on-call");
+        assert_eq!(team_name(&team), "on-call");
     }
 
     #[test]

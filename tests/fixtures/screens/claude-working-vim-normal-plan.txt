@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.318
+▝▜██████▀  Haiku 5.5 · Claude Example
+ ▝▝   ▝▝   ~/example/work
+
+
+❯ Write the English words for the numbers one through one hundred twenty, comma separated, nothing else.
+
+● Thinking for 6s…
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+· Gitifying… (7s · ↓ 225 tokens · thought for 3s)
+                                                                                                    ◐ medium · /effort
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ plan mode on (shift+tab to cycle) · esc to interrupt · ← 1 agent

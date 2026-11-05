@@ -3,5 +3,4 @@
 schema: 1
 bus:
   root: ~/borgchart-runs
-  run: desktop-alert-1
   alert: {plugin: notify, action: alert}

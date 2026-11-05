@@ -1,0 +1,30 @@
+
+ ▐▛███▛█   Claude Code v2.1.318
+▝▜██████▀  Haiku 5.5 · Claude Example
+ ▝▝   ▝▝   ~/example/work
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                ◐ medium · /effort
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ First say "Let me count…" on its own line, then write the English words for the numbers one
+  through four hundred, comma separated.
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · PR #42

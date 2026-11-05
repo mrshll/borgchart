@@ -364,7 +364,7 @@ fn check_bus(
             report.error(
                 deploy_file,
                 format!(
-                    "bus: `root` {} is inside {}; keep run records outside the team and brg's state",
+                    "bus: `root` {} is inside {}; keep team messages outside the team and brg's state",
                     bus.root.display(),
                     dir.display()
                 ),
@@ -376,7 +376,7 @@ fn check_bus(
         report.warning(
             deploy_file,
             format!(
-                "bus: `root` {} is inside the checkout {}; run records belong outside checkouts",
+                "bus: `root` {} is inside the checkout {}; team messages belong outside checkouts",
                 bus.root.display(),
                 checkout.display()
             ),

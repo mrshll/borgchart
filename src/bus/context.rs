@@ -13,8 +13,6 @@ pub const ENV_MEMBER: &str = "BORGCHART_MEMBER";
 pub const ENV_RUN: &str = "BORGCHART_RUN";
 /// A unique ID for one start of one member.
 pub const ENV_INCARNATION: &str = "BORGCHART_INCARNATION";
-/// The absolute path of the pinned `brg` a member's control calls must use.
-pub const ENV_BIN: &str = "BORGCHART_BIN";
 /// Set to `bus` for runtime-invoked plugin actions (alerts).
 pub const ENV_ACTOR: &str = "BORGCHART_ACTOR";
 pub const ACTOR_BUS: &str = "bus";

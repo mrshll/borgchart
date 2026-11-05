@@ -154,13 +154,14 @@ const RESERVED: &[&str] = &[
     "BORGCHART_PARENT",
     "BORGCHART_INCARNATION",
     "BORGCHART_DELIVER_TO",
+    // Storage runs are internal; an action never sees one.
+    "BORGCHART_RUN",
 ];
 
 /// The environment the action runs with, or why there is none.
 fn action_env(
     state: &StateDir,
     meta: &Meta,
-    bus: &BusConfig,
     plugin: &str,
 ) -> Result<(BTreeMap<String, String>, Vec<String>), String> {
     let text = std::fs::read_to_string(state.plugin_env_file(plugin)).map_err(|e| {
@@ -184,7 +185,6 @@ fn action_env(
     }
     env.insert("BORGCHART_ACTOR".into(), "bus".into());
     env.insert("BORGCHART_DEPLOYMENT".into(), state.id.clone());
-    env.insert("BORGCHART_RUN".into(), bus.run.clone());
     env.insert(state::ENV_FILE.into(), meta.source.display().to_string());
     env.insert("BORGCHART_BIN".into(), meta.brg.display().to_string());
     env.insert(
@@ -208,7 +208,7 @@ pub fn invoke(
     };
     if meta.bus.as_ref() != Some(&BusMeta::of(bus)) {
         return unavailable(
-            "the bus root, run or alert action differs from the one recorded at `brg up`",
+            "the bus root or alert action differs from the one recorded at `brg up`",
         );
     }
     if let Err(e) = req.check() {
@@ -239,7 +239,7 @@ pub fn invoke(
         Ok(p) => return unavailable(format!("{} is not executable", p.display())),
         Err(e) => return unavailable(format!("plugin `{plugin}`: {e}")),
     };
-    let (env, secrets) = match action_env(state, meta, bus, plugin) {
+    let (env, secrets) = match action_env(state, meta, plugin) {
         Ok(found) => found,
         Err(e) => return unavailable(e),
     };
@@ -495,17 +495,22 @@ pub mod store {
     /// while running an action.
     struct StoreLock(#[allow(dead_code)] fs::File);
 
-    /// The bus root, run, `attention/` and `attention/alerts/` directories that
-    /// exist must be private ([`fsx::check_private_dir`]): real directories,
-    /// yours, not group- or other-writable. Writers also need the root and run
-    /// to exist already (created by `ensure_run_dir`).
+    /// The bus root, the team's directory, the run, `attention/` and
+    /// `attention/alerts/` directories that exist must be private
+    /// ([`fsx::check_private_dir`]): real directories, yours, not group- or
+    /// other-writable. Writers also need the root, team and run directories
+    /// to exist already (created by `TeamStore::ensure_run`).
     pub fn check_tree(paths: &RunPaths, writing: bool) -> Result<(), Failure> {
-        let root = paths
+        let team = paths
             .root
             .parent()
-            .ok_or_else(|| Failure::new(Code::Error, "run directory has no parent"))?;
+            .ok_or_else(|| Failure::new(Code::Error, "message storage has no parent"))?;
+        let root = team
+            .parent()
+            .ok_or_else(|| Failure::new(Code::Error, "message storage has no parent"))?;
         for (dir, required) in [
             (root.to_path_buf(), writing),
+            (team.to_path_buf(), writing),
             (paths.root.clone(), writing),
             (paths.attention_dir(), false),
             (paths.alerts_dir(), false),
@@ -776,6 +781,12 @@ struct Ctx {
     state: StateDir,
     meta: Option<Meta>,
     bus: BusConfig,
+    /// The team's message storage.
+    store: crate::bus::layout::TeamStore,
+    /// The team's name for messages.
+    team: String,
+    /// How to restart the team, from where the caller is.
+    restart: String,
 }
 
 fn context(input: &crate::validate::Input) -> Result<Ctx, Failure> {
@@ -795,16 +806,45 @@ fn context(input: &crate::validate::Input) -> Result<Ctx, Failure> {
     })?;
     let state = crate::runtime::state_for(input).state;
     let meta = state::read_meta(&state);
+    let team = state::team_name(file);
+    let restart = state::restart_hint(file);
     // Once started, the deployment acts for the bus it was started with.
     if let Some(meta) = &meta
         && meta.bus.as_ref() != Some(&BusMeta::of(&bus))
     {
         return Err(Failure::new(
             Code::Refused,
-            "the bus root, run or alert action in the deployment file differs from the one recorded at `brg up`; restore it, or run `brg down` and `brg up` again",
+            format!(
+                "the bus root or alert action in the deployment file differs from the one recorded when team `{team}` started; restore it, or restart the team to apply it: {restart}"
+            ),
         ));
     }
-    Ok(Ctx { state, meta, bus })
+    let store = crate::bus::layout::TeamStore::new(&bus, &state.id);
+    Ok(Ctx {
+        state,
+        meta,
+        bus,
+        store,
+        team,
+        restart,
+    })
+}
+
+/// The team's current storage, `None` before the lifecycle has picked one.
+/// A missing `current` beside existing storage is refused, not taken for a
+/// first start.
+fn current_run(ctx: &Ctx) -> Result<Option<String>, Failure> {
+    let current = ctx.store.current().map_err(storage_failure)?;
+    if current.is_none() && !ctx.store.runs().map_err(storage_failure)?.is_empty() {
+        return Err(Failure::new(
+            Code::Refused,
+            format!(
+                "team `{}`'s message storage has lost track of which messages are current, so brg won't guess; nothing was read or changed",
+                ctx.team
+            ),
+        ));
+    }
+    Ok(current)
 }
 
 fn finish(json: bool, result: Result<(Value, String), (Failure, Option<Value>)>) -> ExitCode {
@@ -853,10 +893,15 @@ fn plain(f: Failure) -> (Failure, Option<Value>) {
 
 fn cli_test(input: &crate::validate::Input, member: Option<&str>) -> CliResult {
     let ctx = context(input).map_err(plain)?;
-    let meta = ctx.meta.ok_or_else(|| {
+    // The start half of the restart hint (`brg up …`).
+    let up = ctx.restart.rsplit(" && ").next().unwrap_or("brg up");
+    let meta = ctx.meta.clone().ok_or_else(|| {
         plain(Failure::new(
             Code::NotConfigured,
-            "this deployment hasn't been started; run `brg up` first",
+            format!(
+                "team `{}` hasn't been started; start it with: {up}",
+                ctx.team
+            ),
         ))
     })?;
     let member = match member {
@@ -883,15 +928,21 @@ fn cli_test(input: &crate::validate::Input, member: Option<&str>) -> CliResult {
             Some(json!({"outcome": ATTENTION_UNAVAILABLE})),
         ));
     }
-    // `ensure_run_dir` reports an unsafe tree (symlink, not yours, shared) as
-    // `Other`; anything else is an ordinary I/O error.
-    let paths = crate::bus::layout::ensure_run_dir(&ctx.bus).map_err(|e| {
-        plain(if e.kind() == std::io::ErrorKind::Other {
-            Failure::new(Code::Refused, format!("run directory: {e}"))
-        } else {
-            Failure::io("run directory", e)
-        })
+    // The lifecycle picks the team's storage at `up`; until it has, the team
+    // counts as not started.
+    let current = current_run(&ctx).map_err(plain)?.ok_or_else(|| {
+        plain(Failure::new(
+            Code::NotConfigured,
+            format!(
+                "team `{}` has no message storage yet; start the team to create it: {up}",
+                ctx.team
+            ),
+        ))
     })?;
+    let paths = ctx
+        .store
+        .ensure_run(&current)
+        .map_err(|e| plain(storage_failure(e)))?;
     let req = AlertRequest {
         id: new_id("test"),
         member,
@@ -942,14 +993,29 @@ fn cli_test(input: &crate::validate::Input, member: Option<&str>) -> CliResult {
     }
 }
 
-/// The run's paths for reading alerts, or `None` if the run directory doesn't
-/// exist yet. The root, run and alert directories that exist must be
-/// private (see [`crate::bus::fsx::check_private_dir`]), as for writers.
+/// `current` and `ensure_run` report an unsafe tree (symlink, not yours,
+/// shared) or an unreadable `current` as `Other`; anything else is an
+/// ordinary I/O error.
+fn storage_failure(e: std::io::Error) -> Failure {
+    if e.kind() == std::io::ErrorKind::Other {
+        Failure::new(Code::Refused, format!("message storage: {e}"))
+    } else {
+        Failure::io("message storage", e)
+    }
+}
+
+/// The current run's paths for reading alerts, or `None` if the team has no
+/// current storage or its directory doesn't exist yet. The directories that
+/// exist must be private (see [`crate::bus::fsx::check_private_dir`]), as for
+/// writers.
 fn run_paths(
     input: &crate::validate::Input,
 ) -> Result<Option<crate::bus::layout::RunPaths>, Failure> {
     let ctx = context(input)?;
-    let paths = crate::bus::layout::RunPaths::new(&ctx.bus);
+    let Some(current) = current_run(&ctx)? else {
+        return Ok(None);
+    };
+    let paths = ctx.store.run(&current);
     if !paths.root.exists() {
         return Ok(None);
     }

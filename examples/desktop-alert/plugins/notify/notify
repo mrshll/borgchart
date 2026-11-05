@@ -10,8 +10,8 @@ if [ "$#" -ne 5 ] || [ "$1" != alert ]; then
 fi
 id=$2 member=$3 reason=$4 pending=$5
 log="$BORGCHART_STATE_DIR/alerts.log"
-printf '%s run=%s id=%s member=%s reason=%s pending=%s\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$BORGCHART_RUN" "$id" "$member" "$reason" "$pending" >> "$log"
+printf '%s id=%s member=%s reason=%s pending=%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$id" "$member" "$reason" "$pending" >> "$log"
 if command -v notify-send >/dev/null 2>&1; then
     notify-send "brg: $member needs you" "$reason, $pending pending (alert $id)" || true
 fi
