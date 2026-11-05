@@ -132,7 +132,7 @@ How much a member may do is set per member, overridable per deployment.
 
 **What `locked` does and doesn't do.** The gate is the barrier: it decides every tool call.
 - **Claude:** `locked` has no sandbox. Granted plugin commands run with your full rights.
-- **Codex:** `locked` keeps network on, and Codex's sandbox lets commands read any file. Writes are limited to the granted plugins' data directories, the member's temp directory and its working directory. A `locked` Codex member without a declared `cwd` starts in its temp directory.
+- **Codex:** `locked` keeps network on, and Codex's sandbox lets commands read any file. Writes are limited to the granted plugins' data directories, the member's temp directory and its working directory. A `locked` Codex member without a declared `cwd` starts in its temp directory. Plugin programs that need to write elsewhere, such as `uv` writing its cache, fail inside the sandbox; give such a plugin a program that doesn't (e.g. plain `python3` for a standard-library script). brg doesn't move caches into member-writable directories, because a member could then plant code there.
 - **The tmux socket:** brg's tmux socket is a full capability. Anything that can reach it can type into, read or stop any member. That is why `locked` members get no general shell.
 - **Fail closed:** if a `locked` member's gate doesn't report in when it starts, it is stopped, or (behind Claude's folder-trust prompt) gets no input until the gate does report in.
 
