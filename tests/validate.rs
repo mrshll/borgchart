@@ -632,7 +632,7 @@ members:
     f.write(
         "team/borgchart.yaml",
         &format!(
-            "schema: 1\nbus:\n  root: {}\n  run: example-run\n  alert: {{plugin: notify, action: alert}}\n",
+            "schema: 1\nbus:\n  root: {}\n  alert: {{plugin: notify, action: alert}}\n",
             runs.display()
         ),
     );
@@ -650,7 +650,6 @@ fn bus_config_loads() {
     let v = validated.unwrap_or_else(|| panic!("{}", errors(&report)));
     let bus = v.deployment.unwrap().bus.unwrap();
     assert_eq!(bus.root, runs);
-    assert_eq!(bus.run, "example-run");
     assert_eq!(bus.warn_age_days, 7);
     assert_eq!(bus.max_age_days, 14);
     let alert = bus.alert.unwrap();
@@ -663,23 +662,19 @@ fn bus_config_loads() {
 #[test]
 fn bus_config_is_checked() {
     let cases: &[(&str, &str, &str)] = &[
-        ("run: example-run", "run: Bad/Run", "must match"),
+        (
+            "  alert:",
+            "  run: example-run\n  alert:",
+            "unknown field `run`",
+        ),
         ("action: alert", "action: page", "has no action `page`"),
         (
             "plugin: notify",
             "plugin: pager",
             "alert plugin `pager` is not in the team",
         ),
-        (
-            "run: example-run",
-            "run: example-run\n  warn_age_days: 14",
-            "warn_age_days",
-        ),
-        (
-            "run: example-run",
-            "run: example-run\n  extra: 1",
-            "unknown field",
-        ),
+        ("  alert:", "  warn_age_days: 14\n  alert:", "warn_age_days"),
+        ("  alert:", "  extra: 1\n  alert:", "unknown field"),
     ];
     for (from, to, needle) in cases {
         let (f, _) = bus_fixture();
