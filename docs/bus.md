@@ -188,7 +188,7 @@ $ brg msg publish --external ops --key demo-1 --record demo.json --json
 **`bus check`** reports `errors` and `warnings` and the run's `age_days`:
 
 - errors: an unreadable or misnamed record, key or ack; a record whose schema, run or number doesn't match; a gap; an ack for a missing record or by someone other than its recipient; a run older than `max_age_days`;
-- warnings: stray `.tmp-*` files (left by a crash, safe to remove); a run older than `warn_age_days`; a run that continues another but hasn't carried from it yet; the runs this one was carried into (also as `carried_into`), in which case being past `max_age_days` is a warning, not an error.
+- warnings: stray `.tmp-*` files (left by a crash, safe to remove); a run older than `warn_age_days`; a run that continues another but hasn't carried from it yet, or whose carry was partial; the runs this one was carried into (also as `carried_into`), and any records added since the carry. Being past `max_age_days` is a warning rather than an error only when a complete carry (nothing skipped, a healthy store) covers every record the run has now.
 
 It exits `ok` with warnings only, `corrupt` when the store has errors, and `error` when only the run's age does.
 
@@ -216,7 +216,7 @@ A task record from anyone else is `fenced`, and so is one from an incarnation th
 | --- | --- | --- |
 | `assigned` | `assign` | assignee: `accept` or `decline` |
 | `accepted` | `accept` | assignee: `result` |
-| `declined` | `decline` | nothing (the authority may `release` or `reopen`) |
+| `declined` | `decline` | nothing for a first attempt nobody worked on; after an attempt with writers, authority: `release` or `reopen` |
 | `result-claimed` | `result` (from `accepted` or `cancel-requested`) | authority: `verify` or `cancel-request` |
 | `verified` / `rejected` | `verify` with `outcome` `accepted` / `rejected` | authority: `release` or `reopen` |
 | `cancel-requested` | `cancel-request` (from `assigned`, `accepted`, `result-claimed`, `reopened`) | assignee: `cancel-confirm` (or a `result`) |
@@ -228,7 +228,8 @@ Anything else is `invalid` (a `result` before an `accept`, a second `assign` of 
 
 - **Attempts.** A new task's `assign` is attempt 1; `reopen` starts the next. A record whose `attempt` is older than the task's is `fenced`; a later one is `invalid`; a record without `attempt` means the current one (for `reopen`, the next).
 - **Agreement.** `assign` needs `facts.agreement.path` to be a regular file that hashes to `facts.agreement.sha256` (`invalid` otherwise). The fold keeps the agreement, `scope`, `provenance`, `limits` and `checkout`.
-- **One task at a time.** A member holds at most one *unresolved* task (anything but `released` or `declined`): a second `assign`, or a `reopen` while it holds another, is `invalid`. So is an `assign` naming a `checkout` that another unresolved task holds.
+- **One task at a time.** A member holds at most one *unresolved* task, and a checkout belongs to at most one. Resolved means `released`, or `declined` when no attempt of the task ever had a writer; a task declined after an earlier attempt was worked on keeps its member and checkout until a `release` finds its writers gone. An `assign` or `reopen` that would give the member a second unresolved task, or give a checkout to a second one, is `invalid`.
+- **Re-pinning.** An `assign` of a reopened attempt may change or drop the task's `checkout` only once every incarnation that wrote for the task is `gone` (`refused` otherwise).
 - **Verify** must name the current attempt's `result` record. A result is the assignee's claim; only a `verify` with `outcome: accepted` verifies it.
 - **Release never frees a checkout while a writer may survive.** The incarnations that may be writing are every assignee incarnation that accepted, claimed a result or confirmed a cancellation for the task, the assignee's current incarnation (unless the task was declined), and `facts.writer_incarnation` if given. Each must be `gone`; `alive` or `unknown` is `refused`, whatever the records say. Until lifecycle's pane probe is wired in, an incarnation is `gone` only once its incarnation file records `ended_at` (it stopped through brg), and `unknown` otherwise. `facts.checkout`, if given, must be the task's.
 - **Consumption is not acceptance.** Acknowledging an `assign` (`msg ack`) changes nothing; only `accept` does.
@@ -266,12 +267,12 @@ task t-1: verified (attempt 1)
 **`bus carry --from RUN`** continues work from an earlier run. Rotate *before* `max_age_days` (`bus check` warns from `warn_age_days`), or when a store is damaged: start a new run with `run: <new>` and `continues: <old>`, then run `brg bus carry --from <old>` against it. It:
 
 1. requires `bus.continues` to be `RUN` (and the new `run.json`'s `linked_from`, if set, to name it) (`invalid` otherwise);
-2. reads the old run without locking or writing anything in it. If its store is damaged it uses the records up to the first bad one and says so (outcome `partial`, `incomplete: true`, `through`);
-3. publishes into the new run, as actor `bus`, one `note` per piece of pending work, to the original's recipient: the latest `assign` of each unresolved task, each open question, and each unacknowledged record not belonging to a resolved task. Each has `facts.carried_from: {run, id, sha256}` (the SHA-256 of the original record file), `facts.kind` and, for task records, `facts.task`. A recipient that isn't a member of the new run is `skipped`;
+2. reads the old run read-only, under its `bus/lock` shared (as other reads do), writing nothing there. If its store is damaged it uses the records up to the first bad one and says so (outcome `partial`, `incomplete: true`, `through`);
+3. publishes into the new run, as actor `bus`, one `note` per piece of pending work, to the original's recipient: the latest `assign` of each unresolved task, each open question, and each unacknowledged record not belonging to a resolved task. Each has `facts.carried_from: {run, id, sha256}` (the SHA-256 of the original record file), `facts.kind` and, for task records, `facts.task`. A recipient that isn't a member of the new run is `skipped`, which also makes the carry `partial` (`incomplete: true`);
 4. uses the key `carry:<RUN>:<id>`, so running it again returns `duplicate` for everything already carried;
 5. writes `bus/carried/<RUN>.json` in the new run.
 
-Carried work is a pointer, not a transfer: the new run has no tasks until the authority assigns them again. `bus check` of the new run warns until a carry has run; `bus check` of the old run (with the deployment pointed back at it) lists `carried_into`, and a run past `max_age_days` that was carried completely is a warning rather than an error.
+Carried work is a pointer, not a transfer: the new run has no tasks until the authority assigns them again. `bus check` of the new run warns until a carry has run, and while the last one was partial. `bus check` of the old run (with the deployment pointed back at it) lists `carried_into` and warns about anything published there since; past `max_age_days` it stays an error unless a complete carry covers its latest record. Carrying again picks up the newer records (the ones already carried are `duplicate`).
 
 ```console
 $ brg bus carry --from demo-run-1

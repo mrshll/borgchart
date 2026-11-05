@@ -209,7 +209,18 @@ pub fn carry(input: &Input, from: &str, json_out: bool) -> ExitCode {
         if let Some(f) = report.failure() {
             return Err(f);
         }
-        if report.incomplete && !json_out {
+        let skipped = report
+            .carried
+            .iter()
+            .filter(|i| i.outcome == "skipped")
+            .count();
+        if skipped > 0 && !json_out {
+            eprintln!(
+                "warning: {skipped} item(s) skipped (no such recipient in `{}`); the carry is partial",
+                report.into
+            );
+        }
+        if !report.problems.is_empty() && !json_out {
             eprintln!(
                 "warning: run `{from}`'s store is incomplete; carried only through {} ({})",
                 report.through.as_deref().unwrap_or("nothing"),

@@ -31,8 +31,8 @@ pub struct Marker {
     pub from: String,
     pub into: String,
     pub at: String,
-    /// False when the old store had problems and only its readable prefix
-    /// was carried.
+    /// False when the old store had problems (only its readable prefix was
+    /// carried) or some pending work was skipped.
     pub complete: bool,
     /// The last old record considered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -65,6 +65,7 @@ pub struct Item {
 pub struct Report {
     pub from: String,
     pub into: String,
+    /// The old store had problems, or some pending work was skipped.
     pub incomplete: bool,
     pub through: Option<String>,
     pub problems: Vec<String>,
@@ -99,14 +100,13 @@ pub fn pending(old: &manifest::RunManifest, snap: &store::Snapshot) -> Vec<(&'st
     for r in &records {
         let task = r.task.as_deref().and_then(|t| fold.tasks.get(t));
         let reason = if r.kind == Kind::Assign
-            && task
-                .is_some_and(|t| !t.state.is_resolved() && t.records.get("assign") == Some(&r.id))
+            && task.is_some_and(|t| !t.is_resolved() && t.records.get("assign") == Some(&r.id))
         {
             Some("unresolved-task")
         } else if r.kind == Kind::Question && fold.questions.iter().any(|q| q.id == r.id) {
             Some("open-question")
         } else if !snap.is_acked(r.seq)
-            && !(r.kind.is_task_kind() && task.is_none_or(|t| t.state.is_resolved()))
+            && !(r.kind.is_task_kind() && task.is_none_or(|t| t.is_resolved()))
         {
             Some("unacked")
         } else {
@@ -192,10 +192,11 @@ pub fn carry(bus: &Bus, from: &str) -> Result<Report, Failure> {
         }
         items.push(item);
     }
+    let skipped = items.iter().any(|i| i.outcome == "skipped");
     let report = Report {
         from: from.to_string(),
         into: bus.config.run.clone(),
-        incomplete: !snap.healthy(),
+        incomplete: !snap.healthy() || skipped,
         through,
         problems: snap.problems.clone(),
         carried: items,
@@ -279,4 +280,63 @@ pub fn carried_into(root: &Path, run: &str) -> Vec<Marker> {
         .collect();
     out.sort_by(|a, b| a.into.cmp(&b.into));
     out
+}
+
+/// What `bus check` says about carries, for and from this run.
+pub struct CheckNotes {
+    pub warnings: Vec<String>,
+    /// A complete carry covers every record this run has now: past
+    /// `max_age_days`, it is retired (a warning) rather than overdue.
+    pub retired: bool,
+}
+
+/// `into` are the markers naming this run (from [`carried_into`]).
+pub fn check_notes(bus: &Bus, snap: &store::Snapshot, into: &[Marker]) -> CheckNotes {
+    let run = &bus.config.run;
+    let mut warnings = Vec::new();
+    let last = snap
+        .records
+        .keys()
+        .next_back()
+        .map(|seq| super::record::record_id(*seq));
+    let mut retired = false;
+    for m in into {
+        let covers = snap.healthy() && m.through == last;
+        warnings.push(format!(
+            "run `{run}` was carried into `{}` at {}{}",
+            m.into,
+            m.at,
+            match (m.complete, covers) {
+                (true, true) => String::new(),
+                (false, _) => format!(
+                    " (partially: {} skipped or unreadable; reconcile, then `brg bus carry --from {run}` there again)",
+                    if m.skipped.is_empty() {
+                        "records".to_string()
+                    } else {
+                        m.skipped.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>().join(", ")
+                    }
+                ),
+                (true, false) => format!(
+                    " through {}, but it now has records up to {} that weren't carried: `brg bus carry --from {run}` there again",
+                    m.through.as_deref().unwrap_or("nothing"),
+                    last.as_deref().unwrap_or("nothing")
+                ),
+            }
+        ));
+        retired |= m.complete && covers;
+    }
+    if let Some(prev) = &bus.config.continues {
+        match read_marker(&marker_path(&bus.paths, prev)) {
+            None => warnings.push(format!(
+                "this run continues `{prev}`, but nothing has been carried from it yet: `brg bus carry --from {prev}`"
+            )),
+            Some(m) if !m.complete => warnings.push(format!(
+                "the carry from `{prev}` was partial ({} skipped{}): reconcile, then `brg bus carry --from {prev}` again",
+                m.skipped.len(),
+                if m.through.is_some() { "" } else { ", nothing readable" }
+            )),
+            Some(_) => {}
+        }
+    }
+    CheckNotes { warnings, retired }
 }

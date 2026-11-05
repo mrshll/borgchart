@@ -1166,26 +1166,8 @@ pub fn check(bus: &Bus) -> Result<CheckReport, Failure> {
         ));
     }
     report.carried_into = super::carry::carried_into(&bus.config.root, &bus.config.run);
-    for m in &report.carried_into {
-        report.warnings.push(format!(
-            "run `{}` was carried into `{}` at {}{}",
-            bus.config.run,
-            m.into,
-            m.at,
-            if m.complete {
-                ""
-            } else {
-                " (only its readable records)"
-            }
-        ));
-    }
-    if let Some(prev) = &bus.config.continues
-        && super::carry::read_marker(&super::carry::marker_path(&bus.paths, prev)).is_none()
-    {
-        report.warnings.push(format!(
-            "this run continues `{prev}`, but nothing has been carried from it yet: `brg bus carry --from {prev}`"
-        ));
-    }
+    let carry = super::carry::check_notes(bus, &snap, &report.carried_into);
+    report.warnings.extend(carry.warnings);
     match time::parse_utc(&bus.manifest.created_at) {
         None => report.errors.push(format!(
             "run.json: `created_at` is not a UTC time: {}",
@@ -1198,8 +1180,7 @@ pub fn check(bus: &Bus) -> Result<CheckReport, Failure> {
                 .as_secs_f64()
                 / 86_400.0;
             report.age_days = Some((age * 10.0).round() / 10.0);
-            let retired = report.carried_into.iter().any(|m| m.complete);
-            if age >= bus.config.max_age_days as f64 && retired {
+            if age >= bus.config.max_age_days as f64 && carry.retired {
                 report.warnings.push(format!(
                     "run `{}` is {age:.1} days old, past max_age_days ({}), and was carried into a new run",
                     bus.config.run, bus.config.max_age_days

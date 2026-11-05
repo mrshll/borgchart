@@ -55,11 +55,6 @@ impl State {
             State::Reopened => "reopened",
         }
     }
-
-    /// Resolved tasks hold nothing: no checkout, no claim on the assignee.
-    pub fn is_resolved(self) -> bool {
-        matches!(self, State::Released | State::Declined)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -111,6 +106,18 @@ fn authority_ser<S: serde::Serializer>(a: &Option<String>, s: S) -> Result<S::Ok
 }
 
 impl Task {
+    /// Resolved tasks hold nothing: no checkout, no claim on the assignee. A
+    /// released task is resolved; so is a declined one that nobody ever
+    /// worked on. A task declined after an earlier attempt had writers keeps
+    /// its hold until a release finds them all gone.
+    pub fn is_resolved(&self) -> bool {
+        match self.state {
+            State::Released => true,
+            State::Declined => self.writers.is_empty(),
+            _ => false,
+        }
+    }
+
     /// The current attempt's `result` record, if one was claimed.
     pub fn result_id(&self) -> Option<&str> {
         self.records.get("result").map(String::as_str)
@@ -128,6 +135,7 @@ impl Task {
             State::Verified | State::Rejected | State::Cancelled => {
                 (authority, &["release", "reopen"])
             }
+            State::Declined if !self.writers.is_empty() => (authority, &["release", "reopen"]),
             State::Declined | State::Released => return None,
         })
     }
@@ -163,7 +171,7 @@ impl Fold {
     pub fn unresolved_for(&self, member: &str, except: &str) -> Option<&Task> {
         self.tasks
             .values()
-            .find(|t| t.assignee == member && t.task != except && !t.state.is_resolved())
+            .find(|t| t.assignee == member && t.task != except && !t.is_resolved())
     }
 }
 
@@ -675,45 +683,31 @@ pub fn check_publish(
     let task = transition(manifest, &fold, &fact)?;
     match draft.kind {
         Kind::Assign => {
-            if let Some(other) = fold.unresolved_for(&task.assignee, &task.task) {
-                return fail(
-                    Code::Invalid,
-                    format!(
-                        "`{}` already holds unresolved task `{}` ({})",
-                        task.assignee,
-                        other.task,
-                        other.state.as_str()
-                    ),
-                );
-            }
-            if let Some(checkout) = &task.checkout
-                && let Some(other) = fold.tasks.values().find(|t| {
-                    t.task != task.task
-                        && !t.state.is_resolved()
-                        && t.checkout.as_ref() == Some(checkout)
-                })
+            check_holds(&fold, &task)?;
+            // Re-pinning a reopened attempt: its checkout can't move or be
+            // dropped while anyone who wrote there may still be running.
+            if let Some(before) = fold.tasks.get(&task.task)
+                && let Some(held) = &before.checkout
+                && task.checkout.as_ref() != Some(held)
             {
-                return fail(
-                    Code::Invalid,
-                    format!(
-                        "checkout {checkout} is held by unresolved task `{}` ({})",
-                        other.task, other.assignee
-                    ),
-                );
+                for inc in &before.writers {
+                    let l = liveness(&before.assignee, inc);
+                    if l != Liveness::Gone {
+                        return fail(
+                            Code::Refused,
+                            format!(
+                                "`{}` incarnation `{inc}` wrote to checkout {held} and may still be running (liveness: {}); keep that checkout for attempt {} until it has stopped",
+                                before.assignee,
+                                liveness_str(l),
+                                task.attempt
+                            ),
+                        );
+                    }
+                }
             }
             check_agreement(&task.agreement)?;
         }
-        Kind::Reopen => {
-            if let Some(other) = fold.unresolved_for(&task.assignee, &task.task) {
-                return fail(
-                    Code::Invalid,
-                    format!(
-                        "`{}` already holds unresolved task `{}`",
-                        task.assignee, other.task
-                    ),
-                );
-            }
-        }
+        Kind::Reopen => check_holds(&fold, &task)?,
         Kind::Release => {
             let before = &fold.tasks[&task.task];
             let named = text(&draft.facts, "writer_incarnation");
@@ -733,6 +727,36 @@ pub fn check_publish(
             }
         }
         _ => {}
+    }
+    Ok(())
+}
+
+/// A task about to hold its assignee and checkout (an `assign` or `reopen`)
+/// must not collide with another unresolved task's hold on either.
+fn check_holds(fold: &Fold, task: &Task) -> Result<(), Failure> {
+    if let Some(other) = fold.unresolved_for(&task.assignee, &task.task) {
+        return fail(
+            Code::Invalid,
+            format!(
+                "`{}` already holds unresolved task `{}` ({})",
+                task.assignee,
+                other.task,
+                other.state.as_str()
+            ),
+        );
+    }
+    if let Some(checkout) = &task.checkout
+        && let Some(other) = fold.tasks.values().find(|t| {
+            t.task != task.task && !t.is_resolved() && t.checkout.as_ref() == Some(checkout)
+        })
+    {
+        return fail(
+            Code::Invalid,
+            format!(
+                "checkout {checkout} is held by unresolved task `{}` ({})",
+                other.task, other.assignee
+            ),
+        );
     }
     Ok(())
 }

@@ -80,12 +80,18 @@ impl Fixture {
     }
 
     fn start_run(&self, run: &str, linked_from: Option<&str>) {
+        self.start_run_with(run, linked_from, &["lead", "helper", "helper2"]);
+    }
+
+    /// A run whose frozen topology has only `names` (from lead, helper, helper2).
+    fn start_run_with(&self, run: &str, linked_from: Option<&str>, names: &[&str]) {
         let members: BTreeMap<&str, Value> = [
             ("lead", None),
             ("helper", Some("lead")),
             ("helper2", Some("lead")),
         ]
         .iter()
+        .filter(|(m, _)| names.contains(m))
         .map(|(m, p)| (*m, json!({"vendor": "claude", "parent": p})))
         .collect();
         let mut manifest = json!({
@@ -102,7 +108,7 @@ impl Fixture {
                 json!({"run": from, "root": self.root(), "reason": "rotation"});
         }
         self.write_private(&self.run_dir(run).join("run.json"), &manifest);
-        for m in ["lead", "helper", "helper2"] {
+        for m in names {
             self.incarnation(run, m, &format!("{m}-1"), false);
         }
     }
@@ -930,4 +936,180 @@ fn an_aging_run_rotates_into_a_new_one() {
     assert_eq!(f.state("t-1"), "assigned");
     let check = f.brg(As::Operator, &["bus", "check", "--json"], None);
     assert_eq!(check.code, 0, "{:?}", check.json);
+}
+
+fn reopen(task: &str) -> Value {
+    simple("helper", "reopen", task, json!({"reason": "again"}))
+}
+
+/// helper-1 accepts `t-1` (checkout X), claims a result; lead rejects and
+/// reopens it. helper-1 never ends.
+fn rejected_and_reopened(f: &Fixture) {
+    f.ok(As::Member("lead"), "a1", &f.assign("helper", "t-1", 1));
+    f.ok(As::Member("helper"), "c1", &accept("t-1"));
+    let res = f.ok(As::Member("helper"), "r1", &result("t-1"));
+    f.ok(
+        As::Member("lead"),
+        "v1",
+        &verify("helper", "t-1", &res, "rejected"),
+    );
+    f.ok(As::Member("lead"), "o1", &reopen("t-1"));
+}
+
+/// An `assign` of another task to helper2, on helper's checkout path.
+fn on_helpers_checkout(f: &Fixture, task: &str) -> Value {
+    let mut a = f.assign("helper2", task, 1);
+    a["facts"]["checkout"] = json!(f.dir.path().join("checkout-helper"));
+    a
+}
+
+#[test]
+fn review_reopen_checkout_collision() {
+    let f = Fixture::new();
+    f.ok(As::Member("lead"), "a1", &f.assign("helper", "t-1", 1));
+    f.ok(
+        As::Member("helper"),
+        "d1",
+        &simple("lead", "decline", "t-1", json!({"reason": "busy"})),
+    );
+    // A fresh decline holds nothing, so the checkout can go to helper2...
+    f.ok(As::Member("lead"), "a2", &on_helpers_checkout(&f, "t-2"));
+    // ...and then t-1 can't be reopened onto it.
+    let msg = f.refused(As::Member("lead"), "o1", &reopen("t-1"), 5);
+    assert!(msg.contains("checkout"), "{msg}");
+    assert_eq!(f.state("t-1"), "declined");
+}
+
+#[test]
+fn review_decline_discards_live_writer_hold() {
+    let f = Fixture::new();
+    rejected_and_reopened(&f);
+    // helper is replaced without helper-1 ending; helper-2 declines attempt 2.
+    f.incarnation(RUN, "helper", "helper-2", false);
+    f.ok(
+        As::Inc("helper", "helper-2"),
+        "d2",
+        &simple("lead", "decline", "t-1", json!({"reason": "not mine"})),
+    );
+    let show = f.show("t-1");
+    assert_eq!(show["task"]["state"], "declined");
+    // helper-1 may still be writing: the task still holds its checkout and
+    // its assignee until a release finds every writer gone.
+    assert_eq!(show["next"]["kinds"], json!(["release", "reopen"]));
+    assert!(
+        f.refused(As::Member("lead"), "a2", &on_helpers_checkout(&f, "t-2"), 5)
+            .contains("checkout")
+    );
+    f.refused(As::Member("lead"), "a3", &f.assign("helper", "t-3", 1), 5);
+    assert!(
+        f.refused(As::Member("lead"), "x1", &release("helper", "t-1"), 4)
+            .contains("helper-1")
+    );
+    f.ended("helper", "helper-1");
+    f.ok(As::Member("lead"), "x1", &release("helper", "t-1"));
+    f.ok(As::Member("lead"), "a2", &on_helpers_checkout(&f, "t-2"));
+}
+
+#[test]
+fn review_repin_discards_live_checkout() {
+    let f = Fixture::new();
+    rejected_and_reopened(&f);
+    // Re-pinning attempt 2 can't move or drop checkout X while helper-1,
+    // which wrote there, may still be running.
+    let mut moved = f.assign("helper", "t-1", 2);
+    moved["facts"]["checkout"] = json!(f.dir.path().join("checkout-y"));
+    assert!(
+        f.refused(As::Member("lead"), "p1", &moved, 4)
+            .contains("helper-1")
+    );
+    let mut dropped = f.assign("helper", "t-1", 2);
+    dropped["facts"].as_object_mut().unwrap().remove("checkout");
+    f.refused(As::Member("lead"), "p2", &dropped, 4);
+    f.refused(As::Member("lead"), "a2", &on_helpers_checkout(&f, "t-2"), 5);
+    // Once helper-1 is gone the checkout may move, and X is free.
+    f.incarnation(RUN, "helper", "helper-2", false);
+    f.ended("helper", "helper-1");
+    f.ok(As::Member("lead"), "p1", &moved);
+    f.ok(As::Member("lead"), "a2", &on_helpers_checkout(&f, "t-2"));
+}
+
+/// Make `run` look `days` old.
+fn age(f: &Fixture, run: &str, days: u64) {
+    let manifest = f.run_dir(run).join("run.json");
+    let mut m: Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+    m["created_at"] = json!(borgchart::bus::time::format_utc(
+        std::time::SystemTime::now() - Duration::from_secs(days * 86_400 + 60)
+    ));
+    fs::write(&manifest, serde_json::to_vec(&m).unwrap()).unwrap();
+}
+
+#[test]
+fn review_skipped_carry_is_marked_complete() {
+    let f = populated();
+    age(&f, RUN, 15);
+    // The new run has no `helper`, so its task can't be carried.
+    f.configure(NEXT, Some(RUN));
+    f.start_run_with(NEXT, Some(RUN), &["lead", "helper2"]);
+    let out = carry(&f);
+    assert_eq!(out.code, 0, "{:?} {}", out.json, out.stderr);
+    assert_eq!(out.json["outcome"], "partial");
+    assert_eq!(out.json["incomplete"], true);
+    let skipped: Vec<&Value> = out.json["carried"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["outcome"] == "skipped")
+        .collect();
+    assert_eq!(skipped[0]["source"], "m3", "{:?}", out.json);
+    let text = f.brg(As::Operator, &["bus", "carry", "--from", RUN], None);
+    assert!(text.stderr.contains("skipped"), "{}", text.stderr);
+    // The new run still says the carry is unfinished.
+    let check = f.brg(As::Operator, &["bus", "check", "--json"], None);
+    assert!(
+        check.json["warnings"].to_string().contains("partial"),
+        "{:?}",
+        check.json
+    );
+    // The old run is not retired: its age is still an error.
+    f.configure(RUN, None);
+    let old = f.brg(As::Operator, &["bus", "check", "--json"], None);
+    assert_eq!(old.code, 1, "{:?}", old.json);
+    assert!(old.json["errors"].to_string().contains("max_age_days"));
+}
+
+#[test]
+fn review_late_record_does_not_invalidate_retirement() {
+    let f = populated();
+    rotate(&f);
+    assert_eq!(carry(&f).json["outcome"], "carried");
+    // Back in the old run, something arrives after the carry.
+    f.configure(RUN, None);
+    f.ok(
+        As::Ops,
+        "n9",
+        &json!({"to": "lead", "kind": "note", "body": "late"}),
+    );
+    age(&f, RUN, 15);
+    let old = f.brg(As::Operator, &["bus", "check", "--json"], None);
+    assert_eq!(old.code, 1, "{:?}", old.json);
+    assert!(
+        old.json["warnings"].to_string().contains("m8"),
+        "{:?}",
+        old.json
+    );
+    // Carrying again covers it, and the old run is retired.
+    f.configure(NEXT, Some(RUN));
+    let again = carry(&f);
+    assert!(
+        again.json["carried"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["source"] == "m8" && c["outcome"] == "committed"),
+        "{:?}",
+        again.json
+    );
+    f.configure(RUN, None);
+    let old = f.brg(As::Operator, &["bus", "check", "--json"], None);
+    assert_eq!(old.code, 0, "{:?}", old.json);
 }
