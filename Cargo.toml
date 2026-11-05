@@ -1,0 +1,30 @@
+[package]
+name = "borgchart"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT"
+description = "Run teams of coding agents from plain files"
+repository = "https://github.com/mrshll/borgchart"
+publish = false
+
+[lib]
+# Internal only: shared by the `brg` and `borgchart` binaries. Not a public API.
+path = "src/lib.rs"
+
+[[bin]]
+name = "brg"
+path = "src/main.rs"
+
+[[bin]]
+name = "borgchart"
+path = "src/bin/borgchart.rs"
+
+[dependencies]
+clap = { version = "4.6", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde-saphyr = { version = "2.1", default-features = false, features = ["deserialize"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
