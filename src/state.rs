@@ -121,8 +121,13 @@ impl StateDir {
     pub fn plugin_dir(&self, plugin: &str) -> PathBuf {
         self.root.join("plugins").join(plugin)
     }
+    /// A plugin's values (secrets included), kept apart from its writable data dir.
     pub fn plugin_env_file(&self, plugin: &str) -> PathBuf {
-        self.plugin_dir(plugin).join("env.json")
+        self.root.join("secrets").join(format!("{plugin}.json"))
+    }
+    /// A member's own temp directory (its TMPDIR), apart from its enforcement files.
+    pub fn member_tmp(&self, member: &str) -> PathBuf {
+        self.root.join("tmp").join(member)
     }
     pub fn lock_file(&self, member: &str) -> PathBuf {
         self.root.join("locks").join(format!("{member}.lock"))

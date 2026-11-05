@@ -230,6 +230,21 @@ pub fn codex_hook_config(brg: &Path, state: &StateDir, member: &str) -> String {
     )
 }
 
+/// What a sandboxed member's plugin commands may write: each granted plugin's
+/// own state directory, the send-lock directory and its own temp directory. Never the directories
+/// holding gate rules, shims, launch files or plugin secrets.
+pub fn writable_roots(state: &StateDir, member: &str, granted: &[Granted]) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = granted
+        .iter()
+        .map(|g| state.plugin_dir(&g.plugin))
+        .collect();
+    roots.push(state.root.join("locks"));
+    roots.push(state.member_tmp(member));
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
 /// Everything needed to start one member.
 pub struct LaunchSpec {
     pub argv: Vec<String>,
@@ -321,10 +336,20 @@ pub fn member_launch(
                     "-c".into(),
                     format!(
                         "sandbox_workspace_write.writable_roots=[{}]",
-                        toml_string(&state.root.display().to_string())
+                        writable_roots(state, &member.id, &granted)
+                            .iter()
+                            .map(|p| toml_string(&p.display().to_string()))
+                            .collect::<Vec<_>>()
+                            .join(",")
                     ),
                     "-c".into(),
                     "allow_login_shell=false".into(),
+                    // `/tmp` and $TMPDIR would otherwise be writable; the member
+                    // gets its own TMPDIR inside the roots above instead.
+                    "-c".into(),
+                    "sandbox_workspace_write.exclude_slash_tmp=true".into(),
+                    "-c".into(),
+                    "sandbox_workspace_write.exclude_tmpdir_env_var=true".into(),
                     "-c".into(),
                     codex_hook_config(brg, state, &member.id),
                 ]);

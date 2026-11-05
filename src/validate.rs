@@ -104,6 +104,25 @@ fn cross_check(v: &Validated, report: &mut Report) {
             }
         }
         for (id, m) in &d.members {
+            let vendor_claude = v
+                .team
+                .members
+                .get(id)
+                .is_some_and(|t| t.vendor == Vendor::Claude);
+            if d.auto_trust == Some(true)
+                && vendor_claude
+                && v.posture(id) == Posture::Vendor
+                && let Some(cwd) = &m.cwd
+                && (cwd.join(".claude").exists() || cwd.join(".mcp.json").exists())
+            {
+                report.warning(
+                    deploy_file,
+                    format!(
+                        "member `{id}`: `auto_trust: true` will trust {}, which has project settings (`.claude/` or `.mcp.json`) that will load in `vendor` posture",
+                        cwd.display()
+                    ),
+                );
+            }
             if let Some(cwd) = &m.cwd
                 && !cwd.is_dir()
             {

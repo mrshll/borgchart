@@ -36,7 +36,8 @@ States are advisory: they gate `send` for safety, not access.
 ## `brg send`
 
 - **One submission:** the text is pasted as one bracketed paste followed by Enter, so multi-line text arrives as one message. A per-member lock keeps concurrent sends from interleaving.
-- **Refusals:** a member that isn't running, is `blocked`, or is `unknown` (unless `--force`); text with control characters other than newline and tab; text over 16 KiB; text starting with `/` or `!`.
+- **Refusals:** a member that isn't running, is `blocked`, or is `unknown` (unless `--force`); a `vendor`-posture member that is mid-turn; text with control characters other than newline and tab; text over 16 KiB; text starting with `/` or `!`.
+- **Second check:** after pasting, `send` reads the screen again and presses Enter only if no prompt appeared.
 - **Exit codes:** `--json` prints the same as `{ok, code, message}`.
 
 | Code | Meaning |
@@ -46,3 +47,4 @@ States are advisory: they gate `send` for safety, not access.
 | 3 | Member not running |
 | 4 | Member blocked at a prompt |
 | 5 | State unknown, or text refused |
+| 6 | Busy: a `vendor`-posture member is mid-turn (a dialog could appear and catch the Enter) |

@@ -292,7 +292,7 @@ fn up_status_send_logs_down() {
     let state = env.path("state");
     let leftover: Vec<_> = walk(&state)
         .into_iter()
-        .filter(|p| p.ends_with("env.json"))
+        .filter(|p| p.to_string_lossy().contains("/secrets/"))
         .collect();
     assert!(
         leftover.is_empty(),
@@ -382,6 +382,21 @@ fn send_refusals() {
     let json = env.brg(&["send", "--json", "gamma", "hi"]);
     let v: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
     assert_eq!(v["code"], 3);
+}
+
+#[test]
+fn vendor_members_mid_turn_are_busy_but_locked_ones_take_input() {
+    let env = Env::new();
+    env.up();
+    assert!(env.brg(&["send", "beta", "work 5"]).status.success());
+    env.wait_for("beta working", |e| e.state_of("beta") == "working");
+    assert_eq!(env.brg(&["send", "beta", "more"]).status.code(), Some(6));
+    assert!(env.brg(&["send", "alpha", "work 5"]).status.success());
+    env.wait_for("alpha working", |e| e.state_of("alpha") == "working");
+    assert!(env.brg(&["send", "alpha", "queued"]).status.success());
+    env.wait_for("queued", |e| {
+        submissions(e, "alpha").contains(&"queued".to_string())
+    });
 }
 
 #[test]
@@ -527,7 +542,7 @@ fn secrets_stay_out_of_argv_logs_agents_and_tmux() {
         let text = fs::read_to_string(&path).unwrap_or_default();
         if text.contains(SECRET) {
             assert!(
-                path.ends_with("plugins/pager/env.json"),
+                path.ends_with("secrets/pager.json"),
                 "secret found in {}",
                 path.display()
             );

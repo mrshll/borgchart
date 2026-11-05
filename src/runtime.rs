@@ -230,6 +230,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
     let mut messages = Vec::new();
     let mut failed = false;
     let mut started: Vec<Started> = Vec::new();
+    state::ensure_dir(&state.root.join("locks")).map_err(|e| e.to_string())?;
 
     let member_ids: Vec<String> = v
         .team
@@ -330,6 +331,9 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
         env.insert("PATH".into(), path);
         env.insert("BORGCHART_DEPLOYMENT".into(), state.id.clone());
         env.insert("BORGCHART_MEMBER".into(), id.clone());
+        let tmp = state.member_tmp(id);
+        state::ensure_dir(&tmp).map_err(|e| e.to_string())?;
+        env.insert("TMPDIR".into(), tmp.display().to_string());
         env.insert(state::ENV_FILE.into(), dep.source.display().to_string());
         if v.auth() == Auth::ApiKey {
             let key = match member.vendor {
@@ -354,7 +358,11 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             .unwrap_or_else(|| meta.team_dir.clone());
         let trust_dir = deploy_member
             .and_then(|d| d.cwd.as_ref())
-            .filter(|_| v.deployment.as_ref().is_some_and(|d| d.auto_trust))
+            .filter(|_| match v.deployment.as_ref().and_then(|d| d.auto_trust) {
+                Some(on) => on,
+                // By default only `locked` members, which ignore project settings.
+                None => posture == Posture::Locked,
+            })
             .filter(|_| member.vendor == Vendor::Claude)
             .map(|c| c.canonicalize().unwrap_or_else(|_| c.clone()));
         start_window(
@@ -761,6 +769,7 @@ pub enum SendError {
     NotAlive(String),
     Blocked(String),
     Refused(String),
+    Busy(String),
 }
 
 impl SendError {
@@ -770,6 +779,7 @@ impl SendError {
             SendError::NotAlive(_) => 3,
             SendError::Blocked(_) => 4,
             SendError::Refused(_) => 5,
+            SendError::Busy(_) => 6,
         }
     }
     pub fn message(&self) -> &str {
@@ -777,7 +787,8 @@ impl SendError {
             SendError::Usage(m)
             | SendError::NotAlive(m)
             | SendError::Blocked(m)
-            | SendError::Refused(m) => m,
+            | SendError::Refused(m)
+            | SendError::Busy(m) => m,
         }
     }
 }
@@ -825,6 +836,7 @@ pub fn send(input: &Input, member: &str, text: &str, force: bool) -> Result<Stri
         "codex" => Vendor::Codex,
         _ => Vendor::Claude,
     };
+    let locked = member_meta.posture == "locked";
     let session = state.session();
     let tmux = tmux_for(state);
 
@@ -853,6 +865,14 @@ pub fn send(input: &Input, member: &str, text: &str, force: bool) -> Result<Stri
                 "`{member}`'s state is unknown; pass --force to send anyway"
             )));
         }
+        // In `vendor` posture a permission dialog can appear mid-turn, and an
+        // Enter meant for the prompt would answer it. `locked` members can't
+        // be prompted, so they take input while working.
+        State::Working if !locked => {
+            return Err(SendError::Busy(format!(
+                "`{member}` is in the middle of a turn; try again when it is idle"
+            )));
+        }
         _ => {}
     }
 
@@ -867,26 +887,25 @@ pub fn send(input: &Input, member: &str, text: &str, force: bool) -> Result<Stri
     tmux.run_with_stdin(&["load-buffer", "-b", &buffer, "-"], text.as_bytes())
         .map_err(SendError::Refused)?;
     let t = target(&session, member);
-    let out = tmux
-        .ok(&[
-            "paste-buffer",
-            "-p",
-            "-d",
-            "-b",
-            &buffer,
-            "-t",
-            &t,
-            ";",
-            "send-keys",
-            "-t",
-            &t,
-            "Enter",
-        ])
+    let pasted = tmux
+        .ok(&["paste-buffer", "-p", "-d", "-b", &buffer, "-t", &t])
         .map_err(SendError::Refused);
-    if out.is_err() {
+    if pasted.is_err() {
         let _ = tmux.run(&["delete-buffer", "-b", &buffer]);
     }
-    out?;
+    pasted?;
+    // Check again before pressing Enter, in case a dialog appeared meanwhile.
+    let title = tmux
+        .window(&session, member)
+        .map(|w| w.title)
+        .unwrap_or_default();
+    if rules.read(&title, &tmux.capture(&session, member)).state == State::Blocked {
+        return Err(SendError::Blocked(format!(
+            "`{member}` showed a prompt while the text was being pasted; Enter was not pressed. Attach to check it (`brg attach {member}`)"
+        )));
+    }
+    tmux.ok(&["send-keys", "-t", &t, "Enter"])
+        .map_err(SendError::Refused)?;
     drop(lock);
     Ok(format!("sent to {member}"))
 }

@@ -58,8 +58,10 @@ pub struct Deployment {
     pub file: PathBuf,
     pub team_dir: PathBuf,
     pub auth: Auth,
-    /// Accept Claude's folder-trust dialog for a member's declared `cwd`.
-    pub auto_trust: bool,
+    /// Accept Claude's folder-trust dialog for a member's declared `cwd`:
+    /// `None` (the default) for `locked` members only, which ignore project
+    /// settings; `Some(true)` for every member; `Some(false)` for none.
+    pub auto_trust: Option<bool>,
     pub plugins_dir: Option<PathBuf>,
     pub members: BTreeMap<String, MemberDeploy>,
     pub plugins: BTreeMap<String, PluginDeploy>,
@@ -140,7 +142,7 @@ pub fn load(file: &Path, report: &mut Report) -> Option<Deployment> {
         file: file.to_path_buf(),
         team_dir,
         auth: raw.auth.unwrap_or_default(),
-        auto_trust: raw.auto_trust.unwrap_or(true),
+        auto_trust: raw.auto_trust,
         plugins_dir,
         members,
         plugins,

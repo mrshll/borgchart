@@ -164,7 +164,7 @@ members:
 schema: 1
 team: .                       # the team directory, relative to this file (default: .)
 auth: login                   # login (default) | api_key, for every member
-auto_trust: true              # accept Claude's folder-trust dialog for a declared cwd (default: true)
+auto_trust: true              # accept Claude's folder trust for a declared cwd (default: locked members only)
 plugins_dir: ~/borgchart-plugins   # where shared:<name> plugins live
 
 members:
@@ -184,6 +184,7 @@ plugins:
 - **`auth: login`:** brg passes no API-key variables, so a stray key in your shell can't replace your login.
 - **`auth: api_key`:** brg passes `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` by name.
 - **`auto_trust`:** when a Claude member's `cwd` is declared here, `brg up` answers Claude's folder-trust dialog for exactly that folder by sending keys through tmux. Declaring the folder is your consent.
+  - By default this applies to `locked` members only, because they ignore project settings. `auto_trust: true` extends it to every member; `brg validate` then warns if a declared folder has project settings (`.claude/`, `.mcp.json`), which would load.
   - It acts only on the plain trust screen showing that folder; it never answers any other dialog.
   - Each acceptance is printed and shown in `brg status --json` (`trust_accepted`).
   - Trusting a folder lets its project settings load in `vendor` posture; `locked` members ignore project settings.
