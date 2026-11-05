@@ -426,7 +426,11 @@ impl Env {
         let conf = dir.path().join("tmux.conf");
         fs::write(&conf, "set -g remain-on-exit on\n").unwrap();
         let env = BTreeMap::from([
-            ("PATH".to_string(), "/usr/bin:/bin".to_string()),
+            // Wherever this test found tmux (e.g. /opt/homebrew/bin on macOS).
+            (
+                "PATH".to_string(),
+                std::env::var("PATH").unwrap_or_default(),
+            ),
             ("LANG".to_string(), "C.UTF-8".to_string()),
             ("TERM".to_string(), "xterm-256color".to_string()),
         ]);
