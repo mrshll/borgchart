@@ -162,7 +162,7 @@ members:
 - **Names:** use server names exactly as `claude mcp list` / `codex mcp list` print them.
 - **Acting as you:** connector actions act as **you**, not as a bot. A connector that reads mail or messages is untrusted input.
 - **Auth:** Claude's own connectors need your login, so `auth: api_key` can't be used with members that declare them.
-- **Probing:** `brg validate --probe` (coming with the runtime) asks the vendor which servers are configured. It can't check that a connector is signed in, which account it acts as, or its scopes.
+- **Probing:** `brg validate --probe` asks each vendor CLI which servers are configured (`claude mcp list`, `codex mcp list --json`, run in the member's `cwd`), and warns about missing names. Listing health-checks, and so starts, your MCP servers, which is why it only runs when asked. Claude's list is parsed from its text output and may need updating across versions. It can't check that a connector is signed in, which account it acts as, or its scopes.
 
 ## `borgchart.yaml`
 
