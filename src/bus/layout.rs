@@ -19,6 +19,15 @@ pub struct RunPaths {
     pub root: PathBuf,
 }
 
+/// Create the run directory if needed and check it (and the bus root) is
+/// private: see [`super::fsx::ensure_private_tree`]. Every writer calls this
+/// before its first write into a run.
+pub fn ensure_run_dir(config: &BusConfig) -> std::io::Result<RunPaths> {
+    let paths = RunPaths::new(config);
+    super::fsx::ensure_private_tree(&config.root, &paths.root)?;
+    Ok(paths)
+}
+
 impl RunPaths {
     pub fn new(config: &BusConfig) -> Self {
         RunPaths {

@@ -8,7 +8,7 @@
 
 use std::fs;
 use std::io::{self, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -101,6 +101,57 @@ pub fn sync_dir(dir: &Path) -> io::Result<()> {
     fs::File::open(dir)?.sync_all()
 }
 
+/// Create `base` and `dir` (which must be inside `base`) with mode 0700 if
+/// they are missing, then check `base` and every directory from it down to
+/// `dir`: each must be a real directory (not a symlink), owned by you and not
+/// writable by group or others. Writers call this once before writing into
+/// a run, so a root under a shared directory such as `/tmp` can't have been
+/// planted or redirected by someone else.
+pub fn ensure_private_tree(base: &Path, dir: &Path) -> io::Result<()> {
+    let rel = dir.strip_prefix(base).map_err(|_| {
+        io::Error::other(format!(
+            "{} is not inside {}",
+            dir.display(),
+            base.display()
+        ))
+    })?;
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)?;
+    check_private_dir(base)?;
+    let mut current = base.to_path_buf();
+    for part in rel.components() {
+        current.push(part);
+        check_private_dir(&current)?;
+    }
+    Ok(())
+}
+
+/// A real directory, owned by the current user, not group/other-writable.
+pub fn check_private_dir(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = fs::symlink_metadata(path)?;
+    let shown = path.display();
+    if meta.file_type().is_symlink() {
+        return Err(io::Error::other(format!("{shown} is a symlink")));
+    }
+    if !meta.is_dir() {
+        return Err(io::Error::other(format!("{shown} is not a directory")));
+    }
+    if meta.uid() != rustix::process::geteuid().as_raw() {
+        return Err(io::Error::other(format!(
+            "{shown} is owned by someone else"
+        )));
+    }
+    if meta.mode() & 0o022 != 0 {
+        return Err(io::Error::other(format!(
+            "{shown} is writable by group or others"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,6 +196,30 @@ mod tests {
             .filter(|w| *w == Written::Created)
             .count();
         assert_eq!(created, 1);
+    }
+
+    #[test]
+    fn private_tree_refuses_symlinks_and_open_modes() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("runs");
+        let run = base.join("r1");
+        ensure_private_tree(&base, &run).unwrap();
+        let mode = fs::metadata(&run).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+        ensure_private_tree(&base, &run).unwrap();
+
+        fs::set_permissions(&run, fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(ensure_private_tree(&base, &run).is_err());
+        fs::set_permissions(&run, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let elsewhere = dir.path().join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        let linked = dir.path().join("linked");
+        std::os::unix::fs::symlink(&elsewhere, &linked).unwrap();
+        let err = ensure_private_tree(&linked, &linked.join("r1")).unwrap_err();
+        assert!(err.to_string().contains("symlink"), "{err}");
+        assert!(ensure_private_tree(&base, &elsewhere).is_err());
     }
 
     #[test]

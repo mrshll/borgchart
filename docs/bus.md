@@ -52,6 +52,8 @@ Everything for one run lives in `<root>/<run>/` (mode 0700, files 0600). Each ar
 | `attention/inflight/<member>.json` | attention | A wake attempt whose intent is recorded and outcome not yet known. |
 | `attention/alerts/<id>.json` | alerts | Open and resolved alerts. |
 
+Before its first write into a run, every writer creates the run directory if needed and checks that the root and run directory are real directories (not symlinks), owned by you and not writable by group or others. This matters for a root under a shared directory such as `/tmp`.
+
 Immutable files are written with a unique temporary sibling, flushed, then hard-linked to their final name, which fails if the name exists (`src/bus/fsx.rs`). A crash leaves at most a stray `.tmp-*` file; readers skip those.
 
 ## Caller context

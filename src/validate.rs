@@ -371,7 +371,8 @@ fn check_bus(
             );
         }
     }
-    if let Some(checkout) = root.ancestors().find(|d| d.join(".git").exists()) {
+    let is_checkout = |d: &&Path| d.join(".git").is_file() || d.join(".git/HEAD").is_file();
+    if let Some(checkout) = root.ancestors().find(is_checkout) {
         report.warning(
             deploy_file,
             format!(
