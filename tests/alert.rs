@@ -155,7 +155,14 @@ fn argv_is_exactly_the_prefix_and_fixed_arguments() {
     );
     let inv = fx.invoke(&Limits::default());
     assert_eq!(inv.outcome, AlertOutcome::Invoked, "{inv:?}");
-    let plugin_dir = fx.meta.plugins["notify"].dir.clone().unwrap();
+    // The program path is resolved (symlinks followed: /var is /private/var
+    // on macOS), so compare against the canonical plugin directory.
+    let plugin_dir = fx.meta.plugins["notify"]
+        .dir
+        .clone()
+        .unwrap()
+        .canonicalize()
+        .unwrap();
     assert_eq!(
         read_lines(&fx.out().join("argv")),
         vec![
@@ -170,7 +177,7 @@ fn argv_is_exactly_the_prefix_and_fixed_arguments() {
     );
     assert_eq!(
         fs::read_to_string(fx.out().join("cwd")).unwrap().trim(),
-        plugin_dir.canonicalize().unwrap().display().to_string()
+        plugin_dir.display().to_string()
     );
     assert_eq!(inv.output.trim(), "handed-off");
 }
