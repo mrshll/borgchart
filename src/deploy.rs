@@ -34,6 +34,24 @@ struct DeploymentRaw {
     members: BTreeMap<String, MemberDeployRaw>,
     #[serde(default)]
     plugins: BTreeMap<String, PluginDeployRaw>,
+    bus: Option<BusRaw>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BusRaw {
+    root: String,
+    run: String,
+    alert: Option<AlertRaw>,
+    warn_age_days: Option<u32>,
+    max_age_days: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AlertRaw {
+    plugin: String,
+    action: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -65,6 +83,31 @@ pub struct Deployment {
     pub plugins_dir: Option<PathBuf>,
     pub members: BTreeMap<String, MemberDeploy>,
     pub plugins: BTreeMap<String, PluginDeploy>,
+    /// The coordination bus, when this deployment uses one.
+    pub bus: Option<BusConfig>,
+}
+
+/// Default age (days) at which `brg bus check` warns about a run.
+pub const DEFAULT_WARN_AGE_DAYS: u32 = 7;
+/// Default age (days) past which a run must be rotated into a linked run.
+pub const DEFAULT_MAX_AGE_DAYS: u32 = 14;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BusConfig {
+    /// The directory holding run directories (absolute).
+    pub root: PathBuf,
+    /// This deployment's run ID; records live in `<root>/<run>/`.
+    pub run: String,
+    /// The plugin action brg invokes to alert a person (never a member's).
+    pub alert: Option<AlertConfig>,
+    pub warn_age_days: u32,
+    pub max_age_days: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AlertConfig {
+    pub plugin: String,
+    pub action: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -135,6 +178,8 @@ pub fn load(file: &Path, report: &mut Report) -> Option<Deployment> {
         .map(|(name, p)| (name, PluginDeploy { env: p.env }))
         .collect();
 
+    let bus = raw.bus.and_then(|b| load_bus(b, file, report));
+
     if report.errors().count() > before {
         return None;
     }
@@ -146,6 +191,51 @@ pub fn load(file: &Path, report: &mut Report) -> Option<Deployment> {
         plugins_dir,
         members,
         plugins,
+        bus,
+    })
+}
+
+fn load_bus(raw: BusRaw, file: &Path, report: &mut Report) -> Option<BusConfig> {
+    let before = report.errors().count();
+    if !crate::bus::is_valid_run_id(&raw.run) {
+        report.error(
+            Some(file),
+            format!(
+                "bus: `run: {}` must match [a-z0-9][a-z0-9._-]{{0,63}}",
+                raw.run
+            ),
+        );
+    }
+    if !(raw.root.starts_with('/') || raw.root.starts_with("~/")) {
+        report.error(
+            Some(file),
+            "bus: `root` must be an absolute path (or start with ~/)",
+        );
+    }
+    if raw.root.chars().any(char::is_whitespace) {
+        report.error(Some(file), "bus: `root` must not contain whitespace");
+    }
+    let warn = raw.warn_age_days.unwrap_or(DEFAULT_WARN_AGE_DAYS);
+    let max = raw.max_age_days.unwrap_or(DEFAULT_MAX_AGE_DAYS);
+    if warn == 0 || max == 0 || warn >= max {
+        report.error(
+            Some(file),
+            format!("bus: need 0 < warn_age_days ({warn}) < max_age_days ({max})"),
+        );
+    }
+    if report.errors().count() > before {
+        return None;
+    }
+    let base = file.parent().unwrap_or(Path::new("."));
+    Some(BusConfig {
+        root: expand_home(base, &raw.root),
+        run: raw.run,
+        alert: raw.alert.map(|a| AlertConfig {
+            plugin: a.plugin,
+            action: a.action,
+        }),
+        warn_age_days: warn,
+        max_age_days: max,
     })
 }
 

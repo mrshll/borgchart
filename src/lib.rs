@@ -2,6 +2,7 @@
 //!
 //! This crate is not a public library: nothing here is promised stable.
 
+pub mod bus;
 pub mod cli;
 pub mod deploy;
 pub mod diag;
