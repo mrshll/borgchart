@@ -32,6 +32,7 @@ class FakeSlack:
         self.posted: list[dict] = []
         self.calls: list[str] = []
         self.rate_limit_next = 0
+        self.html_next = 0
         handler = self._handler()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -62,6 +63,15 @@ class FakeSlack:
                 slack.calls.append(method)
                 if self.headers.get("Authorization") != f"Bearer {TOKEN}":
                     return self._reply({"ok": False, "error": "invalid_auth"})
+                if slack.html_next > 0:
+                    slack.html_next -= 1
+                    body = b"<html>proxy error</html>"
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return None
                 if slack.rate_limit_next > 0:
                     slack.rate_limit_next -= 1
                     return self._reply({"ok": False, "error": "ratelimited"}, 429, {"Retry-After": "0"})
@@ -113,6 +123,7 @@ def env(tmp_path: Path, slack: FakeSlack) -> dict[str, str]:
         "#!/bin/sh\n"
         'printf "%s\\n" "$*" >> "$FAKE_BRG_LOG"\n'
         'code=$(cat "$FAKE_BRG_EXIT" 2>/dev/null || echo 0)\n'
+        'if [ -f "$FAKE_BRG_SLEEP" ]; then sleep "$(cat "$FAKE_BRG_SLEEP")"; fi\n'
         'if [ "$code" = 0 ]; then echo \'{"ok":true,"code":0,"message":"sent"}\'; '
         'else echo "{\\"ok\\":false,\\"code\\":$code,\\"message\\":\\"blocked\\"}"; fi\n'
         'exit "$code"\n'
@@ -133,6 +144,7 @@ def env(tmp_path: Path, slack: FakeSlack) -> dict[str, str]:
         "BORGCHART_PARENT": "lead",
         "FAKE_BRG_LOG": str(tmp_path / "brg.log"),
         "FAKE_BRG_EXIT": str(tmp_path / "brg.exit"),
+        "FAKE_BRG_SLEEP": str(tmp_path / "brg.sleep"),
     }
 
 
@@ -222,7 +234,7 @@ def test_escalate_sends_ids_and_fixed_values_to_the_parent(env, slack):
     assert out.returncode == 0, out.stderr
     (line,) = sends(env)
     assert line == (
-        "send --json lead Escalation from triager: message ts=1700000001.000100, severity=high, "
+        "send --json --from triager lead Escalation from triager: message ts=1700000001.000100, severity=high, "
         "reason=deploy. Read it with your read command, then triage it and reply in its thread."
     )
 
@@ -254,7 +266,7 @@ def test_escalate_to_a_blocked_lead_errors_and_is_recorded(env, slack):
     Path(env["FAKE_BRG_EXIT"]).write_text("0")
     run("watch.py", ["--once"], env)
     assert undelivered(env) == []
-    assert any(s.startswith("send --json lead Escalation from triager") for s in sends(env))
+    assert any(s.startswith("send --json --from triager lead Escalation from triager") for s in sends(env))
 
 
 def test_escalate_and_watcher_can_write_undelivered_at_once(env, slack):
@@ -288,10 +300,44 @@ def test_watcher_rebuilds_queued_text_and_drops_forged_entries(env, slack):
     run("watch.py", ["--once"], env)
     lines = sends(env)
     assert lines == [
-        "send --json lead Escalation from triager: message ts=1700000001.000100, severity=high, "
+        "send --json --from triager lead Escalation from triager: message ts=1700000001.000100, severity=high, "
         "reason=deploy. Read it with your read command, then triage it and reply in its thread."
     ], lines
     assert undelivered(env) == []
+
+
+def test_watcher_survives_a_non_json_page_and_keeps_health(env, slack):
+    start_watcher(env)
+    slack.html_next = 1
+    out = run("watch.py", ["--once"], env)
+    assert out.returncode == 0, out.stderr
+    health = json.loads((Path(env["BORGCHART_STATE_DIR"]) / "health.json").read_text())
+    assert health["ok"] is False
+
+
+def test_message_with_a_file_is_delivered(env, slack):
+    start_watcher(env)
+    slack.messages = [human("1700000001.000100", "deploys failing, screenshot attached", subtype="file_share")]
+    run("watch.py", ["--once"], env)
+    assert len(sends(env)) == 1
+
+
+def test_escalate_records_a_send_that_times_out(env, slack):
+    Path(env["FAKE_BRG_SLEEP"]).write_text("40")
+    out = run("slackbot", ["escalate", "1700000001.000100", "high", "outage"], env)
+    assert out.returncode == 1, out.stderr
+    assert "Traceback" not in out.stderr
+    (entry,) = undelivered(env)
+    assert entry["kind"] == "escalation"
+
+
+def test_symlinked_state_file_is_not_followed(env, slack, tmp_path):
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep me")
+    state = Path(env["BORGCHART_STATE_DIR"])
+    (state / "cursor.json").symlink_to(victim)
+    run("watch.py", ["--once"], env)
+    assert victim.read_text() == "keep me"
 
 
 def test_read_marks_content_untrusted(env, slack):

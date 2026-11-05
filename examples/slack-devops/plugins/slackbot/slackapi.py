@@ -7,6 +7,7 @@ printed for an agent to read, never forwarded as an instruction.
 from __future__ import annotations
 
 import fcntl
+import http.client
 import json
 import os
 import re
@@ -73,16 +74,28 @@ def call(
                 data = json.loads(resp.read().decode())
         except urllib.error.HTTPError as e:
             if e.code == 429 and attempt < retries:
-                wait = min(float(e.headers.get("Retry-After", "1") or 1), 60.0)
-                sleep(wait)
+                sleep(retry_after(e.headers.get("Retry-After")))
                 continue
             raise SlackError(f"{method}: HTTP {e.code}") from None
         except urllib.error.URLError as e:
             raise SlackError(f"{method}: {e.reason}") from None
+        except (OSError, ValueError, http.client.HTTPException) as e:
+            # Timeouts, cut-off bodies, non-JSON pages from a proxy, …
+            raise SlackError(f"{method}: {type(e).__name__}") from None
+        if not isinstance(data, dict):
+            raise SlackError(f"{method}: unexpected response")
         if not data.get("ok"):
             raise SlackError(f"{method}: {data.get('error', 'unknown error')}")
         return data
     raise SlackError(f"{method}: rate limited")
+
+
+def retry_after(value: str | None) -> float:
+    """Seconds to wait from a Retry-After header (seconds, or anything else → 5)."""
+    try:
+        return min(max(float(value or 1), 0.0), 60.0)
+    except ValueError:
+        return 5.0
 
 
 def check_ts(value: str) -> str:
@@ -91,9 +104,33 @@ def check_ts(value: str) -> str:
     return value
 
 
+# Message subtypes that aren't a person saying something new. Others, such as
+# `file_share` (a message with an upload), are delivered.
+SKIPPED_SUBTYPES = {
+    "bot_message",
+    "message_changed",
+    "message_deleted",
+    "message_replied",
+    "thread_broadcast",
+    "channel_join",
+    "channel_leave",
+    "channel_topic",
+    "channel_purpose",
+    "channel_name",
+    "channel_archive",
+    "channel_unarchive",
+    "pinned_item",
+    "unpinned_item",
+    "reminder_add",
+    "tombstone",
+}
+
+
 def is_human_top_level(message: dict[str, Any], bot_user: str | None) -> bool:
     """New top-level messages from people only: no bots, edits, joins or thread replies."""
-    if message.get("subtype") or message.get("bot_id"):
+    if message.get("subtype") in SKIPPED_SUBTYPES or message.get("bot_id"):
+        return False
+    if not message.get("user"):
         return False
     if bot_user and message.get("user") == bot_user:
         return False
@@ -111,12 +148,24 @@ def state_dir() -> Path:
     return path
 
 
-def brg_send(member: str, text: str) -> tuple[int, str]:
-    """Hand `text` (IDs and fixed values only) to a member with `brg send`."""
+def brg_send(member: str, text: str, sender: str | None = None) -> tuple[int, str]:
+    """Hand `text` (IDs and fixed values only) to a member with `brg send`.
+
+    With `sender`, brg checks that `member` is the sender's parent. Never raises:
+    a failure comes back as a non-zero code.
+    """
     brg = os.environ.get("BORGCHART_BIN", "brg")
-    proc = subprocess.run(
-        [brg, "send", "--json", member, text], capture_output=True, text=True, timeout=30, check=False
-    )
+    args = [brg, "send", "--json"]
+    if sender:
+        args += ["--from", sender]
+    try:
+        proc = subprocess.run(
+            [*args, member, text], capture_output=True, text=True, timeout=30, check=False
+        )
+    except subprocess.TimeoutExpired:
+        return 124, "brg send timed out"
+    except OSError as e:
+        return 127, f"cannot run brg: {e}"
     message = proc.stdout.strip() or proc.stderr.strip()
     try:
         message = json.loads(message).get("message", message)
@@ -128,8 +177,8 @@ def brg_send(member: str, text: str) -> tuple[int, str]:
 MEMBER_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 
 
-def notice_for(entry: dict[str, Any]) -> tuple[str, str]:
-    """Rebuild a queued delivery's target and text from its validated fields.
+def notice_for(entry: dict[str, Any]) -> tuple[str, str, str | None]:
+    """Rebuild a queued delivery's target, text and sender from its validated fields.
 
     The queue file lives in a directory sandboxed members may write, so the
     watcher never sends stored text: it re-creates the fixed notice from IDs
@@ -143,14 +192,15 @@ def notice_for(entry: dict[str, Any]) -> tuple[str, str]:
     if kind == "message":
         if target != os.environ.get("BORGCHART_DELIVER_TO", ""):
             raise ValueError("a message notice may only go to the watcher's own target")
-        return target, message_notice(ts)
+        return target, message_notice(ts), None
     if kind == "escalation":
         sender = str(entry.get("sender", ""))
         severity = entry.get("severity")
         reason = entry.get("reason")
         if not MEMBER_RE.match(sender) or severity not in SEVERITIES or reason not in REASONS:
             raise ValueError("bad escalation fields")
-        return target, escalation_notice(sender, ts, severity, reason)
+        # brg checks that `target` is really the sender's parent (`--from`).
+        return target, escalation_notice(sender, ts, severity, reason), sender
     raise ValueError(f"unknown kind {kind!r}")
 
 

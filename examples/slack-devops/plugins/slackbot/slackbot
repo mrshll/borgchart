@@ -88,10 +88,7 @@ def cmd_escalate(ts: str, severity: str, reason: str) -> int:
         print("this member has no parent to escalate to", file=sys.stderr)
         return 1
     text = slackapi.escalation_notice(sender, ts, severity, reason)
-    try:
-        code, message = slackapi.brg_send(parent, text)
-    except OSError as e:
-        code, message = 127, f"cannot reach brg: {e}"
+    code, message = slackapi.brg_send(parent, text, sender=sender)
     if code == 0:
         print(f"escalated to {parent}")
         return 0

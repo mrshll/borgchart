@@ -28,15 +28,24 @@ MAX_BACKOFF = 300.0
 
 
 def write_json(name: str, value: Any) -> None:
+    """Replace a state file atomically, never following a planted symlink."""
     path = slackapi.state_dir() / name
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(value, sort_keys=True))
+    tmp = path.with_suffix(f".{os.getpid()}.tmp")
+    try:
+        tmp.unlink()
+    except FileNotFoundError:
+        pass
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(json.dumps(value, sort_keys=True))
     os.replace(tmp, path)
 
 
 def read_json(name: str, default: Any) -> Any:
     try:
-        return json.loads((slackapi.state_dir() / name).read_text())
+        fd = os.open(slackapi.state_dir() / name, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, encoding="utf-8") as f:
+            return json.load(f)
     except (OSError, ValueError):
         return default
 
@@ -46,10 +55,7 @@ def health(ok: bool, detail: str) -> None:
 
 
 def deliver(target: str, ts: str) -> bool:
-    try:
-        code, message = slackapi.brg_send(target, slackapi.message_notice(ts))
-    except OSError as e:
-        code, message = 127, str(e)
+    code, message = slackapi.brg_send(target, slackapi.message_notice(ts))
     if code == 0:
         return True
     slackapi.record_undelivered(
@@ -88,14 +94,14 @@ def retry_undelivered(now: float) -> int:
                 keep.append(entry)
                 continue
             try:
-                target, text = slackapi.notice_for(entry)
+                target, text, sender = slackapi.notice_for(entry)
             except ValueError as e:
                 print(f"dropping a queued delivery: {e}", file=sys.stderr)
                 continue
-            try:
-                code, message = slackapi.brg_send(target, text)
-            except OSError as e:
-                code, message = 127, str(e)
+            code, message = slackapi.brg_send(target, text, sender=sender)
+            if code == 5 and "may only send to its parent" in message:
+                print(f"dropping a queued delivery: {message}", file=sys.stderr)
+                continue
             if code != 0:
                 entry["attempts"] = entry.get("attempts", 1) + 1
                 entry["last_error"] = message
@@ -120,10 +126,16 @@ def poll_once(bot_user: str | None) -> int:
         # First run: start from now rather than replaying the channel's history.
         write_json("cursor.json", {"oldest": f"{time.time():.6f}", "seen": []})
         return 0
-    data = slackapi.call(
-        "conversations.history", {"channel": slackapi.channel(), "oldest": cursor, "limit": 100}
-    )
-    messages = sorted(data.get("messages", []), key=lambda m: float(m.get("ts", "0")))
+    messages: list[dict] = []
+    params: dict[str, Any] = {"channel": slackapi.channel(), "oldest": cursor, "limit": 100}
+    for _ in range(5):  # up to 500 new messages per poll
+        data = slackapi.call("conversations.history", params)
+        messages.extend(m for m in data.get("messages", []) if isinstance(m, dict))
+        next_cursor = (data.get("response_metadata") or {}).get("next_cursor")
+        if not data.get("has_more") or not next_cursor:
+            break
+        params = {**params, "cursor": next_cursor}
+    messages.sort(key=lambda m: float(m.get("ts", "0")) if slackapi.TS_RE.match(str(m.get("ts", ""))) else 0.0)
     delivered = 0
     newest = cursor
     for message in messages:
@@ -153,6 +165,12 @@ def main(argv: list[str]) -> int:
             health(True, f"{pending} undelivered" if pending else "watching")
         except SlackError as e:
             health(False, str(e))
+        except Exception as e:  # noqa: BLE001 - keep watching; report it instead
+            try:
+                health(False, f"unexpected {type(e).__name__}")
+            except OSError:
+                pass
+            print(f"watcher error: {type(e).__name__}: {e}", file=sys.stderr)
         if once:
             return 0
         time.sleep(POLL_SECONDS)

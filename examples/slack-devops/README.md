@@ -34,6 +34,19 @@ What the lead can't do: look at systems. It is a smart auto-responder that ackno
    brg status
    ```
 
+### First run
+
+- **Folder trust:** Claude asks once per folder whether you trust it. To let `brg up` answer it for these `locked` agents, declare their folder in `borgchart.yaml`:
+
+  ```yaml
+  members:
+    triager: {cwd: /path/to/borgchart/examples/slack-devops}
+    lead: {cwd: /path/to/borgchart/examples/slack-devops}
+  ```
+
+  Or run `brg attach triager` (and `lead`) once and answer it yourself. Until it's answered, the agent gets no input, and messages wait in the queue.
+- **API key:** with `auth: api_key`, Claude may ask once whether to use the key. `up` then reports the agent stopped, because its gate didn't report in. Answer that prompt in a plain `claude` session first, or use `auth: login`.
+
 `brg attach triager` (or `lead`) shows a live session. Detach with your tmux prefix, then `d`. `brg down` stops everything and removes the private files that held the token.
 
 ## Smoke test (real Slack)

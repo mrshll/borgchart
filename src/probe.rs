@@ -8,6 +8,9 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 
 use crate::diag::Report;
 use crate::team::Vendor;
@@ -39,12 +42,34 @@ fn list(vendor: Vendor, cwd: &Path) -> Result<BTreeSet<String>, String> {
     if vendor == Vendor::Codex {
         cmd.arg("--json");
     }
-    let out = cmd
+    // The small base environment only: plugin secrets in your shell don't
+    // reach your MCP servers.
+    let mut child = cmd
+        .env_clear()
+        .envs(crate::runtime::base_env())
         .current_dir(cwd)
         .stdin(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .output()
+        .spawn()
         .map_err(|e| format!("cannot run `{} mcp list`: {e}", vendor.as_str()))?;
+    let deadline = Instant::now() + PROBE_TIMEOUT;
+    loop {
+        if child.try_wait().map_err(|e| e.to_string())?.is_some() {
+            break;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "`{} mcp list` took over {}s; skipped",
+                vendor.as_str(),
+                PROBE_TIMEOUT.as_secs()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
     let text = String::from_utf8_lossy(&out.stdout);
     Ok(match vendor {
         Vendor::Claude => parse_claude_list(&text),
