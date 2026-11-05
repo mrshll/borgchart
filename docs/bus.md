@@ -156,9 +156,47 @@ Folds task records into per-task state: assigned, accepted or declined, result c
 
 One on-demand worker per run watches for records nobody has seen. Only a member listing *its own* inbox (`inbox`, `inbox wait`) marks the IDs returned to that incarnation as observed; reads by anyone else, and `msg read`, never do. Observation is separate from acknowledgement. Records published after an observation start a new episode. For each episode the worker either wakes the member once (see below) or raises an alert. `publish`, `inbox`, `read` and `ack` start the worker if attention is pending and it isn't running; `brg bus service ensure` does so explicitly; `status`, `inspect` and `check` never do. The worker never creates a tmux session: publishing to a stopped deployment succeeds and reports `attention-unavailable`. A wake attempt left in flight by a crash is never retried automatically; `brg bus attention resolve <member>` clears it once a person has looked.
 
-## Guarded wake (planned)
+## Guarded wake
 
-For a vendor, version and configuration that has passed qualification, the worker may paste one fixed reminder (never a payload) and press Enter. Before pasting it checks the pane's identity (against the incarnation), state, input box and dialogs; before Enter it checks the input box holds exactly the reminder and no dialog appeared. It never clears input, forces, answers a dialog or presses Enter after a crash. At most one paste per episode. A member at a prompt (`blocked`) gets nothing typed and an alert. A busy member, a draft in the input box or a transient uncertain reading defers the wake without spending it; a draft also raises an alert, and the wake goes ahead automatically once the draft clears, or becomes human-required at the deadline. An unqualified vendor or version gets alerts only.
+For a vendor, version and configuration that has passed qualification, the worker may paste one fixed reminder and press Enter:
+
+```text
+brg: new records in your inbox. Run `brg inbox` at your next stopping point.
+```
+
+Nothing from any record is ever typed. One attempt (`src/wake.rs`) holds the member's send lock (waiting at most 2 s, otherwise it defers as `locked`) and goes:
+
+1. **Identity.** The pane must be the incarnation's own: same tmux socket, session, window, `pane_id` and `pane_pid`, and not dead. Otherwise `not-running`, nothing typed.
+2. **State.** The state rules `status` uses run on the same capture. A prompt gives `blocked:<rule>` (the same rule ID `status` shows) and nothing is typed. A running turn defers as `busy`.
+3. **Input box.** The input box must read as empty (below). A draft defers as `draft`; anything unreadable defers as `uncertain`.
+4. **Intent.** The worker records the attempt; if that fails nothing is typed.
+5. **Paste.** The reminder goes in as one bracketed paste.
+6. **Before Enter.** The pane is re-read until the box holds exactly the reminder (the vendor may wrap it across lines) and no prompt is showing, for up to 3 s. Otherwise `human-required` and Enter is not pressed.
+7. **Enter**, then a check that the reminder left the box; if it didn't, `human-required`.
+
+It never clears input, forces, answers a dialog, presses Enter after a crash or tries a second time: `human-required` always waits for a person. Attached clients don't matter; a resize that leaves the screen mid-redraw just defers. A busy member, a draft or an uncertain reading defers without spending the episode's one paste; a draft also raises an alert, the wake goes ahead once the draft clears, and the worker makes it human-required at the deadline. A member at a prompt gets an alert. An unqualified vendor, version or configuration gets alerts only.
+
+**Reading the input box** (`src/composer.rs`) works on a styled capture (`capture-pane -e`) and anchors on each vendor's layout at the bottom of the screen:
+
+- *Claude Code:* the lines between the last two horizontal rules, starting with `❯`; later lines are indented. A grey `❯` means a turn is running (the window title doesn't change during a turn in this version). The footer shows `-- INSERT --` in vim insert mode.
+- *Codex:* the lines above one blank line and the status line ending in `Vim: Insert` or `Vim: Normal`, starting with a bold `›`. The dim placeholder (`Ask Codex to do anything`) reads as empty.
+
+Any other text in the box is a draft: typed text, recalled history, a pasted image's tag, a suggestion. So is a box of more than one line, even if its visible lines are blank (the rest may be scrolled out of view). A pane under 20 rows, or a screen that doesn't match the layout (a popup, a dialog, a resize in progress), reads as uncertain.
+
+**Qualification.** Typing is allowed only for these exact combinations, each tested with the real CLI by `tests/qualify.rs` (empty, single-line, multiline, wrapped and scrolled drafts; vim insert and normal mode; history recall; a draft that clears and one that stays; a short pane; a resize and two attached clients, one in control mode, during attempts; a submission in each vim mode):
+
+| Vendor | `--version` | Input mode | Other settings |
+| --- | --- | --- | --- |
+| Claude Code | `2.1.318 (Claude Code)` | `editorMode: vim` | `promptSuggestionEnabled: false` |
+| Codex | `codex-cli 0.165.0` | `[tui] vim_mode_default = true` | |
+
+The input mode and settings are measured from the files the vendor reads (Claude: `~/.claude.json`, `~/.claude/settings.json`, the project's `.claude/settings{,.local}.json`, a `--settings` argument and managed settings; Codex: `$CODEX_HOME/config.toml` or `~/.codex/config.toml`, the project's `.codex/config.toml` and `-c tui.…` arguments). A setting that can't be read, a `--profile`, or anything not in the table means alerts only. To qualify another version, run the harness (it needs a folder both CLIs already trust, and makes two real submissions per vendor) and add a row only if every case passes:
+
+```text
+BORGCHART_QUALIFY=1 cargo test --locked --test qualify -- --ignored --nocapture --test-threads=1
+```
+
+**What is not guaranteed.** A person typing into the member between the last check and Enter can have their text submitted along with the reminder; nothing here can close that gap. There is no warning before typing.
 
 ## Alerts (planned)
 

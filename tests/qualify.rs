@@ -116,7 +116,13 @@ impl Run {
             .stderr(Stdio::null())
             .output()
             .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").to_string());
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .to_string()
+            });
         let facts = LaunchFacts::measure(vendor, version, &argv, &root().join("work"), &base_env());
         Run {
             vendor,
@@ -143,7 +149,19 @@ impl Run {
         let cwd = root().join("work").display().to_string();
         let (c, r) = (cols.to_string(), rows.to_string());
         let args = [
-            "new-session", "-d", "-s", SESSION, "-n", WINDOW, "-x", &c, "-y", &r, "-c", &cwd, &cmd,
+            "new-session",
+            "-d",
+            "-s",
+            SESSION,
+            "-n",
+            WINDOW,
+            "-x",
+            &c,
+            "-y",
+            &r,
+            "-c",
+            &cwd,
+            &cmd,
         ];
         if let Err(e) = self.tmux.ok(&args) {
             eprintln!("retrying new-session after: {e}");
@@ -172,7 +190,13 @@ impl Run {
     fn pane(&self) -> PaneIdentity {
         let out = self
             .tmux
-            .ok(&["display-message", "-p", "-t", &self.target(), "#{pane_id} #{pane_pid}"])
+            .ok(&[
+                "display-message",
+                "-p",
+                "-t",
+                &self.target(),
+                "#{pane_id} #{pane_pid}",
+            ])
             .unwrap();
         let (id, pid) = out.trim().split_once(' ').unwrap();
         PaneIdentity {
@@ -192,7 +216,13 @@ impl Run {
 
     fn title(&self) -> String {
         self.tmux
-            .ok(&["display-message", "-p", "-t", &self.target(), "#{pane_title}"])
+            .ok(&[
+                "display-message",
+                "-p",
+                "-t",
+                &self.target(),
+                "#{pane_title}",
+            ])
             .unwrap_or_default()
             .trim()
             .to_string()
@@ -242,13 +272,16 @@ impl Run {
     }
 
     fn record(&mut self, case: &str, want: &str, got: String) {
-        let ok = if want.split('|').any(|w| got.starts_with(w)) { "ok" } else { "FAIL" };
+        let ok = if want.split('|').any(|w| got.starts_with(w)) {
+            "ok"
+        } else {
+            "FAIL"
+        };
         println!(
             "| {} | {case} | {want} | {got} | {ok} |",
             self.vendor.as_str()
         );
-        self.rows
-            .push([case.into(), want.into(), got, ok.into()]);
+        self.rows.push([case.into(), want.into(), got, ok.into()]);
     }
 
     /// An attempt on a draft must defer and leave the draft as it was.
@@ -264,7 +297,9 @@ impl Run {
         };
         std::thread::sleep(Duration::from_millis(300));
         let untouched = composer::view(self.vendor, &before).ok().map(|v| v.lines)
-            == composer::view(self.vendor, &self.screen()).ok().map(|v| v.lines);
+            == composer::view(self.vendor, &self.screen())
+                .ok()
+                .map(|v| v.lines);
         self.save(case);
         let got = format!(
             "{}{}{}",
@@ -283,7 +318,9 @@ impl Run {
             std::thread::sleep(Duration::from_secs(2));
             match wake::before_paste(self.vendor, &rules, &self.title(), &self.screen()) {
                 None => return "idle".into(),
-                Some(WakeResult::Blocked(rule)) => return format!("blocked:{rule} (left unanswered)"),
+                Some(WakeResult::Blocked(rule)) => {
+                    return format!("blocked:{rule} (left unanswered)");
+                }
                 Some(_) => {}
             }
         }
@@ -390,26 +427,56 @@ fn qualify(vendor: Vendor) -> Vec<[String; 4]> {
     run.keys(&["-l", "a draft left overnight"]);
     let outer = format!("{}-outer", run.socket);
     let _ = Command::new("tmux")
-        .args(["-L", &outer, "-f", "/dev/null", "new-session", "-d", "-x", "150", "-y", "45"])
+        .args([
+            "-L",
+            &outer,
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-x",
+            "150",
+            "-y",
+            "45",
+        ])
         .arg(format!("tmux -L {} attach -t ={SESSION}", run.socket))
         .env_clear()
         .envs(base_env())
         .status();
     let mut control = Command::new("tmux")
-        .args(["-L", &run.socket, "-C", "attach", "-t", &format!("={SESSION}")])
+        .args([
+            "-L",
+            &run.socket,
+            "-C",
+            "attach",
+            "-t",
+            &format!("={SESSION}"),
+        ])
         .env_clear()
         .envs(base_env())
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .spawn()
         .unwrap();
-    for (i, size) in [("180", "48"), ("120", "40"), ("200", "50")].iter().enumerate() {
-        let _ = run
-            .tmux
-            .ok(&["resize-window", "-t", &run.target(), "-x", size.0, "-y", size.1]);
+    for (i, size) in [("180", "48"), ("120", "40"), ("200", "50")]
+        .iter()
+        .enumerate()
+    {
+        let _ = run.tmux.ok(&[
+            "resize-window",
+            "-t",
+            &run.target(),
+            "-x",
+            size.0,
+            "-y",
+            size.1,
+        ]);
         run.draft_case(&format!("persistent draft #{} (attached, resized)", i + 1));
     }
-    let clients = run.tmux.ok(&["list-clients", "-F", "#{client_control_mode}"]).unwrap_or_default();
+    let clients = run
+        .tmux
+        .ok(&["list-clients", "-F", "#{client_control_mode}"])
+        .unwrap_or_default();
     run.record(
         "clients attached during attempts",
         "2",
@@ -417,7 +484,15 @@ fn qualify(vendor: Vendor) -> Vec<[String; 4]> {
     );
 
     // Too small a pane.
-    let _ = run.tmux.ok(&["resize-window", "-t", &run.target(), "-x", "100", "-y", "12"]);
+    let _ = run.tmux.ok(&[
+        "resize-window",
+        "-t",
+        &run.target(),
+        "-x",
+        "100",
+        "-y",
+        "12",
+    ]);
     run.keys(&["C-u"]);
     std::thread::sleep(Duration::from_millis(800));
     run.save("small");
@@ -430,7 +505,9 @@ fn qualify(vendor: Vendor) -> Vec<[String; 4]> {
     run.record("pane 100x12", "deferred:uncertain", show(&r));
     let _ = control.kill();
     let _ = control.wait();
-    let _ = Command::new("tmux").args(["-L", &outer, "kill-server"]).output();
+    let _ = Command::new("tmux")
+        .args(["-L", &outer, "kill-server"])
+        .output();
 
     if !qualified || !submit {
         run.record("submissions", "", "skipped".into());
@@ -440,13 +517,31 @@ fn qualify(vendor: Vendor) -> Vec<[String; 4]> {
     // Submission 1: insert mode, clients attached, resize during the attempt.
     run.start(200, 50);
     let _ = Command::new("tmux")
-        .args(["-L", &outer, "-f", "/dev/null", "new-session", "-d", "-x", "150", "-y", "45"])
+        .args([
+            "-L",
+            &outer,
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-x",
+            "150",
+            "-y",
+            "45",
+        ])
         .arg(format!("tmux -L {} attach -t ={SESSION}", run.socket))
         .env_clear()
         .envs(base_env())
         .status();
     let mut control = Command::new("tmux")
-        .args(["-L", &run.socket, "-C", "attach", "-t", &format!("={SESSION}")])
+        .args([
+            "-L",
+            &run.socket,
+            "-C",
+            "attach",
+            "-t",
+            &format!("={SESSION}"),
+        ])
         .env_clear()
         .envs(base_env())
         .stdin(Stdio::piped())
@@ -459,7 +554,17 @@ fn qualify(vendor: Vendor) -> Vec<[String; 4]> {
         for (x, y) in [("190", "50"), ("200", "48"), ("200", "50")] {
             std::thread::sleep(Duration::from_millis(150));
             let _ = Command::new("tmux")
-                .args(["-L", &socket, "resize-window", "-t", &target, "-x", x, "-y", y])
+                .args([
+                    "-L",
+                    &socket,
+                    "resize-window",
+                    "-t",
+                    &target,
+                    "-x",
+                    x,
+                    "-y",
+                    y,
+                ])
                 .output();
         }
     });
@@ -475,7 +580,11 @@ fn qualify(vendor: Vendor) -> Vec<[String; 4]> {
     if !submitted {
         std::thread::sleep(Duration::from_secs(1));
         let (r, _) = run.attempt();
-        run.record("submit: vim insert, 2 clients attached", "submitted", show(&r));
+        run.record(
+            "submit: vim insert, 2 clients attached",
+            "submitted",
+            show(&r),
+        );
         submitted = r == WakeResult::Submitted;
     }
     if submitted {
@@ -485,7 +594,11 @@ fn qualify(vendor: Vendor) -> Vec<[String; 4]> {
         run.record(
             "attempt during the turn",
             "deferred:busy",
-            format!("{}{}", show(&busy), if calls > 0 { " (intent recorded!)" } else { "" }),
+            format!(
+                "{}{}",
+                show(&busy),
+                if calls > 0 { " (intent recorded!)" } else { "" }
+            ),
         );
     }
     let end = run.wait_turn();
@@ -493,13 +606,17 @@ fn qualify(vendor: Vendor) -> Vec<[String; 4]> {
     run.record("turn 1 ended", "idle", end);
     let _ = control.kill();
     let _ = control.wait();
-    let _ = Command::new("tmux").args(["-L", &outer, "kill-server"]).output();
+    let _ = Command::new("tmux")
+        .args(["-L", &outer, "kill-server"])
+        .output();
 
     // Submission 2: vim normal mode.
     run.start(200, 50);
     run.keys(&["Escape"]);
     std::thread::sleep(Duration::from_millis(500));
-    let mode = composer::view(vendor, &run.screen()).ok().and_then(|v| v.vim);
+    let mode = composer::view(vendor, &run.screen())
+        .ok()
+        .and_then(|v| v.vim);
     run.record("normal mode shown", "Some(Normal)", format!("{mode:?}"));
     let (r, _) = run.attempt();
     run.record("submit: vim normal", "submitted", show(&r));
@@ -516,7 +633,8 @@ fn qualification_matrix() {
         eprintln!("set BORGCHART_QUALIFY=1 to run");
         return;
     }
-    let mut md = String::from("| vendor | case | expected | got | ok |\n| --- | --- | --- | --- | --- |\n");
+    let mut md =
+        String::from("| vendor | case | expected | got | ok |\n| --- | --- | --- | --- | --- |\n");
     let mut failed = 0;
     println!("| vendor | case | expected | got | ok |");
     for v in vendors() {
@@ -524,7 +642,15 @@ fn qualification_matrix() {
             if row[3] == "FAIL" {
                 failed += 1;
             }
-            let _ = writeln!(md, "| {} | {} | {} | {} | {} |", v.as_str(), row[0], row[1], row[2], row[3]);
+            let _ = writeln!(
+                md,
+                "| {} | {} | {} | {} | {} |",
+                v.as_str(),
+                row[0],
+                row[1],
+                row[2],
+                row[3]
+            );
         }
     }
     std::fs::write(root().join("matrix.md"), &md).unwrap();

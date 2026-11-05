@@ -62,7 +62,7 @@ const QUALIFIED: &[Qualified] = &[
         vendor: Vendor::Claude,
         version: "2.1.318 (Claude Code)",
         editor: "vim",
-    suggestions: Some(false),
+        suggestions: Some(false),
     },
     Qualified {
         vendor: Vendor::Codex,
@@ -99,10 +99,7 @@ pub fn qualification(vendor: Vendor, launch: &LaunchFacts) -> Qualification {
         return Qualification::Unqualified(format!("{} version unknown", vendor.as_str()));
     };
     let Some(editor) = launch.editor.as_deref() else {
-        return Qualification::Unqualified(format!(
-            "{}'s input mode is unknown",
-            vendor.as_str()
-        ));
+        return Qualification::Unqualified(format!("{}'s input mode is unknown", vendor.as_str()));
     };
     let candidates: Vec<&Qualified> = QUALIFIED
         .iter()
@@ -312,7 +309,8 @@ struct Snapshot {
 }
 
 fn snapshot(tmux: &Tmux, expect: &PaneIdentity) -> Option<Snapshot> {
-    let format = "#{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{session_name}\t#{window_name}\t#{pane_title}";
+    let format =
+        "#{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{session_name}\t#{window_name}\t#{pane_title}";
     let out = tmux
         .ok(&["display-message", "-p", "-t", &expect.pane_id, format])
         .ok()?;
@@ -383,9 +381,9 @@ pub fn before_enter(
     match composer::view(vendor, screen) {
         Ok(v) if v.holds(REMINDER) => None,
         Ok(v) if v.busy => Some("a turn started after the paste; Enter was not pressed".into()),
-        Ok(_) => Some(
-            "the input box doesn't hold exactly the reminder; Enter was not pressed".into(),
-        ),
+        Ok(_) => {
+            Some("the input box doesn't hold exactly the reminder; Enter was not pressed".into())
+        }
         Err(why) => Some(format!(
             "the input box can't be read after the paste ({why}); Enter was not pressed"
         )),
@@ -437,7 +435,10 @@ pub fn attempt(
         return WakeResult::NotRunning;
     }
     if let Some(meta) = state::read_meta(state)
-        && meta.members.get(member).is_some_and(|m| m.posture == "locked")
+        && meta
+            .members
+            .get(member)
+            .is_some_and(|m| m.posture == "locked")
         && !state.gate_marker(member).exists()
     {
         return WakeResult::Deferred(Defer::Uncertain(
@@ -472,11 +473,18 @@ pub fn attempt(
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     );
-    if let Err(e) = tmux.run_with_stdin(&["load-buffer", "-b", &buffer, "-"], REMINDER.as_bytes())
-    {
+    if let Err(e) = tmux.run_with_stdin(&["load-buffer", "-b", &buffer, "-"], REMINDER.as_bytes()) {
         return WakeResult::Deferred(Defer::Uncertain(format!("tmux refused the reminder: {e}")));
     }
-    if let Err(e) = tmux.ok(&["paste-buffer", "-p", "-d", "-b", &buffer, "-t", &expect.pane_id]) {
+    if let Err(e) = tmux.ok(&[
+        "paste-buffer",
+        "-p",
+        "-d",
+        "-b",
+        &buffer,
+        "-t",
+        &expect.pane_id,
+    ]) {
         let _ = tmux.run(&["delete-buffer", "-b", &buffer]);
         return WakeResult::HumanRequired(format!("pasting the reminder failed: {e}"));
     }
@@ -563,7 +571,11 @@ mod tests {
     #[test]
     fn toml_reading_is_narrow() {
         assert_eq!(
-            toml_bool("[tui]\nvim_mode_default = true\n", "tui", "vim_mode_default"),
+            toml_bool(
+                "[tui]\nvim_mode_default = true\n",
+                "tui",
+                "vim_mode_default"
+            ),
             Some(true)
         );
         assert_eq!(
@@ -571,11 +583,19 @@ mod tests {
             Some(false)
         );
         assert_eq!(
-            toml_bool("tui = { vim_mode_default = true }\n", "tui", "vim_mode_default"),
+            toml_bool(
+                "tui = { vim_mode_default = true }\n",
+                "tui",
+                "vim_mode_default"
+            ),
             None
         );
         assert_eq!(
-            toml_bool("[other]\nvim_mode_default = true\n", "tui", "vim_mode_default"),
+            toml_bool(
+                "[other]\nvim_mode_default = true\n",
+                "tui",
+                "vim_mode_default"
+            ),
             None
         );
     }

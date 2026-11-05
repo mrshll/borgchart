@@ -103,11 +103,8 @@ fn apply_sgr(style: &mut Style, params: &str) {
                     }
                     Some(2) => {
                         if fg && i + 4 < nums.len() {
-                            style.fg = Fg::Rgb(
-                                nums[i + 2] as u8,
-                                nums[i + 3] as u8,
-                                nums[i + 4] as u8,
-                            );
+                            style.fg =
+                                Fg::Rgb(nums[i + 2] as u8, nums[i + 3] as u8, nums[i + 4] as u8);
                         }
                         i += 4;
                     }
@@ -211,8 +208,7 @@ impl View {
         if self.busy {
             return Reading::Busy;
         }
-        let empty = self.placeholder
-            || (self.lines.len() == 1 && self.lines[0].trim().is_empty());
+        let empty = self.placeholder || (self.lines.len() == 1 && self.lines[0].trim().is_empty());
         if empty {
             Reading::Empty
         } else {
@@ -289,7 +285,10 @@ fn claude_view(lines: &[Line]) -> Result<View, String> {
     let first = rows.first().ok_or("the input box has no lines")?;
     let marker = first.0.first().ok_or("the input box has no prompt")?;
     if marker.ch != '❯' {
-        return Err(format!("the input box starts with `{}`, not `❯`", marker.ch));
+        return Err(format!(
+            "the input box starts with `{}`, not `❯`",
+            marker.ch
+        ));
     }
     if !matches!(first.0.get(1).map(|c| c.ch), Some(' ' | '\u{a0}') | None) {
         return Err("no space after the prompt".into());
@@ -369,8 +368,7 @@ fn codex_view(lines: &[Line]) -> Result<View, String> {
     for row in &lines[start + 1..=last] {
         text.push(continuation(row).ok_or("an input box line isn't indented")?);
     }
-    let placeholder =
-        text.len() == 1 && !visible.is_empty() && visible.iter().all(|c| c.style.dim);
+    let placeholder = text.len() == 1 && !visible.is_empty() && visible.iter().all(|c| c.style.dim);
     Ok(View {
         lines: text,
         placeholder,
@@ -429,16 +427,29 @@ mod tests {
 
     #[test]
     fn codex_needs_its_layout() {
-        let s = screen(&["\x1b[1m›\x1b[0m \x1b[2mAsk anything\x1b[0m", "", "  m · d  Vim: Insert"]);
+        let s = screen(&[
+            "\x1b[1m›\x1b[0m \x1b[2mAsk anything\x1b[0m",
+            "",
+            "  m · d  Vim: Insert",
+        ]);
         assert_eq!(read(Vendor::Codex, &s), Reading::Empty);
         // Not bold: some other `›` line.
         let s = screen(&["› \x1b[2mAsk anything\x1b[0m", "", "  m · d  Vim: Insert"]);
         assert!(matches!(read(Vendor::Codex, &s), Reading::Unknown(_)));
         // Placeholder partly normal text is a draft.
-        let s = screen(&["\x1b[1m›\x1b[0m hi \x1b[2mAsk\x1b[0m", "", "  m · d  Vim: Insert"]);
+        let s = screen(&[
+            "\x1b[1m›\x1b[0m hi \x1b[2mAsk\x1b[0m",
+            "",
+            "  m · d  Vim: Insert",
+        ]);
         assert_eq!(read(Vendor::Codex, &s), Reading::Draft);
         // A popup between the box and the status line.
-        let s = screen(&["\x1b[1m›\x1b[0m /mo", "  /model  choose", "", "  m  Vim: Insert"]);
+        let s = screen(&[
+            "\x1b[1m›\x1b[0m /mo",
+            "  /model  choose",
+            "",
+            "  m  Vim: Insert",
+        ]);
         assert_eq!(read(Vendor::Codex, &s), Reading::Draft);
         let s = screen(&["\x1b[1m›\x1b[0m ", "", "  m · d"]);
         assert!(matches!(read(Vendor::Codex, &s), Reading::Unknown(_)));

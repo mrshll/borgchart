@@ -140,7 +140,12 @@ fn blocked_rule_ids_are_shared_with_status() {
             screen!("claude-permission.txt"),
             "permission-dialog",
         ),
-        (Vendor::Claude, "", screen!("claude-trust.txt"), "trust-dialog"),
+        (
+            Vendor::Claude,
+            "",
+            screen!("claude-trust.txt"),
+            "trust-dialog",
+        ),
         (
             Vendor::Codex,
             "[ . ] Action Required | Run netbot | m2",
@@ -163,7 +168,10 @@ fn pre_paste_decisions_on_real_screens() {
     let c = rules::load(Vendor::Claude).unwrap();
     let x = rules::load(Vendor::Codex).unwrap();
     let t = "✳ Claude Code";
-    assert_eq!(wake::before_paste(Vendor::Claude, &c, t, claude("empty")), None);
+    assert_eq!(
+        wake::before_paste(Vendor::Claude, &c, t, claude("empty")),
+        None
+    );
     assert_eq!(
         wake::before_paste(Vendor::Claude, &c, t, claude("draft")),
         Some(WakeResult::Deferred(Defer::Draft))
@@ -174,7 +182,10 @@ fn pre_paste_decisions_on_real_screens() {
         Some(WakeResult::Deferred(Defer::Busy))
     );
     let t = "example";
-    assert_eq!(wake::before_paste(Vendor::Codex, &x, t, codex("empty")), None);
+    assert_eq!(
+        wake::before_paste(Vendor::Codex, &x, t, codex("empty")),
+        None
+    );
     // A Codex draft hides the idle footer, so the state is unknown; the draft
     // is still reported as a draft.
     assert_eq!(
@@ -253,7 +264,17 @@ impl Env {
             vendor.as_str()
         );
         tmux.ok(&[
-            "new-session", "-d", "-s", "s", "-n", "m", "-x", "120", "-y", "40", &cmd,
+            "new-session",
+            "-d",
+            "-s",
+            "s",
+            "-n",
+            "m",
+            "-x",
+            "120",
+            "-y",
+            "40",
+            &cmd,
         ])
         .unwrap();
         let e = Env {
@@ -262,14 +283,22 @@ impl Env {
             socket,
             tmux,
         };
-        e.wait_for("the fake to draw", |e| e.log().iter().any(|l| l["event"] == "ready"));
+        e.wait_for("the fake to draw", |e| {
+            e.log().iter().any(|l| l["event"] == "ready")
+        });
         e
     }
 
     fn pane(&self) -> PaneIdentity {
         let out = self
             .tmux
-            .ok(&["display-message", "-p", "-t", "=s:=m", "#{pane_id} #{pane_pid}"])
+            .ok(&[
+                "display-message",
+                "-p",
+                "-t",
+                "=s:=m",
+                "#{pane_id} #{pane_pid}",
+            ])
             .unwrap();
         let (id, pid) = out.trim().split_once(' ').unwrap();
         PaneIdentity {
@@ -308,7 +337,10 @@ impl Env {
     }
 
     fn events(&self, kind: &str) -> Vec<serde_json::Value> {
-        self.log().into_iter().filter(|l| l["event"] == kind).collect()
+        self.log()
+            .into_iter()
+            .filter(|l| l["event"] == kind)
+            .collect()
     }
 
     fn wait_for(&self, what: &str, f: impl Fn(&Env) -> bool) {
@@ -385,7 +417,11 @@ fn multiline_and_scrolled_drafts_defer() {
             e.keys(&["C-j"]);
         }
         e.wait_for("the newlines", |e| e.events("key").len() >= 61);
-        assert_eq!(e.attempt(v), (WakeResult::Deferred(Defer::Draft), 0), "{v:?}");
+        assert_eq!(
+            e.attempt(v),
+            (WakeResult::Deferred(Defer::Draft), 0),
+            "{v:?}"
+        );
         assert!(e.events("paste").is_empty());
     }
 }
@@ -496,7 +532,10 @@ fn a_failing_intent_record_types_nothing() {
         &qualified(Vendor::Codex),
         &mut || Err(std::io::Error::other("disk full")),
     );
-    assert!(matches!(r, WakeResult::Deferred(Defer::Uncertain(_))), "{r:?}");
+    assert!(
+        matches!(r, WakeResult::Deferred(Defer::Uncertain(_))),
+        "{r:?}"
+    );
     assert!(e.events("paste").is_empty());
 }
 
