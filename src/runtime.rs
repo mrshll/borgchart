@@ -10,7 +10,7 @@ use serde::Serialize;
 
 use crate::bus::context;
 use crate::bus::layout::RunPaths;
-use crate::bus::manifest::Incarnation;
+use crate::bus::manifest::{Incarnation, Liveness, PaneIdentity};
 use crate::bus::time::utc_now;
 use crate::deploy::Auth;
 use crate::exec::{ExecSpec, PluginEnv, identity_env};
@@ -150,6 +150,16 @@ struct Started {
     locked: bool,
     /// The declared cwd whose Claude folder-trust dialog `up` may accept.
     trust_dir: Option<PathBuf>,
+    /// The pane this `up` launched; nothing after the wait touches another.
+    pane: Option<PaneIdentity>,
+}
+
+/// Whether `s`'s window still runs the pane this `up` launched.
+fn still_launched(tmux: &Tmux, session: &str, s: &Started) -> bool {
+    match (&s.pane, lifecycle::pane_identity(tmux, session, &s.id)) {
+        (Some(a), Some(b)) => a.pane_id == b.pane_id && a.pane_pid == b.pane_pid,
+        _ => false,
+    }
 }
 
 /// The id of the rule that recognizes Claude's folder-trust dialog.
@@ -336,7 +346,8 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
         (None, None) => caller.clone(),
     };
 
-    let meta = match existing {
+    let fresh = existing.is_none();
+    let mut meta = match existing {
         Some(meta) => meta,
         None => {
             let base = base_env();
@@ -348,6 +359,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                 team_dir: v.team.dir.canonicalize().unwrap_or(v.team.dir.clone()),
                 brg: brg.clone(),
                 brg_sha256: Some(caller_sha.clone()),
+                socket: Some(state::tmux_socket()),
                 config: Some(snapshot.clone()),
                 run: binding.as_ref().map(|b| state::RunBinding {
                     run: b.run.clone(),
@@ -403,7 +415,6 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
     };
     let base = meta.base_env.clone();
     let tmux = Tmux::new(&state.tmux_conf(), base.clone());
-    let socket = state::tmux_socket();
 
     let mut messages = Vec::new();
     let mut failed = false;
@@ -547,21 +558,22 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                 cwd,
             },
         );
+        if let (Some((b, _)), Err(_)) = (&incarnation, &result) {
+            // tmux didn't create the window, so nothing runs it.
+            let _ = lifecycle::end_incarnation(&b.paths, id, lifecycle::ENDED_START_FAILED);
+        }
+        result?;
+        let pane = lifecycle::pane_identity(&tmux, &session, id);
         if let Some((b, mut inc)) = incarnation {
-            if let Err(e) = result {
-                let _ = lifecycle::end_incarnation(&b.paths, id, lifecycle::ENDED_START_FAILED);
-                return Err(e);
-            }
-            inc.pane = lifecycle::pane_identity(&socket, &session, id);
+            inc.pane = pane.clone();
             lifecycle::complete_incarnation(&b.paths, &inc)?;
-        } else {
-            result?;
         }
         started.push(Started {
             id: id.clone(),
             vendor: member.vendor,
             locked: posture == Posture::Locked,
             trust_dir,
+            pane,
         });
         messages.push(format!(
             "{id}: started ({}, {})",
@@ -608,11 +620,44 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
         }
     }
 
+    // Record where the tmux server is, so `down`, `run rebind` and liveness
+    // checks ask it directly, whatever the caller's tmux environment.
+    if fresh {
+        let path = started
+            .iter()
+            .find_map(|s| s.pane.as_ref().map(|p| p.socket.clone()))
+            .or_else(|| {
+                tmux.ok(&["display-message", "-p", "#{socket_path}"])
+                    .ok()
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| t.starts_with('/'))
+            });
+        if let Some(path) = path {
+            meta.socket_path = Some(PathBuf::from(path));
+            write_private(
+                &state.meta_file(),
+                &serde_json::to_vec_pretty(&meta).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| format!("cannot write state: {e}"))?;
+        }
+    }
+
     // Members may use the bus while they start up; another `up --member`
-    // may proceed too. The checks below only read screens and, for a
-    // `locked` member that fails its start-up check, stop that window.
+    // may proceed too. The checks below read screens without the locks, and
+    // take them again for anything they change (a key press, a trust marker,
+    // stopping a `locked` member), and only while the window still runs the
+    // pane this `up` launched.
+    let run_paths = binding.as_ref().map(|b| b.paths.clone());
     drop(binding);
     drop(state_lock);
+    let relock = |s: &Started| -> Result<Option<Vec<std::fs::File>>, String> {
+        let mut locks = vec![lifecycle::lock_state(state)?];
+        if let Some(paths) = &run_paths {
+            locks.push(lifecycle::lock_run(paths)?);
+        }
+        Ok(still_launched(&tmux, &session, s).then_some(locks))
+    };
+    let replaced = |id: &str| format!("{id}: replaced while starting; left alone");
 
     // Accept Claude's folder trust for a declared cwd, and make every locked
     // member prove its gate is active, or stop it.
@@ -629,6 +674,15 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                 failed = true;
                 break;
             };
+            if !still_launched(&tmux, &session, s) {
+                messages.push(replaced(id));
+                break;
+            }
+            let pane = s
+                .pane
+                .as_ref()
+                .map(|p| p.pane_id.clone())
+                .unwrap_or_default();
             if w.dead {
                 messages.push(format!(
                     "{id}: exited during start (status {})",
@@ -656,8 +710,12 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                 // Move to "Yes, I trust this folder", confirm it is now the
                 // highlighted choice on the same dialog, and only then press
                 // Enter. Nothing else is ever answered.
-                let t = target(&session, id);
-                tmux.ok(&["send-keys", "-t", &t, "Down"])?;
+                let Some(_locks) = relock(s)? else {
+                    messages.push(replaced(id));
+                    break;
+                };
+                let t = pane.as_str();
+                tmux.ok(&["send-keys", "-t", t, "Down"])?;
                 std::thread::sleep(Duration::from_millis(250));
                 let after = tmux.capture(&session, id);
                 if !(has_line(&after, TRUST_YES_SELECTED)
@@ -668,7 +726,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                     ));
                     break;
                 }
-                tmux.ok(&["send-keys", "-t", &t, "Enter"])?;
+                tmux.ok(&["send-keys", "-t", t, "Enter"])?;
                 let _ = write_private(
                     &state.member_dir(id).join("trust-accepted"),
                     format!("{dir}\n").as_bytes(),
@@ -688,7 +746,11 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                     break;
                 }
                 Some(State::Blocked) if s.locked => {
-                    let _ = tmux.kill_window(&session, id);
+                    let Some(_locks) = relock(s)? else {
+                        messages.push(replaced(id));
+                        break;
+                    };
+                    let _ = tmux.ok(&["kill-window", "-t", &pane]);
                     messages.push(format!(
                         "{id}: stopped: it was at a prompt before its `locked` gate reported in"
                     ));
@@ -706,7 +768,11 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             }
             if Instant::now() > deadline {
                 if s.locked {
-                    let _ = tmux.kill_window(&session, id);
+                    let Some(_locks) = relock(s)? else {
+                        messages.push(replaced(id));
+                        break;
+                    };
+                    let _ = tmux.ok(&["kill-window", "-t", &pane]);
                     messages.push(format!(
                         "{id}: stopped: its `locked` gate did not report in, so it would run unprotected"
                     ));
@@ -742,68 +808,133 @@ fn start_window(
         .map_err(|e| format!("cannot start `{window}`: {e}"))
 }
 
-/// `brg down [--member ID]`. With a bus, the incarnations it stops are
-/// marked ended.
+/// `brg down [--member ID]`.
+///
+/// Works on the tmux server recorded at `up`, refusing a caller whose
+/// `BORGCHART_TMUX_SOCKET` names another, and changes nothing unless that
+/// server answers. A member's incarnation is marked ended, and launch files
+/// and secrets removed, only once its pane was stopped or the server showed
+/// it gone.
 pub fn down(input: &Input, only: Option<&str>) -> Result<Vec<String>, String> {
     let dep = state_for(input);
     let state = &dep.state;
     let session = state.session();
-    let tmux = tmux_for(state);
-    let _state_lock = if state.root.is_dir() {
-        Some(lifecycle::lock_state(state)?)
-    } else {
-        None
+    if !state.root.is_dir() {
+        return Ok(vec!["not running".into()]);
+    }
+    let _state_lock = lifecycle::lock_state(state)?;
+    let Some(mut meta) = state::read_meta(state) else {
+        // Nothing was ever recorded here, so brg started nothing to stop.
+        return Ok(vec!["not running".into()]);
     };
-    let meta = state::read_meta(state);
+    let caller_socket = state::tmux_socket();
+    if let Some(name) = &meta.socket
+        && *name != caller_socket
+    {
+        return Err(format!(
+            "the deployment runs on tmux socket `{name}`, not `{caller_socket}`; run `brg down` with BORGCHART_TMUX_SOCKET={name}. Nothing was changed"
+        ));
+    }
+    let server = lifecycle::Server::of(&meta);
     let run = meta
+        .run
         .as_ref()
-        .and_then(|m| m.run.as_ref())
         .map(|r| RunPaths::from_root(&r.dir))
         .filter(|p| p.runtime_dir().is_dir());
     let _run_lock = match &run {
         Some(paths) => Some(lifecycle::lock_run(paths)?),
         None => None,
     };
+    let rows = match server.panes() {
+        Ok(rows) => rows,
+        // A stop was already confirmed, and nothing has started since.
+        Err(_) if meta.stopped_at.is_some() => Vec::new(),
+        Err(e) => {
+            return Err(format!(
+                "{e}; nothing was changed. If the deployment is really gone (for example after a reboot), `brg up` and then `brg down` clear it"
+            ));
+        }
+    };
+    let in_session = |r: &&lifecycle::PaneRow| r.session == session;
     let mut messages = Vec::new();
-    let mut stopped: Vec<String> = Vec::new();
-    match only {
+    // Panes that are certainly stopped now: killed by this `down`, or not on
+    // the server that answered.
+    let mut killed: Vec<String> = Vec::new();
+    let mut whole = false;
+    let members: Vec<String> = match only {
         Some(id) => {
-            if tmux.window(&session, id).is_some() {
-                tmux.kill_window(&session, id)?;
-                messages.push(format!("{id}: stopped"));
-            } else {
-                messages.push(format!("{id}: not running"));
+            match rows.iter().filter(in_session).find(|r| r.window == id) {
+                Some(w) => {
+                    if rows.iter().filter(in_session).count() == 1 {
+                        server.act(&["kill-session", "-t", &format!("={session}")])?;
+                        whole = true;
+                    } else {
+                        server.act(&["kill-window", "-t", &w.pane_id])?;
+                    }
+                    killed.push(w.pane_id.clone());
+                    messages.push(format!("{id}: stopped"));
+                }
+                None => messages.push(format!("{id}: not running")),
             }
             let _ = std::fs::remove_file(state.gate_marker(id));
             let _ = std::fs::remove_file(state.member_dir(id).join("trust-accepted"));
             let _ = std::fs::remove_file(state.exec_file(id));
-            stopped.push(id.to_string());
+            vec![id.to_string()]
         }
         None => {
-            if tmux.has_session(&session) {
-                tmux.kill_session(&session)?;
+            if rows.iter().any(|r| r.session == session) {
+                server.act(&["kill-session", "-t", &format!("={session}")])?;
+                killed.extend(rows.iter().filter(in_session).map(|r| r.pane_id.clone()));
                 messages.push("stopped".into());
             } else {
                 messages.push("not running".into());
             }
+            whole = true;
             // Remove the private files that held secrets and launch details.
             let _ = std::fs::remove_dir_all(state.root.join("exec"));
-            if let Some(meta) = &meta {
-                for name in meta.plugins.keys() {
-                    let _ = std::fs::remove_file(state.plugin_env_file(name));
+            for name in meta.plugins.keys() {
+                let _ = std::fs::remove_file(state.plugin_env_file(name));
+            }
+            for id in meta.members.keys() {
+                let _ = std::fs::remove_file(state.gate_marker(id));
+                let _ = std::fs::remove_file(state.member_dir(id).join("trust-accepted"));
+            }
+            meta.members.keys().cloned().collect()
+        }
+    };
+    if let Some(paths) = &run {
+        for id in &members {
+            let Some(inc) = crate::bus::manifest::load_incarnation(paths, id)? else {
+                continue;
+            };
+            if inc.ended_at.is_some() {
+                continue;
+            }
+            let stopped = match &inc.pane {
+                // Its window, if it ever had one, was in this session.
+                None => true,
+                Some(p) if lifecycle::Server::from_recorded(&p.socket) == server => {
+                    killed.contains(&p.pane_id) || !rows.iter().any(|r| r.pane_id == p.pane_id)
                 }
-                for id in meta.members.keys() {
-                    let _ = std::fs::remove_file(state.gate_marker(id));
-                    let _ = std::fs::remove_file(state.member_dir(id).join("trust-accepted"));
-                    stopped.push(id.clone());
-                }
+                Some(p) => lifecycle::pane_liveness(p) == Liveness::Gone,
+            };
+            if stopped {
+                lifecycle::end_incarnation(paths, id, lifecycle::ENDED_STOPPED)?;
+            } else {
+                messages.push(format!(
+                    "{id}: incarnation {} may still be running elsewhere; it was left as is",
+                    inc.incarnation
+                ));
             }
         }
     }
-    if let Some(paths) = &run {
-        for id in &stopped {
-            lifecycle::end_incarnation(paths, id, lifecycle::ENDED_STOPPED)?;
-        }
+    if whole {
+        meta.stopped_at = Some(utc_now());
+        write_private(
+            &state.meta_file(),
+            &serde_json::to_vec_pretty(&meta).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| format!("cannot write state: {e}"))?;
     }
     Ok(messages)
 }

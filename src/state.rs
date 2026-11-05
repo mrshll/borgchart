@@ -163,6 +163,18 @@ pub struct Meta {
     /// The bus run this deployment is bound to, if it has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<RunBinding>,
+    /// The tmux socket name the deployment was started on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub socket: Option<String>,
+    /// The tmux server's absolute socket path, read from tmux once the
+    /// first window started. `down`, `run rebind` and liveness address the
+    /// server by this, never by the caller's tmux environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub socket_path: Option<PathBuf>,
+    /// Set by a `down` that stopped the whole deployment (or found it gone
+    /// on a server that answered); cleared by the next fresh `up`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped_at: Option<String>,
     /// The small environment every window and plugin starts from (no secrets).
     pub base_env: BTreeMap<String, String>,
     pub members: BTreeMap<String, MemberMeta>,

@@ -417,61 +417,187 @@ pub fn new_incarnation_id(paths: &RunPaths, member: &str, generation: u64) -> St
     }
 }
 
+/// Hold `bus/lock` (exclusive, briefly) while an incarnation changes, so a
+/// bus mutation checking a member's current incarnation under that lock
+/// sees either the old record or the new one. Lock order: lifecycle →
+/// generation → bus.
+fn with_bus_lock<T>(paths: &RunPaths, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    let _lock = lock_exclusive(&paths.bus_lock())?;
+    f()
+}
+
 /// Record a member's new incarnation as current, before its window starts.
 pub fn begin_incarnation(paths: &RunPaths, inc: &Incarnation) -> Result<(), String> {
-    write_json_replace(&paths.current_incarnation(&inc.member), inc)
+    with_bus_lock(paths, || {
+        write_json_replace(&paths.current_incarnation(&inc.member), inc)
+    })
 }
 
 /// Record the pane an incarnation runs in, and add it to the history.
 pub fn complete_incarnation(paths: &RunPaths, inc: &Incarnation) -> Result<(), String> {
-    write_json_replace(&paths.current_incarnation(&inc.member), inc)?;
-    let body = serde_json::to_vec_pretty(inc).map_err(|e| e.to_string())?;
-    let path = paths.incarnation_history(&inc.member, &inc.incarnation);
-    fsx::write_new(&path, &body)
-        .map(|_| ())
-        .map_err(|e| format!("cannot write {}: {e}", path.display()))
+    with_bus_lock(paths, || {
+        write_json_replace(&paths.current_incarnation(&inc.member), inc)?;
+        let body = serde_json::to_vec_pretty(inc).map_err(|e| e.to_string())?;
+        let path = paths.incarnation_history(&inc.member, &inc.incarnation);
+        fsx::write_new(&path, &body)
+            .map(|_| ())
+            .map_err(|e| format!("cannot write {}: {e}", path.display()))
+    })
 }
 
-/// Mark a member's current incarnation ended, if it hasn't already.
+/// Mark a member's current incarnation ended, if it hasn't already. Call
+/// this only once its pane is known to have stopped.
 pub fn end_incarnation(paths: &RunPaths, member: &str, reason: &str) -> Result<bool, String> {
-    let Some(mut inc) = manifest::load_incarnation(paths, member)? else {
-        return Ok(false);
-    };
-    if inc.ended_at.is_some() {
-        return Ok(false);
+    with_bus_lock(paths, || {
+        let Some(mut inc) = manifest::load_incarnation(paths, member)? else {
+            return Ok(false);
+        };
+        if inc.ended_at.is_some() {
+            return Ok(false);
+        }
+        inc.ended_at = Some(utc_now());
+        inc.ended_reason = Some(reason.to_string());
+        write_json_replace(&paths.current_incarnation(member), &inc)?;
+        Ok(true)
+    })
+}
+
+/// Where a tmux server is: a socket name (`-L`, resolved by tmux from the
+/// caller's environment) or, once recorded, its absolute path (`-S`), which
+/// the caller's `TMUX_TMPDIR` or `BORGCHART_TMUX_SOCKET` can't redirect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Server {
+    Name(String),
+    Path(PathBuf),
+}
+
+impl Server {
+    /// A recorded socket: an absolute path, or (in older records) a name.
+    pub fn from_recorded(socket: &str) -> Self {
+        if socket.starts_with('/') {
+            Server::Path(PathBuf::from(socket))
+        } else {
+            Server::Name(socket.to_string())
+        }
     }
-    inc.ended_at = Some(utc_now());
-    inc.ended_reason = Some(reason.to_string());
-    write_json_replace(&paths.current_incarnation(member), &inc)?;
-    Ok(true)
+
+    /// The deployment's server, as recorded at `up`.
+    pub fn of(meta: &Meta) -> Self {
+        match (&meta.socket_path, &meta.socket) {
+            (Some(path), _) => Server::Path(path.clone()),
+            (None, Some(name)) => Server::Name(name.clone()),
+            (None, None) => Server::Name(state::tmux_socket()),
+        }
+    }
+
+    fn command(&self) -> Command {
+        let mut cmd = Command::new("tmux");
+        // Only what's needed to find tmux; nothing that moves the socket.
+        cmd.env_clear();
+        if let Some(path) = std::env::var_os("PATH") {
+            cmd.env("PATH", path);
+        }
+        match self {
+            Server::Name(name) => cmd.arg("-L").arg(name),
+            Server::Path(path) => cmd.arg("-S").arg(path),
+        };
+        cmd.stdin(Stdio::null());
+        cmd
+    }
+
+    fn describe(&self) -> String {
+        match self {
+            Server::Name(n) => format!("tmux socket `{n}`"),
+            Server::Path(p) => format!("tmux server {}", p.display()),
+        }
+    }
+
+    /// Every pane on the server. `Err` means the server couldn't be asked
+    /// (not running, not reachable from here, or tmux missing); that is not
+    /// evidence that anything stopped.
+    pub fn panes(&self) -> Result<Vec<PaneRow>, String> {
+        let out = self
+            .command()
+            .args([
+                "list-panes",
+                "-a",
+                "-F",
+                // `|` rather than a tab: without a UTF-8 locale tmux
+                // replaces tabs in its output. No field can contain `|`.
+                "#{session_name}|#{window_name}|#{pane_id}|#{pane_pid}|#{pane_dead}",
+            ])
+            .output()
+            .map_err(|e| format!("cannot run tmux: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "cannot reach the {}: {}",
+                self.describe(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|line| {
+                let mut p = line.split('|');
+                Some(PaneRow {
+                    session: p.next()?.to_string(),
+                    window: p.next()?.to_string(),
+                    pane_id: p.next()?.to_string(),
+                    pane_pid: p.next()?.parse().ok()?,
+                    dead: p.next()? == "1",
+                })
+            })
+            .collect())
+    }
+
+    /// Run one tmux command that changes something; `Err` on any failure.
+    pub fn act(&self, args: &[&str]) -> Result<(), String> {
+        let out = self
+            .command()
+            .args(args)
+            .output()
+            .map_err(|e| format!("cannot run tmux: {e}"))?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "tmux {}: {}",
+                args.first().unwrap_or(&""),
+                String::from_utf8_lossy(&out.stderr).trim()
+            ))
+        }
+    }
 }
 
-fn tmux_on(socket: &str) -> Command {
-    let mut cmd = Command::new("tmux");
-    cmd.arg("-L")
-        .arg(socket)
-        .stdin(Stdio::null())
-        .env_remove("TMUX");
-    cmd
+/// One pane, as `list-panes -a` reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneRow {
+    pub session: String,
+    pub window: String,
+    pub pane_id: String,
+    pub pane_pid: u32,
+    pub dead: bool,
 }
 
-/// The pane a window runs in, read from tmux right after it starts.
-pub fn pane_identity(socket: &str, session: &str, window: &str) -> Option<PaneIdentity> {
-    let out = tmux_on(socket)
-        .args([
-            "display-message",
-            "-p",
+/// The pane a window runs in, read from brg's own tmux right after it
+/// starts, with the server's absolute socket path.
+pub fn pane_identity(
+    tmux: &crate::tmux::Tmux,
+    session: &str,
+    window: &str,
+) -> Option<PaneIdentity> {
+    let out = tmux
+        .ok(&[
+            "list-panes",
             "-t",
             &crate::tmux::target(session, window),
-            "#{pane_id}\t#{pane_pid}",
+            "-F",
+            "#{socket_path}\t#{pane_id}\t#{pane_pid}",
         ])
-        .output()
         .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let (id, pid) = text.trim().split_once('\t')?;
+    let line = out.lines().next()?;
+    let mut parts = line.split('\t');
+    let (socket, id, pid) = (parts.next()?, parts.next()?, parts.next()?);
     Some(PaneIdentity {
         socket: socket.to_string(),
         session: session.to_string(),
@@ -481,57 +607,22 @@ pub fn pane_identity(socket: &str, session: &str, window: &str) -> Option<PaneId
     })
 }
 
-/// Whether one session exists on a given tmux socket.
-pub fn has_session(socket: &str, session: &str) -> bool {
-    tmux_on(socket)
-        .args(["has-session", "-t", &format!("={session}")])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+/// What a successful listing says about one recorded pane.
+fn pane_in(rows: &[PaneRow], pane_id: &str, pane_pid: u32) -> Liveness {
+    match rows.iter().find(|r| r.pane_id == pane_id) {
+        Some(r) if r.pane_pid == pane_pid && !r.dead => Liveness::Alive,
+        // Absent, dead, or another process in a reused pane ID.
+        _ => Liveness::Gone,
+    }
 }
 
-/// Whether the pane recorded for an incarnation still runs it.
+/// Whether the pane recorded for an incarnation still runs it. Only a
+/// server that answers can show it gone; one that can't be asked is
+/// `Unknown`, however it fails.
 pub fn pane_liveness(pane: &PaneIdentity) -> Liveness {
-    let out = match tmux_on(&pane.socket)
-        .args([
-            "display-message",
-            "-p",
-            "-t",
-            &pane.pane_id,
-            "#{pane_id}\t#{pane_pid}\t#{pane_dead}",
-        ])
-        .output()
-    {
-        Ok(o) => o,
-        Err(_) => return Liveness::Unknown,
-    };
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr);
-        // No server on that socket, or no such pane: the process is gone.
-        // Anything else (e.g. a socket we may not connect to) can't be told.
-        let gone = [
-            "no server running",
-            "can't find",
-            "No such file or directory",
-            "Connection refused",
-        ];
-        return if gone.iter().any(|g| err.contains(g)) {
-            Liveness::Gone
-        } else {
-            Liveness::Unknown
-        };
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut parts = text.trim().split('\t');
-    let (Some(id), Some(pid), Some(dead)) = (parts.next(), parts.next(), parts.next()) else {
-        return Liveness::Unknown;
-    };
-    if id != pane.pane_id || pid.parse::<u32>().ok() != Some(pane.pane_pid) || dead == "1" {
-        Liveness::Gone
-    } else {
-        Liveness::Alive
+    match Server::from_recorded(&pane.socket).panes() {
+        Ok(rows) => pane_in(&rows, &pane.pane_id, pane.pane_pid),
+        Err(_) => Liveness::Unknown,
     }
 }
 
@@ -761,27 +852,76 @@ pub fn rebind(input: &Input, reason: &str) -> Result<Value, Failure> {
             ),
         ));
     };
-    let session = state.session();
+    // Only a positively stopped run may move: its server answers without
+    // the session, or the last `down` recorded a confirmed stop; and every
+    // member's incarnation is gone.
     let socket = state::tmux_socket();
-    for sock in [latest.socket.as_str(), socket.as_str()] {
-        if has_session(sock, &session) {
+    let stop = stop_command(&latest.pinned, &m.source);
+    let ran = StateDir::from_root(&latest.state_dir);
+    let meta = state::read_meta(&ran);
+    let server = meta
+        .as_ref()
+        .map(Server::of)
+        .unwrap_or_else(|| Server::Name(latest.socket.clone()));
+    let running = |rows: &[PaneRow]| rows.iter().any(|r| r.session == ran.session());
+    match server.panes() {
+        Ok(rows) if running(&rows) => {
             return Err(Failure::new(
                 Code::Refused,
                 format!(
-                    "the deployment is running (tmux socket `{sock}`); stop it first: {}",
-                    stop_command(&latest.pinned, &m.source)
+                    "the deployment is running ({}); stop it first: {stop}",
+                    server.describe()
+                ),
+            ));
+        }
+        Ok(_) => {}
+        Err(_) if meta.as_ref().is_some_and(|m| m.stopped_at.is_some()) => {}
+        Err(e) => {
+            return Err(Failure::new(
+                Code::Refused,
+                format!(
+                    "can't tell whether the deployment is stopped ({e}); stop it first: {stop}"
                 ),
             ));
         }
     }
+    if Server::Name(socket.clone()) != server
+        && let Ok(rows) = Server::Name(socket.clone()).panes()
+        && rows.iter().any(|r| r.session == state.session())
+    {
+        return Err(Failure::new(
+            Code::Refused,
+            format!("the deployment is running (tmux socket `{socket}`); stop it first"),
+        ));
+    }
     for id in m.members.keys() {
-        if let Ok(Some(inc)) = manifest::load_incarnation(&paths, id)
-            && liveness(&paths, id, &inc.incarnation) == Liveness::Alive
-        {
-            return Err(Failure::new(
+        let inc = manifest::load_incarnation(&paths, id).map_err(|e| {
+            Failure::new(
                 Code::Refused,
-                format!("member `{id}` ({}) is still running", inc.incarnation),
-            ));
+                format!("can't tell whether member `{id}` is stopped: {e}"),
+            )
+        })?;
+        let Some(inc) = inc else { continue };
+        match liveness(&paths, id, &inc.incarnation) {
+            Liveness::Gone => {}
+            Liveness::Alive => {
+                return Err(Failure::new(
+                    Code::Refused,
+                    format!(
+                        "member `{id}` ({}) is still running; stop it first: {stop}",
+                        inc.incarnation
+                    ),
+                ));
+            }
+            Liveness::Unknown => {
+                return Err(Failure::new(
+                    Code::Refused,
+                    format!(
+                        "can't tell whether member `{id}` ({}) is stopped: its tmux server can't be asked; stop it first: {stop}",
+                        inc.incarnation
+                    ),
+                ));
+            }
         }
     }
     let gen_lock = state::open_lock(&paths.generation_lock())
@@ -892,19 +1032,41 @@ mod tests {
         assert_eq!(liveness(&paths, "lead", "lead.1.1.abcd"), Liveness::Unknown);
         assert_eq!(liveness(&paths, "lead", "lead.other"), Liveness::Unknown);
         inc.pane = Some(PaneIdentity {
-            socket: format!("brg-no-such-socket-{}", std::process::id()),
+            socket: format!("/nonexistent/brg-no-such-socket-{}", std::process::id()),
             session: "s".into(),
             window: "lead".into(),
             pane_id: "%0".into(),
             pane_pid: 1,
         });
         complete_incarnation(&paths, &inc).unwrap();
-        assert_eq!(liveness(&paths, "lead", "lead.1.1.abcd"), Liveness::Gone);
+        // A server that can't be reached proves nothing.
+        assert_eq!(liveness(&paths, "lead", "lead.1.1.abcd"), Liveness::Unknown);
         assert!(end_incarnation(&paths, "lead", ENDED_STOPPED).unwrap());
         assert!(!end_incarnation(&paths, "lead", ENDED_STOPPED).unwrap());
         assert_eq!(liveness(&paths, "lead", "lead.1.1.abcd"), Liveness::Gone);
         let stored = manifest::load_incarnation(&paths, "lead").unwrap().unwrap();
         assert_eq!(stored.ended_reason.as_deref(), Some(ENDED_STOPPED));
+    }
+
+    #[test]
+    fn only_a_listing_shows_a_pane_gone() {
+        let row = |id: &str, pid: u32, dead: bool| PaneRow {
+            session: "brg-x".into(),
+            window: "lead".into(),
+            pane_id: id.into(),
+            pane_pid: pid,
+            dead,
+        };
+        assert_eq!(pane_in(&[row("%1", 10, false)], "%1", 10), Liveness::Alive);
+        assert_eq!(pane_in(&[row("%1", 10, true)], "%1", 10), Liveness::Gone);
+        assert_eq!(pane_in(&[row("%1", 11, false)], "%1", 10), Liveness::Gone);
+        assert_eq!(pane_in(&[row("%2", 10, false)], "%1", 10), Liveness::Gone);
+        assert_eq!(pane_in(&[], "%1", 10), Liveness::Gone);
+        assert_eq!(
+            Server::from_recorded("/tmp/x/sock"),
+            Server::Path("/tmp/x/sock".into())
+        );
+        assert_eq!(Server::from_recorded("name"), Server::Name("name".into()));
     }
 
     #[test]

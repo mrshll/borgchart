@@ -654,7 +654,11 @@ fn generations_and_incarnations_are_recorded() {
     assert!(pane["pane_id"].as_str().unwrap().starts_with('%'), "{inc}");
     assert!(pane["pane_pid"].as_u64().unwrap() > 0);
     assert_eq!(pane["window"], "lead");
-    assert_eq!(pane["socket"], env.socket.as_str());
+    let socket = pane["socket"].as_str().unwrap();
+    assert!(
+        socket.starts_with('/') && socket.ends_with(&format!("/{}", env.socket)),
+        "{socket}"
+    );
     let listed = env.tmux(&[
         "list-panes",
         "-a",
@@ -744,15 +748,286 @@ fn liveness_is_alive_gone_or_unknown() {
     .unwrap();
     assert_eq!(live(&env.show(), "helper"), "unknown");
 
-    // The pane went away outside brg: gone.
-    env.tmux(&["kill-window", "-t", "lead"]);
+    // A caller whose tmux environment points elsewhere still asks the
+    // recorded server: alive.
+    fs::create_dir_all(env.path("empty-tmux")).unwrap();
+    let out = env
+        .brg_cmd(&["run", "show", "--json"])
+        .env("TMUX_TMPDIR", env.path("empty-tmux"))
+        .env("BORGCHART_TMUX_SOCKET", "brg-lc-no-such-socket")
+        .output()
+        .unwrap();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(live(&v, "lead"), "alive", "{}", both(&out));
+
+    // The pane went away outside brg, on a server that still answers: gone.
+    env.tmux(&["new-session", "-d", "-s", "brg-keep", "sleep 60"]);
+    let lead_pane = read_json(&run.join("runtime/incarnations/lead.json"))["pane"]["pane_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    env.tmux(&["kill-window", "-t", &lead_pane]);
     assert_eq!(live(&env.show(), "lead"), "gone");
 
-    // Ended through brg: gone.
+    // The whole server went away: that can't be told from a hidden one.
+    env.up();
+    assert_eq!(live(&env.show(), "lead"), "alive");
+    env.tmux(&["kill-server"]);
+    assert_eq!(live(&env.show(), "lead"), "unknown");
+
+    // Ended through brg after a confirmed stop: gone.
     env.up();
     assert_eq!(live(&env.show(), "lead"), "alive");
     env.ok(&["down"]);
     assert_eq!(live(&env.show(), "lead"), "gone");
+}
+
+/// Is `lead`'s recorded pane still running? Asked of the recorded server.
+fn lead_pane_alive(env: &Env) -> bool {
+    let inc = read_json(&env.run_dir("run-1").join("runtime/incarnations/lead.json"));
+    let pane = inc["pane"]["pane_id"].as_str().unwrap().to_string();
+    env.tmux(&["list-panes", "-a", "-F", "#{pane_id} #{pane_dead}"])
+        .lines()
+        .any(|l| l == format!("{pane} 0"))
+}
+
+#[test]
+fn down_refuses_a_different_tmux_socket() {
+    let env = Env::new(true);
+    env.up();
+    env.up_helper();
+    for args in [&["down"][..], &["down", "--member", "lead"][..]] {
+        let before = env.snapshot();
+        let out = env
+            .brg_cmd(args)
+            .env("BORGCHART_TMUX_SOCKET", "brg-lc-no-such-socket")
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {}", both(&out));
+        assert!(both(&out).contains("tmux socket"), "{}", both(&out));
+        assert_unchanged(&before, &env.snapshot());
+        assert!(lead_pane_alive(&env));
+    }
+}
+
+#[test]
+fn down_refuses_when_tmux_cannot_be_reached() {
+    let env = Env::new(true);
+    env.up();
+    for args in [&["down"][..], &["down", "--member", "lead"][..]] {
+        let before = env.snapshot();
+        let out = env
+            .brg_cmd(args)
+            .env("PATH", env.path("bin"))
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {}", both(&out));
+        assert!(both(&out).contains("nothing was changed"), "{}", both(&out));
+        assert_unchanged(&before, &env.snapshot());
+        assert!(lead_pane_alive(&env));
+    }
+    // A redirected tmux environment still stops the recorded server.
+    fs::create_dir_all(env.path("empty-tmux")).unwrap();
+    let out = env
+        .brg_cmd(&["down"])
+        .env("TMUX_TMPDIR", env.path("empty-tmux"))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", both(&out));
+    assert!(both(&out).contains("stopped"), "{}", both(&out));
+    assert_eq!(env.tmux(&["list-sessions"]), "");
+    // Stopping again is harmless, even though the server has exited.
+    let out = env.ok(&["down"]);
+    assert!(both(&out).contains("not running"), "{}", both(&out));
+}
+
+#[test]
+fn rebind_refuses_when_it_cannot_tell_the_run_is_stopped() {
+    let env = Env::new(true);
+    env.up();
+    let other = env.other_brg("brg-other");
+    fs::create_dir_all(env.path("empty-tmux")).unwrap();
+    let no_tmux = env
+        .cmd_with(&other, &["run", "rebind", "--reason", "test", "--json"])
+        .env("PATH", env.path("bin"))
+        .output()
+        .unwrap();
+    let hidden = env
+        .cmd_with(&other, &["run", "rebind", "--reason", "test", "--json"])
+        .env("TMUX_TMPDIR", env.path("empty-tmux"))
+        .output()
+        .unwrap();
+    for out in [no_tmux, hidden] {
+        assert_eq!(out.status.code(), Some(4), "{}", both(&out));
+    }
+    assert!(
+        !env.run_dir("run-1")
+            .join("runtime/generations/000002.json")
+            .exists()
+    );
+    assert!(lead_pane_alive(&env));
+
+    // An unreadable incarnation can't show the run is stopped either.
+    env.ok(&["down"]);
+    let inc = env.run_dir("run-1").join("runtime/incarnations/lead.json");
+    fs::write(&inc, "not json").unwrap();
+    let out = env
+        .cmd_with(&other, &["run", "rebind", "--reason", "test"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(4), "{}", both(&out));
+    assert!(
+        !env.run_dir("run-1")
+            .join("runtime/generations/000002.json")
+            .exists()
+    );
+}
+
+fn pid_of(child: &std::process::Child) -> String {
+    child.id().to_string()
+}
+
+#[test]
+fn a_stale_gate_waiter_leaves_a_replacement_alone() {
+    let env = Env::new(false);
+    env.write(
+        "team/team.yaml",
+        &TEAM.replace(
+            "    prompt: lead.md\n",
+            "    prompt: lead.md\n    posture: locked\n",
+        ),
+    );
+    fs::create_dir_all(env.path("home/fake-agent")).unwrap();
+    fs::write(env.path("home/fake-agent/no-hooks"), "").unwrap();
+    let started = Instant::now();
+    let first = env
+        .brg_cmd(&["up"])
+        .env("BORGCHART_GATE_WAIT_MS", "4000")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    env.wait_for("first lead start", |e| e.starts("lead").len() == 1);
+    // Pause the first `up` while it waits for the gate, outside its locks.
+    let lock_path = env.state_dir().join("lifecycle.lock");
+    loop {
+        Command::new("kill")
+            .args(["-STOP", &pid_of(&first)])
+            .status()
+            .unwrap();
+        let lock = fs::File::open(&lock_path).unwrap();
+        if lock.try_lock().is_ok() {
+            break;
+        }
+        drop(lock);
+        Command::new("kill")
+            .args(["-CONT", &pid_of(&first)])
+            .status()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    env.ok(&["down"]);
+    let second = env
+        .brg_cmd(&["up"])
+        .env("BORGCHART_GATE_WAIT_MS", "10000")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    env.wait_for("second lead start", |e| e.starts("lead").len() == 2);
+    let pane = || env.tmux(&["list-panes", "-t", "=lead", "-F", "#{pane_id} #{pane_pid}"]);
+    let replacement = pane();
+    while started.elapsed() < Duration::from_millis(4500) {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Command::new("kill")
+        .args(["-CONT", &pid_of(&first)])
+        .status()
+        .unwrap();
+    let first = first.wait_with_output().unwrap();
+    assert!(
+        both(&first).contains("lead: replaced while starting"),
+        "{}",
+        both(&first)
+    );
+    assert!(
+        !both(&first).contains("did not report in"),
+        "{}",
+        both(&first)
+    );
+    assert_eq!(
+        pane(),
+        replacement,
+        "the stale waiter touched the replacement"
+    );
+    let second = second.wait_with_output().unwrap();
+    assert!(
+        both(&second).contains("lead: stopped: its `locked` gate did not report in"),
+        "{}",
+        both(&second)
+    );
+    assert!(
+        !both(&second).contains("window disappeared"),
+        "{}",
+        both(&second)
+    );
+}
+
+#[test]
+fn api_key_child_starts_take_the_key_from_the_caller() {
+    let env = Env::new(true);
+    let deploy = fs::read_to_string(env.path("team/borgchart.yaml")).unwrap();
+    env.write(
+        "team/borgchart.yaml",
+        &deploy.replace("schema: 1\n", "schema: 1\nauth: api_key\n"),
+    );
+    env.brg_cmd(&["up"])
+        .env("ANTHROPIC_API_KEY", "fake-key-first")
+        .output()
+        .map(|o| assert!(o.status.success(), "{}", both(&o)))
+        .unwrap();
+    env.wait_for("lead start", |e| !e.starts("lead").is_empty());
+    assert_eq!(
+        env.starts("lead")[0]["env"]["ANTHROPIC_API_KEY"],
+        "fake-key-first"
+    );
+
+    // The key is not frozen: a child start needs it from the caller...
+    let before = env.snapshot();
+    let out = env.brg(&["up", "--member", "helper"]);
+    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
+    assert!(
+        both(&out).contains("helper: OPENAI_API_KEY"),
+        "{}",
+        both(&out)
+    );
+    assert_unchanged(&before, &env.snapshot());
+
+    // ...and passes the caller's key on, and nothing stores it.
+    let out = env
+        .brg_cmd(&["up", "--member", "helper"])
+        .env("OPENAI_API_KEY", "fake-key-second")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", both(&out));
+    env.wait_for("helper start", |e| !e.starts("helper").is_empty());
+    assert_eq!(
+        env.starts("helper")[0]["env"]["OPENAI_API_KEY"],
+        "fake-key-second"
+    );
+    assert!(
+        env.starts("helper")[0]["env"]
+            .get("ANTHROPIC_API_KEY")
+            .is_none()
+    );
+    for (path, bytes) in env.snapshot() {
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            !text.contains("fake-key-first") && !text.contains("fake-key-second"),
+            "a key was stored in {}",
+            path.display()
+        );
+    }
 }
 
 #[test]

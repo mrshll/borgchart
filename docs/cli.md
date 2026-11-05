@@ -12,7 +12,7 @@
 | `brg logs <member> [-n LINES]` | Show recent output of a member or plugin process |
 | `brg send <member> <text…> [--force] [--from MEMBER] [--json]` | Paste text into a member and press Enter, as one submission. `--from` (for plugins relaying a member's message) requires the target to be that member's parent |
 | `brg run show [--json]` | With a `bus:`: the run, its current generation and pinned binary, the command that stops the deployment with that binary, and each member's incarnation and liveness. Read-only |
-| `brg run rebind --reason TEXT [--json]` | With a `bus:`: move the stopped run to this `brg` (or back to an earlier one); refused while it runs or the bus is busy. Exit codes as for the bus commands |
+| `brg run rebind --reason TEXT [--json]` | With a `bus:`: move the stopped run to this `brg` (or back to an earlier one); refused unless the run is positively stopped and the bus is idle. Exit codes as for the bus commands |
 
 ## Runtime
 
