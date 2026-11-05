@@ -268,6 +268,17 @@ fn nested_include_is_an_error() {
 }
 
 #[test]
+fn include_amplification_is_capped() {
+    let f = Fixture::new();
+    f.write("includes/shared.md", &"x".repeat(600 * 1024));
+    f.write(
+        "triager.md",
+        "---\nrole: triager\n---\n{{includes/shared}}\n{{includes/shared}}\n",
+    );
+    expect_error(&f, "once includes are expanded");
+}
+
+#[test]
 fn parent_cycles_are_errors() {
     let f = Fixture::new();
     f.edit(

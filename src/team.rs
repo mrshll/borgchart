@@ -777,6 +777,16 @@ fn resolve_includes(
                         ok = false;
                         continue;
                     }
+                    if out.len() + text.len() > yaml::MAX_FILE_BYTES {
+                        report.error(
+                            Some(shown),
+                            format!(
+                                "instruction is larger than {} bytes once includes are expanded",
+                                yaml::MAX_FILE_BYTES
+                            ),
+                        );
+                        return None;
+                    }
                     out.push_str(&text);
                     if !text.ends_with('\n') {
                         out.push('\n');
@@ -792,6 +802,16 @@ fn resolve_includes(
                 ok = false;
             }
         }
+    }
+    if out.len() > yaml::MAX_FILE_BYTES {
+        report.error(
+            Some(shown),
+            format!(
+                "instruction is larger than {} bytes once includes are expanded",
+                yaml::MAX_FILE_BYTES
+            ),
+        );
+        return None;
     }
     ok.then_some(out)
 }
