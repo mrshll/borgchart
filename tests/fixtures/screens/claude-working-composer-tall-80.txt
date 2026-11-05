@@ -1,0 +1,24 @@
+
+ ▐▛███▛█   Claude Code v2.1.318
+▝▜██████▀  Haiku 5.5 · Claude Example
+ ▝▝   ▝▝   ~/example/work
+
+
+❯ Run the shell command sleep 12 with Bash, then reply ok.
+
+  Sleeping for 12 seconds
+  ⎿  $ sleep 12
+
+
+* Harmonizing… (4s · ↓ 16 tokens)
+                                                            ◐ medium · /effort
+────────────────────────────────────────────────────────────────────────────────
+❯ the quick brown fox jumps over the lazy dog again and again the quick brown
+  fox jumps over the lazy dog again and again the quick brown fox jumps over
+  the lazy dog again and again the quick brown fox jumps over the lazy dog
+  again and again the quick brown fox jumps over the lazy dog again and again
+  the quick brown fox jumps over the lazy dog again and again the quick brown
+  fox jumps over the lazy dog again and again the quick brown fox jumps over
+  the lazy dog again and again
+────────────────────────────────────────────────────────────────────────────────
+  -- INSERT -- ⏵⏵ auto mode on (shift+tab to cycle) · PR #42
