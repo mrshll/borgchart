@@ -195,7 +195,8 @@ fn env_is_built_from_scratch() {
             ("BORGCHART_ACTOR", "member"),
         ],
     );
-    assert_eq!(fx.invoke(&Limits::default()).outcome, AlertOutcome::Invoked);
+    let inv = fx.invoke(&Limits::default());
+    assert_eq!(inv.outcome, AlertOutcome::Invoked, "{inv:?}");
     let env = read_env(&fx.out().join("env"));
     assert_eq!(env["BORGCHART_ACTOR"], "bus");
     assert_eq!(env["BORGCHART_RUN"], "example-run-1");
@@ -798,4 +799,39 @@ fn cli_list_refuses_a_run_directory_others_can_write() {
     let (rc, json) = d.json(&["bus", "alerts", "--json"]);
     assert_ne!(rc, 0, "{json}");
     fs::set_permissions(&run, fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+#[test]
+fn overlapping_values_are_masked_together() {
+    let fx = Fixture::new("#!/bin/sh\necho \"x-${A_VALUE}ijkl-y\"\n");
+    // Two values that overlap in the output: masking one first must not
+    // leave the rest of the other visible.
+    fx.write_values("notify", &[("A_VALUE", "abcdefgh"), ("Z_LONG", "efghijkl")]);
+    let inv = fx.invoke(&Limits::default());
+    assert_eq!(inv.outcome, AlertOutcome::Invoked, "{inv:?}");
+    for part in ["abcd", "efgh", "ijkl"] {
+        assert!(!inv.output.contains(part), "{}", inv.output);
+    }
+    assert!(inv.output.starts_with("x-[redacted]"), "{}", inv.output);
+    assert!(inv.output.trim_end().ends_with("-y"), "{}", inv.output);
+}
+
+#[test]
+fn corrupt_alert_messages_never_echo_file_contents() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = run_paths(dir.path());
+    alert::store::open(&paths, &request()).unwrap();
+    let path = paths.alert("a-example-1");
+    let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    value["id"] = "x\u{1b}[2J".into();
+    fs::write(&path, value.to_string()).unwrap();
+    let err = alert::store::list(&paths).unwrap_err();
+    assert!(!err.message.contains('\u{1b}'), "{:?}", err.message);
+    fs::remove_file(&path).unwrap();
+
+    // A planted file name is refused without being printed.
+    fs::write(paths.alerts_dir().join("evil\u{1b}[2J.json"), "{}").unwrap();
+    let err = alert::store::list(&paths).unwrap_err();
+    assert_eq!(err.code, borgchart::bus::outcome::Code::Corrupt);
+    assert!(!err.message.contains('\u{1b}'), "{:?}", err.message);
 }

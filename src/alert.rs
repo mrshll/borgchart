@@ -295,13 +295,26 @@ fn run_bounded(
     secrets: &[String],
 ) -> Invocation {
     let start = Instant::now();
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => return unavailable(format!("cannot run {}: {e}", program.display())),
+    // A program that was just written can be briefly "text file busy" while
+    // another thread's fork still holds its write descriptor: retry a little.
+    let mut tries = 0;
+    let mut child = loop {
+        match cmd.spawn() {
+            Ok(c) => break c,
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 10 => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => return unavailable(format!("cannot run {}: {e}", program.display())),
+        }
     };
     let cap = limits.max_output;
-    // Keep a little more than `cap`, so a value cut by the tail is still
-    // recognized and masked before the final cut.
+    // Each stream keeps `cap` plus the longest value's length. A value whose
+    // start a stream's tail dropped leaves a fragment shorter than that in
+    // the stream's first `keep - cap` bytes, and the final cut to `cap`
+    // always removes at least that much from the front of a truncated
+    // stream (stdout + stderr, keeping the end). A value crossing the final
+    // cut is whole in the buffer, so it is masked before the cut.
     let keep = cap + secrets.iter().map(String::len).max().unwrap_or(0);
     let out = child.stdout.take().map(|r| drain(r, keep));
     let err = child.stderr.take().map(|r| drain(r, keep));
@@ -362,11 +375,7 @@ fn run_bounded(
 /// Lossy UTF-8 with `secrets` masked and control characters (other than
 /// newline and tab) replaced, trimmed to at most `cap` bytes on a character boundary.
 fn clean_output(bytes: &[u8], cap: usize, secrets: &[String]) -> String {
-    let mut text = String::from_utf8_lossy(bytes).to_string();
-    for secret in secrets {
-        text = text.replace(secret.as_str(), "[redacted]");
-    }
-    let text: String = text
+    let text: String = String::from_utf8_lossy(&mask(bytes, secrets))
         .chars()
         .map(|c| {
             if c.is_control() && c != '\n' && c != '\t' {
@@ -384,6 +393,32 @@ fn clean_output(bytes: &[u8], cap: usize, secrets: &[String]) -> String {
         cut += 1;
     }
     text[cut..].to_string()
+}
+
+/// Replace every byte covered by any occurrence of any secret, found in the
+/// original bytes (so overlapping values are masked as their union), with
+/// one `[redacted]` per masked run.
+fn mask(bytes: &[u8], secrets: &[String]) -> Vec<u8> {
+    let mut hidden = vec![false; bytes.len()];
+    for secret in secrets.iter().map(String::as_bytes) {
+        if secret.is_empty() || secret.len() > bytes.len() {
+            continue;
+        }
+        for start in 0..=bytes.len() - secret.len() {
+            if &bytes[start..start + secret.len()] == secret {
+                hidden[start..start + secret.len()].fill(true);
+            }
+        }
+    }
+    let mut out = Vec::with_capacity(bytes.len());
+    for (i, b) in bytes.iter().enumerate() {
+        if !hidden[i] {
+            out.push(*b);
+        } else if i == 0 || !hidden[i - 1] {
+            out.extend_from_slice(b"[redacted]");
+        }
+    }
+    out
 }
 
 /// A fresh alert ID: `<prefix>-<utc millis>-<pid>`.
@@ -485,7 +520,7 @@ pub mod store {
     /// or edited file) is refused rather than printed.
     fn check(alert: &Alert, id: &str) -> Result<(), String> {
         if alert.id != id {
-            return Err(format!("it names alert `{}`", alert.id));
+            return Err("its id doesn't match its file name".into());
         }
         AlertRequest {
             id: alert.id.clone(),
@@ -493,7 +528,8 @@ pub mod store {
             reason: alert.reason,
             pending: alert.pending,
         }
-        .check()?;
+        .check()
+        .map_err(|_| "bad id or member name".to_string())?;
         let times = std::iter::once(&alert.opened_at)
             .chain(alert.resolved_at.as_ref())
             .chain(alert.invocations.iter().map(|i| &i.at));
@@ -631,6 +667,12 @@ pub mod store {
             let Some(id) = name.strip_suffix(".json") else {
                 continue;
             };
+            if !crate::bus::is_valid_run_id(id) {
+                return Err(Failure::new(
+                    Code::Corrupt,
+                    format!("{} holds a file that isn't an alert", dir.display()),
+                ));
+            }
             if let Some(alert) = read(paths, id)? {
                 alerts.push(alert);
             }
