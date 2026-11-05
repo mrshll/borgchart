@@ -97,11 +97,11 @@ The bus stays optional. Without `bus:` in a deployment, `brg message` says the t
 | `session ls` | No session commands; `brg ls --all-sessions` lists every session's teams. |
 | `forget` | Dropped. Stopped teams whose deployment file is gone fall off the list, and `brg down TEAM --forget` drops one by hand. |
 | `check` | `brg status --check`. |
-| `run rebind` | Depends on the open pinning question below. |
+| `run rebind`, `up --upgrade` | Dropped: brg isn't pinned (see Versions). |
 
 ## The watcher
 
-Each team with a bus gets a hidden tmux window, `_watcher`, next to its members. It notices new messages for each member. For each one it either types one fixed reminder into an idle member's input box ("new messages in your inbox"), under strict checks, or alerts a person when it can't safely do that. It never types a message's contents. It runs the run's pinned brg (see Pinning). The name `watcher` is reserved: no plugin may use it, since plugin windows are `_<plugin>`.
+Each team with a bus gets a hidden tmux window, `_watcher`, next to its members. It notices new messages for each member. For each one it either types one fixed reminder into an idle member's input box ("new messages in your inbox"), under strict checks, or alerts a person when it can't safely do that. It never types a message's contents. It runs the installed brg, and restarts itself when that changes (see Versions). The name `watcher` is reserved: no plugin may use it, since plugin windows are `_<plugin>`.
 
 **Environment.** The watcher starts from the deployment's frozen base environment only. It reads the alert plugin's frozen values only when it actually invokes the alert action, as the alert design requires. It never holds plugin secrets.
 
@@ -113,9 +113,9 @@ Each team with a bus gets a hidden tmux window, `_watcher`, next to its members.
 **Kept alive by tmux.** A `pane-died` hook scoped to the watcher's window only respawns it, e.g. `set-hook -w -t TEAM:_watcher pane-died 'respawn-pane'`. brg's tmux config sets `remain-on-exit` for every pane, so the hook must not touch members.
 - The watcher never exits cleanly except at `down`.
 - tmux keeps no state, so the crash-loop counter lives in the watcher's own state file. After a few quick crashes the respawned process records the reason, raises a `worker-unavailable` alert, and stays stopped.
-- An upgrade restarts the window rather than respawning it, because a respawn reuses the old command line.
+- When the installed brg changes, the watcher restarts on the new one. It records that this was a planned restart rather than a crash, then exits, and the hook starts the new brg. If the new brg can't read the run's message format, the watcher refuses as described under Versions, raises an alert and stays stopped.
 
-**Work.** The loop from the bus design: which messages each member has seen, how many nudges have been tried, nudges in progress, and deadlines. It nudges members through the guarded wake adapter and raises alerts through the alert action. It runs outside every member's sandbox, because tmux started it. It holds `runtime/generation.lock` shared for its life, and it writes a heartbeat that `status` and `ls` read.
+**Work.** The loop from the bus design: which messages each member has seen, how many nudges have been tried, nudges in progress, and deadlines. It nudges members through the guarded wake adapter and raises alerts through the alert action. It runs outside every member's sandbox, because tmux started it. It writes a heartbeat that `status` and `ls` read.
 
 **When it can't help.**
 
@@ -129,38 +129,45 @@ brg itself runs nothing on a schedule. For these cases the backstop is whatever 
 
 **Stopping.** `brg down` stops the watcher with the team. The watcher never creates a tmux session and never starts members.
 
-## Pinning (open question)
+## Versions (decided)
 
-**What is pinned.** The brg *program*, not the configuration. Configuration is handled separately and already settled: a run records a fingerprint of its team and deployment files when it starts. Changing, say, a member's model from medium to hard in the team file means stopping the team and starting a new run; brg refuses to start that member into the old run.
+**brg isn't pinned.** A team's brg calls (members' messages, the watcher, plugin shims) use whatever `brg` is installed. Rebuilding or reinstalling brg takes effect at the next call, and most rebuilds are harmless or are fixes you want.
 
-**Why pin the program.** A team keeps running for hours or days while brg calls happen inside it: members send and acknowledge messages, the watcher nudges, plugins run through brg's shims. Suppose the team is working on brg itself, and the lead rebuilds brg halfway through. Without pinning, every member's next brg call silently runs the new build. If that build reads or writes messages differently, the team breaks mid-task. A run therefore keeps its own copy of the brg program it started with, and everything in the team uses that copy until someone deliberately upgrades.
+**The message format is versioned per run.** A run records the format version of its message storage when it starts (the `schema` already in `run.json` and every message). A brg that can't read that format refuses before reading or writing anything, with an exact message:
 
-**What changes with run-from-anywhere.** Today's rule is that a bus change must come from the run's own copy. That would refuse `brg message send oncall/lead …` typed in an ordinary shell. The proposal: any brg that targets a team hands off to that team's copy, re-running the same command with it. You never see it happen. Read-only commands run as they are.
+```
+brg: team `oncall` uses message format 1; this brg uses format 2.
+Restart the team to move it to a new run: brg down oncall && brg up oncall
+```
 
-**Upgrading** would be `brg up --upgrade [team]` on a stopped team: it switches the team to the brg you just ran and restarts the watcher. A plain `brg up` with a different brg never switches silently; it hands off to the team's copy. Rolling back is the same command run with the old brg. This would replace the `run rebind` command in review.
+`brg up` of a stopped team whose run uses an older format, or whose configuration changed, starts a new run. That run continues the old one and carries over its unfinished work, as with `continues:`. So restarting is the whole upgrade. `run:` and `continues:` in `borgchart.yaml` become optional: without them brg numbers the runs itself (`oncall-1`, `oncall-2`, …).
 
-The alternative is no pinning: the team runs whatever brg is installed at each moment. That is simpler, but the mid-task breakage above becomes possible.
+**Configuration stays frozen per run,** as decided earlier. Changing, say, a member's model from medium to hard in the team file takes effect at the next `brg down`/`brg up`, which starts a new run. Starting one member into a running team with changed files is refused.
+
+**Long-running pieces.** The watcher restarts itself when the installed brg changes (above). Plugin processes keep running the code they started with until the team is restarted. They only read and write their own files, not the message storage.
+
+**Future work, not now:** moving a running team to a new message format without stopping it.
 
 ## What this simplifies in the bus pieces
 
-Mostly the attention worker, which becomes the watcher. Per piece:
+Mostly the attention worker, which becomes the watcher, and everything that pinned the brg program. Per piece:
 
 | Piece | What changes |
 | --- | --- |
-| Foundation (#7) | Small. Message format, write helper, privacy checks, caller context and outcome codes stay. The worker's lock and state files become the watcher's lock, state and heartbeat. Members gain `BORGCHART_SESSION`, and `BORGCHART_TMUX_SOCKET` goes. The deployment file gains `name:`. The run storage, run-age cap and rotation are unchanged. |
+| Foundation (#7) | **Removes** runtime generations (`runtime/generations/`, `Generation` with its binary hash and pinned copy), `runtime/bin/<sha>/brg`, `runtime/generation.lock`, and the generation field of incarnations. **Keeps** the message format, write helper, privacy checks, caller context, outcome codes and the configuration snapshot. The `schema` in `run.json` becomes the format version that brg checks. The worker's lock and state files become the watcher's lock, state and heartbeat. Members gain `BORGCHART_SESSION`, and `BORGCHART_TMUX_SOCKET` goes. The deployment file gains `name:`, and `run:`/`continues:` become optional. |
 | Alert action (#8) | None in the library. Its three commands go: alerts show in `status` and resolve themselves when their cause clears. It is invoked by the watcher, and by an outside caller in the session-gone case. |
-| Inbox (#9) | None in the store. Commands move under `brg message` and find the team by name. `bus check`/`bus inspect` fold into `status`. Sending reports whether the watcher is running. |
-| Lifecycle (#10) | Moderate. `--session` replaces the environment variable. `up` registers the team and starts the watcher. `run show` folds into `status`. Pinning changes depend on the open question. Validate-before-mutate, serialized starts, incarnations and fail-closed liveness all stay. |
+| Inbox (#9) | **Removes** the check that refuses changes from anything but the run's pinned binary, and taking `generation.lock` around writes. A format mismatch becomes a refusal with the restart message, instead of a corrupt-store error. Commands move under `brg message` and find the team by name. `bus check`/`inspect` fold into `status`. Nothing else in the store changes. |
+| Lifecycle (#10) | **Removes** copying and pinning the binary, generations and `run rebind`, the "different binary" refusal on child starts, and the `brg`/`borgchart` shims and pinned `BORGCHART_BIN` in members. **Keeps** validate-before-mutate, serialized starts, frozen configuration (a changed file still refuses a child start), incarnations with pane identity, and fail-closed liveness and `down`. **Adds** `--session`, registration, starting the watcher, and a new run at `up` when the format or configuration changed. `run show` folds into `status`. |
 | Wake adapter (#11) | None. It is called by the watcher. |
-| Task facts (#12) | None in the fold or checks. `task list/show` fold into `status` and `message read --task`, and `bus carry` becomes automatic at `up` with `continues:`. |
-| Attention worker (not built) | **Large.** It becomes the watcher. Gone: the on-demand spawn from inside a member, the spawn handoff, the "final empty scan, then exit" race, proving a worker spawned in a member's sandbox survives its tool call and can reach tmux, and `bus service ensure`. What remains is the loop, the heartbeat and the crash-loop cap. |
+| Task facts (#12) | None in the fold or checks. `task list/show` fold into `status` and `message read --task`. `bus carry` becomes automatic at `up`, which now also covers format and configuration changes. |
+| Attention worker (not built) | **Large.** It becomes the watcher. Gone: the on-demand spawn from inside a member, the spawn handoff, the "final empty scan, then exit" race, proving that a worker spawned in a member's sandbox survives its tool call and can reach tmux, `bus service ensure`, and the generation lock it would have held. What remains is the loop, the heartbeat, the crash-loop cap and restarting on a new brg. |
 | `brg send` | Renamed `brg prompt`, unchanged otherwise. |
 
 ## Effects on work in review
 
-- **Lifecycle (#10):** session selection, registration, the watcher in `up`/`down`, and pinning changes once that's decided. These come as follow-up changes after this design is approved; #10 itself isn't reopened.
+- **Foundation and lifecycle (#7, #10):** removing generations and pinning, then adding session selection, registration, the watcher and new runs at `up`. These come as follow-up changes after this design is approved; #7 and #10 themselves aren't reopened.
 - **Wake adapter (#11):** no code change; its caller becomes the watcher.
-- **Inbox, alert, task facts (#9, #8, #12):** the command renames and folds land in one follow-up change.
+- **Inbox, alert, task facts (#9, #8, #12):** removing the pinned-binary check, plus the command renames and folds, land in one follow-up change.
 - **Team configurations** that call brg move from `--file` to `team/member` names, and from `send` to `prompt`, after the rename.
 
 ## Open questions
