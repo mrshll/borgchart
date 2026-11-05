@@ -75,13 +75,35 @@ impl TeamStore {
         RunPaths::from_root(&self.dir.join(id))
     }
 
-    /// The ID for the run after `current` (`r1`, `r2`, …).
-    pub fn next_id(current: Option<&str>) -> String {
-        let n = current
-            .and_then(|c| c.strip_prefix('r'))
-            .and_then(|n| n.parse::<u64>().ok())
+    /// The runs that exist (`r1`, `r2`, …), oldest first. Never creates anything.
+    pub fn runs(&self) -> std::io::Result<Vec<String>> {
+        let entries = match std::fs::read_dir(&self.dir) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        let mut runs: Vec<(u64, String)> = entries
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                let n = run_number(&name)?;
+                e.file_type().ok()?.is_dir().then_some((n, name))
+            })
+            .collect();
+        runs.sort();
+        Ok(runs.into_iter().map(|(_, name)| name).collect())
+    }
+
+    /// The ID for a new run: one past the highest that exists, whatever
+    /// `current` says, so a lost `current` file can never reuse an old run.
+    pub fn next_id(&self) -> std::io::Result<String> {
+        let n = self
+            .runs()?
+            .iter()
+            .filter_map(|r| run_number(r))
+            .max()
             .unwrap_or(0);
-        format!("r{}", n + 1)
+        Ok(format!("r{}", n + 1))
     }
 
     /// Create `id`'s directory if needed and check that the root, the
@@ -95,6 +117,14 @@ impl TeamStore {
     }
 }
 
+fn run_number(name: &str) -> Option<u64> {
+    let digits = name.strip_prefix('r')?;
+    if digits.is_empty() || digits.starts_with('0') || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
 impl RunPaths {
     pub fn from_root(root: &Path) -> Self {
         RunPaths {
@@ -105,6 +135,15 @@ impl RunPaths {
     /// The run manifest: identity, frozen topology and configuration digest.
     pub fn manifest(&self) -> PathBuf {
         self.root.join("run.json")
+    }
+
+    /// Written (immutably) when brg rolls the team's storage over to a new
+    /// run. Rollover writes it while holding this run's `bus/lock`, before
+    /// carrying and switching `current`; every writer re-checks it after
+    /// taking `bus/lock` and, if present, re-resolves `current` instead of
+    /// writing here. So nothing published during a rollover is stranded.
+    pub fn retired(&self) -> PathBuf {
+        self.root.join("retired")
     }
 
     // --- runtime/: lifecycle and runtime binding ---
@@ -209,13 +248,20 @@ mod tests {
         let store = TeamStore::new(&config, "oncall-0a1b2c3d");
         assert_eq!(store.current().unwrap(), None);
         assert!(!store.dir.exists(), "reading creates nothing");
-        assert_eq!(TeamStore::next_id(None), "r1");
+        assert_eq!(store.next_id().unwrap(), "r1");
         let r1 = store.ensure_run("r1").unwrap();
         assert!(r1.root.ends_with("oncall-0a1b2c3d/r1"));
         store.set_current("r1").unwrap();
         assert_eq!(store.current().unwrap().as_deref(), Some("r1"));
-        assert_eq!(TeamStore::next_id(Some("r1")), "r2");
-        assert_eq!(TeamStore::next_id(Some("r41")), "r42");
+        assert_eq!(store.next_id().unwrap(), "r2");
+        store.ensure_run("r2").unwrap();
+        store.ensure_run("r10").unwrap();
+        std::fs::create_dir(store.dir.join("r07")).unwrap();
+        std::fs::create_dir(store.dir.join("notes")).unwrap();
+        assert_eq!(store.runs().unwrap(), ["r1", "r2", "r10"]);
+        // A lost `current` never makes brg reuse an existing run.
+        std::fs::remove_file(store.current_file()).unwrap();
+        assert_eq!(store.next_id().unwrap(), "r11");
         std::fs::write(store.current_file(), "../elsewhere\n").unwrap();
         assert!(store.current().is_err());
     }

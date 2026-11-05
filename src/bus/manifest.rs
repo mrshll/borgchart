@@ -219,19 +219,24 @@ pub enum ManifestError {
 }
 
 impl ManifestError {
-    /// The message to show, in terms of the team.
-    pub fn message(&self, team: &str) -> String {
+    /// The message to show, in terms of the team. `restart` is how to
+    /// restart this team (see `state::restart_hint`).
+    pub fn message(&self, team: &str, restart: &str) -> String {
         match self {
-            ManifestError::Format { found } => format_mismatch(team, *found),
+            ManifestError::Format { found } => format_mismatch(team, *found, restart),
             ManifestError::Unreadable(e) => e.clone(),
         }
     }
 }
 
 /// "team `oncall`'s messages use format 1; this brg uses format 2. …"
-pub fn format_mismatch(team: &str, found: u32) -> String {
+///
+/// Restarting starts fresh storage in this brg's format. Messages in the old
+/// format can't be read by this brg, so they are left where they are rather
+/// than carried over; `up` lists what was left behind.
+pub fn format_mismatch(team: &str, found: u32, restart: &str) -> String {
     format!(
-        "team `{team}`'s messages use format {found}; this brg uses format {}.\nRestart the team to move them over: brg down {team} && brg up {team}",
+        "team `{team}`'s messages use format {found}; this brg uses format {}.\nRestart the team to start fresh storage in the new format: {restart}\n(Open work in the old format isn't carried over; the old messages stay on disk.)",
         super::SCHEMA
     )
 }
@@ -312,12 +317,12 @@ mod tests {
         std::fs::write(paths.manifest(), r#"{"schema": 2, "whatever": true}"#).unwrap();
         let err = load_manifest(&paths).unwrap_err();
         assert_eq!(err, ManifestError::Format { found: 2 });
-        let msg = err.message("oncall");
+        let msg = err.message("oncall", "brg down && brg up");
         assert!(
             msg.contains("team `oncall`'s messages use format 2; this brg uses format 1"),
             "{msg}"
         );
-        assert!(msg.contains("brg down oncall && brg up oncall"), "{msg}");
-        assert!(!msg.contains("run"), "no run wording: {msg}");
+        assert!(msg.contains("brg down && brg up"), "{msg}");
+        assert!(!super::super::mentions_runs(&msg), "no run wording: {msg}");
     }
 }

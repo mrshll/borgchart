@@ -34,7 +34,13 @@ Pick a `root` that every member's vendor configuration can already write without
 
 **A running team's configuration is frozen.** When a team starts, brg records a snapshot of its inputs: the SHA-256 of `borgchart.yaml`, `team.yaml`, each member file, and each member's instruction with includes expanded. Starting one member into the running team refuses if any of these changed. The change takes effect at the next `brg down`/`brg up`. The snapshot hashes file bytes, not brg's internal types, so a compatible brg upgrade sees the same snapshot.
 
-**Storage rolls over by itself.** Internally a team's messages live in a *run*: storage with one message format and one configuration snapshot. When `brg up` starts a team whose configuration or message format changed, or whose storage has reached `max_age_days`, brg starts a new run and carries over the unfinished work (open tasks, unanswered questions, unread messages). Users never see or name runs; there is nothing to configure.
+**Storage rolls over by itself.** Internally a team's messages live in a *run*: storage with one message format and one configuration snapshot. Users never see or name runs; there is nothing to configure.
+
+- **When:** a full `brg up` of a team that is positively stopped (every current member incarnation `gone` or ended), whose configuration changed or whose storage has reached `max_age_days`, starts a new run and carries over the unfinished work (open tasks, unanswered questions, unread messages). `up` of a running team with changed files refuses, like starting one member does.
+- **Format changes:** a brg that can't read the old format can't carry from it. So a format change starts fresh storage and carries nothing. The old messages stay on disk untouched, and `up` says what was left behind.
+- **No lost messages:** rollover takes the old run's `bus/lock`, writes its `retired` marker, carries, then switches `current`. Every writer re-checks `retired` after taking `bus/lock`, and if it's there, re-resolves `current` and writes to the new run instead.
+- **Numbering:** new runs take the next number after the highest that exists (`r1`, `r2`, …), so a lost `current` file can't reuse old storage. A missing `current` beside existing runs is a storage problem, reported in team terms.
+- **Where:** storage is found by the deployment's ID, which comes from its file's path. Moving the team's folder starts with empty storage, and the old storage stays where it was.
 
 ## Layout
 
@@ -43,6 +49,7 @@ Each deployment has a directory `<root>/<deployment-id>/`. Its `current` file na
 | Path (in a run) | Owner | Contents |
 | --- | --- | --- |
 | `run.json` | lifecycle | The run manifest: ID, message format (`schema`), deployment, frozen topology, configuration snapshot, link to the run it continues. Immutable. |
+| `retired` | lifecycle | Present once the team's storage has rolled over to a newer run; writers then go to `current` instead. |
 | `runtime/lifecycle.lock` | lifecycle | Held while starting or stopping anything in the team. |
 | `runtime/incarnations/<member>.json` | lifecycle | The member's current incarnation; history in `runtime/incarnations/<member>/<id>.json`. |
 | `bus/lock` | records | Held while a record is validated, numbered and written. |
@@ -76,8 +83,11 @@ Immutable files are written with a unique temporary sibling, flushed, then hard-
 
 ```
 brg: team `oncall`'s messages use format 1; this brg uses format 2.
-Restart the team to move them over: brg down oncall && brg up oncall
+Restart the team to start fresh storage in the new format: brg down && brg up
+(Open work in the old format isn't carried over; the old messages stay on disk.)
 ```
+
+The restart command is given in a form that works from where you are: the bare commands in the team's folder, or with `--file` from elsewhere.
 
 ## Records
 
