@@ -7,7 +7,7 @@
 brg already runs every deployment inside its own private tmux server (`tmux -L borgchart`). tmux is a long-lived server that keeps processes running, knows every session and window, and lets any client query it. So brg doesn't need a daemon of its own: **tmux is brg's server.**
 
 - **Run from anywhere.** Commands take a team by name instead of finding `borgchart.yaml` in the current folder. `brg ls` lists teams by asking tmux which brg sessions exist, plus brg's own record of teams that are stopped.
-- **Sessions are tmux servers.** `brg --session NAME` uses the tmux server `-L borgchart-NAME`; the default session is today's `-L borgchart`. Each session is an independent group of teams that can be stopped without touching the others.
+- **Sessions are kept minimal.** Most people use one: today's `-L borgchart`. `--session NAME` exists only to keep a separate group of teams on its own tmux server, and may change or go away.
 - **A watcher runs inside tmux.** Each team with a bus gets one hidden tmux window, the *watcher*, which notices new messages and either nudges the member to read them or alerts a person. Because tmux runs it, tmux keeps it alive: no systemd unit, no launchd agent, and no process a member has to spawn.
 
 Limits, stated up front:
@@ -17,16 +17,19 @@ Limits, stated up front:
 
 ## Sessions
 
-| | Default session | Named session |
-| --- | --- | --- |
-| Select | nothing, or `--session default` | `--session NAME`, or `$BORGCHART_SESSION` |
-| tmux server | `-L borgchart` | `-L borgchart-NAME` |
+Sessions are implicit, and deliberately minimal for now:
 
-`NAME` follows member-name rules (`[a-z][a-z0-9_-]{0,31}`). Members and plugin processes get `BORGCHART_SESSION`, so their own commands stay in their session. This replaces today's `BORGCHART_TMUX_SOCKET` variable.
+- The default is today's tmux server, `-L borgchart`. Nothing needs to be chosen.
+- `--session NAME` (or `$BORGCHART_SESSION`) uses a separate tmux server, `-L borgchart-NAME`. It is created when a team is first started with it and disappears when its last team is stopped.
+- `NAME` follows member-name rules (`[a-z][a-z0-9_-]{0,31}`). Members and plugin processes get `BORGCHART_SESSION`, so their own commands stay in their session.
+- This replaces today's `BORGCHART_TMUX_SOCKET` variable.
+- There are no session commands. `brg ls` shows the current session's teams; `--all-sessions` shows every session's.
+
+Whether sessions are needed in this form at all is open. Nothing else in this design depends on more than the one default session.
 
 ## Names and addressing
 
-A team is named by `name:` in `borgchart.yaml`, defaulting to the deployment file's directory name. Names are unique within a session. A second deployment with the same name is refused; that includes two checkouts of the same example. The refusal points to `name:` or `--session`.
+A team is named by `name:` in `borgchart.yaml`, defaulting to the deployment file's directory name. Names are unique within a session. A second deployment with the same name is refused; that includes two checkouts of the same example. The refusal points to `name:`.
 
 Every command that targets a member takes `[team/]member`:
 
@@ -45,9 +48,9 @@ Otherwise the command refuses and lists the matches. A message to a stopped team
 
 Commands that target a whole team take a team name (`brg up oncall`, `brg down oncall`). In a deployment's folder the name can be omitted, as today.
 
-**Registration.** `brg up` (from the folder, or with `--file`) records the team in its session: name, absolute deployment file and deployment ID. The record is kept in two places:
-- brg's state (`$XDG_STATE_HOME/borgchart/sessions/NAME/teams.json`);
-- the tmux session's user options (`@brg-team`, `@brg-file`).
+**Registration.** `brg up` (from the folder, or with `--file`) records the team: name, absolute deployment file and deployment ID. The record is kept in two places:
+- brg's state (`$XDG_STATE_HOME/borgchart/teams.json`);
+- the team's own tmux session, as user options (`@brg-team`, `@brg-file`).
 
 A running team is read from tmux and a stopped one from the state file. If the two disagree, the command refuses and says which to fix. A team whose run storage has disappeared (for example `/tmp` cleared by a reboot) shows as `run missing`, not `stopped`. A stopped team whose deployment file no longer exists is dropped from the list automatically.
 
@@ -91,7 +94,7 @@ The bus stays optional. Without `bus:` in a deployment, `brg message` says the t
 | `alert test\|ls\|resolve` | Open alerts appear in `brg status`. An alert resolves itself when its cause clears: the member reads its inbox, a draft is cleared, or the watcher is running again. A test alert is `brg status --check --test-alert`. |
 | `attention resolve` | Dropped. A nudge left half-done by a crash raises an alert and is never retried. It clears itself the next time that member lists its own inbox (it has then seen the messages) or is restarted. |
 | `run carry` | Dropped. `brg up` of a run that declares `continues: OLD` carries the old run's unfinished work over, once. The `continues:` line in the deployment file is the consent. |
-| `session ls` | `brg ls --all-sessions`. |
+| `session ls` | No session commands; `brg ls --all-sessions` lists every session's teams. |
 | `forget` | Dropped. Stopped teams whose deployment file is gone fall off the list, and `brg down TEAM --forget` drops one by hand. |
 | `check` | `brg status --check`. |
 | `run rebind` | Depends on the open pinning question below. |
