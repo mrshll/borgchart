@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -115,13 +115,8 @@ pub fn open(deployment: &Deployment) -> Result<Bus, Failure> {
             return Err(Failure::new(Code::Refused, e.message(&team, &restart)));
         }
         Err(ManifestError::Unreadable(e)) => {
-            // Drop the path (it names the run): the reason is what matters.
-            let shown = paths.manifest().display().to_string();
-            let detail = e
-                .strip_prefix(&format!("{shown} is unreadable: "))
-                .or_else(|| e.strip_prefix(&format!("cannot read {shown}: ")))
-                .unwrap_or("its manifest can't be read");
-            return Err(Failure::new(Code::Error, unreadable(detail)));
+            let detail = reason(&e, &paths.manifest());
+            return Err(Failure::new(Code::Error, unreadable(&detail)));
         }
     };
     if manifest.run != run {
@@ -149,6 +144,50 @@ pub fn open(deployment: &Deployment) -> Result<Bus, Failure> {
         paths,
         manifest,
     })
+}
+
+/// The reason in a "<path> is unreadable: …" or "cannot read <path>: …"
+/// error, without the path (which is internal).
+fn reason(e: &str, path: &Path) -> String {
+    let shown = path.display().to_string();
+    e.strip_prefix(&format!("{shown} is unreadable: "))
+        .or_else(|| e.strip_prefix(&format!("cannot read {shown}: ")))
+        .map(str::to_string)
+        .unwrap_or_else(|| hide_paths(e, path.parent().unwrap_or(path), None))
+}
+
+/// `text` without the internal paths of a team's storage: paths inside the
+/// run become relative (`bus/records`), the run itself "its messages
+/// folder", and the team's directory "its folder".
+fn hide_paths(text: &str, run_root: &Path, team_dir: Option<&Path>) -> String {
+    let root = run_root.display().to_string();
+    let mut out = text
+        .replace(&format!("{root}/"), "")
+        .replace(&root, "its messages folder");
+    if let Some(dir) = team_dir {
+        out = out.replace(&dir.display().to_string(), "its folder");
+    }
+    out
+}
+
+impl Bus {
+    /// `text` without this team's internal storage paths.
+    fn hide_paths(&self, text: &str) -> String {
+        hide_paths(text, &self.paths.root, Some(&self.store.dir))
+    }
+
+    /// Refuse a reference (a record ID the caller saw before) when the
+    /// mutation followed a rollover: in the new storage that ID may name a
+    /// different message.
+    fn stale_reference(&self, id: &str) -> Failure {
+        Failure::new(
+            Code::Fenced,
+            format!(
+                "team `{}` was restarted, so `{id}` may now be a different message; list the inbox again",
+                self.team
+            ),
+        )
+    }
 }
 
 // --- callers ---
@@ -198,8 +237,15 @@ fn fence_member(bus: &Bus, member: &str, run: &str, incarnation: &str) -> Result
             "{team}/{member} is from before the team was restarted; restart it: {start}"
         ));
     }
-    let current =
-        manifest::load_incarnation(&bus.paths, member).map_err(|e| Failure::new(Code::Error, e))?;
+    let current = manifest::load_incarnation(&bus.paths, member).map_err(|e| {
+        Failure::new(
+            Code::Error,
+            format!(
+                "{team}/{member}'s session record is unreadable ({})",
+                reason(&e, &bus.paths.current_incarnation(member))
+            ),
+        )
+    })?;
     match current {
         None => fenced(format!("{team}/{member} isn't running; start it: {start}")),
         Some(inc) if inc.member != member || inc.incarnation != incarnation => fenced(format!(
@@ -221,14 +267,23 @@ const MAX_ROLLOVER_FOLLOWS: usize = 3;
 /// If the run was retired (the team's storage rolled over) by the time the
 /// lock is held, release it, re-resolve the team's current run and lock
 /// that instead, so nothing is written to storage that rollover has already
-/// carried from. Returns the run that is locked: the caller re-checks
-/// everything it checked before against it.
-fn lock_for_mutation(bus: &Bus) -> Result<(Bus, fs::File), Failure> {
+/// carried from. Returns the run that is locked, and whether that meant
+/// following a rollover: the caller re-checks everything it checked before
+/// against it, and refuses references to records it saw in the old storage.
+fn lock_for_mutation(bus: &Bus) -> Result<(Bus, fs::File, bool), Failure> {
     let mut bus = bus.clone();
+    let mut followed = false;
     for _ in 0..MAX_ROLLOVER_FOLLOWS {
-        bus.store
-            .ensure_run(&bus.run)
-            .map_err(|e| Failure::io(&format!("team `{}`'s message storage", bus.team), e))?;
+        bus.store.ensure_run(&bus.run).map_err(|e| {
+            Failure::new(
+                Code::Error,
+                format!(
+                    "team `{}`'s message storage can't be used: {}",
+                    bus.team,
+                    bus.hide_paths(&e.to_string())
+                ),
+            )
+        })?;
         for dir in [bus.paths.runtime_dir(), bus.paths.bus_dir()] {
             fsx::create_private_dirs(&dir)
                 .map_err(|e| Failure::io("cannot create the store", e))?;
@@ -238,8 +293,9 @@ fn lock_for_mutation(bus: &Bus) -> Result<(Bus, fs::File), Failure> {
         lock.lock()
             .map_err(|e| Failure::io("cannot lock bus/lock", e))?;
         if !bus.paths.retired().exists() {
-            return Ok((bus, lock));
+            return Ok((bus, lock, followed));
         }
+        followed = true;
         drop(lock);
         let next = open(&bus.deployment)?;
         if next.run == bus.run {
@@ -273,6 +329,24 @@ fn recheck_authority(bus: &Bus, caller: &Caller) -> Result<(), Failure> {
 /// mid-publication without its key or ack. Opens the lock read-only and
 /// creates nothing: with no lock file there is no store to read yet.
 fn read_lock(paths: &RunPaths) -> Result<Option<fs::File>, Failure> {
+    match read_lock_until(paths, None)? {
+        ReadLock::Held(f) => Ok(Some(f)),
+        ReadLock::NoStore => Ok(None),
+        ReadLock::TimedOut => Err(Failure::new(Code::Error, "cannot lock bus/lock")),
+    }
+}
+
+enum ReadLock {
+    /// No lock file: nothing has been written yet.
+    NoStore,
+    Held(fs::File),
+    /// The deadline passed while a writer held the lock.
+    TimedOut,
+}
+
+/// [`read_lock`], giving up at `deadline` (if any) instead of waiting for a
+/// writer indefinitely.
+fn read_lock_until(paths: &RunPaths, deadline: Option<Instant>) -> Result<ReadLock, Failure> {
     use std::os::unix::fs::OpenOptionsExt;
     let file = match fs::OpenOptions::new()
         .read(true)
@@ -280,12 +354,54 @@ fn read_lock(paths: &RunPaths) -> Result<Option<fs::File>, Failure> {
         .open(paths.bus_lock())
     {
         Ok(f) => f,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(ReadLock::NoStore),
         Err(e) => return Err(Failure::io("cannot open bus/lock", e)),
     };
-    file.lock_shared()
-        .map_err(|e| Failure::io("cannot lock bus/lock", e))?;
-    Ok(Some(file))
+    let Some(deadline) = deadline else {
+        file.lock_shared()
+            .map_err(|e| Failure::io("cannot lock bus/lock", e))?;
+        return Ok(ReadLock::Held(file));
+    };
+    loop {
+        match file.try_lock_shared() {
+            Ok(()) => return Ok(ReadLock::Held(file)),
+            Err(fs::TryLockError::WouldBlock) => {
+                let now = Instant::now();
+                if now >= deadline {
+                    return Ok(ReadLock::TimedOut);
+                }
+                std::thread::sleep(Duration::from_millis(20).min(deadline - now));
+            }
+            Err(fs::TryLockError::Error(e)) => {
+                return Err(Failure::io("cannot lock bus/lock", e));
+            }
+        }
+    }
+}
+
+/// What one poll of a wait saw.
+pub enum WaitSnapshot {
+    Ready(Snapshot),
+    /// The storage was retired (the team rolled over): resolve it again.
+    Retired,
+    /// The deadline passed while a writer held the lock.
+    TimedOut,
+}
+
+/// A consistent read for a bounded wait: like [`snapshot`], but never waits
+/// for the lock past `deadline`, and reports storage that rollover retired
+/// (checked while holding the lock, so a poll queued behind a rollover
+/// never reads the old storage as current).
+pub fn wait_snapshot(bus: &Bus, deadline: Instant) -> Result<WaitSnapshot, Failure> {
+    let _lock = match read_lock_until(&bus.paths, Some(deadline))? {
+        ReadLock::TimedOut => return Ok(WaitSnapshot::TimedOut),
+        ReadLock::NoStore => None,
+        ReadLock::Held(f) => Some(f),
+    };
+    if bus.paths.retired().exists() {
+        return Ok(WaitSnapshot::Retired);
+    }
+    Ok(WaitSnapshot::Ready(scan(&bus.paths, &bus.run)))
 }
 
 /// A consistent read of the whole store, under `bus/lock` shared.
@@ -529,7 +645,10 @@ pub fn scan(paths: &RunPaths, run: &str) -> Snapshot {
         }
     }
     let _ = list_dir(&paths.bus_dir(), &mut Vec::new(), &mut strays);
-    s.problems = problems;
+    s.problems = problems
+        .iter()
+        .map(|p| hide_paths(p, &paths.root, None))
+        .collect();
     // Shown relative to the run, whose own path is internal.
     s.strays = strays
         .into_iter()
@@ -848,8 +967,17 @@ pub fn publish(
     });
     let slot = slot_of(&actor);
 
-    let (bus, lock) = lock_for_mutation(bus)?;
+    let (bus, lock, followed) = lock_for_mutation(bus)?;
     let bus = &bus;
+    let mut refs: Vec<&str> = draft.reply_to.iter().map(String::as_str).collect();
+    if draft.kind == Kind::Verify
+        && let Some(r) = draft.facts.get("result").and_then(Value::as_str)
+    {
+        refs.push(r);
+    }
+    if followed && let Some(first) = refs.first() {
+        return Err(bus.stale_reference(first));
+    }
     recheck_authority(bus, caller)?;
     check_route(&bus.manifest, &actor, &draft.to).map_err(|e| Failure::new(Code::Invalid, e))?;
     let snap = scan(&bus.paths, &bus.run);
@@ -879,12 +1007,6 @@ pub fn publish(
         });
     }
 
-    let mut refs: Vec<&str> = draft.reply_to.iter().map(String::as_str).collect();
-    if draft.kind == Kind::Verify
-        && let Some(r) = draft.facts.get("result").and_then(Value::as_str)
-    {
-        refs.push(r);
-    }
     if let Some(missing) = refs.iter().find(|r| snap.get(r).is_none()) {
         return Err(Failure::new(
             Code::Invalid,
@@ -1080,8 +1202,11 @@ pub fn ack(
         })
         .collect::<Result<Vec<u64>, Failure>>()?;
     let actor = actor_for(bus, caller)?;
-    let (bus, lock) = lock_for_mutation(bus)?;
+    let (bus, lock, followed) = lock_for_mutation(bus)?;
     let bus = &bus;
+    if followed {
+        return Err(bus.stale_reference(&ids[0]));
+    }
     recheck_authority(bus, caller)?;
     let snap = scan(&bus.paths, &bus.run);
     snap.require_healthy()?;

@@ -463,24 +463,48 @@ pub fn inbox(input: &Input, args: InboxArgs) -> ExitCode {
                 }
                 let limit = check_limit(limit)?;
                 let after = parse_after(after.as_deref())?;
-                let bus = open_bus(input)?;
-                let t = target(&bus, &who)?;
                 let deadline = Instant::now() + Duration::from_secs(timeout);
+                let first = open_bus(input)?.run;
+                let timed_out = |t: &Target| {
+                    Failure::new(
+                        Code::Timeout,
+                        format!("nothing new for {} after {timeout}s", t.recipient),
+                    )
+                };
+                // Each poll finds the team's current storage again and checks
+                // the inbox, the caller and the format against it: a restart
+                // while waiting must not leave the wait on old storage.
                 loop {
-                    let snap = store::snapshot(&bus)?;
-                    let page = store::list(&snap, &t.recipient, after, limit, false);
-                    if !page.records.is_empty() {
-                        if let Some((m, i)) = &t.own {
-                            store::observed(&bus, m, i, &page);
+                    let bus = open_bus(input)?;
+                    if bus.run != first
+                        && let Some(a) = after
+                    {
+                        return Err(Failure::new(
+                            Code::Fenced,
+                            format!(
+                                "team `{}` was restarted while waiting, so `--after {}` no longer applies; list the inbox again",
+                                bus.team,
+                                super::record::record_id(a)
+                            ),
+                        ));
+                    }
+                    let t = target(&bus, &who)?;
+                    match store::wait_snapshot(&bus, deadline)? {
+                        store::WaitSnapshot::TimedOut => return Err(timed_out(&t)),
+                        store::WaitSnapshot::Retired => {}
+                        store::WaitSnapshot::Ready(snap) => {
+                            let page = store::list(&snap, &t.recipient, after, limit, false);
+                            if !page.records.is_empty() {
+                                if let Some((m, i)) = &t.own {
+                                    store::observed(&bus, m, i, &page);
+                                }
+                                return Ok(page_output(&t, &page, &snap, full));
+                            }
                         }
-                        return Ok(page_output(&t, &page, &snap, full));
                     }
                     let now = Instant::now();
                     if now >= deadline {
-                        return Err(Failure::new(
-                            Code::Timeout,
-                            format!("nothing new for {} after {timeout}s", t.recipient),
-                        ));
+                        return Err(timed_out(&t));
                     }
                     std::thread::sleep(store::POLL.min(deadline - now));
                 }

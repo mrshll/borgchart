@@ -104,6 +104,33 @@ impl Fixture {
         self.write_private(&self.store_dir().join(run).join("run.json"), &manifest);
     }
 
+    /// A new current storage `run` for the same team (same members), with a
+    /// record `m1` (`(to, body)`) if one is given,
+    /// switched to while holding the old storage's `bus/lock`, the way
+    /// rollover does it.
+    fn roll_over(&self, run: &str, record: Option<(&str, &str)>) {
+        let id = borgchart::state::deployment_id(&self.dep_file());
+        self.write_manifest_for(run, &id);
+        if let Some((to, body)) = record {
+            self.write_private(
+                &self
+                    .store_dir()
+                    .join(run)
+                    .join("bus/records/0000000001.json"),
+                &json!({
+                    "schema": 1, "run": run, "id": "m1", "seq": 1,
+                    "at": "2026-11-05T19:00:00.000Z",
+                    "actor": {"type": "member", "member": "lead", "incarnation": "lead-1"},
+                    "key": "new-1", "to": to, "kind": "note", "body": body,
+                }),
+            );
+        }
+        let lock = hold(&self.run_dir().join("bus/lock"));
+        fs::write(self.run_dir().join("retired"), "").unwrap();
+        fs::write(self.store_dir().join("current"), format!("{run}\n")).unwrap();
+        drop(lock);
+    }
+
     /// How brg says to restart the team (from the tests' working directory).
     fn restart(&self) -> String {
         borgchart::state::restart_hint(&self.dep_file())
@@ -242,11 +269,16 @@ fn output(out: std::process::Output) -> Out {
     }
 }
 
-/// Users see teams and members only: no run IDs and no "run" wording.
+/// Users see teams and members only: no run IDs, no "run" wording and no
+/// paths inside the team's storage (`<root>/<deployment-id>/…`).
 fn assert_team_words(text: &str) {
     assert!(
         !borgchart::bus::mentions_runs(text),
         "run wording in output: {text}"
+    );
+    assert!(
+        !text.contains(&format!("/teams/{TEAM}-")),
+        "storage path in output: {text}"
     );
 }
 
@@ -956,7 +988,7 @@ fn writers_follow_the_team_to_new_storage() {
             .join("r42/bus/records/0000000001.json")
             .exists()
     );
-    // Acks follow too: m1 of the new storage.
+    // An ack begun after the switch reads IDs in the new storage.
     let ack = f.brg(
         &As::Operator,
         &["msg", "ack", "m1", "--external", "ops", "--json"],
@@ -971,6 +1003,351 @@ fn writers_follow_the_team_to_new_storage() {
     fs::write(f.store_dir().join("r42/retired"), "").unwrap();
     let out = f.publish(&As::Operator, "k3", &note("lead", "c"));
     assert_eq!(out.code, 7, "{:?}", out.json);
+}
+
+#[test]
+fn an_ack_queued_behind_a_rollover_is_refused() {
+    let f = Fixture::new();
+    // Old m1 for external:ops; the new storage has an unrelated m1 for it too.
+    let q = json!({"to": "external:ops", "kind": "question", "body": "OLD MESSAGE"});
+    assert_eq!(f.publish(&As::Member("lead"), "q-1", &q).code, 0);
+    let lock = hold(&f.run_dir().join("bus/lock"));
+    let mut child = spawn(
+        &f,
+        &As::Operator,
+        &["msg", "ack", "m1", "--external", "ops", "--json"],
+        b"",
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(child.try_wait().is_ok_and(|s| s.is_none()), "the ack waits");
+    let id = borgchart::state::deployment_id(&f.dep_file());
+    f.write_manifest_for("r42", &id);
+    f.write_private(
+        &f.store_dir().join("r42/bus/records/0000000001.json"),
+        &json!({
+            "schema": 1, "run": "r42", "id": "m1", "seq": 1,
+            "at": "2026-11-05T19:00:00.000Z",
+            "actor": {"type": "member", "member": "lead", "incarnation": "lead-1"},
+            "key": "new-1", "to": "external:ops", "kind": "note", "body": "UNRELATED NEW MESSAGE",
+        }),
+    );
+    fs::write(f.run_dir().join("retired"), "").unwrap();
+    fs::write(f.store_dir().join("current"), "r42\n").unwrap();
+    drop(lock);
+    let out = finish_within(child, Duration::from_secs(15));
+    assert_eq!(out.code, 8, "{:?} {}", out.json, out.stderr);
+    assert_eq!(
+        out.json["message"],
+        "team `oncall` was restarted, so `m1` may now be a different message; list the inbox again"
+    );
+    assert!(!f.store_dir().join("r42/bus/acks/m1.json").exists());
+    assert!(!f.run_dir().join("bus/acks/m1.json").exists());
+}
+
+#[test]
+fn a_reply_queued_behind_a_rollover_is_refused() {
+    let f = Fixture::new();
+    assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
+    let id = borgchart::state::deployment_id(&f.dep_file());
+    for (key, draft) in [
+        (
+            "reply",
+            json!({"to": "lead", "kind": "note", "reply_to": ["m1"], "body": "re"}),
+        ),
+        (
+            "verify",
+            json!({"to": "helper", "kind": "verify", "task": "t",
+                "facts": {"result": "m1", "outcome": "accepted"}}),
+        ),
+    ] {
+        let lock = hold(&f.run_dir().join("bus/lock"));
+        let (who, args): (As, Vec<&str>) = if key == "reply" {
+            (
+                As::Operator,
+                vec![
+                    "msg",
+                    "publish",
+                    "--key",
+                    key,
+                    "--external",
+                    "ops",
+                    "--json",
+                ],
+            )
+        } else {
+            (
+                As::Member("lead"),
+                vec!["msg", "publish", "--key", key, "--json"],
+            )
+        };
+        let child = spawn(&f, &who, &args, &serde_json::to_vec(&draft).unwrap());
+        std::thread::sleep(Duration::from_millis(500));
+        // Roll over to storage that has its own m1, for lead.
+        let next = if key == "reply" { "r42" } else { "r43" };
+        f.write_manifest_for(next, &id);
+        for m in ["lead", "helper", "helper2", "sub"] {
+            f.write_private(
+                &f.store_dir()
+                    .join(next)
+                    .join(format!("runtime/incarnations/{m}.json")),
+                &json!({"member": m, "incarnation": format!("{m}-1"),
+                    "started_at": "2026-11-05T19:00:00.000Z"}),
+            );
+        }
+        f.write_private(
+            &f.store_dir().join(next).join("bus/records/0000000001.json"),
+            &json!({
+                "schema": 1, "run": next, "id": "m1", "seq": 1,
+                "at": "2026-11-05T19:00:00.000Z",
+                "actor": {"type": "external", "name": "ops"},
+                "key": "new-1", "to": "lead", "kind": "result", "task": "t",
+                "facts": {"status": "complete"},
+            }),
+        );
+        fs::write(f.run_dir().join("retired"), "").unwrap();
+        fs::write(f.store_dir().join("current"), format!("{next}\n")).unwrap();
+        drop(lock);
+        let out = finish_within(child, Duration::from_secs(15));
+        assert_eq!(out.code, 8, "{key}: {:?} {}", out.json, out.stderr);
+        assert!(
+            out.json["message"]
+                .as_str()
+                .unwrap()
+                .contains("list the inbox again"),
+            "{key}: {:?}",
+            out.json
+        );
+        let records = f.store_dir().join(next).join("bus/records");
+        assert_eq!(
+            fs::read_dir(&records).unwrap().count(),
+            1,
+            "{key}: nothing written"
+        );
+        // Back to the original storage for the next case.
+        fs::remove_file(f.run_dir().join("retired")).unwrap();
+        fs::write(f.store_dir().join("current"), format!("{RUN}\n")).unwrap();
+    }
+}
+
+#[test]
+fn inbox_wait_follows_the_team_to_new_storage() {
+    let f = Fixture::new();
+    let start = Instant::now();
+    let child = spawn(
+        &f,
+        &As::Operator,
+        &[
+            "inbox",
+            "wait",
+            "--member",
+            "lead",
+            "--timeout",
+            "10",
+            "--json",
+        ],
+        b"",
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    f.roll_over("r42", Some(("lead", "new")));
+    let out = finish_within(child, Duration::from_secs(15));
+    assert_eq!(out.code, 0, "{:?} {}", out.json, out.stderr);
+    assert_eq!(ids(&out.json), ["m1"]);
+    assert!(start.elapsed() < Duration::from_secs(5));
+}
+
+#[test]
+fn inbox_wait_after_a_cursor_refuses_new_storage() {
+    let f = Fixture::new();
+    assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
+    let child = spawn(
+        &f,
+        &As::Operator,
+        &[
+            "inbox",
+            "wait",
+            "--member",
+            "lead",
+            "--after",
+            "m1",
+            "--timeout",
+            "10",
+            "--json",
+        ],
+        b"",
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    f.roll_over("r42", Some(("lead", "new")));
+    let out = finish_within(child, Duration::from_secs(15));
+    assert_eq!(out.code, 8, "{:?} {}", out.json, out.stderr);
+    assert_eq!(
+        out.json["message"],
+        "team `oncall` was restarted while waiting, so `--after m1` no longer applies; list the inbox again"
+    );
+}
+
+#[test]
+fn inbox_wait_rechecks_the_member_and_format() {
+    // A member from before the restart.
+    let f = Fixture::new();
+    let child = spawn(
+        &f,
+        &As::Member("lead"),
+        &["inbox", "wait", "--timeout", "10", "--json"],
+        b"",
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    f.roll_over("r42", Some(("lead", "new")));
+    let out = finish_within(child, Duration::from_secs(15));
+    assert_eq!(out.code, 8, "{:?} {}", out.json, out.stderr);
+    assert!(
+        out.json["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("oncall/lead is from before the team was restarted"),
+        "{:?}",
+        out.json
+    );
+    // New storage in a format this brg can't read.
+    let g = Fixture::new();
+    let child = spawn(
+        &g,
+        &As::Operator,
+        &[
+            "inbox",
+            "wait",
+            "--member",
+            "lead",
+            "--timeout",
+            "10",
+            "--json",
+        ],
+        b"",
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    let id = borgchart::state::deployment_id(&g.dep_file());
+    g.write_manifest_for("r42", &id);
+    let path = g.store_dir().join("r42/run.json");
+    let mut m: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    m["schema"] = json!(999);
+    fs::write(&path, serde_json::to_vec(&m).unwrap()).unwrap();
+    let before = g.tree();
+    let lock = hold(&g.run_dir().join("bus/lock"));
+    fs::write(g.run_dir().join("retired"), "").unwrap();
+    fs::write(g.store_dir().join("current"), "r42\n").unwrap();
+    drop(lock);
+    let out = finish_within(child, Duration::from_secs(15));
+    assert_eq!(out.code, 4, "{:?} {}", out.json, out.stderr);
+    assert!(
+        out.json["message"].as_str().unwrap().contains("format 999"),
+        "{:?}",
+        out.json
+    );
+    // Read-only throughout: only the rollover itself changed anything.
+    let after = g.tree();
+    let changed: Vec<_> = after.symmetric_difference(&before).collect();
+    assert!(
+        changed.iter().all(|p| p.contains("/current ")
+            || p.contains("/retired ")
+            || p.contains("/bus ")
+            || p.contains("/bus/lock ")),
+        "{changed:?}"
+    );
+}
+
+#[test]
+fn inbox_wait_is_bounded_while_a_writer_holds_the_lock() {
+    let f = Fixture::new();
+    assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
+    let lock = hold(&f.run_dir().join("bus/lock"));
+    let start = Instant::now();
+    let mut child = spawn(
+        &f,
+        &As::Operator,
+        &[
+            "inbox",
+            "wait",
+            "--member",
+            "lead",
+            "--after",
+            "m1",
+            "--timeout",
+            "1",
+            "--json",
+        ],
+        b"",
+    );
+    while child.try_wait().unwrap().is_none() {
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "wait still blocked on the lock"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    drop(lock);
+    let out = output(child.wait_with_output().unwrap());
+    assert_eq!(out.code, 9, "{:?} {}", out.json, out.stderr);
+}
+
+#[test]
+fn damaged_storage_errors_name_the_team_not_paths() {
+    // A malformed member session record.
+    let f = Fixture::new();
+    fs::write(f.run_dir().join("runtime/incarnations/lead.json"), "{").unwrap();
+    for args in [vec!["inbox", "--json"], vec!["inbox"]] {
+        let out = f.brg(&As::Member("lead"), &args, None);
+        assert_eq!(out.code, 1, "{args:?}: {:?} {}", out.json, out.stderr);
+        let msg = if args.len() == 2 {
+            out.json["message"].as_str().unwrap().to_string()
+        } else {
+            out.stderr.clone()
+        };
+        assert!(
+            msg.contains("oncall/lead's session record is unreadable (EOF"),
+            "{msg}"
+        );
+    }
+    // A record area that isn't a directory.
+    let g = Fixture::new();
+    assert_eq!(g.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
+    let records = g.run_dir().join("bus/records");
+    fs::remove_dir_all(&records).unwrap();
+    fs::write(&records, "").unwrap();
+    let out = g.brg(&As::Operator, &["bus", "check", "--json"], None);
+    assert_eq!(out.code, 7, "{:?}", out.json);
+    assert!(
+        out.json["errors"]
+            .to_string()
+            .contains("cannot list bus/records: Not a directory"),
+        "{:?}",
+        out.json
+    );
+    let out = g.brg(&As::Operator, &["bus", "check"], None);
+    assert!(
+        out.stderr.contains("cannot list bus/records"),
+        "{}",
+        out.stderr
+    );
+    // Storage someone else could write to.
+    let h = Fixture::new();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(h.store_dir(), fs::Permissions::from_mode(0o777)).unwrap();
+    let out = h.publish(&As::Operator, "k1", &note("lead", "a"));
+    assert_eq!(out.code, 1, "{:?}", out.json);
+    assert_eq!(
+        out.json["message"],
+        "team `oncall`'s message storage can't be used: its folder is writable by group or others"
+    );
+    let text = h.brg(
+        &As::Operator,
+        &["msg", "publish", "--key", "k1", "--external", "ops"],
+        Some(&serde_json::to_vec(&note("lead", "a")).unwrap()),
+    );
+    assert_eq!(text.code, 1);
+    assert!(
+        text.stderr.contains("its folder is writable by group"),
+        "{}",
+        text.stderr
+    );
 }
 
 #[test]
