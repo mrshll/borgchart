@@ -238,12 +238,18 @@ impl Fixture {
         out.json
     }
 
-    /// Every path under the temp dir, with its kind and size.
+    /// Every path under the temp dir: files with their size, directories
+    /// by existence only (a directory's size is platform-specific: on macOS
+    /// it grows as entries are added).
     fn tree(&self) -> BTreeSet<String> {
         fn walk(dir: &Path, out: &mut BTreeSet<String>) {
             for e in fs::read_dir(dir).unwrap().flatten() {
                 let meta = fs::symlink_metadata(e.path()).unwrap();
-                out.insert(format!("{} {}", e.path().display(), meta.len()));
+                if meta.is_dir() {
+                    out.insert(format!("{} dir", e.path().display()));
+                } else {
+                    out.insert(format!("{} {}", e.path().display(), meta.len()));
+                }
                 if meta.is_dir() {
                     walk(&e.path(), out);
                 }
