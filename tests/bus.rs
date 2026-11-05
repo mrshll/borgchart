@@ -164,7 +164,7 @@ impl Fixture {
         {
             let mut input = child.stdin.take().unwrap();
             if let Some(bytes) = stdin {
-                input.write_all(bytes).unwrap();
+                feed(&mut input, bytes);
             }
         }
         let out = child.wait_with_output().unwrap();
@@ -219,6 +219,17 @@ impl Fixture {
         let mut out = BTreeSet::new();
         walk(self.dir.path(), &mut out);
         out
+    }
+}
+
+/// Write a draft to brg's stdin. brg may refuse and exit before reading it
+/// all (e.g. an oversize draft), so a broken pipe is fine: the exit code and
+/// outcome are what tests check.
+fn feed(input: &mut impl Write, bytes: &[u8]) {
+    match input.write_all(bytes) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+        Err(e) => panic!("cannot write brg's stdin: {e}"),
     }
 }
 
@@ -958,7 +969,7 @@ fn spawn(f: &Fixture, who: &As, args: &[&str], stdin: &[u8]) -> std::process::Ch
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(stdin).unwrap();
+    feed(&mut child.stdin.take().unwrap(), stdin);
     child
 }
 
