@@ -172,6 +172,7 @@ team: .                       # the team directory, relative to this file (defau
 auth: login                   # login (default) | api_key, for every member
 auto_trust: true              # trust a declared cwd without a person (Claude default: locked members only)
 plugins_dir: ~/borgchart-plugins   # where shared:<name> plugins live
+tmux: {user_config: true}     # load your own tmux config on brg's server (default: false)
 
 members:
   lead:
@@ -195,3 +196,20 @@ plugins:
   - **Claude:** `brg up` answers Claude's folder-trust dialog for exactly that folder by sending keys through tmux. It acts only on the plain trust screen showing that folder; it never answers any other dialog. By default this applies to `locked` members only, because they ignore project settings. `auto_trust: true` extends it to every member; `brg validate` then warns if a declared folder has project settings (`.claude/`, `.mcp.json`), which would load in `vendor` posture.
   - **Codex:** only with `auto_trust: true`, and only in `vendor` posture. brg starts the member with `-c projects={"<folder>"={trust_level="trusted"}}`, so Codex never shows its trust screen. That trusts exactly that folder, for that session only: nothing is written to `~/.codex/config.toml`. Answering the screen yourself trusts the whole Git repository (every worktree too) and saves it. Trust lets the folder's `.codex/` config, hooks and MCP servers load, and selects Codex's default permissions for a trusted folder; `brg validate` warns if the folder has a `.codex/`. A `-c projects…` in the member's `args` replaces brg's.
   - A `locked` Codex member is never trusted this way. It can write its own folder, so it could write a `.codex/` that would load outside its gate on its next start. `brg validate` warns, and its trust screen is left for you.
+- **`tmux.user_config`:** brg's private tmux server normally reads only brg's own config, so `brg attach` doesn't have your prefix, key bindings, mouse settings or status bar (key bindings belong to the tmux server, not to the client that attaches). Set it to `true` to load the first of `~/.tmux.conf`, `$XDG_CONFIG_HOME/tmux/tmux.conf` and `~/.config/tmux/tmux.conf` that exists, or to a path. Off by default.
+  - The config is read once, when brg's tmux server starts. Every team on that server shares it, so it comes from the team whose `brg up` started the server. If the server is already running with a different setting, `brg up` says so; the change takes effect once every team on it is down. Its scripts run with brg's cleared environment.
+  - After your config loads, brg sets again the options it relies on, so your config can't change them:
+    - `allow-rename off` and `automatic-rename off`: brg finds members by window name.
+    - `remain-on-exit on` and `history-limit 20000`: brg reads a member's screen and its exit.
+    - An empty `update-environment`: an attaching client's variables don't reach members.
+    - The server's own `default-shell`: brg starts each window through it.
+    - `allow-set-title on` (on tmux versions that have it): brg reads members' pane titles.
+    - `destroy-unattached off` and `exit-unattached off`: nothing ends brg's server or sessions while nobody is attached.
+    - tmux's built-in `default-terminal` and the RGB terminal feature: members keep colour.
+  - `brg validate` warns, with file and line numbers, about what can still act after that:
+    - shell commands at load (`run`, `run-shell`, `if-shell`): a background script or one that sets options later can still override brg's;
+    - hooks (`set-hook`) and plugin managers (tpm);
+    - session save/restore plugins (resurrect, continuum): on brg's server they can save brg's sessions over the ones you saved from your own tmux, or restore yours into it;
+    - sessions created or attached as the config loads: brg's server then outlives `brg down`.
+    The check is best effort. It reads each line's first command, skips key bindings, and follows files your config sources by a plain or `~/` path.
+  - To keep your own bindings without this, run `brg attach` from inside your own tmux: your outer server's prefix and bindings still work around it (press the prefix twice to reach brg's).

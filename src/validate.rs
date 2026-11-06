@@ -186,6 +186,13 @@ fn cross_check(v: &Validated, report: &mut Report) {
     if let Some(bus) = v.deployment.as_ref().and_then(|d| d.bus.as_ref()) {
         check_bus(v, bus, deploy_file, report);
     }
+    if let Some(user) = v
+        .deployment
+        .as_ref()
+        .and_then(|d| d.tmux_user_config.as_ref())
+    {
+        check_user_tmux_config(user, deploy_file, report);
+    }
 
     // Shared plugins need the deployment's plugins_dir.
     for plugin in v.team.plugins.values() {
@@ -499,4 +506,146 @@ fn check_shared_plugin(
             Err(e) => report.error(deploy_file, format!("plugin `{}`: {e}", plugin.name)),
         }
     }
+}
+
+/// `tmux.user_config`: the file must be usable, and anything in it (or in a
+/// file it sources by a plain path) that can act after brg's required options
+/// are applied is reported with its lines.
+fn check_user_tmux_config(
+    user: &deploy::UserTmuxConfig,
+    deploy_file: Option<&Path>,
+    report: &mut Report,
+) {
+    let Some(path) = user.resolve() else {
+        report.warning(
+            deploy_file,
+            "`tmux.user_config: true`, but none of ~/.tmux.conf, $XDG_CONFIG_HOME/tmux/tmux.conf or ~/.config/tmux/tmux.conf exists; nothing will be loaded",
+        );
+        return;
+    };
+    let shown = path.display().to_string();
+    if shown.contains('\'') || shown.contains('\n') {
+        report.error(
+            deploy_file,
+            format!(
+                "`tmux.user_config`: brg can't load a path containing `'` or a newline: {shown:?}"
+            ),
+        );
+        return;
+    }
+    if !path.is_file() {
+        report.error(
+            deploy_file,
+            format!("`tmux.user_config`: {shown} is not a file"),
+        );
+        return;
+    }
+    let mut queue = vec![path];
+    let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
+    while let Some(file) = queue.pop() {
+        if seen.len() >= 16 || !seen.insert(file.clone()) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let scan = scan_tmux_config(&text);
+        let dir = file.parent().unwrap_or(Path::new("/"));
+        queue.extend(scan.sources.iter().map(|s| sourced_path(dir, s)));
+        let later = "brg applies its own options after your config loads, but these can change them later or act on brg's sessions";
+        for (what, lines, why) in [
+            (
+                "runs shell commands (`run`, `run-shell`, `if-shell`)",
+                &scan.runs,
+                later,
+            ),
+            ("sets hooks (`set-hook`)", &scan.hooks, later),
+            ("uses a plugin manager", &scan.plugins, later),
+            (
+                "uses a session save/restore plugin",
+                &scan.restore,
+                "on brg's server it can save brg's sessions over the ones you saved from your own tmux, or restore yours into brg's server",
+            ),
+            (
+                "creates or attaches sessions as it loads",
+                &scan.sessions,
+                "brg's server would then outlive `brg down` and keep this config until it's stopped",
+            ),
+        ] {
+            if lines.is_empty() {
+                continue;
+            }
+            let at: Vec<String> = lines.iter().map(usize::to_string).collect();
+            report.warning(
+                deploy_file,
+                format!(
+                    "`tmux.user_config`: {} {what} at {} {}; {why}",
+                    file.display(),
+                    if at.len() == 1 { "line" } else { "lines" },
+                    at.join(", ")
+                ),
+            );
+        }
+    }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct TmuxConfigScan {
+    runs: Vec<usize>,
+    hooks: Vec<usize>,
+    plugins: Vec<usize>,
+    restore: Vec<usize>,
+    sessions: Vec<usize>,
+    /// Literal paths given to `source`/`source-file`.
+    sources: Vec<String>,
+}
+
+/// Lines (1-based) in a tmux config that brg can't vouch for. Best effort:
+/// only a line's first command is read, and key bindings (which act only on a
+/// key press) are skipped.
+fn scan_tmux_config(text: &str) -> TmuxConfigScan {
+    let mut scan = TmuxConfigScan::default();
+    for (i, line) in text.lines().enumerate() {
+        let line = line.trim_start();
+        if line.starts_with('#') {
+            continue;
+        }
+        let mut words = line.split_whitespace();
+        let first = words.next().unwrap_or("");
+        let n = i + 1;
+        match first {
+            "bind" | "bind-key" => continue,
+            "run" | "run-shell" => scan.runs.push(n),
+            // `-F` only expands a format; without it the condition is a shell command.
+            "if" | "if-shell" if !line.split_whitespace().any(|w| w == "-F") => scan.runs.push(n),
+            "set-hook" => scan.hooks.push(n),
+            "new" | "new-session" | "neww" | "new-window" | "attach" | "attach-session" | "a" => {
+                scan.sessions.push(n)
+            }
+            "source" | "source-file" => {
+                if let Some(arg) = words.find(|w| !w.starts_with('-')) {
+                    let arg = arg.trim_matches(|c| c == '\'' || c == '"');
+                    if !arg.contains('$') && !arg.contains("#{") {
+                        scan.sources.push(arg.to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+        if ["resurrect", "continuum"].iter().any(|w| line.contains(w)) {
+            scan.restore.push(n);
+        } else if ["@plugin", "tpm"].iter().any(|w| line.contains(w)) {
+            scan.plugins.push(n);
+        }
+    }
+    scan
+}
+
+fn sourced_path(dir: &Path, arg: &str) -> PathBuf {
+    if let Some(rest) = arg.strip_prefix("~/")
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        return PathBuf::from(home).join(rest);
+    }
+    dir.join(arg)
 }

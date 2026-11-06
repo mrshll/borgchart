@@ -376,11 +376,36 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
         )?),
         None => None,
     };
-    let notes: Vec<String> = binding
+    let mut notes: Vec<String> = binding
         .as_ref()
         .and_then(|b| b.note.clone())
         .into_iter()
         .collect();
+    let user_config = v
+        .deployment
+        .as_ref()
+        .and_then(|d| d.tmux_user_config.as_ref())
+        .and_then(|u| u.resolve());
+    // The server reads its config once, when it starts, and every team on
+    // it shares it.
+    let wanted = user_config
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    if let Ok(loaded) =
+        tmux_for(state).ok(&["show-options", "-gqv", crate::tmux::USER_CONFIG_OPTION])
+        && loaded.trim() != wanted
+    {
+        notes.push(format!(
+            "brg's tmux server is already running {}, so this team's `tmux.user_config` ({}) takes effect only once every team on it is down and it starts again",
+            if loaded.trim().is_empty() {
+                "without your tmux config".to_string()
+            } else {
+                format!("with {}", loaded.trim())
+            },
+            if wanted.is_empty() { "off" } else { wanted.as_str() }
+        ));
+    }
 
     let fresh = existing.is_none();
     let mut meta = match existing {
@@ -388,7 +413,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
         None => {
             let base = base_env();
             Tmux::new(&state.tmux_conf(), base.clone())
-                .write_config()
+                .write_config(user_config.as_deref())
                 .map_err(|e| format!("cannot write tmux config: {e}"))?;
             let mut meta = Meta {
                 source: dep.source.clone(),

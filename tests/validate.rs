@@ -596,6 +596,56 @@ fn auto_trust_warns_about_codex_project_settings_and_locked_codex_members() {
 }
 
 #[test]
+fn user_tmux_config_risks_are_warned_with_their_lines() {
+    // Catches: a user tmux config whose scripts, hooks, session-restore
+    // plugins or load-time sessions could undo brg's options or outlive
+    // `brg down` passing validation silently, including in a file it sources;
+    // warnings for key bindings, which act only on a key press; and a missing
+    // config file passing as fine.
+    let f = Fixture::new();
+    f.write(
+        "tmux/main.conf",
+        "set -g mouse on\nrun-shell 'echo hi'\nset-hook -g after-new-window 'rename-window x'\nset -g @plugin 'tmux-plugins/tmux-resurrect'\nsource-file -q extra.conf\n# run 'commented out'\nbind-key R run-shell 'echo only on a key press'\nif-shell 'true' 'set -g status on'\nnew-session -A -s main\n",
+    );
+    f.write(
+        "tmux/extra.conf",
+        "bind r source-file ~/.tmux.conf\nrun -b 'sleep 1'\n",
+    );
+    f.edit(
+        "borgchart.yaml",
+        "schema: 1\n",
+        &format!(
+            "schema: 1\ntmux: {{user_config: {}}}\n",
+            f.path("tmux/main.conf").display()
+        ),
+    );
+    let (report, validated) = f.run();
+    assert!(validated.is_some(), "{}", errors(&report));
+    let w = warnings(&report);
+    // The key binding on line 7 runs only on a key press: not reported.
+    for want in [
+        "main.conf runs shell commands (`run`, `run-shell`, `if-shell`) at lines 2, 8;",
+        "main.conf sets hooks (`set-hook`) at line 3;",
+        "main.conf uses a session save/restore plugin at line 4;",
+        "main.conf creates or attaches sessions as it loads at line 9;",
+        "extra.conf runs shell commands (`run`, `run-shell`, `if-shell`) at line 2;",
+    ] {
+        assert!(w.contains(want), "{want}\n{w}");
+    }
+
+    let f = Fixture::new();
+    f.edit(
+        "borgchart.yaml",
+        "schema: 1\n",
+        &format!(
+            "schema: 1\ntmux: {{user_config: {}}}\n",
+            f.path("missing.conf").display()
+        ),
+    );
+    expect_error(&f, "is not a file");
+}
+
+#[test]
 fn deployment_must_match_the_team() {
     let f = Fixture::new();
     f.edit(

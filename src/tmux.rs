@@ -7,7 +7,8 @@ use std::process::{Command, Output, Stdio};
 
 use crate::state::tmux_socket;
 
-/// The tmux config brg's private server runs with. Your own `~/.tmux.conf` is never read.
+/// The tmux config brg's private server runs with. Your own `~/.tmux.conf` is
+/// read only when the deployment opts in (`tmux.user_config`).
 pub const CONFIG: &str = "\
 set -g remain-on-exit on
 set -g history-limit 20000
@@ -17,6 +18,42 @@ set -g status-left '[brg #{session_name}] '
 set -g status-left-length 40
 set -as terminal-features ',*:RGB'
 ";
+
+/// What brg relies on, applied again after your own config so it can't change
+/// them: windows keep their member names, dead panes, history and pane titles
+/// stay readable, nothing ends brg's detached server or sessions, members get
+/// no variables from an attaching client, windows start through the shell the
+/// server started with, and the terminal stays the one tmux was built with
+/// (both saved before your config) with RGB colour.
+const REQUIRED: &str = "\
+set -g remain-on-exit on
+set -g history-limit 20000
+set -g update-environment ''
+set -g allow-rename off
+set -g automatic-rename off
+set -g destroy-unattached off
+set -s exit-unattached off
+set -gq allow-set-title on
+set -gF default-terminal '#{@brg-default-terminal}'
+set -gF default-shell '#{@brg-default-shell}'
+set -as terminal-features ',*:RGB'
+";
+
+/// The server option recording which of your configs it loaded ('' for none),
+/// so a later `up` can tell when the running server differs from what it asks.
+pub const USER_CONFIG_OPTION: &str = "@brg-user-config";
+
+/// The config text: brg's own, or, with `user` (a path without `'` or a
+/// newline), brg's, then that file, then brg's required options again.
+pub fn config_text(user: Option<&Path>) -> String {
+    let Some(user) = user else {
+        return CONFIG.to_string();
+    };
+    let user = user.display();
+    format!(
+        "{CONFIG}set -gF @brg-default-terminal '#{{default-terminal}}'\nset -gF @brg-default-shell '#{{default-shell}}'\nsource-file -q '{user}'\n{REQUIRED}set -g {USER_CONFIG_OPTION} '{user}'\n"
+    )
+}
 
 pub struct Tmux {
     socket: String,
@@ -66,8 +103,8 @@ impl Tmux {
         }
     }
 
-    pub fn write_config(&self) -> std::io::Result<()> {
-        crate::state::write_script(&self.config, CONFIG)?;
+    pub fn write_config(&self, user: Option<&Path>) -> std::io::Result<()> {
+        crate::state::write_script(&self.config, &config_text(user))?;
         std::fs::set_permissions(
             &self.config,
             std::os::unix::fs::PermissionsExt::from_mode(0o600),
