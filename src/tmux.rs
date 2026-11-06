@@ -92,7 +92,7 @@ impl Tmux {
             .args(args)
             .stdin(Stdio::null())
             .output()
-            .map_err(|e| format!("cannot run tmux: {e}"))?;
+            .map_err(|e| format!("cannot start tmux: {e}"))?;
         Ok(out)
     }
 
@@ -113,7 +113,7 @@ impl Tmux {
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| format!("cannot run tmux: {e}"))?;
+            .map_err(|e| format!("cannot start tmux: {e}"))?;
         child
             .stdin
             .take()

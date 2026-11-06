@@ -298,12 +298,60 @@ m7 (unacked) -> helper: m2 committed
 carried 2 item(s) from `demo-run-1` into `demo-run-2`
 ```
 
-## Lifecycle and runtime binding (planned)
+## Lifecycle and runtime binding
 
-- Every start validates fully before changing anything; lifecycle changes are serialized by `runtime/lifecycle.lock` (and, without a bus, a lock in brg's state directory).
-- Starting one member into a running team reuses the team's original base environment and plugin values rather than the caller's, and refuses a changed configuration without touching the running team. Any brg can do it: brg isn't pinned.
-- With a bus, `up` creates the team's storage on first start, and rolls it over (see Configuration) when the configuration or message format changed. Each member start gets a new incarnation: recorded before the window starts, then with its pane identity (`%N` pane ID, PID, window, socket) and vendor version once known. `down` marks the incarnations it stops as ended.
-- `up` and `status` print the team as a tree, with each member's vendor, model and outcome or state. Messages talk about teams and members, never runs.
+**Checks before changes.** `brg up` works out everything a start needs (plugin values, `auth: api_key` keys, which storage the team's messages go to, whether the team is already running) before it writes anything. A refused start leaves brg's state directory and the team's message storage as they were.
+
+**Serialized.** `up`, `up --member`, `down` and `down --member` take a lock in brg's state directory (`<state>/lifecycle.lock`) and then, with a bus, `runtime/lifecycle.lock`. `up` holds them while it writes files and starts windows, and releases them before it waits for `locked` gates and Claude's folder trust, so members can already use the bus and another `up --member` isn't held up. Anything that wait changes (the keys that accept folder trust, the trust marker, stopping a `locked` member that fails its check) takes the locks again and first checks that the window still runs the very pane (ID and PID) this `up` launched; a member stopped or replaced meanwhile is left alone (`replaced while starting`), and for a `locked` member that counts as a failed start. A `locked` member whose pane can't be read, at start or when it must be stopped, is stopped by its window name while the locks are held, so it never works without its gate. Two `up --member helper` at once start it once; the other reports `already running`.
+
+**What `up` and `status` print.** `up` prints the team as a tree (members under their `parent`, siblings by name), each member with its vendor, model and what happened: `started`, `already running`, `not started (start: false)`, `failed: …`, or a `locked` member's `stopped: …`. Plugin processes follow the tree. `up --member` leaves the other members' outcome blank.
+
+```
+$ brg up
+oncall
+└─ lead      claude opus high     started
+   └─ helper codex example-model  not started (start: false)
+```
+
+`status` prints the same tree with each member's live state and details, then the plugin processes. A member with no window is `not started` when it has never run since the team's storage began (with a bus: no incarnation in the current storage, so every member of a team that never started, or just rolled over, is `not started`; without one: no start recorded since the team last started afresh; state from an earlier brg recorded none, so its members read `stopped`), printed as `up` prints it: `not started (start: false)` for a `start: false` member. One that ran and ended (or whose start record can't be read) is `stopped`. While the team is running (at least one member has a live window), a `stopped` `start: true` member is an alert: printed `stopped (should be running)`, with `"expected_running": true` in `--json`, and shown like `exited` in `status -i`. After a whole-team `down`, ended members are plain `stopped`. `status --json` is the same rows as before, in tree order, with `parent`, `model`, `expected_running` when set and, with a bus, `liveness`.
+
+```
+$ brg down --member helper
+helper: stopped
+$ brg status
+oncall
+└─ lead        claude opus high      idle
+   ├─ helper   codex example-model   stopped (should be running)
+   └─ reviewer claude sonnet medium  not started (start: false)
+```
+
+**Starting into a running team.** When the team's session exists and its `deployment.json` is there, `up` (with or without `--member`) joins it instead of starting afresh. It uses the base environment and plugin values recorded at the first `up`, never your current shell's: nothing from your `PATH`, `TMPDIR` or other variables reaches the new member, and you don't need the plugin secrets set again. The one exception is `auth: api_key`: the vendor's key (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`) is read from your environment at each start, for the members being started, and passed to them. It is not frozen and brg never stores it (it is in the member's launch file only until the window reads it); a start without it is refused before anything is written. It doesn't rewrite plugin value files or other members' files. With a bus it doesn't rewrite `deployment.json` either; without one, `deployment.json` records each member's first start since the team started afresh (its recorded environment and plugin values stay as they were). If any configuration input changed since the team started (see Configuration), it refuses, changing nothing, and names what changed in team and member terms:
+
+```
+brg: oncall/helper's instruction file changed since the team started; restart the team to apply it: brg down && brg up
+```
+
+The restart command is the bare form in the team's folder and names `--file` elsewhere. A full `up` of a running team with changed files refuses the same way.
+
+**brg isn't pinned.** Every window, plugin shim, gate hook and plugin process runs the `brg` that started it (`_exec`, `_run` and `_gate` use the running binary, as in v0): a member started later with `up --member` uses the `brg` that ran that command, and members find whatever `brg` is installed on their `PATH`; members get no `BORGCHART_BIN` (plugin programs still do: the `brg` that started the team). So start a team from a stable install, not a build that `cargo clean` can remove. A plugin command may not be called `brg` or `borgchart`: a granted command's shim comes first on the member's `PATH`, so it would shadow the installed brg and the member's message commands would call the plugin.
+
+**Message storage at `up`.** With a bus, the team's first `up` creates its storage (internally, run `r1`, named in the team's `current` file) and writes `run.json`: the deployment ID, message format, frozen topology and configuration snapshot. Later starts reuse it, except that a full `up` of a stopped team rolls over to a new run (see Configuration) when the configuration or message format changed or the storage reached `max_age_days`:
+
+- The new run takes the next number after the highest that exists, and its `run.json` links to the old one (`linked_from: {run, root, reason}`, with reason `config`, `format` or `age`).
+- Rollover needs every member positively stopped: each current incarnation recorded in the old run (including members the new configuration no longer has) must be ended or `gone`. One that is `alive`, `unknown`, unreadable or malformed refuses (`brg can't tell that oncall/helper has stopped …`), changing nothing, whatever the reason for the rollover.
+- It takes the old run's `bus/lock`, writes the old run's `retired` marker, carries unfinished work (configuration and age rollovers only), then switches `current`. Carrying is a hook (`carry_into`) that task facts fill in; until it is wired in, a configuration or age rollover leaves unfinished work behind in the old run.
+- A format rollover carries nothing (this brg can't read the old format) and `up` says how many messages were left on disk.
+- `up --member` never rolls over: with changed files or another format it refuses with the restart command. A team that is running, or whose storage is missing its `current` file while runs exist, or whose current run is missing its `run.json`, is never rolled over or started either; those refuse as a storage problem before writing anything.
+- Nothing ever starts into retired storage. If a rollover was interrupted after retiring the old run but before switching `current`, the next full `up` finishes it (switches to the run the marker names, carrying again, so carrying must be idempotent) when that run clearly is its successor (exists, belongs to this team, links back), then decides as usual; otherwise it refuses. `up --member` refuses and asks for a full start.
+- Lifecycle storage errors are reported in team terms, without storage paths or run IDs.
+
+The old run is never changed beyond its `retired` marker.
+
+**Incarnations.** Each member start is a new incarnation, with an ID `<member>.<UTC yyyymmddhhmmssmmm>.<4 hex>` that is unique in the run. Its current file is written before the window starts, then again with the pane's identity (`%N` pane ID, PID, window, session, and the tmux server's absolute socket path) and the vendor version measured at this start; the same record then goes into the history (`runtime/incarnations/<member>/<id>.json`). The member gets `BORGCHART_RUN` (internal) and `BORGCHART_INCARNATION`. `down` and `down --member` mark the incarnations they stop ended (`ended_at`, `ended_reason: "stopped"`); a window tmux fails to create is ended as `start-failed`. Every change to an incarnation file is made holding `bus/lock` (briefly, after the lifecycle locks), so a bus mutation that checks a member's incarnation under that lock sees either the old record or the new one.
+
+**Stopping.** `up` records the tmux socket name and the server's absolute socket path. `down` and `down --member` address that server directly, so a caller's `TMUX_TMPDIR` can't point them elsewhere, and refuse a caller whose `BORGCHART_TMUX_SOCKET` names another socket. They change nothing unless the server answers: an incarnation is marked ended, and secrets and launch files removed, only after brg stopped its pane or the server showed it absent. A `down` that stops the whole session (or finds it gone) records the confirmed stop in `deployment.json`, so a later `down` after the server has exited just says `not running`. If the server really is gone without a `down` (for example after a reboot), `brg up` and then `brg down` clear it.
+
+**Liveness.** brg asks the incarnation's recorded tmux server (by its absolute socket path) for every pane. The incarnation is `alive` when that list has its pane with the same ID and PID, not dead; `gone` when the server answers and the pane is absent, dead or another process, or when the incarnation was ended by a confirmed stop; `unknown` otherwise: no pane recorded, tmux missing, or a server that can't be reached (not running, a removed or hidden socket, no permission). An unreachable server is never taken as proof that anything stopped; treat `unknown` as possibly alive.
 
 ## Attention worker (planned)
 

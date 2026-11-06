@@ -726,13 +726,12 @@ fn cli_refusals() {
     let (rc, json) = d.json(&["bus", "alert", "test", "--member", "nobody", "--json"]);
     assert_eq!(rc, 5, "{json}");
     assert_eq!(json["outcome"], "invalid");
-    // `down` removes the plugin values: the action is unavailable, not a crash.
-    let out = d.brg_cmd(&["down"]).output().unwrap();
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    // Without its plugin values (as after `down`) the action is unavailable,
+    // not a crash. The values are removed directly: every member here is
+    // `start: false`, so no tmux server runs for `down` to reach, and `down`
+    // refuses when it can't reach the team's server.
+    let state = StateDir::from_root(&d.path("state").join(deployment_id(&d.path("state"))));
+    fs::remove_file(state.plugin_env_file("notify")).unwrap();
     let (rc, json) = d.json(&["bus", "alert", "test", "--json"]);
     assert_eq!(rc, 3, "{json}");
     assert_eq!(json["outcome"], "attention-unavailable");
@@ -940,7 +939,9 @@ fn cli_without_current_storage_is_as_if_not_started() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    // `up` ran, but the team has no current storage yet.
+    // The team has no message storage yet: `up` creates it, so remove it to
+    // model a team whose storage was never created.
+    fs::remove_dir_all(d.path("runs").join(deployment_id(&d.path("state")))).unwrap();
     let (rc, json) = d.json(&["bus", "alert", "test", "--json"]);
     assert_eq!(rc, 3, "{json}");
     assert_eq!(json["outcome"], "not-configured");

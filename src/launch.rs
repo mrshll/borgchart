@@ -88,6 +88,12 @@ pub fn shim_script(
     )
 }
 
+/// Command names a plugin may not grant. A granted command's shim comes
+/// first on the member's `PATH`, so a plugin command called `brg` (or
+/// `borgchart`) would shadow the installed brg, and the member's bus calls
+/// would run the plugin instead.
+pub const RESERVED_COMMANDS: [&str; 2] = ["brg", "borgchart"];
+
 /// The member's opening prompt: its standing instruction, the deployment's
 /// extra task, and the commands it may run (shims by absolute path).
 pub fn opening_prompt(

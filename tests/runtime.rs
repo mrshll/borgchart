@@ -258,7 +258,7 @@ fn up_status_send_logs_down() {
     );
     assert_eq!(
         rows.iter().find(|r| r["name"] == "gamma").unwrap()["state"],
-        "stopped"
+        "not started"
     );
     env.wait_for("plugin health", |e| {
         e.status()
@@ -280,7 +280,10 @@ fn up_status_send_logs_down() {
     assert!(stdout(&logs).contains("> hello there"), "{}", stdout(&logs));
 
     let table = env.brg(&["status"]);
-    assert!(stdout(&table).starts_with("NAME"), "{}", stdout(&table));
+    // The team's tree (named after its folder), then plugin processes.
+    let text = stdout(&table);
+    assert!(text.starts_with("team\n├─ alpha"), "{text}");
+    assert!(text.contains("\nplugin "), "{text}");
 
     let out = env.brg(&["up", "--member", "gamma"]);
     assert!(out.status.success());
@@ -307,7 +310,9 @@ fn up_twice_is_harmless() {
     let out = env.brg(&["up"]);
     assert!(out.status.success());
     assert!(
-        stdout(&out).contains("alpha: already running"),
+        stdout(&out)
+            .lines()
+            .any(|l| l.contains(" alpha ") && l.ends_with("  already running")),
         "{}",
         stdout(&out)
     );
@@ -720,7 +725,7 @@ fn folder_trust_is_accepted_for_a_declared_cwd() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        stdout(&out).contains("alpha: accepted folder trust for"),
+        stdout(&out).contains("started; accepted folder trust for"),
         "{}",
         stdout(&out)
     );
@@ -754,7 +759,7 @@ fn folder_trust_is_left_alone_without_a_declared_cwd_or_when_turned_off() {
         let env = trust_env(deploy);
         let out = env.brg(&["up"]);
         assert!(
-            stdout(&out).contains("alpha: waiting at Claude's folder-trust prompt"),
+            stdout(&out).contains("started; waiting at Claude's folder-trust prompt"),
             "{}",
             stdout(&out)
         );
@@ -781,7 +786,7 @@ fn folder_trust_is_left_alone_when_yes_is_already_highlighted() {
     fs::write(env.path("home/fake-agent/trust-yes"), "").unwrap();
     let out = env.brg(&["up"]);
     assert!(
-        stdout(&out).contains("alpha: waiting at Claude's folder-trust prompt"),
+        stdout(&out).contains("started; waiting at Claude's folder-trust prompt"),
         "{}",
         stdout(&out)
     );
@@ -800,7 +805,9 @@ fn locked_member_at_a_prompt_before_its_gate_reports_is_stopped() {
     let out = env.brg(&["up"]);
     assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
     assert!(
-        stdout(&out).contains("alpha: stopped: it was at a prompt"),
+        stdout(&out)
+            .lines()
+            .any(|l| l.contains(" alpha ") && l.contains("  stopped: it was at a prompt")),
         "{}",
         stdout(&out)
     );
