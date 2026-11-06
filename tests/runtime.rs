@@ -4,6 +4,8 @@
 //! Run with `cargo test --features test-support`.
 #![cfg(feature = "test-support")]
 
+mod common;
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -22,9 +24,7 @@ struct Env {
 
 impl Drop for Env {
     fn drop(&mut self) {
-        let _ = Command::new("tmux")
-            .args(["-L", &self.socket, "kill-server"])
-            .output();
+        crate::common::kill_server(&self.socket);
     }
 }
 
@@ -136,9 +136,7 @@ members:
     }
 
     fn tmux(&self, args: &[&str]) -> String {
-        let out = Command::new("tmux")
-            .arg("-L")
-            .arg(&self.socket)
+        let out = crate::common::tmux(&self.socket)
             .args(args)
             .output()
             .unwrap();
@@ -488,7 +486,7 @@ fn identity_comes_from_the_shim_not_the_environment() {
         .into_iter()
         .find(|p| p.ends_with("members/alpha/bin/pager"))
         .unwrap();
-    let out = Command::new(&shim)
+    let out = common::command(&shim)
         .args(["read", "5"])
         .env("BORGCHART_MEMBER", "beta")
         .env("PAGER_TOKEN", "")
