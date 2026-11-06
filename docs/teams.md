@@ -1,73 +1,63 @@
 # Defining a brg team (proposal)
 
-**Status: proposal.** This page describes, in one place, how a team and its plugins are defined and used once the work in review lands. Today's shipped format is in [format.md](format.md). Items marked **Open** are not decided yet.
+**Status: proposal.** This page describes, in one place, how a team and its plugins are defined and used once the work in review lands. Today's shipped format is in [format.md](format.md). Items marked **Open** are not decided yet. For command syntax, `brg … --help` is the authority; the tables below are a short summary.
 
 ## The files
+
+A real team lives in [`dev-team/`](../dev-team/): the team this repository is developed with, plus [`dev-design-team/`](../dev-design-team/), the design panel its lead seats. The sketch below is a smaller version of it:
 
 ```
 devteam/
 ├── team.yaml          # who is on the team, and which plugins they may use
-├── lead.md            # one file per member: role, models, standing instruction
-├── companion.md
+├── orchestrator.md    # one file per member: role, models, standing instruction
 ├── implementer.md
 ├── reviewer.md
-├── includes/rules.md  # shared text, pulled in with {{includes/rules}}
-├── plugins/notify/    # a plugin: a program in any language
-└── borgchart.yaml     # values for this one place: name, folders, messages on/off
+├── includes/base.md   # shared text, pulled in with {{includes/base}}
+└── borgchart.yaml     # values for this one place: name, folders, local rules
 ```
 
-The team directory is shareable: it says nothing about one machine. `borgchart.yaml` holds what changes per place.
+The team directory is shareable: it says nothing about one machine or one project. `borgchart.yaml` holds what changes per place, and in practice lives outside the team directory.
 
 ### `team.yaml`
 
 ```yaml
 default: claude                        # vendor for members that don't name one
 
-plugins:
-  notify:
-    path: plugins/notify               # a folder in the team, or shared:<name>
-    env: [NOTIFY_ROOM]                 # the only variables the plugin receives
-    actions:
-      say:   notify say <text>         # a command members may be granted
-      alert: notify alert <id> <member> <reason> <pending>   # brg's own alert hook
-
 members:
   lead:
-    prompt: lead.md
-    plugins: {notify: [say]}
-  companion:
-    prompt: companion.md
-    parent: lead
+    prompt: orchestrator.md
+    vendor: claude                     # the lead wakes itself with a background wait
   implementer:
     prompt: implementer.md
+    vendor: codex
     parent: lead
     start: false                       # the lead starts it when there's work: brg up --member implementer
   reviewer:
     prompt: reviewer.md
-    vendor: codex
+    vendor: claude
     parent: lead
     start: false
 ```
 
 - **Members** have a member file (`prompt`), an optional `vendor`, a `parent`, and `start`. `start: false` means the member is started on demand. They also have a `posture` (`vendor`, the default, or `locked` for members that read untrusted text) and plugin grants.
 - **`parent`** makes the org chart, and messages follow it: a member writes to its parent or its children. The top member can also write to an outside caller (`external:NAME`).
-- **Plugins** are plain programs. brg runs only what `team.yaml` lists. A member can use only the actions it's granted; each granted action appears in its instruction with an absolute path. Secrets reach the plugin through a private file, never the agent's environment.
+- **Plugins** are plain programs, declared under `plugins:` (a folder in the team, or `shared:<name>`, with the variables they receive and the actions members may be granted). brg runs only what `team.yaml` lists. A member can use only the actions it's granted; each granted action appears in its instruction with an absolute path. Secrets reach the plugin through a private file, never the agent's environment.
   - A plugin may also declare a long-running `process` (a watcher of some outside source) with `delivers_to: <member>`.
-  - An action that brg runs itself, like `alert` above, gets fixed arguments and never any message text.
+  - An action that brg runs itself, like a bus `alert` action, gets fixed arguments and never any message text. The alert action (#8) is parked until the watcher (#20); see "Getting a member's attention".
 
 ### Member files
 
 ```markdown
 ---
 role: implementer
-models: {claude: opus medium, codex: example-model medium}
+models: {claude: opus medium, codex: gpt-6.1-sol high}
 ---
-You implement one assigned task at a time in your own checkout.
+You are the implementer on a development team. The lead assigns you one bounded task at a time, in your own checkout.
 
-{{includes/rules}}
+{{includes/base}}
 ```
 
-- **`models`:** pins a model, and optionally an effort, per vendor. Only the member's own vendor needs an entry.
+- **`models`:** pins a model, and optionally an effort, per vendor. Only the member's own vendor needs an entry; `dev-team/` names both, so moving a member to the other vendor is a one-line change to its `vendor:` in `team.yaml`.
 - **Body:** the standing instruction. It's sent once, when the member starts.
 - **Includes:** one level deep.
 
@@ -79,24 +69,24 @@ name: devteam                          # the team's name on the command line
 auth: login
 auto_trust: false
 bus:                                   # turns messages on for this team
-  root: /tmp/brg-teams-1000            # where messages are kept
-  alert: {plugin: notify, action: alert}
+  root: ~/.local/state/brg-teams       # where messages are kept; survives reboots
 members:
-  lead:        {cwd: ~/work/project}
+  lead:
+    cwd: ~/work/project
+    rules: |                           # local rules: today's `task:`, renamed in #19
+      Checks: the repository's hooks. GitHub: act as the team's own account.
   implementer: {cwd: ~/work/project-impl}   # one checkout per writer
-  reviewer:    {cwd: ~/work/project-impl}   # reads the checkout; its tasks name no checkout
-plugins:
-  notify: {env: {NOTIFY_ROOM: example-room}}
+  reviewer:    {cwd: ~/work/project-review} # read-only; its tasks name no checkout
 ```
 
 - **`name`:** defaults to the folder's name. It must be unique among your teams; a second folder with the same name is refused.
 - **`bus`:** turns messages on. Without it, the team works as today: you drive it with `prompt`.
-- **Per member:** `cwd`, `task` (appended to the instruction), `posture` and extra vendor `args`.
+- **Per member:** `cwd`, `rules` (local rules appended to the instruction: the project's checks and conventions, paths, which GitHub identity to use), `posture` and extra vendor `args`. `rules` is today's `task:`; the rename is part of #19. It holds standing rules, not a one-shot task: the back-and-forth happens in chat with the lead.
 - **Secrets:** never written here. They come from your environment by name when you run `brg up`.
 
 ## Commands
 
-A small top level for people:
+A small top level for people. `brg --help` and `brg <command> --help` give the full syntax; inside a member, the help also covers the message kinds and facts, waiting and the task lifecycle.
 
 | Command | What it does |
 | --- | --- |
@@ -114,9 +104,8 @@ A small top level for people:
 ```
 devteam
 └─ lead            claude opus high       started
-   ├─ companion    claude opus high       started
-   ├─ implementer  claude opus medium     not started (start: false)
-   └─ reviewer     codex example-model    not started (start: false)
+   ├─ implementer  codex gpt-6.1-sol high not started (start: false)
+   └─ reviewer     claude opus high       not started (start: false)
 ```
 
 **Messages**, mostly used by members:
@@ -142,9 +131,10 @@ devteam
 
 **Getting a member's attention.** A member with messages waiting has to notice them. Nothing is typed into its terminal in the normal case:
 
-- **Claude members wake themselves.** At the start of each turn they run `brg message wait` in the background, and Claude Code starts a new turn when it returns.
-- **Codex members are woken by `codex queue`.** It hands the waiting session a one-line pointer to its inbox and starts a turn, with nothing typed.
-- **A hidden watcher per team is the safety net.** It looks for members with unread messages and no working wait, and wakes them the vendor's way. Its last resort is to type one fixed reminder, and only into a provably empty input box. When it can't do that safely, it alerts a person.
+- **Work is waiting before a member starts.** The lead publishes the assignment first, then starts the member, whose first action is to read its inbox. So an on-demand member never needs waking for its first task.
+- **Claude members wake themselves.** At the start of each turn they run `brg message wait` in the background, and Claude Code starts a new turn when it returns. That's why `dev-team/`'s lead runs on Claude.
+- **Codex members are woken by `codex queue`** once the watcher (#20) lands. It hands the waiting session a one-line pointer to its inbox and starts a turn, with nothing typed. Until then a Codex member waits only in the foreground, for the answer to its own question, and a Codex lead isn't supported.
+- **A hidden watcher per team is the safety net** (#20). It looks for members with unread messages and no working wait, and wakes them the vendor's way. Its last resort is to type one fixed reminder, and only into a provably empty input box. When it can't do that safely, it alerts a person through the team's alert action (#8), which is parked until the watcher lands with it.
 - **Version check.** Each of these is enabled per vendor and version only after it has been tested on that CLI.
 
 ## Secrets (proposed, not in this work)
@@ -152,10 +142,10 @@ devteam
 Today a plugin's secrets come from your environment when you run `brg up`, so they must be present at every start. The proposal is to register them with brg once, as Modal or Kubernetes do:
 
 ```
-$ passh read op://vault/notify/token | brg secret add devteam NOTIFY_TOKEN
+$ op read op://vault/chat/token | brg secret add devteam CHAT_TOKEN
 $ brg secret ls devteam
-NOTIFY_TOKEN   added 2026-11-06
-$ brg secret rm devteam NOTIFY_TOKEN
+CHAT_TOKEN     added 2026-11-06
+$ brg secret rm devteam CHAT_TOKEN
 ```
 
 - **`add`** reads the value from stdin. Paste it, or pipe it from a password manager; where it comes from is your business. It never appears in a command line, a prompt or a log.
@@ -184,7 +174,7 @@ members:
   └─ lead              claude opus high      working
      ├─ implementer-1  claude opus medium    working
      ├─ implementer-2  claude opus medium    idle
-     └─ reviewer       codex example-model   not started (start: false)
+     └─ reviewer       claude opus high      not started (start: false)
 
   devteam
   └─ lead            claude opus high      idle
@@ -225,7 +215,7 @@ members:
   lead:
     prompt: lead.md
   ws:                                  # a workstream: a whole sub-team
-    team: teams/medium                 # a team folder inside this one, or shared:<name>
+    team: teams/dev-team               # a team folder inside this one, or shared:<name>
     parent: lead
     start: false
     max: 4
@@ -241,7 +231,7 @@ members:
        ├─ ws-1
        │  └─ lead               claude opus high     working
        │     ├─ implementer-1   claude opus medium   working
-       │     └─ reviewer        codex example-model  not started (start: false)
+       │     └─ reviewer        claude opus high     not started (start: false)
        └─ ws                    on demand (1 of 4 running)
     ```
 
@@ -291,6 +281,7 @@ Open questions:
 ## Open
 
 - **Roles with several copies** and **teams as members** (above).
+- **Deployment shape:** one deployment file that declares several teams, or named teams on the command line (`brg up dev-team`), decided after the first real run of `dev-team/` (#34). Today each team has its own file, and a lead that seats a second team (like the design panel) passes `--file`.
 - **Sessions:** whether separate groups of teams (`--session`) are needed at all. They are kept minimal for now.
 - **Storage key:** messages are keyed by the deployment's location, so moving the team's folder starts empty. Should `name` be the key instead?
 - **Secrets:**
@@ -299,4 +290,4 @@ Open questions:
   - rotation;
   - which plugin or member may read which secret;
   - how a deployed team maps them to a cloud secret manager.
-- **When renames land:** `prompt`, `message …` and the folded commands arrive in one follow-up change after the reworked pieces merge. Until then the commands under review keep today's names.
+- **When renames land:** `prompt`, `message …`, `rules:` and the folded commands arrive in one follow-up change (#19). Until then the commands keep today's names (`send`, `msg`, `inbox`, `task:`).
