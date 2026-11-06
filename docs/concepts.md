@@ -1,70 +1,80 @@
 # Concepts
 
-**Status: proposal.** Nothing here is built yet. Once the names are agreed they drive the renames (#19), roles with copies (#24) and teams as members (#25). The open naming questions and their alternatives are in PR #50.
+**Status: proposal, revised after the owner's first answers.** Nothing here is built yet. It drives the renames (#19), roles with copies (#24) and teams as members (#25). The questions still open are in PR #50.
 
-## The nouns
+## Definitions and what runs from them
 
-| Noun | What it is | Example |
-| --- | --- | --- |
-| **Team** | A definition: a team folder with `team.yaml` and its role files. Reusable and shareable; it says nothing about one machine. | `dev-team/` |
-| **Deployment** | How and where a team runs: a `borgchart.yaml` file (folders, logins, values, message storage). Kept with the user, not with the team. | `~/.config/borgchart/borgchart-dev.yaml` |
-| **Team instance** | A team seated from a deployment: its members, messages and tasks. It has an ID. In commands and output it's simply "the team" (`brg up borgchart-dev`). | `borgchart-dev` |
-| **Role** | A named part in a team: a role file, a vendor, a parent, whether it starts with the team, and how many copies may run. | `lead`, `implementer` |
-| **Member** | One running agent filling a role in a team instance. Copies of a role are separate members. | `lead`, `implementer-2` |
-| **Start** | One start of a member: `brg up` starts it, and only its latest start may act as the member. | `implementer-2` start 3 |
+Each definition noun has an active noun: the thing `brg up` creates from it.
+
+| Definition | Active | Created by | Examples |
+| --- | --- | --- | --- |
+| **Role**: a named part in a team (a role file, a vendor, a parent, whether it starts with the team, how many copies may run) | **Member**: one running agent filling the role | `brg up --role implementer` | `implementer`, `implementer-2` |
+| **Deployment**: a `.yaml` file that says how and where a team runs (folders, logins, values, message storage) | **Instance**: the team running from that deployment, with its members, messages and tasks | `brg up dev-team` | `dev-team`, `dev-team-2` |
+
+**Team** is the set of roles: a team folder with `team.yaml` and its role files. It's reusable and says nothing about one machine. A team runs only through a deployment, so it has no active noun of its own. "Team" never means a running thing in commands, output or variables.
+
+**Start**: one start of a member. Starts are numbered per member, and only a member's latest start may act as it.
 
 Unchanged:
 - **Plugins:** a *plugin* is a program the team declares, and a *plugin process* is one that runs alongside the members.
 - **Outside callers:** anyone outside the team, written `external:NAME`.
-- **Sessions:** a *session* (`--session`, planned) is a separate tmux server for a group of teams. That's not the tmux session brg makes for each team, which stays an implementation detail.
 
-**A team instance lives from its first `brg up` until you remove it.**
-- **Restarts:** `brg down` then `brg up` restarts the same instance, with the same ID, messages and open tasks.
-- **What comes back:** a full `up` starts the `start: true` roles plus any member that still holds an open task or checkout. The rest are listed as stopped.
+## Names and IDs
 
-**Members:**
-- **A member keeps its ID across restarts.** `implementer-2` stopped and started again is still `implementer-2`, with its inbox and its task.
-- **A role with one member (`max: 1`, the default) always has exactly one member, named after the role**, running or not. Copies are numbered `implementer-1`, `implementer-2`, and the numbers are never reused within the instance.
+| What | Name | Example |
+| --- | --- | --- |
+| Deployment | Its file name without `.yaml`. For a file literally named `borgchart.yaml`, its folder's name. There's no `name:` field. | `dev-team.yaml` is `dev-team` |
+| Instance | The deployment's name. A second instance of the same deployment running at the same time takes `-2`, then `-3`. Numbers are never reused within a deployment. | `dev-team`, `dev-team-2` |
+| Member | The role's name for a role with one member (`max: 1`, the default); `<role>-<n>` for copies. Copy numbers are never reused within the instance. | `lead`, `implementer-2` |
+| Start | A number per member, from 1, never reused (below) | 3 |
+| Member address | `[instance/]member`. The instance may be left out inside a member, in a folder holding exactly one deployment, or when one running instance has that member. A role name works when the role has exactly one member. | `dev-team/implementer-2` |
+| Role address | `[instance/]role`, for sending a message only: it goes to the role's shared queue (#24). | `dev-team/implementer` |
+| Message | `[instance/]m<seq>` | `dev-team/m42` |
+
+**Uniqueness.** Deployment names are unique among your deployments: brg registers each by name and file path. A second file with the same name in another folder is refused, with a pointer to rename one of them.
 
 **Parents are roles.** `parent: lead` names a role, and a member's parent is the member filling that role. So a parent role must have one member: `validate` refuses a `parent:` that names a role with `max > 1`.
 
-**A department (#25) is one team instance.** A role can be a team. Its members (`ws-1`, `ws-2`) are members of the department that have their own sub-members (`coding/ws-2/lead`), in the department's one message store. They aren't separate team instances.
+**Departments (#25).** A role can be a team. Its members (`ws-1`, `ws-2`) have their own sub-members (`dev/ws-2/lead`), inside the department's instance and its one message store.
 
-## No run, no incarnation
+## Commands: create from the definition, act on the active noun
 
-Today's code has two more nouns: a *run* (a hidden storage generation, rolled over when files, the message format or the storage's age change, carrying open work across) and an *incarnation* (one start of a member, used for fencing). The proposal removes both from code, storage and records, not just from output:
+| Command | What it does |
+| --- | --- |
+| `brg up [deployment]` | Creates the deployment's instance, or continues it: it starts its `start: true` roles, plus any member that still holds an open task or checkout. If the instance is already running, it starts what's missing and says so. |
+| `brg up [deployment] --new` | Creates the next concurrent instance (`dev-team-2`). Each instance needs its own checkouts, so this is refused unless the deployment's `cwd` values use `{instance}`. |
+| `brg up --role R [instance]` | Creates a member for role R: the next copy, or, for a `max: 1` role, its single member if it isn't running. |
+| `brg down [instance]`, `brg down instance/member` | Stops an instance or one member. |
+| `brg restart instance/member`, `brg restart instance` | Starts an existing member, or instance, again with a new start. A stopped copy that holds a task resumes it. |
+| `attach`, `logs`, `prompt` | A member address |
+| `brg ls` | Your deployments and their instances, running or stopped |
 
-- **The team instance is the unit of storage.** It keeps one message store for its whole life, so message numbers never restart.
-  - **Configuration** is frozen from a full `up` to the full `down`. It's replaced only when every member is positively stopped.
-  - **Orphaned work:** a full `up` refuses while the new configuration orphans open work (a removed role holding a task or checkout, say) and says what to cancel or restore.
-  - **A message-format change** is refused until `brg down <team> --reset` archives the old messages. Losing open work is then a decision, and message and start numbers continue from the archive.
-  - **There's no age-based rollover.**
-    - `validate` refuses a message root under `/tmp` or any other path cleaned by age.
-    - An index keeps reads cheap as the store grows.
-  - **The upgrade:** the switch to this layout converts a team's current storage once, so open work survives it.
-- **Starts replace incarnations.** Start numbers are per member and never reused, even across `--reset`. If the record of them is lost while other traces of the team remain, `up` refuses rather than start counting again. A start keeps every job an incarnation does:
-  - fencing a replaced process ("this start of `implementer-2` has been replaced");
-  - the recorded tmux pane that decides whether the start is still running;
-  - the task writers that must be gone before a checkout is freed;
-  - what the background wait has already shown.
+## Lifetimes
 
-## IDs and addresses
+**An instance lives from its first `up` until you remove it.**
+- **Restarts:** `down` then `up`, or `restart`, keep its name, messages and open tasks. Its members keep their IDs.
+- **Message store:** one per instance, for its whole life, so message numbers never restart.
+- **Frozen configuration:** the configuration is frozen from a full `up` to the full `down`, and replaced only once every member is positively stopped.
+- **Orphaned work:** a full `up` refuses while the new configuration orphans open work (for example, a removed role that holds a task or checkout). It says what to cancel or restore.
+- **Message-format change:** refused until `brg down <instance> --reset` archives the old messages. Message and start numbers then continue from the archive.
+- **No age-based rollover:** `validate` refuses a message root under `/tmp` or any other path cleaned by age, and an index keeps reads cheap as the store grows.
+- **The upgrade:** the switch to this layout converts each instance's current storage once, so open work survives it.
 
-| What | Format | Example |
-| --- | --- | --- |
-| Team instance | `[a-z][a-z0-9_-]{0,31}`: `name:` in the deployment, or by default its file name without `.yaml` (the folder's name for `borgchart.yaml`). Unique among your teams in a session, running or stopped; a duplicate is refused, with a pointer to `name:`. | `borgchart-dev` |
-| Member | The role name for a `max: 1` role; `<role>-<n>` for copies. `validate` refuses a role name that could be another role's copy ID. | `lead`, `implementer-2` |
-| Start | A number per member, from 1 | 3 |
-| Member address | `[team/]member`, for `attach`, `logs`, `prompt` and `down`. The team may be left out inside a member, in a folder holding `borgchart.yaml`, or when exactly one running team has that member. A role name works when it has exactly one member. | `borgchart-dev/implementer-2` |
-| Role address | `[team/]role`, for sending a message only: it goes to the role's shared queue (#24) | `borgchart-dev/implementer` |
-| Nested member | `<team>/<member>/<sub-member>` | `coding/ws-2/lead` |
-| Message | `[team/]m<seq>` | `borgchart-dev/m42` |
+**Starts** do the jobs of today's incarnations:
+- fencing a replaced process ("this start of `implementer-2` has been replaced");
+- the recorded tmux pane that decides whether the start is still running;
+- the task writers that must be gone before a checkout is freed;
+- what the background wait has already shown.
+
+Start numbers are never reused, even across `--reset`. They live in brg's registry, outside the archivable store. If that record is lost while other traces of the instance remain, `up` refuses rather than start counting again.
+
+Today's *run* (a hidden storage generation) and *incarnation* disappear from code, storage and records.
 
 ## `brg status`
 
 ```
 $ brg status
-borgchart-dev                       team dev-team/ · ~/.config/borgchart/borgchart-dev.yaml
+dev-team                            deployment ~/.config/borgchart/dev-team.yaml · team dev-team/
 └─ lead              claude opus high          working
    ├─ implementer-1  codex gpt-6.1-sol high    working
    ├─ implementer-2  codex gpt-6.1-sol high    idle
@@ -72,35 +82,50 @@ borgchart-dev                       team dev-team/ · ~/.config/borgchart/borgch
    └─ researcher     on demand (none running)
 ```
 
-- **Header line:** the team instance, then its team folder and deployment file.
-- **Tree lines:** one line per member. A role with copies and none running (here `researcher`, `max: 2`) gets one dim line. Department members nest.
-- **`--json`:** each member row has `team`, `member`, `role`, `parent` (a member ID), `start`, and the existing fields. Plugin-process rows keep `kind: plugin` and their name, with no member or role.
+- **Header line:** the instance, then its deployment file and team folder.
+- **Tree lines:**
+  - one line per member;
+  - a role with copies and none running (here `researcher`, `max: 2`) gets one dim line;
+  - department members nest.
+- **`--json` member rows:** `instance`, `deployment`, `member`, `role`, `parent` (a member ID), `start`, and the existing fields. Plugin-process rows keep `kind: plugin` and their name.
 
-## From today's names
+## Every use of "team" today
+
+| Today | Means | Proposed |
+| --- | --- | --- |
+| `brg up` / `down` / `status` "the team" (help, output) | the running thing | instance |
+| `brg ls` "your teams" | deployments and what runs from them | deployments and their instances |
+| `[team/]member` (sessions design) | instance | `[instance/]member` |
+| team name derived from the deployment's folder | instance | the deployment file's name |
+| errors: "team `x` was restarted", "no team named `x`" | instance | "instance `x`" |
+| `BORGCHART_DEPLOYMENT` (a storage key), `BORGCHART_TEAM` (earlier proposal) | instance | `BORGCHART_INSTANCE` |
+| JSON `team` (earlier proposal) | instance | `instance`, plus `deployment` |
+| `--team DIR`: a team folder used on its own | the definition, with an implicit deployment | `--team-dir DIR`, an implicit deployment named after the folder |
+| `./team.yaml` on its own (no deployment file) | the same | the same implicit deployment |
+| `team:` in `borgchart.yaml` | the team folder | unchanged |
+| "team directory", `team.yaml` | the definition | unchanged ("team folder") |
+| tmux session `brg-<name>-<hash>` | instance | `brg-<instance>` |
+| docs: "team" for the running thing | instance | "instance"; "team" only for the definition |
+
+## Other names
 
 | Where | Today | Proposed |
 | --- | --- | --- |
 | `team.yaml` | `members:` | `roles:` |
 | | member file (`prompt: implementer.md`) | role file (same key) |
 | | `parent:`, `delivers_to:` name a member | name a role |
-| | frontmatter `role:` (a required, unused label) | dropped |
+| | frontmatter `role:` (required, unused) | dropped |
 | `borgchart.yaml` | `members:` (per-member values) | `roles:` |
-| | `team: .` (the team folder) | unchanged |
-| | team name from the deployment's folder | `name:`, default from the file name |
-| CLI | `--team DIR` (a team folder alone) | `--team-dir DIR` |
-| | `--member ID` | a member ID, or a role name with exactly one member |
-| | `brg up --member reviewer` starts that member | unchanged. `--role implementer` starts the next copy of a `max > 1` role, and `--member implementer` is refused there, listing the copies. |
-| | `attach`, `logs`, `send <member>`, `--from MEMBER` | member addresses (above) |
+| | — | `{instance}` in `cwd` for concurrent instances, `{n}` for copies |
+| CLI | `brg up --member X` | `brg up --role X` (create); `restart`/`down` with a member address |
 | | `brg bus carry --from RUN` | removed |
-| Output | the team name in trees and errors | the team instance (`borgchart-dev/implementer-2`) |
-| | `status --json` `name`, `kind` | `member`, `role`, `team`, `start`; `kind` stays |
-| Records | `actor: {type: member, member, incarnation}`, task fact `writer_incarnation`, the internal `run` field | `actor: {type: member, member, start}`, `writer_start`, no `run`: one message-format change, together with the single store |
-| On disk | `<bus.root>/<name>-<hash>/current`, `r1/…`, `runtime/incarnations/<member>.json` | `<bus.root>/<team>-<hash>/…`, `members/<member>/starts/<n>.json` |
-| | brg state `$XDG_STATE_HOME/borgchart/<name>-<hash>/` (also inside `BORGCHART_STATE_DIR`) | `…/borgchart/<team>-<hash>/` |
-| | tmux session `brg-<name>-<hash>` | `brg-<team>` |
-| Docs | "member" for both the declared part and the running agent, "run", "incarnation" | "role" and "member", "start". Covers `format.md` (and its older-shape steps), `teams.md`, `sessions.md`, `bus.md`, `cli.md`, the `brg … --help` text, and the `dev-team/` role files. |
+| Output | `status --json` `name`, `kind` | `member`, `role`, `instance`, `deployment`, `start`; `kind` stays |
+| Records | `actor: {type: member, member, incarnation}`, `writer_incarnation`, the internal `run` field | `actor: {type: member, member, start}`, `writer_start`, no `run`: one message-format change, with the single store |
+| On disk | `<bus.root>/<name>-<hash>/current`, `r1/…`, `runtime/incarnations/…` | `<bus.root>/<instance>/…`, `members/<member>/starts/<n>.json` |
+| | brg state `…/borgchart/<name>-<hash>/` | `…/borgchart/<instance>/`, plus the registry |
+| Docs | "member" for both the part and the agent, "run", "incarnation", "team" for the running thing | "role", "member", "start", "instance". Covers `format.md` (and its older-shape steps), `teams.md`, `sessions.md`, `bus.md`, `cli.md`, the `--help` text, and the `dev-team/` role files. |
 
-**Upgrading running teams.** New default names change the storage folder, the state folder and the tmux session, so stop every team before upgrading. brg refuses `up` while a tmux session under the old name exists for that deployment file, rather than start a second set of members on the same checkouts.
+**Upgrading running instances.** The new names change the storage folder, the state folder and the tmux session, so stop everything before upgrading. brg refuses `up` while a tmux session under an old name exists for that deployment, rather than start a second set of members on the same checkouts.
 
 ## Environment variables
 
@@ -108,18 +133,18 @@ Every `BORGCHART_*` variable that a member, plugin or test can see:
 
 | Today | Seen by | Proposed | Meaning |
 | --- | --- | --- | --- |
-| `BORGCHART_MEMBER` | members, plugin actions | unchanged | the member ID (`implementer-2`) |
-| — | members, plugin actions | `BORGCHART_ROLE` | the role it fills (`implementer`) |
-| `BORGCHART_DEPLOYMENT` | members, plugins, alert actions | `BORGCHART_TEAM` | the team instance. Today's value is a storage key. |
+| `BORGCHART_DEPLOYMENT` | members, plugins, alert actions | `BORGCHART_INSTANCE` | the instance (`dev-team-2`). Today's value is a storage key. |
+| — | members, plugin actions | `BORGCHART_ROLE` | the role (`implementer`) |
+| `BORGCHART_MEMBER` | members, plugin actions | unchanged | the member (`implementer-2`) |
 | `BORGCHART_RUN`, `BORGCHART_INCARNATION` | members | `BORGCHART_START` | the member's start number; brg refuses an earlier start |
 | `BORGCHART_FILE` | members, plugins, the caller | unchanged | the deployment file |
 | `BORGCHART_BIN` | members, plugins | unchanged | the brg that started them |
-| `BORGCHART_PARENT` | plugin actions | unchanged | the calling member's parent (a member ID) |
+| `BORGCHART_PARENT` | plugin actions | unchanged | the calling member's parent (a member) |
 | `BORGCHART_DELIVER_TO` | plugin processes | unchanged | the role address a process hands work to (its queue, for a role with copies) |
 | `BORGCHART_STATE_DIR` | plugins | unchanged | the plugin's private folder |
 | `BORGCHART_ACTOR` | alert actions | unchanged | `bus`: an alert action can't act as a member |
-| `BORGCHART_TMUX_SOCKET` | members, plugins, tests | unchanged for now; `BORGCHART_SESSION` if sessions land | which tmux server the team runs on |
-| `BORGCHART_TMUX_TMPDIR` (#47) | members, plugins, tests | unchanged for now; `BORGCHART_SESSION_DIR` if sessions land | where that server keeps its socket; keeps test servers private |
+| `BORGCHART_TMUX_SOCKET` | members, plugins, tests | unchanged (decided) | which tmux server runs the instance |
+| `BORGCHART_TMUX_TMPDIR` (#47) | members, plugins, tests | unchanged (decided) | where that server keeps its socket; keeps test servers private |
 | `BORGCHART_STATE_HOME` | the caller, tests | unchanged | brg's state folder |
 | `BORGCHART_GATE_WAIT_MS` | the caller, tests | unchanged; a tuning knob | how long `up` waits for a `locked` member's gate |
 | `BORGCHART_WAIT_MIN_MS`, `BORGCHART_WAIT_TIMEOUT_MS` | tests (test builds only) | unchanged | shorten the background wait's minimum and timeout |
@@ -127,4 +152,4 @@ Every `BORGCHART_*` variable that a member, plugin or test can see:
 
 ## Effects on #24 and #25
 
-Their acceptance text says `brg up --member implementer` starts the next copy. With this proposal, `brg up --role implementer` does that. #25's departments become members whose role is a team, not separate team instances. Update both issues once the names are agreed.
+Their acceptance text says `brg up --member implementer` starts the next copy; that becomes `brg up --role implementer`. #25's departments are members whose role is a team, inside one instance. Update both issues once the names are agreed.
