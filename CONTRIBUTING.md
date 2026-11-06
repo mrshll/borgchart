@@ -11,6 +11,10 @@ Four checks must pass before a change merges. CI runs the Rust checks on Linux a
 
 The tests need `tmux`, and `py` needs `uv`.
 
+## Tests that start processes
+
+The tests may run inside a team member, where `BORGCHART_*` and `TMUX` point at that member's real team. Start every `brg`, `tmux` or other program through `tests/common` (`common::command`, `common::tmux`), or with `env_clear()`, and stop each tmux server with `common::kill_server`, which also removes its socket file. `.githooks/checks test` runs the tests with `BORGCHART_*` pointing nowhere, so a test that forgets fails there.
+
 ## Git hooks
 
 Turn the hooks on once per checkout:

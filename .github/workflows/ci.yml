@@ -31,6 +31,10 @@ jobs:
       - run: .githooks/checks fmt
       - run: .githooks/checks clippy
       - run: .githooks/checks test
+      - name: No tmux sockets left behind
+        run: |
+          left=$(ls "/tmp/tmux-$(id -u)" 2>/dev/null | grep '^brg-' || true)
+          [ -z "$left" ] || { echo "the tests left these tmux sockets: $left"; exit 1; }
 
   slackbot-plugin:
     runs-on: ubuntu-24.04
