@@ -79,9 +79,9 @@ pub struct InboxArgs {
     /// Only records after this ID (the `next` of the previous page).
     #[arg(long)]
     pub after: Option<String>,
-    /// Records per page (1-100).
-    #[arg(long, default_value_t = store::DEFAULT_PAGE)]
-    pub limit: usize,
+    /// Records per page (1-100, default 20).
+    #[arg(long)]
+    pub limit: Option<usize>,
     /// Include acknowledged records.
     #[arg(long)]
     pub all: bool,
@@ -103,16 +103,19 @@ pub enum InboxCommand {
         /// Only records after this ID: the last one you have seen.
         #[arg(long)]
         after: Option<String>,
-        /// Give up after this many seconds (1–600), exiting `timeout`.
+        /// Wait read-only for IDs this member session hasn't been shown.
         #[arg(long)]
-        timeout: u64,
-        /// Records per page (1-100).
-        #[arg(long, default_value_t = store::DEFAULT_PAGE)]
-        limit: usize,
+        background: bool,
+        /// Seconds until timeout: 1–600 foreground; 60–86400 background (default 86400).
+        #[arg(long, required_unless_present = "background")]
+        timeout: Option<u64>,
+        /// Records per page (1-100, default 20; foreground only).
+        #[arg(long)]
+        limit: Option<usize>,
         /// Include bodies and facts.
         #[arg(long)]
         full: bool,
-        /// Print the page, or the failure, as JSON.
+        /// Print IDs (background), the page (foreground), or the failure as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -450,12 +453,18 @@ fn render(r: &Record, acked: bool, full: bool) -> String {
     out
 }
 
-pub fn inbox(input: &Input, args: InboxArgs) -> ExitCode {
+pub fn inbox(input: &Input, args: InboxArgs, started: Instant) -> ExitCode {
+    let parent_flags = args.who.member.is_some()
+        || args.who.external.is_some()
+        || args.after.is_some()
+        || args.limit.is_some()
+        || args.all
+        || args.full;
     match args.command {
         None => finish(
             args.json,
             (|| {
-                let limit = check_limit(args.limit)?;
+                let limit = check_limit(args.limit.unwrap_or(store::DEFAULT_PAGE))?;
                 let after = parse_after(args.after.as_deref())?;
                 let bus = open_bus(input)?;
                 let t = target(&bus, &args.who)?;
@@ -472,6 +481,7 @@ pub fn inbox(input: &Input, args: InboxArgs) -> ExitCode {
         Some(InboxCommand::Wait {
             who,
             after,
+            background,
             timeout,
             limit,
             full,
@@ -479,15 +489,52 @@ pub fn inbox(input: &Input, args: InboxArgs) -> ExitCode {
         }) => finish(
             json,
             (|| {
-                if !(1..=store::MAX_WAIT_SECS).contains(&timeout) {
+                if background
+                    && (parent_flags
+                        || who.member.is_some()
+                        || who.external.is_some()
+                        || after.is_some()
+                        || limit.is_some()
+                        || full)
+                {
                     return Err(Failure::new(
                         Code::Usage,
-                        format!("`--timeout`: 1–{} seconds", store::MAX_WAIT_SECS),
+                        "`--background` takes only your own inbox, without `--after`, `--member`, `--external`, `--limit` or `--full`",
                     ));
                 }
-                let limit = check_limit(limit)?;
+                let timeout = timeout
+                    .or(background.then_some(store::MAX_BACKGROUND_WAIT_SECS))
+                    .ok_or_else(|| Failure::new(Code::Usage, "`--timeout` is required"))?;
+                let (min, max) = if background {
+                    (
+                        store::MIN_BACKGROUND_WAIT_SECS,
+                        store::MAX_BACKGROUND_WAIT_SECS,
+                    )
+                } else {
+                    (1, store::MAX_WAIT_SECS)
+                };
+                if !(min..=max).contains(&timeout) {
+                    return Err(Failure::new(
+                        Code::Usage,
+                        format!("`--timeout`: {min}–{max} seconds"),
+                    ));
+                }
+                let limit = check_limit(limit.unwrap_or(store::DEFAULT_PAGE))?;
                 let after = parse_after(after.as_deref())?;
-                let deadline = Instant::now() + Duration::from_secs(timeout);
+                let duration = Duration::from_secs(timeout);
+                #[cfg(feature = "test-support")]
+                let duration = if background {
+                    std::env::var("BORGCHART_WAIT_TIMEOUT_MS")
+                        .ok()
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .map(Duration::from_millis)
+                        .unwrap_or(duration)
+                } else {
+                    duration
+                };
+                let deadline = Instant::now() + duration;
+                let minimum = started + store::background_wait_minimum();
+                let mut start_mark = None;
                 let first = open_bus(input)?.run;
                 let timed_out = |t: &Target| {
                     Failure::new(
@@ -499,7 +546,17 @@ pub fn inbox(input: &Input, args: InboxArgs) -> ExitCode {
                 // the inbox, the caller and the format against it: a restart
                 // while waiting must not leave the wait on old storage.
                 loop {
+                    let mut next_check = deadline;
                     let bus = open_bus(input)?;
+                    if background && bus.run != first {
+                        return Err(Failure::new(
+                            Code::Fenced,
+                            format!(
+                                "team `{}` was restarted while waiting; this session is over",
+                                bus.team
+                            ),
+                        ));
+                    }
                     if bus.run != first
                         && let Some(a) = after
                     {
@@ -513,16 +570,68 @@ pub fn inbox(input: &Input, args: InboxArgs) -> ExitCode {
                         ));
                     }
                     let t = target(&bus, &who)?;
+                    if background && t.own.is_none() {
+                        return Err(Failure::new(
+                            Code::Usage,
+                            "`--background` requires your own member session",
+                        ));
+                    }
                     match store::wait_snapshot(&bus, deadline)? {
                         store::WaitSnapshot::TimedOut => return Err(timed_out(&t)),
                         store::WaitSnapshot::Retired => {}
                         store::WaitSnapshot::Ready(snap) => {
-                            let page = store::list(&snap, &t.recipient, after, limit, false);
-                            if !page.records.is_empty() {
-                                if let Some((m, i)) = &t.own {
-                                    store::observed(&bus, m, i, &page);
+                            if background {
+                                snap.require_healthy()?;
+                                // Only an arrival beyond the first snapshot may
+                                // bypass the minimum. Observation failures must
+                                // never turn old records into immediate wakes.
+                                let start_mark = *start_mark.get_or_insert_with(|| {
+                                    snap.records.last_key_value().map_or(0, |(&seq, _)| seq)
+                                });
+                                // Recheck after a lock wait, which may have queued
+                                // behind a member replacement.
+                                let current = target(&bus, &who)?;
+                                let (member, incarnation) =
+                                    current.own.as_ref().expect("own member session");
+                                let shown = super::attention_hooks::shown_ids(
+                                    &bus.paths,
+                                    member,
+                                    incarnation,
+                                );
+                                let recipient = current.recipient.to_string();
+                                let unseen: Vec<&Record> = snap
+                                    .records
+                                    .values()
+                                    .filter(|r| {
+                                        r.to == recipient
+                                            && !snap.is_acked(r.seq)
+                                            && !shown.contains(&r.seq)
+                                    })
+                                    .collect();
+                                if !unseen.is_empty() {
+                                    if unseen.iter().any(|r| r.seq > start_mark)
+                                        || Instant::now() >= minimum
+                                    {
+                                        let ids: Vec<String> =
+                                            unseen.iter().map(|r| r.id.clone()).collect();
+                                        return Ok(Output {
+                                            json: ok_json(
+                                                "ok",
+                                                json!({"ids": ids, "count": ids.len()}),
+                                            ),
+                                            text: format!("{}\n", ids.join(" ")),
+                                        });
+                                    }
+                                    next_check = next_check.min(minimum);
                                 }
-                                return Ok(page_output(&t, &page, &snap, full));
+                            } else {
+                                let page = store::list(&snap, &t.recipient, after, limit, false);
+                                if !page.records.is_empty() {
+                                    if let Some((m, i)) = &t.own {
+                                        store::observed(&bus, m, i, &page);
+                                    }
+                                    return Ok(page_output(&t, &page, &snap, full));
+                                }
                             }
                         }
                     }
@@ -530,7 +639,7 @@ pub fn inbox(input: &Input, args: InboxArgs) -> ExitCode {
                     if now >= deadline {
                         return Err(timed_out(&t));
                     }
-                    std::thread::sleep(store::POLL.min(deadline - now));
+                    std::thread::sleep(store::POLL.min(next_check.saturating_duration_since(now)));
                 }
             })(),
         ),
