@@ -1,6 +1,6 @@
 # Concepts
 
-**Status: proposal, revised after the owner's answers.** Nothing here is built yet. It drives the renames (#19), roles with copies (#24) and teams as members (#25). The last open questions are in PR #50.
+**Status: agreed design, not built yet.** It drives the renames (#19), roles with copies (#24) and teams as members (#25). The old names go away outright, with no aliases or pointers.
 
 ## Definitions and what runs from them
 
@@ -9,7 +9,7 @@ Each definition noun has an active noun, created from it by `brg create`.
 | Definition | Active | Created by | Examples |
 | --- | --- | --- | --- |
 | **Deployment**: a `.yaml` file saying how and where a team runs (folders, logins, values, message storage) | **Instance**: the team running from that deployment, with its members, messages and tasks | `brg create dev-team` | `dev-team-k3f9`, `dev-team-p7xm` |
-| **Role**: a named part in a team (a role file, a vendor, a parent, whether it starts with the instance, how many copies may run) | **Member**: one running agent filling the role | `brg create dev-team-k3f9/role:implementer` | `implementer`, `implementer-2` |
+| **Role**: a named part in a team (a role file, a vendor, a parent, whether it starts with the instance, how many copies may run) | **Member**: one running agent filling the role | `brg create dev-team-k3f9/implementer` | `implementer-x7k2`, `lead-q8m3` |
 
 - **Team:** the set of roles, a team folder with `team.yaml` and its role files. It's reusable and says nothing about one machine. A team runs only through a deployment, so it has no active noun of its own. Every run needs a deployment file.
 - **Start:** one start of a member. Starts are numbered per member, and only a member's latest start may act as it.
@@ -23,7 +23,7 @@ There's no `up`. There are four verbs. `create` always makes something new; `sta
 
 | Command | On an instance | On a member |
 | --- | --- | --- |
-| `brg create` | `create <deployment>` makes a new instance, starts it, and prints its ID and tree. Run it twice and you have two instances. | `create <instance>/role:<role>` makes a new member and starts it. It's refused past `max`. For a `max: 1` role whose member already exists, it points to `start`. |
+| `brg create` | `create <deployment>` makes a new instance, starts it, and prints its ID and tree. Run it twice and you have two instances. | `create <instance>/<role>` makes a new member of that role and starts it. `create` takes only a deployment or a role, never a member. It's refused past `max`; for a `max: 1` role whose member already exists, it points to `start`. |
 | `brg start` | Brings the instance to what should be running. That's the `start: true` roles, the members that were running when it was last stopped, and every member holding an open task or checkout. Members already running are left alone. Changed files are applied only when the instance was fully stopped. | Starts that member with a new start. If it's already running, it says so and changes nothing. |
 | `brg stop` | Stops every member. On a stopped instance, it says so and changes nothing. | Stops that member; the same on a stopped one. |
 | `brg delete` | Removes a stopped instance: its messages, state and registration. It's refused while anything runs. If the instance holds open work, it lists that work and needs `--force`. | Removes a stopped member that holds no open work, freeing its place under `max`. Its number isn't reused. |
@@ -41,10 +41,10 @@ There's no `up`. There are four verbs. `create` always makes something new; `sta
 | --- | --- | --- |
 | Deployment | Its file name without `.yaml`; for a file named `borgchart.yaml`, its folder's name. There's no `name:` field. | `dev-team.yaml` is `dev-team` |
 | Instance | `<deployment>-<suffix>`. The suffix is four characters from `23456789abcdefghjkmnpqrstuvwxyz` (no `0 1 i l o`), random, checked against every instance brg has registered, and never reused. | `dev-team-k3f9` |
-| Member | The role's name for its first member, then `<role>-2`, `<role>-3`; numbers are never reused within the instance | `lead`, `implementer-2` |
+| Member | `<role>-<suffix>`, with the same kind of suffix as instances, never reused within the instance | `lead-q8m3`, `implementer-x7k2` |
 | Start | A number per member, from 1 | 3 |
-| Member address | `[instance/]member` | `dev-team-k3f9/implementer-2` |
-| Role address | `[instance/]role:<role>`. It's used by `create`, and for a message to the role's shared queue (#24). It's spelled like `external:NAME`, so it can't be confused with the role's first member. | `dev-team-k3f9/role:implementer` |
+| Member address | `[instance/]member` | `dev-team-k3f9/implementer-x7k2` |
+| Role address | `[instance/]<role>`, the bare role name. It's used by `create`, and for a message to the role's shared queue (#24). Members always carry a suffix, so a bare name is never a member's ID. | `dev-team-k3f9/implementer` |
 | Message | `[instance/]m<seq>` | `dev-team-k3f9/m42` |
 
 **Leaving the instance out.** An address may omit the instance:
@@ -54,9 +54,11 @@ There's no `up`. There are four verbs. `create` always makes something new; `sta
 
 Otherwise brg lists the candidates and asks for the ID. It never picks by order.
 
+**A role name where a member is expected** (`attach lead`, `prompt implementer`, `stop dev-team-k3f9/reviewer`) resolves to the role's only member when it has exactly one. With several, brg lists them and asks for the member's ID.
+
 **Parents are roles.** `parent: lead` names a role, and a member's parent is the member filling that role. So a parent role must have one member: `validate` refuses a `parent:` that names a role with `max > 1`.
 
-**Departments (#25).** A role can be a team. Its members (`ws`, `ws-2`) have their own sub-members (`dev-k3f9/ws-2/lead`), inside the department's instance and its one message store.
+**Departments (#25).** A role can be a team. Its members (`ws-a7k2`) have their own sub-members (`dev-k3f9/ws-a7k2/lead-q8m3`), inside the department's instance and its one message store.
 
 ## Lifetimes
 
@@ -73,7 +75,7 @@ Otherwise brg lists the candidates and asks for the ID. It never picks by order.
 - **The upgrade:** the switch to this layout converts each team's current storage once, into an instance, so open work survives it.
 
 **Starts** do the jobs of today's incarnations:
-- fencing a replaced process ("this start of `implementer-2` has been replaced");
+- fencing a replaced process ("this start of `implementer-x7k2` has been replaced");
 - the recorded tmux pane that decides whether the start is still running;
 - the task writers that must be gone before a checkout is freed;
 - what the background wait has already shown.
@@ -87,10 +89,10 @@ Today's *run* (a hidden storage generation) and *incarnation* are gone from code
 ```
 $ brg status
 dev-team-k3f9                       deployment ~/.config/borgchart/dev-team.yaml · team dev-team/
-└─ lead              claude opus high          working
-   ├─ implementer    codex gpt-6.1-sol high    working
-   ├─ implementer-2  codex gpt-6.1-sol high    idle
-   ├─ reviewer       claude opus high          not created (start: false)
+└─ lead-q8m3            claude opus high          working
+   ├─ implementer-x7k2  codex gpt-6.1-sol high    working
+   ├─ implementer-c4nd  codex gpt-6.1-sol high    idle
+   ├─ reviewer          not created (start: false)
    └─ researcher     on demand (none running)
 ```
 
@@ -127,9 +129,9 @@ dev-team-k3f9                       deployment ~/.config/borgchart/dev-team.yaml
 | | `parent:`, `delivers_to:` name a member | name a role |
 | | frontmatter `role:` (required, unused) | dropped |
 | `borgchart.yaml` | `members:` (per-member values) | `roles:` |
-| | — | `{instance}` in `cwd` for parallel instances, `{n}` for copies |
+| | — | `{instance}` in `cwd` for parallel instances, `{member}` for copies |
 | CLI | `brg up` | `create` (new instance or member) and `start` (existing ones) |
-| | `brg up --member X`, `brg down --member X` | `create <instance>/role:X`, then `start` or `stop <instance>/X` |
+| | `brg up --member X`, `brg down --member X` | `create <instance>/X` (a role), then `start` or `stop <instance>/<member>` |
 | | `brg down` | `brg stop` |
 | | `--forget` (sessions design) | `delete` |
 | | `brg bus carry --from RUN` | removed |
@@ -150,7 +152,7 @@ Every `BORGCHART_*` variable that a member, plugin or test can see:
 | --- | --- | --- | --- |
 | `BORGCHART_DEPLOYMENT` | members, plugins, alert actions | `BORGCHART_INSTANCE` | the instance (`dev-team-k3f9`). Today's value is a storage key. |
 | — | members, plugin actions | `BORGCHART_ROLE` | the role (`implementer`) |
-| `BORGCHART_MEMBER` | members, plugin actions | unchanged | the member (`implementer-2`) |
+| `BORGCHART_MEMBER` | members, plugin actions | unchanged | the member (`implementer-x7k2`) |
 | `BORGCHART_RUN`, `BORGCHART_INCARNATION` | members | `BORGCHART_START` | the member's start number; brg refuses an earlier start |
 | `BORGCHART_FILE` | members, plugins, the caller | unchanged | the deployment file |
 | `BORGCHART_BIN` | members, plugins | unchanged | the brg that started them |
@@ -167,4 +169,4 @@ Every `BORGCHART_*` variable that a member, plugin or test can see:
 
 ## Effects on #24 and #25
 
-Their acceptance text says `brg up --member implementer` starts the next copy; that becomes `brg create <instance>/role:implementer`. #25's departments are members whose role is a team, inside one instance. Update both issues once the names are agreed.
+Their acceptance text says `brg up --member implementer` starts the next copy; that becomes `brg create <instance>/implementer`, and copies are named `implementer-<suffix>`. #25's departments are members whose role is a team, inside one instance. Update both issues once the names are agreed.
