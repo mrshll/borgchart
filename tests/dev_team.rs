@@ -123,32 +123,43 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// SHA-256 of private words (a person's name and handle, a host, private
+/// tools and their wrappers), kept as hashes so this public test doesn't
+/// name them. Matched against every word, split on non-alphanumerics and
+/// also keeping `-`.
+const DENIED: [&str; 6] = [
+    "78193ef266c1e3c2ce4ea2a86d7fc87e8c52799653faaac8536533a1c9300f82",
+    "ffcc96318a5d172bf3bcb94007800f1efcfc56d7e030a30cd1feaa44605fb127",
+    "428e626f22d0273bb2741c8747418eaff1828bcd397fe7d00f3ec30d4519d95d",
+    "1bd5e42b105faceb0b4de779ebc3c72142dd8777d363a49e70c6b37d8c5fafb3",
+    "ecb4780d51076af0ad6855abe157e8465ddfe2ed00b591515f2e0ebca5247b04",
+    "96573e904a3798a4d9e6a0dff1b51f2c7ac36a475b28f71ed20cf8d3685f8189",
+];
+
+fn denied_word(text: &str) -> Option<String> {
+    let lower = text.to_lowercase();
+    let words = lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .chain(lower.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-')));
+    words
+        .filter(|w| !w.is_empty())
+        .find(|w| DENIED.contains(&borgchart::bus::manifest::sha256_hex(w.as_bytes()).as_str()))
+        .map(str::to_string)
+}
+
 #[test]
 fn the_team_files_stay_generic() {
+    assert!(denied_word("the owner merges").is_none());
+
     let mut files = Vec::new();
     walk(&dev_team(), &mut files);
     assert!(files.len() >= 10, "{files:?}");
     // Machine paths, private tooling and people stay in the private
     // deployment file, never here.
-    let deny = [
-        "herdr",
-        "serveserve",
-        "mrshll",
-        "marsh",
-        "passh",
-        "agent-gh",
-    ];
     let home = regex::Regex::new(r"/(home|Users)/[^/\s]+|/tmp/|/root/").unwrap();
     for file in files {
         let text = fs::read_to_string(&file).unwrap();
-        let lower = text.to_lowercase();
-        for word in deny {
-            assert!(
-                !lower.contains(word),
-                "{} mentions `{word}`",
-                file.display()
-            );
-        }
+        assert_eq!(denied_word(&text), None, "{}", file.display());
         assert!(
             !home.is_match(&text),
             "{} has a machine path: {:?}",
