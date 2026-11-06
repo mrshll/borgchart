@@ -194,6 +194,81 @@ fn the_time_limit_stops_the_servers_while_the_test_still_runs() {
 }
 
 #[test]
+fn a_socket_linked_from_elsewhere_is_not_followed() {
+    // Catches: the cleanup stopping a server outside the private
+    // directory through a symbolic link planted in it.
+    let other = PrivateTmux::new();
+    let socket = other.socket("o");
+    let ok = other
+        .tmux(&socket)
+        .args(["new-session", "-d", "-s", "o", "sleep 300"])
+        .status()
+        .unwrap();
+    assert!(ok.success());
+    let target = other
+        .dir()
+        .join(format!("tmux-{}", other.uid()))
+        .join(&socket);
+    let private = PrivateTmux::with_watchdog(Duration::from_secs(1));
+    let linked = private.dir().join(format!("tmux-{}", private.uid()));
+    fs::create_dir_all(&linked).unwrap();
+    std::os::unix::fs::symlink(&target, linked.join("linked")).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while private.dir().exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(!private.dir().exists(), "the watchdog didn't clean up");
+    let still = other
+        .tmux(&socket)
+        .args(["has-session", "-t", "=o"])
+        .status()
+        .unwrap();
+    assert!(still.success(), "the server outside was stopped");
+}
+
+/// Resume and kill `pid` if a test fails while it is stopped.
+struct Resume(u32);
+
+impl Drop for Resume {
+    fn drop(&mut self) {
+        if std::thread::panicking() && alive(self.0) {
+            for signal in ["-CONT", "-KILL"] {
+                let _ = Command::new("kill")
+                    .args([signal, &self.0.to_string()])
+                    .status();
+            }
+        }
+    }
+}
+
+#[test]
+fn a_server_that_stops_answering_is_still_stopped() {
+    // Catches: one stopped or hung server blocking the cleanup for ever,
+    // keeping its agents and every registered path.
+    let root = root();
+    outside(root.path());
+    let private = PrivateTmux::with_watchdog(Duration::from_secs(3));
+    let s = start(&private, root.path());
+    let _resume = Resume(s.server);
+    // Once the watchdog has noted the server, stop it.
+    let noted = private.dir().join(common::SERVERS);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !fs::read_to_string(&noted).is_ok_and(|t| t.starts_with(&format!("{} ", s.server))) {
+        assert!(
+            Instant::now() < deadline,
+            "the watchdog never noted the server"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let stopped = Command::new("kill")
+        .args(["-STOP", &s.server.to_string()])
+        .status()
+        .unwrap();
+    assert!(stopped.success());
+    cleaned_up(&s, root.path(), Duration::from_secs(20));
+}
+
+#[test]
 fn dropping_it_cleans_up_and_stops_the_watchdog() {
     // Catches: registered paths removed only by the watchdog, a removal
     // that follows a link out of the scratch directory, or a watchdog left
