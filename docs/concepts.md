@@ -19,16 +19,16 @@ Each definition noun has an active noun, created from it by `brg create`.
 
 ## Commands
 
-There's no `up`. Four verbs, each doing one thing:
+There's no `up`. There are four verbs. `create` always makes something new; `start`, `stop` and `delete` are safe to repeat:
 
-| Command | What it does |
-| --- | --- |
-| `brg create <deployment>` | Creates a new instance: it starts the `start: true` roles and prints the new instance ID and its tree. Run it twice and you have two instances. |
-| `brg create <instance>/role:<role>` | Creates a member: the next copy, or, for a `max: 1` role, its one member. It's refused past `max`. Refused too when the member exists but is stopped, with a pointer to `restart`. |
-| `brg restart <instance>` | Stops whatever runs, applies changed files, and starts the `start: true` roles plus every member that still holds an open task or checkout. It works on a stopped instance too. |
-| `brg restart <instance>/<member>` | A new start of that member, e.g. after a crash. A stopped copy that holds a task resumes it. |
-| `brg down <instance>[/<member>]` | Stops an instance or one member. |
-| `brg delete <instance>` | Removes a stopped instance: its messages, state and registration. It's refused while anything runs. If the instance holds open work, it lists that work and needs `--force`. |
+| Command | On an instance | On a member |
+| --- | --- | --- |
+| `brg create` | `create <deployment>` makes a new instance, starts it, and prints its ID and tree. Run it twice and you have two instances. | `create <instance>/role:<role>` makes a new member and starts it. It's refused past `max`. For a `max: 1` role whose member already exists, it points to `start`. |
+| `brg start` | Brings the instance to what should be running. That's the `start: true` roles, the members that were running when it was last stopped, and every member holding an open task or checkout. Members already running are left alone. Changed files are applied only when the instance was fully stopped. | Starts that member with a new start. If it's already running, it says so and changes nothing. |
+| `brg stop` | Stops every member. On a stopped instance, it says so and changes nothing. | Stops that member; the same on a stopped one. |
+| `brg delete` | Removes a stopped instance: its messages, state and registration. It's refused while anything runs. If the instance holds open work, it lists that work and needs `--force`. | Removes a stopped member that holds no open work, freeing its place under `max`. Its number isn't reused. |
+
+**Restarting** is `stop` then `start`. That's also how changed files are applied.
 
 **Also:**
 - `attach`, `logs` and `prompt` take a member address.
@@ -50,7 +50,7 @@ There's no `up`. Four verbs, each doing one thing:
 **Leaving the instance out.** An address may omit the instance:
 - inside a member, where it means that member's own instance;
 - when exactly one running instance has that member;
-- when the deployment's name is given and that deployment has exactly one instance (`brg restart dev-team`).
+- when the deployment's name is given and that deployment has exactly one instance (`brg start dev-team`).
 
 Otherwise brg lists the candidates and asks for the ID. It never picks by order.
 
@@ -61,12 +61,14 @@ Otherwise brg lists the candidates and asks for the ID. It never picks by order.
 ## Lifetimes
 
 **An instance lives from `create` until `delete`.**
-- **Restarts:** `down` and `restart` keep its ID, messages and open tasks, and its members keep their IDs.
-- **Its deployment file:** the instance records the file's path. If the file moves, `restart <instance> --file <new path>` points it there.
+- **Stopping and starting:** `stop` and `start` keep its ID, messages and open tasks, and its members keep their IDs.
+- **Members are kept:** a member exists from `create` until `delete`, running or stopped. `max` counts those members. A stopped member stays addressable and can be started again.
+- **Its deployment file:** the instance records the file's path. If the file moves, `start <instance> --file <new path>` points it there.
 - **Message store:** one per instance for its whole life, keyed by the instance ID, so message numbers never restart.
-- **Frozen configuration:** the configuration is frozen from a start to the next full stop. `restart` applies changes, and only once every member is positively stopped.
-- **Orphaned work:** `restart` refuses while the new configuration orphans open work (a removed role that holds a task or checkout, say), and says what to cancel or restore.
-- **A new message format:** brg refuses an instance whose messages it can't read, and points to `brg create` for a fresh instance (its open work has to be sent again) and `brg delete` for the old one. No storage generations are needed.
+- **Frozen configuration:** the configuration is frozen from a start to the next full stop. `start` applies changes only after a full `stop`, once every member is positively stopped.
+- **Orphaned work:** `start` refuses while the new configuration orphans open work (a removed role that holds a task or checkout, say), and says what to cancel or restore.
+- **Checkouts:** every operation that starts a member (`create`, `start`, `start --file`) checks its resolved working folder. It refuses if that folder is the same as, inside, or around a folder that another instance's member holds, running or stopped with an open checkout. The check and the reservation happen together, under one lock, so two starts can't race.
+- **A new message format:** brg refuses to start an instance whose messages it can't read, and points to `brg create` for a fresh instance (its open work has to be sent again). `stop` and liveness never parse messages, so they still work on the old instance. Its checkouts stay reserved, and `delete` of it needs `--force` ("its contents can't be inspected"). No storage generations are needed.
 - **No age-based rollover:** `validate` refuses a message root under `/tmp` or any other path cleaned by age. An index keeps reads cheap as the store grows.
 - **The upgrade:** the switch to this layout converts each team's current storage once, into an instance, so open work survives it.
 
@@ -126,8 +128,9 @@ dev-team-k3f9                       deployment ~/.config/borgchart/dev-team.yaml
 | | frontmatter `role:` (required, unused) | dropped |
 | `borgchart.yaml` | `members:` (per-member values) | `roles:` |
 | | — | `{instance}` in `cwd` for parallel instances, `{n}` for copies |
-| CLI | `brg up` | `create` (new instance or member) and `restart` (existing ones) |
-| | `brg up --member X`, `brg down --member X` | `create <instance>/role:X`, `restart` or `down <instance>/X` |
+| CLI | `brg up` | `create` (new instance or member) and `start` (existing ones) |
+| | `brg up --member X`, `brg down --member X` | `create <instance>/role:X`, then `start` or `stop <instance>/X` |
+| | `brg down` | `brg stop` |
 | | `--forget` (sessions design) | `delete` |
 | | `brg bus carry --from RUN` | removed |
 | Output | `status --json` `name`, `kind` | `member`, `role`, `instance`, `deployment`, `start`; `kind` stays |
