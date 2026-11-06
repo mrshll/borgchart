@@ -2,7 +2,7 @@
 
 ## Checks
 
-Four checks must pass before a change merges; CI runs them on Linux and macOS. They live in one script, so the git hooks and CI run the same commands:
+Four checks must pass before a change merges. CI runs the Rust checks on Linux and macOS, and the Python tests on Linux. They live in one script, so the git hooks and CI run the same commands:
 
 ```
 .githooks/checks              # all four: fmt, clippy, test, py
