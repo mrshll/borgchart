@@ -86,7 +86,7 @@ members:
         );
         env.script(
             "team/plugins/pager/watch.sh",
-            "#!/bin/sh\nenv | grep -E '^(TERM|COLORTERM)=' > \"$BORGCHART_STATE_DIR/window-env\"\nwhile true; do printf '{\"ok\": true, \"at\": \"now\", \"detail\": \"fine\"}' > \"$BORGCHART_STATE_DIR/health.json\"; sleep 1; done\n",
+            "#!/bin/sh\nenv | grep -E '^(TERM|COLORTERM)=' > \"$BORGCHART_STATE_DIR/window-env.tmp\"\nmv \"$BORGCHART_STATE_DIR/window-env.tmp\" \"$BORGCHART_STATE_DIR/window-env\"\nwhile true; do printf '{\"ok\": true, \"at\": \"now\", \"detail\": \"fine\"}' > \"$BORGCHART_STATE_DIR/health.json\"; sleep 1; done\n",
         );
         env.write(
             "team/borgchart.yaml",
