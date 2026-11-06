@@ -11,6 +11,16 @@
 | `brg attach <member>` | Open a member's live session; detach with your tmux prefix, then `d` (press the prefix twice inside your own tmux) |
 | `brg logs <member> [-n LINES]` | Show recent output of a member or plugin process |
 | `brg send <member> <text…> [--force] [--from MEMBER] [--json]` | Paste text into a member and press Enter, as one submission. `--from` (for plugins relaying a member's message) requires the target to be that member's parent |
+| `brg msg publish --key KEY [--record FILE\|-] [--external NAME] [--json]` | Publish a bus record from a JSON draft (stdin by default). A retry with the same key returns the same record; see [the bus](bus.md#commands--records) |
+| `brg inbox [--member ID \| --external NAME] [--after ID] [--limit N] [--all] [--full] [--json]` | List records addressed to you (or another inbox, read-only), oldest first, a page at a time. Never acknowledges |
+| `brg inbox wait … --timeout SECONDS` | Wait (up to 600 s) for a new unacknowledged record; exits 9 on timeout |
+| `brg msg read ID [--json]` | Show one record in full |
+| `brg msg ack ID… [--external NAME] [--json]` | Acknowledge records addressed to you; acking twice is a no-op |
+| `brg bus inspect [--last N] [--json]` | Summarize the team's messages: members, inbox counts, recent records, store health |
+| `brg bus check [--json]` | Check the store (gaps, unreadable files, stray temporaries), the storage's age and carries. Never writes |
+| `brg bus carry --from RUN [--json]` | Carry unresolved tasks, open questions and unacknowledged records from the run the current one is linked from, as linked notes; the old run is only read. Idempotent; see [the bus](bus.md#commands--tasks) |
+| `brg task list [--json]` | List tasks (state, assignee, attempt, next step) and open questions, folded from the team's messages |
+| `brg task show TASK [--json]` | Show one task: agreement, scope, checkout, each fact's record, writers and their liveness, history, next step, open questions |
 | `brg bus alert test [--member ID] [--json]` | Run the deployment's `bus.alert` action once with reason `test` and record the alert (see [bus.md](bus.md#alerts)) |
 | `brg bus alerts [--all] [--json]` | List open alerts (`--all` includes resolved ones) |
 | `brg bus alert resolve <id> [--json]` | Mark an alert resolved |

@@ -109,12 +109,34 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// The coordination bus.
+    /// Publish, read and acknowledge bus records.
+    Msg {
+        #[command(flatten)]
+        target: Target,
+        #[command(subcommand)]
+        command: crate::bus::cli::MsgCommand,
+    },
+    /// List records addressed to you (or `--member`/`--external`), oldest first.
+    #[command(args_conflicts_with_subcommands = true)]
+    Inbox {
+        #[command(flatten)]
+        target: Target,
+        #[command(flatten)]
+        args: crate::bus::cli::InboxArgs,
+    },
+    /// List and show tasks folded from the team's messages.
+    Task {
+        #[command(flatten)]
+        target: Target,
+        #[command(subcommand)]
+        command: crate::bus::task_cli::TaskCommand,
+    },
+    /// Inspect and check the team's message storage.
     Bus {
         #[command(flatten)]
         target: Target,
         #[command(subcommand)]
-        command: BusCommand,
+        command: crate::bus::cli::BusCommand,
     },
     #[command(name = "_exec", hide = true)]
     Exec { state: PathBuf, window: String },
@@ -133,12 +155,6 @@ enum Command {
         state: PathBuf,
         member: String,
     },
-}
-
-#[derive(Subcommand)]
-enum BusCommand {
-    #[command(flatten)]
-    Alerts(crate::alert::Commands),
 }
 
 fn resolve(target: &Target) -> Result<Input, ExitCode> {
@@ -313,11 +329,15 @@ pub fn main() -> ExitCode {
                 }
             }
         }
+        Command::Msg { target, command } => {
+            crate::bus::cli::msg(&target_or_exit!(&target), command)
+        }
+        Command::Inbox { target, args } => crate::bus::cli::inbox(&target_or_exit!(&target), args),
+        Command::Task { target, command } => {
+            crate::bus::task_cli::task(&target_or_exit!(&target), command)
+        }
         Command::Bus { target, command } => {
-            let input = target_or_exit!(&target);
-            match command {
-                BusCommand::Alerts(c) => crate::alert::main(&input, c),
-            }
+            crate::bus::cli::bus(&target_or_exit!(&target), command)
         }
         Command::Exec { state, window } => crate::exec::exec_main(&state, &window),
         Command::Run {

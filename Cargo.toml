@@ -26,6 +26,12 @@ name = "fake-agent"
 path = "tests/support/fake_agent.rs"
 required-features = ["test-support"]
 
+[[bin]]
+# Test-only stand-in for the vendors' input boxes (guarded wake tests); never installed.
+name = "fake-composer"
+path = "tests/support/fake_composer.rs"
+required-features = ["test-support"]
+
 [features]
 test-support = []
 
