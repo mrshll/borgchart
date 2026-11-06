@@ -54,6 +54,22 @@ fn fill(dir: &Path, name: &str, text: &str) -> PathBuf {
     file
 }
 
+/// The value of the first `key:` line in a deployment's text, unquoted.
+fn yaml_value(text: &str, key: &str) -> String {
+    let line = text
+        .lines()
+        .find_map(|l| l.trim().strip_prefix(&format!("{key}:")))
+        .unwrap_or_else(|| panic!("no {key}: in {text}"));
+    let value = line.split(" #").next().unwrap().trim();
+    value.trim_matches('"').to_string()
+}
+
+/// A member file's standing instruction: its text after the front matter.
+fn member_body(file: &Path) -> String {
+    let text = fs::read_to_string(file).unwrap();
+    text.splitn(3, "---\n").nth(2).unwrap().to_string()
+}
+
 /// The README's (first) dev-team deployment, filled in under `dir`.
 fn fill_example(dir: &Path) -> PathBuf {
     fill(dir, "dev-team", &readme_deployments()[0])
@@ -92,7 +108,6 @@ fn the_readme_deployments_validate_cleanly() {
     let blocks = readme_deployments();
     assert!(!blocks.is_empty());
     for (i, text) in blocks.iter().enumerate() {
-        assert!(text.contains("root: ~/.local/state/brg-teams"), "{text}");
         let file = fill(dir.path(), &format!("readme-{i}"), text);
         let out = validate(dir.path(), &file);
         let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -531,16 +546,27 @@ mod round {
             .unwrap()
             .as_str()
             .unwrap();
+        // The prompt is the lead's member file with its include expanded,
+        // plus the deployment's local rules.
+        let lead_body = member_body(&dev_team().join("orchestrator.md"));
+        let base = fs::read_to_string(dev_team().join("includes/base.md")).unwrap();
+        let opening = lead_body.lines().find(|l| !l.trim().is_empty()).unwrap();
+        assert!(prompt.starts_with(opening.trim()), "{prompt}");
+        assert!(prompt.contains(base.lines().next().unwrap()), "{prompt}");
+        let deployment = fs::read_to_string(&team.file).unwrap();
         assert!(
-            prompt.starts_with("You are the lead of a development team"),
+            prompt.contains(&yaml_value(&deployment, "task")),
             "{prompt}"
         );
-        assert!(prompt.contains("## Waking yourself") && prompt.contains("Local rules:"));
         assert!(!prompt.contains("{{"), "{prompt}");
         assert_eq!(start["env"]["BORGCHART_BIN"], env!("CARGO_BIN_EXE_brg"));
         assert_eq!(start["cwd"], work.join("lead").display().to_string());
         // The bus root `~/…` landed under HOME.
-        assert!(team.path("home/.local/state/brg-teams").is_dir());
+        let root = yaml_value(&readme_deployments()[0], "root");
+        assert!(
+            team.path(&format!("home/{}", root.strip_prefix("~/").unwrap()))
+                .is_dir()
+        );
 
         // The assignment is waiting before the implementer starts.
         let agreement = work.join("notes/t1-agreement.md");
