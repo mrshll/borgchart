@@ -1209,23 +1209,39 @@ fn down_still_refuses_when_only_a_plugin_process_ran() {
     }
 }
 
-/// Whether `pid` is a running process (not a zombie).
-fn running(pid: u32) -> bool {
+/// `pid`'s start time, if it is a running process (not a zombie).
+fn started(pid: u32) -> Option<String> {
     let out = Command::new("ps")
-        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .env("LC_ALL", "C")
+        .args(["-o", "stat=", "-o", "lstart=", "-p", &pid.to_string()])
         .output()
         .unwrap();
-    let stat = String::from_utf8_lossy(&out.stdout);
-    !stat.trim().is_empty() && !stat.trim_start().starts_with('Z')
+    let text = String::from_utf8_lossy(&out.stdout);
+    let (stat, start) = text.trim().split_once(' ')?;
+    (!stat.starts_with('Z')).then(|| start.trim().to_string())
 }
 
-/// Processes a test started that must not outlive it if it fails.
-struct Strays(Vec<u32>);
+fn running(pid: u32) -> bool {
+    started(pid).is_some()
+}
+
+/// Processes a test started, killed if the test fails while they run.
+struct Strays(Vec<(u32, String)>);
+
+impl Strays {
+    fn add(&mut self, pid: u32) {
+        self.0.push((pid, started(pid).expect("a running process")));
+    }
+}
 
 impl Drop for Strays {
     fn drop(&mut self) {
-        for &pid in &self.0 {
-            if running(pid) {
+        if !std::thread::panicking() {
+            return;
+        }
+        for (pid, start) in &self.0 {
+            // Only the same process: its PID may have been reused since.
+            if started(*pid).as_ref() == Some(start) {
                 let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
             }
         }
@@ -1235,22 +1251,29 @@ impl Drop for Strays {
 /// From inside `member`, as a background tool call would: two children,
 /// each in a session of its own (so the pane's hangup never reaches them),
 /// one ignoring TERM. The tool keeps waiting for them, so they stay in the
-/// member's process tree. Returns their PIDs once both run.
+/// member's process tree. Returns their PIDs once both are set up.
 fn detach_children(env: &Env, member: &str, strays: &mut Strays) -> [u32; 2] {
     let dir = env.path(&format!("detached/{member}"));
     fs::create_dir_all(&dir).unwrap();
-    let detach = "perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV'";
-    let deaf = "perl -MPOSIX -e 'POSIX::setsid(); $SIG{TERM} = \"IGNORE\"; exec @ARGV'";
-    let d = dir.display();
+    // Each writes its PID once its session and TERM handling are in place,
+    // then becomes `sleep`, keeping both.
+    let child = |name: &str, deaf: bool| {
+        format!(
+            "perl -MPOSIX -e 'POSIX::setsid(); {}open(my $f, \">\", \"{d}/{name}.tmp\") or die; print $f $$; close $f; rename(\"{d}/{name}.tmp\", \"{d}/{name}\"); exec @ARGV' sleep 300 </dev/null >/dev/null 2>&1 &",
+            if deaf {
+                "$SIG{TERM} = \"IGNORE\"; "
+            } else {
+                ""
+            },
+            d = dir.display()
+        )
+    };
     env.script(
         &format!("detached/{member}.sh"),
         &format!(
-            "#!/bin/sh\n\
-             {detach} sleep 300 </dev/null >/dev/null 2>&1 &\n\
-             echo $! > {d}/a.tmp && mv {d}/a.tmp {d}/a\n\
-             {deaf} sleep 300 </dev/null >/dev/null 2>&1 &\n\
-             echo $! > {d}/b.tmp && mv {d}/b.tmp {d}/b\n\
-             wait\n"
+            "#!/bin/sh\n{}\n{}\nwait\n",
+            child("a", false),
+            child("b", true)
         ),
     );
     let script = env.path(&format!("detached/{member}.sh"));
@@ -1266,12 +1289,18 @@ fn detach_children(env: &Env, member: &str, strays: &mut Strays) -> [u32; 2] {
             .unwrap()
     };
     let pids = [pid("a"), pid("b")];
-    strays.0.extend(pids);
-    env.wait_for("both children running", |_| {
-        pids.iter().all(|&p| running(p))
+    // Exec'd into `sleep` (its start time doesn't change).
+    env.wait_for("both children sleeping", |_| {
+        pids.iter().all(|&p| {
+            Command::new("ps")
+                .args(["-o", "comm=", "-p", &p.to_string()])
+                .output()
+                .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("sleep"))
+        })
     });
-    // Exec'd into `sleep`, with TERM still ignored in the second.
-    std::thread::sleep(Duration::from_millis(300));
+    for p in pids {
+        strays.add(p);
+    }
     pids
 }
 
@@ -1284,6 +1313,26 @@ fn down_ends_children_that_left_the_pane() {
         env.up_helper();
         let lead = detach_children(&env, "lead", &mut strays);
         let helper = detach_children(&env, "helper", &mut strays);
+        // Another window that happens to be called `lead`: not lead's.
+        let session = env.tmux(&["list-sessions", "-F", "#{session_name}"]);
+        let target = format!("={}:", session.trim());
+        let namesake: u32 = env
+            .tmux(&[
+                "new-window",
+                "-d",
+                "-P",
+                "-F",
+                "#{pane_pid}",
+                "-t",
+                &target,
+                "-n",
+                "lead",
+                "sleep 300",
+            ])
+            .trim()
+            .parse()
+            .unwrap();
+        strays.add(namesake);
 
         env.ok(&["down", "--member", "lead"]);
         for pid in lead {
@@ -1292,10 +1341,10 @@ fn down_ends_children_that_left_the_pane() {
                 "bus: {bus}: lead's child {pid} outlived `down --member lead`"
             );
         }
-        for pid in helper {
+        for pid in helper.into_iter().chain([namesake]) {
             assert!(
                 running(pid),
-                "bus: {bus}: helper's child {pid} was stopped with lead"
+                "bus: {bus}: {pid}, not lead's, was stopped with lead"
             );
         }
 

@@ -3,13 +3,18 @@
 //! that left its pane's process group or session (with `setsid`, or inside
 //! a sandbox's own PID namespace) outlives its pane otherwise.
 //!
-//! A process is known by its PID and start time, so a PID reused by an
-//! unrelated process after the snapshot is never signalled.
+//! A process is known by its PID and start time. Each signal is sent only
+//! after checking that the PID still names the same process: on Linux
+//! through a pidfd opened before that check, so a PID reused since can't
+//! receive it. On macOS, `ps` reports start times to the second and
+//! signals go by PID right after the check; PIDs there are handed out in
+//! sequence, so a reuse in between would need the whole PID space to wrap.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
-use rustix::process::{Pid, Signal, kill_process};
+use rustix::process::Signal;
 
 /// How long processes have to exit after TERM before they get KILL.
 pub const GRACE: Duration = Duration::from_secs(2);
@@ -67,35 +72,41 @@ pub fn ancestry(table: &[Proc], pid: u32) -> BTreeSet<u32> {
     out
 }
 
-/// The pane PIDs, of `(pane pid, tmux server pid)` pairs, that are the
-/// server's own children in `table`. A pane PID is a number in the
-/// server's PID namespace; seen from another (brg run inside a sandbox) it
-/// may name an unrelated process, which this leaves out.
-pub fn owned(table: &[Proc], roots: &[(u32, u32)]) -> Vec<u32> {
-    let ppid: BTreeMap<u32, u32> = table.iter().map(|p| (p.pid, p.ppid)).collect();
-    roots
+/// Check that every pane PID in `table` is a child of the tmux server
+/// (`server`, its PID). A pane that has already exited is fine; one listed
+/// under another parent means these PIDs don't name the panes here.
+pub fn owned(table: &[Proc], panes: &[u32], server: u32) -> Result<(), String> {
+    match table
         .iter()
-        .filter(|(pane, server)| ppid.get(pane) == Some(server))
-        .map(|(pane, _)| *pane)
-        .collect()
+        .find(|p| panes.contains(&p.pid) && p.ppid != server)
+    {
+        Some(p) => Err(format!(
+            "process {} isn't the tmux server's child here",
+            p.pid
+        )),
+        None => Ok(()),
+    }
 }
 
-/// The processes under the given panes now (`(pane pid, tmux server pid)`
-/// pairs), leaving out brg itself and its ancestors: a member may run
-/// `brg down` from inside its own pane.
-pub fn snapshot(roots: &[(u32, u32)]) -> Result<Vec<Proc>, String> {
-    if roots.is_empty() {
+/// The processes under the given pane PIDs now, as tmux server `server`
+/// (its PID and socket) reported them, leaving out brg itself and its
+/// ancestors: a member may run `brg down` from inside its own pane. `Err`
+/// when they can't be told apart from unrelated processes.
+pub fn snapshot(panes: &[u32], server: u32, socket: &Path) -> Result<Vec<Proc>, String> {
+    if panes.is_empty() {
         return Ok(Vec::new());
     }
+    same_namespace(server, socket)?;
     let table = table()?;
+    owned(&table, panes, server)?;
     let keep = ancestry(&table, std::process::id());
-    Ok(tree(&table, &owned(&table, roots), &keep))
+    Ok(tree(&table, panes, &keep))
 }
 
-/// End `procs`, and whatever they started since the snapshot: TERM each
-/// one that is still the same process, then KILL any still running after
-/// [`GRACE`]. Returns those that outlived KILL. `Err` means the process
-/// table couldn't be read again, so the rest were left alone.
+/// End `procs`, and what they started between the snapshot and now: TERM
+/// each one that is still the same process, then KILL any still running
+/// after [`GRACE`]. Returns those that outlived KILL. `Err` means the
+/// process table couldn't be read again, so the rest were left alone.
 pub fn end(procs: &[Proc]) -> Result<Vec<u32>, String> {
     if procs.is_empty() {
         return Ok(Vec::new());
@@ -136,10 +147,9 @@ fn grown(table: &[Proc], procs: &[Proc], keep: &BTreeSet<u32>) -> Vec<Proc> {
         .collect()
 }
 
-fn signal(p: &Proc, sig: Signal) {
-    if let Some(pid) = Pid::from_raw(p.pid as i32) {
-        let _ = kill_process(pid, sig);
-    }
+/// Whether `now` (a fresh read of `p.pid`) is still `p`, running.
+fn same(p: &Proc, now: Option<&Proc>) -> bool {
+    now.is_some_and(|n| n.start == p.start && !n.zombie)
 }
 
 /// Those of `procs` that are still running as the same process.
@@ -153,12 +163,63 @@ fn still_running(procs: &[Proc]) -> Result<Vec<Proc>, String> {
         .collect();
     Ok(procs
         .iter()
-        .filter(|p| {
-            now.get(&p.pid)
-                .is_some_and(|n| n.start == p.start && !n.zombie)
-        })
+        .filter(|p| same(p, now.get(&p.pid)))
         .cloned()
         .collect())
+}
+
+/// Signal `p` if its PID still names it. The pidfd is opened first, so
+/// the check is about the process it holds.
+#[cfg(target_os = "linux")]
+fn signal(p: &Proc, sig: Signal) {
+    use rustix::process::{Pid, PidfdFlags, pidfd_open, pidfd_send_signal};
+    let Some(pid) = Pid::from_raw(p.pid as i32) else {
+        return;
+    };
+    let Ok(fd) = pidfd_open(pid, PidfdFlags::empty()) else {
+        return;
+    };
+    if same(p, read_stat(p.pid).as_ref()) {
+        let _ = pidfd_send_signal(&fd, sig);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn signal(p: &Proc, sig: Signal) {
+    let Some(pid) = rustix::process::Pid::from_raw(p.pid as i32) else {
+        return;
+    };
+    let now = lookup(std::iter::once(p.pid)).unwrap_or_default();
+    if same(p, now.first()) {
+        let _ = rustix::process::kill_process(pid, sig);
+    }
+}
+
+/// Check that brg sees the tmux server in its own PID namespace, so the
+/// PIDs tmux reports name the same processes here: the server behind the
+/// socket, as the kernel reports it to brg, must be `server` and share
+/// brg's namespace.
+#[cfg(target_os = "linux")]
+fn same_namespace(server: u32, socket: &Path) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let stream = std::os::unix::net::UnixStream::connect(socket)
+        .map_err(|e| format!("cannot reach the tmux server at {}: {e}", socket.display()))?;
+    let peer = rustix::net::sockopt::socket_peercred(&stream)
+        .map_err(|e| format!("cannot identify the tmux server: {e}"))?;
+    drop(stream);
+    let peer = peer.pid.as_raw_nonzero().get() as u32;
+    let ns =
+        |pid: &str| std::fs::metadata(format!("/proc/{pid}/ns/pid")).map(|m| (m.dev(), m.ino()));
+    match (ns("self"), ns(&peer.to_string())) {
+        (Ok(mine), Ok(its)) if peer == server && mine == its => Ok(()),
+        _ => Err("the tmux server runs in another PID namespace".into()),
+    }
+}
+
+/// macOS has no PID namespaces.
+#[cfg(not(target_os = "linux"))]
+fn same_namespace(_server: u32, _socket: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 // --- the process table ---
@@ -324,8 +385,8 @@ mod tests {
         assert_eq!(pids(&tree(&table, &[10], &keep)), [14]);
     }
 
-    // Catches: signalling an unrelated process when the pane PID tmux
-    // reports means something else here (brg in another PID namespace).
+    // Catches: signalling an unrelated process tree when a pane PID tmux
+    // reports names something else here.
     #[test]
     fn only_the_servers_own_children_are_panes() {
         let table = [
@@ -336,9 +397,9 @@ mod tests {
             p(20, 1),
             p(21, 20),
         ];
-        let roots = owned(&table, &[(10, 500), (20, 500), (99, 500)]);
-        assert_eq!(roots, [10]);
-        assert_eq!(pids(&tree(&table, &roots, &BTreeSet::new())), [10, 11]);
+        // A pane that already exited (99) is no reason to stop.
+        assert!(owned(&table, &[10, 99], 500).is_ok());
+        assert!(owned(&table, &[10, 20], 500).is_err());
     }
 
     // Catches: a child forked after the snapshot surviving, and a PID

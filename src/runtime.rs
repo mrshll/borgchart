@@ -1006,21 +1006,33 @@ pub fn down(input: &Input, only: Option<&str>) -> Result<Vec<String>, String> {
     let mut messages = Vec::new();
     // The processes under the panes this `down` stops, found before tmux
     // kills the panes: some may have left the pane's session, and would
-    // outlive it. Only live panes in this session on the recorded server.
-    let roots: Vec<(u32, u32)> = rows
+    // outlive it. Only live panes in this session on the recorded server,
+    // and with `--member`, only those in the one window it kills.
+    let target = only.and_then(|id| rows.iter().filter(in_session).find(|r| r.window == id));
+    let panes: Vec<u32> = rows
         .iter()
         .filter(in_session)
-        .filter(|r| !r.dead && only.is_none_or(|id| r.window == id))
-        .map(|r| (r.pane_pid, r.server_pid))
+        .filter(|r| !r.dead)
+        .filter(|r| match only {
+            Some(_) => target.is_some_and(|t| t.window_id == r.window_id),
+            None => true,
+        })
+        .map(|r| r.pane_pid)
         .collect();
-    let procs = proctree::snapshot(&roots);
+    let procs = if panes.is_empty() {
+        Ok(Vec::new())
+    } else {
+        server
+            .identity()
+            .and_then(|(socket, pid)| proctree::snapshot(&panes, pid, &socket))
+    };
     // Panes that are certainly stopped now: killed by this `down`, or not on
     // the server that answered.
     let mut killed: Vec<String> = Vec::new();
     let mut whole = false;
     let members: Vec<String> = match only {
         Some(id) => {
-            match rows.iter().filter(in_session).find(|r| r.window == id) {
+            match target {
                 Some(w) => {
                     if rows.iter().filter(in_session).count() == 1 {
                         server.act(&["kill-session", "-t", &format!("={session}")])?;
