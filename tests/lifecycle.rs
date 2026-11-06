@@ -467,7 +467,7 @@ fn members_that_ran_and_ended_are_stopped() {
 
         // While the team runs, a `start: true` member that ended should be
         // running: it stands out.
-        env.ok(&["up", "--member", "helper"]);
+        env.up_helper();
         env.ok(&["down", "--member", "lead"]);
         let out = env.ok(&["status"]);
         assert_eq!(
