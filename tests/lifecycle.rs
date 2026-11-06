@@ -1041,11 +1041,18 @@ fn liveness_is_alive_gone_or_unknown() {
     env.tmux(&["kill-window", "-t", &lead_pane]);
     assert_eq!(live(&env.rows(), "lead"), "gone");
 
-    // The whole server went away: that can't be told from a hidden one.
+    // The whole server exited, leaving its socket file: gone. Without the
+    // file, it can't be told from a hidden server: unknown.
     fs::remove_file(run.join("runtime/incarnations/helper.json")).unwrap();
     env.up();
     assert_eq!(live(&env.rows(), "lead"), "alive");
+    let socket = read_json(&run.join("runtime/incarnations/lead.json"))["pane"]["socket"]
+        .as_str()
+        .unwrap()
+        .to_string();
     env.tmux(&["kill-server"]);
+    assert_eq!(live(&env.rows(), "lead"), "gone");
+    fs::remove_file(&socket).unwrap();
     assert_eq!(live(&env.rows(), "lead"), "unknown");
 
     // Ended through brg after a confirmed stop: gone.
