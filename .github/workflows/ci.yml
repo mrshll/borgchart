@@ -28,13 +28,13 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - name: Toolchain
         run: rustup show active-toolchain
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets --features test-support --locked -- -D warnings
-      - run: cargo test --features test-support --locked
+      - run: .githooks/checks fmt
+      - run: .githooks/checks clippy
+      - run: .githooks/checks test
 
   slackbot-plugin:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-      - run: uv run --no-project --with pytest==8.3.5 pytest -p no:cacheprovider examples/slack-devops/plugins/slackbot/tests
+      - run: .githooks/checks py
