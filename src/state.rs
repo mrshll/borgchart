@@ -249,11 +249,12 @@ pub struct MemberMeta {
     pub posture: String,
     pub parent: Option<String>,
     pub vendor_version: Option<String>,
-    /// Set once `up` has started the member's window since the team last
+    /// Whether `up` has started the member's window since the team last
     /// started afresh (`status` tells `not started` from `stopped` by it
-    /// when the team has no bus).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub started: bool,
+    /// when the team has no bus). `None` in state from an earlier brg,
+    /// which didn't record it: history unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

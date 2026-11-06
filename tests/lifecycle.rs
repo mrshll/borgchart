@@ -499,6 +499,37 @@ fn members_that_ran_and_ended_are_stopped() {
 }
 
 #[test]
+fn state_from_an_earlier_brg_reads_as_stopped_not_never_started() {
+    let env = Env::new(false);
+    env.up();
+    let meta_file = env.state_dir().join("deployment.json");
+    let mut meta = read_json(&meta_file);
+    // New state records every member's start history explicitly.
+    assert_eq!(meta["members"]["lead"]["started"], true);
+    assert_eq!(meta["members"]["helper"]["started"], false);
+
+    // An earlier brg wrote no `started` field: history unknown.
+    for m in meta["members"].as_object_mut().unwrap().values_mut() {
+        m.as_object_mut().unwrap().remove("started");
+    }
+    fs::write(&meta_file, serde_json::to_vec_pretty(&meta).unwrap()).unwrap();
+    let helper = env.row("helper");
+    assert_eq!(helper["state"], "stopped", "{helper}");
+    assert!(helper.get("expected_running").is_none(), "{helper}");
+
+    env.up_helper();
+    env.ok(&["down", "--member", "lead"]);
+    let out = env.ok(&["status"]);
+    assert_eq!(
+        stdout(&out),
+        "oncall\n\
+         └─ lead      claude opus high     stopped (should be running)\n   \
+         └─ helper codex example-model  idle\n"
+    );
+    assert_eq!(env.row("lead")["expected_running"], true);
+}
+
+#[test]
 fn a_start_true_member_never_started_is_not_started() {
     let env = Env::new(true);
     env.up_helper();

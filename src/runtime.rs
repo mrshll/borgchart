@@ -429,7 +429,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                         },
                         parent: member.parent.clone(),
                         vendor_version: vendor_version(member.vendor, &base),
-                        started: false,
+                        started: Some(false),
                     },
                 );
             }
@@ -590,9 +590,9 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
         // member ran.
         if binding.is_none()
             && let Some(m) = meta.members.get_mut(id)
-            && !m.started
+            && m.started != Some(true)
         {
-            m.started = true;
+            m.started = Some(true);
             write_private(
                 &state.meta_file(),
                 &serde_json::to_vec_pretty(&meta).map_err(|e| e.to_string())?,
@@ -1165,7 +1165,7 @@ pub fn status(input: &Input) -> Result<Vec<StatusRow>, String> {
         let posture = v.posture(id);
         // Whether it ever ran here: with a bus, an incarnation in the team's
         // current storage (one that can't be read counts); without one, a
-        // start recorded since the team last started afresh.
+        // start recorded since the team last started afresh (or no record).
         let incarnation = match &run {
             Some(paths) => crate::bus::manifest::load_incarnation(paths, id),
             None => Ok(None),
@@ -1173,7 +1173,11 @@ pub fn status(input: &Input) -> Result<Vec<StatusRow>, String> {
         let ran = match (&run, &incarnation) {
             (Some(_), Ok(inc)) => inc.is_some(),
             (Some(_), Err(_)) => true,
-            (None, _) => meta.members.get(id).is_some_and(|m| m.started),
+            // State from an earlier brg didn't record starts: assume it ran.
+            (None, _) => meta
+                .members
+                .get(id)
+                .is_some_and(|m| m.started != Some(false)),
         };
         let mut row = StatusRow {
             name: id.clone(),
