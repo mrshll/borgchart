@@ -23,6 +23,7 @@ use super::store::{self, Bus, Page};
 #[derive(Subcommand)]
 pub enum MsgCommand {
     /// Publish a record from a JSON draft (a file, or `-`/nothing for stdin).
+    #[command(after_long_help = super::help::publish())]
     Publish {
         /// The operation key: a retry with the same key returns the same record.
         #[arg(long)]
@@ -33,22 +34,27 @@ pub enum MsgCommand {
         /// Publish as an outside caller with this name.
         #[arg(long)]
         external: Option<String>,
+        /// Print {ok, code, outcome, id, ...} as JSON.
         #[arg(long)]
         json: bool,
     },
     /// Show one record, with its body and facts. Never acknowledges it.
     Read {
+        /// The record ID (`m<number>`).
         id: String,
+        /// Print the record as JSON.
         #[arg(long)]
         json: bool,
     },
     /// Acknowledge records addressed to you (acking twice is a no-op).
     Ack {
+        /// Record IDs (`m<number>`), all addressed to you.
         #[arg(required = true)]
         ids: Vec<String>,
         /// Acknowledge as the outside caller with this name.
         #[arg(long)]
         external: Option<String>,
+        /// Print each ID's outcome (`acked` or `already`) as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -73,6 +79,7 @@ pub struct InboxArgs {
     /// Only records after this ID (the `next` of the previous page).
     #[arg(long)]
     pub after: Option<String>,
+    /// Records per page (1-100).
     #[arg(long, default_value_t = store::DEFAULT_PAGE)]
     pub limit: usize,
     /// Include acknowledged records.
@@ -81,6 +88,7 @@ pub struct InboxArgs {
     /// Include bodies and facts.
     #[arg(long)]
     pub full: bool,
+    /// Print the page as JSON ({records, next, unacked, total, store}).
     #[arg(long)]
     pub json: bool,
 }
@@ -88,18 +96,23 @@ pub struct InboxArgs {
 #[derive(Subcommand, Clone)]
 pub enum InboxCommand {
     /// Wait until the inbox has an unacknowledged record after `--after`.
+    #[command(after_long_help = super::help::wait())]
     Wait {
         #[command(flatten)]
         who: Who,
+        /// Only records after this ID: the last one you have seen.
         #[arg(long)]
         after: Option<String>,
         /// Give up after this many seconds (1–600), exiting `timeout`.
         #[arg(long)]
         timeout: u64,
+        /// Records per page (1-100).
         #[arg(long, default_value_t = store::DEFAULT_PAGE)]
         limit: usize,
+        /// Include bodies and facts.
         #[arg(long)]
         full: bool,
+        /// Print the page, or the failure, as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -112,11 +125,13 @@ pub enum BusCommand {
         /// How many recent record headers to show.
         #[arg(long, default_value_t = 10)]
         last: usize,
+        /// Print the summary as JSON.
         #[arg(long)]
         json: bool,
     },
     /// Check the team's message storage and its age. Never writes.
     Check {
+        /// Print the report as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -125,6 +140,7 @@ pub enum BusCommand {
         /// The earlier run: the one the current run is linked from.
         #[arg(long)]
         from: String,
+        /// Print the carry report as JSON.
         #[arg(long)]
         json: bool,
     },

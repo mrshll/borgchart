@@ -10,6 +10,7 @@ pub mod carry;
 pub mod cli;
 pub mod context;
 pub mod fsx;
+pub mod help;
 pub mod layout;
 pub mod manifest;
 pub mod outcome;

@@ -13,15 +13,20 @@ use super::{carry as carrying, store, tasks};
 
 #[derive(Subcommand)]
 pub enum TaskCommand {
-    /// List tasks and open questions, folded from the run's records.
+    /// List tasks and open questions, folded from the team's records.
+    #[command(long_about = super::help::task_list())]
     List {
+        /// Print tasks (with `next`) and questions as JSON.
         #[arg(long)]
         json: bool,
     },
     /// Show one task: its state, agreement, records, writers, next step
     /// and open questions about it.
+    #[command(long_about = super::help::task_show())]
     Show {
+        /// The task ID.
         task: String,
+        /// Print the task, its next step and open questions as JSON.
         #[arg(long)]
         json: bool,
     },
