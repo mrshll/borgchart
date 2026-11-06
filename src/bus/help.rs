@@ -8,7 +8,8 @@
 
 use super::outcome::Code;
 use super::record::{
-    Kind, MAX_ARTIFACTS, MAX_BODY_BYTES, MAX_FACTS_BYTES, MAX_KEY_BYTES, MAX_RECORD_BYTES, MAX_REFS,
+    Kind, MAX_ARTIFACTS, MAX_BODY_BYTES, MAX_FACTS_BYTES, MAX_KEY_BYTES, MAX_LABEL_BYTES,
+    MAX_RECORD_BYTES, MAX_REFS,
 };
 use super::store;
 
@@ -280,7 +281,8 @@ Draft (one JSON object; any other field is refused):
   reply_to   IDs of records this answers or follows (m<number>), at most {MAX_REFS}
   body       text, at most {MAX_BODY_BYTES} bytes
   artifacts  [{{\"path\": \"/absolute/file\", \"label\": \"text\"}}], at most {MAX_ARTIFACTS}
-             existing regular files of up to {} MiB; brg records bytes and sha256
+             existing regular files of up to {} MiB (brg records bytes and
+             sha256); `label` is optional, at most {MAX_LABEL_BYTES} bytes
   facts      an object of kind-specific details (below), at most {MAX_FACTS_BYTES} bytes;
              keys a kind doesn't name are kept and ignored
 Text may contain newlines and tabs, no other control characters. The whole draft
@@ -333,14 +335,17 @@ must identify one intended record: reuse it only to retry that record.
 A new record needs a new key. After a crash or an unclear exit, publish the
 same draft with the same key again.
 
-Example (the assignee `helper` reports on task t-1 to its parent `lead`):
-  \"$BORGCHART_BIN\" msg publish --key result-t-1-1 <<'EOF'
-  {{\"to\": \"lead\", \"kind\": \"result\", \"task\": \"t-1\", \"attempt\": 1,
-   \"reply_to\": [\"m1\"],
-   \"body\": \"Parser done; all tests pass.\",
-   \"facts\": {{\"status\": \"complete\", \"checks\": [{{\"name\": \"tests\", \"outcome\": \"pass\"}}]}}}}
-  EOF
-  committed: m3 (result to lead)
+Example (the assignee `helper` reports on task t-1 to its parent `lead`;
+paste the lines between the rules as they are):
+--------
+\"$BORGCHART_BIN\" msg publish --key result-t-1-1 <<'EOF'
+{{\"to\": \"lead\", \"kind\": \"result\", \"task\": \"t-1\", \"attempt\": 1,
+ \"reply_to\": [\"m1\"],
+ \"body\": \"Parser done; all tests pass.\",
+ \"facts\": {{\"status\": \"complete\", \"checks\": [{{\"name\": \"tests\", \"outcome\": \"pass\"}}]}}}}
+EOF
+--------
+Prints: committed: m3 (result to lead)
 
 Outcomes (with --json: {{ok, code, outcome, ...}}; the exit status is the code):
 "
