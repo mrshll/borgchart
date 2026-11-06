@@ -583,7 +583,7 @@ impl Server {
                 "-F",
                 // `|` rather than a tab: without a UTF-8 locale tmux
                 // replaces tabs in its output. No field can contain `|`.
-                "#{session_name}|#{window_name}|#{pane_id}|#{pane_pid}|#{pane_dead}",
+                "#{session_name}|#{window_name}|#{pane_id}|#{pane_pid}|#{pane_dead}|#{window_id}",
             ])
             .output()
             .map_err(|e| format!("cannot start tmux: {e}"))?;
@@ -604,9 +604,26 @@ impl Server {
                     pane_id: p.next()?.to_string(),
                     pane_pid: p.next()?.parse().ok()?,
                     dead: p.next()? == "1",
+                    window_id: p.next()?.to_string(),
                 })
             })
             .collect())
+    }
+
+    /// The server's absolute socket path and PID, as the server reports
+    /// them. Needs a session on the server.
+    pub fn identity(&self) -> Result<(PathBuf, u32), String> {
+        let out = self
+            .command()
+            .args(["display-message", "-p", "#{socket_path}|#{pid}"])
+            .output()
+            .map_err(|e| format!("cannot start tmux: {e}"))?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        text.trim()
+            .rsplit_once('|')
+            .filter(|(path, _)| out.status.success() && path.starts_with('/'))
+            .and_then(|(path, pid)| Some((PathBuf::from(path), pid.parse().ok()?)))
+            .ok_or_else(|| format!("cannot identify the {}", self.describe()))
     }
 
     /// Run one tmux command that changes something; `Err` on any failure.
@@ -636,6 +653,7 @@ pub struct PaneRow {
     pub pane_id: String,
     pub pane_pid: u32,
     pub dead: bool,
+    pub window_id: String,
 }
 
 /// The pane a window runs in, read from brg's own tmux right after it
@@ -897,6 +915,7 @@ mod tests {
             pane_id: id.into(),
             pane_pid: pid,
             dead,
+            window_id: "@1".into(),
         };
         assert_eq!(pane_in(&[row("%1", 10, false)], "%1", 10), Liveness::Alive);
         assert_eq!(pane_in(&[row("%1", 10, true)], "%1", 10), Liveness::Gone);

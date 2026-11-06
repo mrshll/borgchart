@@ -16,6 +16,7 @@ use crate::deploy::Auth;
 use crate::exec::{ExecSpec, PluginEnv, identity_env};
 use crate::launch;
 use crate::lifecycle;
+use crate::proctree;
 use crate::rules::{self, State};
 use crate::state::{
     self, MemberMeta, Meta, PluginMeta, StateDir, shell_quote, write_private, write_script,
@@ -351,7 +352,13 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
     state::ensure_dir(&state.root)
         .map_err(|e| format!("cannot create {}: {e}", state.root.display()))?;
     let state_lock = lifecycle::lock_state(state)?;
-    let existing = state::read_meta(state).filter(|_| probe.has_session(&session));
+    let previous = state::read_meta(state);
+    // Unless the last deployment here was confirmed stopped, or never
+    // started a window, a server this caller can't see may still run it.
+    let may_still_run = previous
+        .as_ref()
+        .is_some_and(|m| m.stopped_at.is_none() && m.windows_started != Some(false));
+    let existing = previous.filter(|_| probe.has_session(&session));
     let joining = existing.is_some();
     match &existing {
         Some(meta) => lifecycle::check_join(meta, &snapshot, state, &team, &restart)?,
@@ -394,6 +401,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                     dir: b.paths.root.clone(),
                 }),
                 base_env: base.clone(),
+                windows_started: Some(may_still_run),
                 ..Meta::default()
             };
             // Plugins: their values (secrets included) go to private files for the shims.
@@ -592,6 +600,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             &tmux,
             &brg,
             state,
+            &mut meta,
             &session,
             id,
             &ExecSpec {
@@ -692,6 +701,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                 &tmux,
                 &brg,
                 state,
+                &mut meta,
                 &session,
                 &window,
                 &ExecSpec { argv, env, cwd },
@@ -943,10 +953,21 @@ fn start_window(
     tmux: &Tmux,
     brg: &Path,
     state: &StateDir,
+    meta: &mut Meta,
     session: &str,
     window: &str,
     spec: &ExecSpec,
 ) -> Result<(), String> {
+    // Recorded first: once tmux runs, `down` must not take an unreachable
+    // server for one that never started.
+    if meta.windows_started != Some(true) {
+        meta.windows_started = Some(true);
+        write_private(
+            &state.meta_file(),
+            &serde_json::to_vec_pretty(meta).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| format!("cannot write state: {e}"))?;
+    }
     let body = serde_json::to_vec(spec).map_err(|e| e.to_string())?;
     write_private(&state.exec_file(window), &body)
         .map_err(|e| format!("cannot write launch file: {e}"))?;
@@ -1000,8 +1021,9 @@ pub fn down(input: &Input, only: Option<&str>) -> Result<Vec<String>, String> {
     };
     let rows = match server.panes() {
         Ok(rows) => rows,
-        // A stop was already confirmed, and nothing has started since.
-        Err(_) if meta.stopped_at.is_some() => Vec::new(),
+        // A stop was already confirmed, or nothing ever started, and
+        // nothing has started since.
+        Err(_) if meta.stopped_at.is_some() || meta.windows_started == Some(false) => Vec::new(),
         Err(e) => {
             return Err(format!(
                 "{e}; nothing was changed. If team `{team}` is really gone (for example after a reboot), `brg up` and then `brg down` clear it"
@@ -1010,13 +1032,35 @@ pub fn down(input: &Input, only: Option<&str>) -> Result<Vec<String>, String> {
     };
     let in_session = |r: &&lifecycle::PaneRow| r.session == session;
     let mut messages = Vec::new();
+    // The processes under the panes this `down` stops, found before tmux
+    // kills the panes: some may have left the pane's session, and would
+    // outlive it. Only live panes in this session on the recorded server,
+    // and with `--member`, only those in the one window it kills.
+    let target = only.and_then(|id| rows.iter().filter(in_session).find(|r| r.window == id));
+    let panes: Vec<u32> = rows
+        .iter()
+        .filter(in_session)
+        .filter(|r| !r.dead)
+        .filter(|r| match only {
+            Some(_) => target.is_some_and(|t| t.window_id == r.window_id),
+            None => true,
+        })
+        .map(|r| r.pane_pid)
+        .collect();
+    let procs = if panes.is_empty() {
+        Ok(Vec::new())
+    } else {
+        server
+            .identity()
+            .and_then(|(socket, pid)| proctree::snapshot(&panes, pid, &socket))
+    };
     // Panes that are certainly stopped now: killed by this `down`, or not on
     // the server that answered.
     let mut killed: Vec<String> = Vec::new();
     let mut whole = false;
     let members: Vec<String> = match only {
         Some(id) => {
-            match rows.iter().filter(in_session).find(|r| r.window == id) {
+            match target {
                 Some(w) => {
                     if rows.iter().filter(in_session).count() == 1 {
                         server.act(&["kill-session", "-t", &format!("={session}")])?;
@@ -1055,6 +1099,18 @@ pub fn down(input: &Input, only: Option<&str>) -> Result<Vec<String>, String> {
             meta.members.keys().cloned().collect()
         }
     };
+    // Now the panes are gone, end what ran under them, before anything
+    // below can return early.
+    match procs.and_then(|p| proctree::end(&p)) {
+        Ok(left) if left.is_empty() => {}
+        Ok(left) => messages.push(format!(
+            "processes {} didn't exit after KILL",
+            left.iter().map(u32::to_string).collect::<Vec<_>>().join(", ")
+        )),
+        Err(e) => messages.push(format!(
+            "{e}; processes the stopped members left running in the background, if any, weren't checked"
+        )),
+    }
     if let Some(paths) = &run {
         for id in &members {
             let Some(inc) = crate::bus::manifest::load_incarnation(paths, id).map_err(|_| {
