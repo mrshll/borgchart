@@ -5,9 +5,10 @@
 //! Run with `cargo test --features test-support --test wake`.
 #![cfg(feature = "test-support")]
 
+mod common;
+
 use std::collections::BTreeMap;
 use std::fs;
-use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
@@ -396,9 +397,7 @@ struct Env {
 
 impl Drop for Env {
     fn drop(&mut self) {
-        let _ = Command::new("tmux")
-            .args(["-L", &self.socket, "kill-server"])
-            .output();
+        crate::common::kill_server(&self.socket);
     }
 }
 
@@ -741,8 +740,8 @@ fn unqualified_members_get_alerts_only() {
 fn an_attached_client_and_a_resize_do_not_matter() {
     let e = Env::new(Vendor::Claude);
     // A control-mode client stays attached for the attempt.
-    let mut client = Command::new("tmux")
-        .args(["-L", &e.socket, "-C", "attach", "-t", "s"])
+    let mut client = common::tmux(&e.socket)
+        .args(["-C", "attach", "-t", "s"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .spawn()

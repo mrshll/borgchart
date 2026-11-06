@@ -18,6 +18,8 @@
 //! `target/qualify/matrix.md`; raw screens go to `target/qualify/screens/`
 //! (they show your real screen: sanitize before keeping any as fixtures).
 
+mod common;
+
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -64,10 +66,8 @@ struct Run {
 
 impl Drop for Run {
     fn drop(&mut self) {
-        let _ = self.tmux.run(&["kill-server"]);
-        let _ = Command::new("tmux")
-            .args(["-L", &format!("{}-outer", self.socket), "kill-server"])
-            .output();
+        common::kill_server(&self.socket);
+        common::kill_server(&format!("{}-outer", self.socket));
     }
 }
 
@@ -578,9 +578,7 @@ fn qualify(vendor: Vendor) -> Vec<[String; 4]> {
     run.record("pane 100x12", "deferred:uncertain", show(&r));
     let _ = control.kill();
     let _ = control.wait();
-    let _ = Command::new("tmux")
-        .args(["-L", &outer, "kill-server"])
-        .output();
+    common::kill_server(&outer);
 
     if !qualified || !submit {
         run.record("submissions", "", "skipped".into());
@@ -626,18 +624,8 @@ fn qualify(vendor: Vendor) -> Vec<[String; 4]> {
     let resizer = std::thread::spawn(move || {
         for (x, y) in [("190", "50"), ("200", "48"), ("200", "50")] {
             std::thread::sleep(Duration::from_millis(150));
-            let _ = Command::new("tmux")
-                .args([
-                    "-L",
-                    &socket,
-                    "resize-window",
-                    "-t",
-                    &target,
-                    "-x",
-                    x,
-                    "-y",
-                    y,
-                ])
+            let _ = common::tmux(&socket)
+                .args(["resize-window", "-t", &target, "-x", x, "-y", y])
                 .output();
         }
     });
@@ -679,9 +667,7 @@ fn qualify(vendor: Vendor) -> Vec<[String; 4]> {
     run.record("turn 1 ended", "idle", end);
     let _ = control.kill();
     let _ = control.wait();
-    let _ = Command::new("tmux")
-        .args(["-L", &outer, "kill-server"])
-        .output();
+    common::kill_server(&outer);
 
     // Submission 2: vim normal mode.
     run.start(200, 50);
