@@ -1,37 +1,53 @@
-//! The team that develops borgchart (`dev-team/`): its example deployment
-//! validates, its member files expand and stay generic, and one task round
-//! works with `fake-agent` members.
+//! The team that develops borgchart (`dev-team/`) and its design panel
+//! (`dev-design-team/`): their example deployments validate, their member
+//! files expand and stay generic, one task round works with `fake-agent`
+//! members, and the lead can seat the design panel.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-fn dev_team() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("dev-team")
+const TEAMS: [&str; 2] = ["dev-team", "dev-design-team"];
+
+fn team_dir(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(name)
 }
 
-/// The example deployment with its placeholders filled with paths under
-/// `dir`. The bus root stays `~/…`, so `HOME` decides where it lands.
+fn dev_team() -> PathBuf {
+    team_dir("dev-team")
+}
+
+/// The dev team's example deployment, filled in under `dir`.
 fn fill_example(dir: &Path) -> PathBuf {
-    let text = fs::read_to_string(dev_team().join("borgchart.example.yaml")).unwrap();
-    assert!(text.contains("root: ~/.local/state/brg-teams"), "{text}");
+    fill(dir, "dev-team")
+}
+
+/// `team`'s example deployment with its placeholders filled with paths
+/// under `dir`, written to `dir/config/<team>.yaml`. The bus root stays
+/// `~/…`, so `HOME` decides where it lands.
+fn fill(dir: &Path, team: &str) -> PathBuf {
+    let text = fs::read_to_string(team_dir(team).join("borgchart.example.yaml")).unwrap();
+    if team == "dev-team" {
+        assert!(text.contains("root: ~/.local/state/brg-teams"), "{text}");
+    }
     let work = dir.join("borgchart-dev");
-    for w in ["lead", "impl-a", "impl-b", "review", "notes"] {
+    for w in ["lead", "impl", "review", "design", "notes/design/current"] {
         fs::create_dir_all(work.join(w)).unwrap();
     }
     let filled = text
         .replace(
-            "/path/to/borgchart/dev-team",
-            &dev_team().display().to_string(),
+            &format!("/path/to/borgchart/{team} "),
+            &format!("{} ", team_dir(team).display()),
         )
-        .replace("/path/to/borgchart-dev", &work.display().to_string());
+        .replace("/path/to/borgchart-dev", &work.display().to_string())
+        .replace("/path/to/config", &dir.join("config").display().to_string());
     assert!(
         !filled
             .lines()
             .any(|l| !l.trim_start().starts_with('#') && l.contains("/path/to")),
         "{filled}"
     );
-    let file = dir.join("config/dev-team.yaml");
+    let file = dir.join(format!("config/{team}.yaml"));
     fs::create_dir_all(file.parent().unwrap()).unwrap();
     fs::write(&file, filled).unwrap();
     fs::create_dir_all(dir.join("home")).unwrap();
@@ -51,65 +67,138 @@ fn validate(dir: &Path, file: &Path) -> Output {
 }
 
 #[test]
-fn the_example_deployment_validates_with_only_the_expected_warning() {
+fn both_example_deployments_validate_cleanly() {
     let dir = tempfile::tempdir().unwrap();
-    let file = fill_example(dir.path());
-    let out = validate(dir.path(), &file);
-    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert!(out.status.success(), "{report}");
-    assert_eq!(report["errors"], serde_json::json!([]), "{report}");
-    // The Codex reviewer runs the CLI's default model on purpose.
-    let warnings: Vec<(String, String)> = report["warnings"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|w| {
-            (
-                w["file"].as_str().unwrap_or("").to_string(),
-                w["message"].as_str().unwrap().to_string(),
-            )
-        })
-        .collect();
-    assert_eq!(
-        warnings,
-        [(
-            dev_team().join("reviewer.md").display().to_string(),
-            "no `models.codex` entry; the vendor's default model will be used".to_string()
-        )]
-    );
+    for team in TEAMS {
+        let file = fill(dir.path(), team);
+        let out = validate(dir.path(), &file);
+        let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert!(out.status.success(), "{team}: {report}");
+        assert_eq!(report["errors"], serde_json::json!([]), "{team}: {report}");
+        assert_eq!(
+            report["warnings"],
+            serde_json::json!([]),
+            "{team}: {report}"
+        );
+    }
 }
 
-fn member_files() -> Vec<PathBuf> {
-    let team = fs::read_to_string(dev_team().join("team.yaml")).unwrap();
-    let mut files: Vec<PathBuf> = team
+/// Each team's member files, by the `prompt:` lines of its `team.yaml`.
+fn member_files(team: &str) -> Vec<PathBuf> {
+    let text = fs::read_to_string(team_dir(team).join("team.yaml")).unwrap();
+    let mut files: Vec<PathBuf> = text
         .lines()
         .filter_map(|l| l.trim().strip_prefix("prompt: "))
-        .map(|p| dev_team().join(p.trim()))
+        .map(|p| team_dir(team).join(p.trim()))
         .collect();
     files.sort();
     files.dedup();
     files
 }
 
+fn includes_of(file: &Path) -> Vec<String> {
+    fs::read_to_string(file)
+        .unwrap()
+        .lines()
+        .filter_map(|l| l.strip_prefix("{{includes/")?.strip_suffix("}}"))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Includes resolve, don't nest, and each is shared: text used by one
+/// member file belongs in that file.
 #[test]
-fn member_files_expand_their_includes() {
-    let files = member_files();
-    assert_eq!(files.len(), 4, "{files:?}");
-    for file in files {
-        let text = fs::read_to_string(&file).unwrap();
-        let includes: Vec<&str> = text
-            .lines()
-            .filter_map(|l| l.strip_prefix("{{includes/")?.strip_suffix("}}"))
-            .collect();
-        assert!(includes.contains(&"rules"), "{}", file.display());
-        assert!(includes.contains(&"member-bus") || includes.contains(&"lead-bus"));
+fn includes_resolve_and_are_shared() {
+    let files = member_files("dev-team");
+    assert_eq!(files.len(), 5, "{files:?}");
+    let mut uses: std::collections::BTreeMap<String, usize> = Default::default();
+    for file in &files {
+        let includes = includes_of(file);
+        assert!(includes.contains(&"rules".into()), "{}", file.display());
+        let is_lead = file.ends_with("orchestrator.md");
+        assert_eq!(
+            includes.contains(&"member-bus".into()),
+            !is_lead,
+            "{}",
+            file.display()
+        );
         for stem in includes {
             let inc = dev_team().join(format!("includes/{stem}.md"));
             let body = fs::read_to_string(&inc)
                 .unwrap_or_else(|e| panic!("{}: {stem}: {e}", file.display()));
             assert!(!body.contains("{{"), "{} nests an include", inc.display());
+            *uses.entry(stem).or_default() += 1;
         }
     }
+    let mut present: Vec<String> = fs::read_dir(dev_team().join("includes"))
+        .unwrap()
+        .map(|e| {
+            let name = e.unwrap().file_name().to_string_lossy().to_string();
+            name.strip_suffix(".md").unwrap_or(&name).to_string()
+        })
+        .collect();
+    present.sort();
+    assert_eq!(
+        present,
+        uses.keys().cloned().collect::<Vec<_>>(),
+        "{uses:?}"
+    );
+    for (stem, n) in &uses {
+        assert!(*n >= 2, "includes/{stem}.md is used by {n} member file");
+    }
+    // The design panel's one member file stands alone.
+    for file in member_files("dev-design-team") {
+        assert_eq!(includes_of(&file), Vec::<String>::new());
+    }
+    assert!(!team_dir("dev-design-team").join("includes").exists());
+}
+
+/// Claude Code refuses foreground sleep and poll loops, so wherever a
+/// Claude member's instructions sleep, they do it in a background command.
+#[test]
+fn claude_members_sleep_only_in_background_commands() {
+    // Member files whose `vendor:` in team.yaml is claude, plus the helpers'
+    // shared include (Claude helpers use it too).
+    let team = fs::read_to_string(dev_team().join("team.yaml")).unwrap();
+    let mut files = vec![dev_team().join("includes/member-bus.md")];
+    let mut prompt = None;
+    for line in team.lines().map(str::trim) {
+        if let Some(p) = line.strip_prefix("prompt: ") {
+            prompt = Some(p.to_string());
+        }
+        if line.starts_with("vendor: claude") {
+            files.push(dev_team().join(prompt.take().unwrap()));
+        }
+    }
+    assert!(files.iter().any(|f| f.ends_with("monitor.md")), "{files:?}");
+    assert!(
+        files.iter().any(|f| f.ends_with("orchestrator.md")),
+        "{files:?}"
+    );
+    let mut sleeps = 0;
+    for file in &files {
+        let text = fs::read_to_string(file).unwrap();
+        // A command line indented under a bullet or step belongs to it.
+        let mut item = "";
+        for line in text.lines() {
+            if !line.starts_with(' ') {
+                item = line;
+            }
+            if line.contains("sleep") {
+                sleeps += 1;
+                // Either it forbids sleeping, or its item says to run the
+                // command in the Bash tool's background mode.
+                let forbids = line.to_lowercase().contains("never sleep");
+                assert!(
+                    forbids || item.contains("**background** mode"),
+                    "{}: a sleep outside a background command: {line}",
+                    file.display()
+                );
+            }
+        }
+    }
+    // The lead's design-panel wait and the monitor's watch, at least.
+    assert!(sleeps >= 2, "{sleeps}");
 }
 
 fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -152,8 +241,11 @@ fn the_team_files_stay_generic() {
     assert!(denied_word("the owner merges").is_none());
 
     let mut files = Vec::new();
-    walk(&dev_team(), &mut files);
-    assert!(files.len() >= 10, "{files:?}");
+    for team in TEAMS {
+        let before = files.len();
+        walk(&team_dir(team), &mut files);
+        assert!(files.len() - before >= 3, "{team}: {files:?}");
+    }
     // Machine paths, private tooling and people stay in the private
     // deployment file, never here.
     let home = regex::Regex::new(r"/(home|Users)/[^/\s]+|/tmp/|/root/").unwrap();
@@ -169,9 +261,10 @@ fn the_team_files_stay_generic() {
     }
 }
 
-/// The lead alone under `fake-agent`, then one implementer task:
-/// assign → (start) → accept → result → verify → stop → release, with the
-/// lead's background self-wake returning for each reply.
+/// The lead alone under `fake-agent`, then one task for the (Codex)
+/// implementer: assign → (start) → accept → questions → result → verify →
+/// stop → release, with the lead's background self-wake returning for each
+/// reply.
 #[cfg(feature = "test-support")]
 mod round {
     use super::*;
@@ -401,11 +494,11 @@ mod round {
         let agreement = work.join("notes/t1-agreement.md");
         fs::write(&agreement, "Task t1: a fictional change.\n").unwrap();
         let sha = borgchart::bus::manifest::sha256_hex(&fs::read(&agreement).unwrap());
-        let checkout = work.join("impl-a").display().to_string();
+        let checkout = work.join("impl").display().to_string();
         let assign = team.publish(
             "lead",
             "t1.assign.1.1",
-            serde_json::json!({"to": "implementer-a", "kind": "assign", "task": "t1", "attempt": 1,
+            serde_json::json!({"to": "implementer", "kind": "assign", "task": "t1", "attempt": 1,
                 "body": "Make a fictional change.",
                 "facts": {"agreement": {"path": agreement, "sha256": sha}, "scope": "tests", "checkout": checkout}}),
         );
@@ -413,16 +506,22 @@ mod round {
 
         // The lead has listed nothing yet, so it waits without `--after`.
         team.background_wait("lead", "wait-1", None, 30);
-        team.ok(&["up", "--member", "implementer-a"]);
-        team.wait_idle("implementer-a");
-        let log = fs::read_to_string(team.path("home/fake-agent/implementer-a.jsonl")).unwrap();
+        team.ok(&["up", "--member", "implementer"]);
+        team.wait_idle("implementer");
+        let log = fs::read_to_string(team.path("home/fake-agent/implementer.jsonl")).unwrap();
         let start: serde_json::Value = serde_json::from_str(log.lines().next().unwrap()).unwrap();
         assert_eq!(start["cwd"], checkout);
+        // The implementer is Codex, on the model its file names.
+        let argv = start["argv"].to_string();
+        assert!(
+            argv.starts_with("[\"codex") && argv.contains("gpt-6-sol"),
+            "{argv}"
+        );
 
         // Its first action: read its inbox, then accept.
         let inbox = team.path("s/impl-inbox.out");
         team.run_in(
-            "implementer-a",
+            "implementer",
             "impl-inbox",
             &format!(
                 "\"$BORGCHART_BIN\" inbox --json > {o} 2>&1; echo \"exit $?\" >> {o}\n",
@@ -431,7 +530,7 @@ mod round {
         );
         assert_eq!(ids(&team.output("impl-inbox").0), ["m1"]);
         team.publish(
-            "implementer-a",
+            "implementer",
             "t1.accept.1.1",
             serde_json::json!({"to": "lead", "kind": "accept", "task": "t1", "attempt": 1, "reply_to": ["m1"]}),
         );
@@ -453,11 +552,11 @@ mod round {
             serde_json::json!({"to": "lead", "kind": "question", "task": "t1", "attempt": 1,
                 "body": format!("Fictional question {n}?")})
         };
-        let q1 = team.publish("implementer-a", "t1.question.1.1", question(1));
-        let q2 = team.publish("implementer-a", "t1.question.1.2", question(2));
+        let q1 = team.publish("implementer", "t1.question.1.1", question(1));
+        let q2 = team.publish("implementer", "t1.question.1.2", question(2));
         assert_eq!((&q1["id"], &q2["id"]), (&"m3".into(), &"m4".into()));
         let retry = team.publish_as(
-            "implementer-a",
+            "implementer",
             "t1.question.1.2-retry",
             "t1.question.1.2",
             question(2),
@@ -469,11 +568,32 @@ mod round {
         team.ack("lead", "m3");
         team.ack("lead", "m4");
 
-        team.background_wait("lead", "wait-3", Some("m4"), 30);
+        // A Codex helper waits for its answer in the foreground, inside its
+        // own turn: it never leaves a wait running in the background.
+        let answer = team.path("s/impl-answer.out");
+        team.run_in(
+            "implementer",
+            "impl-answer",
+            &format!(
+                "\"$BORGCHART_BIN\" inbox wait --after m1 --timeout 30 --json > {o} 2>&1; echo \"exit $?\" >> {o}\n",
+                o = answer.display()
+            ),
+        );
+        team.publish(
+            "lead",
+            "t1.decision.1.1",
+            serde_json::json!({"to": "implementer", "kind": "decision", "task": "t1", "attempt": 1,
+                "reply_to": ["m4"], "body": "Fictional answer."}),
+        );
+        let (answered, code) = team.output("impl-answer");
+        assert_eq!((code, ids(&answered)), (0, vec!["m5".to_string()]));
+        team.ack("implementer", "m5");
+
+        team.background_wait("lead", "wait-3", Some("m5"), 30);
         let report = work.join("notes/t1-report.md");
         fs::write(&report, "status: complete\naction-needed: none\n").unwrap();
         team.publish(
-            "implementer-a",
+            "implementer",
             "t1.result.1.1",
             serde_json::json!({"to": "lead", "kind": "result", "task": "t1", "attempt": 1, "reply_to": ["m1"],
                 "body": "action-needed: none",
@@ -481,28 +601,95 @@ mod round {
                 "facts": {"status": "complete", "checks": [{"name": "cargo test", "outcome": "pass"}]}}),
         );
         let (woke, code) = team.output("wait-3");
-        assert_eq!((code, ids(&woke)), (0, vec!["m5".to_string()]));
-        team.ack("lead", "m5");
-        team.ack("implementer-a", "m1");
+        assert_eq!((code, ids(&woke)), (0, vec!["m6".to_string()]));
+        team.ack("lead", "m6");
+        team.ack("implementer", "m1");
 
         team.publish(
             "lead",
             "t1.verify.1.1",
-            serde_json::json!({"to": "implementer-a", "kind": "verify", "task": "t1", "attempt": 1,
-                "reply_to": ["m5"], "facts": {"result": "m5", "outcome": "accepted"}}),
+            serde_json::json!({"to": "implementer", "kind": "verify", "task": "t1", "attempt": 1,
+                "reply_to": ["m6"], "facts": {"result": "m6", "outcome": "accepted"}}),
         );
-        team.ok(&["down", "--member", "implementer-a"]);
+        team.ok(&["down", "--member", "implementer"]);
         let show = team.ok(&["task", "show", "t1"]);
         assert!(show.contains("(gone, current)"), "{show}");
         team.publish(
             "lead",
             "t1.release.1.1",
-            serde_json::json!({"to": "implementer-a", "kind": "release", "task": "t1", "attempt": 1,
-                "facts": {"evidence": "verified m5; implementer-a stopped", "checkout": checkout}}),
+            serde_json::json!({"to": "implementer", "kind": "release", "task": "t1", "attempt": 1,
+                "facts": {"evidence": "verified m6; implementer stopped", "checkout": checkout}}),
         );
         let list = team.ok(&["task", "list"]);
-        assert!(list.contains("t1  implementer-a#1  released"), "{list}");
+        assert!(list.contains("t1  implementer#1  released"), "{list}");
 
+        team.ok(&["down"]);
+    }
+
+    /// The lead seats the design panel the way orchestrator.md says: `up`
+    /// and `down` of the panel's own deployment, by `--file`, from inside
+    /// the lead. Each designer's opening prompt names the brief.
+    #[test]
+    fn the_lead_seats_the_design_panel_by_file() {
+        let team = new_team("design");
+        let panel = fill(team.dir.path(), "dev-design-team");
+        let brief = team.path("borgchart-dev/notes/design/current/brief.md");
+        team.ok(&["up"]);
+        team.wait_idle("lead");
+
+        let run = |name: &str, args: &str| {
+            let out = team.path(&format!("s/{name}.out"));
+            team.run_in(
+                "lead",
+                name,
+                &format!(
+                    "\"$BORGCHART_BIN\" {args} --file {f} > {o} 2>&1; echo \"exit $?\" >> {o}\n",
+                    f = panel.display(),
+                    o = out.display()
+                ),
+            );
+            team.wait_for(&format!("{name} output"), || {
+                fs::read_to_string(&out).is_ok_and(|t| t.contains("exit "))
+            });
+            fs::read_to_string(&out).unwrap()
+        };
+        let up = run("panel-up", "up");
+        assert!(up.ends_with("exit 0\n"), "{up}");
+        for designer in ["designer-claude", "designer-codex"] {
+            assert!(
+                up.lines()
+                    .any(|l| l.contains(designer) && l.ends_with("started")),
+                "{up}"
+            );
+            let log = team.path(&format!("home/fake-agent/{designer}.jsonl"));
+            team.wait_for(designer, || log.exists());
+            let start: serde_json::Value =
+                serde_json::from_str(fs::read_to_string(&log).unwrap().lines().next().unwrap())
+                    .unwrap();
+            let argv = start["argv"].to_string();
+            assert!(argv.contains(&brief.display().to_string()), "{argv}");
+            assert!(argv.contains("You are a designer"), "{argv}");
+            assert_eq!(start["env"]["BORGCHART_MEMBER"], designer);
+        }
+
+        let down = run("panel-down", "down");
+        assert!(down.ends_with("exit 0\n"), "{down}");
+        // The panel is down; the dev team still runs.
+        let status = Command::new(env!("CARGO_BIN_EXE_brg"))
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", team.path("home"))
+            .env("BORGCHART_STATE_HOME", team.path("state"))
+            .env("BORGCHART_TMUX_SOCKET", &team.socket)
+            .args(["status", "--json", "--file"])
+            .arg(&panel)
+            .output()
+            .unwrap();
+        let rows: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+        for row in rows.as_array().unwrap() {
+            assert_eq!(row["state"], "stopped", "{rows}");
+        }
+        team.wait_idle("lead");
         team.ok(&["down"]);
     }
 
@@ -535,7 +722,7 @@ mod round {
     /// exactly that.
     #[test]
     fn fenced_waits_stop_the_loop_except_after_a_restart() {
-        let rule = fs::read_to_string(dev_team().join("includes/self-wake.md")).unwrap();
+        let rule = fs::read_to_string(dev_team().join("orchestrator.md")).unwrap();
         assert!(rule.contains("list the inbox again"), "{rule}");
 
         let team = new_team("fenced");

@@ -3,31 +3,35 @@
 # from borgchart.example.yaml. See README.md.
 #
 # Every member uses `vendor` posture: the bus doesn't support `locked`
-# members yet. Models and efforts are in each member file.
+# members yet. Each member file names both vendors' models, so moving a
+# member to the other vendor is a change to its `vendor:` line here.
+#
+# The lead seats the design panel, a separate team (../dev-design-team),
+# before costly-to-reverse design choices.
 default: claude
 
 members:
   lead:
-    prompt: lead.md
+    prompt: orchestrator.md
+    vendor: claude      # a Codex lead needs a wake mechanism brg doesn't have yet
     start: true
-  companion:
-    prompt: companion.md
-    parent: lead
-    start: false        # started on demand, for a second look
-  implementer-a:
+  implementer:
     prompt: implementer.md
-    parent: lead
-    start: false
-  implementer-b:
-    prompt: implementer.md
+    vendor: codex
     parent: lead
     start: false
   reviewer:
     prompt: reviewer.md
-    vendor: codex       # the Codex CLI's default model (reviewer.md names none)
+    vendor: claude
     parent: lead
     start: false
-  reviewer-claude:
-    prompt: reviewer.md
+  researcher:
+    prompt: researcher.md
+    vendor: codex
     parent: lead
-    start: false        # fallback only, when Codex is unavailable
+    start: false
+  monitor:
+    prompt: monitor.md
+    vendor: claude
+    parent: lead
+    start: false

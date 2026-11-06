@@ -1,0 +1,14 @@
+# The design panel for the borgchart development team: two designers, one per
+# vendor, each writing an independent proposal from the same blind brief.
+# The dev-team lead starts and stops it with its own deployment file; see
+# ../dev-team/README.md. No bus: designers read the brief from a file and
+# write their proposals to files.
+members:
+  designer-claude:
+    prompt: designer.md
+    vendor: claude
+    start: true
+  designer-codex:
+    prompt: designer.md
+    vendor: codex
+    start: true

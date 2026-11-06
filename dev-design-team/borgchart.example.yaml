@@ -1,0 +1,25 @@
+# A deployment of the design panel. The dev-team lead starts and stops it
+# with `brg up --file <this file>` / `brg down --file <this file>`. Copy it
+# outside the repository (for example ~/.config/borgchart/dev-design-team.yaml),
+# replace every /path/to/... and <...> value, and keep the copy out of git.
+# Name the copy's path in the lead's local rules.
+schema: 1
+team: /path/to/borgchart/dev-design-team   # absolute: the copy lives outside the repo
+auth: login
+auto_trust: false
+
+members:
+  designer-claude:
+    cwd: /path/to/borgchart-dev/design   # read-only, detached at the brief's baseline
+    task: |
+      ## Local rules
+      - Brief: /path/to/borgchart-dev/notes/design/current/brief.md
+      - Design directory (write your proposal here): /path/to/borgchart-dev/notes/design/current
+      - <paths never to touch, other local rules>
+  designer-codex:
+    cwd: /path/to/borgchart-dev/design
+    task: |
+      ## Local rules
+      - Brief: /path/to/borgchart-dev/notes/design/current/brief.md
+      - Design directory (write your proposal here): /path/to/borgchart-dev/notes/design/current
+      - <paths never to touch, other local rules>

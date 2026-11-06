@@ -11,7 +11,7 @@ DRAFT
 ```
 
 - **Accept.** On an `assign`, read its agreement file and check it hashes to the `sha256` in the record (`sha256sum <path>`). Then publish `accept` (with `reply_to` the assign's ID), or `decline` with a `reason` fact if you can't do it. You hold at most one unresolved task: decline a second.
-- **Ask.** For anything material that the agreement doesn't settle, publish a `question` to `lead`. Its answer is a `decision` that names your question in `reply_to`.
+- **Ask.** For anything material that the agreement doesn't settle, publish a `question` to `lead`. Its answer is a `decision` that names your question in `reply_to`. Wait for it in the **foreground**: `"$BORGCHART_BIN" inbox wait --after <highest ID you have listed> --timeout 600 --json`, and run the same wait again on a timeout (exit 9). A `fenced` (exit 8) means your session is over: stop and wait for the lead.
 - **Result.** When done or stopped, write your report (see the rules below) at the path the agreement names, then publish one `result` for the task and attempt: facts `status` (`complete`, `partial` or `blocked`) and `checks` (`[{"name": …, "outcome": …}]`), the report as an artifact, and only its `action-needed:` line as the body:
 
 ```
@@ -21,8 +21,10 @@ DRAFT
  "facts": {"status": "complete", "checks": [{"name": "cargo test", "outcome": "pass"}]}}
 ```
 
-- **Cancel.** On a `cancel-request`, stop writing: make no further edits, stop anything you started in the background (except your inbox wait), and publish `cancel-confirm` with facts `quiescent: true` and `evidence` (what you stopped, your last commit, what is uncommitted).
-- **After.** `verify`, `release` and `reopen` come from the lead. Ack them; on a `reopen`, read it and start the new attempt with an `accept`.
+- **Cancel.** On a `cancel-request`, stop writing: make no further edits, stop anything you started in the background, and publish `cancel-confirm` with facts `quiescent: true` and `evidence` (what you stopped, your last commit, what is uncommitted).
+- **After your result,** finish your turn. The lead verifies, stops you and releases the task. To redo work, it publishes a `reopen` and starts you again: then you find it in your inbox, read it, and start the new attempt with an `accept`.
 - **Ack** each record once you have acted on it: `"$BORGCHART_BIN" msg ack <id>…`. Reading never acknowledges.
+
+**Never start an inbox wait in the background,** and never sleep or poll for records: you read your inbox at start, work to your result, and wait (the `inbox wait` above, in the foreground) only for the answer to your own question. Between steps of a long task, glance at your inbox (`"$BORGCHART_BIN" inbox --json`) for a `cancel-request`.
 
 Never start, stop or assign members, and never publish to anyone but `lead`.
