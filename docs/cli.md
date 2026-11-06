@@ -11,6 +11,13 @@
 | `brg attach <member>` | Open a member's live session; detach with your tmux prefix, then `d` (press the prefix twice inside your own tmux) |
 | `brg logs <member> [-n LINES]` | Show recent output of a member or plugin process |
 | `brg send <member> <text…> [--force] [--from MEMBER] [--json]` | Paste text into a member and press Enter, as one submission. `--from` (for plugins relaying a member's message) requires the target to be that member's parent |
+| `brg msg publish --key KEY [--record FILE\|-] [--external NAME] [--json]` | Publish a bus record from a JSON draft (stdin by default). A retry with the same key returns the same record; see [the bus](bus.md#commands--records) |
+| `brg inbox [--member ID \| --external NAME] [--after ID] [--limit N] [--all] [--full] [--json]` | List records addressed to you (or another inbox, read-only), oldest first, a page at a time. Never acknowledges |
+| `brg inbox wait … --timeout SECONDS` | Wait (up to 600 s) for a new unacknowledged record; exits 9 on timeout |
+| `brg msg read ID [--json]` | Show one record in full |
+| `brg msg ack ID… [--external NAME] [--json]` | Acknowledge records addressed to you; acking twice is a no-op |
+| `brg bus inspect [--last N] [--json]` | Summarize the team's messages: members, inbox counts, recent records, store health |
+| `brg bus check [--json]` | Check the store (gaps, unreadable files, stray temporaries) and the storage's age. Never writes |
 
 ## Runtime
 

@@ -1,6 +1,6 @@
 # The coordination bus
 
-**Status: in progress.** This document is the shared contract for the bus work. The configuration, layout, caller context, envelope and outcome codes below exist in code. Each later section says *planned* until the change implementing it lands.
+**Status: in progress.** This document is the shared contract for the bus work. The configuration, layout, caller context, envelope, record commands and outcome codes below exist in code. Each later section says *planned* until the change implementing it lands.
 
 The bus lets members, and callers outside the team, hand each other durable records: assignments, results, questions, decisions and plain notes. A record is a file. Publishing one never types anything into a terminal. A separate attention worker may type one fixed, payload-free reminder into an idle member, under strict checks, or raise an alert instead.
 
@@ -106,7 +106,7 @@ A caller writes a **draft**; brg adds identity and stores a **record**.
 }
 ```
 
-The stored record adds `schema`, `run`, `id` (`m<seq>`), `seq`, `at` (UTC, RFC 3339), `actor` (`{"type":"member","member":…,"incarnation":…}`, `{"type":"external","name":…}` or `{"type":"bus"}`) and `key`, and replaces each artifact with its measured `bytes` and `sha256`.
+The stored record adds `schema`, `run` (the internal storage it was written in; commands never show it), `id` (`m<seq>`), `seq`, `at` (UTC, RFC 3339), `actor` (`{"type":"member","member":…,"incarnation":…}`, `{"type":"external","name":…}` or `{"type":"bus"}`) and `key`, and replaces each artifact with its measured `bytes` and `sha256`.
 
 **Recipients.** `to` is a member, or `external:<name>` for an outside caller. A member may publish to its parent or its children. A member with no parent (the team's root) may also publish to `external:<name>`, for questions and results that leave the team. An external caller may publish to any member.
 
@@ -132,24 +132,85 @@ The stored record adds `schema`, `run`, `id` (`m<seq>`), `seq`, `at` (UTC, RFC 3
 
 **Retries.** The record is the commit point: a crash before its final name exists means nothing was published, and after it means it was. A retry with the same slot and key and the same draft (artifact contents included) returns the original record (`duplicate`); with any difference, including changed artifact bytes, it fails (`conflict`). Sequence numbers come from the records themselves, so a crash can't leave a gap; a gap means a record was removed, which is `corrupt`.
 
-## Commands — records (planned)
+## Commands — records
 
 ```
 brg msg publish --key KEY [--record FILE|-] [--external NAME] [--json]
-brg inbox [--member ID | --external NAME] [--after ID] [--limit N] [--all] [--json]
-brg inbox wait [--member ID | --external NAME] [--after ID] --timeout SECONDS [--json]
+brg inbox [--member ID | --external NAME] [--after ID] [--limit N] [--all] [--full] [--json]
+brg inbox wait [--member ID | --external NAME] [--after ID] --timeout SECONDS [--limit N] [--full] [--json]
 brg msg read ID [--json]
 brg msg ack ID… [--external NAME] [--json]
-brg bus inspect [--json]
+brg bus inspect [--last N] [--json]
 brg bus check [--json]
 ```
 
-- **publish** validates the draft against the run's frozen topology and the rules above, checks `reply_to` IDs exist, measures artifacts, then numbers and writes the record under `bus/lock`.
-- **inbox** lists records addressed to one recipient that it hasn't acknowledged (`--all` includes acknowledged ones), oldest first, a page at a time, with a cursor for the next page. Reading never acknowledges. A member lists its own inbox; anyone may name another with `--member`, read-only.
-- **inbox wait** returns as soon as the inbox has something after `--after`, or exits `timeout`. The timeout is required and capped.
-- **ack** records consumption by the recipient (a member's current incarnation, or the named external caller). Acking twice is a no-op.
-- **inspect** and **check** never write. `check` reports the first unreadable record or gap, stray temporary files, and the run's age against `warn_age_days`/`max_age_days`.
-- An unreadable record, a gap or an unreadable key/ack stops every mutation (`corrupt`); reads and inspection still work and say the store is incomplete.
+Every command takes the deployment as other commands do (`-f`, `$BORGCHART_FILE`, `./borgchart.yaml`); a team directory on its own has no bus, and a team whose storage `brg up` hasn't created yet ("team `oncall` hasn't been started yet") is `not-configured`; neither creates anything. Storage that has runs but no `current` is damaged, not new: every command reports it (`corrupt`) rather than starting over. Writers (`msg publish`, `msg ack`) follow a rollover as described under `msg publish`. Every command, reads included, refuses (`refused`, 4) a team whose messages are in another format, with the restart command shown under [Versions](#caller-context). Output names teams and members only: errors about damaged storage (an unreadable member session record, an unlistable record area, a storage folder others could write) give the reason without storage paths. With `--json`, each prints one JSON object `{ok, code, outcome, …}`; errors are `{ok: false, code, outcome, message}`. Exit codes are the [outcome codes](#outcome-codes).
+
+**`msg publish`** reads a draft (from `--record FILE`, or stdin for `-` or no `--record`) and publishes it as the caller: a member from its environment, or `--external NAME`. An operator (neither) is `refused`. In order, it:
+
+1. checks the key, the draft's shape, its kind's required facts and its recipient against the team's frozen topology (`invalid`), with an early check of the caller (below) to fail fast;
+2. measures each artifact: a regular file (a symlink to one is followed) up to 256 MiB, recording `bytes` and `sha256` (`invalid` if missing, not a regular file, or too big; a FIFO or device is refused without opening it);
+3. takes `bus/lock` exclusive (creating the store first if needed). If the storage was retired meanwhile (the team rolled over), it releases the lock, finds the team's current storage and locks that instead, so nothing lands in storage that has already been carried from. A draft with references (`reply_to`, a `verify`'s `facts.result`) is then refused (`fenced`: "team `oncall` was restarted, so `m1` may now be a different message; list the inbox again"), since IDs restart in the new storage;
+4. holding it, checks the caller authoritatively (a member's membership, that it is from the team's current start, and its current, not-ended incarnation: `fenced`) and the recipient again. Incarnations change only under `bus/lock`, so this holds until the write;
+5. rescans the store (`corrupt` if anything is unreadable or missing);
+6. if the caller's slot already used the key: the same draft and artifact contents return the original record (`duplicate`, repairing a missing key index entry), anything else is a `conflict`;
+7. checks every `reply_to` ID (and a `verify`'s `facts.result`) names a record (`invalid`), then writes the record and its key index entry.
+
+```console
+$ brg msg publish --external ops --key demo-1 --record demo.json --json
+{"at":"2026-11-05T19:38:32.766Z","attention":"none","code":0,"id":"m1","key":"demo-1","kind":"note","ok":true,"outcome":"committed","seq":1,"to":"lead"}
+$ brg msg publish --external ops --key demo-1 --record demo.json --json
+{"at":"2026-11-05T19:38:32.766Z","attention":"none","code":0,"id":"m1","key":"demo-1","kind":"note","ok":true,"outcome":"duplicate","seq":1,"to":"lead"}
+```
+
+`attention` says whether anyone will be reminded; it is `none` until the attention worker exists.
+
+**`inbox`** lists records addressed to one recipient, oldest first:
+
+- With no `--member`/`--external`, a member lists its own inbox (its identity is checked as for publishing; a stale one is `fenced`). An operator must name one (`usage`).
+- `--member ID` reads any member's inbox, read-only, from anyone. `--external NAME` reads `external:NAME`'s inbox, as that outside caller (refused inside a member).
+- Unacknowledged records only, unless `--all`. Reading never acknowledges.
+- `--limit` defaults to 20 (1–100). `next` is the ID to pass as `--after` for the next page, or `null` on the last page. Paging by ID is stable while records arrive.
+- Records are headers (everything but `body` and `facts`, plus `body_bytes` and `acked`); `--full` includes the body and facts.
+
+```json
+{"ok": true, "code": 0, "outcome": "ok", "recipient": "lead",
+ "records": [{"id": "m1", "seq": 1, "at": "…", "actor": {"type": "external", "name": "ops"},
+              "key": "demo-1", "to": "lead", "kind": "note", "schema": 1,
+              "body_bytes": 29, "acked": false}],
+ "next": null, "unacked": 1, "total": 1, "store": "ok"}
+```
+
+`store` is `incomplete` when the store has an unreadable record or a gap: the listing then shows what is readable.
+
+**`inbox wait`** takes the same recipient options and checks every 250 ms until there is an unacknowledged record after `--after`, then prints the page as `inbox` does. `--timeout` (1–600 seconds) is required; when it passes with nothing new the command exits `timeout` (9), even while a writer holds `bus/lock` (it never waits for the lock past its deadline). Each check finds the team's current storage again and re-checks the inbox, the caller and the message format against it, so a restart while waiting is followed. If the team was restarted and `--after` was given, the cursor no longer applies: the wait is `fenced` and asks you to list the inbox again.
+
+**`msg read ID`** prints one record in full, with `acked`, to anyone. It never acknowledges, and never counts as the recipient having seen it. An unknown ID is `not-found`.
+
+**`msg ack ID…`** records that the recipient has consumed records: a member for its own records, or `--external NAME` for `external:NAME`'s. Every ID is checked first (`not-found`; `refused` if any isn't addressed to the caller), then each gets `bus/acks/<id>.json`. Like publish, ack checks the caller again while holding `bus/lock`. An ack that had to follow a restart to get the lock is `fenced` ("list the inbox again") rather than acknowledging whatever now has that ID. Each result is `acked`, or `already` when it was acknowledged before, which changes nothing.
+
+```json
+{"ok": true, "code": 0, "outcome": "ok", "acked": [{"id": "m1", "outcome": "acked"}, {"id": "m2", "outcome": "already"}]}
+```
+
+**`bus inspect`** summarizes the team's messages: `team`, `deployment`, `created_at` (when the current storage was created), the frozen members, each recipient's `total` and `unacked`, the last `--last` (default 10) record headers as `recent`, and `store: {healthy, problems, strays}`.
+
+**`bus check`** reports `errors` and `warnings` and the storage's `age_days`:
+
+- errors: an unreadable or misnamed record, key or ack; a record whose schema, storage or number doesn't match; a gap; an ack for a missing record or by someone other than its recipient; storage older than `max_age_days`;
+- warnings: stray `.tmp-*` files (left by a crash, safe to remove; shown relative to the storage); storage older than `warn_age_days`. Both age messages give the restart command that rolls the storage over, in a form that works from where you are.
+
+It exits `ok` with warnings only, `corrupt` when the store has errors, and `error` when only the storage's age does.
+
+```console
+$ brg bus check
+warning: team `oncall`'s message storage is 8.0 days old (warn_age_days 7); it rolls over at the first restart after 14 days: brg down && brg up
+ok: 2 record(s), storage 8.0 days old
+```
+
+**Read-only.** `inbox`, `inbox wait`, `msg read`, `bus inspect` and `bus check` never create or change a file. Each read of the store holds `bus/lock` shared (opened read-only; with no lock file there is nothing to read yet), so it never sees a record without its key index entry or ack mid-write. An ack that is unreadable, has another schema or isn't by the record's recipient is a store problem and doesn't count as consumption.
+
+**Corrupt store.** An unreadable record, key or ack, or a gap, stops every mutation (`corrupt`) until a person repairs the store; reads and inspection still work and say the store is incomplete.
 
 ## Task facts and recovery (planned)
 
