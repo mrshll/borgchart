@@ -32,7 +32,7 @@
 | `gate-inactive` | A `locked` member whose gate hasn't reported in; it gets no input |
 | `exited` | The program ended (with its status when tmux knows it) |
 | `not started` | Never ran since the team started afresh (its message storage began, with a bus); printed `not started (start: false)` for a `start: false` member |
-| `stopped` | Ran and has ended; printed `stopped (should be running)` for a `start: true` member, with `"expected_running": true` in `--json` |
+| `stopped` | Ran and has ended; printed `stopped (should be running)` for a `start: true` member while the rest of the team runs, with `"expected_running": true` in `--json` |
 
 States are advisory: they gate `send` for safety, not access.
 

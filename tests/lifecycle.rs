@@ -465,20 +465,36 @@ fn members_that_ran_and_ended_are_stopped() {
         assert_eq!(helper["state"], "stopped");
         assert!(helper.get("expected_running").is_none(), "{helper}");
 
-        // A `start: true` member that ended should be running: it stands out.
-        env.ok(&["down"]);
+        // While the team runs, a `start: true` member that ended should be
+        // running: it stands out.
+        env.ok(&["up", "--member", "helper"]);
+        env.ok(&["down", "--member", "lead"]);
         let out = env.ok(&["status"]);
         assert_eq!(
             stdout(&out),
             "oncall\n\
              └─ lead      claude opus high     stopped (should be running)\n   \
-             └─ helper codex example-model  stopped\n",
+             └─ helper codex example-model  idle\n",
             "bus: {bus}"
         );
         let lead = env.row("lead");
         assert_eq!(lead["state"], "stopped");
         assert_eq!(lead["expected_running"], true);
         assert!(!mentions_runs(&both(&out)), "{}", both(&out));
+
+        // A team stopped on purpose: ended members are plain `stopped`.
+        env.ok(&["down"]);
+        let out = env.ok(&["status"]);
+        assert_eq!(
+            stdout(&out),
+            "oncall\n\
+             └─ lead      claude opus high     stopped\n   \
+             └─ helper codex example-model  stopped\n",
+            "bus: {bus}"
+        );
+        let lead = env.row("lead");
+        assert_eq!(lead["state"], "stopped");
+        assert!(lead.get("expected_running").is_none(), "{lead}");
     }
 }
 

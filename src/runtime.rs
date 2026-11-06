@@ -1089,7 +1089,8 @@ pub struct StatusRow {
     /// running (`alive`, `gone` or `unknown`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub liveness: Option<Liveness>,
-    /// A `start: true` member that ran and is `stopped`: it should be running.
+    /// A `start: true` member that ran and is `stopped` while the rest of
+    /// the team runs: it should be running.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub expected_running: bool,
     /// The member's declared `start`.
@@ -1152,6 +1153,11 @@ pub fn status(input: &Input) -> Result<Vec<StatusRow>, String> {
             cols: Vec::new(),
         })
         .collect();
+    // The team runs while any member has a live window; a team stopped on
+    // purpose expects no one to be running.
+    let team_running = windows
+        .iter()
+        .any(|w| !w.dead && v.team.members.contains_key(&w.name));
     let mut rows = Vec::new();
     for (i, _) in tree::order(&nodes) {
         let id = &nodes[i].id;
@@ -1223,7 +1229,7 @@ pub fn status(input: &Input) -> Result<Vec<StatusRow>, String> {
                 }
             }
         }
-        row.expected_running = row.state == STOPPED && member.start;
+        row.expected_running = team_running && row.state == STOPPED && member.start;
         rows.push(row);
     }
     for (name, plugin) in &v.team.plugins {
