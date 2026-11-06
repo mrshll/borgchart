@@ -480,6 +480,31 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             }
         }
 
+        let auto_trust = v.deployment.as_ref().and_then(|d| d.auto_trust);
+        let declared_cwd = deploy_member
+            .and_then(|d| d.cwd.as_ref())
+            .map(|c| c.canonicalize().unwrap_or_else(|_| c.clone()));
+        // Claude: `up` answers its trust dialog. By default only for `locked`
+        // members, which ignore project settings.
+        let trust_dir = declared_cwd
+            .clone()
+            .filter(|_| member.vendor == Vendor::Claude)
+            .filter(|_| auto_trust.unwrap_or(posture == Posture::Locked));
+        // Codex: trust passed as session config, only with `auto_trust: true`
+        // and only in `vendor` posture. A trusted folder's `.codex/` loads, and a
+        // `locked` Codex member can write its folder, so it could configure its
+        // own next start outside its gate. The deployment's own `projects`
+        // setting wins.
+        let codex_trust = declared_cwd
+            .filter(|_| member.vendor == Vendor::Codex)
+            .filter(|_| auto_trust == Some(true) && posture == Posture::Vendor)
+            .filter(|_| {
+                !launch::codex_args_set(
+                    deploy_member.map(|d| d.args.as_slice()).unwrap_or_default(),
+                    "projects",
+                )
+            });
+
         let settings_path = state.member_dir(id).join("claude-settings.json");
         let spec = launch::member_launch(
             &brg,
@@ -490,6 +515,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             posture,
             &help,
             &settings_path,
+            codex_trust.as_deref(),
         );
         if let Some(rules) = &spec.gate {
             write_private(
@@ -538,16 +564,6 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                     meta.team_dir.clone()
                 }
             });
-        let trust_dir = deploy_member
-            .and_then(|d| d.cwd.as_ref())
-            .filter(|_| match v.deployment.as_ref().and_then(|d| d.auto_trust) {
-                Some(on) => on,
-                // By default only `locked` members, which ignore project settings.
-                None => posture == Posture::Locked,
-            })
-            .filter(|_| member.vendor == Vendor::Claude)
-            .map(|c| c.canonicalize().unwrap_or_else(|_| c.clone()));
-
         // With a bus, each start is a new incarnation, recorded before its
         // window exists and again once its pane is known.
         let incarnation = match &binding {
@@ -632,6 +648,18 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             pane,
         });
         set(&mut outcomes, id, "started".into());
+        if let Some(dir) = &codex_trust {
+            let dir = dir.display().to_string();
+            let _ = write_private(
+                &state.member_dir(id).join("trust-accepted"),
+                format!("{dir}\n").as_bytes(),
+            );
+            append(
+                &mut outcomes,
+                id,
+                format!("trusted folder {dir} for this Codex session"),
+            );
+        }
     }
 
     // Plugin processes start with the whole team.

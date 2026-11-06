@@ -549,6 +549,38 @@ fn auto_trust_warns_about_project_settings_for_vendor_members() {
 }
 
 #[test]
+fn auto_trust_warns_about_codex_project_settings_and_locked_codex_members() {
+    // Catches: a Codex folder whose `.codex/` would load without a warning, and
+    // a `locked` Codex member silently left at its trust screen.
+    for (posture, want) in [
+        (
+            "    accept_risk: true\n",
+            "has project settings (`.codex/`)",
+        ),
+        ("    posture: locked\n", "doesn't trust"),
+    ] {
+        let f = Fixture::new();
+        f.edit(
+            "team.yaml",
+            "    prompt: lead.md\n    posture: locked\n",
+            &format!("    prompt: lead.md\n    vendor: codex\n{posture}"),
+        );
+        f.write("work/.codex/config.toml", "");
+        f.edit(
+            "borgchart.yaml",
+            "schema: 1\n",
+            &format!(
+                "schema: 1\nauto_trust: true\nmembers:\n  lead: {{cwd: {}}}\n",
+                f.path("work").display()
+            ),
+        );
+        let (report, validated) = f.run();
+        assert!(validated.is_some(), "{}", errors(&report));
+        assert!(warnings(&report).contains(want), "{}", warnings(&report));
+    }
+}
+
+#[test]
 fn deployment_must_match_the_team() {
     let f = Fixture::new();
     f.edit(
