@@ -15,7 +15,8 @@ use crate::validate::{Input, validate};
 #[command(
     name = "brg",
     version,
-    about = "Run teams of coding agents from plain files"
+    about = "Run teams of coding agents from plain files",
+    after_long_help = crate::bus::help::root()
 )]
 struct Cli {
     #[command(subcommand)]
@@ -50,6 +51,7 @@ enum Command {
     Up {
         #[command(flatten)]
         target: Target,
+        /// Start only this member.
         #[arg(long)]
         member: Option<String>,
     },
@@ -57,6 +59,7 @@ enum Command {
     Down {
         #[command(flatten)]
         target: Target,
+        /// Stop only this member.
         #[arg(long)]
         member: Option<String>,
     },
@@ -64,6 +67,7 @@ enum Command {
     Status {
         #[command(flatten)]
         target: Target,
+        /// Print the rows as JSON.
         #[arg(long, conflicts_with_all = ["watch", "interactive"])]
         json: bool,
         /// Refresh the table every few seconds.
@@ -80,12 +84,14 @@ enum Command {
     Attach {
         #[command(flatten)]
         target: Target,
+        /// The member to attach to.
         member: String,
     },
     /// Show a member's or plugin's recent output.
     Logs {
         #[command(flatten)]
         target: Target,
+        /// The member, or a plugin process (`_<plugin>`).
         member: String,
         /// How many lines of history.
         #[arg(short = 'n', long, default_value_t = 200)]
@@ -95,6 +101,7 @@ enum Command {
     Send {
         #[command(flatten)]
         target: Target,
+        /// The member to type into.
         member: String,
         /// The text (several words are joined with spaces).
         #[arg(required = true, num_args = 1..)]
@@ -106,6 +113,7 @@ enum Command {
         /// brg checks that the target is that member's parent.
         #[arg(long)]
         from: Option<String>,
+        /// Print {ok, code, message} as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -117,7 +125,10 @@ enum Command {
         command: crate::bus::cli::MsgCommand,
     },
     /// List records addressed to you (or `--member`/`--external`), oldest first.
-    #[command(args_conflicts_with_subcommands = true)]
+    #[command(
+        args_conflicts_with_subcommands = true,
+        after_long_help = crate::bus::help::inbox()
+    )]
     Inbox {
         #[command(flatten)]
         target: Target,
@@ -125,6 +136,7 @@ enum Command {
         args: crate::bus::cli::InboxArgs,
     },
     /// List and show tasks folded from the team's messages.
+    #[command(after_long_help = crate::bus::help::task())]
     Task {
         #[command(flatten)]
         target: Target,
@@ -393,5 +405,33 @@ fn run_validate(input: &Input, json: bool, probe: bool) -> ExitCode {
         ExitCode::from(1)
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    /// Every visible argument of every visible command says what it is.
+    #[test]
+    fn every_argument_has_help() {
+        fn walk(cmd: &clap::Command, path: &str, missing: &mut Vec<String>) {
+            for arg in cmd.get_arguments() {
+                let id = arg.get_id().as_str();
+                if arg.is_hide_set() || id == "help" || id == "version" {
+                    continue;
+                }
+                if arg.get_help().is_none() && arg.get_long_help().is_none() {
+                    missing.push(format!("{path} {id}"));
+                }
+            }
+            for sub in cmd.get_subcommands().filter(|s| !s.is_hide_set()) {
+                walk(sub, &format!("{path} {}", sub.get_name()), missing);
+            }
+        }
+        let mut missing = Vec::new();
+        walk(&Cli::command(), "brg", &mut missing);
+        assert!(missing.is_empty(), "arguments without help: {missing:?}");
     }
 }

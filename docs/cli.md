@@ -2,6 +2,8 @@
 
 `brg` is also installed as `borgchart`. Every command finds its deployment from `--file`, then `$BORGCHART_FILE`, then `./borgchart.yaml`, then a `./team.yaml` on its own (`--team DIR` for another directory).
 
+`brg <command> --help` documents each command. The bus pages are written for agents in a team and need nothing else: `msg publish --help` (draft fields, every record kind with its facts, operation keys, an example, outcomes), `inbox --help` and `inbox wait --help` (the `--after` cursor, acknowledging, outcomes), and `task --help` (the task lifecycle and releasing a task's writers).
+
 | Command | What it does |
 | --- | --- |
 | `brg validate [--json] [--probe]` | Check the team and deployment without starting anything; `--probe` also lists each vendor's MCP connectors (this starts your MCP servers) |

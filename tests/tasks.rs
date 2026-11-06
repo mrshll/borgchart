@@ -1159,3 +1159,78 @@ fn review_late_record_does_not_invalidate_retirement() {
     let old = f.brg(As::Operator, &["bus", "check", "--json"], None);
     assert_eq!(old.code, 0, "{:?}", old.json);
 }
+
+/// The example draft in `msg publish --help`, its key and the output it
+/// says publishing prints.
+fn help_example() -> (String, String, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_brg"))
+        .env_clear()
+        .args(["msg", "publish", "--help"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    let mut lines = text.lines().skip_while(|l| !l.contains("<<'EOF'"));
+    let command = lines
+        .next()
+        .expect("a heredoc example in msg publish --help");
+    let key = command
+        .split_whitespace()
+        .skip_while(|w| *w != "--key")
+        .nth(1)
+        .unwrap()
+        .to_string();
+    let mut draft = String::new();
+    for l in lines.by_ref() {
+        if l.trim() == "EOF" {
+            break;
+        }
+        draft.push_str(l);
+        draft.push('\n');
+    }
+    let printed = lines.next().unwrap().trim().to_string();
+    (key, draft, printed)
+}
+
+fn help_text(args: &[&str]) -> String {
+    let out = Command::new(env!("CARGO_BIN_EXE_brg"))
+        .env_clear()
+        .args(args)
+        .arg("--help")
+        .output()
+        .unwrap();
+    String::from_utf8(out.stdout).unwrap()
+}
+
+#[test]
+fn the_publish_help_example_publishes_and_its_outcomes_are_documented() {
+    let f = Fixture::new();
+    let help = help_text(&["msg", "publish"]);
+    let (key, draft, printed) = help_example();
+    f.ok(As::Member("lead"), "a1", &f.assign("helper", "t-1", 1));
+    f.ok(As::Member("helper"), "c1", &accept("t-1"));
+    let publish = |body: &[u8], json: bool| {
+        let mut args = vec!["msg", "publish", "--key", key.as_str()];
+        if json {
+            args.push("--json");
+        }
+        f.brg(As::Member("helper"), &args, Some(body))
+    };
+    let out = publish(draft.as_bytes(), false);
+    assert_eq!(out.code, 0, "{:?} {}", out.json, out.stderr);
+    assert_eq!(out.json.as_str().map(str::trim), Some(printed.as_str()));
+    assert_eq!(f.state("t-1"), "result-claimed");
+
+    // Retrying is safe; reusing the key for something else is not. Each
+    // outcome publish returned is named in the help with its exit code.
+    let retry = publish(draft.as_bytes(), true);
+    let other = publish(draft.replace("Parser done", "Other").as_bytes(), true);
+    for out in [&retry, &other] {
+        let named = format!("{} ({})", out.json["outcome"].as_str().unwrap(), out.code);
+        assert!(
+            help.contains(&named),
+            "`{named}` missing from msg publish --help"
+        );
+    }
+    assert_eq!(retry.json["outcome"], "duplicate");
+    assert_eq!(other.json["outcome"], "conflict");
+}
