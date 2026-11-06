@@ -11,6 +11,16 @@
 #   foreground   `waiter` waits while showing a running turn
 #   stale        `waiter` replies with $HOME/fake/stale-nonce, reversed
 #   write-config append a line to $CODEX_HOME/config.toml at start
+#   write-at-exit append to $CODEX_HOME/config.toml when stopped
+#   trust-exit   show the trust screen briefly, then exit
+#   trust-unknown show the trust screen briefly, then an unknown screen
+#   early-turn   `waiter` starts its turn on the message while its wait
+#                still runs, and replies after the wait ends
+#   same-poll    `waiter`, already working, replies just before its wait
+#                ends (both within one poll interval)
+# early-turn and same-poll end a decoy wait (one with a wrong identity,
+# which brg keeps running for its 60 s minimum) themselves, so they choose
+# when it exits.
 # $HOME/fake/hang-version-<vendor> makes `--version` hang.
 # Folders listed in $HOME/fake/trusted (and below them) are trusted.
 set -u
@@ -29,6 +39,9 @@ scenario=ok
 
 if [ "$scenario" = wrongenv ] && [ -z "${FAKE_REEXEC:-}" ]; then
   exec env -u COLORTERM TERM=dumb FAKE_REEXEC=1 /bin/sh "$0" "$@"
+fi
+if [ "$scenario" = write-at-exit ] && [ -n "${CODEX_HOME:-}" ]; then
+  trap 'echo "# written at exit by the fake" >>"$CODEX_HOME/config.toml"; exit 0' HUP TERM INT
 fi
 if [ "$scenario" = write-config ] && [ -n "${CODEX_HOME:-}" ]; then
   echo "# written by the fake" >>"$CODEX_HOME/config.toml"
@@ -65,7 +78,7 @@ draw() { # draw <mode>: idle | working | trust | codex-trust | approval
       *) printf '\033]0;\342\234\263 fake\007' ;;
     esac
     printf "${colour}▝▜██████▀\033[0m  Fake Claude\r\n"
-    printf '%s' "$lines" | sed 's/$/\r/'
+    printf '%s' "$lines" | while IFS= read -r l; do printf '%s\r\n' "$l"; done
     case $1 in
       idle) printf '%s\r\n❯ \r\n%s\r\n  ⏵⏵ accept edits on\r\n' "$rule" "$rule" ;;
       working) printf '✻ Working… (1s)\r\n%s\r\n❯ \r\n%s\r\n  esc to interrupt\r\n' "$rule" "$rule" ;;
@@ -76,7 +89,7 @@ draw() { # draw <mode>: idle | working | trust | codex-trust | approval
   else
     printf '\033]0;fake\007'
     printf "${colour}>_ Fake Codex\033[0m\r\n"
-    printf '%s' "$lines" | sed 's/$/\r/'
+    printf '%s' "$lines" | while IFS= read -r l; do printf '%s\r\n' "$l"; done
     case $1 in
       idle) printf '› Ask Codex to do anything\r\n\r\n  ? for shortcuts\r\n' ;;
       working) printf '• Working (1s • esc to interrupt)\r\n› Ask Codex to do anything\r\n\r\n  ? for shortcuts\r\n' ;;
@@ -93,24 +106,34 @@ trusted() {
   return 1
 }
 
+# The trust screen, left unanswered (or, for the controls, not kept).
+at_trust() {
+  draw "$1"
+  case $scenario in
+    trust-exit) sleep 1; exit 1 ;;
+    trust-unknown) sleep 1; printf '\033[2J\033[H  something else entirely\r\n' ;;
+  esac
+  forever
+}
+
 if ! trusted; then
-  if [ "$vendor" = claude ]; then
-    draw trust
-    forever
-  fi
+  [ "$vendor" = claude ] && at_trust trust
   want="projects={\"$PWD\"={trust_level=\"trusted\"}}"
   ok=
   for a in "$@"; do [ "$a" = "$want" ] && ok=1; done
-  if [ -z "$ok" ]; then
-    draw codex-trust
-    forever
-  fi
+  [ -z "$ok" ] && at_trust codex-trust
 fi
 
 if [ "$scenario" = approval ]; then
   draw approval
   forever
 fi
+
+nonce_word() { # the nonce from the inbox, read without marking it shown
+  "$BORGCHART_BIN" inbox --member waiter --full | grep -o 'nonce [0-9a-z]*' | tail -1 | cut -d' ' -f2
+}
+
+reply() { say "● REPLY $(printf '%s' "$1" | rev)"; draw idle; }
 
 if [ "$member" = waiter ]; then
   out=$(mktemp)
@@ -122,20 +145,37 @@ if [ "$member" = waiter ]; then
     foreground)
       draw working
       "$BORGCHART_BIN" inbox wait --background --timeout 600 >"$out" 2>&1 ;;
+    early-turn|same-poll)
+      BORGCHART_INCARNATION=not-this-one "$BORGCHART_BIN" inbox wait --background >"$out" 2>&1 &
+      decoy=$!
+      say "● ARMED"
+      draw idle
+      until [ -n "$(nonce_word)" ]; do sleep 0.1; done
+      draw working
+      if [ "$scenario" = early-turn ]; then
+        sleep 1
+        kill $decoy
+        sleep 0.5
+      else
+        reply "$(nonce_word)"
+        kill $decoy
+      fi
+      [ "$scenario" = early-turn ] && reply "$(nonce_word)"
+      forever ;;
     *)
       "$BORGCHART_BIN" inbox wait --background --timeout 600 >"$out" 2>&1 &
       say "● ARMED"
       draw idle
       wait $! ;;
   esac
+  # The new turn, after the wait ended.
   draw working
+  sleep 1
   if [ "$scenario" = stale ]; then
-    word=$(cat "$fake/stale-nonce")
+    reply "$(cat "$fake/stale-nonce")"
   else
-    word=$("$BORGCHART_BIN" inbox --full | grep -o 'nonce [0-9a-z]*' | tail -1 | cut -d' ' -f2)
+    reply "$(nonce_word)"
   fi
-  say "● REPLY $(printf '%s' "$word" | rev)"
-  draw idle
   forever
 fi
 

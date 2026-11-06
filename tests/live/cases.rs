@@ -7,10 +7,17 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+use borgchart::rules::State;
+
 use super::rules::{CHECK_STATUS_TRUST_DETAIL, Outcome, RUN_CLAUDE_TRUST_ON, Who};
 use super::world::{self, World, limited, limited_with_stdin};
 
 const POLL: Duration = Duration::from_millis(300);
+/// Between looks while a trust screen must stay.
+const HOLD_POLL: Duration = Duration::from_millis(100);
+/// The pause between looks after the nonce is sent (each look takes a few
+/// ms more); the result reports the gaps seen.
+const FINE_POLL: Duration = Duration::from_millis(15);
 
 /// The Claude background-wait member (the fake keys its behaviour on it).
 pub const WAITER: &str = "waiter";
@@ -32,6 +39,7 @@ const WAITER_PROMPT: &str = "This is an automated test of background commands. F
 /// One case's team, started with `brg up`. Dropping it runs `brg down`.
 pub struct Team<'w> {
     w: &'w World,
+    rules: borgchart::rules::RuleSet,
     pub file: PathBuf,
     pub member: String,
     pub session: String,
@@ -86,8 +94,13 @@ impl<'w> Team<'w> {
         std::fs::write(&file, yaml).unwrap();
         let file = file.canonicalize().unwrap();
         let id = borgchart::state::deployment_id(&file);
+        let vendor = match s.who {
+            Who::Claude => borgchart::team::Vendor::Claude,
+            Who::Codex => borgchart::team::Vendor::Codex,
+        };
         Team {
             w,
+            rules: borgchart::rules::load(vendor).unwrap(),
             session: format!("brg-{id}"),
             file,
             member: s.member.to_string(),
@@ -150,10 +163,6 @@ impl<'w> Team<'w> {
             .tmux(&["capture-pane", "-p", "-e", "-t", &self.target()])
     }
 
-    pub fn plain(&self) -> String {
-        self.w.tmux(&["capture-pane", "-p", "-t", &self.target()])
-    }
-
     pub fn pane_pid(&self) -> Option<u32> {
         self.w
             .tmux(&["display-message", "-p", "-t", &self.target(), "#{pane_pid}"])
@@ -181,6 +190,82 @@ impl<'w> Team<'w> {
                 return (state, rule);
             }
             std::thread::sleep(POLL);
+        }
+    }
+}
+
+/// One observation of the member's pane, from a single tmux call.
+pub struct Look {
+    /// The window or pane is gone.
+    pub gone: bool,
+    /// The member exited (the pane stays, dead, showing its last screen).
+    pub dead: bool,
+    pub title: String,
+    pub screen: String,
+}
+
+impl Team<'_> {
+    pub fn look(&self) -> Look {
+        let t = self.target();
+        let out = self.w.tmux(&[
+            "display-message",
+            "-p",
+            "-t",
+            &t,
+            "#{pane_dead}\t#{pane_title}",
+            ";",
+            "capture-pane",
+            "-p",
+            "-t",
+            &t,
+        ]);
+        let Some((head, screen)) = out.split_once('\n') else {
+            return Look {
+                gone: true,
+                dead: false,
+                title: String::new(),
+                screen: String::new(),
+            };
+        };
+        let (dead, title) = head.split_once('\t').unwrap_or((head, ""));
+        Look {
+            gone: false,
+            dead: dead == "1",
+            title: title.to_string(),
+            screen: screen.to_string(),
+        }
+    }
+
+    /// The state rules `status` uses, on one look.
+    pub fn read(&self, look: &Look) -> (State, String) {
+        let r = self.rules.read(&look.title, &look.screen);
+        (r.state, r.rule.unwrap_or_default())
+    }
+
+    /// The trust screen, kept: on every poll through the hold and on the
+    /// final look, with the member's pane alive. `Err` says how it left.
+    pub fn hold_trust(&self, at_trust: impl Fn(&Self, &Look) -> bool) -> Result<u32, String> {
+        let end = Instant::now() + self.w.limits.hold;
+        let mut polls = 0;
+        loop {
+            let last = Instant::now() >= end;
+            let look = self.look();
+            polls += 1;
+            if look.gone {
+                return Err(format!("its window was gone at poll {polls}"));
+            }
+            if look.dead {
+                self.save(&format!("{}-left-trust", self.member));
+                return Err(format!("the member exited at poll {polls}"));
+            }
+            if !at_trust(self, &look) {
+                self.save(&format!("{}-left-trust", self.member));
+                return Err(format!("another screen at poll {polls}"));
+            }
+            if last {
+                return Ok(polls);
+            }
+            std::thread::sleep(HOLD_POLL);
         }
     }
 }
@@ -325,20 +410,18 @@ fn claude_trust_case(w: &World, on: bool, id: &str, status: &mut Outcome) -> Out
             out.trim()
         ));
     }
-    std::thread::sleep(w.limits.hold);
     *status = status_trust(&t);
-    let row = t.row();
     t.save(id);
-    let still = row["rule"] == "trust-dialog";
-    let accepted = !row["trust_accepted"].is_null();
-    match (still, accepted) {
-        (true, false) => Outcome::Pass(format!(
-            "stopped at the trust dialog, unanswered after {} s",
+    let held = t.hold_trust(|t, look| t.read(look).1 == "trust-dialog");
+    let row = t.row();
+    match held {
+        Err(e) => Outcome::Fail(format!("left the trust screen: {e}")),
+        Ok(_) if !row["trust_accepted"].is_null() => {
+            Outcome::Fail(format!("trust was accepted: {}", row["trust_accepted"]))
+        }
+        Ok(polls) => Outcome::Pass(format!(
+            "stopped at the trust dialog, kept unanswered on all {polls} looks over {} s",
             w.limits.hold.as_secs()
-        )),
-        _ => Outcome::Fail(format!(
-            "after the hold: rule {:?}, trust_accepted {}",
-            row["rule"], row["trust_accepted"]
         )),
     }
 }
@@ -377,86 +460,78 @@ fn codex_trust_case(w: &World, trust: Option<bool>, id: &str, status: &mut Outco
             bus: false,
         },
     );
-    let mut trust_seen = false;
-    let mut idle_seen = false;
-    let mut blocked = None;
-    let up = std::thread::scope(|s| {
-        let up = s.spawn(|| t.up());
-        // While `up` runs (a locked member keeps it waiting for its gate)
-        // and for the start limit after, watch the screen.
-        let end = Instant::now() + w.limits.start;
-        let mut held_since: Option<Instant> = None;
-        loop {
-            let screen = t.plain();
-            if codex_trust_screen(&screen) {
-                if !trust_seen && trust == Some(false) {
-                    *status = status_trust(&t);
-                }
-                trust_seen = true;
-                held_since.get_or_insert_with(Instant::now);
-                t.save(id);
-            }
-            let (state, rule) = t.state();
-            if state == "idle" && !codex_trust_screen(&screen) {
-                idle_seen = true;
-            }
-            if state == "blocked" {
-                blocked = Some(rule);
-            }
-            let done = up.is_finished();
-            let held = held_since.is_some_and(|h| h.elapsed() >= w.limits.hold);
-            if done && (idle_seen || held || blocked.is_some() || Instant::now() > end) {
-                break;
-            }
-            if idle_seen && trust == Some(true) && done {
-                break;
-            }
-            std::thread::sleep(POLL);
-        }
-        up.join().unwrap()
-    });
-    if !trust_seen && !idle_seen {
-        t.save(id);
+    enum Seen {
+        Trust,
+        Idle,
+        Blocked(String),
+        Nothing(String),
     }
+    let (seen, held, up) = std::thread::scope(|s| {
+        let up = s.spawn(|| t.up());
+        // While `up` runs (a locked member keeps it waiting for its gate):
+        // the first look that shows the trust screen, idle or a prompt.
+        let end = Instant::now() + w.limits.start;
+        let seen = loop {
+            let look = t.look();
+            let (state, rule) = t.read(&look);
+            if !look.gone && !look.dead && codex_trust_screen(&look.screen) {
+                break Seen::Trust;
+            }
+            match state {
+                State::Idle => break Seen::Idle,
+                State::Blocked => break Seen::Blocked(rule),
+                _ if Instant::now() > end => break Seen::Nothing(format!("{state:?}")),
+                _ => {}
+            }
+            std::thread::sleep(HOLD_POLL);
+        };
+        t.save(id);
+        // Then the screen must stay, through the whole hold. For a locked
+        // member this runs before brg's gate deadline stops its window.
+        let held = matches!(seen, Seen::Trust).then(|| {
+            if trust == Some(false) {
+                *status = status_trust(&t);
+            }
+            t.hold_trust(|_, look| codex_trust_screen(&look.screen))
+        });
+        (seen, held, up.join().unwrap())
+    });
+    let outcome = match (trust, seen, held) {
+        (_, Seen::Blocked(rule), _) => blocked_at(&rule, &repo),
+        (_, _, _) if up.is_err() => Outcome::Fail(up.clone().unwrap_err()),
+        (Some(true), Seen::Idle, _) => {
+            Outcome::Pass("reached its prompt with session-only trust".into())
+        }
+        (Some(true), Seen::Trust, _) => {
+            Outcome::Fail("stopped at the trust screen despite the session trust".into())
+        }
+        (_, Seen::Trust, Some(Ok(polls))) => Outcome::Pass(format!(
+            "stopped at the trust screen, kept unanswered on all {polls} looks over {} s",
+            w.limits.hold.as_secs()
+        )),
+        (_, Seen::Trust, Some(Err(e))) => Outcome::Fail(format!("left the trust screen: {e}")),
+        (_, Seen::Idle, _) => Outcome::Blocked(format!(
+            "no trust screen in {}: the folder is already trusted",
+            repo.display()
+        )),
+        (_, Seen::Nothing(state), _) => Outcome::Fail(format!(
+            "neither its prompt nor a trust screen (state {state}); up said: {}",
+            up.map(|(_, o)| o).unwrap_or_default().trim()
+        )),
+        (_, Seen::Trust, None) => unreachable!(),
+    };
+    // The config is hashed again only after the team is down, so a write
+    // at shutdown counts too.
+    drop(t);
     let after = w.codex_config_hash();
-    let hash = if before == after {
-        "config.toml unchanged".to_string()
-    } else {
+    if before != after {
         return Outcome::Fail(format!(
             "the Codex config.toml changed during the case (sha256 {before} → {after}); not restored"
         ));
-    };
-    let up = match up {
-        Ok((_, out)) => out,
-        Err(e) => return Outcome::Fail(e),
-    };
-    if let Some(rule) = blocked {
-        return blocked_at(&rule, &repo);
     }
-    match trust {
-        Some(true) => {
-            if trust_seen {
-                Outcome::Fail("stopped at the trust screen despite the session trust".into())
-            } else if idle_seen {
-                Outcome::Pass(format!(
-                    "reached its prompt with session-only trust; {hash}"
-                ))
-            } else {
-                Outcome::Fail(format!("never reached its prompt; up said: {}", up.trim()))
-            }
-        }
-        _ => {
-            if trust_seen && !idle_seen {
-                Outcome::Pass(format!("stopped at the trust screen, unanswered; {hash}"))
-            } else if idle_seen {
-                Outcome::Blocked(format!(
-                    "no trust screen in {}: the folder is already trusted",
-                    repo.display()
-                ))
-            } else {
-                Outcome::Fail(format!("no trust screen seen; up said: {}", up.trim()))
-            }
-        }
+    match outcome {
+        Outcome::Pass(d) => Outcome::Pass(format!("{d}; config.toml unchanged after teardown")),
+        o => o,
     }
 }
 
@@ -646,47 +721,115 @@ pub fn background_wait(w: &World) -> Outcome {
         ));
     }
 
-    // 4. A new assistant turn naming the nonce, after the wait exited.
-    let end = Instant::now() + w.limits.reply;
-    let mut exited: Option<Instant> = None;
+    // 4. A new assistant turn naming the nonce, started after the wait
+    // exited. Each poll checks the wait before and after one look of the
+    // pane, so a look is known to be from while it ran (alive after) or
+    // after it ended (gone before); a poll where it ended in between counts
+    // only against a PASS.
+    let start = Instant::now();
+    let end = start + w.limits.reply;
+    let mut polls = 0u32;
+    let mut last = start;
+    let mut max_gap = Duration::ZERO;
+    let mut exit: Option<(u32, Instant)> = None;
+    let mut turn: Option<Instant> = None;
+    let ms = |d: Duration| d.as_millis();
     loop {
-        let alive = still_runs(wait_pid);
-        if !alive {
-            exited.get_or_insert_with(Instant::now);
+        let now = Instant::now();
+        if polls > 0 {
+            max_gap = max_gap.max(now - last);
         }
-        let screen = t.plain();
-        let replied = screen
+        last = now;
+        polls += 1;
+        let alive_before = still_runs(wait_pid);
+        let look = t.look();
+        let alive_after = still_runs(wait_pid);
+        let (state, rule) = t.read(&look);
+        let replied = look
+            .screen
             .lines()
             .any(|l| l.starts_with("● ") && l.contains(&reply));
-        if replied {
-            t.save(id);
-            if alive {
-                return Outcome::Fail(
-                    "the reply came while the wait still ran: not caused by it".into(),
-                );
-            }
-            return Outcome::Pass(format!(
-                "armed while idle; nonce sent only on the bus (attention none); reply after the wait exited ({} ms later)",
-                exited.map(|e| e.elapsed().as_millis()).unwrap_or(0)
-            ));
-        }
-        let (state, rule) = t.state();
-        if state == "blocked" {
+        let resolution = || {
+            format!(
+                "{polls} polls, gaps up to {} ms (pause {} ms)",
+                ms(max_gap),
+                ms(FINE_POLL)
+            )
+        };
+        if state == State::Blocked {
             t.save(id);
             return blocked_at(&rule, &folder);
+        }
+        if look.gone || look.dead {
+            t.save(id);
+            return Outcome::Fail(format!("the member exited at poll {polls}"));
+        }
+        match exit {
+            None if alive_before => {
+                if replied {
+                    t.save(id);
+                    return Outcome::Fail(format!(
+                        "the reply came while the wait still ran: not caused by it ({})",
+                        resolution()
+                    ));
+                }
+                if alive_after && state != State::Idle {
+                    t.save(id);
+                    return Outcome::Fail(format!(
+                        "turn started before the wait exited (state {state:?} at poll {polls}; {})",
+                        resolution()
+                    ));
+                }
+            }
+            None => {
+                exit = Some((polls, now));
+                if replied {
+                    t.save(id);
+                    return Outcome::Fail(format!(
+                        "the reply was already there on the first look after the wait ended: \
+                         its order against the exit is unknown ({})",
+                        resolution()
+                    ));
+                }
+                if state == State::Working {
+                    turn = Some(now);
+                }
+            }
+            Some((exit_poll, exit_at)) => {
+                if state == State::Working {
+                    turn.get_or_insert(now);
+                }
+                if replied {
+                    t.save(id);
+                    let Some(turn_at) = turn else {
+                        return Outcome::Fail(format!(
+                            "the reply came with no new turn seen after the wait ended ({})",
+                            resolution()
+                        ));
+                    };
+                    return Outcome::Pass(format!(
+                        "armed while idle; nonce sent only on the bus (attention none); idle while the wait ran; \
+                         wait gone at poll {exit_poll}, new turn seen {} ms later, reply {} ms later ({})",
+                        ms(turn_at - exit_at),
+                        ms(now - exit_at),
+                        resolution()
+                    ));
+                }
+            }
         }
         if Instant::now() > end {
             t.save(id);
             return Outcome::Fail(format!(
-                "no reply naming this nonce within {} s (wait {})",
+                "no reply naming this nonce within {} s (wait {}; {})",
                 w.limits.reply.as_secs(),
-                if exited.is_some() {
+                if exit.is_some() {
                     "exited"
                 } else {
                     "still running"
-                }
+                },
+                resolution()
             ));
         }
-        std::thread::sleep(POLL);
+        std::thread::sleep(FINE_POLL);
     }
 }

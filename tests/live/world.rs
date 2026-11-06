@@ -399,13 +399,22 @@ pub fn limited(cmd: &mut Command, limit: Duration) -> Result<Output, String> {
     limited_with_stdin(cmd, limit, None)
 }
 
+/// How long a finished call's output pipes may stay open (held by a
+/// descendant) before what was read is taken as all of it.
+const DRAIN: Duration = Duration::from_secs(2);
+
+/// Run `cmd` within `limit`. It starts in its own process group, and on
+/// timeout the whole group is killed, not only the immediate child.
 pub fn limited_with_stdin(
     cmd: &mut Command,
     limit: Duration,
     stdin: Option<&[u8]>,
 ) -> Result<Output, String> {
     use std::io::Write as _;
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    use std::os::unix::process::CommandExt as _;
+    cmd.stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0);
     if stdin.is_some() {
         cmd.stdin(Stdio::piped());
     }
@@ -413,34 +422,55 @@ pub fn limited_with_stdin(
     if let Some(bytes) = stdin {
         let _ = child.stdin.take().unwrap().write_all(bytes);
     }
-    let mut out = child.stdout.take().unwrap();
-    let mut err = child.stderr.take().unwrap();
-    let t_out = std::thread::spawn(move || {
-        let mut b = Vec::new();
-        let _ = out.read_to_end(&mut b);
-        b
-    });
-    let t_err = std::thread::spawn(move || {
-        let mut b = Vec::new();
-        let _ = err.read_to_end(&mut b);
-        b
-    });
+    let (tx, rx) = std::sync::mpsc::channel::<(bool, Vec<u8>)>();
+    for (is_out, mut pipe) in [
+        (
+            true,
+            Box::new(child.stdout.take().unwrap()) as Box<dyn std::io::Read + Send>,
+        ),
+        (false, Box::new(child.stderr.take().unwrap())),
+    ] {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let mut b = Vec::new();
+            let _ = pipe.read_to_end(&mut b);
+            let _ = tx.send((is_out, b));
+        });
+    }
+    drop(tx);
+    let kill_group = |child: &mut std::process::Child| {
+        if let Some(pgid) = rustix::process::Pid::from_raw(child.id() as i32) {
+            let _ = rustix::process::kill_process_group(pgid, rustix::process::Signal::KILL);
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    };
     let start = Instant::now();
     let status = loop {
         if let Some(s) = child.try_wait().map_err(|e| e.to_string())? {
             break s;
         }
         if start.elapsed() > limit {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_group(&mut child);
             return Err(format!("did not finish within {} s", limit.as_secs()));
         }
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(20));
     };
+    // Bounded: a descendant that kept the pipes open can't hold the call.
+    let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+    let drain_end = Instant::now() + DRAIN;
+    for _ in 0..2 {
+        let left = drain_end.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left) {
+            Ok((true, b)) => stdout = b,
+            Ok((false, b)) => stderr = b,
+            Err(_) => break,
+        }
+    }
     Ok(Output {
         status,
-        stdout: t_out.join().unwrap_or_default(),
-        stderr: t_err.join().unwrap_or_default(),
+        stdout,
+        stderr,
     })
 }
 
@@ -452,8 +482,12 @@ pub struct Proc {
     pub argv: Vec<String>,
 }
 
+/// Whether process facts can be read (`/proc`: Linux). Without them the
+/// cases that need them are SKIP. `BRG_LIVE_PRETEND_NO_PROC=1` makes a
+/// Linux run behave as one without, to check that path (as on macOS).
 pub fn has_proc() -> bool {
-    Path::new("/proc/self/environ").exists()
+    std::env::var_os("BRG_LIVE_PRETEND_NO_PROC").is_none()
+        && Path::new("/proc/self/environ").exists()
 }
 
 pub fn procs() -> Vec<Proc> {

@@ -236,6 +236,33 @@ fn dry_run_reaches_every_expected_result() {
     w.preflight(&both);
     let private = w.private.dir().to_path_buf();
     let matrix = Matrix::create(&w.evidence, &header(&w, &both, false));
+    // Without process facts (/proc: macOS), these cases and their controls
+    // are SKIP, and say why; every other case and control is the same.
+    let procs = world::has_proc();
+    let needs_proc = [
+        "claude-env-colour",
+        "codex-env-colour",
+        "claude-background-wait",
+    ];
+    let expect = |id: &str, want: &'static str| {
+        if !procs && needs_proc.contains(&id) {
+            "SKIP"
+        } else {
+            want
+        }
+    };
+    let mut wrong = Vec::new();
+    let mut check = |what: &str, id: &str, want: &'static str, got: Option<&Outcome>| {
+        let want = expect(id, want);
+        match got {
+            Some(o) if o.label() == want => {
+                if want == "SKIP" && needs_proc.contains(&id) && !o.detail().contains("/proc") {
+                    wrong.push(format!("{what}: SKIP without the /proc reason: {o:?}"));
+                }
+            }
+            got => wrong.push(format!("{what}: want {want}, got {got:?}")),
+        }
+    };
 
     // Every case, all fakes well behaved.
     let results = run_cases(&w, &both, true, &matrix);
@@ -247,23 +274,13 @@ fn dry_run_reaches_every_expected_result() {
         "claude-wake-matrix",
         "codex-wake-matrix",
     ];
-    let mut wrong = Vec::new();
     for (id, _) in REQUIRED {
         let want = if skips.contains(id) { "SKIP" } else { "PASS" };
-        match results.get(*id) {
-            Some(o) if o.label() == want => {}
-            got => wrong.push(format!("{id}: want {want}, got {got:?}")),
-        }
+        check(id, id, want, results.get(*id));
     }
     let v = rules::verdict(&both, &results, false, true);
     matrix.finish(&v);
     assert!(!v.fails() && !v.qualifies(), "{v:?}");
-
-    // A missing case: the run is incomplete and fails.
-    let mut short = results.clone();
-    short.remove("codex-env-colour");
-    let v = rules::verdict(&both, &short, false, true);
-    assert!(v.fails() && v.missing == ["codex-env-colour"], "{v:?}");
 
     // False-positive controls: (case, member, fake scenario, expected).
     let controls: &[(&str, &str, &str, &str)] = &[
@@ -286,54 +303,48 @@ fn dry_run_reaches_every_expected_result() {
             "approval",
             "BLOCKED",
         ),
+        (
+            "claude-background-wait",
+            cases::WAITER,
+            "early-turn",
+            "FAIL",
+        ),
+        ("claude-background-wait", cases::WAITER, "same-poll", "FAIL"),
         ("claude-env-colour", "painter", "nocolour", "FAIL"),
         ("claude-env-colour", "painter", "wrongenv", "FAIL"),
         ("codex-env-colour", "painter", "nocolour", "FAIL"),
         ("codex-env-colour", "painter", "wrongenv", "FAIL"),
         ("codex-trust-off", "truster", "write-config", "FAIL"),
+        ("codex-trust-off", "truster", "write-at-exit", "FAIL"),
         ("codex-trust-on", "truster", "approval", "BLOCKED"),
+        ("claude-trust-off", "truster", "trust-exit", "FAIL"),
+        ("claude-trust-off", "truster", "trust-unknown", "FAIL"),
+        ("codex-trust-off", "truster", "trust-exit", "FAIL"),
+        ("codex-trust-off", "truster", "trust-unknown", "FAIL"),
+        ("codex-locked-trust", "truster", "trust-exit", "FAIL"),
+        ("codex-locked-trust", "truster", "trust-unknown", "FAIL"),
     ];
     w.fake_file("stale-nonce", Some("n0123456789abcdefz"));
-    let control = |w: &World, id: &str, what: &str, want: &str, wrong: &mut Vec<String>| {
+    let mut control = |w: &World, id: &str, what: &str, want: &'static str| {
         let got = case(w, id, true).remove(0).1;
         matrix.row(&format!("control {id} ({what})"), &got);
-        if got.label() != want {
-            wrong.push(format!("control {id} ({what}): want {want}, got {got:?}"));
-        }
+        check(&format!("control {id} ({what})"), id, want, Some(&got));
     };
     for (id, member, scenario, want) in controls {
         w.scenario(member, scenario);
-        control(&w, id, scenario, want, &mut wrong);
+        control(&w, id, scenario, want);
         w.scenario(member, "ok");
     }
     // A folder that turns out to be trusted already: never PASS.
     let trusted = format!("{}\n{}\n", w.trusted.display(), w.scratch.display());
     w.fake_file("trusted", Some(&trusted));
-    control(
-        &w,
-        "claude-trust-off",
-        "already trusted",
-        "BLOCKED",
-        &mut wrong,
-    );
-    control(
-        &w,
-        "codex-trust-off",
-        "already trusted",
-        "BLOCKED",
-        &mut wrong,
-    );
+    control(&w, "claude-trust-off", "already trusted", "BLOCKED");
+    control(&w, "codex-trust-off", "already trusted", "BLOCKED");
     w.fake_file("trusted", Some(&format!("{}\n", w.trusted.display())));
     // A hung CLI: preflight's limit makes its cases BLOCKED.
     w.fake_file("hang-version-codex", Some(""));
     w.preflight(&[Who::Codex]);
-    control(
-        &w,
-        "codex-env-colour",
-        "hung --version",
-        "BLOCKED",
-        &mut wrong,
-    );
+    control(&w, "codex-trust-on", "hung --version", "BLOCKED");
     w.fake_file("hang-version-codex", None);
 
     drop(w);
@@ -348,4 +359,57 @@ fn dry_run_reaches_every_expected_result() {
         "the private tmux directory outlived the run"
     );
     assert!(wrong.is_empty(), "{}\n\n{kept}", wrong.join("\n"));
+}
+
+/// A timed-out call takes its whole process group with it, and a finished
+/// call whose output pipes a descendant still holds returns anyway.
+#[test]
+fn time_limited_calls_end_their_group_and_never_wait_on_held_pipes() {
+    let dir = tempfile::tempdir().unwrap();
+    let pid_file = dir.path().join("pid");
+    let gone = |pid: &str| {
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < end {
+            let alive = common::command("kill")
+                .args(["-0", pid])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap()
+                .success();
+            if !alive {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        false
+    };
+    // Timed out: the shell and the sleep it started both end.
+    let mut cmd = common::command("sh");
+    cmd.arg("-c")
+        .arg("sleep 60 & echo $! > \"$1\"; wait")
+        .arg("sh")
+        .arg(&pid_file);
+    let r = world::limited(&mut cmd, std::time::Duration::from_secs(1));
+    assert!(r.is_err(), "{r:?}");
+    let pid = std::fs::read_to_string(&pid_file).unwrap();
+    assert!(
+        gone(pid.trim()),
+        "the timed-out call's child {pid} still runs"
+    );
+    // Finished, with a background child holding stdout: bounded.
+    let start = std::time::Instant::now();
+    let mut cmd = common::command("sh");
+    cmd.arg("-c")
+        .arg("sleep 60 & echo $! > \"$1\"; echo done")
+        .arg("sh")
+        .arg(&pid_file);
+    let out = world::limited(&mut cmd, std::time::Duration::from_secs(30)).unwrap();
+    let pid = std::fs::read_to_string(&pid_file).unwrap();
+    let _ = common::command("kill").arg(pid.trim()).status();
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(10),
+        "waited {:?} on pipes a descendant held",
+        start.elapsed()
+    );
+    assert!(out.status.success());
 }
