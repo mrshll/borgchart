@@ -3,6 +3,8 @@
 //! files expand and stay generic, one task round works with `fake-agent`
 //! members, and the lead can seat the design panel.
 
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -345,9 +347,7 @@ mod round {
 
     impl Drop for Team {
         fn drop(&mut self) {
-            let _ = Command::new("tmux")
-                .args(["-L", &self.socket, "kill-server"])
-                .output();
+            crate::common::kill_server(&self.socket);
         }
     }
 

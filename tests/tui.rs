@@ -2,10 +2,11 @@
 //! Enter attaches to a member, the detach key returns to the screen, q quits.
 #![cfg(feature = "test-support")]
 
+mod common;
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 struct Servers {
@@ -16,18 +17,13 @@ struct Servers {
 impl Drop for Servers {
     fn drop(&mut self) {
         for s in [&self.inner, &self.outer] {
-            let _ = Command::new("tmux").args(["-L", s, "kill-server"]).output();
+            common::kill_server(s);
         }
     }
 }
 
 fn tmux(socket: &str, args: &[&str]) -> String {
-    let out = Command::new("tmux")
-        .arg("-L")
-        .arg(socket)
-        .args(args)
-        .output()
-        .unwrap();
+    let out = common::tmux(socket).args(args).output().unwrap();
     String::from_utf8_lossy(&out.stdout).to_string()
 }
 
@@ -79,10 +75,8 @@ fn status_i_attaches_detaches_and_quits() {
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
 
     let outer = servers.outer.clone();
-    Command::new("tmux")
+    common::tmux(&outer)
         .args([
-            "-L",
-            &outer,
             "-f",
             "/dev/null",
             "new-session",
@@ -95,7 +89,6 @@ fn status_i_attaches_detaches_and_quits() {
             "30",
         ])
         .arg(script.display().to_string())
-        .env_remove("TMUX")
         .status()
         .unwrap();
     let screen = || tmux(&outer, &["capture-pane", "-p", "-t", "=o:"]);
@@ -128,8 +121,8 @@ fn status_i_attaches_detaches_and_quits() {
     wait(
         "the screen to close",
         || {
-            !Command::new("tmux")
-                .args(["-L", &outer, "has-session", "-t", "=o"])
+            !common::tmux(&outer)
+                .args(["has-session", "-t", "=o"])
                 .status()
                 .unwrap()
                 .success()
