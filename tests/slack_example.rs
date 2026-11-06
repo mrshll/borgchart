@@ -4,6 +4,8 @@
 //! Needs tmux and uv. Run with `cargo test --features test-support`.
 #![cfg(feature = "test-support")]
 
+mod common;
+
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -128,9 +130,7 @@ struct Run {
 
 impl Drop for Run {
     fn drop(&mut self) {
-        let _ = Command::new("tmux")
-            .args(["-L", &self.socket, "kill-server"])
-            .output();
+        crate::common::kill_server(&self.socket);
     }
 }
 
