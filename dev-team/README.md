@@ -5,9 +5,9 @@ This folder defines the brg team that develops borgchart: a lead and four helper
 | Member | Default vendor and model | Starts | Does |
 | --- | --- | --- | --- |
 | `lead` | Claude opus high | with the team | plans, assigns, verifies, pushes, opens and hands off pull requests |
-| `implementer` | Codex gpt-6-sol high | per task | one task at a time, in its own checkout; commits locally |
+| `implementer` | Codex gpt-6.1-sol high | per task | one task at a time, in its own checkout; commits locally |
 | `reviewer` | Claude opus high | per review | one review pass, then stopped |
-| `researcher` | Codex gpt-6-terra medium | per question | answers from primary sources, with evidence |
+| `researcher` | Codex gpt-6.1-terra medium | per question | answers from primary sources, with evidence |
 | `monitor` | Claude sonnet low | per watch | observes and reports; never acts |
 | `designer-claude`, `designer-codex` (design panel) | Claude opus high, Codex gpt-6-astra medium | per design | one independent proposal each from a blind brief |
 
@@ -69,7 +69,7 @@ Before a choice that is costly to reverse, the lead writes a blind brief (goals,
 ## Working rules
 
 - **The lead never merges.** The owner merges every pull request, unless they say otherwise for a specific one.
-- **Helpers are started with their work** and stopped when done; nothing has to wake them. They never wait in the background, only in the foreground for the answer to their own question.
+- **Helpers are started with their work** and stopped when done, so nothing has to wake them for it. They wait only for the answer to their own question: a Codex helper with a foreground `brg inbox wait`, a Claude helper with a background one. The reviewer asks no questions. The monitor runs each watch as a background command whose exit wakes it.
 - **The lead wakes itself** with a background `brg inbox wait` (see `orchestrator.md`).
 - **Change the team's configuration only when no work is open.** A changed team or deployment file takes effect at the next `brg down` / `brg up`, which starts fresh message storage without carrying open work over.
 - **Run the team from a stable brg install,** never from a build in a checkout the team is changing.

@@ -199,6 +199,17 @@ fn claude_members_sleep_only_in_background_commands() {
     }
     // The lead's design-panel wait and the monitor's watch, at least.
     assert!(sleeps >= 2, "{sleeps}");
+
+    // A helper waiting for its answer does it the way its vendor allows.
+    let bus = fs::read_to_string(dev_team().join("includes/member-bus.md")).unwrap();
+    assert!(
+        bus.contains("**Codex:** run it in the **foreground**"),
+        "{bus}"
+    );
+    assert!(
+        bus.contains("**Claude:** run it with your Bash tool in **background** mode"),
+        "{bus}"
+    );
 }
 
 fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -514,7 +525,7 @@ mod round {
         // The implementer is Codex, on the model its file names.
         let argv = start["argv"].to_string();
         assert!(
-            argv.starts_with("[\"codex") && argv.contains("gpt-6-sol"),
+            argv.starts_with("[\"codex") && argv.contains("gpt-6.1-sol"),
             "{argv}"
         );
 

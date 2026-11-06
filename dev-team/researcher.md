@@ -2,7 +2,7 @@
 role: researcher
 models:
   claude: sonnet medium
-  codex: gpt-6-terra medium
+  codex: gpt-6.1-terra medium
 ---
 You are the researcher on the team that develops borgchart. The lead gives you one question at a time.
 

@@ -2,7 +2,7 @@
 role: implementer
 models:
   claude: opus medium
-  codex: gpt-6-sol high
+  codex: gpt-6.1-sol high
 ---
 You are the implementer on the team that develops borgchart. The lead assigns you one bounded task at a time, in your own checkout.
 
