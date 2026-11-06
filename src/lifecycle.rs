@@ -676,40 +676,38 @@ fn pane_in(rows: &[PaneRow], pane_id: &str, pane_pid: u32) -> Liveness {
 }
 
 /// Whether the pane recorded for an incarnation still runs it. A server
-/// that answers shows it alive or gone. One that can't be asked is
-/// `Unknown`, unless its recorded socket is still there and refuses
-/// connections: then the server has exited, and its panes with it.
+/// that answers shows it alive or gone. One that can't be asked (exited,
+/// hidden, or no tmux here) is `Unknown`, unless the pane's own process has
+/// exited: then the pane no longer runs it, as when a listing shows it dead.
 pub fn pane_liveness(pane: &PaneIdentity) -> Liveness {
     match Server::from_recorded(&pane.socket).panes() {
         Ok(rows) => pane_in(&rows, &pane.pane_id, pane.pane_pid),
-        Err(_) if server_exited(&pane.socket) => Liveness::Gone,
+        Err(_) if process_exited(pane.pane_pid) => Liveness::Gone,
         Err(_) => Liveness::Unknown,
     }
 }
 
-/// A recorded socket path whose file is a socket nobody listens on: tmux
-/// leaves that behind when its server exits. A missing file proves nothing
-/// (something may have cleaned the directory under a live server), and
-/// neither does any other error. A live server with a full queue of new
-/// connections can refuse one too (macOS), so it must refuse every try.
-fn server_exited(socket: &str) -> bool {
-    use std::os::unix::fs::FileTypeExt;
-    if !socket.starts_with('/') {
+/// Whether process `pid` has certainly exited: `ps` lists this process but
+/// not `pid`. Any process with that ID (even a reused one) is not proof, and
+/// neither is a `ps` that can't run or doesn't list this process.
+fn process_exited(pid: u32) -> bool {
+    let me = std::process::id();
+    if pid == 0 || pid == me {
         return false;
     }
-    let refused = || {
-        fs::symlink_metadata(socket).is_ok_and(|m| m.file_type().is_socket())
-            && matches!(
-                std::os::unix::net::UnixStream::connect(socket),
-                Err(e) if e.kind() == io::ErrorKind::ConnectionRefused
-            )
+    let Ok(out) = Command::new("ps")
+        .args(["-o", "pid=", "-p", &format!("{me},{pid}")])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return false;
     };
-    (0..3).all(|attempt| {
-        if attempt > 0 {
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        refused()
-    })
+    let listed: Vec<u32> = String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .filter_map(|p| p.parse().ok())
+        .collect();
+    listed.contains(&me) && !listed.contains(&pid)
 }
 
 /// Whether `member`'s incarnation `incarnation` may still be running.
@@ -856,40 +854,41 @@ mod tests {
     }
 
     #[test]
-    fn a_socket_nobody_listens_on_shows_its_panes_gone() {
+    fn an_unreachable_server_shows_a_pane_gone_only_once_its_process_exited() {
         let dir = tempfile::tempdir().unwrap();
         let paths = RunPaths::from_root(dir.path());
-        // A tmux server that exited leaves its socket file behind.
-        let sockets = tempfile::tempdir().unwrap();
-        let socket = sockets.path().join("brg-exited");
-        drop(std::os::unix::net::UnixListener::bind(&socket).unwrap());
+        // A pane process that ignores the hang-up outlives its tmux server.
+        let mut survivor = Command::new("sh")
+            .args(["-c", "trap '' HUP; exec sleep 30"])
+            .spawn()
+            .unwrap();
         let inc = Incarnation {
             member: "lead".into(),
             incarnation: "lead.1.abcd".into(),
             started_at: utc_now(),
             vendor_version: None,
             pane: Some(PaneIdentity {
-                socket: socket.display().to_string(),
+                socket: dir.path().join("brg-exited").display().to_string(),
                 session: "s".into(),
                 window: "lead".into(),
                 pane_id: "%0".into(),
-                pane_pid: 1,
+                pane_pid: survivor.id(),
             }),
             ended_at: None,
             ended_reason: None,
         };
         begin_incarnation(&paths, &inc).unwrap();
         complete_incarnation(&paths, &inc).unwrap();
+        assert_eq!(liveness(&paths, "lead", "lead.1.abcd"), Liveness::Unknown);
+        assert!(check_stopped(&paths, "t", "brg up").is_err());
+
+        survivor.kill().unwrap();
+        survivor.wait().unwrap();
         assert_eq!(liveness(&paths, "lead", "lead.1.abcd"), Liveness::Gone);
         // So a rollover can go ahead.
         check_stopped(&paths, "t", "brg up").unwrap();
-
-        // Anything else at that path is not proof: a plain file.
-        fs::remove_file(&socket).unwrap();
-        fs::write(&socket, "").unwrap();
-        assert_eq!(liveness(&paths, "lead", "lead.1.abcd"), Liveness::Unknown);
-        assert!(check_stopped(&paths, "t", "brg up").is_err());
     }
+
     #[test]
     fn only_a_listing_shows_a_pane_gone() {
         let row = |id: &str, pid: u32, dead: bool| PaneRow {

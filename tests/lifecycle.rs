@@ -1041,19 +1041,21 @@ fn liveness_is_alive_gone_or_unknown() {
     env.tmux(&["kill-window", "-t", &lead_pane]);
     assert_eq!(live(&env.rows(), "lead"), "gone");
 
-    // The whole server exited, leaving its socket file: gone. Without the
-    // file, it can't be told from a hidden server: unknown.
+    // The whole server exited: it can't be asked, so the pane's own process
+    // decides. It exits on the hang-up: gone once it has.
     fs::remove_file(run.join("runtime/incarnations/helper.json")).unwrap();
     env.up();
     assert_eq!(live(&env.rows(), "lead"), "alive");
-    let socket = read_json(&run.join("runtime/incarnations/lead.json"))["pane"]["socket"]
-        .as_str()
-        .unwrap()
-        .to_string();
     env.tmux(&["kill-server"]);
-    assert_eq!(live(&env.rows(), "lead"), "gone");
-    fs::remove_file(&socket).unwrap();
-    assert_eq!(live(&env.rows(), "lead"), "unknown");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while live(&env.rows(), "lead") != "gone" {
+        assert!(
+            Instant::now() < deadline,
+            "lead still {}",
+            live(&env.rows(), "lead")
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
 
     // Ended through brg after a confirmed stop: gone.
     env.up();
