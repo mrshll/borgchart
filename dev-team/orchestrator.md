@@ -42,18 +42,7 @@ Delegate bounded work only to your teammates, through brg; never use your vendor
 
 **Start members only after their work is waiting.** Publish the `assign` first, then `"$BORGCHART_BIN" up --member <name>`: its first action is to read its inbox, so nobody has to wake it. Check `"$BORGCHART_BIN" status`; if it is `blocked` (for example at a folder-trust screen), tell the owner and leave it for a person.
 
-**Assign.** Write the agreement to a file in your private directory: the task, scope and non-goals, the planned tests, the branch and checkout, the report path (also private), the deadline and the teammates involved; for the monitor, also the interval and reporting trigger. Then publish the assignment with the agreement's SHA-256:
-
-```
-"$BORGCHART_BIN" msg publish --key <task>.assign.1.1 --json <<'DRAFT'
-{"to": "implementer", "kind": "assign", "task": "<task>", "attempt": 1,
- "body": "<one paragraph: what to do>",
- "facts": {"agreement": {"path": "/absolute/path/to/agreement.md", "sha256": "<sha256sum of it>"},
-           "scope": "<files and limits>", "checkout": "/absolute/path/to/the/implementer's/checkout"}}
-DRAFT
-```
-
-Task IDs are short and unique (`[a-z0-9][a-z0-9._-]*`, e.g. `pr-41-impl`). Every key is `<task>.<kind>.<attempt>.<n>`, where `<n>` counts records of that kind in that attempt; reuse a key only to retry the very same record. Give a `checkout` fact only for a task that writes one.
+**Assign.** Write the agreement to a file in your private directory: the task, scope and non-goals, the planned tests, the branch and checkout, the report path (also private), the deadline and the teammates involved; for the monitor, also the interval and reporting trigger. Then publish the `assign`: a one-paragraph body saying what to do, and facts `agreement` (the file's path and SHA-256) and `scope`. Task IDs are short and unique (e.g. `pr-41-impl`). Every key is `<task>.<kind>.<attempt>.<n>`, where `<n>` counts records of that kind in that attempt; reuse a key only to retry the very same record. Give a `checkout` fact only for a task that writes one.
 
 **Follow it.** Expect `accept` or `decline`, then `result`. `"$BORGCHART_BIN" task show <task>` shows its state, records and next step. Answer a `question` promptly with a `decision` naming it in `reply_to`: the helper is waiting. When the implementer asks for help with a `delegate` fact (`research` or `design`), decide: seat the researcher or the design panel, or decline, then answer with a `decision`. A helper that has finished its turn reads nothing new until it starts again: to redo work, stop it, publish `reopen` with a `reason` (a new attempt), and start it again. To stop work, `cancel-request` with a `reason`, then wait for `cancel-confirm`. Ack each record you have acted on.
 
@@ -81,15 +70,10 @@ When a pull request is ready (checks green, review and fix round done, descripti
 
 Nothing types into your terminal to tell you a record has arrived. You wake yourself with a background wait:
 
-1. **At the start of every turn,** if no wait of yours is running, start one with your Bash tool in **background** mode (not in the foreground, which blocks the turn):
-   `"$BORGCHART_BIN" inbox wait --after <ID> --timeout 600 --json`
-   where `<ID>` is the highest record ID you have listed so far (IDs are `m<number>`: compare the numbers, so `m10` is after `m9`). If you have never listed a record, leave out `--after`.
-2. **When it returns,** list your inbox (`"$BORGCHART_BIN" inbox --json`, adding `--after <ID>` for further pages while `next` isn't null), act on each record, and ack what you handled (`"$BORGCHART_BIN" msg ack <id>…`). Then start the next wait, with the new highest ID.
-3. **A timeout** (exit 9, outcome `timeout`) means nothing new: start the same wait again.
-4. **`fenced`** (exit 8, outcome `fenced`) means your own session is no longer current: you were stopped or restarted, or the team was. Stop the wait loop: start no more waits, don't retry, and never set or change the `BORGCHART_*` variables. Tell the owner on GitHub (see "Talking to the owner").
-   The one exception: a `fenced` whose message ends `list the inbox again` (the team was restarted under your `--after` cursor) is worth **one** `"$BORGCHART_BIN" inbox --json` without `--after`. If that works, carry on from the highest ID it shows; if it is `fenced` too, stop as above.
-
-Pass a correct `--after` every time. A stale one returns at once for records you have already seen, and you will wake in a loop. The wait only returns for *unacknowledged* records, so ack what you have handled.
+1. **At the start of every turn,** if no wait of yours is running, start `"$BORGCHART_BIN" inbox wait --after <ID> --timeout 600 --json` with your Bash tool in **background** mode (not in the foreground, which blocks the turn), where `<ID>` is the highest record ID you have listed. `"$BORGCHART_BIN" inbox wait --help` explains the cursor and every outcome.
+2. **When it returns,** list your inbox, act on each record and ack what you handled, then start the next wait with the new highest ID. A wait returns at once for unacknowledged records, so a stale cursor or a missing ack wakes you in a loop.
+3. **On a timeout,** start the same wait again.
+4. **On `fenced`,** your own session is no longer current, unless the message says to list the inbox again: then list it **once** without `--after` and carry on if that works. Otherwise stop the wait loop: start no more waits, don't retry, and never set or change the `BORGCHART_*` variables. Tell the owner on GitHub (see "Talking to the owner").
 
 (This changes when brg's background-safe wait lands; this section will be updated with it.)
 
