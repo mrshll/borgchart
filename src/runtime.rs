@@ -517,6 +517,9 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
         env.insert("PATH".into(), path);
         env.insert("BORGCHART_DEPLOYMENT".into(), state.id.clone());
         env.insert(context::ENV_MEMBER.into(), id.clone());
+        // The brg that starts this member, so its own brg calls don't depend
+        // on what its shell puts first on `PATH`.
+        env.insert("BORGCHART_BIN".into(), brg.display().to_string());
         let tmp = state.member_tmp(id);
         state::ensure_dir(&tmp).map_err(|e| e.to_string())?;
         env.insert("TMPDIR".into(), tmp.display().to_string());
