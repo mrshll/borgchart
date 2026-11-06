@@ -14,6 +14,10 @@ use crate::bus::manifest::ConfigSnapshot;
 /// Overrides for tests and unusual setups.
 pub const ENV_STATE_HOME: &str = "BORGCHART_STATE_HOME";
 pub const ENV_TMUX_SOCKET: &str = "BORGCHART_TMUX_SOCKET";
+/// The directory brg's tmux servers keep their sockets in, passed to tmux as
+/// `TMUX_TMPDIR`. brg never takes `TMUX_TMPDIR` itself from your environment:
+/// a member's own setting must not move its team's server.
+pub const ENV_TMUX_TMPDIR: &str = "BORGCHART_TMUX_TMPDIR";
 /// Set inside members and plugins: the deployment file, so `brg` run there finds it.
 pub const ENV_FILE: &str = "BORGCHART_FILE";
 pub const DEFAULT_SOCKET: &str = "borgchart";

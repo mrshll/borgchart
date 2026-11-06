@@ -44,6 +44,7 @@ const BASE_ENV: &[&str] = &[
     "CLAUDE_CONFIG_DIR",
     state::ENV_STATE_HOME,
     state::ENV_TMUX_SOCKET,
+    state::ENV_TMUX_TMPDIR,
 ];
 
 /// How long `up` waits for a `locked` member's gate to report in.
@@ -1566,6 +1567,10 @@ fn attach_command(input: &Input, name: &str) -> Result<Command, String> {
         .args(["attach-session", "-t", &target(&session, &window)])
         // Works from inside your own tmux too: brg's server is a separate one.
         .env_remove("TMUX");
+    match std::env::var_os(state::ENV_TMUX_TMPDIR) {
+        Some(dir) => cmd.env("TMUX_TMPDIR", dir),
+        None => cmd.env_remove("TMUX_TMPDIR"),
+    };
     Ok(cmd)
 }
 
