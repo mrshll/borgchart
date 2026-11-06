@@ -26,7 +26,22 @@ for check in "$@"; do
   case $check in
     fmt) run fmt cargo fmt --check ;;
     clippy) run clippy cargo clippy --all-targets --features test-support --locked -- -D warnings ;;
-    test) run test cargo test --features test-support --locked ;;
+    # Inside a team member, BORGCHART_* names that team's real deployment
+    # and message storage. The tests run with them pointing nowhere, so a
+    # test that forgets to clear them fails instead of writing into the team.
+    test)
+      run test env \
+        BORGCHART_FILE=/nonexistent/caller-team/borgchart.yaml \
+        BORGCHART_STATE_HOME=/nonexistent/caller-team/state \
+        BORGCHART_STATE_DIR=/nonexistent/caller-team/member-state \
+        BORGCHART_DEPLOYMENT=caller-team \
+        BORGCHART_MEMBER=caller-member \
+        BORGCHART_RUN=r999 \
+        BORGCHART_INCARNATION=caller-member.0.0 \
+        BORGCHART_BIN=/nonexistent/caller-team/brg \
+        BORGCHART_TMUX_SOCKET=brg-caller-team \
+        cargo test --features test-support --locked
+      ;;
     py) run py uv run --no-project --with pytest==8.3.5 pytest -p no:cacheprovider examples/slack-devops/plugins/slackbot/tests ;;
     *)
       echo "checks: unknown check '$check' (use fmt, clippy, test or py)" >&2
