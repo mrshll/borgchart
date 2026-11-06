@@ -77,9 +77,10 @@ pub struct Deployment {
     pub file_sha256: String,
     pub team_dir: PathBuf,
     pub auth: Auth,
-    /// Accept Claude's folder-trust dialog for a member's declared `cwd`:
-    /// `None` (the default) for `locked` members only, which ignore project
-    /// settings; `Some(true)` for every member; `Some(false)` for none.
+    /// Trust a member's declared `cwd`. Claude: `up` answers its folder-trust
+    /// dialog; `None` (the default) for `locked` members only, which ignore
+    /// project settings; `Some(true)` for every member; `Some(false)` for none.
+    /// Codex: session config, only with `Some(true)` and only in `vendor` posture.
     pub auto_trust: Option<bool>,
     pub plugins_dir: Option<PathBuf>,
     pub members: BTreeMap<String, MemberDeploy>,

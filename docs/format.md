@@ -170,7 +170,7 @@ members:
 schema: 1
 team: .                       # the team directory, relative to this file (default: .)
 auth: login                   # login (default) | api_key, for every member
-auto_trust: true              # accept Claude's folder trust for a declared cwd (default: locked members only)
+auto_trust: true              # trust a declared cwd without a person (Claude default: locked members only)
 plugins_dir: ~/borgchart-plugins   # where shared:<name> plugins live
 
 members:
@@ -191,9 +191,7 @@ plugins:
 - **Codex updates:** brg starts Codex members with `-c check_for_update_on_startup=false`, so an unattended member doesn't stop at Codex's "Update available" prompt; update Codex yourself. A `-c check_for_update_on_startup=…` (or `--config`) in `args` overrides this.
 - **`auth: login`:** brg passes no API-key variables, so a stray key in your shell can't replace your login.
 - **`auth: api_key`:** brg passes `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` by name.
-- **`auto_trust`:** when a Claude member's `cwd` is declared here, `brg up` answers Claude's folder-trust dialog for exactly that folder by sending keys through tmux. Declaring the folder is your consent.
-  - By default this applies to `locked` members only, because they ignore project settings. `auto_trust: true` extends it to every member; `brg validate` then warns if a declared folder has project settings (`.claude/`, `.mcp.json`), which would load.
-  - It acts only on the plain trust screen showing that folder; it never answers any other dialog.
-  - Each acceptance is printed and shown in `brg status --json` (`trust_accepted`).
-  - Trusting a folder lets its project settings load in `vendor` posture; `locked` members ignore project settings.
-  - Set `auto_trust: false` to attach and answer it yourself.
+- **`auto_trust`:** trusts a member's `cwd` declared here, so the member doesn't stop at its vendor's folder-trust screen. Declaring the folder is your consent. Each trust is printed and shown in `brg status --json` (`trust_accepted`). Set `auto_trust: false` to attach and answer the screen yourself.
+  - **Claude:** `brg up` answers Claude's folder-trust dialog for exactly that folder by sending keys through tmux. It acts only on the plain trust screen showing that folder; it never answers any other dialog. By default this applies to `locked` members only, because they ignore project settings. `auto_trust: true` extends it to every member; `brg validate` then warns if a declared folder has project settings (`.claude/`, `.mcp.json`), which would load in `vendor` posture.
+  - **Codex:** only with `auto_trust: true`, and only in `vendor` posture. brg starts the member with `-c projects={"<folder>"={trust_level="trusted"}}`, so Codex never shows its trust screen. That trusts exactly that folder, for that session only: nothing is written to `~/.codex/config.toml`. Answering the screen yourself trusts the whole Git repository (every worktree too) and saves it. Trust lets the folder's `.codex/` config, hooks and MCP servers load, and selects Codex's default permissions for a trusted folder; `brg validate` warns if the folder has a `.codex/`. A `-c projects…` in the member's `args` replaces brg's.
+  - A `locked` Codex member is never trusted this way. It can write its own folder, so it could write a `.codex/` that would load outside its gate on its next start. `brg validate` warns, and its trust screen is left for you.

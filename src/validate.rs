@@ -143,6 +143,35 @@ fn cross_check(v: &Validated, report: &mut Report) {
                     ),
                 );
             }
+            let vendor_codex = v
+                .team
+                .members
+                .get(id)
+                .is_some_and(|t| t.vendor == Vendor::Codex);
+            if d.auto_trust == Some(true)
+                && vendor_codex
+                && let Some(cwd) = &m.cwd
+            {
+                if v.posture(id) == Posture::Locked {
+                    report.warning(
+                        deploy_file,
+                        format!(
+                            "member `{id}`: `auto_trust: true` doesn't trust {} for a `locked` Codex member, which can write that folder; a trusted folder's `.codex/` loads outside its gate. Its trust screen is left for you",
+                            cwd.display()
+                        ),
+                    );
+                } else if cwd.join(".codex").exists()
+                    && !crate::launch::codex_args_set(&m.args, "projects")
+                {
+                    report.warning(
+                        deploy_file,
+                        format!(
+                            "member `{id}`: `auto_trust: true` will trust {}, which has project settings (`.codex/`): its config, hooks and MCP servers will load",
+                            cwd.display()
+                        ),
+                    );
+                }
+            }
             if let Some(cwd) = &m.cwd
                 && !cwd.is_dir()
             {
