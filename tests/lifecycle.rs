@@ -1736,3 +1736,87 @@ fn up_refuses_a_relative_tmux_directory() {
     assert!(env.snapshot().is_empty(), "{:?}", env.snapshot().keys());
     assert!(sockets(&env).is_empty());
 }
+
+/// Liveness when the recorded server can't be reached: these start `tmux`,
+/// `ps` and a child process, so they run here and not in the fast tier.
+mod liveness {
+    use std::process::Command;
+
+    use borgchart::bus::layout::RunPaths;
+    use borgchart::bus::manifest;
+    use borgchart::bus::manifest::{Incarnation, Liveness, PaneIdentity};
+    use borgchart::bus::time::utc_now;
+    use borgchart::lifecycle::{
+        ENDED_STOPPED, begin_incarnation, check_stopped, complete_incarnation, end_incarnation,
+        liveness,
+    };
+
+    #[test]
+    fn liveness_without_a_pane_or_after_ending() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = RunPaths::from_root(dir.path());
+        let mut inc = Incarnation {
+            member: "lead".into(),
+            incarnation: "lead.1.abcd".into(),
+            started_at: utc_now(),
+            vendor_version: None,
+            pane: None,
+            ended_at: None,
+            ended_reason: None,
+        };
+        begin_incarnation(&paths, &inc).unwrap();
+        assert_eq!(liveness(&paths, "lead", "lead.1.abcd"), Liveness::Unknown);
+        assert_eq!(liveness(&paths, "lead", "lead.other"), Liveness::Unknown);
+        inc.pane = Some(PaneIdentity {
+            socket: format!("/nonexistent/brg-no-such-socket-{}", std::process::id()),
+            session: "s".into(),
+            window: "lead".into(),
+            pane_id: "%0".into(),
+            pane_pid: 1,
+        });
+        complete_incarnation(&paths, &inc).unwrap();
+        // A server that can't be reached proves nothing.
+        assert_eq!(liveness(&paths, "lead", "lead.1.abcd"), Liveness::Unknown);
+        assert!(end_incarnation(&paths, "lead", ENDED_STOPPED).unwrap());
+        assert!(!end_incarnation(&paths, "lead", ENDED_STOPPED).unwrap());
+        assert_eq!(liveness(&paths, "lead", "lead.1.abcd"), Liveness::Gone);
+        let stored = manifest::load_incarnation(&paths, "lead").unwrap().unwrap();
+        assert_eq!(stored.ended_reason.as_deref(), Some(ENDED_STOPPED));
+    }
+
+    #[test]
+    fn an_unreachable_server_shows_a_pane_gone_only_once_its_process_exited() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = RunPaths::from_root(dir.path());
+        // A pane process that ignores the hang-up outlives its tmux server.
+        let mut survivor = Command::new("sh")
+            .args(["-c", "trap '' HUP; exec sleep 30"])
+            .spawn()
+            .unwrap();
+        let inc = Incarnation {
+            member: "lead".into(),
+            incarnation: "lead.1.abcd".into(),
+            started_at: utc_now(),
+            vendor_version: None,
+            pane: Some(PaneIdentity {
+                socket: dir.path().join("brg-exited").display().to_string(),
+                session: "s".into(),
+                window: "lead".into(),
+                pane_id: "%0".into(),
+                pane_pid: survivor.id(),
+            }),
+            ended_at: None,
+            ended_reason: None,
+        };
+        begin_incarnation(&paths, &inc).unwrap();
+        complete_incarnation(&paths, &inc).unwrap();
+        assert_eq!(liveness(&paths, "lead", "lead.1.abcd"), Liveness::Unknown);
+        assert!(check_stopped(&paths, "t", "brg up").is_err());
+
+        survivor.kill().unwrap();
+        survivor.wait().unwrap();
+        assert_eq!(liveness(&paths, "lead", "lead.1.abcd"), Liveness::Gone);
+        // So a rollover can go ahead.
+        check_stopped(&paths, "t", "brg up").unwrap();
+    }
+}

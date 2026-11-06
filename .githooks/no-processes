@@ -1,0 +1,30 @@
+#!/bin/sh
+# Run a command with recording stand-ins for the programs a fast test must
+# never start (tmux, ps, sh, sleep, claude, codex) first on its PATH. Fails
+# if any of them was called, even when the caller tolerated the failure;
+# otherwise exits as the command did.
+#
+#   .githooks/no-processes cargo test --lib
+#
+# A program run by absolute path isn't caught.
+set -eu
+dir=$(mktemp -d "${TMPDIR:-/tmp}/brgfast.XXXXXX")
+trap 'rm -rf "$dir"' EXIT
+mkdir "$dir/bin"
+for program in tmux ps sh sleep claude codex; do
+  cat >"$dir/bin/$program" <<STANDIN
+#!/bin/sh
+printf '%s %s\n' '$program' "\$*" >>'$dir/calls'
+echo "no-processes: refused: $program \$*" >&2
+exit 126
+STANDIN
+  chmod 755 "$dir/bin/$program"
+done
+status=0
+PATH="$dir/bin:$PATH" "$@" || status=$?
+if [ -s "$dir/calls" ]; then
+  echo "no-processes: these were started, and must not be:" >&2
+  cat "$dir/calls" >&2
+  exit 1
+fi
+exit "$status"
