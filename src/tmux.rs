@@ -43,6 +43,28 @@ impl Tmux {
         }
     }
 
+    /// A client for a named socket, whatever `BORGCHART_TMUX_SOCKET` says.
+    pub fn on_socket(socket: &str, config: &Path, env: BTreeMap<String, String>) -> Self {
+        Tmux {
+            socket: socket.to_string(),
+            config: config.to_path_buf(),
+            env,
+        }
+    }
+
+    pub fn socket(&self) -> &str {
+        &self.socket
+    }
+
+    /// The same client settings for another server (a name or an absolute path).
+    pub fn with_socket(&self, socket: &str) -> Self {
+        Tmux {
+            socket: socket.to_string(),
+            config: self.config.clone(),
+            env: self.env.clone(),
+        }
+    }
+
     pub fn write_config(&self) -> std::io::Result<()> {
         crate::state::write_script(&self.config, CONFIG)?;
         std::fs::set_permissions(
@@ -54,7 +76,13 @@ impl Tmux {
     fn command(&self) -> Command {
         let mut cmd = Command::new("tmux");
         cmd.env_clear().envs(&self.env);
-        cmd.arg("-L").arg(&self.socket).arg("-f").arg(&self.config);
+        // An absolute socket path (as tmux reports it) or a socket name.
+        let flag = if self.socket.starts_with('/') {
+            "-S"
+        } else {
+            "-L"
+        };
+        cmd.arg(flag).arg(&self.socket).arg("-f").arg(&self.config);
         cmd
     }
 

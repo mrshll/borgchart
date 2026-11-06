@@ -166,9 +166,47 @@ Folds task records into per-task state: assigned, accepted or declined, result c
 
 Replaced by the team's *watcher*, a hidden tmux window described in the sessions design (`docs/sessions.md`, proposed in its own change). The rules that carry over: only a member listing its own inbox marks records as observed; observation is separate from acknowledgement; new records after an observation start a new episode; the watcher never creates a tmux session; and a wake left in flight by a crash is never retried.
 
-## Guarded wake (planned)
+## Guarded wake
 
-For a vendor, version and configuration that has passed qualification, the worker may paste one fixed reminder (never a payload) and press Enter. Before pasting it checks the pane's identity (against the incarnation), state, input box and dialogs; before Enter it checks the input box holds exactly the reminder and no dialog appeared. It never clears input, forces, answers a dialog or presses Enter after a crash. At most one paste per episode. A member at a prompt (`blocked`) gets nothing typed and an alert. A busy member, a draft in the input box or a transient uncertain reading defers the wake without spending it; a draft also raises an alert, and the wake goes ahead automatically once the draft clears, or becomes human-required at the deadline. An unqualified vendor or version gets alerts only.
+For a vendor, version and configuration that has passed qualification, the worker may paste one fixed reminder and press Enter:
+
+```text
+brg: new records in your inbox. Run `brg inbox` at your next stopping point.
+```
+
+Nothing from any record is ever typed. One attempt (`src/wake.rs`) holds the member's send lock (waiting at most 2 s, otherwise it defers as `locked`) and goes:
+
+1. **Identity.** The pane is looked up on the tmux server the incarnation recorded (its socket path, or a socket name) and must be the incarnation's own: same session, window, `pane_id` and `pane_pid`, and not dead. Otherwise `not-running`, nothing typed.
+2. **State.** The state rules `status` uses run on the same capture. A prompt gives `blocked:<rule>` (the same rule ID `status` shows) and nothing is typed. A running turn defers as `busy`.
+3. **Input box.** The input box must read as empty (below), and the pane must not be in tmux copy mode. A draft defers as `draft`; anything unreadable defers as `uncertain`.
+4. **Intent.** The worker records the attempt; if that fails nothing is typed.
+5. **Paste.** The reminder goes in as one bracketed paste.
+6. **Before Enter.** The pane is re-read, for up to 3 s, until no prompt is showing and the box holds exactly the reminder: the same characters and spaces on each line, the cursor right after the last character (so a typed trailing space shows), and a line break only where the vendor had to wrap (the next word could not have fitted in the pane's width). Otherwise `human-required` and Enter is not pressed.
+7. **Enter**, then, for up to 3 s, a check that the box reads as empty. Only an empty box, seen, counts as `submitted`; the reminder still there, other text, a pane that is gone or a screen that can't be read is `human-required`.
+
+It never clears input, forces, answers a dialog, presses Enter after a crash or tries a second time: `human-required` always waits for a person. Attached clients don't matter; a resize that leaves the screen mid-redraw just defers. A busy member, a draft or an uncertain reading defers without spending the episode's one paste; a draft also raises an alert, the wake goes ahead once the draft clears, and the worker makes it human-required at the deadline. A member at a prompt gets an alert. An unqualified vendor, version or configuration gets alerts only.
+
+**Reading the input box** (`src/composer.rs`) works on a styled capture (`capture-pane -e`) and anchors on each vendor's layout at the bottom of the screen:
+
+- *Claude Code:* the lines between the last two horizontal rules, starting with `❯`; later lines are indented. A grey `❯` means a turn is running (the window title doesn't change during a turn in this version). The footer shows `-- INSERT --` in vim insert mode. Claude shows no placeholder, and typed spaces look like nothing, so a blank box reads as empty only in insert mode with the cursor right after the `❯`. In vim normal mode a box holding one space looks exactly like an empty one, so Claude in normal mode always defers as uncertain.
+- *Codex:* the lines above one blank line and the status line ending in `Vim: Insert` or `Vim: Normal`, starting with a bold `›`. Codex draws its dim placeholder (`Ask Codex to do anything`) only while the box is empty, so the placeholder reads as empty and a blank box without it (typed spaces) as a draft.
+
+Any other text in the box is a draft: typed text, recalled history, a pasted image's tag, a suggestion. So is a box of more than one line, even if its visible lines are blank (the rest may be scrolled out of view). A pane under 20 rows, or a screen that doesn't match the layout (a popup, a dialog, a resize in progress), reads as uncertain.
+
+**Qualification.** Typing is allowed only for these exact combinations, each tested with the real CLI by `tests/qualify.rs` (empty, single-line, multiline, wrapped and scrolled drafts; vim insert and normal mode; history recall; a draft that clears and one that stays; a short pane; whitespace-only drafts; the Enter check on a pasted, never-submitted reminder, plain, wrapped at 60 columns, with a typed trailing space and with a space removed; a resize and two attached clients, one in control mode, during attempts; a submission in each vim mode, where Claude in normal mode now defers):
+
+| Vendor | `--version` | Input mode | Other settings |
+| --- | --- | --- | --- |
+| Claude Code | `2.1.318 (Claude Code)` | `editorMode: vim` | `promptSuggestionEnabled: false` |
+| Codex | `codex-cli 0.165.0` | `[tui] vim_mode_default = true` | |
+
+The input mode and settings are measured from the files the vendor reads (Claude: `~/.claude.json`, `~/.claude/settings.json`, the project's `.claude/settings{,.local}.json`, a `--settings` argument and managed settings; Codex: `$CODEX_HOME/config.toml` or `~/.codex/config.toml`, the project's `.codex/config.toml` and `-c tui.…` arguments). A missing settings file counts as unset. One that exists but can't be read or parsed, a value of the wrong type, a setting written in a form the reader doesn't follow (an inline `tui = {…}` table, a `-c` override other than `tui.vim_mode_default=true|false`, the key under another table), a `--profile`, or anything not in the table means alerts only. To qualify another version, run the harness (it needs a folder both CLIs already trust, and makes two real submissions per vendor) and add a row only if every case passes:
+
+```text
+BORGCHART_QUALIFY=1 cargo test --locked --test qualify -- --ignored --nocapture --test-threads=1
+```
+
+**What is not guaranteed.** A person typing into the member between the last check and Enter can have their text submitted along with the reminder; nothing here can close that gap. A typed newline exactly where the vendor would have wrapped, or extra spaces at a wrap point, can't be seen in a capture and would pass the Enter check. There is no warning before typing.
 
 ## Alerts (planned)
 
