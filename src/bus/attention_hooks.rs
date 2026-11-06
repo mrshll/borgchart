@@ -25,7 +25,8 @@ struct Observed {
     ids: Vec<String>,
 }
 
-/// Read-only, best effort: damaged state costs an extra wake, not a record.
+/// Read-only, best effort: damaged state leaves IDs unseen; wait timing
+/// never relies on this state being available.
 pub(super) fn shown_ids(paths: &RunPaths, member: &str, incarnation: &str) -> BTreeSet<u64> {
     let read = || -> Option<BTreeSet<u64>> {
         let bytes = fs::read(paths.observation(member, incarnation)).ok()?;
@@ -72,8 +73,9 @@ pub fn after_publish(_paths: &RunPaths, _deployment: &Deployment, _record: &Reco
 pub fn after_list(paths: &RunPaths, member: &str, incarnation: &str, ids: &[String]) {
     // The caller checked the bus root through the run directory. Check the
     // attention directories too, before reading or replacing anything there.
-    // No lock: concurrent listings of one incarnation may lose one merge,
-    // costing an extra wake. A listing must never fail on observation errors.
+    // No lock: concurrent listings of one incarnation may lose one merge
+    // and leave IDs unseen. Background waits still rate-limit old IDs.
+    // A listing must never fail on observation errors.
     let write = || -> std::io::Result<()> {
         let path = paths.observation(member, incarnation);
         let parent = path.parent().expect("observation has a parent");

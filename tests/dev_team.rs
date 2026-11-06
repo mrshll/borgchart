@@ -808,7 +808,6 @@ mod round {
             .next()
             .unwrap();
         assert!(wake.contains("inbox wait --background --json"), "{wake}");
-        assert!(!wake.contains("--after"), "{wake}");
         assert!(wake.contains("start no more waits"), "{wake}");
 
         let team = new_team("fenced");

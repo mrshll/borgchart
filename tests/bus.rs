@@ -854,7 +854,7 @@ mod background_wait {
     }
 
     #[test]
-    fn background_wait_returns_ids_immediately_in_text_or_json() {
+    fn background_wait_returns_old_ids_at_minimum_in_text_or_json() {
         let f = Fixture::new();
         for key in ["one", "two"] {
             assert_eq!(
@@ -865,18 +865,164 @@ mod background_wait {
         }
         let start = Instant::now();
         let mut cmd = command(&f, &As::Member("lead"), &["--timeout", "86400"]);
-        cmd.env("BORGCHART_WAIT_MIN_MS", "10000");
         let out = finish_within(cmd.spawn().unwrap(), Duration::from_secs(3));
         assert_eq!(out.code, 0, "{:?} {}", out.json, out.stderr);
         assert_eq!(out.json["ids"], json!(["m1", "m2"]));
-        assert!(start.elapsed() < Duration::from_secs(3));
-        let out = f
+        assert!(start.elapsed() >= Duration::from_millis(400));
+        let start = Instant::now();
+        let child = f
             .command(&As::Member("lead"), &["inbox", "wait", "--background"])
-            .output()
+            .env("BORGCHART_WAIT_MIN_MS", "400")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
             .unwrap();
-        assert!(out.status.success());
-        assert_eq!(out.stdout, b"m1 m2\n");
+        let out = finish_within(child, Duration::from_secs(3));
+        assert_eq!(out.code, 0);
+        assert_eq!(out.json, "m1 m2\n");
+        assert!(start.elapsed() >= Duration::from_millis(400));
         assert!(!observation(&f).exists());
+    }
+
+    #[test]
+    fn background_wait_leading_file_error_backs_off() {
+        let f = Fixture::new();
+        let file = f.dep_file();
+        let mut cmd = f.command(
+            &As::Member("lead"),
+            &[
+                "-f",
+                file.to_str().unwrap(),
+                "inbox",
+                "wait",
+                "--background",
+            ],
+        );
+        cmd.env("BORGCHART_WAIT_MIN_MS", "400")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let start = Instant::now();
+        let out = finish_within(cmd.spawn().unwrap(), Duration::from_secs(3));
+        assert_eq!(out.code, 2);
+        assert!(start.elapsed() >= Duration::from_millis(400));
+    }
+
+    #[test]
+    fn background_wait_boolean_value_error_backs_off() {
+        let f = Fixture::new();
+        let mut cmd = f.command(&As::Member("lead"), &["inbox", "wait", "--background=true"]);
+        cmd.env("BORGCHART_WAIT_MIN_MS", "400")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let start = Instant::now();
+        let out = finish_within(cmd.spawn().unwrap(), Duration::from_secs(3));
+        assert_eq!(out.code, 2);
+        assert!(start.elapsed() >= Duration::from_millis(400));
+    }
+
+    #[test]
+    fn background_wait_explicit_help_is_immediate() {
+        let f = Fixture::new();
+        for flag in ["--help", "-h"] {
+            for background in ["--background", "--background=true"] {
+                let mut cmd = f.command(&As::Member("lead"), &["inbox", "wait", background, flag]);
+                cmd.env("BORGCHART_WAIT_MIN_MS", "10000")
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+                let start = Instant::now();
+                let out = finish_within(cmd.spawn().unwrap(), Duration::from_secs(3));
+                assert!(matches!(out.code, 0 | 2));
+                assert!(start.elapsed() < Duration::from_secs(3));
+            }
+        }
+    }
+
+    #[test]
+    fn background_wait_persistent_observation_failure_is_rate_limited() {
+        let f = Fixture::new();
+        assert_eq!(
+            f.publish(&As::Operator, "old", &note("lead", "old body"))
+                .code,
+            0
+        );
+        borgchart::bus::fsx::create_private_dirs(&observation(&f)).unwrap();
+        for _ in 0..3 {
+            assert_eq!(ids(&f.inbox(&As::Member("lead"), &[])), ["m1"]);
+            assert!(
+                observation(&f).is_dir(),
+                "observation writes must keep failing"
+            );
+            let before = bytes(&f.run_dir());
+            let start = Instant::now();
+            let out = finish_within(
+                command(&f, &As::Member("lead"), &[]).spawn().unwrap(),
+                Duration::from_secs(3),
+            );
+            assert_eq!(out.code, 0, "{:?} {}", out.json, out.stderr);
+            assert_eq!(out.json["ids"], json!(["m1"]));
+            assert!(start.elapsed() >= Duration::from_millis(400));
+            assert_eq!(bytes(&f.run_dir()), before);
+        }
+    }
+
+    #[test]
+    fn background_wait_new_arrival_bypasses_minimum_and_includes_old_ids() {
+        let f = Fixture::new();
+        assert_eq!(
+            f.publish(&As::Operator, "old", &note("lead", "old body"))
+                .code,
+            0
+        );
+        let mut cmd = command(&f, &As::Member("lead"), &[]);
+        cmd.env("BORGCHART_WAIT_MIN_MS", "10000");
+        let start = Instant::now();
+        let mut child = cmd.spawn().unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(child.try_wait().unwrap().is_none());
+        assert_eq!(
+            f.publish(&As::Operator, "new", &note("lead", "new body"))
+                .code,
+            0
+        );
+        let out = finish_within(child, Duration::from_secs(3));
+        assert_eq!(out.code, 0, "{:?} {}", out.json, out.stderr);
+        assert_eq!(out.json["ids"], json!(["m1", "m2"]));
+        assert!(start.elapsed() < Duration::from_secs(3));
+        assert!(!observation(&f).exists());
+    }
+
+    #[test]
+    fn background_wait_requires_draining_every_inbox_page() {
+        let f = Fixture::new();
+        for n in 1..=21 {
+            assert_eq!(
+                f.publish(&As::Operator, &format!("note-{n}"), &note("lead", "body"))
+                    .code,
+                0
+            );
+        }
+        let first = f.inbox(&As::Member("lead"), &[]);
+        assert_eq!(first["records"].as_array().unwrap().len(), 20);
+        assert_eq!(first["next"], "m20");
+        let start = Instant::now();
+        let out = finish_within(
+            command(&f, &As::Member("lead"), &[]).spawn().unwrap(),
+            Duration::from_secs(3),
+        );
+        assert_eq!(out.code, 0, "{:?} {}", out.json, out.stderr);
+        assert_eq!(out.json["ids"], json!(["m21"]));
+        assert!(start.elapsed() >= Duration::from_millis(400));
+        let last = f.inbox(&As::Member("lead"), &["--after", "m20"]);
+        assert_eq!(ids(&last), ["m21"]);
+        assert!(last["next"].is_null());
+        let mut cmd = command(&f, &As::Member("lead"), &["--timeout", "60"]);
+        cmd.env("BORGCHART_WAIT_TIMEOUT_MS", "500");
+        let out = finish_within(cmd.spawn().unwrap(), Duration::from_secs(3));
+        assert_eq!(
+            out.code, 9,
+            "all 21 records are shown but still unacknowledged: {:?} {}",
+            out.json, out.stderr
+        );
     }
 
     #[test]

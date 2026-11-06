@@ -453,7 +453,7 @@ fn render(r: &Record, acked: bool, full: bool) -> String {
     out
 }
 
-pub fn inbox(input: &Input, args: InboxArgs) -> ExitCode {
+pub fn inbox(input: &Input, args: InboxArgs, started: Instant) -> ExitCode {
     let parent_flags = args.who.member.is_some()
         || args.who.external.is_some()
         || args.after.is_some()
@@ -533,6 +533,8 @@ pub fn inbox(input: &Input, args: InboxArgs) -> ExitCode {
                     duration
                 };
                 let deadline = Instant::now() + duration;
+                let minimum = started + store::background_wait_minimum();
+                let mut start_mark = None;
                 let first = open_bus(input)?.run;
                 let timed_out = |t: &Target| {
                     Failure::new(
@@ -544,6 +546,7 @@ pub fn inbox(input: &Input, args: InboxArgs) -> ExitCode {
                 // the inbox, the caller and the format against it: a restart
                 // while waiting must not leave the wait on old storage.
                 loop {
+                    let mut next_check = deadline;
                     let bus = open_bus(input)?;
                     if background && bus.run != first {
                         return Err(Failure::new(
@@ -579,6 +582,12 @@ pub fn inbox(input: &Input, args: InboxArgs) -> ExitCode {
                         store::WaitSnapshot::Ready(snap) => {
                             if background {
                                 snap.require_healthy()?;
+                                // Only an arrival beyond the first snapshot may
+                                // bypass the minimum. Observation failures must
+                                // never turn old records into immediate wakes.
+                                let start_mark = *start_mark.get_or_insert_with(|| {
+                                    snap.records.last_key_value().map_or(0, |(&seq, _)| seq)
+                                });
                                 // Recheck after a lock wait, which may have queued
                                 // behind a member replacement.
                                 let current = target(&bus, &who)?;
@@ -590,7 +599,7 @@ pub fn inbox(input: &Input, args: InboxArgs) -> ExitCode {
                                     incarnation,
                                 );
                                 let recipient = current.recipient.to_string();
-                                let ids: Vec<String> = snap
+                                let unseen: Vec<&Record> = snap
                                     .records
                                     .values()
                                     .filter(|r| {
@@ -598,16 +607,22 @@ pub fn inbox(input: &Input, args: InboxArgs) -> ExitCode {
                                             && !snap.is_acked(r.seq)
                                             && !shown.contains(&r.seq)
                                     })
-                                    .map(|r| r.id.clone())
                                     .collect();
-                                if !ids.is_empty() {
-                                    return Ok(Output {
-                                        json: ok_json(
-                                            "ok",
-                                            json!({"ids": ids, "count": ids.len()}),
-                                        ),
-                                        text: format!("{}\n", ids.join(" ")),
-                                    });
+                                if !unseen.is_empty() {
+                                    if unseen.iter().any(|r| r.seq > start_mark)
+                                        || Instant::now() >= minimum
+                                    {
+                                        let ids: Vec<String> =
+                                            unseen.iter().map(|r| r.id.clone()).collect();
+                                        return Ok(Output {
+                                            json: ok_json(
+                                                "ok",
+                                                json!({"ids": ids, "count": ids.len()}),
+                                            ),
+                                            text: format!("{}\n", ids.join(" ")),
+                                        });
+                                    }
+                                    next_check = next_check.min(minimum);
                                 }
                             } else {
                                 let page = store::list(&snap, &t.recipient, after, limit, false);
@@ -624,7 +639,7 @@ pub fn inbox(input: &Input, args: InboxArgs) -> ExitCode {
                     if now >= deadline {
                         return Err(timed_out(&t));
                     }
-                    std::thread::sleep(store::POLL.min(deadline - now));
+                    std::thread::sleep(store::POLL.min(next_check.saturating_duration_since(now)));
                 }
             })(),
         ),

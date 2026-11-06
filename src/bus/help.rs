@@ -432,11 +432,18 @@ with what your own `inbox` listings have shown this session, and prints only
 the unseen, unacknowledged IDs (space-separated), or {{ok, code, outcome, ids,
 count}} with --json. It never writes, marks records as shown, or acknowledges.
 --timeout is optional (60-86400 seconds, default 86400). --after, --member,
---external, --limit and --full are refused. New records return immediately;
-every other exit, including usage errors and missing identity, waits until
-60 seconds have passed. A restart or replaced session is always fenced:
-stop re-arming. List your inbox, work, then re-arm one background wait after
-each turn, with no cursor bookkeeping.
+--external, --limit and --full are refused. The highest sequence in the first
+readable snapshot is the start mark. An unseen record above it returns at
+once, including every unseen ID, old and new, in the output. If unseen records
+exist only at or below the mark, keep polling and return them at 60 seconds
+since command start; a later arrival can return sooner. Errors, including
+usage errors and missing identity, also wait for that minimum. This applies
+to normal outcomes: explicit --help/-h and signals (SIGTERM, SIGKILL) can end
+the command immediately. Damaged or missing observations cannot bypass the
+minimum for old records. A restart or replaced session is always fenced:
+stop re-arming. List your inbox and follow next with `inbox --after <next>`
+until it is null, work, then re-arm one background wait after each turn.
+Earlier unacknowledged records are fine; the wait needs no cursor bookkeeping.
 
 Outcomes (with --json: {{ok, code, outcome, ...}}; the exit status is the code):
 ",

@@ -70,8 +70,8 @@ When a pull request is ready (checks green, review and fix round done, descripti
 
 Nothing types into your terminal to tell you a record has arrived. You wake yourself with a background wait:
 
-1. **At the start of every turn,** list your inbox, act on each record and ack what you handled. The listing records what this session has seen.
-2. **Before finishing every turn,** if no wait of yours is running, start `"$BORGCHART_BIN" inbox wait --background --json` with your Bash tool in **background** mode. Its exit wakes you when an unacknowledged record this session hasn't seen arrives. The wait prints only IDs; list your inbox to read them, work, then re-arm. There is no cursor to maintain. `"$BORGCHART_BIN" inbox wait --help` explains every outcome.
+1. **At the start of every turn,** list your inbox with `"$BORGCHART_BIN" inbox --json`, then follow `next` with `"$BORGCHART_BIN" inbox --after <next> --json` until `next` is null. These listings record every page this session has seen. Then act on the records and ack what you handled; earlier records may remain unacknowledged while you work.
+2. **Before finishing every turn,** if no wait of yours is running, start `"$BORGCHART_BIN" inbox wait --background --json` with your Bash tool in **background** mode. Its exit wakes you for unseen, unacknowledged records: arrivals beyond its first snapshot return immediately, records already present wait at least 60 seconds. The wait prints only IDs; drain every inbox page to read them, work, then re-arm. The wait needs no cursor to maintain. `"$BORGCHART_BIN" inbox wait --help` explains every outcome.
 3. **On a timeout,** start the same wait again.
 4. **On `fenced`,** your own session is no longer current. Stop the wait loop: start no more waits, don't retry, and never set or change the `BORGCHART_*` variables. Tell the owner on GitHub (see "Talking to the owner").
 

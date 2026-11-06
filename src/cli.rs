@@ -202,11 +202,16 @@ pub fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().collect();
     // Recognize the wait even when clap rejects its flags. Usage errors
     // must back off too, or a broken background command can spin turns.
-    let background = args.get(1).is_some_and(|a| a == "inbox")
-        && args.iter().skip(2).any(|a| a == "wait")
-        && args.iter().any(|a| a == "--background");
+    // Over-matching (e.g. a file named `wait`) only delays an error, which
+    // is harmless. Explicit help and external termination remain immediate.
+    let background = args.iter().any(|a| a == "inbox")
+        && args.iter().any(|a| a == "wait")
+        && args
+            .iter()
+            .any(|a| a == "--background" || a.as_encoded_bytes().starts_with(b"--background="));
+    let help = args.iter().any(|a| a == "--help" || a == "-h");
     let back_off = || {
-        if background {
+        if background && !help {
             let minimum = crate::bus::store::background_wait_minimum();
             std::thread::sleep(minimum.saturating_sub(started.elapsed()));
         }
@@ -220,14 +225,14 @@ pub fn main() -> ExitCode {
             error.exit();
         }
     };
-    let code = run(cli);
+    let code = run(cli, started);
     if code != ExitCode::SUCCESS {
         back_off();
     }
     code
 }
 
-fn run(cli: Cli) -> ExitCode {
+fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
     match cli.command {
         Command::Validate {
             target,
@@ -377,7 +382,9 @@ fn run(cli: Cli) -> ExitCode {
         Command::Msg { target, command } => {
             crate::bus::cli::msg(&target_or_exit!(&target), command)
         }
-        Command::Inbox { target, args } => crate::bus::cli::inbox(&target_or_exit!(&target), args),
+        Command::Inbox { target, args } => {
+            crate::bus::cli::inbox(&target_or_exit!(&target), args, started)
+        }
         Command::Task { target, command } => {
             crate::bus::task_cli::task(&target_or_exit!(&target), command)
         }
