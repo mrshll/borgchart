@@ -1,0 +1,5 @@
+#!/bin/sh
+# Fast checks before each commit. Enable once per checkout:
+#   git config core.hooksPath .githooks
+# The checks run on the working tree, not only on what is staged.
+exec "$(git rev-parse --show-toplevel)/.githooks/checks" fmt clippy

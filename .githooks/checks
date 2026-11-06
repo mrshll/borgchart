@@ -1,0 +1,36 @@
+#!/bin/sh
+# The repository's checks, in one place: the git hooks and CI both run them.
+#
+#   .githooks/checks              # all four: fmt clippy test py
+#   .githooks/checks fmt clippy   # any subset, in the order given
+#
+# Set CHECKS_WRAP to a command that prefixes every check, for example a
+# script that limits memory or how many builds run at once.
+set -eu
+cd "$(git rev-parse --show-toplevel)"
+
+run() {
+  name=$1
+  shift
+  echo "checks: $name: $*" >&2
+  # CHECKS_WRAP is split on spaces on purpose: it may be a command with arguments.
+  # shellcheck disable=SC2086
+  if ! ${CHECKS_WRAP:-} "$@"; then
+    echo "checks: $name failed" >&2
+    exit 1
+  fi
+}
+
+[ "$#" -gt 0 ] || set -- fmt clippy test py
+for check in "$@"; do
+  case $check in
+    fmt) run fmt cargo fmt --check ;;
+    clippy) run clippy cargo clippy --all-targets --features test-support --locked -- -D warnings ;;
+    test) run test cargo test --features test-support --locked ;;
+    py) run py uv run --no-project --with pytest==8.3.5 pytest -p no:cacheprovider examples/slack-devops/plugins/slackbot/tests ;;
+    *)
+      echo "checks: unknown check '$check' (use fmt, clippy, test or py)" >&2
+      exit 2
+      ;;
+  esac
+done

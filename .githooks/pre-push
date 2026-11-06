@@ -1,0 +1,4 @@
+#!/bin/sh
+# All checks, including the full test suites, before each push.
+# Enable once per checkout: git config core.hooksPath .githooks
+exec "$(git rev-parse --show-toplevel)/.githooks/checks" fmt clippy test py
