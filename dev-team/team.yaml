@@ -1,0 +1,33 @@
+# The team that develops borgchart itself. Machine-specific values (checkouts,
+# message storage, local rules) live in a deployment file outside git; start
+# from borgchart.example.yaml. See README.md.
+#
+# Every member uses `vendor` posture: the bus doesn't support `locked`
+# members yet. Models and efforts are in each member file.
+default: claude
+
+members:
+  lead:
+    prompt: lead.md
+    start: true
+  companion:
+    prompt: companion.md
+    parent: lead
+    start: false        # started on demand, for a second look
+  implementer-a:
+    prompt: implementer.md
+    parent: lead
+    start: false
+  implementer-b:
+    prompt: implementer.md
+    parent: lead
+    start: false
+  reviewer:
+    prompt: reviewer.md
+    vendor: codex       # the Codex CLI's default model (reviewer.md names none)
+    parent: lead
+    start: false
+  reviewer-claude:
+    prompt: reviewer.md
+    parent: lead
+    start: false        # fallback only, when Codex is unavailable

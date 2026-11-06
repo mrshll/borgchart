@@ -1,0 +1,50 @@
+# A deployment of the borgchart development team. Copy it outside the
+# repository (for example ~/.config/borgchart/dev-team.yaml), replace every
+# /path/to/... and <...> value, and keep the copy out of git. See README.md.
+schema: 1
+team: /path/to/borgchart/dev-team    # absolute: the copy lives outside the repo
+auth: login                          # members use your own vendor logins
+auto_trust: false                    # a person answers each folder-trust screen
+
+bus:
+  root: ~/.local/state/brg-teams     # private, survives reboots; ~/ is expanded
+  max_age_days: 14
+
+members:
+  lead:
+    cwd: /path/to/borgchart-dev/lead
+    task: |
+      ## Local rules
+      - The owner: <name>, GitHub handle @<login>; tracking issue: <owner>/<repo>#<number>.
+      - GitHub: act as <identity>, through <wrapper> for gh and git push.
+      - Private directory for agreements, reports and review notes: /path/to/borgchart-dev/notes
+      - Handover note: /path/to/borgchart-dev/notes/handover.md
+      - Checkouts: implementer-a /path/to/borgchart-dev/impl-a, implementer-b /path/to/borgchart-dev/impl-b, review /path/to/borgchart-dev/review.
+      - <build limits, secrets handling, paths never to touch>
+  companion:
+    cwd: /path/to/borgchart-dev/lead   # reads the lead's checkout
+    task: |
+      ## Local rules
+      - <local rules for a read-only advisor>
+  implementer-a:
+    cwd: /path/to/borgchart-dev/impl-a
+    task: |
+      ## Local rules
+      - GitHub: <the identity and commit setup to use>.
+      - <build limits, secrets handling, paths never to touch>
+  implementer-b:
+    cwd: /path/to/borgchart-dev/impl-b
+    task: |
+      ## Local rules
+      - GitHub: <the identity and commit setup to use>.
+      - <build limits, secrets handling, paths never to touch>
+  reviewer:
+    cwd: /path/to/borgchart-dev/review # shared with reviewer-claude; one runs at a time
+    task: |
+      ## Local rules
+      - <read-only GitHub access, build limits>
+  reviewer-claude:
+    cwd: /path/to/borgchart-dev/review
+    task: |
+      ## Local rules
+      - <read-only GitHub access, build limits>
