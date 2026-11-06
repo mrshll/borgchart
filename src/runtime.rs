@@ -90,8 +90,15 @@ pub fn state_for(input: &Input) -> Deployment {
     }
 }
 
+/// The deployment's tmux server: the socket path recorded at `up` once
+/// there is one, whatever the caller's tmux settings say; until then, the
+/// socket brg's settings name.
 fn tmux_for(state: &StateDir) -> Tmux {
-    Tmux::new(&state.tmux_conf(), base_env())
+    let tmux = Tmux::new(&state.tmux_conf(), base_env());
+    match state::read_meta(state).and_then(|m| m.socket_path) {
+        Some(path) => tmux.with_socket(&path.display().to_string()),
+        None => tmux,
+    }
 }
 
 fn plugin_dir(v: &Validated, name: &str) -> Option<PathBuf> {
@@ -305,6 +312,15 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             state.root.display()
         ));
     }
+    // Members get it in their environment and run in their own folders.
+    if let Some(dir) = std::env::var_os(state::ENV_TMUX_TMPDIR)
+        && !Path::new(&dir).is_absolute()
+    {
+        return Err(format!(
+            "{} must be an absolute path; nothing was started",
+            state::ENV_TMUX_TMPDIR
+        ));
+    }
     // Every window, shim, gate hook and plugin process this `up` starts
     // runs the brg running now, as in v0: brg isn't pinned.
     let brg = brg_path();
@@ -444,6 +460,11 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
     };
     let base = meta.base_env.clone();
     let tmux = Tmux::new(&state.tmux_conf(), base.clone());
+    // A running team's server is the one recorded for it.
+    let tmux = match &meta.socket_path {
+        Some(path) => tmux.with_socket(&path.display().to_string()),
+        None => tmux,
+    };
 
     let mut outcomes: BTreeMap<String, String> = BTreeMap::new();
     let mut plugin_outcomes: Vec<(String, String)> = Vec::new();
@@ -1560,9 +1581,11 @@ fn attach_command(input: &Input, name: &str) -> Result<Command, String> {
     let tmux = tmux_for(&dep.state);
     let window = window_name(&tmux, &session, name)?;
     let mut cmd = Command::new("tmux");
-    cmd.arg("-L")
-        .arg(state::tmux_socket())
-        .arg("-f")
+    match state::read_meta(&dep.state).and_then(|m| m.socket_path) {
+        Some(path) => cmd.arg("-S").arg(path),
+        None => cmd.arg("-L").arg(state::tmux_socket()),
+    };
+    cmd.arg("-f")
         .arg(dep.state.tmux_conf())
         .args(["attach-session", "-t", &target(&session, &window)])
         // Works from inside your own tmux too: brg's server is a separate one.
