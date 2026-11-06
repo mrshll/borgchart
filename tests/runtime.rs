@@ -258,7 +258,7 @@ fn up_status_send_logs_down() {
     );
     assert_eq!(
         rows.iter().find(|r| r["name"] == "gamma").unwrap()["state"],
-        "stopped"
+        "not started"
     );
     env.wait_for("plugin health", |e| {
         e.status()

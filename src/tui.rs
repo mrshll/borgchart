@@ -35,11 +35,14 @@ pub fn watch(input: &Input, interval: Duration) -> Result<(), String> {
     }
 }
 
-fn state_style(state: &str) -> Style {
-    match state {
-        "blocked" | "exited" => Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+fn state_style(row: &StatusRow) -> Style {
+    let alert = Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED);
+    match row.state.as_str() {
+        "blocked" | "exited" => alert,
+        // A `start: true` member that ended.
+        runtime::STOPPED if row.expected_running => alert,
         "working" => Style::default().add_modifier(Modifier::BOLD),
-        "stopped" => Style::default().add_modifier(Modifier::DIM),
+        runtime::STOPPED | runtime::NOT_STARTED => Style::default().add_modifier(Modifier::DIM),
         _ => Style::default(),
     }
 }
@@ -80,7 +83,7 @@ fn draw(
                 Cell::from(r.kind),
                 Cell::from(r.vendor.clone().unwrap_or_else(|| "-".into())),
                 Cell::from(r.posture.clone().unwrap_or_else(|| "-".into())),
-                Cell::from(r.state.clone()).style(state_style(&r.state)),
+                Cell::from(r.state.clone()).style(state_style(r)),
                 Cell::from(r.detail.clone().unwrap_or_default()),
             ])
         })
@@ -92,7 +95,7 @@ fn draw(
             Constraint::Length(7),
             Constraint::Length(7),
             Constraint::Length(8),
-            Constraint::Length(9),
+            Constraint::Length(11),
             Constraint::Min(10),
         ],
     )
@@ -161,7 +164,7 @@ pub fn interactive(input: &Input) -> Result<(), String> {
                 let Some(row) = rows.get(selected) else {
                     continue;
                 };
-                if row.state == "stopped" {
+                if row.state == runtime::STOPPED || row.state == runtime::NOT_STARTED {
                     message = format!("{} is not running", row.name);
                     continue;
                 }

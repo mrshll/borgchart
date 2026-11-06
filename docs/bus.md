@@ -170,7 +170,17 @@ oncall
    └─ helper codex example-model  not started (start: false)
 ```
 
-`status` prints the same tree with each member's live state and details, then the plugin processes. `status --json` is the same rows as before, in tree order, with `parent`, `model` and, with a bus, `liveness`.
+`status` prints the same tree with each member's live state and details, then the plugin processes. A member with no window is `not started` when it has never run since the team's storage began (with a bus: no incarnation in the current storage, so every member of a team that never started, or just rolled over, is `not started`; without one: no start since the team last started afresh), printed as `up` prints it: `not started (start: false)` for a `start: false` member. One that ran and ended (or whose start record can't be read) is `stopped`; for a `start: true` member that is an alert, printed `stopped (should be running)`, with `"expected_running": true` in `--json` and shown like `exited` in `status -i`. `status --json` is the same rows as before, in tree order, with `parent`, `model`, `expected_running` when set and, with a bus, `liveness`.
+
+```
+$ brg down --member helper
+helper: stopped
+$ brg status
+oncall
+└─ lead        claude opus high      idle
+   ├─ helper   codex example-model   stopped (should be running)
+   └─ reviewer claude sonnet medium  not started (start: false)
+```
 
 **Starting into a running team.** When the team's session exists and its `deployment.json` is there, `up` (with or without `--member`) joins it instead of starting afresh. It uses the base environment and plugin values recorded at the first `up`, never your current shell's: nothing from your `PATH`, `TMPDIR` or other variables reaches the new member, and you don't need the plugin secrets set again. The one exception is `auth: api_key`: the vendor's key (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`) is read from your environment at each start, for the members being started, and passed to them. It is not frozen and brg never stores it (it is in the member's launch file only until the window reads it); a start without it is refused before anything is written. It doesn't rewrite `deployment.json`, plugin value files or other members' files. If any configuration input changed since the team started (see Configuration), it refuses, changing nothing, and names what changed in team and member terms:
 

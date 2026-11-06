@@ -429,6 +429,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                         },
                         parent: member.parent.clone(),
                         vendor_version: vendor_version(member.vendor, &base),
+                        started: false,
                     },
                 );
             }
@@ -585,6 +586,19 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             let _ = lifecycle::end_incarnation(&b.paths, id, lifecycle::ENDED_START_FAILED);
         }
         result?;
+        // Without a bus, the team's state is where `status` learns that a
+        // member ran.
+        if binding.is_none()
+            && let Some(m) = meta.members.get_mut(id)
+            && !m.started
+        {
+            m.started = true;
+            write_private(
+                &state.meta_file(),
+                &serde_json::to_vec_pretty(&meta).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| format!("cannot write state: {e}"))?;
+        }
         let pane = lifecycle::pane_identity(&tmux, &session, id);
         if pane.is_none() && posture == Posture::Locked {
             // Without its pane, later checks couldn't tell this member from a
@@ -873,7 +887,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
         .map(|m| {
             let outcome = match outcomes.get(&m.id) {
                 Some(o) => o.clone(),
-                None if only.is_none() && !m.start => "not started (start: false)".into(),
+                None if only.is_none() && !m.start => not_started(false),
                 None => String::new(),
             };
             tree::Node {
@@ -1075,6 +1089,35 @@ pub struct StatusRow {
     /// running (`alive`, `gone` or `unknown`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub liveness: Option<Liveness>,
+    /// A `start: true` member that ran and is `stopped`: it should be running.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub expected_running: bool,
+    /// The member's declared `start`.
+    #[serde(skip)]
+    pub start: bool,
+}
+
+/// A member's state when it has never run in the team's current storage.
+pub const NOT_STARTED: &str = "not started";
+/// A member's state when it ran and has ended.
+pub const STOPPED: &str = "stopped";
+
+/// What `up` and `status` print for a member that has never run.
+pub fn not_started(start: bool) -> String {
+    if start {
+        NOT_STARTED.into()
+    } else {
+        format!("{NOT_STARTED} (start: false)")
+    }
+}
+
+/// What `status` prints in a member's state column.
+pub fn state_label(row: &StatusRow) -> String {
+    match row.state.as_str() {
+        NOT_STARTED => not_started(row.start),
+        STOPPED if row.expected_running => format!("{STOPPED} (should be running)"),
+        s => s.to_string(),
+    }
 }
 
 /// The name a deployment's team goes by in messages.
@@ -1114,6 +1157,18 @@ pub fn status(input: &Input) -> Result<Vec<StatusRow>, String> {
         let id = &nodes[i].id;
         let member = &v.team.members[id];
         let posture = v.posture(id);
+        // Whether it ever ran here: with a bus, an incarnation in the team's
+        // current storage (one that can't be read counts); without one, a
+        // start recorded since the team last started afresh.
+        let incarnation = match &run {
+            Some(paths) => crate::bus::manifest::load_incarnation(paths, id),
+            None => Ok(None),
+        };
+        let ran = match (&run, &incarnation) {
+            (Some(_), Ok(inc)) => inc.is_some(),
+            (Some(_), Err(_)) => true,
+            (None, _) => meta.members.get(id).is_some_and(|m| m.started),
+        };
         let mut row = StatusRow {
             name: id.clone(),
             kind: "member",
@@ -1123,17 +1178,19 @@ pub fn status(input: &Input) -> Result<Vec<StatusRow>, String> {
                 None => m.name.clone(),
             }),
             parent: member.parent.clone(),
-            liveness: run.as_ref().and_then(|paths| {
-                crate::bus::manifest::load_incarnation(paths, id)
-                    .ok()
-                    .flatten()
-                    .map(|inc| lifecycle::liveness(paths, id, &inc.incarnation))
-            }),
+            liveness: incarnation
+                .as_ref()
+                .ok()
+                .and_then(|i| i.as_ref())
+                .zip(run.as_ref())
+                .map(|(inc, paths)| lifecycle::liveness(paths, id, &inc.incarnation)),
             posture: Some(match posture {
                 Posture::Vendor => "vendor".into(),
                 Posture::Locked => "locked".into(),
             }),
-            state: "stopped".into(),
+            state: if ran { STOPPED } else { NOT_STARTED }.into(),
+            expected_running: false,
+            start: member.start,
             rule: None,
             detail: None,
             vendor_version: meta.members.get(id).and_then(|m| m.vendor_version.clone()),
@@ -1166,6 +1223,7 @@ pub fn status(input: &Input) -> Result<Vec<StatusRow>, String> {
                 }
             }
         }
+        row.expected_running = row.state == STOPPED && member.start;
         rows.push(row);
     }
     for (name, plugin) in &v.team.plugins {
@@ -1186,6 +1244,8 @@ pub fn status(input: &Input) -> Result<Vec<StatusRow>, String> {
             detail: None,
             vendor_version: None,
             trust_accepted: None,
+            expected_running: false,
+            start: false,
         };
         if let Some(w) = windows.iter().find(|w| w.name == window) {
             row.state = if w.dead {
@@ -1273,7 +1333,7 @@ pub fn render_status(team: &str, rows: &[StatusRow]) -> String {
                         r.vendor.as_deref().unwrap_or("-"),
                         r.model.as_deref().unwrap_or("default")
                     ),
-                    r.state.clone(),
+                    state_label(r),
                     detail.join("; "),
                 ],
             }

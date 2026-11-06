@@ -415,7 +415,7 @@ fn status_prints_the_same_tree_with_live_states() {
         stdout(&out),
         "oncall\n\
          └─ lead      claude opus high     idle\n   \
-         └─ helper codex example-model  stopped\n"
+         └─ helper codex example-model  not started (start: false)\n"
     );
     let rows = env.rows();
     let names: Vec<&str> = rows.iter().map(|r| r["name"].as_str().unwrap()).collect();
@@ -424,6 +424,76 @@ fn status_prints_the_same_tree_with_live_states() {
     assert_eq!(rows[0]["model"], "opus high");
     assert_eq!(rows[0]["liveness"], "alive");
     assert!(rows[1].get("liveness").is_none(), "{}", rows[1]);
+    assert_eq!(rows[1]["state"], "not started");
+    assert!(rows[1].get("expected_running").is_none(), "{}", rows[1]);
+}
+
+#[test]
+fn a_team_that_never_started_is_all_not_started() {
+    for bus in [true, false] {
+        let env = Env::new(bus);
+        let out = env.ok(&["status"]);
+        assert_eq!(
+            stdout(&out),
+            "oncall\n\
+             └─ lead      claude opus high     not started\n   \
+             └─ helper codex example-model  not started (start: false)\n",
+            "bus: {bus}"
+        );
+        for row in env.rows() {
+            assert_eq!(row["state"], "not started", "{row}");
+        }
+    }
+}
+
+#[test]
+fn members_that_ran_and_ended_are_stopped() {
+    for bus in [true, false] {
+        let env = Env::new(bus);
+        env.up();
+        env.up_helper();
+        env.ok(&["down", "--member", "helper"]);
+        let out = env.ok(&["status"]);
+        assert_eq!(
+            stdout(&out),
+            "oncall\n\
+             └─ lead      claude opus high     idle\n   \
+             └─ helper codex example-model  stopped\n",
+            "bus: {bus}"
+        );
+        let helper = env.row("helper");
+        assert_eq!(helper["state"], "stopped");
+        assert!(helper.get("expected_running").is_none(), "{helper}");
+
+        // A `start: true` member that ended should be running: it stands out.
+        env.ok(&["down"]);
+        let out = env.ok(&["status"]);
+        assert_eq!(
+            stdout(&out),
+            "oncall\n\
+             └─ lead      claude opus high     stopped (should be running)\n   \
+             └─ helper codex example-model  stopped\n",
+            "bus: {bus}"
+        );
+        let lead = env.row("lead");
+        assert_eq!(lead["state"], "stopped");
+        assert_eq!(lead["expected_running"], true);
+        assert!(!mentions_runs(&both(&out)), "{}", both(&out));
+    }
+}
+
+#[test]
+fn a_start_true_member_never_started_is_not_started() {
+    let env = Env::new(true);
+    env.up_helper();
+    let out = env.ok(&["status"]);
+    assert_eq!(
+        stdout(&out),
+        "oncall\n\
+         └─ lead      claude opus high     not started\n   \
+         └─ helper codex example-model  idle\n"
+    );
+    assert!(env.row("lead").get("expected_running").is_none());
 }
 
 /// Start `helper` into the running team from a caller environment built by
