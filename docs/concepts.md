@@ -35,10 +35,14 @@ Unchanged:
 Today's code has two more nouns: a *run* (a hidden storage generation, rolled over when files, the message format or the storage's age change, carrying open work across) and an *incarnation* (one start of a member, used for fencing). The proposal removes both from code, storage and records, not just from output:
 
 - **The team instance is the unit of storage.** It keeps one message store for its whole life, so message numbers never restart.
-  - **Configuration** is frozen from a full `up` to the full `down`.
-  - **A message-format change** is refused until `brg reset <instance>` archives the old messages, so losing open work is a decision.
-  - **There's no age-based rollover.** Storage moves out of `/tmp` by default.
-- **Starts replace incarnations.** A start keeps every job an incarnation does:
+  - **Configuration** is frozen from a full `up` to the full `down`. It's replaced only when every member is positively stopped.
+  - **Orphaned work:** a full `up` refuses while the new configuration orphans open work (a removed role holding a task or checkout, say) and says what to cancel or restore.
+  - **A message-format change** is refused until `brg down <team> --reset` archives the old messages. Losing open work is then a decision, and message and start numbers continue from the archive.
+  - **There's no age-based rollover.**
+    - `validate` refuses a message root under `/tmp` or any other path cleaned by age.
+    - An index keeps reads cheap as the store grows.
+  - **The upgrade:** the switch to this layout converts a team's current storage once, so open work survives it.
+- **Starts replace incarnations.** Start numbers are per member and never reused, even across `--reset`. A start keeps every job an incarnation does:
   - fencing a replaced process ("this start of `implementer-2` has been replaced");
   - the recorded tmux pane that decides whether the start is still running;
   - the task writers that must be gone before a checkout is freed;
