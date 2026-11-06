@@ -154,6 +154,10 @@ fn cross_check(v: &Validated, report: &mut Report) {
         }
     }
 
+    if let Some(bus) = v.deployment.as_ref().and_then(|d| d.bus.as_ref()) {
+        check_bus(v, bus, deploy_file, report);
+    }
+
     // Shared plugins need the deployment's plugins_dir.
     for plugin in v.team.plugins.values() {
         if let Some(PluginLocation::Shared(shared)) = &plugin.location {
@@ -307,6 +311,103 @@ fn cross_check(v: &Validated, report: &mut Report) {
             }
         }
     }
+}
+
+fn check_bus(
+    v: &Validated,
+    bus: &deploy::BusConfig,
+    deploy_file: Option<&Path>,
+    report: &mut Report,
+) {
+    for id in v.team.members.keys() {
+        if v.posture(id) == Posture::Locked {
+            report.error(
+                deploy_file,
+                format!(
+                    "bus: member `{id}` is `locked`; the bus doesn't support `locked` members yet"
+                ),
+            );
+        }
+    }
+    if let Some(alert) = &bus.alert {
+        match v.team.plugins.get(&alert.plugin) {
+            None => report.error(
+                deploy_file,
+                format!("bus: alert plugin `{}` is not in the team", alert.plugin),
+            ),
+            Some(plugin) => {
+                if !plugin.actions.contains_key(&alert.action) {
+                    report.error(
+                        deploy_file,
+                        format!(
+                            "bus: plugin `{}` has no action `{}`",
+                            alert.plugin, alert.action
+                        ),
+                    );
+                }
+                if plugin.location.is_none() {
+                    report.error(
+                        deploy_file,
+                        format!(
+                            "bus: alert plugin `{}` needs a `path`, so brg runs a known program",
+                            alert.plugin
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    let root = resolve_existing_prefix(&bus.root);
+    for dir in [v.team.dir.clone(), crate::state::state_home()] {
+        let dir = dir.canonicalize().unwrap_or(dir);
+        if root.starts_with(&dir) {
+            report.error(
+                deploy_file,
+                format!(
+                    "bus: `root` {} is inside {}; keep team messages outside the team and brg's state",
+                    bus.root.display(),
+                    dir.display()
+                ),
+            );
+        }
+    }
+    let is_checkout = |d: &&Path| d.join(".git").is_file() || d.join(".git/HEAD").is_file();
+    if let Some(checkout) = root.ancestors().find(is_checkout) {
+        report.warning(
+            deploy_file,
+            format!(
+                "bus: `root` {} is inside the checkout {}; team messages belong outside checkouts",
+                bus.root.display(),
+                checkout.display()
+            ),
+        );
+    }
+}
+
+/// `path` with its longest existing prefix canonicalized (following
+/// symlinks) and the missing rest appended, so a root that doesn't exist yet
+/// is still placed correctly. `..` in the missing rest is applied lexically.
+fn resolve_existing_prefix(path: &Path) -> PathBuf {
+    let mut existing = path.to_path_buf();
+    let mut rest = Vec::new();
+    while existing.canonicalize().is_err() {
+        match (existing.file_name(), existing.parent()) {
+            (Some(name), Some(parent)) => {
+                rest.push(name.to_os_string());
+                existing = parent.to_path_buf();
+            }
+            _ => break,
+        }
+    }
+    let mut out = existing.canonicalize().unwrap_or(existing);
+    for name in rest.into_iter().rev() {
+        if name == ".." {
+            out.pop();
+        } else if name != "." {
+            out.push(name);
+        }
+    }
+    out
 }
 
 fn plugin_commands(plugin: &Plugin) -> Vec<String> {

@@ -129,6 +129,8 @@ struct ModelsRaw {
 #[derive(Debug, Clone, Serialize)]
 pub struct Team {
     pub dir: PathBuf,
+    /// SHA-256 of `team.yaml` as it was read and parsed.
+    pub file_sha256: String,
     pub default_vendor: Vendor,
     pub members: BTreeMap<String, Member>,
     pub plugins: BTreeMap<String, Plugin>,
@@ -148,6 +150,8 @@ pub struct Member {
     pub grants: BTreeMap<String, Grant>,
     pub connectors: Connectors,
     pub prompt_file: PathBuf,
+    /// SHA-256 of the member file as it was read and parsed.
+    pub prompt_sha256: String,
     /// The member body with includes resolved: its standing instruction.
     pub instruction: String,
 }
@@ -348,6 +352,7 @@ pub fn load(dir: &Path, report: &mut Report) -> Option<Team> {
     }
     Some(Team {
         dir: dir.to_path_buf(),
+        file_sha256: crate::bus::manifest::sha256_hex(text.as_bytes()),
         default_vendor,
         members,
         plugins,
@@ -628,11 +633,13 @@ fn load_member(
     let mut role = String::new();
     let mut model = None;
     let mut instruction = String::new();
+    let mut prompt_sha256 = String::new();
     if let Some(prompt_path) = &prompt_path {
         let shown = dir.join(&m.prompt);
-        if let Some((front, body)) =
+        if let Some((front, body, sha)) =
             read_member_file(dir, includes_dir, &shown, prompt_path, report)
         {
+            prompt_sha256 = sha;
             role = front.role;
             let configured = match vendor {
                 Vendor::Claude => front.models.claude,
@@ -671,6 +678,7 @@ fn load_member(
         grants,
         connectors,
         prompt_file: dir.join(&m.prompt),
+        prompt_sha256,
         instruction,
     })
 }
@@ -686,7 +694,7 @@ fn read_member_file(
     shown: &Path,
     real: &Path,
     report: &mut Report,
-) -> Option<(Front, String)> {
+) -> Option<(Front, String, String)> {
     let text = match read_text(real) {
         Ok(t) => t,
         Err(e) => {
@@ -727,6 +735,7 @@ fn read_member_file(
             models: front.models,
         },
         body,
+        crate::bus::manifest::sha256_hex(text.as_bytes()),
     ))
 }
 

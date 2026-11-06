@@ -602,3 +602,191 @@ fn cli_reports_json_and_exit_codes() {
         .unwrap();
     assert_eq!(usage.status.code(), Some(2));
 }
+
+/// A vendor-posture pair with an alert plugin, deployed with a bus whose
+/// run root sits beside (not inside) the team.
+fn bus_fixture() -> (Fixture, PathBuf) {
+    let f = Fixture {
+        dir: tempfile::tempdir().unwrap(),
+    };
+    f.write(
+        "team/team.yaml",
+        r#"
+plugins:
+  notify:
+    path: plugins/notify
+    actions:
+      alert: notify alert <id> <member> <reason> <pending>
+members:
+  lead:
+    prompt: lead.md
+  helper:
+    prompt: helper.md
+    parent: lead
+"#,
+    );
+    f.write("team/lead.md", "---\nrole: lead\n---\nLead.\n");
+    f.write("team/helper.md", "---\nrole: helper\n---\nHelp.\n");
+    f.exec("team/plugins/notify/notify");
+    let runs = f.path("runs");
+    f.write(
+        "team/borgchart.yaml",
+        &format!(
+            "schema: 1\nbus:\n  root: {}\n  alert: {{plugin: notify, action: alert}}\n",
+            runs.display()
+        ),
+    );
+    (f, runs)
+}
+
+fn run_bus(f: &Fixture) -> (Report, Option<Validated>) {
+    validate(&Input::Deployment(f.path("team/borgchart.yaml")))
+}
+
+#[test]
+fn bus_config_loads() {
+    let (f, runs) = bus_fixture();
+    let (report, validated) = run_bus(&f);
+    let v = validated.unwrap_or_else(|| panic!("{}", errors(&report)));
+    let bus = v.deployment.unwrap().bus.unwrap();
+    assert_eq!(bus.root, runs);
+    assert_eq!(bus.warn_age_days, 7);
+    assert_eq!(bus.max_age_days, 14);
+    let alert = bus.alert.unwrap();
+    assert_eq!(
+        (alert.plugin.as_str(), alert.action.as_str()),
+        ("notify", "alert")
+    );
+}
+
+#[test]
+fn bus_config_is_checked() {
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "  alert:",
+            "  run: example-run\n  alert:",
+            "unknown field `run`",
+        ),
+        ("action: alert", "action: page", "has no action `page`"),
+        (
+            "plugin: notify",
+            "plugin: pager",
+            "alert plugin `pager` is not in the team",
+        ),
+        ("  alert:", "  warn_age_days: 14\n  alert:", "warn_age_days"),
+        ("  alert:", "  extra: 1\n  alert:", "unknown field"),
+    ];
+    for (from, to, needle) in cases {
+        let (f, _) = bus_fixture();
+        f.edit("team/borgchart.yaml", from, to);
+        let (report, validated) = run_bus(&f);
+        let errs = errors(&report);
+        assert!(validated.is_none(), "{to}: expected failure");
+        assert!(errs.contains(needle), "{to}: wanted {needle:?} in:\n{errs}");
+    }
+}
+
+#[test]
+fn bus_root_must_be_absolute_and_outside_the_team() {
+    let (f, runs) = bus_fixture();
+    f.edit("team/borgchart.yaml", &runs.display().to_string(), "runs");
+    let (report, _) = run_bus(&f);
+    assert!(errors(&report).contains("must be an absolute path"));
+
+    let (f, runs) = bus_fixture();
+    let inside = f.path("team/runs");
+    f.edit(
+        "team/borgchart.yaml",
+        &runs.display().to_string(),
+        &inside.display().to_string(),
+    );
+    let (report, validated) = run_bus(&f);
+    assert!(validated.is_none());
+    assert!(
+        errors(&report).contains("keep team messages outside"),
+        "{}",
+        errors(&report)
+    );
+}
+
+#[test]
+fn bus_refuses_locked_members() {
+    let (f, _) = bus_fixture();
+    f.edit(
+        "team/team.yaml",
+        "    prompt: helper.md\n",
+        "    prompt: helper.md\n    posture: locked\n",
+    );
+    let (report, validated) = run_bus(&f);
+    assert!(validated.is_none());
+    assert!(
+        errors(&report).contains("doesn't support `locked` members"),
+        "{}",
+        errors(&report)
+    );
+}
+
+#[test]
+fn config_snapshot_follows_file_bytes_not_paths() {
+    let (f, _) = bus_fixture();
+    let snap = |path: PathBuf| {
+        let (report, v) = validate(&Input::Deployment(path));
+        v.unwrap_or_else(|| panic!("{}", errors(&report)))
+            .config_snapshot()
+    };
+    let a = snap(f.path("team/borgchart.yaml"));
+    assert_eq!(a.version, 1);
+    assert!(a.inputs.contains_key("deployment"));
+    assert!(a.inputs.contains_key("members/helper/instruction"));
+
+    let alias = f.path("alias");
+    std::os::unix::fs::symlink(f.path("team"), &alias).unwrap();
+    assert_eq!(
+        snap(alias.join("borgchart.yaml")),
+        a,
+        "same bytes, other path"
+    );
+
+    f.edit("team/helper.md", "Help.", "Help more.");
+    let b = snap(f.path("team/borgchart.yaml"));
+    assert_ne!(a.digest, b.digest);
+    assert_ne!(
+        a.inputs["members/helper/prompt"],
+        b.inputs["members/helper/prompt"]
+    );
+    assert_eq!(a.inputs["team.yaml"], b.inputs["team.yaml"]);
+}
+
+#[test]
+fn snapshot_describes_what_was_validated() {
+    let (f, _) = bus_fixture();
+    let (report, old) = run_bus(&f);
+    let old = old.unwrap_or_else(|| panic!("{}", errors(&report)));
+    let before = old.config_snapshot();
+    f.edit("team/team.yaml", "    parent: lead\n", "");
+    let (report, new) = run_bus(&f);
+    let new = new.unwrap_or_else(|| panic!("{}", errors(&report)));
+    assert_eq!(old.config_snapshot(), before, "nothing is re-read");
+    assert_ne!(new.config_snapshot().digest, before.digest);
+    fs::remove_file(f.path("team/team.yaml")).unwrap();
+    assert_eq!(old.config_snapshot(), before);
+}
+
+#[test]
+fn missing_bus_root_through_a_symlink_is_placed_correctly() {
+    let (f, runs) = bus_fixture();
+    std::os::unix::fs::symlink(f.path("team"), f.path("alias")).unwrap();
+    let sneaky = f.path("alias/not-created/yet");
+    f.edit(
+        "team/borgchart.yaml",
+        &runs.display().to_string(),
+        &sneaky.display().to_string(),
+    );
+    let (report, validated) = run_bus(&f);
+    assert!(validated.is_none());
+    assert!(
+        errors(&report).contains("keep team messages outside"),
+        "{}",
+        errors(&report)
+    );
+}

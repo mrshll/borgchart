@@ -185,6 +185,7 @@ plugins:
     env: {SLACK_CHANNEL_ID: C0000EXAMPLE}   # non-secret values only
 ```
 
+- **`bus`:** optional; turns on the coordination bus for this deployment. See [bus.md](bus.md).
 - **Secrets** are never written here. They come by name from the environment `brg up` runs in. `brg validate` warns about a declared name that nothing supplies yet.
 - **Trust:** treat this file as trusted, like the team: `posture` and `args` can widen an agent's permissions.
 - **Codex updates:** brg starts Codex members with `-c check_for_update_on_startup=false`, so an unattended member doesn't stop at Codex's "Update available" prompt; update Codex yourself. A `-c check_for_update_on_startup=…` (or `--config`) in `args` overrides this.
