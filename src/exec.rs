@@ -48,10 +48,19 @@ pub fn exec_main(state_root: &Path, window: &str) -> ExitCode {
     let Some((program, args)) = spec.argv.split_first() else {
         return fail(format!("empty command for `{window}`"));
     };
+    let mut env = spec.env;
+    // The window's terminal: tmux sets TERM from the server's
+    // `default-terminal`, and the config declares RGB, so colour reaches the
+    // pane. A value the launch file names itself wins.
+    if let Ok(term) = std::env::var("TERM") {
+        env.entry("TERM".into()).or_insert(term);
+    }
+    env.entry("COLORTERM".into())
+        .or_insert_with(|| "truecolor".into());
     let err = Command::new(program)
         .args(args)
         .env_clear()
-        .envs(&spec.env)
+        .envs(&env)
         .current_dir(&spec.cwd)
         .exec();
     fail(format!("cannot start `{program}`: {err}"))

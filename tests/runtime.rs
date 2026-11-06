@@ -86,7 +86,7 @@ members:
         );
         env.script(
             "team/plugins/pager/watch.sh",
-            "#!/bin/sh\nwhile true; do printf '{\"ok\": true, \"at\": \"now\", \"detail\": \"fine\"}' > \"$BORGCHART_STATE_DIR/health.json\"; sleep 1; done\n",
+            "#!/bin/sh\nenv | grep -E '^(TERM|COLORTERM)=' > \"$BORGCHART_STATE_DIR/window-env\"\nwhile true; do printf '{\"ok\": true, \"at\": \"now\", \"detail\": \"fine\"}' > \"$BORGCHART_STATE_DIR/health.json\"; sleep 1; done\n",
         );
         env.write(
             "team/borgchart.yaml",
@@ -569,6 +569,57 @@ fn secrets_stay_out_of_argv_logs_agents_and_tmux() {
         !String::from_utf8_lossy(&ps.stdout).contains(SECRET),
         "secret visible in ps"
     );
+}
+
+#[test]
+fn windows_get_tmux_terminal_and_colour_not_the_callers() {
+    // Catches: members and plugin windows starting with no TERM/COLORTERM, so
+    // agents print without colour; and the caller's own TERM (the outer
+    // terminal, not tmux) leaking in instead of the server's.
+    let env = Env::new();
+    let out = env
+        .brg_cmd(&["up"])
+        .env("TERM", "caller-term")
+        .env("COLORTERM", "caller-colour")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    env.wait_for("alpha idle", |e| e.state_of("alpha") == "idle");
+    env.wait_for("beta idle", |e| e.state_of("beta") == "idle");
+    let server_term = env.tmux(&["show-options", "-gv", "default-terminal"]);
+    let server_term = server_term.trim();
+    assert!(!server_term.is_empty());
+    for member in ["alpha", "beta"] {
+        let start = env
+            .events(member)
+            .into_iter()
+            .find(|e| e["event"] == "start")
+            .unwrap();
+        assert_eq!(start["env"]["TERM"], server_term, "{member}");
+        assert_eq!(start["env"]["COLORTERM"], "truecolor", "{member}");
+        // Only TERM comes from the pane, not the rest of its environment.
+        assert!(start["env"].get("TMUX").is_none(), "{member}");
+    }
+    env.wait_for("pager window env", |e| {
+        walk(&e.path("state"))
+            .iter()
+            .any(|p| p.ends_with("plugins/pager/window-env"))
+    });
+    let plugin_env = walk(&env.path("state"))
+        .into_iter()
+        .find(|p| p.ends_with("plugins/pager/window-env"))
+        .map(|p| fs::read_to_string(p).unwrap())
+        .unwrap();
+    let lines: Vec<&str> = plugin_env.lines().collect();
+    assert!(
+        lines.contains(&format!("TERM={server_term}").as_str()),
+        "{plugin_env}"
+    );
+    assert!(lines.contains(&"COLORTERM=truecolor"), "{plugin_env}");
 }
 
 #[test]

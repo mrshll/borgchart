@@ -15,6 +15,7 @@ set -g update-environment ''
 set -g allow-rename off
 set -g status-left '[brg #{session_name}] '
 set -g status-left-length 40
+set -as terminal-features ',*:RGB'
 ";
 
 pub struct Tmux {
