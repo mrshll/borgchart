@@ -675,14 +675,39 @@ fn pane_in(rows: &[PaneRow], pane_id: &str, pane_pid: u32) -> Liveness {
     }
 }
 
-/// Whether the pane recorded for an incarnation still runs it. Only a
-/// server that answers can show it gone; one that can't be asked is
-/// `Unknown`, however it fails.
+/// Whether the pane recorded for an incarnation still runs it. A server
+/// that answers shows it alive or gone. One that can't be asked (exited,
+/// hidden, or no tmux here) is `Unknown`, unless the pane's own process has
+/// exited: then the pane no longer runs it, as when a listing shows it dead.
 pub fn pane_liveness(pane: &PaneIdentity) -> Liveness {
     match Server::from_recorded(&pane.socket).panes() {
         Ok(rows) => pane_in(&rows, &pane.pane_id, pane.pane_pid),
+        Err(_) if process_exited(pane.pane_pid) => Liveness::Gone,
         Err(_) => Liveness::Unknown,
     }
+}
+
+/// Whether process `pid` has certainly exited: `ps` lists this process but
+/// not `pid`. Any process with that ID (even a reused one) is not proof, and
+/// neither is a `ps` that can't run or doesn't list this process.
+fn process_exited(pid: u32) -> bool {
+    let me = std::process::id();
+    if pid == 0 || pid == me {
+        return false;
+    }
+    let Ok(out) = Command::new("ps")
+        .args(["-o", "pid=", "-p", &format!("{me},{pid}")])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return false;
+    };
+    let listed: Vec<u32> = String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .filter_map(|p| p.parse().ok())
+        .collect();
+    listed.contains(&me) && !listed.contains(&pid)
 }
 
 /// Whether `member`'s incarnation `incarnation` may still be running.
@@ -826,6 +851,42 @@ mod tests {
         assert_eq!(liveness(&paths, "lead", "lead.1.abcd"), Liveness::Gone);
         let stored = manifest::load_incarnation(&paths, "lead").unwrap().unwrap();
         assert_eq!(stored.ended_reason.as_deref(), Some(ENDED_STOPPED));
+    }
+
+    #[test]
+    fn an_unreachable_server_shows_a_pane_gone_only_once_its_process_exited() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = RunPaths::from_root(dir.path());
+        // A pane process that ignores the hang-up outlives its tmux server.
+        let mut survivor = Command::new("sh")
+            .args(["-c", "trap '' HUP; exec sleep 30"])
+            .spawn()
+            .unwrap();
+        let inc = Incarnation {
+            member: "lead".into(),
+            incarnation: "lead.1.abcd".into(),
+            started_at: utc_now(),
+            vendor_version: None,
+            pane: Some(PaneIdentity {
+                socket: dir.path().join("brg-exited").display().to_string(),
+                session: "s".into(),
+                window: "lead".into(),
+                pane_id: "%0".into(),
+                pane_pid: survivor.id(),
+            }),
+            ended_at: None,
+            ended_reason: None,
+        };
+        begin_incarnation(&paths, &inc).unwrap();
+        complete_incarnation(&paths, &inc).unwrap();
+        assert_eq!(liveness(&paths, "lead", "lead.1.abcd"), Liveness::Unknown);
+        assert!(check_stopped(&paths, "t", "brg up").is_err());
+
+        survivor.kill().unwrap();
+        survivor.wait().unwrap();
+        assert_eq!(liveness(&paths, "lead", "lead.1.abcd"), Liveness::Gone);
+        // So a rollover can go ahead.
+        check_stopped(&paths, "t", "brg up").unwrap();
     }
 
     #[test]
