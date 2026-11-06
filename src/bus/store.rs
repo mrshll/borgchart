@@ -406,8 +406,13 @@ pub fn wait_snapshot(bus: &Bus, deadline: Instant) -> Result<WaitSnapshot, Failu
 
 /// A consistent read of the whole store, under `bus/lock` shared.
 pub fn snapshot(bus: &Bus) -> Result<Snapshot, Failure> {
-    let _lock = read_lock(&bus.paths)?;
-    Ok(scan(&bus.paths, &bus.run))
+    snapshot_of(&bus.paths, &bus.run)
+}
+
+/// The same for any run's store (an earlier run being carried from).
+pub fn snapshot_of(paths: &RunPaths, run: &str) -> Result<Snapshot, Failure> {
+    let _lock = read_lock(paths)?;
+    Ok(scan(paths, run))
 }
 
 // --- the store on disk ---
@@ -945,13 +950,42 @@ pub fn publish(
     key: &str,
     draft_bytes: &[u8],
 ) -> Result<Published, Failure> {
-    if !record::is_valid_key(key) {
-        return Err(Failure::new(
+    check_key(key)?;
+    let actor = actor_for(bus, caller)?;
+    publish_actor(bus, Some(caller), actor, key, draft_bytes)
+}
+
+fn check_key(key: &str) -> Result<(), Failure> {
+    if record::is_valid_key(key) {
+        Ok(())
+    } else {
+        Err(Failure::new(
             Code::Invalid,
             "`--key`: 1–128 characters of [A-Za-z0-9._:/@#+=-]",
-        ));
+        ))
     }
-    let actor = actor_for(bus, caller)?;
+}
+
+/// Publish a draft as an already-checked actor. brg itself publishes as
+/// [`Actor::Bus`] when it carries work into a linked run.
+pub fn publish_as(
+    bus: &Bus,
+    actor: Actor,
+    key: &str,
+    draft_bytes: &[u8],
+) -> Result<Published, Failure> {
+    publish_actor(bus, None, actor, key, draft_bytes)
+}
+
+/// `caller` is rechecked under the lock; brg's own records have none.
+fn publish_actor(
+    bus: &Bus,
+    caller: Option<&Caller>,
+    actor: Actor,
+    key: &str,
+    draft_bytes: &[u8],
+) -> Result<Published, Failure> {
+    check_key(key)?;
     let draft = parse_draft(draft_bytes)?;
     check_route(&bus.manifest, &actor, &draft.to).map_err(|e| Failure::new(Code::Invalid, e))?;
     let artifacts = measure(&draft)?;
@@ -978,7 +1012,9 @@ pub fn publish(
     if followed && let Some(first) = refs.first() {
         return Err(bus.stale_reference(first));
     }
-    recheck_authority(bus, caller)?;
+    if let Some(caller) = caller {
+        recheck_authority(bus, caller)?;
+    }
     check_route(&bus.manifest, &actor, &draft.to).map_err(|e| Failure::new(Code::Invalid, e))?;
     let snap = scan(&bus.paths, &bus.run);
     snap.require_healthy()?;
@@ -1013,6 +1049,12 @@ pub fn publish(
             format!("`{missing}` names no record"),
         ));
     }
+    // Task transitions, authority and liveness, against exactly the
+    // records this one will follow.
+    let probe = |member: &str, incarnation: &str| {
+        super::tasks::recorded_liveness(&bus.paths, member, incarnation)
+    };
+    super::tasks::check_publish(bus, &snap, &actor, &draft, &probe)?;
 
     // A healthy store is contiguous from 1, so the next number is one past its size.
     let seq = snap.records.len() as u64 + 1;
@@ -1263,6 +1305,8 @@ pub struct CheckReport {
     pub age_days: Option<f64>,
     /// True when an error is about the store itself (rather than its age).
     pub corrupt: bool,
+    /// The linked runs this run's work was carried into.
+    pub carried_into: Vec<super::carry::Marker>,
 }
 
 pub fn check(bus: &Bus) -> Result<CheckReport, Failure> {
@@ -1279,6 +1323,9 @@ pub fn check(bus: &Bus) -> Result<CheckReport, Failure> {
             stray.display()
         ));
     }
+    report.carried_into = super::carry::carried_into(&bus.store.dir, &bus.run);
+    let carry = super::carry::check_notes(bus, &snap, &report.carried_into);
+    report.warnings.extend(carry.warnings);
     match time::parse_utc(&bus.manifest.created_at) {
         None => report.errors.push(format!(
             "the storage's manifest: `created_at` is not a UTC time: {}",
@@ -1293,7 +1340,12 @@ pub fn check(bus: &Bus) -> Result<CheckReport, Failure> {
             report.age_days = Some((age * 10.0).round() / 10.0);
             let team = &bus.team;
             let restart = &bus.restart;
-            if age >= bus.config.max_age_days as f64 {
+            if age >= bus.config.max_age_days as f64 && carry.retired {
+                report.warnings.push(format!(
+                    "run `{}` is {age:.1} days old, past max_age_days ({}), and was carried into a new run",
+                    bus.run, bus.config.max_age_days
+                ));
+            } else if age >= bus.config.max_age_days as f64 {
                 report.errors.push(format!(
                     "team `{team}`'s message storage is {age:.1} days old, past max_age_days ({}); restart the team to roll it over: {restart}",
                     bus.config.max_age_days
