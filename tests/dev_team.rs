@@ -193,9 +193,13 @@ mod round {
 
     impl Team {
         fn brg(&self, args: &[&str]) -> Output {
+            self.cmd(args).output().unwrap()
+        }
+
+        fn cmd(&self, args: &[&str]) -> Command {
             let bin = self.dir.path().join("bin");
-            Command::new(env!("CARGO_BIN_EXE_brg"))
-                .env_clear()
+            let mut cmd = Command::new(env!("CARGO_BIN_EXE_brg"));
+            cmd.env_clear()
                 .env(
                     "PATH",
                     format!(
@@ -209,9 +213,8 @@ mod round {
                 .env("BORGCHART_TMUX_SOCKET", &self.socket)
                 .args(args)
                 .arg("--file")
-                .arg(&self.file)
-                .output()
-                .unwrap()
+                .arg(&self.file);
+            cmd
         }
 
         fn ok(&self, args: &[&str]) -> String {
@@ -291,16 +294,30 @@ mod round {
 
         /// Publish a draft from inside `member`.
         fn publish(&self, member: &str, key: &str, draft: serde_json::Value) -> serde_json::Value {
-            let out = self.path(&format!("s/{key}.out"));
+            let json = self.publish_as(member, key, key, draft);
+            assert_eq!(json["outcome"], "committed", "{key}: {json}");
+            json
+        }
+
+        /// Publish from inside `member`, its output kept under `name` (so a
+        /// retry of the same key gets its own output file).
+        fn publish_as(
+            &self,
+            member: &str,
+            name: &str,
+            key: &str,
+            draft: serde_json::Value,
+        ) -> serde_json::Value {
+            let out = self.path(&format!("s/{name}.out"));
             self.run_in(
                 member,
-                key,
+                name,
                 &format!(
                     "\"$BORGCHART_BIN\" msg publish --key {key} --json > {o} 2>&1 <<'DRAFT'\n{draft}\nDRAFT\necho \"exit $?\" >> {o}\n",
                     o = out.display()
                 ),
             );
-            let (json, code) = self.output(key);
+            let (json, code) = self.output(name);
             assert_eq!(code, 0, "{key}: {json}");
             json
         }
@@ -329,8 +346,7 @@ mod round {
             .collect()
     }
 
-    #[test]
-    fn one_task_round_with_fake_agents() {
+    fn new_team(tag: &str) -> Team {
         let dir = tempfile::tempdir().unwrap();
         let file = fill_example(dir.path());
         let bin = dir.path().join("bin");
@@ -338,11 +354,16 @@ mod round {
         for vendor in ["claude", "codex"] {
             std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_fake-agent"), bin.join(vendor)).unwrap();
         }
-        let team = Team {
-            socket: format!("brg-dev-team-test-{}", std::process::id()),
+        Team {
+            socket: format!("brg-dev-team-{tag}-{}", std::process::id()),
             file,
             dir,
-        };
+        }
+    }
+
+    #[test]
+    fn one_task_round_with_fake_agents() {
+        let team = new_team("round");
         let work = team.path("borgchart-dev");
 
         let up = team.ok(&["up"]);
@@ -382,7 +403,7 @@ mod round {
         let checkout = work.join("impl-a").display().to_string();
         let assign = team.publish(
             "lead",
-            "t1.assign.1",
+            "t1.assign.1.1",
             serde_json::json!({"to": "implementer-a", "kind": "assign", "task": "t1", "attempt": 1,
                 "body": "Make a fictional change.",
                 "facts": {"agreement": {"path": agreement, "sha256": sha}, "scope": "tests", "checkout": checkout}}),
@@ -410,7 +431,7 @@ mod round {
         assert_eq!(ids(&team.output("impl-inbox").0), ["m1"]);
         team.publish(
             "implementer-a",
-            "t1.accept.1",
+            "t1.accept.1.1",
             serde_json::json!({"to": "lead", "kind": "accept", "task": "t1", "attempt": 1, "reply_to": ["m1"]}),
         );
         let (woke, code) = team.output("wait-1");
@@ -425,40 +446,191 @@ mod round {
             (9, &serde_json::json!("timeout"))
         );
 
-        team.background_wait("lead", "wait-3", Some("m2"), 30);
+        // Two questions in one attempt: each its own key (`.<n>` counts that
+        // kind within the attempt); an identical retry is a duplicate.
+        let question = |n: u32| {
+            serde_json::json!({"to": "lead", "kind": "question", "task": "t1", "attempt": 1,
+                "body": format!("Fictional question {n}?")})
+        };
+        let q1 = team.publish("implementer-a", "t1.question.1.1", question(1));
+        let q2 = team.publish("implementer-a", "t1.question.1.2", question(2));
+        assert_eq!((&q1["id"], &q2["id"]), (&"m3".into(), &"m4".into()));
+        let retry = team.publish_as(
+            "implementer-a",
+            "t1.question.1.2-retry",
+            "t1.question.1.2",
+            question(2),
+        );
+        assert_eq!(
+            (&retry["outcome"], &retry["id"]),
+            (&"duplicate".into(), &"m4".into())
+        );
+        team.ack("lead", "m3");
+        team.ack("lead", "m4");
+
+        team.background_wait("lead", "wait-3", Some("m4"), 30);
         let report = work.join("notes/t1-report.md");
         fs::write(&report, "status: complete\naction-needed: none\n").unwrap();
         team.publish(
             "implementer-a",
-            "t1.result.1",
+            "t1.result.1.1",
             serde_json::json!({"to": "lead", "kind": "result", "task": "t1", "attempt": 1, "reply_to": ["m1"],
                 "body": "action-needed: none",
                 "artifacts": [{"path": report, "label": "report"}],
                 "facts": {"status": "complete", "checks": [{"name": "cargo test", "outcome": "pass"}]}}),
         );
         let (woke, code) = team.output("wait-3");
-        assert_eq!((code, ids(&woke)), (0, vec!["m3".to_string()]));
-        team.ack("lead", "m3");
+        assert_eq!((code, ids(&woke)), (0, vec!["m5".to_string()]));
+        team.ack("lead", "m5");
         team.ack("implementer-a", "m1");
 
         team.publish(
             "lead",
-            "t1.verify.1",
+            "t1.verify.1.1",
             serde_json::json!({"to": "implementer-a", "kind": "verify", "task": "t1", "attempt": 1,
-                "reply_to": ["m3"], "facts": {"result": "m3", "outcome": "accepted"}}),
+                "reply_to": ["m5"], "facts": {"result": "m5", "outcome": "accepted"}}),
         );
         team.ok(&["down", "--member", "implementer-a"]);
         let show = team.ok(&["task", "show", "t1"]);
         assert!(show.contains("(gone, current)"), "{show}");
         team.publish(
             "lead",
-            "t1.release.1",
+            "t1.release.1.1",
             serde_json::json!({"to": "implementer-a", "kind": "release", "task": "t1", "attempt": 1,
-                "facts": {"evidence": "verified m3; implementer-a stopped", "checkout": checkout}}),
+                "facts": {"evidence": "verified m5; implementer-a stopped", "checkout": checkout}}),
         );
         let list = team.ok(&["task", "list"]);
         assert!(list.contains("t1  implementer-a#1  released"), "{list}");
 
+        team.ok(&["down"]);
+    }
+
+    /// Run brg with exactly the environment the lead was started with, as a
+    /// tool process the lead left running would.
+    fn lead_cmd(team: &Team) -> Command {
+        let log = fs::read_to_string(team.path("home/fake-agent/lead.jsonl")).unwrap();
+        let start: serde_json::Value = serde_json::from_str(log.lines().next().unwrap()).unwrap();
+        let env: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(start["env"].clone()).unwrap();
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_brg"));
+        cmd.env_clear().envs(env);
+        cmd
+    }
+
+    fn as_lead(team: &Team, args: &[&str]) -> Output {
+        lead_cmd(team).args(args).output().unwrap()
+    }
+
+    fn json(out: &Output) -> (serde_json::Value, Option<i32>) {
+        (
+            serde_json::from_slice(&out.stdout).unwrap_or_default(),
+            out.status.code(),
+        )
+    }
+
+    /// `fenced` from a member's own wait means its session is over: listing
+    /// again can't help. Only "… list the inbox again" (the team was
+    /// restarted under a cursor) is worth one re-list, and self-wake.md says
+    /// exactly that.
+    #[test]
+    fn fenced_waits_stop_the_loop_except_after_a_restart() {
+        let rule = fs::read_to_string(dev_team().join("includes/self-wake.md")).unwrap();
+        assert!(rule.contains("list the inbox again"), "{rule}");
+
+        let team = new_team("fenced");
+        team.ok(&["up"]);
+        team.wait_idle("lead");
+        let note = team.path("note.json");
+        fs::write(
+            &note,
+            r#"{"to": "lead", "kind": "note", "body": "Fictional note."}"#,
+        )
+        .unwrap();
+        let note = note.display().to_string();
+        team.ok(&[
+            "msg",
+            "publish",
+            "--external",
+            "owner",
+            "--key",
+            "n1",
+            "--record",
+            &note,
+        ]);
+        assert_eq!(
+            json(&as_lead(&team, &["inbox", "--json"])).0["records"][0]["id"],
+            "m1"
+        );
+
+        // The lead is stopped while a wait of its session runs.
+        let waiting = {
+            let mut cmd = lead_cmd(&team);
+            cmd.args([
+                "inbox",
+                "wait",
+                "--after",
+                "m1",
+                "--timeout",
+                "30",
+                "--json",
+            ]);
+            std::thread::spawn(move || cmd.output().unwrap())
+        };
+        std::thread::sleep(Duration::from_millis(500));
+        team.ok(&["down"]);
+        let (stale, code) = json(&waiting.join().unwrap());
+        assert_eq!(
+            (code, &stale["outcome"]),
+            (Some(8), &"fenced".into()),
+            "{stale}"
+        );
+        let message = stale["message"].as_str().unwrap();
+        assert!(message.contains("lead was stopped"), "{message}");
+        assert!(!message.contains("list the inbox again"), "{message}");
+        // Listing again from that session is fenced the same way.
+        let (relist, code) = json(&as_lead(&team, &["inbox", "--json"]));
+        assert_eq!(code, Some(8), "{relist}");
+        assert!(
+            !relist["message"]
+                .as_str()
+                .unwrap()
+                .contains("list the inbox again")
+        );
+
+        // A restart with changed files under a waiting cursor is the one case
+        // that says "list the inbox again", and there listing again works.
+        let owner = |args: &[&str]| {
+            let mut all = vec!["inbox"];
+            all.extend_from_slice(args);
+            all.extend_from_slice(&["--external", "owner", "--json"]);
+            all.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+        };
+        team.ok(&["up"]);
+        team.wait_idle("lead");
+        let args = owner(&["wait", "--after", "m1", "--timeout", "30"]);
+        let waiter = {
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            let mut cmd = team.cmd(&args);
+            std::thread::spawn(move || cmd.output().unwrap())
+        };
+        std::thread::sleep(Duration::from_millis(500));
+        team.ok(&["down"]);
+        let mut text = fs::read_to_string(&team.file).unwrap();
+        text.push_str("# changed\n");
+        fs::write(&team.file, text).unwrap();
+        team.ok(&["up"]);
+        let (restarted, code) = json(&waiter.join().unwrap());
+        assert_eq!(code, Some(8), "{restarted}");
+        assert!(
+            restarted["message"]
+                .as_str()
+                .unwrap()
+                .ends_with("list the inbox again"),
+            "{restarted}"
+        );
+        let relist = owner(&[]);
+        let relist: Vec<&str> = relist.iter().map(String::as_str).collect();
+        team.ok(&relist);
         team.ok(&["down"]);
     }
 }

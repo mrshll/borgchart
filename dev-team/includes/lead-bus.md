@@ -5,7 +5,7 @@
 **Assign.** Write the agreement to a file in your private directory: the task, scope and non-goals, the branch and checkout, the report path (also in the private directory), the deadline, and the teammates involved. Then publish the assignment, with the agreement's SHA-256:
 
 ```
-"$BORGCHART_BIN" msg publish --key <task>.assign.1 --json <<'DRAFT'
+"$BORGCHART_BIN" msg publish --key <task>.assign.1.1 --json <<'DRAFT'
 {"to": "implementer-a", "kind": "assign", "task": "<task>", "attempt": 1,
  "body": "<one paragraph: what to do>",
  "facts": {"agreement": {"path": "/absolute/path/to/agreement.md", "sha256": "<sha256sum of it>"},
@@ -13,7 +13,7 @@
 DRAFT
 ```
 
-Task IDs are short and unique (`[a-z0-9][a-z0-9._-]*`, e.g. `pr-41-impl`). Give a `checkout` fact only for a task that writes one: reviewer and companion tasks name no checkout.
+Task IDs are short and unique (`[a-z0-9][a-z0-9._-]*`, e.g. `pr-41-impl`). Every key is `<task>.<kind>.<attempt>.<n>`, where `<n>` counts records of that kind in that attempt (a second `decision` in attempt 1 is `<task>.decision.1.2`); reuse a key only to retry the very same record. Give a `checkout` fact only for a task that writes one: reviewer and companion tasks name no checkout.
 
 **Follow it.** Expect `accept` or `decline`, then `result`. `"$BORGCHART_BIN" task show <task>` shows its state, records and next step; `"$BORGCHART_BIN" msg read <id> --json` shows one record. Answer a `question` with a `decision` naming it in `reply_to`. To redo work, publish `reopen` with a `reason` (a new attempt); to stop it, `cancel-request` with a `reason`, then wait for `cancel-confirm`. Ack each record you have acted on.
 

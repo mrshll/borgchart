@@ -2,10 +2,10 @@
 
 Your owner is your parent, `lead`; you publish only to it. Work arrives as records in your inbox, never as text typed into your terminal. Your work is published before you are started, so **your first action is to read your inbox**: `"$BORGCHART_BIN" inbox --json`. Read one record in full with `"$BORGCHART_BIN" msg read <id> --json`.
 
-Publish a record by passing a JSON draft on stdin, with an operation key that makes a retry harmless (the same key and draft return the same record, `duplicate`):
+Publish a record by passing a JSON draft on stdin, with an operation key `<task>.<kind>.<attempt>.<n>`, where `<n>` counts records of that kind in that attempt (1, 2, …: your second question in attempt 1 is `<task>.question.1.2`). Reuse a key only to retry the very same record: the same key and draft return the same record (`duplicate`); the same key with a different draft is refused (`conflict`).
 
 ```
-"$BORGCHART_BIN" msg publish --key <task>.<kind>.<attempt> --json <<'DRAFT'
+"$BORGCHART_BIN" msg publish --key <task>.accept.1.1 --json <<'DRAFT'
 {"to": "lead", "kind": "accept", "task": "<task>", "attempt": 1, "reply_to": ["<assign id>"]}
 DRAFT
 ```
