@@ -70,12 +70,10 @@ When a pull request is ready (checks green, review and fix round done, descripti
 
 Nothing types into your terminal to tell you a record has arrived. You wake yourself with a background wait:
 
-1. **At the start of every turn,** if no wait of yours is running, start `"$BORGCHART_BIN" inbox wait --after <ID> --timeout 600 --json` with your Bash tool in **background** mode (not in the foreground, which blocks the turn), where `<ID>` is the highest record ID you have listed. `"$BORGCHART_BIN" inbox wait --help` explains the cursor and every outcome.
-2. **When it returns,** list your inbox, act on each record and ack what you handled, then start the next wait with the new highest ID. A wait returns at once for unacknowledged records, so a stale cursor or a missing ack wakes you in a loop.
+1. **At the start of every turn,** list your inbox with `"$BORGCHART_BIN" inbox --json`, then follow `next` with `"$BORGCHART_BIN" inbox --after <next> --json` until `next` is null. These listings record every page this session has seen. Then act on the records and ack what you handled; earlier records may remain unacknowledged while you work.
+2. **Before finishing every turn,** if no wait of yours is running, start `"$BORGCHART_BIN" inbox wait --background --json` with your Bash tool in **background** mode. Its exit wakes you for unseen, unacknowledged records: arrivals beyond its first snapshot return immediately, records already present wait at least 60 seconds. The wait prints only IDs; drain every inbox page to read them, work, then re-arm. The wait needs no cursor to maintain. `"$BORGCHART_BIN" inbox wait --help` explains every outcome.
 3. **On a timeout,** start the same wait again.
-4. **On `fenced`,** your own session is no longer current, unless the message says to list the inbox again: then list it **once** without `--after` and carry on if that works. Otherwise stop the wait loop: start no more waits, don't retry, and never set or change the `BORGCHART_*` variables. Tell the owner on GitHub (see "Talking to the owner").
-
-(This changes when brg's background-safe wait lands; this section will be updated with it.)
+4. **On `fenced`,** your own session is no longer current. Stop the wait loop: start no more waits, don't retry, and never set or change the `BORGCHART_*` variables. Tell the owner on GitHub (see "Talking to the owner").
 
 ## Talking to the owner
 

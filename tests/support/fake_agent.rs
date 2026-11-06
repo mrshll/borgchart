@@ -27,8 +27,10 @@ enum Mode {
     Working,
     Dialog,
     Mute,
-    /// Claude's folder-trust screen; `trust_choice` 0 = "No, exit", 1 = "Yes".
+    /// The folder-trust screen; `trust_choice` 0 = "No, exit", 1 = "Yes".
     Trust,
+    /// Codex's folder-trust screen (0.165.0), "Trust and continue" highlighted.
+    CodexTrust,
 }
 
 struct Agent {
@@ -124,6 +126,22 @@ impl Agent {
     fn draw(&self) {
         let (title, body) = match (self.vendor, self.mode) {
             (_, Mode::Mute) => ("plain".to_string(), vec!["$ ".to_string()]),
+            (_, Mode::CodexTrust) => (
+                String::new(),
+                vec![
+                    "  Folder access".into(),
+                    format!(
+                        "  {}",
+                        std::env::current_dir()
+                            .map(|d| d.display().to_string())
+                            .unwrap_or_default()
+                    ),
+                    "  Trust this folder? Your trust decision will be saved.".into(),
+                    "› 1. Trust and continue".into(),
+                    "  2. Quit".into(),
+                    "  enter continue · esc quit".into(),
+                ],
+            ),
             (_, Mode::Trust) => (
                 String::new(),
                 vec![
@@ -303,6 +321,23 @@ fn restore_terminal() {
     let _ = stdout.flush();
 }
 
+/// Whether a `-c projects={…}` argument trusts the current folder.
+fn codex_trusted_by_config(args: &[String]) -> bool {
+    let Ok(cwd) = std::env::current_dir() else {
+        return false;
+    };
+    let want = format!(
+        "{}={{trust_level=\"trusted\"}}",
+        serde_json::to_string(&cwd.display().to_string()).unwrap()
+    );
+    args.windows(2).any(|w| {
+        w[0] == "-c"
+            && w[1]
+                .strip_prefix("projects={")
+                .is_some_and(|v| v.contains(&want))
+    })
+}
+
 fn main() {
     let argv: Vec<String> = std::env::args().collect();
     let name = PathBuf::from(&argv[0])
@@ -337,10 +372,14 @@ fn main() {
         .exists();
     let flag = |name: &str| PathBuf::from(&home).join("fake-agent").join(name).exists();
     let trust_first = vendor == Vendor::Claude && (flag("trust") || flag("trust-yes"));
+    // Codex skips its trust screen when the session's config trusts the
+    // folder, as `-c projects={"<cwd>"={trust_level="trusted"}}` does.
+    let codex_trust_first =
+        vendor == Vendor::Codex && flag("codex-trust") && !codex_trusted_by_config(args);
     // A prompt before the session starts: its SessionStart hook hasn't run.
     let dialog_first = flag("dialog-first");
     let start_hooks = if skip_hooks { Vec::new() } else { start_hooks };
-    if !trust_first && !dialog_first {
+    if !trust_first && !codex_trust_first && !dialog_first {
         run_start_hooks(&log, &start_hooks);
     }
 
@@ -359,6 +398,8 @@ fn main() {
         pre_hooks: if skip_hooks { Vec::new() } else { pre_hooks },
         mode: if trust_first {
             Mode::Trust
+        } else if codex_trust_first {
+            Mode::CodexTrust
         } else if dialog_first {
             Mode::Dialog
         } else {
@@ -440,6 +481,12 @@ fn main() {
                 continue;
             }
             match b {
+                b'\r' | b'\n' if agent.mode == Mode::CodexTrust => {
+                    log_event(&agent.log, serde_json::json!({"event": "trust-accepted"}));
+                    agent.mode = Mode::Idle;
+                    run_start_hooks(&agent.log, &agent.start_hooks);
+                    agent.draw();
+                }
                 b'\r' | b'\n' if agent.mode == Mode::Trust => {
                     if agent.trust_choice == 1 {
                         log_event(&agent.log, serde_json::json!({"event": "trust-accepted"}));

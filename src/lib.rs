@@ -15,6 +15,7 @@ pub mod lifecycle;
 pub mod names;
 pub mod paths;
 pub mod probe;
+pub mod proctree;
 pub mod rules;
 pub mod runtime;
 pub mod state;

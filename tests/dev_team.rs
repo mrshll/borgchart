@@ -795,14 +795,21 @@ mod round {
         )
     }
 
-    /// `fenced` from a member's own wait means its session is over: listing
-    /// again can't help. Only "… list the inbox again" (the team was
-    /// restarted under a cursor) is worth one re-list, and self-wake.md says
-    /// exactly that.
+    /// Self-waking uses a background wait with no cursor. The foreground
+    /// wait still allows a re-list when storage restarts under a cursor;
+    /// a stopped member's session cannot recover that way.
     #[test]
     fn fenced_waits_stop_the_loop_except_after_a_restart() {
         let rule = fs::read_to_string(dev_team().join("orchestrator.md")).unwrap();
-        assert!(rule.contains("list the inbox again"), "{rule}");
+        let wake = rule
+            .split("## Waking yourself")
+            .nth(1)
+            .unwrap()
+            .split("## Talking to the owner")
+            .next()
+            .unwrap();
+        assert!(wake.contains("inbox wait --background --json"), "{wake}");
+        assert!(wake.contains("start no more waits"), "{wake}");
 
         let team = new_team("fenced");
         team.ok(&["up"]);

@@ -76,7 +76,7 @@ members:
         );
         env.script(
             "team/plugins/pager/watch.sh",
-            "#!/bin/sh\nwhile true; do printf '{\"ok\": true, \"at\": \"now\", \"detail\": \"fine\"}' > \"$BORGCHART_STATE_DIR/health.json\"; sleep 1; done\n",
+            "#!/bin/sh\nenv | grep -E '^(TERM|COLORTERM)=' > \"$BORGCHART_STATE_DIR/window-env.tmp\"\nmv \"$BORGCHART_STATE_DIR/window-env.tmp\" \"$BORGCHART_STATE_DIR/window-env\"\nwhile true; do printf '{\"ok\": true, \"at\": \"now\", \"detail\": \"fine\"}' > \"$BORGCHART_STATE_DIR/health.json\"; sleep 1; done\n",
         );
         env.write(
             "team/borgchart.yaml",
@@ -557,6 +557,57 @@ fn secrets_stay_out_of_argv_logs_agents_and_tmux() {
 }
 
 #[test]
+fn windows_get_tmux_terminal_and_colour_not_the_callers() {
+    // Catches: members and plugin windows starting with no TERM/COLORTERM, so
+    // agents print without colour; and the caller's own TERM (the outer
+    // terminal, not tmux) leaking in instead of the server's.
+    let env = Env::new();
+    let out = env
+        .brg_cmd(&["up"])
+        .env("TERM", "caller-term")
+        .env("COLORTERM", "caller-colour")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    env.wait_for("alpha idle", |e| e.state_of("alpha") == "idle");
+    env.wait_for("beta idle", |e| e.state_of("beta") == "idle");
+    let server_term = env.tmux(&["show-options", "-gv", "default-terminal"]);
+    let server_term = server_term.trim();
+    assert!(!server_term.is_empty());
+    for member in ["alpha", "beta"] {
+        let start = env
+            .events(member)
+            .into_iter()
+            .find(|e| e["event"] == "start")
+            .unwrap();
+        assert_eq!(start["env"]["TERM"], server_term, "{member}");
+        assert_eq!(start["env"]["COLORTERM"], "truecolor", "{member}");
+        // Only TERM comes from the pane, not the rest of its environment.
+        assert!(start["env"].get("TMUX").is_none(), "{member}");
+    }
+    env.wait_for("pager window env", |e| {
+        walk(&e.path("state"))
+            .iter()
+            .any(|p| p.ends_with("plugins/pager/window-env"))
+    });
+    let plugin_env = walk(&env.path("state"))
+        .into_iter()
+        .find(|p| p.ends_with("plugins/pager/window-env"))
+        .map(|p| fs::read_to_string(p).unwrap())
+        .unwrap();
+    let lines: Vec<&str> = plugin_env.lines().collect();
+    assert!(
+        lines.contains(&format!("TERM={server_term}").as_str()),
+        "{plugin_env}"
+    );
+    assert!(lines.contains(&"COLORTERM=truecolor"), "{plugin_env}");
+}
+
+#[test]
 fn locked_member_without_an_active_gate_is_stopped() {
     let env = Env::new();
     fs::create_dir_all(env.path("home/fake-agent")).unwrap();
@@ -780,6 +831,115 @@ fn folder_trust_is_left_alone_when_yes_is_already_highlighted() {
             .iter()
             .any(|e| e["event"] == "trust-accepted")
     );
+}
+
+fn codex_trust_env(deploy: &str) -> Env {
+    let env = Env::new();
+    fs::create_dir_all(env.path("home/fake-agent")).unwrap();
+    fs::write(env.path("home/fake-agent/codex-trust"), "").unwrap();
+    fs::create_dir_all(env.path("work")).unwrap();
+    env.write(
+        "team/borgchart.yaml",
+        &deploy.replace("WORK", &env.path("work").display().to_string()),
+    );
+    env
+}
+
+fn start_argv(env: &Env, member: &str) -> Vec<String> {
+    env.events(member)
+        .into_iter()
+        .find(|e| e["event"] == "start")
+        .unwrap()["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect()
+}
+
+fn status_of(env: &Env, name: &str) -> serde_json::Value {
+    env.status()
+        .into_iter()
+        .find(|r| r["name"] == name)
+        .unwrap()
+}
+
+#[test]
+fn codex_auto_trust_trusts_exactly_the_declared_folder_for_the_session() {
+    // Catches: a Codex member with `auto_trust: true` sitting at its
+    // folder-trust screen, or a folder other than its declared cwd trusted.
+    let env = codex_trust_env(
+        "schema: 1\nauto_trust: true\nmembers:\n  beta: {cwd: WORK}\nplugins:\n  pager:\n    env: {PAGER_ROOM: R0}\n",
+    );
+    let out = env.brg(&["up"]);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        stdout(&out),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let work = env.path("work").canonicalize().unwrap();
+    assert!(
+        stdout(&out).contains(&format!(
+            "trusted folder {} for this Codex session",
+            work.display()
+        )),
+        "{}",
+        stdout(&out)
+    );
+    env.wait_for("beta idle", |e| e.state_of("beta") == "idle");
+    let trusts: Vec<String> = start_argv(&env, "beta")
+        .into_iter()
+        .filter(|a| a.starts_with("projects="))
+        .collect();
+    assert_eq!(
+        trusts,
+        [format!(
+            "projects={{{}={{trust_level=\"trusted\"}}}}",
+            serde_json::to_string(&work.display().to_string()).unwrap()
+        )]
+    );
+    assert_eq!(
+        status_of(&env, "beta")["trust_accepted"],
+        work.display().to_string()
+    );
+}
+
+#[test]
+fn codex_trust_screen_is_left_for_a_person_unless_auto_trust_covers_the_folder() {
+    // Catches: Codex trust passed without `auto_trust: true` (including the
+    // `locked` default that covers Claude), for an undeclared folder, or over
+    // the deployment's own `projects` setting.
+    for deploy in [
+        "schema: 1\nauto_trust: false\nmembers:\n  beta: {cwd: WORK}\n",
+        "schema: 1\nmembers:\n  beta: {cwd: WORK, posture: locked}\n",
+        "schema: 1\nauto_trust: true\nmembers:\n  beta: {cwd: WORK, posture: locked}\n",
+        "schema: 1\nauto_trust: true\n",
+        "schema: 1\nauto_trust: true\nmembers:\n  beta: {cwd: WORK, args: [-c, 'projects={}']}\n",
+    ] {
+        let env = codex_trust_env(&format!(
+            "{deploy}plugins:\n  pager:\n    env: {{PAGER_ROOM: R0}}\n"
+        ));
+        let out = env
+            .brg_cmd(&["up"])
+            .env("BORGCHART_GATE_WAIT_MS", "1500")
+            .output()
+            .unwrap();
+        assert!(
+            !stdout(&out).contains("trusted folder"),
+            "{deploy}: {}",
+            stdout(&out)
+        );
+        env.wait_for("alpha idle", |e| e.state_of("alpha") == "idle");
+        let trusts: Vec<String> = start_argv(&env, "beta")
+            .into_iter()
+            .filter(|a| a.starts_with("projects=") && a != "projects={}")
+            .collect();
+        assert!(trusts.is_empty(), "{deploy}: {trusts:?}");
+        let beta = status_of(&env, "beta");
+        assert!(beta["trust_accepted"].is_null(), "{deploy}: {beta}");
+        assert_ne!(beta["state"], "idle", "{deploy}: {beta}");
+    }
 }
 
 #[test]

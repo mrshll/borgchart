@@ -234,6 +234,12 @@ pub struct Meta {
     /// on a server that answered); cleared by the next fresh `up`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stopped_at: Option<String>,
+    /// Whether `up` may have started a window, and so a tmux server, since
+    /// the deployment was last confirmed stopped: set before each start.
+    /// `Some(false)` lets `down` say a team whose server can't be reached
+    /// isn't running; `None` (state from an earlier brg) means unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub windows_started: Option<bool>,
     /// The small environment every window and plugin starts from (no secrets).
     pub base_env: BTreeMap<String, String>,
     pub members: BTreeMap<String, MemberMeta>,

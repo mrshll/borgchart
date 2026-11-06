@@ -16,6 +16,7 @@ use crate::deploy::Auth;
 use crate::exec::{ExecSpec, PluginEnv, identity_env};
 use crate::launch;
 use crate::lifecycle;
+use crate::proctree;
 use crate::rules::{self, State};
 use crate::state::{
     self, MemberMeta, Meta, PluginMeta, StateDir, shell_quote, write_private, write_script,
@@ -368,7 +369,13 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
     state::ensure_dir(&state.root)
         .map_err(|e| format!("cannot create {}: {e}", state.root.display()))?;
     let state_lock = lifecycle::lock_state(state)?;
-    let existing = state::read_meta(state).filter(|_| probe.has_session(&session));
+    let previous = state::read_meta(state);
+    // Unless the last deployment here was confirmed stopped, or never
+    // started a window, a server this caller can't see may still run it.
+    let may_still_run = previous
+        .as_ref()
+        .is_some_and(|m| m.stopped_at.is_none() && m.windows_started != Some(false));
+    let existing = previous.filter(|_| probe.has_session(&session));
     let joining = existing.is_some();
     match &existing {
         Some(meta) => lifecycle::check_join(meta, &snapshot, state, &team, &restart)?,
@@ -411,6 +418,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                     dir: b.paths.root.clone(),
                 }),
                 base_env: base.clone(),
+                windows_started: Some(may_still_run),
                 ..Meta::default()
             };
             // Plugins: their values (secrets included) go to private files for the shims.
@@ -502,6 +510,31 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             }
         }
 
+        let auto_trust = v.deployment.as_ref().and_then(|d| d.auto_trust);
+        let declared_cwd = deploy_member
+            .and_then(|d| d.cwd.as_ref())
+            .map(|c| c.canonicalize().unwrap_or_else(|_| c.clone()));
+        // Claude: `up` answers its trust dialog. By default only for `locked`
+        // members, which ignore project settings.
+        let trust_dir = declared_cwd
+            .clone()
+            .filter(|_| member.vendor == Vendor::Claude)
+            .filter(|_| auto_trust.unwrap_or(posture == Posture::Locked));
+        // Codex: trust passed as session config, only with `auto_trust: true`
+        // and only in `vendor` posture. A trusted folder's `.codex/` loads, and a
+        // `locked` Codex member can write its folder, so it could configure its
+        // own next start outside its gate. The deployment's own `projects`
+        // setting wins.
+        let codex_trust = declared_cwd
+            .filter(|_| member.vendor == Vendor::Codex)
+            .filter(|_| auto_trust == Some(true) && posture == Posture::Vendor)
+            .filter(|_| {
+                !launch::codex_args_set(
+                    deploy_member.map(|d| d.args.as_slice()).unwrap_or_default(),
+                    "projects",
+                )
+            });
+
         let settings_path = state.member_dir(id).join("claude-settings.json");
         let spec = launch::member_launch(
             &brg,
@@ -512,6 +545,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             posture,
             &help,
             &settings_path,
+            codex_trust.as_deref(),
         );
         if let Some(rules) = &spec.gate {
             write_private(
@@ -560,16 +594,6 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                     meta.team_dir.clone()
                 }
             });
-        let trust_dir = deploy_member
-            .and_then(|d| d.cwd.as_ref())
-            .filter(|_| match v.deployment.as_ref().and_then(|d| d.auto_trust) {
-                Some(on) => on,
-                // By default only `locked` members, which ignore project settings.
-                None => posture == Posture::Locked,
-            })
-            .filter(|_| member.vendor == Vendor::Claude)
-            .map(|c| c.canonicalize().unwrap_or_else(|_| c.clone()));
-
         // With a bus, each start is a new incarnation, recorded before its
         // window exists and again once its pane is known.
         let incarnation = match &binding {
@@ -598,6 +622,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             &tmux,
             &brg,
             state,
+            &mut meta,
             &session,
             id,
             &ExecSpec {
@@ -654,6 +679,18 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             pane,
         });
         set(&mut outcomes, id, "started".into());
+        if let Some(dir) = &codex_trust {
+            let dir = dir.display().to_string();
+            let _ = write_private(
+                &state.member_dir(id).join("trust-accepted"),
+                format!("{dir}\n").as_bytes(),
+            );
+            append(
+                &mut outcomes,
+                id,
+                format!("trusted folder {dir} for this Codex session"),
+            );
+        }
     }
 
     // Plugin processes start with the whole team.
@@ -686,6 +723,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                 &tmux,
                 &brg,
                 state,
+                &mut meta,
                 &session,
                 &window,
                 &ExecSpec { argv, env, cwd },
@@ -937,10 +975,21 @@ fn start_window(
     tmux: &Tmux,
     brg: &Path,
     state: &StateDir,
+    meta: &mut Meta,
     session: &str,
     window: &str,
     spec: &ExecSpec,
 ) -> Result<(), String> {
+    // Recorded first: once tmux runs, `down` must not take an unreachable
+    // server for one that never started.
+    if meta.windows_started != Some(true) {
+        meta.windows_started = Some(true);
+        write_private(
+            &state.meta_file(),
+            &serde_json::to_vec_pretty(meta).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| format!("cannot write state: {e}"))?;
+    }
     let body = serde_json::to_vec(spec).map_err(|e| e.to_string())?;
     write_private(&state.exec_file(window), &body)
         .map_err(|e| format!("cannot write launch file: {e}"))?;
@@ -994,8 +1043,9 @@ pub fn down(input: &Input, only: Option<&str>) -> Result<Vec<String>, String> {
     };
     let rows = match server.panes() {
         Ok(rows) => rows,
-        // A stop was already confirmed, and nothing has started since.
-        Err(_) if meta.stopped_at.is_some() => Vec::new(),
+        // A stop was already confirmed, or nothing ever started, and
+        // nothing has started since.
+        Err(_) if meta.stopped_at.is_some() || meta.windows_started == Some(false) => Vec::new(),
         Err(e) => {
             return Err(format!(
                 "{e}; nothing was changed. If team `{team}` is really gone (for example after a reboot), `brg up` and then `brg down` clear it"
@@ -1004,13 +1054,35 @@ pub fn down(input: &Input, only: Option<&str>) -> Result<Vec<String>, String> {
     };
     let in_session = |r: &&lifecycle::PaneRow| r.session == session;
     let mut messages = Vec::new();
+    // The processes under the panes this `down` stops, found before tmux
+    // kills the panes: some may have left the pane's session, and would
+    // outlive it. Only live panes in this session on the recorded server,
+    // and with `--member`, only those in the one window it kills.
+    let target = only.and_then(|id| rows.iter().filter(in_session).find(|r| r.window == id));
+    let panes: Vec<u32> = rows
+        .iter()
+        .filter(in_session)
+        .filter(|r| !r.dead)
+        .filter(|r| match only {
+            Some(_) => target.is_some_and(|t| t.window_id == r.window_id),
+            None => true,
+        })
+        .map(|r| r.pane_pid)
+        .collect();
+    let procs = if panes.is_empty() {
+        Ok(Vec::new())
+    } else {
+        server
+            .identity()
+            .and_then(|(socket, pid)| proctree::snapshot(&panes, pid, &socket))
+    };
     // Panes that are certainly stopped now: killed by this `down`, or not on
     // the server that answered.
     let mut killed: Vec<String> = Vec::new();
     let mut whole = false;
     let members: Vec<String> = match only {
         Some(id) => {
-            match rows.iter().filter(in_session).find(|r| r.window == id) {
+            match target {
                 Some(w) => {
                     if rows.iter().filter(in_session).count() == 1 {
                         server.act(&["kill-session", "-t", &format!("={session}")])?;
@@ -1049,6 +1121,18 @@ pub fn down(input: &Input, only: Option<&str>) -> Result<Vec<String>, String> {
             meta.members.keys().cloned().collect()
         }
     };
+    // Now the panes are gone, end what ran under them, before anything
+    // below can return early.
+    match procs.and_then(|p| proctree::end(&p)) {
+        Ok(left) if left.is_empty() => {}
+        Ok(left) => messages.push(format!(
+            "processes {} didn't exit after KILL",
+            left.iter().map(u32::to_string).collect::<Vec<_>>().join(", ")
+        )),
+        Err(e) => messages.push(format!(
+            "{e}; processes the stopped members left running in the background, if any, weren't checked"
+        )),
+    }
     if let Some(paths) = &run {
         for id in &members {
             let Some(inc) = crate::bus::manifest::load_incarnation(paths, id).map_err(|_| {

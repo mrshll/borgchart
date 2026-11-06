@@ -1012,12 +1012,21 @@ fn liveness_is_alive_gone_or_unknown() {
     env.tmux(&["kill-window", "-t", &lead_pane]);
     assert_eq!(live(&env.rows(), "lead"), "gone");
 
-    // The whole server went away: that can't be told from a hidden one.
+    // The whole server exited: it can't be asked, so the pane's own process
+    // decides. It exits on the hang-up: gone once it has.
     fs::remove_file(run.join("runtime/incarnations/helper.json")).unwrap();
     env.up();
     assert_eq!(live(&env.rows(), "lead"), "alive");
     env.tmux(&["kill-server"]);
-    assert_eq!(live(&env.rows(), "lead"), "unknown");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while live(&env.rows(), "lead") != "gone" {
+        assert!(
+            Instant::now() < deadline,
+            "lead still {}",
+            live(&env.rows(), "lead")
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
 
     // Ended through brg after a confirmed stop: gone.
     env.up();
@@ -1033,6 +1042,13 @@ fn lead_pane_alive(env: &Env) -> bool {
     env.tmux(&["list-panes", "-a", "-F", "#{pane_id} #{pane_dead}"])
         .lines()
         .any(|l| l == format!("{pane} 0"))
+}
+
+/// Is a live `lead` window on the team's server, with or without a bus?
+fn lead_window_alive(env: &Env) -> bool {
+    env.tmux(&["list-panes", "-a", "-F", "#{window_name} #{pane_dead}"])
+        .lines()
+        .any(|l| l == "lead 0")
 }
 
 #[test]
@@ -1057,7 +1073,13 @@ fn down_refuses_a_different_tmux_socket() {
 
 #[test]
 fn down_refuses_when_tmux_cannot_be_reached() {
-    let env = Env::new(true);
+    for bus in [true, false] {
+        refuses_when_unreachable(bus);
+    }
+}
+
+fn refuses_when_unreachable(bus: bool) {
+    let env = Env::new(bus);
     env.up();
     for args in [&["down"][..], &["down", "--member", "lead"][..]] {
         let before = env.snapshot();
@@ -1070,7 +1092,7 @@ fn down_refuses_when_tmux_cannot_be_reached() {
         assert!(both(&out).contains("nothing was changed"), "{}", both(&out));
         assert!(!mentions_runs(&both(&out)), "{}", both(&out));
         assert_unchanged(&before, &env.snapshot());
-        assert!(lead_pane_alive(&env));
+        assert!(lead_window_alive(&env), "bus: {bus}");
     }
     // A redirected tmux environment still stops the recorded server.
     fs::create_dir_all(env.path("empty-tmux")).unwrap();
@@ -1085,6 +1107,237 @@ fn down_refuses_when_tmux_cannot_be_reached() {
     // Stopping again is harmless, even though the server has exited.
     let out = env.ok(&["down"]);
     assert!(both(&out).contains("not running"), "{}", both(&out));
+}
+
+#[test]
+fn down_on_a_team_that_never_started_says_not_running() {
+    for bus in [false, true] {
+        let env = Env::new(bus);
+        env.write(
+            "oncall/team.yaml",
+            &TEAM.replace(
+                "    prompt: lead.md\n",
+                "    prompt: lead.md\n    start: false\n",
+            ),
+        );
+        env.ok(&["up"]);
+        assert_eq!(env.tmux(&["list-sessions"]), "", "bus: {bus}");
+        for args in [&["down", "--member", "lead"][..], &["down"][..]] {
+            let out = env.ok(args);
+            assert!(
+                both(&out).contains("not running"),
+                "bus: {bus}: {}",
+                both(&out)
+            );
+        }
+    }
+}
+
+#[test]
+fn an_up_that_cannot_see_the_server_does_not_make_down_say_not_running() {
+    for bus in [false, true] {
+        let env = Env::new(bus);
+        env.write(
+            "oncall/team.yaml",
+            &TEAM.replace(
+                "    prompt: lead.md\n",
+                "    prompt: lead.md\n    start: false\n",
+            ),
+        );
+        env.ok(&["up", "--member", "lead"]);
+        env.wait_for("lead idle", |e| e.state_of("lead") == "idle");
+        // A caller without tmux finds no session, so it starts the team
+        // afresh, with nothing to start.
+        let no_tmux = |args: &[&str]| {
+            env.brg_cmd(args)
+                .env("PATH", env.path("bin"))
+                .output()
+                .unwrap()
+        };
+        let out = no_tmux(&["up"]);
+        assert!(out.status.success(), "bus: {bus}: {}", both(&out));
+        let out = no_tmux(&["down"]);
+        assert_eq!(out.status.code(), Some(1), "bus: {bus}: {}", both(&out));
+        assert!(both(&out).contains("nothing was changed"), "{}", both(&out));
+        assert!(lead_window_alive(&env), "bus: {bus}");
+    }
+}
+
+#[test]
+fn down_still_refuses_when_only_a_plugin_process_ran() {
+    for bus in [false, true] {
+        let env = Env::new(bus);
+        env.write(
+            "oncall/team.yaml",
+            &TEAM
+                .replace(
+                    "    prompt: lead.md\n",
+                    "    prompt: lead.md\n    start: false\n",
+                )
+                .replace(
+                    "    path: plugins/pager\n",
+                    "    path: plugins/pager\n    process: [./watch]\n",
+                ),
+        );
+        env.script("oncall/plugins/pager/watch", "#!/bin/sh\nexec sleep 300\n");
+        env.ok(&["up"]);
+        env.wait_for("the plugin's window", |e| {
+            e.tmux(&["list-windows", "-a"]).contains("_pager")
+        });
+        env.tmux(&["kill-server"]);
+        let out = env.brg(&["down"]);
+        assert_eq!(out.status.code(), Some(1), "bus: {bus}: {}", both(&out));
+        assert!(both(&out).contains("nothing was changed"), "{}", both(&out));
+    }
+}
+
+/// `pid`'s start time, if it is a running process (not a zombie).
+fn started(pid: u32) -> Option<String> {
+    let out = Command::new("ps")
+        .env("LC_ALL", "C")
+        .args(["-o", "stat=", "-o", "lstart=", "-p", &pid.to_string()])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    let (stat, start) = text.trim().split_once(' ')?;
+    (!stat.starts_with('Z')).then(|| start.trim().to_string())
+}
+
+fn running(pid: u32) -> bool {
+    started(pid).is_some()
+}
+
+/// Processes a test started, killed if the test fails while they run.
+struct Strays(Vec<(u32, String)>);
+
+impl Strays {
+    fn add(&mut self, pid: u32) {
+        self.0.push((pid, started(pid).expect("a running process")));
+    }
+}
+
+impl Drop for Strays {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        for (pid, start) in &self.0 {
+            // Only the same process: its PID may have been reused since.
+            if started(*pid).as_ref() == Some(start) {
+                let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
+            }
+        }
+    }
+}
+
+/// From inside `member`, as a background tool call would: two children,
+/// each in a session of its own (so the pane's hangup never reaches them),
+/// one ignoring TERM. The tool keeps waiting for them, so they stay in the
+/// member's process tree. Returns their PIDs once both are set up.
+fn detach_children(env: &Env, member: &str, strays: &mut Strays) -> [u32; 2] {
+    let dir = env.path(&format!("detached/{member}"));
+    fs::create_dir_all(&dir).unwrap();
+    // Each writes its PID once its session and TERM handling are in place,
+    // then becomes `sleep`, keeping both.
+    let child = |name: &str, deaf: bool| {
+        format!(
+            "perl -MPOSIX -e 'POSIX::setsid(); {}open(my $f, \">\", \"{d}/{name}.tmp\") or die; print $f $$; close $f; rename(\"{d}/{name}.tmp\", \"{d}/{name}\"); exec @ARGV' sleep 300 </dev/null >/dev/null 2>&1 &",
+            if deaf {
+                "$SIG{TERM} = \"IGNORE\"; "
+            } else {
+                ""
+            },
+            d = dir.display()
+        )
+    };
+    env.script(
+        &format!("detached/{member}.sh"),
+        &format!(
+            "#!/bin/sh\n{}\n{}\nwait\n",
+            child("a", false),
+            child("b", true)
+        ),
+    );
+    let script = env.path(&format!("detached/{member}.sh"));
+    env.ok(&["send", member, &format!("tool sh {}", script.display())]);
+    env.wait_for("both children", |_| {
+        dir.join("a").exists() && dir.join("b").exists()
+    });
+    let pid = |f: &str| -> u32 {
+        fs::read_to_string(dir.join(f))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap()
+    };
+    let pids = [pid("a"), pid("b")];
+    // Exec'd into `sleep` (its start time doesn't change).
+    env.wait_for("both children sleeping", |_| {
+        pids.iter().all(|&p| {
+            Command::new("ps")
+                .args(["-o", "comm=", "-p", &p.to_string()])
+                .output()
+                .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("sleep"))
+        })
+    });
+    for p in pids {
+        strays.add(p);
+    }
+    pids
+}
+
+#[test]
+fn down_ends_children_that_left_the_pane() {
+    for bus in [false, true] {
+        let env = Env::new(bus);
+        let mut strays = Strays(Vec::new());
+        env.up();
+        env.up_helper();
+        let lead = detach_children(&env, "lead", &mut strays);
+        let helper = detach_children(&env, "helper", &mut strays);
+        // Another window that happens to be called `lead`: not lead's.
+        let session = env.tmux(&["list-sessions", "-F", "#{session_name}"]);
+        let target = format!("={}:", session.trim());
+        let namesake: u32 = env
+            .tmux(&[
+                "new-window",
+                "-d",
+                "-P",
+                "-F",
+                "#{pane_pid}",
+                "-t",
+                &target,
+                "-n",
+                "lead",
+                "sleep 300",
+            ])
+            .trim()
+            .parse()
+            .unwrap();
+        strays.add(namesake);
+
+        env.ok(&["down", "--member", "lead"]);
+        for pid in lead {
+            assert!(
+                !running(pid),
+                "bus: {bus}: lead's child {pid} outlived `down --member lead`"
+            );
+        }
+        for pid in helper.into_iter().chain([namesake]) {
+            assert!(
+                running(pid),
+                "bus: {bus}: {pid}, not lead's, was stopped with lead"
+            );
+        }
+
+        env.ok(&["down"]);
+        for pid in helper {
+            assert!(
+                !running(pid),
+                "bus: {bus}: helper's child {pid} outlived `down`"
+            );
+        }
+    }
 }
 
 fn pid_of(child: &std::process::Child) -> String {

@@ -214,9 +214,10 @@ fn codex_hook_hash(event_label: &str, command: &str) -> String {
     )
 }
 
-/// Whether Codex arguments override config `key` (`-c key=…`, `--config key=…`,
-/// `-c=key=…`, `--config=key=…` or `-ckey=…`), judged by the text before `=`.
-fn codex_args_set(args: &[String], key: &str) -> bool {
+/// Whether Codex arguments override config `key` or a key inside it (`-c key=…`,
+/// `--config key=…`, `-c=key=…`, `--config=key=…`, `-ckey=…` or `-c key.sub=…`),
+/// judged by the text before `=`.
+pub fn codex_args_set(args: &[String], key: &str) -> bool {
     let mut values: Vec<&str> = Vec::new();
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -228,9 +229,24 @@ fn codex_args_set(args: &[String], key: &str) -> bool {
             values.push(v.strip_prefix('=').unwrap_or(v));
         }
     }
-    values
-        .into_iter()
-        .any(|v| v.split_once('=').is_some_and(|(k, _)| k.trim() == key))
+    values.into_iter().any(|v| {
+        v.split_once('=').is_some_and(|(k, _)| {
+            let k = k.trim();
+            k == key
+                || k.strip_prefix(key)
+                    .is_some_and(|rest| rest.starts_with('.'))
+        })
+    })
+}
+
+/// The `-c projects=…` value that trusts exactly `dir` for this Codex session.
+/// Codex writes nothing to its config for it, unlike answering its trust screen,
+/// which saves trust for the whole repository.
+pub fn codex_trust_config(dir: &Path) -> String {
+    format!(
+        "projects={{{}={{trust_level=\"trusted\"}}}}",
+        toml_string(&dir.display().to_string())
+    )
 }
 
 fn toml_string(value: &str) -> String {
@@ -289,6 +305,7 @@ pub fn member_launch(
     posture: Posture,
     help: &BTreeMap<String, String>,
     settings_path: &Path,
+    codex_trust: Option<&Path>,
 ) -> LaunchSpec {
     let granted = granted(team, member);
     let shim_dir = state.member_bin(&member.id);
@@ -385,6 +402,9 @@ pub fn member_launch(
                     codex_hook_config(brg, state, &member.id),
                 ]);
                 gate = Some(gate_rules(&granted, &shim_dir, mcp_tools));
+            }
+            if let Some(dir) = codex_trust {
+                argv.extend(["-c".into(), codex_trust_config(dir)]);
             }
             argv.extend(extra_args);
             // `--` so a prompt that starts with `-` isn't read as an option.
