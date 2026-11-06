@@ -237,12 +237,12 @@ members:
 
     ```
     coding
-    └─ lead                 claude opus high      working
+    └─ lead                     claude opus high     working
        ├─ ws-1
-       │  └─ lead           claude opus high      working
-       │     ├─ implementer-1 claude opus medium  working
-       │     └─ reviewer    codex example-model   not started (start: false)
-       └─ ws               on demand (1 of 4 running)
+       │  └─ lead               claude opus high     working
+       │     ├─ implementer-1   claude opus medium   working
+       │     └─ reviewer        codex example-model  not started (start: false)
+       └─ ws                    on demand (1 of 4 running)
     ```
 
   - **Addressing extends:** `coding/ws-2/lead`, `coding/ws-2/implementer-1`. Bare names resolve relative to the sender, so inside `ws-2`, `implementer-1` means `ws-2`'s own copy.
