@@ -197,8 +197,9 @@ pub fn main() -> ExitCode {
             let input = target_or_exit!(&target);
             match runtime::up(&input, member.as_deref()) {
                 Ok(outcome) => {
-                    for m in &outcome.messages {
-                        println!("{m}");
+                    print!("{}", outcome.tree);
+                    for n in &outcome.notes {
+                        println!("{n}");
                     }
                     if outcome.failed {
                         ExitCode::from(1)
@@ -257,7 +258,10 @@ pub fn main() -> ExitCode {
                             serde_json::to_string_pretty(&rows).unwrap_or_default()
                         );
                     } else {
-                        print!("{}", runtime::render_table(&rows));
+                        print!(
+                            "{}",
+                            runtime::render_status(&runtime::team_name(&input), &rows)
+                        );
                     }
                     ExitCode::SUCCESS
                 }

@@ -10,6 +10,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, TableState};
 
 use crate::runtime::{self, StatusRow};
+use crate::tree;
 use crate::validate::Input;
 
 const REFRESH: Duration = Duration::from_secs(2);
@@ -26,7 +27,7 @@ pub fn watch(input: &Input, interval: Duration) -> Result<(), String> {
         let _ = write!(
             out,
             "\x1b[H\x1b[2J{}\nrefreshed at {} (UTC epoch); Ctrl-C to stop\n",
-            runtime::render_table(&rows),
+            runtime::render_status(&runtime::team_name(input), &rows),
             now
         );
         let _ = out.flush();
@@ -34,11 +35,14 @@ pub fn watch(input: &Input, interval: Duration) -> Result<(), String> {
     }
 }
 
-fn state_style(state: &str) -> Style {
-    match state {
-        "blocked" | "exited" => Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+fn state_style(row: &StatusRow) -> Style {
+    let alert = Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED);
+    match row.state.as_str() {
+        "blocked" | "exited" => alert,
+        // A `start: true` member that ended.
+        runtime::STOPPED if row.expected_running => alert,
         "working" => Style::default().add_modifier(Modifier::BOLD),
-        "stopped" => Style::default().add_modifier(Modifier::DIM),
+        runtime::STOPPED | runtime::NOT_STARTED => Style::default().add_modifier(Modifier::DIM),
         _ => Style::default(),
     }
 }
@@ -53,15 +57,33 @@ fn draw(
         Layout::vertical([Constraint::Min(3), Constraint::Length(2)]).areas(frame.area());
     let header = Row::new(["NAME", "KIND", "VENDOR", "POSTURE", "STATE", "DETAIL"])
         .style(Style::default().add_modifier(Modifier::BOLD));
+    // Members show where they sit in the team's tree.
+    let nodes: Vec<tree::Node> = rows
+        .iter()
+        .filter(|r| r.kind == "member")
+        .map(|r| tree::Node {
+            id: r.name.clone(),
+            parent: r.parent.clone(),
+            cols: Vec::new(),
+        })
+        .collect();
+    let prefixes: std::collections::BTreeMap<String, String> = tree::order(&nodes)
+        .into_iter()
+        .map(|(i, p)| (nodes[i].id.clone(), p))
+        .collect();
     let body: Vec<Row> = rows
         .iter()
         .map(|r| {
+            let prefix = match r.kind {
+                "member" => prefixes.get(&r.name).cloned().unwrap_or_default(),
+                _ => String::new(),
+            };
             Row::new(vec![
-                Cell::from(r.name.clone()),
+                Cell::from(format!("{prefix}{}", r.name)),
                 Cell::from(r.kind),
                 Cell::from(r.vendor.clone().unwrap_or_else(|| "-".into())),
                 Cell::from(r.posture.clone().unwrap_or_else(|| "-".into())),
-                Cell::from(r.state.clone()).style(state_style(&r.state)),
+                Cell::from(r.state.clone()).style(state_style(r)),
                 Cell::from(r.detail.clone().unwrap_or_default()),
             ])
         })
@@ -69,11 +91,11 @@ fn draw(
     let table = Table::new(
         body,
         [
-            Constraint::Length(14),
+            Constraint::Length(20),
             Constraint::Length(7),
             Constraint::Length(7),
             Constraint::Length(8),
-            Constraint::Length(9),
+            Constraint::Length(11),
             Constraint::Min(10),
         ],
     )
@@ -142,7 +164,7 @@ pub fn interactive(input: &Input) -> Result<(), String> {
                 let Some(row) = rows.get(selected) else {
                     continue;
                 };
-                if row.state == "stopped" {
+                if row.state == runtime::STOPPED || row.state == runtime::NOT_STARTED {
                     message = format!("{} is not running", row.name);
                     continue;
                 }

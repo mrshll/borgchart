@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::bus::manifest::ConfigSnapshot;
+
 /// Overrides for tests and unusual setups.
 pub const ENV_STATE_HOME: &str = "BORGCHART_STATE_HOME";
 pub const ENV_TMUX_SOCKET: &str = "BORGCHART_TMUX_SOCKET";
@@ -189,6 +191,10 @@ impl StateDir {
     pub fn member_tmp(&self, member: &str) -> PathBuf {
         self.root.join("tmp").join(member)
     }
+    /// Held by `up` and `down` while they change the deployment.
+    pub fn lifecycle_lock(&self) -> PathBuf {
+        self.root.join("lifecycle.lock")
+    }
     pub fn lock_file(&self, member: &str) -> PathBuf {
         self.root.join("locks").join(format!("{member}.lock"))
     }
@@ -202,12 +208,39 @@ impl StateDir {
 pub struct Meta {
     pub source: PathBuf,
     pub team_dir: PathBuf,
-    /// The absolute path of the `brg` that started the deployment.
+    /// The absolute path of the `brg` that started the deployment (plugins
+    /// get it as `BORGCHART_BIN`).
     pub brg: PathBuf,
+    /// The configuration the deployment started with. Members started into
+    /// it later must see the same.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<ConfigSnapshot>,
+    /// The run (internal) holding the team's messages, if it has a bus.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<RunBinding>,
+    /// The tmux socket name the deployment was started on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub socket: Option<String>,
+    /// The tmux server's absolute socket path, read from tmux once the
+    /// first window started. `down` and liveness address the
+    /// server by this, never by the caller's tmux environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub socket_path: Option<PathBuf>,
+    /// Set by a `down` that stopped the whole deployment (or found it gone
+    /// on a server that answered); cleared by the next fresh `up`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped_at: Option<String>,
     /// The small environment every window and plugin starts from (no secrets).
     pub base_env: BTreeMap<String, String>,
     pub members: BTreeMap<String, MemberMeta>,
     pub plugins: BTreeMap<String, PluginMeta>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunBinding {
+    pub run: String,
+    /// The run directory, `<bus.root>/<run>`.
+    pub dir: PathBuf,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -216,6 +249,12 @@ pub struct MemberMeta {
     pub posture: String,
     pub parent: Option<String>,
     pub vendor_version: Option<String>,
+    /// Whether `up` has started the member's window since the team last
+    /// started afresh (`status` tells `not started` from `stopped` by it
+    /// when the team has no bus). `None` in state from an earlier brg,
+    /// which didn't record it: history unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
