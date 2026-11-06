@@ -16,6 +16,7 @@
 | `brg msg publish --key KEY [--record FILE\|-] [--external NAME] [--json]` | Publish a bus record from a JSON draft (stdin by default). A retry with the same key returns the same record; see [the bus](bus.md#commands--records) |
 | `brg inbox [--member ID \| --external NAME] [--after ID] [--limit N] [--all] [--full] [--json]` | List records addressed to you (or another inbox, read-only), oldest first, a page at a time. Never acknowledges |
 | `brg inbox wait … --timeout SECONDS` | Wait (up to 600 s) for a new unacknowledged record; exits 9 on timeout |
+| `brg inbox wait --background [--timeout SECONDS]` | Read-only wait for unseen IDs: records beyond the first snapshot return immediately; older unseen records and errors wait at least 60 s. Timeout 60–86400 s (default 24 h); explicit help and signals end it immediately |
 | `brg msg read ID [--json]` | Show one record in full |
 | `brg msg ack ID… [--external NAME] [--json]` | Acknowledge records addressed to you; acking twice is a no-op |
 | `brg bus inspect [--last N] [--json]` | Summarize the team's messages: members, inbox counts, recent records, store health |

@@ -198,7 +198,41 @@ macro_rules! target_or_exit {
 }
 
 pub fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let started = std::time::Instant::now();
+    let args: Vec<_> = std::env::args_os().collect();
+    // Recognize the wait even when clap rejects its flags. Usage errors
+    // must back off too, or a broken background command can spin turns.
+    // Over-matching (e.g. a file named `wait`) only delays an error, which
+    // is harmless. Explicit help and external termination remain immediate.
+    let background = args.iter().any(|a| a == "inbox")
+        && args.iter().any(|a| a == "wait")
+        && args
+            .iter()
+            .any(|a| a == "--background" || a.as_encoded_bytes().starts_with(b"--background="));
+    let help = args.iter().any(|a| a == "--help" || a == "-h");
+    let back_off = || {
+        if background && !help {
+            let minimum = crate::bus::store::background_wait_minimum();
+            std::thread::sleep(minimum.saturating_sub(started.elapsed()));
+        }
+    };
+    let cli = match Cli::try_parse_from(args) {
+        Ok(cli) => cli,
+        Err(error) => {
+            if error.use_stderr() {
+                back_off();
+            }
+            error.exit();
+        }
+    };
+    let code = run(cli, started);
+    if code != ExitCode::SUCCESS {
+        back_off();
+    }
+    code
+}
+
+fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
     match cli.command {
         Command::Validate {
             target,
@@ -348,7 +382,9 @@ pub fn main() -> ExitCode {
         Command::Msg { target, command } => {
             crate::bus::cli::msg(&target_or_exit!(&target), command)
         }
-        Command::Inbox { target, args } => crate::bus::cli::inbox(&target_or_exit!(&target), args),
+        Command::Inbox { target, args } => {
+            crate::bus::cli::inbox(&target_or_exit!(&target), args, started)
+        }
         Command::Task { target, command } => {
             crate::bus::task_cli::task(&target_or_exit!(&target), command)
         }

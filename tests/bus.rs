@@ -784,6 +784,381 @@ fn inbox_wait_returns_early_or_times_out() {
     assert_eq!(out.code, 2, "--timeout is required");
 }
 
+#[cfg(feature = "test-support")]
+mod background_wait {
+    use super::*;
+
+    fn command(f: &Fixture, who: &As, extra: &[&str]) -> Command {
+        let mut args = vec!["inbox", "wait", "--background", "--json"];
+        args.extend(extra);
+        let mut cmd = f.command(who, &args);
+        cmd.env("BORGCHART_WAIT_MIN_MS", "400")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        cmd
+    }
+
+    fn observation(f: &Fixture) -> PathBuf {
+        f.run_dir().join("attention/observed/lead/lead-1.json")
+    }
+
+    fn bytes(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+        let mut files = BTreeMap::new();
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    files.insert(path.clone(), Vec::new());
+                    files.extend(bytes(&path));
+                } else {
+                    files.insert(path.clone(), fs::read(path).unwrap());
+                }
+            }
+        }
+        files
+    }
+
+    #[test]
+    fn background_wait_ignores_shown_records_and_never_marks_arrivals() {
+        let f = Fixture::new();
+        assert_eq!(
+            f.publish(&As::Operator, "old", &note("lead", "old body"))
+                .code,
+            0
+        );
+        assert_eq!(ids(&f.inbox(&As::Member("lead"), &[])), ["m1"]);
+        let seen = fs::read(observation(&f)).unwrap();
+        let mut child = command(&f, &As::Member("lead"), &[]).spawn().unwrap();
+        std::thread::sleep(Duration::from_millis(650));
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "an unacked, shown record woke the wait"
+        );
+        assert_eq!(
+            f.publish(&As::Operator, "new", &note("lead", "new body"))
+                .code,
+            0
+        );
+        let before = bytes(&f.run_dir());
+        let out = finish_within(child, Duration::from_secs(3));
+        assert_eq!(out.code, 0, "{:?} {}", out.json, out.stderr);
+        assert_eq!(
+            out.json,
+            json!({"ok": true, "code": 0, "outcome": "ok", "ids": ["m2"], "count": 1})
+        );
+        assert_eq!(bytes(&f.run_dir()), before);
+        assert_eq!(fs::read(observation(&f)).unwrap(), seen);
+        assert_eq!(ids(&f.inbox(&As::Member("lead"), &[])), ["m1", "m2"]);
+        let observed: Value = serde_json::from_slice(&fs::read(observation(&f)).unwrap()).unwrap();
+        assert_eq!(observed["ids"], json!(["m1", "m2"]));
+    }
+
+    #[test]
+    fn background_wait_returns_old_ids_at_minimum_in_text_or_json() {
+        let f = Fixture::new();
+        for key in ["one", "two"] {
+            assert_eq!(
+                f.publish(&As::Operator, key, &note("lead", "private body"))
+                    .code,
+                0
+            );
+        }
+        let start = Instant::now();
+        let mut cmd = command(&f, &As::Member("lead"), &["--timeout", "86400"]);
+        let out = finish_within(cmd.spawn().unwrap(), Duration::from_secs(3));
+        assert_eq!(out.code, 0, "{:?} {}", out.json, out.stderr);
+        assert_eq!(out.json["ids"], json!(["m1", "m2"]));
+        assert!(start.elapsed() >= Duration::from_millis(400));
+        let start = Instant::now();
+        let child = f
+            .command(&As::Member("lead"), &["inbox", "wait", "--background"])
+            .env("BORGCHART_WAIT_MIN_MS", "400")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let out = finish_within(child, Duration::from_secs(3));
+        assert_eq!(out.code, 0);
+        assert_eq!(out.json, "m1 m2\n");
+        assert!(start.elapsed() >= Duration::from_millis(400));
+        assert!(!observation(&f).exists());
+    }
+
+    #[test]
+    fn background_wait_leading_file_error_backs_off() {
+        let f = Fixture::new();
+        let file = f.dep_file();
+        let mut cmd = f.command(
+            &As::Member("lead"),
+            &[
+                "-f",
+                file.to_str().unwrap(),
+                "inbox",
+                "wait",
+                "--background",
+            ],
+        );
+        cmd.env("BORGCHART_WAIT_MIN_MS", "400")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let start = Instant::now();
+        let out = finish_within(cmd.spawn().unwrap(), Duration::from_secs(3));
+        assert_eq!(out.code, 2);
+        assert!(start.elapsed() >= Duration::from_millis(400));
+    }
+
+    #[test]
+    fn background_wait_boolean_value_error_backs_off() {
+        let f = Fixture::new();
+        let mut cmd = f.command(&As::Member("lead"), &["inbox", "wait", "--background=true"]);
+        cmd.env("BORGCHART_WAIT_MIN_MS", "400")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let start = Instant::now();
+        let out = finish_within(cmd.spawn().unwrap(), Duration::from_secs(3));
+        assert_eq!(out.code, 2);
+        assert!(start.elapsed() >= Duration::from_millis(400));
+    }
+
+    #[test]
+    fn background_wait_explicit_help_is_immediate() {
+        let f = Fixture::new();
+        for flag in ["--help", "-h"] {
+            for background in ["--background", "--background=true"] {
+                let mut cmd = f.command(&As::Member("lead"), &["inbox", "wait", background, flag]);
+                cmd.env("BORGCHART_WAIT_MIN_MS", "10000")
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+                let start = Instant::now();
+                let out = finish_within(cmd.spawn().unwrap(), Duration::from_secs(3));
+                assert!(matches!(out.code, 0 | 2));
+                assert!(start.elapsed() < Duration::from_secs(3));
+            }
+        }
+    }
+
+    #[test]
+    fn background_wait_persistent_observation_failure_is_rate_limited() {
+        let f = Fixture::new();
+        assert_eq!(
+            f.publish(&As::Operator, "old", &note("lead", "old body"))
+                .code,
+            0
+        );
+        borgchart::bus::fsx::create_private_dirs(&observation(&f)).unwrap();
+        for _ in 0..3 {
+            assert_eq!(ids(&f.inbox(&As::Member("lead"), &[])), ["m1"]);
+            assert!(
+                observation(&f).is_dir(),
+                "observation writes must keep failing"
+            );
+            let before = bytes(&f.run_dir());
+            let start = Instant::now();
+            let out = finish_within(
+                command(&f, &As::Member("lead"), &[]).spawn().unwrap(),
+                Duration::from_secs(3),
+            );
+            assert_eq!(out.code, 0, "{:?} {}", out.json, out.stderr);
+            assert_eq!(out.json["ids"], json!(["m1"]));
+            assert!(start.elapsed() >= Duration::from_millis(400));
+            assert_eq!(bytes(&f.run_dir()), before);
+        }
+    }
+
+    #[test]
+    fn background_wait_new_arrival_bypasses_minimum_and_includes_old_ids() {
+        let f = Fixture::new();
+        assert_eq!(
+            f.publish(&As::Operator, "old", &note("lead", "old body"))
+                .code,
+            0
+        );
+        let mut cmd = command(&f, &As::Member("lead"), &[]);
+        cmd.env("BORGCHART_WAIT_MIN_MS", "10000");
+        let start = Instant::now();
+        let mut child = cmd.spawn().unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(child.try_wait().unwrap().is_none());
+        assert_eq!(
+            f.publish(&As::Operator, "new", &note("lead", "new body"))
+                .code,
+            0
+        );
+        let out = finish_within(child, Duration::from_secs(3));
+        assert_eq!(out.code, 0, "{:?} {}", out.json, out.stderr);
+        assert_eq!(out.json["ids"], json!(["m1", "m2"]));
+        assert!(start.elapsed() < Duration::from_secs(3));
+        assert!(!observation(&f).exists());
+    }
+
+    #[test]
+    fn background_wait_requires_draining_every_inbox_page() {
+        let f = Fixture::new();
+        for n in 1..=21 {
+            assert_eq!(
+                f.publish(&As::Operator, &format!("note-{n}"), &note("lead", "body"))
+                    .code,
+                0
+            );
+        }
+        let first = f.inbox(&As::Member("lead"), &[]);
+        assert_eq!(first["records"].as_array().unwrap().len(), 20);
+        assert_eq!(first["next"], "m20");
+        let start = Instant::now();
+        let out = finish_within(
+            command(&f, &As::Member("lead"), &[]).spawn().unwrap(),
+            Duration::from_secs(3),
+        );
+        assert_eq!(out.code, 0, "{:?} {}", out.json, out.stderr);
+        assert_eq!(out.json["ids"], json!(["m21"]));
+        assert!(start.elapsed() >= Duration::from_millis(400));
+        let last = f.inbox(&As::Member("lead"), &["--after", "m20"]);
+        assert_eq!(ids(&last), ["m21"]);
+        assert!(last["next"].is_null());
+        let mut cmd = command(&f, &As::Member("lead"), &["--timeout", "60"]);
+        cmd.env("BORGCHART_WAIT_TIMEOUT_MS", "500");
+        let out = finish_within(cmd.spawn().unwrap(), Duration::from_secs(3));
+        assert_eq!(
+            out.code, 9,
+            "all 21 records are shown but still unacknowledged: {:?} {}",
+            out.json, out.stderr
+        );
+    }
+
+    #[test]
+    fn background_wait_errors_back_off_including_parser_errors() {
+        let f = Fixture::new();
+        for (who, flags, code) in [
+            (As::Operator, vec![], 2),
+            (As::Member("lead"), vec!["--timeout", "30"], 2),
+            (As::Member("lead"), vec!["--timeout", "86401"], 2),
+            (As::Member("lead"), vec!["--after", "m1"], 2),
+            (As::Member("lead"), vec!["--limit", "20"], 2),
+            (As::Member("lead"), vec!["--full"], 2),
+            (As::Member("lead"), vec!["--member", "helper"], 2),
+            (As::Operator, vec!["--external", "ops"], 2),
+            (As::Member("lead"), vec!["--timeout", "bad"], 2),
+            (As::Member("lead"), vec!["--unknown"], 2),
+            (As::MemberWith("lead", RUN, "old"), vec![], 8),
+        ] {
+            let start = Instant::now();
+            let out = finish_within(
+                command(&f, &who, &flags).spawn().unwrap(),
+                Duration::from_secs(3),
+            );
+            assert_eq!(out.code, code, "{flags:?}: {:?} {}", out.json, out.stderr);
+            assert!(
+                start.elapsed() >= Duration::from_millis(400),
+                "{flags:?}: no backoff"
+            );
+        }
+        assert_eq!(
+            f.publish(&As::Operator, "bad", &note("lead", "body")).code,
+            0
+        );
+        fs::write(f.run_dir().join("bus/records/0000000001.json"), "broken").unwrap();
+        let start = Instant::now();
+        let out = finish_within(
+            command(&f, &As::Member("lead"), &[]).spawn().unwrap(),
+            Duration::from_secs(3),
+        );
+        assert_eq!(out.code, 7);
+        assert!(start.elapsed() >= Duration::from_millis(400));
+    }
+
+    #[test]
+    fn background_wait_timeout_obeys_the_minimum() {
+        let f = Fixture::new();
+        let start = Instant::now();
+        let mut cmd = command(&f, &As::Member("lead"), &["--timeout", "60"]);
+        cmd.env("BORGCHART_WAIT_TIMEOUT_MS", "1");
+        let out = finish_within(cmd.spawn().unwrap(), Duration::from_secs(3));
+        assert_eq!(out.code, 9, "{:?} {}", out.json, out.stderr);
+        assert!(start.elapsed() >= Duration::from_millis(400));
+    }
+
+    #[test]
+    fn background_wait_killed_mid_flight_changes_no_files() {
+        let f = Fixture::new();
+        assert_eq!(
+            f.publish(&As::Operator, "seen", &note("lead", "body")).code,
+            0
+        );
+        f.inbox(&As::Member("lead"), &[]);
+        let before = bytes(&f.run_dir());
+        let mut child = command(&f, &As::Member("lead"), &[]).spawn().unwrap();
+        std::thread::sleep(Duration::from_millis(650));
+        assert!(child.try_wait().unwrap().is_none());
+        child.kill().unwrap(); // SIGKILL on Unix.
+        child.wait().unwrap();
+        assert_eq!(bytes(&f.run_dir()), before);
+    }
+
+    #[test]
+    fn background_wait_fences_restarts_and_replacements() {
+        for rollover in [true, false] {
+            let f = Fixture::new();
+            let child = command(&f, &As::Member("lead"), &[]).spawn().unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+            if rollover {
+                f.roll_over("r42", Some(("lead", "new storage")));
+            } else {
+                f.write_incarnation("lead", "lead-2", false);
+            }
+            let out = finish_within(child, Duration::from_secs(3));
+            assert_eq!(out.code, 8, "{:?} {}", out.json, out.stderr);
+        }
+    }
+
+    #[test]
+    fn observations_union_own_pages_and_tolerate_damage() {
+        use std::os::unix::fs::PermissionsExt;
+        let f = Fixture::new();
+        for n in 1..=12 {
+            assert_eq!(
+                f.publish(&As::Operator, &format!("note-{n}"), &note("lead", "body"))
+                    .code,
+                0
+            );
+        }
+        f.inbox(&As::Operator, &["--member", "lead"]);
+        f.inbox(&As::Member("lead"), &["--member", "lead"]);
+        f.brg(&As::Member("lead"), &["msg", "read", "m1", "--json"], None);
+        assert!(!observation(&f).exists());
+        f.inbox(&As::Member("lead"), &["--after", "m9"]);
+        f.inbox(&As::Member("lead"), &["--limit", "2"]);
+        let seen: Value = serde_json::from_slice(&fs::read(observation(&f)).unwrap()).unwrap();
+        assert_eq!(
+            seen,
+            json!({"schema": 1, "member": "lead", "incarnation": "lead-1", "ids": ["m1", "m2", "m10", "m11", "m12"]})
+        );
+        assert_eq!(
+            fs::metadata(observation(&f)).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        for dir in ["attention", "attention/observed", "attention/observed/lead"] {
+            assert_eq!(
+                fs::metadata(f.run_dir().join(dir))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+        }
+        fs::write(observation(&f), "broken").unwrap();
+        let out = finish_within(
+            command(&f, &As::Member("lead"), &[]).spawn().unwrap(),
+            Duration::from_secs(3),
+        );
+        assert_eq!(out.code, 0, "bad observation is treated as empty");
+        assert_eq!(out.json["count"], 12);
+        f.inbox(&As::Member("lead"), &["--limit", "1"]);
+        let seen: Value = serde_json::from_slice(&fs::read(observation(&f)).unwrap()).unwrap();
+        assert_eq!(seen["ids"], json!(["m1"]));
+    }
+}
+
 #[test]
 fn caller_context_is_checked() {
     let f = Fixture::new();

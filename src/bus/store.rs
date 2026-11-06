@@ -40,7 +40,21 @@ pub const MAX_ARTIFACT_BYTES: u64 = 256 * 1024 * 1024;
 pub const DEFAULT_PAGE: usize = 20;
 pub const MAX_PAGE: usize = 100;
 pub const MAX_WAIT_SECS: u64 = 600;
+pub const MIN_BACKGROUND_WAIT_SECS: u64 = 60;
+pub const MAX_BACKGROUND_WAIT_SECS: u64 = 86400;
 pub const POLL: Duration = Duration::from_millis(250);
+
+/// The loop guard also applies to errors before an inbox can be opened.
+pub fn background_wait_minimum() -> Duration {
+    #[cfg(feature = "test-support")]
+    if let Some(ms) = std::env::var("BORGCHART_WAIT_MIN_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+    {
+        return Duration::from_millis(ms);
+    }
+    Duration::from_secs(MIN_BACKGROUND_WAIT_SECS)
+}
 
 /// A team's opened message storage: the deployment's bus configuration and
 /// its current run's manifest.
@@ -457,7 +471,7 @@ impl Snapshot {
         self.problems.is_empty()
     }
 
-    fn require_healthy(&self) -> Result<(), Failure> {
+    pub(super) fn require_healthy(&self) -> Result<(), Failure> {
         match self.problems.first() {
             None => Ok(()),
             Some(first) => Err(Failure::new(
@@ -1175,7 +1189,9 @@ pub fn list(snap: &Snapshot, to: &Recipient, after: Option<u64>, limit: usize, a
 /// After a member listed its own inbox.
 pub fn observed(bus: &Bus, member: &str, incarnation: &str, page: &Page) {
     let ids: Vec<String> = page.records.iter().map(|r| r.id.clone()).collect();
-    attention_hooks::after_list(&bus.paths, member, incarnation, &ids);
+    if !ids.is_empty() && bus.store.ensure_run(&bus.run).is_ok() {
+        attention_hooks::after_list(&bus.paths, member, incarnation, &ids);
+    }
     ensure_attention(bus);
 }
 
