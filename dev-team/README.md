@@ -42,6 +42,8 @@ Each member file names both vendors' models; `vendor:` in `team.yaml` picks one.
 
 4. **Answer the folder-trust screens** once per checkout. `auto_trust` is false, so a person answers them: when a member first starts in a checkout and `brg status` shows it `blocked`, run `brg attach <member>`, answer, and detach (your tmux prefix, then `d`). Or run `claude` and `codex` there once beforehand, in every checkout whose members use them (the design checkout has both).
 
+   **Codex's sandbox.** Codex members write outside their checkout: the message storage, brg's state directory, the tmux socket directory and the notes directory. If your Codex sandbox stops them for approval there, you can add exactly those directories for that member in its deployment `args` (`-c sandbox_workspace_write.writable_roots=[…]`). This widens the sandbox, so it's your choice, and it replaces your config's `writable_roots` list for that member.
+
 5. **Start the team:**
 
    ```sh
