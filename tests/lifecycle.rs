@@ -7,6 +7,8 @@
 //! Run with `cargo test --features test-support`.
 #![cfg(feature = "test-support")]
 
+mod common;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -29,9 +31,7 @@ struct Env {
 
 impl Drop for Env {
     fn drop(&mut self) {
-        let _ = Command::new("tmux")
-            .args(["-L", &self.socket, "kill-server"])
-            .output();
+        crate::common::kill_server(&self.socket);
     }
 }
 
@@ -143,9 +143,7 @@ impl Env {
     }
 
     fn tmux(&self, args: &[&str]) -> String {
-        let out = Command::new("tmux")
-            .arg("-L")
-            .arg(&self.socket)
+        let out = crate::common::tmux(&self.socket)
             .args(args)
             .output()
             .unwrap();

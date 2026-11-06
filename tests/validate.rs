@@ -1,9 +1,10 @@
 //! Loader and `brg validate` tests against teams built in temporary directories.
 
+mod common;
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::process::Command;
 
 use borgchart::diag::Report;
 use borgchart::team::{Grant, Posture, Vendor};
@@ -576,7 +577,7 @@ fn team_alone_validates_without_deployment() {
 #[test]
 fn cli_reports_json_and_exit_codes() {
     let f = Fixture::new();
-    let ok = Command::new(env!("CARGO_BIN_EXE_brg"))
+    let ok = common::command(env!("CARGO_BIN_EXE_brg"))
         .args(["validate", "--json", "--file"])
         .arg(f.path("borgchart.yaml"))
         .output()
@@ -586,7 +587,7 @@ fn cli_reports_json_and_exit_codes() {
     assert_eq!(parsed["ok"], true);
 
     f.edit("team.yaml", "parent: lead", "parent: boss");
-    let bad = Command::new(env!("CARGO_BIN_EXE_borgchart"))
+    let bad = common::command(env!("CARGO_BIN_EXE_borgchart"))
         .args(["validate", "--file"])
         .arg(f.path("borgchart.yaml"))
         .output()
@@ -595,7 +596,7 @@ fn cli_reports_json_and_exit_codes() {
     assert!(String::from_utf8_lossy(&bad.stderr).contains("parent `boss`"));
 
     let empty = tempfile::tempdir().unwrap();
-    let usage = Command::new(env!("CARGO_BIN_EXE_brg"))
+    let usage = common::command(env!("CARGO_BIN_EXE_brg"))
         .arg("validate")
         .current_dir(empty.path())
         .output()
