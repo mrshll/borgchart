@@ -9,7 +9,6 @@ mod common;
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use borgchart::bus::manifest::PaneIdentity;
@@ -386,19 +385,13 @@ fn only_a_seen_empty_box_confirms_a_submission() {
 
 // ---- attempts against the fake composer ----
 
-static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
 struct Env {
+    /// First, so its server stops before the test's directory goes.
+    private: common::PrivateTmux,
     dir: tempfile::TempDir,
     socket: String,
     tmux: Tmux,
     state: StateDir,
-}
-
-impl Drop for Env {
-    fn drop(&mut self) {
-        crate::common::kill_server(&self.socket);
-    }
 }
 
 fn qualified(vendor: Vendor) -> LaunchFacts {
@@ -417,18 +410,20 @@ impl Env {
     /// Start the fake composer for `vendor` in session `s`, window `m`.
     fn new(vendor: Vendor) -> Env {
         let dir = tempfile::tempdir().unwrap();
-        let socket = format!(
-            "brg-wake-{}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::SeqCst)
-        );
+        let private = common::PrivateTmux::new();
+        let socket = private.socket("brg-wake");
         let conf = dir.path().join("tmux.conf");
         fs::write(&conf, "set -g remain-on-exit on\n").unwrap();
         let env = BTreeMap::from([
-            // Wherever this test found tmux (e.g. /opt/homebrew/bin on macOS).
+            // The guard, then wherever this test found tmux (e.g.
+            // /opt/homebrew/bin on macOS).
             (
                 "PATH".to_string(),
-                std::env::var("PATH").unwrap_or_default(),
+                private.path_with(&std::env::var("PATH").unwrap_or_default()),
+            ),
+            (
+                "BORGCHART_TMUX_TMPDIR".to_string(),
+                private.dir().display().to_string(),
             ),
             ("LANG".to_string(), "C.UTF-8".to_string()),
             ("TERM".to_string(), "xterm-256color".to_string()),
@@ -458,6 +453,7 @@ impl Env {
         .unwrap();
         let e = Env {
             state: StateDir::from_root(&dir.path().join("state")),
+            private,
             dir,
             socket,
             tmux,
@@ -740,7 +736,9 @@ fn unqualified_members_get_alerts_only() {
 fn an_attached_client_and_a_resize_do_not_matter() {
     let e = Env::new(Vendor::Claude);
     // A control-mode client stays attached for the attempt.
-    let mut client = common::tmux(&e.socket)
+    let mut client = e
+        .private
+        .tmux(&e.socket)
         .args(["-C", "attach", "-t", "s"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())

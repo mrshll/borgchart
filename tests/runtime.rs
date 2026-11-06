@@ -10,33 +10,23 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 const SECRET: &str = "xoxb-not-a-real-token-41f3";
 
-static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
 struct Env {
+    /// First, so its servers stop before the test's directory goes.
+    tmux: common::PrivateTmux,
     dir: tempfile::TempDir,
     socket: String,
-}
-
-impl Drop for Env {
-    fn drop(&mut self) {
-        crate::common::kill_server(&self.socket);
-    }
 }
 
 impl Env {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let socket = format!(
-            "brg-test-{}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::SeqCst)
-        );
-        let env = Env { dir, socket };
+        let tmux = common::PrivateTmux::new();
+        let socket = tmux.socket("brg-test");
+        let env = Env { tmux, dir, socket };
         let bin = env.path("bin");
         fs::create_dir_all(&bin).unwrap();
         let fake = env!("CARGO_BIN_EXE_fake-agent");
@@ -115,19 +105,19 @@ members:
         cmd.env_clear()
             .env(
                 "PATH",
-                format!(
+                self.tmux.path_with(&format!(
                     "{}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
                     self.path("bin").display()
-                ),
+                )),
             )
             .env("HOME", self.path("home"))
             .env("LANG", "C.UTF-8")
             .env("BORGCHART_STATE_HOME", self.path("state"))
-            .env("BORGCHART_TMUX_SOCKET", &self.socket)
             .env("BORGCHART_GATE_WAIT_MS", "8000")
             .env("PAGER_TOKEN", SECRET)
             .current_dir(self.path("team"))
             .args(args);
+        self.tmux.brg_env(&mut cmd, &self.socket);
         cmd
     }
 
@@ -136,10 +126,7 @@ members:
     }
 
     fn tmux(&self, args: &[&str]) -> String {
-        let out = crate::common::tmux(&self.socket)
-            .args(args)
-            .output()
-            .unwrap();
+        let out = self.tmux.tmux(&self.socket).args(args).output().unwrap();
         String::from_utf8_lossy(&out.stdout).to_string()
     }
 
