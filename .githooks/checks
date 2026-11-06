@@ -21,6 +21,23 @@ run() {
   fi
 }
 
+# The test run's tmux directories live under one root per run. Stop every
+# server left in it (a test killed before it could clean up, or one that
+# forgot) and remove it; print what was found.
+test_root=
+sweep() {
+  [ -n "$test_root" ] && [ -d "$test_root" ] || return 0
+  find "$test_root" -type s 2>/dev/null | while IFS= read -r sock; do
+    if tmux -S "$sock" list-sessions >/dev/null 2>&1; then
+      echo "a running tmux server: $sock"
+    else
+      echo "a tmux socket: $sock"
+    fi
+    tmux -S "$sock" kill-server >/dev/null 2>&1 || true
+  done
+  rm -rf "$test_root"
+}
+
 [ "$#" -gt 0 ] || set -- fmt clippy test py
 for check in "$@"; do
   case $check in
@@ -30,7 +47,12 @@ for check in "$@"; do
     # and message storage. The tests run with them pointing nowhere, so a
     # test that forgets to clear them fails instead of writing into the team.
     test)
+      test_root=$(mktemp -d /tmp/brgrun.XXXXXX)
+      trap 'sweep >&2' EXIT
+      trap 'sweep >&2; exit 130' INT
+      trap 'sweep >&2; exit 143' TERM
       run test env \
+        BRG_TEST_TMPDIR_ROOT="$test_root" \
         BORGCHART_FILE=/nonexistent/caller-team/borgchart.yaml \
         BORGCHART_STATE_HOME=/nonexistent/caller-team/state \
         BORGCHART_STATE_DIR=/nonexistent/caller-team/member-state \
@@ -40,7 +62,15 @@ for check in "$@"; do
         BORGCHART_INCARNATION=caller-member.0.0 \
         BORGCHART_BIN=/nonexistent/caller-team/brg \
         BORGCHART_TMUX_SOCKET=brg-caller-team \
+        BORGCHART_TMUX_TMPDIR=/nonexistent/caller-team/tmux \
         cargo test --features test-support --locked
+      left=$(sweep)
+      test_root=
+      if [ -n "$left" ]; then
+        printf 'checks: the tests left tmux behind (now stopped):\n%s\n' "$left" >&2
+        echo "checks: test failed" >&2
+        exit 1
+      fi
       ;;
     py) run py uv run --no-project --with pytest==8.3.5 pytest -p no:cacheprovider examples/slack-devops/plugins/slackbot/tests ;;
     *)
