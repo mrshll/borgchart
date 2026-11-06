@@ -24,9 +24,9 @@ A test that starts a process (tmux, `brg`, a child) belongs in a default-tier ta
 
 ## Tests that start processes
 
-The tests may run inside a team member, where `BORGCHART_*` and `TMUX` point at that member's real team. Start every `brg`, `tmux` or other program through `tests/common` (`common::command`, `common::tmux`), or with `env_clear()`, and stop each tmux server with `common::kill_server`, which also removes its socket file. `.githooks/checks test` runs the tests with `BORGCHART_*` pointing nowhere, so a test that forgets fails there.
+The tests may run inside a team member, where `BORGCHART_*` and `TMUX` point at that member's real team. Start every program through `tests/common` (`common::command`), or with `env_clear()`. Each test's tmux servers live in its own `common::PrivateTmux`: a private directory with a guard that refuses any tmux call outside it. Run tmux through `PrivateTmux::tmux`, point brg at it with `brg_env`, and put the guard first on brg's `PATH` with `path_with`; dropping it stops the servers and removes the directory. `.githooks/checks test` runs the tests with `BORGCHART_*` pointing nowhere, so a test that forgets fails there.
 
-A test that may be killed or hang before it drops its `common::PrivateTmux` (as a live run can) starts it with `PrivateTmux::with_watchdog(limit)`: if the test process dies or `limit` passes, a detached watchdog stops the servers in the private directory and removes it. Register files the test keeps outside that directory (scratch configuration) with `also_remove(path)`; they go on a normal drop too.
+A test that may be killed or hang before it drops its `common::PrivateTmux` (as a live run can) starts it with `PrivateTmux::with_watchdog(limit)`: if the test process dies or `limit` passes, a detached watchdog stops the servers in the private directory and removes it. Register files the test keeps outside that directory (a work folder, say) with `also_remove(path)`; they go on a normal drop too.
 
 ## Git hooks
 
