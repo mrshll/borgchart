@@ -197,6 +197,7 @@ plugins:
   - **Codex:** only with `auto_trust: true`, and only in `vendor` posture. brg starts the member with `-c projects={"<folder>"={trust_level="trusted"}}`, so Codex never shows its trust screen. That trusts exactly that folder, for that session only: nothing is written to `~/.codex/config.toml`. Answering the screen yourself trusts the whole Git repository (every worktree too) and saves it. Trust lets the folder's `.codex/` config, hooks and MCP servers load, and selects Codex's default permissions for a trusted folder; `brg validate` warns if the folder has a `.codex/`. A `-c projects…` in the member's `args` replaces brg's.
   - A `locked` Codex member is never trusted this way. It can write its own folder, so it could write a `.codex/` that would load outside its gate on its next start. `brg validate` warns, and its trust screen is left for you.
 - **`tmux.user_config`:** brg's private tmux server normally reads only brg's own config, so `brg attach` doesn't have your prefix, key bindings, mouse settings or status bar (key bindings belong to the tmux server, not to the client that attaches). Set it to `true` to load the first of `~/.tmux.conf`, `$XDG_CONFIG_HOME/tmux/tmux.conf` and `~/.config/tmux/tmux.conf` that exists, or to a path. Off by default.
+  - The path can't contain `'`, `*`, `?`, `[`, `\` or a newline (tmux would read it as a glob pattern).
   - The config is read once, when brg's tmux server starts. Every team on that server shares it, so it comes from the team whose `brg up` started the server. If the server is already running with a different setting, `brg up` says so; the change takes effect once every team on it is down. Its scripts run with brg's cleared environment.
   - After your config loads, brg sets again the options it relies on, so your config can't change them:
     - `allow-rename off` and `automatic-rename off`: brg finds members by window name.
@@ -211,5 +212,5 @@ plugins:
     - hooks (`set-hook`) and plugin managers (tpm);
     - session save/restore plugins (resurrect, continuum): on brg's server they can save brg's sessions over the ones you saved from your own tmux, or restore yours into it;
     - sessions created or attached as the config loads: brg's server then outlives `brg down`.
-    The check is best effort. It reads each line's first command, skips key bindings, and follows files your config sources by a plain or `~/` path.
+    The check is best effort. It reads each line's first command, skips key bindings, and follows files your config sources by an absolute or `~/` path. A relative include is reported, not followed: tmux finds it from the folder `brg up` runs in.
   - To keep your own bindings without this, run `brg attach` from inside your own tmux: your outer server's prefix and bindings still work around it (press the prefix twice to reach brg's).

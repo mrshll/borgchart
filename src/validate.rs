@@ -524,11 +524,12 @@ fn check_user_tmux_config(
         return;
     };
     let shown = path.display().to_string();
-    if shown.contains('\'') || shown.contains('\n') {
+    // tmux reads the path quoted, then expands it as a glob pattern.
+    if shown.contains(['\'', '\n', '*', '?', '[', '\\']) {
         report.error(
             deploy_file,
             format!(
-                "`tmux.user_config`: brg can't load a path containing `'` or a newline: {shown:?}"
+                "`tmux.user_config`: brg can't load a path containing `'`, `*`, `?`, `[`, `\\` or a newline: {shown:?}"
             ),
         );
         return;
@@ -550,8 +551,13 @@ fn check_user_tmux_config(
             continue;
         };
         let scan = scan_tmux_config(&text);
-        let dir = file.parent().unwrap_or(Path::new("/"));
-        queue.extend(scan.sources.iter().map(|s| sourced_path(dir, s)));
+        let mut relative = Vec::new();
+        for (line, arg) in &scan.sources {
+            match sourced_path(arg) {
+                Some(p) => queue.push(p),
+                None => relative.push(*line),
+            }
+        }
         let later = "brg applies its own options after your config loads, but these can change them later or act on brg's sessions";
         for (what, lines, why) in [
             (
@@ -570,6 +576,11 @@ fn check_user_tmux_config(
                 "creates or attaches sessions as it loads",
                 &scan.sessions,
                 "brg's server would then outlive `brg down` and keep this config until it's stopped",
+            ),
+            (
+                "sources a file by a relative path",
+                &relative,
+                "tmux finds it from the folder `brg up` runs in, so brg didn't check it",
             ),
         ] {
             if lines.is_empty() {
@@ -596,8 +607,8 @@ struct TmuxConfigScan {
     plugins: Vec<usize>,
     restore: Vec<usize>,
     sessions: Vec<usize>,
-    /// Literal paths given to `source`/`source-file`.
-    sources: Vec<String>,
+    /// Literal paths given to `source`/`source-file`, with their lines.
+    sources: Vec<(usize, String)>,
 }
 
 /// Lines (1-based) in a tmux config that brg can't vouch for. Best effort:
@@ -626,7 +637,7 @@ fn scan_tmux_config(text: &str) -> TmuxConfigScan {
                 if let Some(arg) = words.find(|w| !w.starts_with('-')) {
                     let arg = arg.trim_matches(|c| c == '\'' || c == '"');
                     if !arg.contains('$') && !arg.contains("#{") {
-                        scan.sources.push(arg.to_string());
+                        scan.sources.push((n, arg.to_string()));
                     }
                 }
             }
@@ -641,11 +652,12 @@ fn scan_tmux_config(text: &str) -> TmuxConfigScan {
     scan
 }
 
-fn sourced_path(dir: &Path, arg: &str) -> PathBuf {
-    if let Some(rest) = arg.strip_prefix("~/")
-        && let Some(home) = std::env::var_os("HOME")
-    {
-        return PathBuf::from(home).join(rest);
+/// A sourced file brg can find: an absolute or `~/` path. tmux resolves a
+/// relative one from its client's folder, which brg can't know here.
+fn sourced_path(arg: &str) -> Option<PathBuf> {
+    if let Some(rest) = arg.strip_prefix("~/") {
+        return std::env::var_os("HOME").map(|home| PathBuf::from(home).join(rest));
     }
-    dir.join(arg)
+    let path = PathBuf::from(arg);
+    path.is_absolute().then_some(path)
 }
