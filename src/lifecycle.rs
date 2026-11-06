@@ -583,7 +583,7 @@ impl Server {
                 "-F",
                 // `|` rather than a tab: without a UTF-8 locale tmux
                 // replaces tabs in its output. No field can contain `|`.
-                "#{session_name}|#{window_name}|#{pane_id}|#{pane_pid}|#{pane_dead}",
+                "#{session_name}|#{window_name}|#{pane_id}|#{pane_pid}|#{pane_dead}|#{pid}",
             ])
             .output()
             .map_err(|e| format!("cannot start tmux: {e}"))?;
@@ -604,6 +604,7 @@ impl Server {
                     pane_id: p.next()?.to_string(),
                     pane_pid: p.next()?.parse().ok()?,
                     dead: p.next()? == "1",
+                    server_pid: p.next()?.parse().ok()?,
                 })
             })
             .collect())
@@ -636,6 +637,8 @@ pub struct PaneRow {
     pub pane_id: String,
     pub pane_pid: u32,
     pub dead: bool,
+    /// The tmux server's own PID: the pane process is its child.
+    pub server_pid: u32,
 }
 
 /// The pane a window runs in, read from brg's own tmux right after it
@@ -836,6 +839,7 @@ mod tests {
             pane_id: id.into(),
             pane_pid: pid,
             dead,
+            server_pid: 1,
         };
         assert_eq!(pane_in(&[row("%1", 10, false)], "%1", 10), Liveness::Alive);
         assert_eq!(pane_in(&[row("%1", 10, true)], "%1", 10), Liveness::Gone);
