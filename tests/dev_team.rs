@@ -364,7 +364,8 @@ mod round {
     #[test]
     fn one_task_round_with_fake_agents() {
         let team = new_team("round");
-        let work = team.path("borgchart-dev");
+        // Resolved, as brg records paths (macOS: /var is /private/var).
+        let work = team.path("borgchart-dev").canonicalize().unwrap();
 
         let up = team.ok(&["up"]);
         assert!(
@@ -392,9 +393,7 @@ mod round {
         assert!(prompt.contains("## Waking yourself") && prompt.contains("## Local rules"));
         assert!(!prompt.contains("{{"), "{prompt}");
         assert_eq!(start["env"]["BORGCHART_BIN"], env!("CARGO_BIN_EXE_brg"));
-        // brg records the resolved path (macOS: /var is /private/var).
-        let lead_cwd = work.join("lead").canonicalize().unwrap();
-        assert_eq!(start["cwd"], lead_cwd.display().to_string());
+        assert_eq!(start["cwd"], work.join("lead").display().to_string());
         // The bus root `~/…` landed under HOME.
         assert!(team.path("home/.local/state/brg-teams").is_dir());
 
