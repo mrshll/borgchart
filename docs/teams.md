@@ -140,12 +140,12 @@ devteam
   - Each member has one open task at a time.
   - A checkout is never released while the member writing it might still be running.
 
-**Getting a member's attention (Open).** A member with messages waiting has to notice them. Two ways are on the table, being tested now on the real CLIs:
+**Getting a member's attention.** A member with messages waiting has to notice them. Nothing is typed into its terminal in the normal case:
 
-1. **The member waits for itself.** Before going idle it runs `brg message wait` in the background, and the CLI wakes it when a message arrives. Nothing is typed.
-2. **A watcher nudges it.** A hidden window per team types one fixed reminder ("new messages in your inbox") into an idle member whose input box is provably empty. It waits while the member is busy. It alerts a person when it can't type safely: a draft in the box, a dialog, or a CLI version that hasn't been tested.
-
-Pending the test, the likely answer is (1) where the vendor supports it, with the watcher as the fallback and alarm.
+- **Claude members wake themselves.** At the start of each turn they run `brg message wait` in the background, and Claude Code starts a new turn when it returns.
+- **Codex members are woken by `codex queue`.** It hands the waiting session a one-line pointer to its inbox and starts a turn, with nothing typed.
+- **A hidden watcher per team is the safety net.** It looks for members with unread messages and no working wait, and wakes them the vendor's way. Its last resort is to type one fixed reminder, and only into a provably empty input box. When it can't do that safely, it alerts a person.
+- **Version check.** Each of these is enabled per vendor and version only after it has been tested on that CLI.
 
 ## Secrets (proposed, not in this work)
 
@@ -163,7 +163,59 @@ $ brg secret rm devteam NOTIFY_TOKEN
 - **Scope:** a secret belongs to one team. A secret shared by every team in a session is an open question.
 - **Persistence:** registered secrets survive restarts and reboots. Plugins receive them through brg's existing private-file mechanism, as declared in `env`; agents never see them.
 
+## Roles with several copies (Open: design only, a later change)
 
+Some roles are needed as work appears, sometimes several at once: three implementers on three tasks. The direction:
+
+```yaml
+members:
+  implementer:
+    prompt: implementer.md
+    parent: lead
+    start: false
+    max: 3                             # up to three copies at once
+```
+
+- **Starting a copy.** Each `brg up --member implementer` starts one new copy: `implementer-1`, then `implementer-2`, and so on. Past `max` it's refused, and the refusal lists the running copies. Each copy gets the same member file, plus its own name and checkout (below).
+- **The tree** shows running copies with their live state. A role with none running gets one dim line:
+
+  ```
+  devteam
+  └─ lead              claude opus high      working
+     ├─ implementer-1  claude opus medium    working
+     ├─ implementer-2  claude opus medium    idle
+     └─ reviewer       codex example-model   not started (start: false)
+
+  devteam
+  └─ lead            claude opus high      idle
+     └─ implementer  on demand (none running)
+  ```
+
+  Ended copies leave the tree; `brg status --all` could list them.
+- **Addressing.** `devteam/implementer-2` reaches one copy. A bare `implementer` works only while exactly one copy is running; otherwise brg errors and lists the copies, the same rule as for team names. `brg down --member implementer` follows the same rule.
+- **Messages to the role.** A message sent to `implementer`, rather than to one copy, waits in a shared queue for the role. The first copy to take it gets it.
+
+Proposed changes to this direction, and why:
+
+1. **`max` alone turns copies on; no `start: on-demand`.** `start: false` already means "on demand", and `max` defaults to 1, today's single member. This adds one key instead of a third `start` value.
+2. **Copies hang under the role's declared `parent`, and only that parent (or a person) may start one.** Messages and task rights follow `parent`. If "whoever started it" became the parent, the org chart would change at runtime. With this rule the two readings agree.
+3. **Copy numbers aren't reused while the team's storage lives.** A new `implementer-2` would otherwise inherit an ended copy's inbox and task.
+4. **"Take" means `accept`, not `ack`, for tasks.** The first copy to accept an assignment sent to the role becomes its assignee; later accepts are told it's taken. Each copy still holds at most one open task. Plain notes to the role go to the first copy that acks them. If ack meant take, a copy that crashed between acking and working would lose the task.
+5. **Wake one copy, not all.** A role message wakes the idle copy with the lowest number. If nobody takes it within a few minutes, the next copy is woken. Waking every copy would spend a turn on each for one message.
+6. **An ended copy stays in the tree while it still holds an open task or a checkout,** shown as `stopped (open task T3)`. It leaves the tree once that's released. Otherwise unfinished work disappears from view.
+
+Open questions:
+
+- **Is `max` required?** Proposed: optional, default 1, with a sane upper bound (e.g. 8).
+- **Checkouts.** A checkout holds one writer, so each copy needs its own. Options:
+  - a `cwd` template in `borgchart.yaml`, like `cwd: ~/work/project-impl-{n}`, with folders you create (simplest, and brg doesn't manage git);
+  - brg creates and later removes a git worktree per copy.
+
+  Proposed: the template first.
+- **When every copy has ended,** unacknowledged role messages stay queued. `status` shows them (`implementer  on demand (none running) · 2 waiting`), and the parent is told. Should brg start a copy by itself instead?
+- **A copy that ends with an open task:** does the task go back to the parent for reassignment, or wait for `brg up --member implementer-2` to restart that same copy?
+
+## What you never see
 
 - **Storage.** No runs, run IDs, generations or storage paths in commands, output or errors. brg rolls a team's message storage over by itself when its configuration changes or the storage reaches its age limit, and carries open work across.
 - **brg versions.** Nothing is pinned: every call uses the installed `brg`. If an upgraded brg can't read a team's messages, it says exactly what to do:
@@ -186,7 +238,7 @@ $ brg secret rm devteam NOTIFY_TOKEN
 
 ## Open
 
-- **Waking members:** self-wake, the watcher, or both (above).
+- **Roles with several copies** (above).
 - **Sessions:** whether separate groups of teams (`--session`) are needed at all. They are kept minimal for now.
 - **Storage key:** messages are keyed by the deployment's location, so moving the team's folder starts empty. Should `name` be the key instead?
 - **Secrets:**
