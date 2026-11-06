@@ -1,0 +1,37 @@
+# A development team: a lead and four helpers it starts on demand.
+# Machine-specific values (checkouts, message storage, local rules) live in a
+# deployment file outside git; see README.md.
+#
+# Every member uses `vendor` posture: the bus doesn't support `locked`
+# members yet. Each member file names both vendors' models, so moving a
+# member to the other vendor is a change to its `vendor:` line here.
+#
+# The lead seats the design panel, a separate team (../dev-design-team),
+# before costly-to-reverse design choices.
+default: claude
+
+members:
+  lead:
+    prompt: orchestrator.md
+    vendor: claude      # a Codex lead needs a wake mechanism brg doesn't have yet
+    start: true
+  implementer:
+    prompt: implementer.md
+    vendor: codex
+    parent: lead
+    start: false
+  reviewer:
+    prompt: reviewer.md
+    vendor: claude
+    parent: lead
+    start: false
+  researcher:
+    prompt: researcher.md
+    vendor: codex
+    parent: lead
+    start: false
+  monitor:
+    prompt: monitor.md
+    vendor: claude
+    parent: lead
+    start: false

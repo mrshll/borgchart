@@ -1159,3 +1159,113 @@ fn review_late_record_does_not_invalidate_retirement() {
     let old = f.brg(As::Operator, &["bus", "check", "--json"], None);
     assert_eq!(old.code, 0, "{:?}", old.json);
 }
+
+/// The example in `msg publish --help`: the shell block exactly as printed
+/// (from the `<<'EOF'` line through its terminator, untrimmed), the JSON
+/// draft inside it, its key, and the output it says publishing prints.
+struct Example {
+    block: String,
+    draft: String,
+    key: String,
+    printed: String,
+}
+
+fn help_example() -> Example {
+    let out = Command::new(env!("CARGO_BIN_EXE_brg"))
+        .env_clear()
+        .args(["msg", "publish", "--help"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    let mut lines = text.lines().skip_while(|l| !l.contains("<<'EOF'"));
+    let command = lines
+        .next()
+        .expect("a heredoc example in msg publish --help");
+    let key = command
+        .split_whitespace()
+        .skip_while(|w| *w != "--key")
+        .nth(1)
+        .unwrap()
+        .to_string();
+    let mut block = format!("{command}\n");
+    let mut draft = String::new();
+    for l in lines.by_ref() {
+        block.push_str(l);
+        block.push('\n');
+        if l == "EOF" {
+            break;
+        }
+        draft.push_str(l);
+        draft.push('\n');
+    }
+    let printed = lines
+        .find_map(|l| l.strip_prefix("Prints: "))
+        .expect("`Prints: …` after the example")
+        .to_string();
+    Example {
+        block,
+        draft,
+        key,
+        printed,
+    }
+}
+
+fn help_text(args: &[&str]) -> String {
+    let out = Command::new(env!("CARGO_BIN_EXE_brg"))
+        .env_clear()
+        .args(args)
+        .arg("--help")
+        .output()
+        .unwrap();
+    String::from_utf8(out.stdout).unwrap()
+}
+
+#[test]
+fn the_publish_help_example_publishes_and_its_outcomes_are_documented() {
+    let f = Fixture::new();
+    let help = help_text(&["msg", "publish"]);
+    let ex = help_example();
+    f.ok(As::Member("lead"), "a1", &f.assign("helper", "t-1", 1));
+    f.ok(As::Member("helper"), "c1", &accept("t-1"));
+
+    // Run the block as a member's shell would, pasted as printed.
+    let out = Command::new("sh")
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", f.dir.path())
+        .env("BORGCHART_BIN", env!("CARGO_BIN_EXE_brg"))
+        .env("BORGCHART_FILE", f.dep_file())
+        .env("BORGCHART_MEMBER", "helper")
+        .env("BORGCHART_RUN", f.current())
+        .env("BORGCHART_INCARNATION", "helper-1")
+        .args(["-c", &ex.block])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stdout} {stderr}");
+    assert!(stderr.is_empty(), "the shell complained: {stderr}");
+    assert_eq!(stdout.trim(), ex.printed);
+    assert_eq!(f.state("t-1"), "result-claimed");
+
+    let publish = |body: &[u8]| {
+        f.brg(
+            As::Member("helper"),
+            &["msg", "publish", "--key", ex.key.as_str(), "--json"],
+            Some(body),
+        )
+    };
+    // Retrying is safe; reusing the key for something else is not. Each
+    // outcome publish returned is named in the help with its exit code.
+    let retry = publish(ex.draft.as_bytes());
+    let other = publish(ex.draft.replace("Parser done", "Other").as_bytes());
+    for out in [&retry, &other] {
+        let named = format!("{} ({})", out.json["outcome"].as_str().unwrap(), out.code);
+        assert!(
+            help.contains(&named),
+            "`{named}` missing from msg publish --help"
+        );
+    }
+    assert_eq!(retry.json["outcome"], "duplicate");
+    assert_eq!(other.json["outcome"], "conflict");
+}

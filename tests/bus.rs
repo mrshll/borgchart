@@ -1753,3 +1753,55 @@ fn an_ack_with_another_schema_is_corrupt() {
     assert_eq!(ids(&inbox), ["m1"]);
     assert_eq!(inbox["store"], "incomplete");
 }
+
+#[test]
+fn inbox_wait_help_names_the_outcomes_wait_returns() {
+    let out = Command::new(env!("CARGO_BIN_EXE_brg"))
+        .env_clear()
+        .args(["inbox", "wait", "--help"])
+        .output()
+        .unwrap();
+    let help = String::from_utf8(out.stdout).unwrap();
+    let f = Fixture::new();
+    let wait = |extra: &[&str]| {
+        let mut args = vec!["inbox", "wait", "--json"];
+        args.extend(extra);
+        f.brg(&As::Member("lead"), &args, None)
+    };
+    let usage = wait(&["--timeout", "0"]);
+    let timeout = wait(&["--timeout", "1"]);
+    assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
+    let ok = wait(&["--timeout", "1"]);
+    let child = spawn(
+        &f,
+        &As::Operator,
+        &[
+            "inbox",
+            "wait",
+            "--member",
+            "lead",
+            "--after",
+            "m1",
+            "--timeout",
+            "10",
+            "--json",
+        ],
+        b"",
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    f.roll_over("r42", Some(("lead", "new")));
+    let fenced = finish_within(child, Duration::from_secs(15));
+    for (expect, out) in [
+        ("usage", &usage),
+        ("timeout", &timeout),
+        ("ok", &ok),
+        ("fenced", &fenced),
+    ] {
+        assert_eq!(out.json["outcome"], expect, "{:?} {}", out.json, out.stderr);
+        let named = format!("{expect} ({})", out.code);
+        assert!(
+            help.contains(&named),
+            "`{named}` missing from inbox wait --help"
+        );
+    }
+}
