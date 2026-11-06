@@ -590,7 +590,7 @@ fn child_start_env(caller: impl Fn(&mut Command)) -> (Env, BTreeMap<String, Stri
         helper["TMPDIR"],
         state.join("tmp/helper").display().to_string()
     );
-    assert!(!helper.contains_key("BORGCHART_BIN"));
+    assert_eq!(helper["BORGCHART_BIN"], env!("CARGO_BIN_EXE_brg"));
     assert!(!helper.contains_key("PAGER_TOKEN"));
     (env, helper)
 }
@@ -632,7 +632,8 @@ fn members_run_the_brg_that_started_them() {
         env.up();
         let built = env!("CARGO_BIN_EXE_brg");
         let lead = &env.starts("lead")[0]["env"];
-        assert!(lead.get("BORGCHART_BIN").is_none(), "{lead}");
+        // Members find the brg that started them as `$BORGCHART_BIN`.
+        assert_eq!(lead["BORGCHART_BIN"], built, "{lead}");
         assert_eq!(lead.get("BORGCHART_RUN").is_some(), bus);
         assert_eq!(lead.get("BORGCHART_INCARNATION").is_some(), bus);
         let state = env.state_dir();
@@ -663,6 +664,13 @@ fn members_run_the_brg_that_started_them() {
         assert!(
             started.contains(&format!("{} _exec", other.display())),
             "{started}"
+        );
+        env.wait_for("helper start", |e| !e.starts("helper").is_empty());
+        let helper = &env.starts("helper")[0]["env"];
+        assert_eq!(
+            helper["BORGCHART_BIN"],
+            other.display().to_string(),
+            "{helper}"
         );
         // `brg run …` is gone.
         assert_eq!(env.brg(&["run", "show"]).status.code(), Some(2));
