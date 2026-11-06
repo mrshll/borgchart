@@ -427,6 +427,17 @@ does. It returns at once if one is already there, so acknowledge what you
 have handled or pass the last ID you have seen as --after. Waiting never
 acknowledges. --timeout (1-{} seconds) is required.
 
+With --background, only your own member session may wait. It compares records
+with what your own `inbox` listings have shown this session, and prints only
+the unseen, unacknowledged IDs (space-separated), or {{ok, code, outcome, ids,
+count}} with --json. It never writes, marks records as shown, or acknowledges.
+--timeout is optional (60-86400 seconds, default 86400). --after, --member,
+--external, --limit and --full are refused. New records return immediately;
+every other exit, including usage errors and missing identity, waits until
+60 seconds have passed. A restart or replaced session is always fenced:
+stop re-arming. List your inbox, work, then re-arm one background wait after
+each turn, with no cursor bookkeeping.
+
 Outcomes (with --json: {{ok, code, outcome, ...}}; the exit status is the code):
 ",
         store::POLL.as_millis(),
@@ -436,22 +447,22 @@ Outcomes (with --json: {{ok, code, outcome, ...}}; the exit status is the code):
         (
             n(Code::Ok),
             Code::Ok,
-            "new records; read them, then wait --after the last one",
+            "new records; read them, then wait --after the last one (with --background: list your inbox, work, then re-arm)",
         ),
         (
             n(Code::Timeout),
             Code::Timeout,
-            "nothing new in time; wait again with the same --after",
+            "nothing new in time; wait again with the same --after (with --background: re-arm without a cursor)",
         ),
         (
             n(Code::Fenced),
             Code::Fenced,
-            "the team was restarted while waiting, so --after names old records: list the inbox again (`inbox`, no --after) and wait after what it shows. Or this member was replaced: stop",
+            "with --background: the session is over, stop. With --after: the team was restarted, so list the inbox again (`inbox`, no --after) and wait after what it shows. Or this member was replaced: stop",
         ),
         (
             n(Code::Usage),
             Code::Usage,
-            "--timeout, --after or --limit out of range, or no inbox named outside a member",
+            "--timeout, --after or --limit out of range, no inbox named outside a member, or --background without own identity / with incompatible flags",
         ),
         (
             n(Code::NotConfigured),

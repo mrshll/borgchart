@@ -198,7 +198,36 @@ macro_rules! target_or_exit {
 }
 
 pub fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let started = std::time::Instant::now();
+    let args: Vec<_> = std::env::args_os().collect();
+    // Recognize the wait even when clap rejects its flags. Usage errors
+    // must back off too, or a broken background command can spin turns.
+    let background = args.get(1).is_some_and(|a| a == "inbox")
+        && args.iter().skip(2).any(|a| a == "wait")
+        && args.iter().any(|a| a == "--background");
+    let back_off = || {
+        if background {
+            let minimum = crate::bus::store::background_wait_minimum();
+            std::thread::sleep(minimum.saturating_sub(started.elapsed()));
+        }
+    };
+    let cli = match Cli::try_parse_from(args) {
+        Ok(cli) => cli,
+        Err(error) => {
+            if error.use_stderr() {
+                back_off();
+            }
+            error.exit();
+        }
+    };
+    let code = run(cli);
+    if code != ExitCode::SUCCESS {
+        back_off();
+    }
+    code
+}
+
+fn run(cli: Cli) -> ExitCode {
     match cli.command {
         Command::Validate {
             target,

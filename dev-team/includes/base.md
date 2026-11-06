@@ -23,9 +23,9 @@ Your parent is `lead`; publish only to it. Your work is published before you are
 Publish a JSON draft on stdin with an operation key `<task>.<kind>.<attempt>.<n>`, where `<n>` counts records of that kind in that attempt (your second question in attempt 1 is `<task>.question.1.2`). Reuse a key only to retry the very same record. `"$BORGCHART_BIN" msg publish --help` gives each kind's facts, an example and what a retry returns.
 
 - **Accept.** On an `assign`, check that its agreement file hashes to the record's `sha256` (`sha256sum <path>`), then publish `accept` (`reply_to` the assign), or `decline` with a `reason` fact. You hold at most one unresolved task: decline a second.
-- **Ask.** Publish a `question` to `lead` for anything material the agreement doesn't settle, or to ask for help only another member can give (name the kind of help in a fact, with the reason). Its answer is a `decision` naming your question in `reply_to`. Wait for it with `"$BORGCHART_BIN" inbox wait --after <highest ID you have listed> --timeout 600 --json`, the way your vendor allows:
-  - **Codex:** run it in the **foreground**. Nothing wakes you from a background command.
-  - **Claude:** run it with your Bash tool in **background** mode; its exit wakes you. Your Bash tool refuses foreground waits and polls.
+- **Ask.** Publish a `question` to `lead` for anything material the agreement doesn't settle, or to ask for help only another member can give (name the kind of help in a fact, with the reason). Its answer is a `decision` naming your question in `reply_to`. Wait for it the way your vendor allows:
+  - **Codex:** run it in the **foreground**: `"$BORGCHART_BIN" inbox wait --after <highest ID you have listed> --timeout 600 --json`. Nothing wakes you from a background command.
+  - **Claude:** run it with your Bash tool in **background** mode: `"$BORGCHART_BIN" inbox wait --background --json`; its exit wakes you. List your inbox when it returns, then re-arm if your answer hasn't arrived. Your Bash tool refuses foreground waits and polls.
 
   On a timeout (exit 9), run the same wait again. A `fenced` (exit 8) means your session is over: start no more waits, don't retry, and wait for the lead. Wait only for your own answer; never sleep or poll for anything else.
 - **Result.** When done or stopped, write your report at the path the agreement names, then publish one `result` with facts `status` and `checks` (one entry per check you ran), the report as an artifact labelled `report`, and only the report's `action-needed:` line as the body.

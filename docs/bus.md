@@ -58,7 +58,7 @@ Each deployment has a directory `<root>/<deployment-id>/`. Its `current` file na
 | `bus/acks/<id>.json` | records | The recipient's acknowledgement of one record. |
 | `bus/carried/<run>.json` | records | What `bus carry` brought into this run from an earlier one. Replaced on each carry. |
 | `attention/worker.lock`, `worker.json` | watcher | The team's watcher and its state. |
-| `attention/observed/<member>/<incarnation>.json` | watcher | What `inbox` has returned to that incarnation. |
+| `attention/observed/<member>/<incarnation>.json` | records (inbox) | What `inbox` has returned to that incarnation: `{schema: 1, member, incarnation, ids}`, with IDs sorted by sequence and deduplicated across listings. |
 | `attention/inflight/<member>.json` | watcher | A wake attempt whose intent is recorded and outcome not yet known. |
 | `attention/alerts/<id>.json` | alerts | Open and resolved alerts. |
 
@@ -139,6 +139,7 @@ The stored record adds `schema`, `run` (the internal storage it was written in; 
 brg msg publish --key KEY [--record FILE|-] [--external NAME] [--json]
 brg inbox [--member ID | --external NAME] [--after ID] [--limit N] [--all] [--full] [--json]
 brg inbox wait [--member ID | --external NAME] [--after ID] --timeout SECONDS [--limit N] [--full] [--json]
+brg inbox wait --background [--timeout SECONDS] [--json]
 brg msg read ID [--json]
 brg msg ack ID… [--external NAME] [--json]
 brg bus inspect [--last N] [--json]
@@ -185,6 +186,10 @@ $ brg msg publish --external ops --key demo-1 --record demo.json --json
 `store` is `incomplete` when the store has an unreadable record or a gap: the listing then shows what is readable.
 
 **`inbox wait`** takes the same recipient options and checks every 250 ms until there is an unacknowledged record after `--after`, then prints the page as `inbox` does. `--timeout` (1–600 seconds) is required; when it passes with nothing new the command exits `timeout` (9), even while a writer holds `bus/lock` (it never waits for the lock past its deadline). Each check finds the team's current storage again and re-checks the inbox, the caller and the message format against it, so a restart while waiting is followed. If the team was restarted and `--after` was given, the cursor no longer applies: the wait is `fenced` and asks you to list the inbox again.
+
+**`inbox wait --background [--timeout SECONDS]`** waits for unacknowledged records that this member's current session has never been shown by its own `inbox` listings. It requires the member's own `BORGCHART_MEMBER`, `BORGCHART_RUN` and `BORGCHART_INCARNATION`; `--member`, `--external`, `--after`, `--limit` and `--full` are usage errors. The timeout defaults to 86400 seconds (24 hours), with a range of 60–86400 seconds. A new record returns immediately. Otherwise the command never exits before 60 seconds have passed, including on any error (even a usage error or missing identity). Timeout is exit 9; a restart or replacement of the session is always `fenced` (8), so stop re-arming it.
+
+The background wait prints only the new IDs, space-separated on one line, or `{ok: true, code: 0, outcome: "ok", ids: ["m3"], count: 1}` with `--json`. It only reads, takes shared bus locks, and never marks records as shown or acknowledges them. Killing it leaves the bus and attention files unchanged. Only listing your own inbox records what was shown; `--member` listings and `msg read` do not. A missing, unreadable or malformed observation file counts as nothing shown. Concurrent listings may lose a merge and cause an extra wake. List the inbox, act on the records, then re-arm one background wait after each turn; no cursor bookkeeping is needed.
 
 **`msg read ID`** prints one record in full, with `acked`, to anyone. It never acknowledges, and never counts as the recipient having seen it. An unknown ID is `not-found`.
 
