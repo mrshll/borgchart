@@ -1,5 +1,5 @@
-//! The team that develops borgchart (`dev-team/`) and its design panel
-//! (`dev-design-team/`): their example deployments validate, their member
+//! A development team (`dev-team/`) and its design panel
+//! (`dev-design-team/`): the README's deployment validates, the member
 //! files expand and stay generic, one task round works with `fake-agent`
 //! members, and the lead can seat the design panel.
 
@@ -17,41 +17,59 @@ fn dev_team() -> PathBuf {
     team_dir("dev-team")
 }
 
-/// The dev team's example deployment, filled in under `dir`.
-fn fill_example(dir: &Path) -> PathBuf {
-    fill(dir, "dev-team")
+/// The ```yaml blocks of the dev team's README: the deployments a reader
+/// copies.
+fn readme_deployments() -> Vec<String> {
+    let text = fs::read_to_string(dev_team().join("README.md")).unwrap();
+    let mut blocks = Vec::new();
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
+        if line.trim() == "```yaml" {
+            let block: Vec<&str> = lines.by_ref().take_while(|l| l.trim() != "```").collect();
+            blocks.push(block.join("\n") + "\n");
+        }
+    }
+    blocks
 }
 
-/// `team`'s example deployment with its placeholders filled with paths
-/// under `dir`, written to `dir/config/<team>.yaml`. The bus root stays
-/// `~/…`, so `HOME` decides where it lands.
-fn fill(dir: &Path, team: &str) -> PathBuf {
-    let text = fs::read_to_string(team_dir(team).join("borgchart.example.yaml")).unwrap();
-    if team == "dev-team" {
-        assert!(text.contains("root: ~/.local/state/brg-teams"), "{text}");
-    }
-    let work = dir.join("borgchart-dev");
-    for w in ["lead", "impl", "review", "design", "notes/design/current"] {
+/// A README deployment with its placeholders filled with paths under `dir`
+/// (checkouts and notes under `dir/work`), written to `dir/config/<name>.yaml`.
+/// The bus root stays `~/…`, so `HOME` decides where it lands.
+fn fill(dir: &Path, name: &str, text: &str) -> PathBuf {
+    let work = dir.join("work");
+    for w in ["lead", "impl", "design", "notes/design/current"] {
         fs::create_dir_all(work.join(w)).unwrap();
     }
     let filled = text
         .replace(
-            &format!("/path/to/borgchart/{team} "),
-            &format!("{} ", team_dir(team).display()),
+            "/path/to/repo/",
+            &format!("{}/", env!("CARGO_MANIFEST_DIR")),
         )
-        .replace("/path/to/borgchart-dev", &work.display().to_string())
-        .replace("/path/to/config", &dir.join("config").display().to_string());
-    assert!(
-        !filled
-            .lines()
-            .any(|l| !l.trim_start().starts_with('#') && l.contains("/path/to")),
-        "{filled}"
-    );
-    let file = dir.join(format!("config/{team}.yaml"));
+        .replace("/path/to/work", &work.display().to_string());
+    assert!(!filled.contains("/path/to"), "{filled}");
+    let file = dir.join(format!("config/{name}.yaml"));
     fs::create_dir_all(file.parent().unwrap()).unwrap();
     fs::write(&file, filled).unwrap();
     fs::create_dir_all(dir.join("home")).unwrap();
     file
+}
+
+/// The README's (first) dev-team deployment, filled in under `dir`.
+fn fill_example(dir: &Path) -> PathBuf {
+    fill(dir, "dev-team", &readme_deployments()[0])
+}
+
+/// A design-panel deployment, as the README describes it: no bus; each
+/// designer's local rules name the brief and the design directory.
+fn fill_panel(dir: &Path) -> PathBuf {
+    let mut text =
+        String::from("schema: 1\nteam: /path/to/repo/dev-design-team\nauth: login\nmembers:\n");
+    for designer in ["designer-claude", "designer-codex"] {
+        text.push_str(&format!(
+            "  {designer}:\n    cwd: /path/to/work/design\n    task: \"Local rules: brief /path/to/work/notes/design/current/brief.md; design directory /path/to/work/notes/design/current; deadline 30 minutes.\"\n"
+        ));
+    }
+    fill(dir, "dev-design-team", &text)
 }
 
 fn validate(dir: &Path, file: &Path) -> Output {
@@ -66,23 +84,31 @@ fn validate(dir: &Path, file: &Path) -> Output {
         .unwrap()
 }
 
+/// What a reader copies from the README works as written: no errors and no
+/// warnings once the placeholders are filled.
 #[test]
-fn both_example_deployments_validate_cleanly() {
+fn the_readme_deployments_validate_cleanly() {
     let dir = tempfile::tempdir().unwrap();
-    for team in TEAMS {
-        let file = fill(dir.path(), team);
+    let blocks = readme_deployments();
+    assert!(!blocks.is_empty());
+    for (i, text) in blocks.iter().enumerate() {
+        assert!(text.contains("root: ~/.local/state/brg-teams"), "{text}");
+        let file = fill(dir.path(), &format!("readme-{i}"), text);
         let out = validate(dir.path(), &file);
         let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-        assert!(out.status.success(), "{team}: {report}");
-        assert_eq!(report["errors"], serde_json::json!([]), "{team}: {report}");
+        assert!(out.status.success(), "block {i}: {report}");
+        assert_eq!(
+            report["errors"],
+            serde_json::json!([]),
+            "block {i}: {report}"
+        );
         assert_eq!(
             report["warnings"],
             serde_json::json!([]),
-            "{team}: {report}"
+            "block {i}: {report}"
         );
     }
 }
-
 /// Each team's member files, by the `prompt:` lines of its `team.yaml`.
 fn member_files(team: &str) -> Vec<PathBuf> {
     let text = fs::read_to_string(team_dir(team).join("team.yaml")).unwrap();
@@ -104,9 +130,9 @@ fn includes_of(file: &Path) -> Vec<String> {
         .map(str::to_string)
         .collect()
 }
-
 /// Includes resolve, don't nest, and each is shared: text used by one
-/// member file belongs in that file.
+/// member file belongs in that file. Every dev-team member, the lead
+/// included, gets the shared base.
 #[test]
 fn includes_resolve_and_are_shared() {
     let files = member_files("dev-team");
@@ -114,14 +140,7 @@ fn includes_resolve_and_are_shared() {
     let mut uses: std::collections::BTreeMap<String, usize> = Default::default();
     for file in &files {
         let includes = includes_of(file);
-        assert!(includes.contains(&"rules".into()), "{}", file.display());
-        let is_lead = file.ends_with("orchestrator.md");
-        assert_eq!(
-            includes.contains(&"member-bus".into()),
-            !is_lead,
-            "{}",
-            file.display()
-        );
+        assert!(includes.contains(&"base".into()), "{}", file.display());
         for stem in includes {
             let inc = dev_team().join(format!("includes/{stem}.md"));
             let body = fs::read_to_string(&inc)
@@ -153,14 +172,19 @@ fn includes_resolve_and_are_shared() {
     assert!(!team_dir("dev-design-team").join("includes").exists());
 }
 
-/// Claude Code refuses foreground sleep and poll loops, so wherever a
-/// Claude member's instructions sleep, they do it in a background command.
+/// Claude Code refuses foreground sleep and poll loops, and Codex starts no
+/// turn when a background command exits. So wherever a Claude member's
+/// instructions sleep, they do it in a background command, and every wait
+/// a member of either vendor may run says how that vendor runs it.
 #[test]
-fn claude_members_sleep_only_in_background_commands() {
-    // Member files whose `vendor:` in team.yaml is claude, plus the helpers'
-    // shared include (Claude helpers use it too).
+fn members_wait_the_way_their_vendor_allows() {
+    // Member files run as Claude by team.yaml, plus the shared base (Claude
+    // helpers use it too) and the designer (one designer is Claude).
+    let mut files = vec![
+        dev_team().join("includes/base.md"),
+        team_dir("dev-design-team").join("designer.md"),
+    ];
     let team = fs::read_to_string(dev_team().join("team.yaml")).unwrap();
-    let mut files = vec![dev_team().join("includes/member-bus.md")];
     let mut prompt = None;
     for line in team.lines().map(str::trim) {
         if let Some(p) = line.strip_prefix("prompt: ") {
@@ -178,10 +202,16 @@ fn claude_members_sleep_only_in_background_commands() {
     let mut sleeps = 0;
     for file in &files {
         let text = fs::read_to_string(file).unwrap();
-        // A command line indented under a bullet or step belongs to it.
+        // A line belongs to the nearest bullet or step that starts at or
+        // before it; an indented command line belongs to its item.
         let mut item = "";
         for line in text.lines() {
-            if !line.starts_with(' ') {
+            let t = line.trim_start();
+            let starts_item = !line.starts_with(' ')
+                || t.starts_with("- ")
+                || t.split_once(". ")
+                    .is_some_and(|(n, _)| n.chars().all(|c| c.is_ascii_digit()));
+            if starts_item {
                 item = line;
             }
             if line.contains("sleep") {
@@ -197,18 +227,29 @@ fn claude_members_sleep_only_in_background_commands() {
             }
         }
     }
-    // The lead's design-panel wait and the monitor's watch, at least.
-    assert!(sleeps >= 2, "{sleeps}");
+    // The lead's design-panel wait, the monitor's watch and the Claude
+    // designer's wait for answers, at least.
+    assert!(sleeps >= 3, "{sleeps}");
 
-    // A helper waiting for its answer does it the way its vendor allows.
-    let bus = fs::read_to_string(dev_team().join("includes/member-bus.md")).unwrap();
+    // A helper waiting for its answer, and a designer waiting for the
+    // lead's answers, do it the way their vendor allows.
+    let base = fs::read_to_string(dev_team().join("includes/base.md")).unwrap();
     assert!(
-        bus.contains("**Codex:** run it in the **foreground**"),
-        "{bus}"
+        base.contains("**Codex:** run it in the **foreground**"),
+        "{base}"
     );
     assert!(
-        bus.contains("**Claude:** run it with your Bash tool in **background** mode"),
-        "{bus}"
+        base.contains("**Claude:** run it with your Bash tool in **background** mode"),
+        "{base}"
+    );
+    let designer = fs::read_to_string(team_dir("dev-design-team").join("designer.md")).unwrap();
+    assert!(
+        designer.contains("**Claude:** start, with your Bash tool in **background** mode"),
+        "{designer}"
+    );
+    assert!(
+        designer.contains("**Codex:** run the same loop in the **foreground**, at most 10 minutes"),
+        "{designer}"
     );
 }
 
@@ -255,7 +296,7 @@ fn the_team_files_stay_generic() {
     for team in TEAMS {
         let before = files.len();
         walk(&team_dir(team), &mut files);
-        assert!(files.len() - before >= 3, "{team}: {files:?}");
+        assert!(files.len() - before >= 2, "{team}: {files:?}");
     }
     // Machine paths, private tooling and people stay in the private
     // deployment file, never here.
@@ -469,7 +510,7 @@ mod round {
     fn one_task_round_with_fake_agents() {
         let team = new_team("round");
         // Resolved, as brg records paths (macOS: /var is /private/var).
-        let work = team.path("borgchart-dev").canonicalize().unwrap();
+        let work = team.path("work").canonicalize().unwrap();
 
         let up = team.ok(&["up"]);
         assert!(
@@ -491,10 +532,10 @@ mod round {
             .as_str()
             .unwrap();
         assert!(
-            prompt.starts_with("You are the lead of the team"),
+            prompt.starts_with("You are the lead of a development team"),
             "{prompt}"
         );
-        assert!(prompt.contains("## Waking yourself") && prompt.contains("## Local rules"));
+        assert!(prompt.contains("## Waking yourself") && prompt.contains("Local rules:"));
         assert!(!prompt.contains("{{"), "{prompt}");
         assert_eq!(start["env"]["BORGCHART_BIN"], env!("CARGO_BIN_EXE_brg"));
         assert_eq!(start["cwd"], work.join("lead").display().to_string());
@@ -643,8 +684,8 @@ mod round {
     #[test]
     fn the_lead_seats_the_design_panel_by_file() {
         let team = new_team("design");
-        let panel = fill(team.dir.path(), "dev-design-team");
-        let brief = team.path("borgchart-dev/notes/design/current/brief.md");
+        let panel = fill_panel(team.dir.path());
+        let brief = team.path("work/notes/design/current/brief.md");
         team.ok(&["up"]);
         team.wait_idle("lead");
 

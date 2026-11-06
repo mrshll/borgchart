@@ -1,6 +1,6 @@
-# The team that develops borgchart itself. Machine-specific values (checkouts,
-# message storage, local rules) live in a deployment file outside git; start
-# from borgchart.example.yaml. See README.md.
+# A development team: a lead and four helpers it starts on demand.
+# Machine-specific values (checkouts, message storage, local rules) live in a
+# deployment file outside git; see README.md.
 #
 # Every member uses `vendor` posture: the bus doesn't support `locked`
 # members yet. Each member file names both vendors' models, so moving a

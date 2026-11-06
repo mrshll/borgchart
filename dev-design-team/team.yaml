@@ -1,8 +1,8 @@
-# The design panel for the borgchart development team: two designers, one per
-# vendor, each writing an independent proposal from the same blind brief.
-# The dev-team lead starts and stops it with its own deployment file; see
-# ../dev-team/README.md. No bus: designers read the brief from a file and
-# write their proposals to files.
+# The design panel for the development team in ../dev-team: two designers,
+# one per vendor, each writing an independent proposal from the same blind
+# brief. The dev-team lead starts and stops it by its own deployment file; see
+# ../dev-team/README.md. No bus: designers exchange files with the lead
+# (questions, answers, proposals) in a design directory.
 members:
   designer-claude:
     prompt: designer.md
