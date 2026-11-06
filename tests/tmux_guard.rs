@@ -26,6 +26,8 @@ fn the_guard_refuses_servers_outside_the_private_directory() {
     let outside = elsewhere.path().join("sock");
     let outside = outside.to_str().unwrap();
     let escape = format!("{}/../sock", private.dir().display());
+    // Inside the directory, but not where tmux (and the cleanup) look.
+    let stray = format!("{}/custom.sock", private.dir().display());
     let guard = || common::command(private.guard());
 
     // -L without the private TMUX_TMPDIR: unset, or another directory.
@@ -48,8 +50,8 @@ fn the_guard_refuses_servers_outside_the_private_directory() {
     };
     // No -L or -S: tmux would use $TMUX or the default server.
     refused(&private, &inside().arg("list-sessions").output().unwrap());
-    // -S outside the directory, or climbing out of it.
-    for path in [outside, &escape] {
+    // -S outside the directory, climbing out of it, or off the socket layout.
+    for path in [outside, &escape, &stray] {
         refused(
             &private,
             &inside()

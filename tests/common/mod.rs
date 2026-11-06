@@ -107,10 +107,14 @@ impl PrivateTmux {
     }
 
     /// `tmux -L <socket>` on a server in the directory: through the guard,
-    /// scrubbed, with `TMUX_TMPDIR` set.
+    /// scrubbed, with `TMUX_TMPDIR` set. A server it starts reads no tmux
+    /// configuration (yours could run commands); a test that wants one adds
+    /// its own `-f`.
     pub fn tmux(&self, socket: &str) -> Command {
         let mut cmd = command(self.guard());
-        cmd.env("TMUX_TMPDIR", &self.path).arg("-L").arg(socket);
+        cmd.env("TMUX_TMPDIR", &self.path)
+            .args(["-f", "/dev/null", "-L"])
+            .arg(socket);
         cmd
     }
 
@@ -137,7 +141,8 @@ impl PrivateTmux {
     }
 
     /// The guard runs the real tmux only when the server it would reach is
-    /// in the directory: `-S` with a path inside it, or `-L` with
+    /// in the directory: `-S` with a socket path where tmux puts them
+    /// (`<dir>/tmux-<uid>/<name>`, which the drop stops), or `-L` with
     /// `TMUX_TMPDIR` set to it; every `-L` and `-S` given must be. It reads
     /// tmux's global options up to the command (`capture-pane -S -20` names
     /// no socket) and allows only `-L name`, `-S path`, `-f file` and `-C`,
@@ -153,6 +158,7 @@ impl PrivateTmux {
         for s in [canon, literal, real] {
             assert!(!s.contains('\''), "{s}");
         }
+        let uid = self.uid;
         let script = format!(
             r#"#!/bin/sh
 # A test's tmux guard: only servers in the test's private directory.
@@ -167,8 +173,14 @@ refuse() {{
 tmpdir_ok() {{
   [ "${{TMUX_TMPDIR-}}" = "$dir" ] || [ "${{TMUX_TMPDIR-}}" = "$lit" ]
 }}
+# Only where tmux itself puts sockets (and the drop finds them):
+# <dir>/tmux-<uid>/<name>.
 inside() {{
-  case $1 in */../*|*/..) return 1 ;; "$dir"/*|"$lit"/*) return 0 ;; esac
+  case $1 in
+    */../*|*/..) return 1 ;;
+    "$dir"/tmux-{uid}/*/*|"$lit"/tmux-{uid}/*/*) return 1 ;;
+    "$dir"/tmux-{uid}/?*|"$lit"/tmux-{uid}/?*) return 0 ;;
+  esac
   return 1
 }}
 server=

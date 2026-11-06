@@ -754,7 +754,7 @@ mod round {
         let mut status = Command::new(env!("CARGO_BIN_EXE_brg"));
         status
             .env_clear()
-            .env("PATH", "/usr/bin:/bin")
+            .env("PATH", team.tmux.path_with("/usr/bin:/bin"))
             .env("HOME", team.path("home"))
             .env("BORGCHART_STATE_HOME", team.path("state"))
             .args(["status", "--json", "--file"])
