@@ -42,7 +42,7 @@ Today's code has two more nouns: a *run* (a hidden storage generation, rolled ov
     - `validate` refuses a message root under `/tmp` or any other path cleaned by age.
     - An index keeps reads cheap as the store grows.
   - **The upgrade:** the switch to this layout converts a team's current storage once, so open work survives it.
-- **Starts replace incarnations.** Start numbers are per member and never reused, even across `--reset`. A start keeps every job an incarnation does:
+- **Starts replace incarnations.** Start numbers are per member and never reused, even across `--reset`. If the record of them is lost while other traces of the team remain, `up` refuses rather than start counting again. A start keeps every job an incarnation does:
   - fencing a replaced process ("this start of `implementer-2` has been replaced");
   - the recorded tmux pane that decides whether the start is still running;
   - the task writers that must be gone before a checkout is freed;
