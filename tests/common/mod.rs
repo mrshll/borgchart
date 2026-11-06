@@ -59,6 +59,10 @@ const REFUSED: &str = "refused";
 /// the private directory (so the watchdog reads the same list).
 const ALSO_REMOVE: &str = "also-remove";
 
+/// The watchdog's note of each server's PID and start time, inside the
+/// private directory.
+pub const SERVERS: &str = "watchdog-servers";
+
 /// A test's private tmux directory and its guard. Dropping it stops every
 /// server in the directory, removes the paths given to
 /// [`also_remove`](Self::also_remove) and the directory, then fails the test
@@ -78,10 +82,14 @@ impl PrivateTmux {
     /// before any server, that does the drop's cleanup if the test process
     /// dies without dropping it (killed, or aborted) or once `limit` has
     /// passed, whatever the test is doing then. It stops every server in the
-    /// directory (`-S` on each socket in `<dir>/tmux-<uid>/`), removes the
-    /// paths given to [`also_remove`](Self::also_remove) and then the
-    /// directory, and touches nothing else. It runs in its own process
-    /// group, so an interrupt sent to the test's doesn't stop it.
+    /// directory (`-S` on each socket in `<dir>/tmux-<uid>/`, never through
+    /// a symbolic link), removes the paths given to
+    /// [`also_remove`](Self::also_remove) and then the directory, and
+    /// touches nothing else. Each tmux call it makes has a time limit. A
+    /// server that doesn't answer `kill-server` (stopped, or hung) is
+    /// killed by the PID it reported while it still answered, if that PID
+    /// still has the same start time. It runs in its own process group, so
+    /// an interrupt sent to the test's doesn't stop it.
     pub fn with_watchdog(limit: Duration) -> Self {
         let mut tmux = Self::new();
         let script = tmux.path.join("watchdog");
@@ -119,6 +127,11 @@ impl PrivateTmux {
         writeln!(list, "{text}").unwrap();
     }
 
+    /// The uid the directory's `tmux-<uid>` socket folder is named for.
+    pub fn uid(&self) -> u32 {
+        self.uid
+    }
+
     /// The watchdog's own pid, if it has one.
     pub fn watchdog_pid(&self) -> Option<u32> {
         self.watchdog.as_ref().map(|c| c.id())
@@ -140,17 +153,70 @@ impl PrivateTmux {
 # process dies, or after its time limit.
 trap '' HUP INT TERM
 dir='{dir}'
+socks="$dir/tmux-{uid}"
+known="$dir/{SERVERS}"
 started=$(date +%s)
 alive() {{
   stat=$(ps -o stat= -p {pid} 2>/dev/null) || return 1
   case $stat in Z*|'') return 1 ;; esac
 }}
+# Run a command for at most $1 seconds.
+bounded() {{
+  secs=$1
+  shift
+  "$@" &
+  p=$!
+  n=0
+  while kill -0 "$p" 2>/dev/null; do
+    if [ "$n" -ge $((secs * 10)) ]; then
+      kill -9 "$p" 2>/dev/null
+      break
+    fi
+    sleep 0.1
+    n=$((n + 1))
+  done
+  wait "$p"
+}}
+# The servers' sockets: real sockets in the real directory, never a
+# symbolic link to one elsewhere.
+sockets() {{
+  if [ -d "$socks" ] && [ ! -L "$socks" ]; then
+    for s in "$socks"/*; do
+      if [ -S "$s" ] && [ ! -L "$s" ]; then printf '%s\n' "$s"; fi
+    done
+  fi
+}}
+started_at() {{
+  ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//; s/ *$//'
+}}
+# Note each server's PID and start time while it answers.
+learn() {{
+  sockets | while IFS= read -r s; do
+    # Into a file, not a pipe: tmux hands the client's output to the
+    # server, so a stopped server would hold a pipe open for ever.
+    bounded 2 '{real}' -S "$s" display-message -p '#{{pid}}' >"$dir/.pid" 2>/dev/null || continue
+    spid=$(cat "$dir/.pid")
+    case $spid in '' | *[!0-9]*) continue ;; esac
+    grep -q "^$spid " "$known" 2>/dev/null && continue
+    printf '%s %s\n' "$spid" "$(started_at "$spid")" >>"$known"
+  done
+}}
 while alive && [ $(( $(date +%s) - started )) -lt {limit} ]; do
+  learn
   sleep 1
 done
-for sock in "$dir"/tmux-{uid}/*; do
-  [ -S "$sock" ] && '{real}' -S "$sock" kill-server >/dev/null 2>&1
+sockets | while IFS= read -r s; do
+  bounded 3 '{real}' -S "$s" kill-server >/dev/null 2>&1
 done
+# A server that didn't answer: kill it by the PID it gave, if that is
+# still the same process.
+if [ -f "$known" ]; then
+  while read -r spid start; do
+    if [ -n "$spid" ] && [ "$(started_at "$spid")" = "$start" ]; then
+      kill -9 "$spid" 2>/dev/null
+    fi
+  done <"$known"
+fi
 if [ -f "$dir/{ALSO_REMOVE}" ]; then
   while IFS= read -r path; do
     [ -n "$path" ] && rm -rf -- "$path"
@@ -280,6 +346,8 @@ tmpdir_ok() {{
 # Only where tmux itself puts sockets (and the drop finds them):
 # <dir>/tmux-<uid>/<name>.
 inside() {{
+  # Never through a symbolic link, to a socket or its directory.
+  if [ -L "$1" ] || [ -L "$dir/tmux-{uid}" ] || [ -L "$lit/tmux-{uid}" ]; then return 1; fi
   case $1 in
     */../*|*/..) return 1 ;;
     "$dir"/tmux-{uid}/*/*|"$lit"/tmux-{uid}/*/*) return 1 ;;
@@ -329,7 +397,17 @@ impl Default for PrivateTmux {
 impl Drop for PrivateTmux {
     fn drop(&mut self) {
         let sockets = self.path.join(format!("tmux-{}", self.uid));
-        for entry in std::fs::read_dir(&sockets).into_iter().flatten().flatten() {
+        let linked = std::fs::symlink_metadata(&sockets).is_ok_and(|m| m.is_symlink());
+        for entry in std::fs::read_dir(&sockets)
+            .into_iter()
+            .filter(|_| !linked)
+            .flatten()
+            .flatten()
+        {
+            // Never through a symbolic link to a server elsewhere.
+            if entry.file_type().map_or(true, |t| t.is_symlink()) {
+                continue;
+            }
             let _ = command(self.guard())
                 .arg("-S")
                 .arg(entry.path())
