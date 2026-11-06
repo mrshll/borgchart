@@ -25,24 +25,24 @@ Unchanged:
 | --- | --- | --- |
 | Deployment | Its file name without `.yaml`. For a file literally named `borgchart.yaml`, its folder's name. There's no `name:` field. | `dev-team.yaml` is `dev-team` |
 | Instance | The deployment's name. A second instance of the same deployment running at the same time takes `-2`, then `-3`. Numbers are never reused within a deployment. | `dev-team`, `dev-team-2` |
-| Member | The role's name for a role with one member (`max: 1`, the default); `<role>-<n>` for copies. Copy numbers are never reused within the instance. | `lead`, `implementer-2` |
+| Member | The role's name for its first member, then `<role>-2`, `<role>-3` for more, the same pattern as instances. Numbers are never reused within the instance. | `lead`, `implementer`, `implementer-2` |
 | Start | A number per member, from 1, never reused (below) | 3 |
-| Member address | `[instance/]member`. The instance may be left out inside a member, in a folder holding exactly one deployment, or when one running instance has that member. A role name works when the role has exactly one member. | `dev-team/implementer-2` |
-| Role address | `[instance/]role`, for sending a message only: it goes to the role's shared queue (#24). | `dev-team/implementer` |
+| Member address | `[instance/]member`. The instance may be left out inside a member, or when exactly one running instance has that member. Inferring it from a deployment (its folder) works only when that deployment has exactly one eligible instance; otherwise brg asks for the ID. | `dev-team/implementer-2` |
+| Role address | `[instance/]role:<role>`, for sending a message only: it goes to the role's shared queue (#24). It's spelled like `external:NAME`, so it can't be confused with the role's first member. | `dev-team/role:implementer` |
 | Message | `[instance/]m<seq>` | `dev-team/m42` |
 
 **Uniqueness.** Deployment names are unique among your deployments: brg registers each by name and file path. A second file with the same name in another folder is refused, with a pointer to rename one of them.
 
 **Parents are roles.** `parent: lead` names a role, and a member's parent is the member filling that role. So a parent role must have one member: `validate` refuses a `parent:` that names a role with `max > 1`.
 
-**Departments (#25).** A role can be a team. Its members (`ws-1`, `ws-2`) have their own sub-members (`dev/ws-2/lead`), inside the department's instance and its one message store.
+**Departments (#25).** A role can be a team. Its members (`ws`, `ws-2`) have their own sub-members (`dev/ws-2/lead`), inside the department's instance and its one message store.
 
 ## Commands: create from the definition, act on the active noun
 
 | Command | What it does |
 | --- | --- |
-| `brg up [deployment]` | Creates the deployment's instance, or continues it: it starts its `start: true` roles, plus any member that still holds an open task or checkout. If the instance is already running, it starts what's missing and says so. |
-| `brg up [deployment] --new` | Creates the next concurrent instance (`dev-team-2`). Each instance needs its own checkouts, so this is refused unless the deployment's `cwd` values use `{instance}`. |
+| `brg up [deployment]` | Creates the deployment's first instance (named after the file), or continues that one, never a numbered one: it starts its `start: true` roles, plus any member that still holds an open task or checkout. If the instance is already running, it starts what's missing and says so. |
+| `brg up [deployment] --new` | Creates the next concurrent instance (`dev-team-2`). Each instance needs its own checkouts. `--new` is refused when any member's resolved working folder (declared, or the default team folder) is the same as, inside, or around a working folder of another live instance. `{instance}` in `cwd` is the easy way to get distinct folders. |
 | `brg up --role R [instance]` | Creates a member for role R: the next copy, or, for a `max: 1` role, its single member if it isn't running. |
 | `brg down [instance]`, `brg down instance/member` | Stops an instance or one member. |
 | `brg restart instance/member`, `brg restart instance` | Starts an existing member, or instance, again with a new start. A stopped copy that holds a task resumes it. |
@@ -76,7 +76,7 @@ Today's *run* (a hidden storage generation) and *incarnation* disappear from cod
 $ brg status
 dev-team                            deployment ~/.config/borgchart/dev-team.yaml · team dev-team/
 └─ lead              claude opus high          working
-   ├─ implementer-1  codex gpt-6.1-sol high    working
+   ├─ implementer    codex gpt-6.1-sol high    working
    ├─ implementer-2  codex gpt-6.1-sol high    idle
    ├─ reviewer       claude opus high          not started (start: false)
    └─ researcher     on demand (none running)
