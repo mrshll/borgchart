@@ -1,751 +1,351 @@
-//! Real-vendor qualification for the guarded wake. Ignored by default.
-//!
-//! Starts the real `claude` and `codex` with your own configuration on a
-//! private tmux socket and checks how `wake` reads and treats their input
-//! boxes. Typing without submitting costs nothing; each vendor gets two real
-//! submissions of the reminder (vim insert mode, with clients attached and a
-//! resize during the attempt; and vim normal mode). Approval prompts are never
-//! answered: one that appears is recorded and left.
+//! The live tier: the real `claude` and `codex`, started by real `brg up`
+//! with your own login and configuration in place. Ignored by default;
+//! local only.
 //!
 //! ```text
-//! BORGCHART_QUALIFY=1 cargo test --locked --test qualify -- --ignored --nocapture --test-threads=1
+//! BORGCHART_LIVE=1 cargo test --locked --test live -- --ignored --nocapture --test-threads=1
 //! ```
 //!
-//! `BORGCHART_QUALIFY_VENDORS=claude` (or `codex`) limits the run;
-//! `BORGCHART_QUALIFY_SUBMIT=0` skips the submissions. The vendors run in
-//! `target/qualify/work`, which must be inside a folder both CLIs already
-//! trust (no trust prompt is answered). The matrix is printed and written to
-//! `target/qualify/matrix.md`; raw screens go to `target/qualify/screens/`
-//! (they show your real screen: sanitize before keeping any as fixtures).
+//! - `BORGCHART_LIVE_VENDORS=claude` (or `codex`) limits the run, which is
+//!   then partial and qualifies nothing. An empty or unknown name is refused.
+//! - `BORGCHART_LIVE_SUBMIT=0` skips the wake matrix's two real submissions
+//!   per vendor (also partial).
+//! - `BORGCHART_LIVE_DRY=1` runs the same harness against owned fake CLIs
+//!   instead, and wins over `BORGCHART_LIVE`. The default tier runs it too
+//!   (`dry_run_reaches_every_expected_result`).
+//!
+//! What it touches: tmux runs only in a private directory behind the
+//! test's guard, under a watchdog that stops it if the run dies or
+//! overruns. Nothing of your vendor configuration is copied or written by
+//! brg: Codex gets session-only trust (`-c projects=…`), and every Claude
+//! deployment sets `auto_trust: false`. Claude cases other than trust run in
+//! `target/live/<run>/work/`, which must be inside a folder Claude already
+//! trusts (this checkout or a parent); the trust cases use fresh folders
+//! under the system temp directory. No tool approval is ever answered: one
+//! that appears ends its case BLOCKED.
+//!
+//! The matrix (UTC time, brg revision, vendor versions) is written as cases
+//! finish to `target/live/<run>/matrix.md`, with screens in `screens/`
+//! beside it (they show your real screen). Only a complete live run with
+//! every case in [`rules::REQUIRED`] PASS qualifies a stable rebuild.
 
 mod common;
 
+#[path = "live/cases.rs"]
+mod cases;
+#[path = "live/rules.rs"]
+mod rules;
+#[path = "live/wake_matrix.rs"]
+mod wake_matrix;
+#[path = "live/world.rs"]
+mod world;
+
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use borgchart::bus::manifest::PaneIdentity;
-use borgchart::composer::{self, Reading};
-use borgchart::rules;
-use borgchart::state::StateDir;
 use borgchart::team::Vendor;
-use borgchart::tmux::{self, Tmux};
-use borgchart::wake::{self, Defer, LaunchFacts, Qualification, REMINDER, Snapshot, WakeResult};
+use rules::{Matrix, Mode, Outcome, REQUIRED, Who};
+use world::World;
 
-const SESSION: &str = "brg-qualify";
-const WINDOW: &str = "member";
-
-fn root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/qualify")
-}
-
-fn base_env() -> BTreeMap<String, String> {
-    let mut env = BTreeMap::new();
-    for key in ["HOME", "USER", "LANG", "PATH"] {
-        if let Ok(v) = std::env::var(key) {
-            env.insert(key.to_string(), v);
-        }
+/// One case by ID, with any sub-check results it produces.
+fn case(w: &World, id: &str, submit: bool) -> Vec<(String, Outcome)> {
+    let who = REQUIRED.iter().find(|(r, _)| *r == id).map(|(_, w)| *w);
+    if let Some(Err(why)) = who.and_then(|who| w.versions.get(&who)) {
+        return vec![(id.into(), Outcome::Blocked(format!("preflight: {why}")))];
     }
-    env.insert("TERM".into(), "xterm-256color".into());
-    env.entry("LANG".into()).or_insert_with(|| "C.UTF-8".into());
-    env
-}
-
-struct Run {
-    /// First, so its servers stop before anything else goes.
-    private: common::PrivateTmux,
-    vendor: Vendor,
-    socket: String,
-    tmux: Tmux,
-    state: StateDir,
-    argv: Vec<String>,
-    facts: LaunchFacts,
-    rows: Vec<[String; 4]>,
-    qualified: bool,
-}
-
-fn show(r: &WakeResult) -> String {
-    match r {
-        WakeResult::Submitted => "submitted".into(),
-        WakeResult::Deferred(Defer::Busy) => "deferred:busy".into(),
-        WakeResult::Deferred(Defer::Draft) => "deferred:draft".into(),
-        WakeResult::Deferred(Defer::Locked) => "deferred:locked".into(),
-        WakeResult::Deferred(Defer::Uncertain(w)) => format!("deferred:uncertain ({w})"),
-        WakeResult::Blocked(rule) => format!("blocked:{rule}"),
-        WakeResult::HumanRequired(w) => format!("human-required ({w})"),
-        WakeResult::AlertOnly(w) => format!("alert-only ({w})"),
-        WakeResult::NotRunning => "not-running".into(),
-    }
-}
-
-fn show_reading(r: &Reading) -> String {
-    match r {
-        Reading::Empty => "empty".into(),
-        Reading::Draft => "draft".into(),
-        Reading::Busy => "busy".into(),
-        Reading::Unknown(w) => format!("unknown ({w})"),
-    }
-}
-
-impl Run {
-    fn new(vendor: Vendor) -> Run {
-        let private = common::PrivateTmux::new();
-        let socket = private.socket(&format!("brg-qualify-{}", vendor.as_str()));
-        std::fs::create_dir_all(root().join("work")).unwrap();
-        std::fs::create_dir_all(root().join("screens")).unwrap();
-        let conf = root().join(format!("tmux-{}.conf", vendor.as_str()));
-        std::fs::write(&conf, tmux::CONFIG).unwrap();
-        let mut tmux_env = base_env();
-        let path = tmux_env.get("PATH").cloned().unwrap_or_default();
-        tmux_env.insert("PATH".into(), private.path_with(&path));
-        tmux_env.insert(
-            "BORGCHART_TMUX_TMPDIR".into(),
-            private.dir().display().to_string(),
-        );
-        let tmux = Tmux::on_socket(&socket, &conf, tmux_env);
-        let argv: Vec<String> = match vendor {
-            Vendor::Claude => vec!["claude".into()],
-            // The update check would show a startup dialog; brg answers none.
-            Vendor::Codex => ["codex", "-c", "check_for_update_on_startup=false"]
-                .map(String::from)
-                .to_vec(),
-        };
-        let version = Command::new(vendor.as_str())
-            .arg("--version")
-            .env_clear()
-            .envs(base_env())
-            .stderr(Stdio::null())
-            .output()
-            .ok()
-            .map(|o| {
-                String::from_utf8_lossy(&o.stdout)
-                    .lines()
-                    .next()
-                    .unwrap_or("")
-                    .to_string()
-            });
-        let facts = LaunchFacts::measure(vendor, version, &argv, &root().join("work"), &base_env());
-        Run {
-            private,
-            vendor,
-            state: StateDir::from_root(&root().join(format!("state-{}", vendor.as_str()))),
-            socket,
-            tmux,
-            argv,
-            facts,
-            rows: Vec::new(),
-            qualified: false,
-        }
-    }
-
-    /// A tmux client for `socket` in the private directory, with the
-    /// vendors' environment.
-    fn client(&self, socket: &str) -> Command {
-        let mut cmd = self.private.tmux(socket);
-        cmd.env_clear()
-            .envs(base_env())
-            .env("TMUX_TMPDIR", self.private.dir());
-        cmd
-    }
-
-    /// (Re)start the vendor in a fresh pane and wait for its empty input box.
-    fn start(&self, cols: u32, rows: u32) {
-        let _ = self.tmux.run(&["kill-server"]);
-        std::thread::sleep(Duration::from_millis(500));
-        let cmd = self
-            .argv
-            .iter()
-            .map(|a| borgchart::state::shell_quote(a))
-            .collect::<Vec<_>>()
-            .join(" ");
-        let cwd = root().join("work").display().to_string();
-        let (c, r) = (cols.to_string(), rows.to_string());
-        let args = [
-            "new-session",
-            "-d",
-            "-s",
-            SESSION,
-            "-n",
-            WINDOW,
-            "-x",
-            &c,
-            "-y",
-            &r,
-            "-c",
-            &cwd,
-            &cmd,
-        ];
-        if let Err(e) = self.tmux.ok(&args) {
-            eprintln!("retrying new-session after: {e}");
-            std::thread::sleep(Duration::from_secs(1));
-            self.tmux.ok(&args).unwrap();
-        }
-        let start = Instant::now();
-        while start.elapsed() < Duration::from_secs(30) {
-            std::thread::sleep(Duration::from_millis(500));
-            if self.reading() == Reading::Empty {
-                std::thread::sleep(Duration::from_millis(1500));
-                return;
-            }
-        }
-        panic!(
-            "{} did not reach an empty input box:\n{}",
-            self.vendor.as_str(),
-            self.screen()
-        );
-    }
-
-    fn target(&self) -> String {
-        format!("={SESSION}:={WINDOW}")
-    }
-
-    fn pane(&self) -> PaneIdentity {
-        let out = self
-            .tmux
-            .ok(&[
-                "display-message",
-                "-p",
-                "-t",
-                &self.target(),
-                "#{pane_id} #{pane_pid}",
-            ])
-            .unwrap();
-        let (id, pid) = out.trim().split_once(' ').unwrap();
-        PaneIdentity {
-            socket: self.socket.clone(),
-            session: SESSION.into(),
-            window: WINDOW.into(),
-            pane_id: id.into(),
-            pane_pid: pid.parse().unwrap(),
-        }
-    }
-
-    fn screen(&self) -> String {
-        self.tmux
-            .ok(&["capture-pane", "-p", "-e", "-t", &self.target()])
-            .unwrap_or_default()
-    }
-
-    fn snap(&self) -> Snapshot {
-        wake::snapshot(&self.tmux, &self.pane()).expect("the pane is gone")
-    }
-
-    fn reading(&self) -> Reading {
-        let s = self.snap();
-        composer::read(self.vendor, &s.screen, Some(s.geometry))
-    }
-
-    fn save(&self, case: &str) {
-        let path = root()
-            .join("screens")
-            .join(format!("{}-{case}.ansi", self.vendor.as_str()));
-        let _ = std::fs::write(path, self.screen());
-    }
-
-    fn keys(&self, args: &[&str]) {
-        let target = self.target();
-        let mut a = vec!["send-keys", "-t", target.as_str()];
-        a.extend_from_slice(args);
-        self.tmux.ok(&a).unwrap();
-        std::thread::sleep(Duration::from_millis(150));
-    }
-
-    fn newline(&self) {
-        match self.vendor {
-            Vendor::Claude => self.keys(&["S-Enter"]),
-            Vendor::Codex => self.keys(&["C-j"]),
-        }
-    }
-
-    fn attempt(&self) -> (WakeResult, u32) {
-        let mut calls = 0;
-        let r = wake::attempt(
-            &self.tmux,
-            &self.state,
-            WINDOW,
-            &self.pane(),
-            self.vendor,
-            &self.facts,
-            &mut || {
-                calls += 1;
-                Ok(())
-            },
-        );
-        (r, calls)
-    }
-
-    fn record(&mut self, case: &str, want: &str, got: String) {
-        self.record_checked(case, want, got, &[]);
-    }
-
-    /// Record a row that also fails if any invariant is false.
-    fn record_checked(&mut self, case: &str, want: &str, got: String, invariants: &[(&str, bool)]) {
-        let got = invariants
-            .iter()
-            .filter(|(_, held)| !held)
-            .fold(got, |g, (what, _)| format!("{g} ({what} violated)"));
-        let ok = if evaluate(want, &got, invariants) {
-            "ok"
-        } else {
-            "FAIL"
-        };
-        println!(
-            "| {} | {case} | {want} | {got} | {ok} |",
-            self.vendor.as_str()
-        );
-        self.rows.push([case.into(), want.into(), got, ok.into()]);
-    }
-
-    /// An attempt on a draft must defer and leave the draft as it was.
-    fn draft_case(&mut self, case: &str) {
-        std::thread::sleep(Duration::from_millis(500));
-        let before = self.snap();
-        let (r, calls) = if self.qualified {
-            self.attempt()
-        } else {
-            let rules = rules::load(self.vendor).unwrap();
-            let r = wake::before_paste(self.vendor, &rules, &before);
-            (r.unwrap_or(WakeResult::Submitted), 0)
-        };
-        std::thread::sleep(Duration::from_millis(300));
-        let after = self.snap();
-        let lines = |s: &Snapshot| {
-            composer::view(self.vendor, &s.screen, None)
-                .ok()
-                .map(|v| v.lines)
-        };
-        let untouched = lines(&before) == lines(&after)
-            && (before.geometry.cursor_x, before.geometry.cursor_y)
-                == (after.geometry.cursor_x, after.geometry.cursor_y);
-        self.save(case);
-        self.record_checked(
-            case,
-            "deferred:draft",
-            show(&r),
-            &[
-                ("no intent recorded", calls == 0),
-                ("input box untouched", untouched),
-            ],
-        );
-    }
-
-    /// A whitespace draft may read as a draft or as uncertain, never as empty.
-    fn draft_or_uncertain(&mut self, case: &str) {
-        std::thread::sleep(Duration::from_millis(500));
-        let rules = rules::load(self.vendor).unwrap();
-        let s = self.snap();
-        self.save(case);
-        let got = match wake::before_paste(self.vendor, &rules, &s) {
-            None => "would paste".to_string(),
-            Some(r) => show(&r),
-        };
-        self.record(case, "deferred:draft|deferred:uncertain", got);
-    }
-
-    /// Paste text by hand (bracketed), the way the wake does, without Enter.
-    fn paste(&self, text: &str) {
-        self.tmux
-            .run_with_stdin(&["load-buffer", "-b", "qualify", "-"], text.as_bytes())
-            .unwrap();
-        self.tmux
-            .ok(&[
-                "paste-buffer",
-                "-p",
-                "-d",
-                "-b",
-                "qualify",
-                "-t",
-                &self.target(),
-            ])
-            .unwrap();
-        std::thread::sleep(Duration::from_millis(800));
-    }
-
-    fn enter_case(&mut self, case: &str, want: &str) {
-        std::thread::sleep(Duration::from_millis(300));
-        let rules = rules::load(self.vendor).unwrap();
-        let s = self.snap();
-        self.save(case);
-        let g = s.geometry;
-        let got = match wake::before_enter(self.vendor, &rules, &s) {
-            None => format!("would press Enter (cursor {},{})", g.cursor_x, g.cursor_y),
-            Some(why) => format!("withheld: {why}"),
-        };
-        self.record(case, want, got);
-    }
-
-    /// Wait for a turn to end: an empty idle box, or a prompt (left alone).
-    fn wait_turn(&self) -> String {
-        let start = Instant::now();
-        let rules = rules::load(self.vendor).unwrap();
-        while start.elapsed() < Duration::from_secs(180) {
-            std::thread::sleep(Duration::from_secs(2));
-            match wake::before_paste(self.vendor, &rules, &self.snap()) {
-                None => return "idle".into(),
-                Some(WakeResult::Blocked(rule)) => {
-                    return format!("blocked:{rule} (left unanswered)");
-                }
-                Some(_) => {}
-            }
-        }
-        "still busy after 180 s".into()
-    }
-}
-
-fn vendors() -> Vec<Vendor> {
-    let only = std::env::var("BORGCHART_QUALIFY_VENDORS").unwrap_or_default();
-    [Vendor::Claude, Vendor::Codex]
+    let one = |o: Outcome| vec![(id.to_string(), o)];
+    let run = || match id {
+        "claude-trust-off" => cases::claude_trust(w, false),
+        "claude-trust-on" => cases::claude_trust(w, true),
+        "codex-trust-on" => cases::codex_trust(w, Some(true)),
+        "codex-trust-off" => cases::codex_trust(w, Some(false)),
+        "codex-locked-trust" => cases::codex_trust(w, None),
+        "claude-env-colour" => one(cases::env_colour(w, Who::Claude)),
+        "codex-env-colour" => one(cases::env_colour(w, Who::Codex)),
+        "claude-background-wait" => one(cases::background_wait(w)),
+        "codex-queue" => one(Outcome::Skip(
+            "`codex queue` isn't available until #20".into(),
+        )),
+        "claude-wake-matrix" => one(matrix_case(w, Vendor::Claude, submit)),
+        "codex-wake-matrix" => one(matrix_case(w, Vendor::Codex, submit)),
+        other => one(Outcome::Fail(format!("no such case {other}"))),
+    };
+    catch_unwind(AssertUnwindSafe(run))
+        .unwrap_or_else(|e| {
+            let why = e
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_default();
+            one(Outcome::Fail(format!("the harness panicked: {why}")))
+        })
         .into_iter()
-        .filter(|v| only.is_empty() || only.split(',').any(|o| o == v.as_str()))
+        .map(|(id, o)| (id, o.checked()))
         .collect()
 }
 
-fn qualify(vendor: Vendor) -> Vec<[String; 4]> {
-    let mut run = Run::new(vendor);
-    let submit = std::env::var("BORGCHART_QUALIFY_SUBMIT").as_deref() != Ok("0");
-    println!(
-        "\n{}: version {:?}, editor {:?}, suggestions {:?}, qualification {:?}",
-        vendor.as_str(),
-        run.facts.vendor_version,
-        run.facts.editor,
-        run.facts.suggestions,
-        wake::qualification(vendor, &run.facts)
+fn matrix_case(w: &World, vendor: Vendor, submit: bool) -> Outcome {
+    if w.mode == Mode::Dry {
+        return Outcome::Skip(
+            "dry: needs the real input boxes (tests/wake.rs covers the logic with fake-composer)"
+                .into(),
+        );
+    }
+    let who = match vendor {
+        Vendor::Claude => Who::Claude,
+        Vendor::Codex => Who::Codex,
+    };
+    let version = w.versions.get(&who).and_then(|v| v.clone().ok());
+    let (rows, qualified) = wake_matrix::qualify(vendor, version, submit);
+    let table = wake_matrix::table(vendor, &rows);
+    let _ = std::fs::write(
+        w.evidence
+            .join(format!("{}-wake-matrix.md", vendor.as_str())),
+        &table,
     );
-    let qualified = wake::qualification(vendor, &run.facts) == Qualification::Qualified;
-    run.qualified = qualified;
-    let mut facts_row = format!("{:?}", run.facts.vendor_version.as_deref().unwrap_or("?"));
-    let _ = write!(facts_row, " editor={:?}", run.facts.editor);
-    run.record("launch facts", "", facts_row);
-    if !qualified {
-        // Unqualified: the adapter must not type, whatever the screen shows.
-        run.start(200, 50);
-        let (r, _) = run.attempt();
-        run.record("unqualified attempt", "alert-only", show(&r));
-        // The readings below are still measured, without typing.
-    }
-
-    // Empty idle box.
-    run.start(200, 50);
-    run.save("empty");
-    let rules = rules::load(vendor).unwrap();
-    let got = match wake::before_paste(vendor, &rules, &run.snap()) {
-        None => "would paste".to_string(),
-        Some(r) => show(&r),
-    };
-    run.record("empty idle", "would paste", got);
-
-    // Single-line draft, then vim normal mode with it.
-    run.keys(&["-l", "please look at the example widget"]);
-    run.draft_case("draft single-line");
-    run.keys(&["Escape"]);
-    run.draft_case("draft in vim normal mode");
-
-    // Multiline.
-    run.start(200, 50);
-    run.keys(&["-l", "first line of a note"]);
-    run.newline();
-    run.keys(&["-l", "second line"]);
-    run.draft_case("draft multiline");
-
-    // A draft scrolled out of view: many lines, then blank ones at the end.
-    run.start(200, 50);
-    for i in 0..45 {
-        run.keys(&["-l", &format!("row {i} of a long note")]);
-        run.newline();
-    }
-    for _ in 0..25 {
-        run.newline();
-    }
-    run.draft_case("draft offscreen (blank tail)");
-
-    // Wrapped single line in a narrow pane.
-    run.start(60, 50);
-    run.keys(&[
-        "-l",
-        "a fairly long single line draft that will need to wrap across the narrow pane width",
-    ]);
-    run.draft_case("draft wrapped");
-
-    // History recall.
-    run.start(200, 50);
-    run.keys(&["Up"]);
-    std::thread::sleep(Duration::from_millis(500));
-    let got = show_reading(&run.reading());
-    run.save("history-up");
-    run.record("history recall (Up)", "draft", got.clone());
-
-    // A draft that clears: draft, then (after a person clears it) empty.
-    run.start(200, 50);
-    run.keys(&["-l", "temporary"]);
-    run.draft_case("draft clears: first attempt");
-    run.keys(&["C-u"]);
-    std::thread::sleep(Duration::from_millis(500));
-    let got = match wake::before_paste(vendor, &rules, &run.snap()) {
-        None => "would paste".to_string(),
-        Some(r) => show(&r),
-    };
-    run.record("draft clears: after clearing", "would paste", got);
-
-    // Whitespace-only drafts: never read as empty.
-    run.start(200, 50);
-    run.keys(&["-l", "   "]);
-    run.draft_or_uncertain("spaces-only draft (insert)");
-    run.start(200, 50);
-    run.keys(&["-l", " "]);
-    run.keys(&["Escape"]);
-    run.draft_or_uncertain("one space, then vim normal mode");
-
-    // The Enter check, with the reminder pasted by hand and never submitted.
-    run.start(200, 50);
-    run.paste(REMINDER);
-    run.enter_case("reminder pasted", "would press Enter");
-    run.keys(&["-l", " "]);
-    run.enter_case("reminder + a typed space", "withheld");
-    run.start(200, 50);
-    run.paste(&REMINDER.replace("brg inbox", "brginbox"));
-    run.enter_case("reminder with a space removed", "withheld");
-    run.start(60, 50);
-    run.paste(REMINDER);
-    run.enter_case("reminder wrapped at 60 columns", "would press Enter");
-
-    // A persistent draft keeps deferring, with a resize and attached clients.
-    run.start(200, 50);
-    run.keys(&["-l", "a draft left overnight"]);
-    let outer = format!("{}-outer", run.socket);
-    let _ = run
-        .client(&outer)
-        .args([
-            "-f",
-            "/dev/null",
-            "new-session",
-            "-d",
-            "-x",
-            "150",
-            "-y",
-            "45",
-        ])
-        .arg(format!(
-            "{} -L {} attach -t ={SESSION}",
-            run.private.guard().display(),
-            run.socket
-        ))
-        .status();
-    let mut control = run
-        .client(&run.socket)
-        .args(["-C", "attach", "-t", &format!("={SESSION}")])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .spawn()
-        .unwrap();
-    for (i, size) in [("180", "48"), ("120", "40"), ("200", "50")]
+    let failed: Vec<&str> = rows
         .iter()
-        .enumerate()
-    {
-        let _ = run.tmux.ok(&[
-            "resize-window",
-            "-t",
-            &run.target(),
-            "-x",
-            size.0,
-            "-y",
-            size.1,
-        ]);
-        run.draft_case(&format!("persistent draft #{} (attached, resized)", i + 1));
-    }
-    let clients = run
-        .tmux
-        .ok(&["list-clients", "-F", "#{client_control_mode}"])
-        .unwrap_or_default();
-    run.record(
-        "clients attached during attempts",
-        "2",
-        clients.lines().count().to_string(),
-    );
-
-    // Too small a pane.
-    let _ = run.tmux.ok(&[
-        "resize-window",
-        "-t",
-        &run.target(),
-        "-x",
-        "100",
-        "-y",
-        "12",
-    ]);
-    run.keys(&["C-u"]);
-    std::thread::sleep(Duration::from_millis(800));
-    run.save("small");
-    let r = if run.qualified {
-        run.attempt().0
-    } else {
-        wake::before_paste(vendor, &rules, &run.snap()).unwrap_or(WakeResult::Submitted)
-    };
-    run.record("pane 100x12", "deferred:uncertain", show(&r));
-    let _ = control.kill();
-    let _ = control.wait();
-    let _ = run.client(&outer).arg("kill-server").output();
-
-    if !qualified || !submit {
-        run.record("submissions", "", "skipped".into());
-        return std::mem::take(&mut run.rows);
-    }
-
-    // Submission 1: insert mode, clients attached, resize during the attempt.
-    run.start(200, 50);
-    let _ = run
-        .client(&outer)
-        .args([
-            "-f",
-            "/dev/null",
-            "new-session",
-            "-d",
-            "-x",
-            "150",
-            "-y",
-            "45",
-        ])
-        .arg(format!(
-            "{} -L {} attach -t ={SESSION}",
-            run.private.guard().display(),
-            run.socket
+        .filter(|r| r[3] == "FAIL")
+        .map(|r| r[0].as_str())
+        .collect();
+    if !failed.is_empty() {
+        Outcome::Fail(format!("rows failed: {}", failed.join(", ")))
+    } else if !qualified {
+        Outcome::Skip(format!(
+            "this {} isn't qualified for typed reminders (see the launch facts row); typed attempts and submissions skipped",
+            vendor.as_str()
         ))
-        .status();
-    let mut control = run
-        .client(&run.socket)
-        .args(["-C", "attach", "-t", &format!("={SESSION}")])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .spawn()
-        .unwrap();
-    let target = run.target();
-    let (r, _) = std::thread::scope(|scope| {
-        let run = &run;
-        scope.spawn(|| {
-            for (x, y) in [("190", "50"), ("200", "48"), ("200", "50")] {
-                std::thread::sleep(Duration::from_millis(150));
-                let _ = run
-                    .client(&run.socket)
-                    .args(["resize-window", "-t", &target, "-x", x, "-y", y])
-                    .output();
-            }
-        });
-        run.attempt()
-    });
-    // A redraw mid-resize can make the box unreadable: that defers, safely.
-    run.record(
-        "attempt during a resize",
-        "submitted|deferred:uncertain",
-        show(&r),
-    );
-    let mut submitted = r == WakeResult::Submitted;
-    if !submitted {
-        std::thread::sleep(Duration::from_secs(1));
-        let (r, _) = run.attempt();
-        run.record(
-            "submit: vim insert, 2 clients attached",
-            "submitted",
-            show(&r),
-        );
-        submitted = r == WakeResult::Submitted;
+    } else if !submit {
+        Outcome::Skip("submissions turned off (BORGCHART_LIVE_SUBMIT=0)".into())
+    } else {
+        Outcome::Pass(format!("{} rows ok", rows.len()))
     }
-    if submitted {
-        std::thread::sleep(Duration::from_millis(800));
-        run.save("working");
-        let (busy, calls) = run.attempt();
-        run.record(
-            "attempt during the turn",
-            "deferred:busy",
-            format!(
-                "{}{}",
-                show(&busy),
-                if calls > 0 { " (intent recorded!)" } else { "" }
-            ),
-        );
-    }
-    let end = run.wait_turn();
-    run.save("after-turn-1");
-    run.record("turn 1 ended", "idle", end);
-    let _ = control.kill();
-    let _ = control.wait();
-    let _ = run.client(&outer).arg("kill-server").output();
-
-    // Submission 2: vim normal mode.
-    run.start(200, 50);
-    run.keys(&["Escape"]);
-    std::thread::sleep(Duration::from_millis(500));
-    let mode = composer::view(vendor, &run.screen(), None)
-        .ok()
-        .and_then(|v| v.vim);
-    run.record("normal mode shown", "Some(Normal)", format!("{mode:?}"));
-    let (r, _) = run.attempt();
-    // Claude can't tell an empty box from one space in normal mode, so it defers.
-    let want = match vendor {
-        Vendor::Claude => "deferred:uncertain",
-        Vendor::Codex => "submitted",
-    };
-    run.record("submit: vim normal", want, show(&r));
-    let end = run.wait_turn();
-    run.save("after-turn-2");
-    run.record("turn 2 ended", "idle", end);
-    std::mem::take(&mut run.rows)
 }
 
-#[test]
-#[ignore = "launches the real vendor CLIs; set BORGCHART_QUALIFY=1"]
-fn qualification_matrix() {
-    if std::env::var("BORGCHART_QUALIFY").as_deref() != Ok("1") {
-        eprintln!("set BORGCHART_QUALIFY=1 to run");
-        return;
-    }
-    let mut md =
-        String::from("| vendor | case | expected | got | ok |\n| --- | --- | --- | --- | --- |\n");
-    let mut failed = 0;
-    println!("| vendor | case | expected | got | ok |");
-    for v in vendors() {
-        for row in qualify(v) {
-            if row[3] == "FAIL" {
-                failed += 1;
-            }
-            let _ = writeln!(
-                md,
-                "| {} | {} | {} | {} | {} |",
-                v.as_str(),
-                row[0],
-                row[1],
-                row[2],
-                row[3]
-            );
+/// Run every selected case in order, writing each row as it finishes.
+fn run_cases(
+    w: &World,
+    selected: &[Who],
+    submit: bool,
+    matrix: &Matrix,
+) -> BTreeMap<String, Outcome> {
+    let mut results = BTreeMap::new();
+    for (id, who) in REQUIRED {
+        if !selected.contains(who) || results.contains_key(*id) {
+            continue;
+        }
+        for (id, o) in case(w, id, submit) {
+            matrix.row(&id, &o);
+            results.insert(id, o);
         }
     }
-    std::fs::write(root().join("matrix.md"), &md).unwrap();
-    assert_eq!(failed, 0, "qualification failures:\n{md}");
+    results
 }
 
-/// A row passes when the result has one of the `|`-separated prefixes and
-/// every invariant held, whatever the result text says.
-fn evaluate(want: &str, got: &str, invariants: &[(&str, bool)]) -> bool {
-    want.split('|').any(|w| got.starts_with(w)) && invariants.iter().all(|(_, held)| *held)
+fn revision() -> String {
+    let git = |args: &[&str]| {
+        common::command("git")
+            .args(args)
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default()
+    };
+    let rev = git(&["rev-parse", "--short", "HEAD"]);
+    let dirty = !git(&["status", "--porcelain", "--untracked-files=no"]).is_empty();
+    format!("{rev}{}", if dirty { " (modified)" } else { "" })
+}
+
+fn header(w: &World, selected: &[Who], partial: bool) -> String {
+    let mut h = String::from(if w.mode == Mode::Dry {
+        "# Live tier: DRY run (owned fake CLIs; qualifies nothing)\n\n"
+    } else {
+        "# Live tier run\n\n"
+    });
+    h.push_str(&format!("- UTC: {}\n", borgchart::bus::time::utc_now()));
+    h.push_str(&format!("- brg: {}\n", revision()));
+    for (who, v) in &w.versions {
+        let v = match v {
+            Ok(v) => v.clone(),
+            Err(e) => format!("unavailable: {e}"),
+        };
+        h.push_str(&format!("- {}: {v}\n", who.as_str()));
+    }
+    let names: Vec<&str> = selected.iter().map(|w| w.as_str()).collect();
+    h.push_str(&format!(
+        "- selection: {}{}\n",
+        names.join(", "),
+        if partial { " (partial)" } else { "" }
+    ));
+    h
 }
 
 #[test]
-fn rows_fail_on_any_broken_invariant() {
-    assert!(evaluate("deferred:draft", "deferred:draft", &[("a", true)]));
-    assert!(evaluate(
-        "submitted|deferred:uncertain",
-        "deferred:uncertain (x)",
-        &[]
-    ));
-    assert!(!evaluate("deferred:draft", "deferred:busy", &[]));
-    assert!(!evaluate(
-        "deferred:draft",
-        "deferred:draft",
-        &[("no intent recorded", false)]
-    ));
-    assert!(!evaluate(
-        "deferred:draft",
-        "deferred:draft",
-        &[("no intent recorded", true), ("input box untouched", false)]
-    ));
+#[ignore = "launches the real vendor CLIs; set BORGCHART_LIVE=1"]
+fn live_matrix() {
+    let env = |k: &str| std::env::var(k).ok();
+    let mode = rules::mode(
+        env("BORGCHART_LIVE").as_deref(),
+        env("BORGCHART_LIVE_DRY").as_deref(),
+    );
+    if mode == Mode::Off {
+        eprintln!("set BORGCHART_LIVE=1 to run (or BORGCHART_LIVE_DRY=1 for the fakes)");
+        return;
+    }
+    let (selected, mut partial) =
+        rules::select(env("BORGCHART_LIVE_VENDORS").as_deref()).unwrap_or_else(|e| panic!("{e}"));
+    let submit = env("BORGCHART_LIVE_SUBMIT").as_deref() != Some("0");
+    partial |= !submit;
+    let mut w = match mode {
+        Mode::Dry => {
+            let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("target/live")
+                .join(format!("{}-dry", world::run_name()));
+            World::dry(&dir)
+        }
+        _ => World::live(),
+    };
+    w.preflight(&selected);
+    wake_matrix::set_dirs(wake_matrix::Dirs {
+        work: w.trusted.join("wake"),
+        keep: w.evidence.clone(),
+        limit: w.limits.run,
+    });
+    let matrix = Matrix::create(&w.evidence, &header(&w, &selected, partial));
+    println!("matrix: {}", matrix.path.display());
+    let results = run_cases(&w, &selected, submit, &matrix);
+    let v = rules::verdict(&selected, &results, partial, mode == Mode::Dry);
+    matrix.finish(&v);
+    assert!(
+        !v.fails(),
+        "{}\n(see {})",
+        v.summary(),
+        matrix.path.display()
+    );
+}
+
+/// The dry run, in the default tier: every case and every false-positive
+/// control reaches its expected result against the owned fakes, the matrix
+/// is stamped DRY and kept, and no server outlives the run.
+#[test]
+fn dry_run_reaches_every_expected_result() {
+    let keep = tempfile::tempdir().unwrap();
+    let evidence = keep.path().join("run");
+    let both = [Who::Claude, Who::Codex];
+    let mut w = World::dry(&evidence);
+    w.preflight(&both);
+    let private = w.private.dir().to_path_buf();
+    let matrix = Matrix::create(&w.evidence, &header(&w, &both, false));
+
+    // Every case, all fakes well behaved.
+    let results = run_cases(&w, &both, true, &matrix);
+    let skips = [
+        "claude-trust-status",
+        "codex-trust-status",
+        "claude-trust-on",
+        "codex-queue",
+        "claude-wake-matrix",
+        "codex-wake-matrix",
+    ];
+    let mut wrong = Vec::new();
+    for (id, _) in REQUIRED {
+        let want = if skips.contains(id) { "SKIP" } else { "PASS" };
+        match results.get(*id) {
+            Some(o) if o.label() == want => {}
+            got => wrong.push(format!("{id}: want {want}, got {got:?}")),
+        }
+    }
+    let v = rules::verdict(&both, &results, false, true);
+    matrix.finish(&v);
+    assert!(!v.fails() && !v.qualifies(), "{v:?}");
+
+    // A missing case: the run is incomplete and fails.
+    let mut short = results.clone();
+    short.remove("codex-env-colour");
+    let v = rules::verdict(&both, &short, false, true);
+    assert!(v.fails() && v.missing == ["codex-env-colour"], "{v:?}");
+
+    // False-positive controls: (case, member, fake scenario, expected).
+    let controls: &[(&str, &str, &str, &str)] = &[
+        ("claude-background-wait", cases::WAITER, "stale", "FAIL"),
+        (
+            "claude-background-wait",
+            cases::WAITER,
+            "foreground",
+            "FAIL",
+        ),
+        (
+            "claude-background-wait",
+            cases::WAITER,
+            "never-armed",
+            "FAIL",
+        ),
+        (
+            "claude-background-wait",
+            cases::WAITER,
+            "approval",
+            "BLOCKED",
+        ),
+        ("claude-env-colour", "painter", "nocolour", "FAIL"),
+        ("claude-env-colour", "painter", "wrongenv", "FAIL"),
+        ("codex-env-colour", "painter", "nocolour", "FAIL"),
+        ("codex-env-colour", "painter", "wrongenv", "FAIL"),
+        ("codex-trust-off", "truster", "write-config", "FAIL"),
+        ("codex-trust-on", "truster", "approval", "BLOCKED"),
+    ];
+    w.fake_file("stale-nonce", Some("n0123456789abcdefz"));
+    let control = |w: &World, id: &str, what: &str, want: &str, wrong: &mut Vec<String>| {
+        let got = case(w, id, true).remove(0).1;
+        matrix.row(&format!("control {id} ({what})"), &got);
+        if got.label() != want {
+            wrong.push(format!("control {id} ({what}): want {want}, got {got:?}"));
+        }
+    };
+    for (id, member, scenario, want) in controls {
+        w.scenario(member, scenario);
+        control(&w, id, scenario, want, &mut wrong);
+        w.scenario(member, "ok");
+    }
+    // A folder that turns out to be trusted already: never PASS.
+    let trusted = format!("{}\n{}\n", w.trusted.display(), w.scratch.display());
+    w.fake_file("trusted", Some(&trusted));
+    control(
+        &w,
+        "claude-trust-off",
+        "already trusted",
+        "BLOCKED",
+        &mut wrong,
+    );
+    control(
+        &w,
+        "codex-trust-off",
+        "already trusted",
+        "BLOCKED",
+        &mut wrong,
+    );
+    w.fake_file("trusted", Some(&format!("{}\n", w.trusted.display())));
+    // A hung CLI: preflight's limit makes its cases BLOCKED.
+    w.fake_file("hang-version-codex", Some(""));
+    w.preflight(&[Who::Codex]);
+    control(
+        &w,
+        "codex-env-colour",
+        "hung --version",
+        "BLOCKED",
+        &mut wrong,
+    );
+    w.fake_file("hang-version-codex", None);
+
+    drop(w);
+    let kept = std::fs::read_to_string(evidence.join("matrix.md")).unwrap();
+    assert!(kept.starts_with("# Live tier: DRY run"), "{kept}");
+    assert!(
+        kept.contains("control claude-background-wait (stale)"),
+        "{kept}"
+    );
+    assert!(
+        !private.exists(),
+        "the private tmux directory outlived the run"
+    );
+    assert!(wrong.is_empty(), "{}\n\n{kept}", wrong.join("\n"));
 }
