@@ -215,6 +215,58 @@ Open questions:
 - **When every copy has ended,** unacknowledged role messages stay queued. `status` shows them (`implementer  on demand (none running) · 2 waiting`), and the parent is told. Should brg start a copy by itself instead?
 - **A copy that ends with an open task:** does the task go back to the parent for reassignment, or wait for `brg up --member implementer-2` to restart that same copy?
 
+## Teams as members (departments) (Open: design only, a later change)
+
+A member can be a whole team. A **department** is just a team whose members include teams. It's a name for that shape, not a new kind of object.
+
+```yaml
+# coding/team.yaml
+members:
+  lead:
+    prompt: lead.md
+  ws:                                  # a workstream: a whole sub-team
+    team: teams/medium                 # a team folder inside this one, or shared:<name>
+    parent: lead
+    start: false
+    max: 4
+```
+
+- **Starting one.** `brg up --member ws` starts `ws-1`, a whole copy of the sub-team. Its top member is the member itself: the department's lead writes to `ws-1` and reaches `ws-1`'s lead. The sub-team's own on-demand roles sit under that lead and are started by it, as in any team.
+- **The rules already decided apply at every level:**
+  - **The tree nests:**
+
+    ```
+    coding
+    └─ lead                 claude opus high      working
+       ├─ ws-1
+       │  └─ lead           claude opus high      working
+       │     ├─ implementer-1 claude opus medium  working
+       │     └─ reviewer    codex example-model   not started (start: false)
+       └─ ws               on demand (1 of 4 running)
+    ```
+
+  - **Addressing extends:** `coding/ws-2/lead`, `coding/ws-2/implementer-1`. Bare names resolve relative to the sender, so inside `ws-2`, `implementer-1` means `ws-2`'s own copy.
+  - **`parent` chains escalation upward:** a sub-team's lead escalates to the member it hangs under, and so on up to the person.
+  - **Each copy freezes its own configuration** at its start and gets its own checkouts. The `cwd` template from the copies section keeps one writer per checkout, now per sub-team copy.
+- **Quota and model routing are not core.** They're a plugin the lead uses before seating a team or a copy, for example a `route` action that answers "go" or "wait", based on usage, before the lead runs `brg up --member ws`. brg itself never checks quotas.
+
+Proposed changes to this direction, and why:
+
+1. **`team:` must be inside the team folder, or `shared:<name>` as for plugins, never a path like `../medium`.** The team folder is meant to be shareable and say nothing about one machine. A path outside it breaks that.
+2. **One message store per department, not one per sub-team.** Copies are namespaced members (`ws-2/lead`) in the department's single store. A parent-to-child message is then an ordinary local record, with one sequence, one inspect and one check. Separate stores would need delivery between stores, and a rollover would have to coordinate them.
+3. **A sub-team copy can't write to outside callers.** Only the outermost team's top member answers `external:NAME`. Inside a department, a sub-team's top member writes to its parent. Otherwise every workstream could reach the person directly, around the department's lead.
+4. **Per-copy values come from the department's `borgchart.yaml`,** under that member, with `{n}` in paths, for example `ws: {members: {lead: {cwd: ~/work/project-ws{n}}}}`. A sub-team's own `borgchart.yaml` is ignored when it runs as a member. One place configures the whole department.
+5. **The routing plugin starts as go/wait only.** Letting it change a copy's vendor or model would make `up --member` take overrides that member files currently pin. Add overrides only if go/wait proves too little.
+
+Open questions:
+
+- **Depth.** Cycles (a team containing itself, directly or not) are refused at `validate`. Is there also a depth limit? Proposed: 3 levels, raise it if needed.
+- **Standalone use.** Can a sub-team's folder also run as an ordinary team? Proposed: yes, with its own `borgchart.yaml`, and that file is ignored when the team runs as a member.
+- **Storage.** Shared with the department (proposed above) or one store per sub-team.
+- **Stopping.** `brg down --member ws-2` stops the whole copy. What about the open tasks of its members (the same question as for a copy that ends with an open task)?
+- **Siblings.** Can `ws-1/lead` message `ws-2/lead` directly? Proposed: no, only through their common parent, as for any siblings.
+- **Display.** Should `status` fold a busy sub-team into one line by default, with `--all` expanding it?
+
 ## What you never see
 
 - **Storage.** No runs, run IDs, generations or storage paths in commands, output or errors. brg rolls a team's message storage over by itself when its configuration changes or the storage reaches its age limit, and carries open work across.
@@ -238,7 +290,7 @@ Open questions:
 
 ## Open
 
-- **Roles with several copies** (above).
+- **Roles with several copies** and **teams as members** (above).
 - **Sessions:** whether separate groups of teams (`--session`) are needed at all. They are kept minimal for now.
 - **Storage key:** messages are keyed by the deployment's location, so moving the team's folder starts empty. Should `name` be the key instead?
 - **Secrets:**
