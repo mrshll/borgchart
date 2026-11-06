@@ -160,7 +160,9 @@ fn cross_check(v: &Validated, report: &mut Report) {
                             cwd.display()
                         ),
                     );
-                } else if cwd.join(".codex").exists() {
+                } else if cwd.join(".codex").exists()
+                    && !crate::launch::codex_args_set(&m.args, "projects")
+                {
                     report.warning(
                         deploy_file,
                         format!(

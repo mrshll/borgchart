@@ -551,14 +551,23 @@ fn auto_trust_warns_about_project_settings_for_vendor_members() {
 
 #[test]
 fn auto_trust_warns_about_codex_project_settings_and_locked_codex_members() {
-    // Catches: a Codex folder whose `.codex/` would load without a warning, and
-    // a `locked` Codex member silently left at its trust screen.
-    for (posture, want) in [
+    // Catches: a Codex folder whose `.codex/` would load without a warning, a
+    // `locked` Codex member silently left at its trust screen, and a warning
+    // that brg will trust a folder when the member's own `projects` args win.
+    for (posture, args, want, warned) in [
         (
             "    accept_risk: true\n",
+            "",
             "has project settings (`.codex/`)",
+            true,
         ),
-        ("    posture: locked\n", "doesn't trust"),
+        ("    posture: locked\n", "", "doesn't trust", true),
+        (
+            "    accept_risk: true\n",
+            ", args: [-c, 'projects={}']",
+            "has project settings (`.codex/`)",
+            false,
+        ),
     ] {
         let f = Fixture::new();
         f.edit(
@@ -571,13 +580,18 @@ fn auto_trust_warns_about_codex_project_settings_and_locked_codex_members() {
             "borgchart.yaml",
             "schema: 1\n",
             &format!(
-                "schema: 1\nauto_trust: true\nmembers:\n  lead: {{cwd: {}}}\n",
+                "schema: 1\nauto_trust: true\nmembers:\n  lead: {{cwd: {}{args}}}\n",
                 f.path("work").display()
             ),
         );
         let (report, validated) = f.run();
         assert!(validated.is_some(), "{}", errors(&report));
-        assert!(warnings(&report).contains(want), "{}", warnings(&report));
+        assert_eq!(
+            warnings(&report).contains(want),
+            warned,
+            "{args}: {}",
+            warnings(&report)
+        );
     }
 }
 

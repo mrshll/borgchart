@@ -926,6 +926,7 @@ fn codex_trust_screen_is_left_for_a_person_unless_auto_trust_covers_the_folder()
     for deploy in [
         "schema: 1\nauto_trust: false\nmembers:\n  beta: {cwd: WORK}\n",
         "schema: 1\nmembers:\n  beta: {cwd: WORK, posture: locked}\n",
+        "schema: 1\nauto_trust: true\nmembers:\n  beta: {cwd: WORK, posture: locked}\n",
         "schema: 1\nauto_trust: true\n",
         "schema: 1\nauto_trust: true\nmembers:\n  beta: {cwd: WORK, args: [-c, 'projects={}']}\n",
     ] {
