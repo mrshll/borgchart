@@ -106,7 +106,7 @@ Two folders with the same name can both run. Their instances are told apart by t
 
 **Parents are roles.** `parent: lead` names a role, and a member's parent is the member filling that role. So a parent role must have one member: `validate` refuses a `parent:` that names a role with `max > 1`. The same goes for a plugin's `delivers_to:`.
 
-**Recipients.** A message goes to one member, or from a team's root member to `external:NAME`. An instance isn't a recipient: a message naming only an instance (`dev-design-k3f9`) is refused, listing its members. A member's messages stay inside its own instance. To hand work to another instance, such as a design panel, a lead creates it and passes the brief and results through files, until #25 makes such a team a department.
+**Recipients.** A message goes to one member, or from a team's root member to `external:NAME`. An instance isn't a recipient: a message naming only an instance (`dev-design-k3f9`) is refused, listing its members. For now a member's messages stay inside its own instance. Messages between chosen members of different instances, such as two teams' leads, are planned (#62): a person links a role in one instance with a role in another. The message format leaves room for them, so they need no second format change. A team that works as part of another, such as a design panel inside the dev team, becomes a department (#25) and shares its instance.
 
 **Departments (#25).** A role can be a team, named as any team is. Its members (`ws-a7k2`) have their own sub-members (`dev-k3f9/ws-a7k2/lead-q8m3`), inside the department's instance, its one message store and its working folder.
 
