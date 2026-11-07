@@ -105,8 +105,9 @@ impl Fake {
                 _ => {}
             }
         }
-        self.log(serde_json::json!({"event": "control", "text": text}));
+        // Drawn first: a test that sees the control event sees its screen.
         self.draw();
+        self.log(serde_json::json!({"event": "control", "text": text}));
     }
 
     /// The input box's lines, wrapped to the pane width.
