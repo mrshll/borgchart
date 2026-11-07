@@ -82,7 +82,7 @@ There's no `up`. There are four verbs. `create` always makes something new; `sta
 | Member | `<role>-<suffix>`, with the same kind of suffix as instances, never reused within the instance | `lead-q8m3`, `implementer-x7k2` |
 | Start | A number per member, from 1 | 3 |
 | Member address | `[instance/]member` | `dev-team-k3f9/implementer-x7k2` |
-| Role address | `[instance/]<role>`, the bare role name. `create` takes it. Members always carry a suffix, so a bare name is never a member's ID. There's no role queue: messages go to members. | `dev-team-k3f9/implementer` |
+| Role address | `[instance/]<role>`, the bare role name. Only `create` takes it. Members always carry a suffix, so a bare name is never a member's ID. There's no role queue: messages go to members. | `dev-team-k3f9/implementer` |
 | Message | `[instance/]m<seq>` | `dev-team-k3f9/m42` |
 
 **Finding a team by name.** brg looks in every folder under `teams:`. A team is a subfolder holding a `team.yaml`.
@@ -99,7 +99,7 @@ Two folders with the same name can both run. Their instances are told apart by t
 
 Otherwise brg lists the candidates and asks for the ID. It never picks by order. Message, inbox and task commands take the instance as `--instance`; inside a member it's always the member's own.
 
-**A role name where a member is expected** (`attach lead`, `prompt implementer`, `stop dev-team-k3f9/reviewer`, a message to `implementer`) resolves to the role's only member when it has exactly one. With several, brg lists them and asks for the member's ID.
+**Members are always named in full.** Commands that act on a member (`attach`, `prompt`, `stop`), and messages, take its full ID (`lead-q8m3`). A role name there is refused, listing the role's members. There are no shortcuts for now.
 
 **Parents are roles.** `parent: lead` names a role, and a member's parent is the member filling that role. So a parent role must have one member: `validate` refuses a `parent:` that names a role with `max > 1`. The same goes for a plugin's `delivers_to:`.
 
