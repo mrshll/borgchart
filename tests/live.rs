@@ -267,8 +267,6 @@ fn dry_run_reaches_every_expected_result() {
     // Every case, all fakes well behaved.
     let results = run_cases(&w, &both, true, &matrix);
     let skips = [
-        "claude-trust-status",
-        "codex-trust-status",
         "claude-trust-on",
         "codex-queue",
         "claude-wake-matrix",

@@ -22,7 +22,7 @@ use crate::state::{
     self, MemberMeta, Meta, PluginMeta, StateDir, shell_quote, write_private, write_script,
 };
 use crate::team::{PluginLocation, Posture, Vendor};
-use crate::tmux::{Tmux, target};
+use crate::tmux::{self, Tmux, target};
 use crate::tree;
 use crate::validate::{Input, Validated, validate};
 
@@ -160,6 +160,9 @@ struct Started {
     locked: bool,
     /// The declared cwd whose Claude folder-trust dialog `up` may accept.
     trust_dir: Option<PathBuf>,
+    /// A Codex member started without session trust: `up` watches for its
+    /// trust screen, only to say so; it never answers it.
+    watch_codex_trust: bool,
     /// The pane this `up` launched; nothing after the wait touches another.
     pane: Option<PaneIdentity>,
 }
@@ -182,7 +185,7 @@ fn launched(tmux: &Tmux, session: &str, s: &Started) -> Launched {
     }
 }
 
-/// The id of the rule that recognizes Claude's folder-trust dialog.
+/// The id of the rules that recognize each vendor's folder-trust screen.
 const TRUST_RULE: &str = "trust-dialog";
 const TRUST_NO_SELECTED: &str = " ❯ No, exit";
 const TRUST_YES_SELECTED: &str = " ❯ Yes, I trust this folder";
@@ -701,6 +704,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             vendor: member.vendor,
             locked: posture == Posture::Locked,
             trust_dir,
+            watch_codex_trust: member.vendor == Vendor::Codex && codex_trust.is_none(),
             pane,
         });
         set(&mut outcomes, id, "started".into());
@@ -797,7 +801,10 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
 
     // Accept Claude's folder trust for a declared cwd, and make every locked
     // member prove its gate is active, or stop it.
-    for s in started.iter().filter(|s| s.locked || s.trust_dir.is_some()) {
+    for s in started
+        .iter()
+        .filter(|s| s.locked || s.trust_dir.is_some() || s.watch_codex_trust)
+    {
         let id = &s.id;
         let deadline = Instant::now() + gate_wait();
         let mut trusted = false;
@@ -864,12 +871,45 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                     failed |= s.locked;
                     break;
                 }
+                // Keys would go to copy mode, not the dialog: read the very
+                // pane they go to, with the locks held. Wait for it to leave
+                // copy mode, and answer then.
+                match tmux.pane_in_mode(&pane) {
+                    Some(false) => {}
+                    Some(true) if Instant::now() > deadline => {
+                        append(
+                            &mut outcomes,
+                            id,
+                            format!(
+                                "waiting at Claude's folder-trust prompt: {}; {}, then answer it",
+                                tmux::IN_MODE,
+                                tmux::leave_mode_hint(id)
+                            ),
+                        );
+                        break;
+                    }
+                    Some(true) => {
+                        std::thread::sleep(Duration::from_millis(200));
+                        continue;
+                    }
+                    None => {
+                        append(
+                            &mut outcomes,
+                            id,
+                            format!(
+                                "couldn't read its pane, so the folder-trust dialog was left for you; run `brg attach {id}`"
+                            ),
+                        );
+                        break;
+                    }
+                }
                 let t = pane.as_str();
                 tmux.ok(&["send-keys", "-t", t, "Down"])?;
                 std::thread::sleep(Duration::from_millis(250));
                 let after = tmux.capture(&session, id);
-                if !(has_line(&after, TRUST_YES_SELECTED)
-                    && trust_dialog_path(&after).as_deref() == s.trust_dir.as_deref())
+                if tmux.pane_in_mode(t) != Some(false)
+                    || !(has_line(&after, TRUST_YES_SELECTED)
+                        && trust_dialog_path(&after).as_deref() == s.trust_dir.as_deref())
                 {
                     append(
                         &mut outcomes,
@@ -895,14 +935,15 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                 continue;
             }
             match reading.map(|r| r.state) {
-                // Nothing runs before Claude's folder trust is answered, and the
+                // Left for a person, never answered here; a `locked` member's
                 // gate must still report in afterwards (`send` checks).
                 Some(State::Blocked) if is_trust => {
                     append(
                         &mut outcomes,
                         id,
                         format!(
-                            "waiting at Claude's folder-trust prompt; answer it with `brg attach {id}`"
+                            "waiting at {}'s folder-trust prompt; answer it with `brg attach {id}`",
+                            s.vendor.display_name()
                         ),
                     );
                     break;
@@ -1249,6 +1290,7 @@ pub fn not_started(start: bool) -> String {
 /// What `status` prints in a member's state column.
 pub fn state_label(row: &StatusRow) -> String {
     match row.state.as_str() {
+        "blocked" if row.rule.as_deref() == Some(TRUST_RULE) => "blocked (folder trust)".into(),
         NOT_STARTED => not_started(row.start),
         STOPPED if row.expected_running => format!("{STOPPED} (should be running)"),
         s => s.to_string(),
@@ -1359,11 +1401,24 @@ pub fn status(input: &Input) -> Result<Vec<StatusRow>, String> {
                         row.detail = Some(e);
                     }
                 }
+                let mut details: Vec<String> = row.detail.take().into_iter().collect();
+                // It waits for a person to answer it.
+                if row.state == "blocked" && row.rule.as_deref() == Some(TRUST_RULE) {
+                    details.insert(0, format!("waiting at folder trust: `brg attach {id}`"));
+                }
                 if posture == Posture::Locked && !state.gate_marker(id).exists() {
-                    row.detail = Some("gate not active: gets no input".into());
+                    details.push("gate not active: gets no input".to_string());
                     if row.state != "blocked" {
                         row.state = "gate-inactive".into();
                     }
+                }
+                // Nothing is typed into it (`send`, the wake, folder trust)
+                // until it leaves copy mode.
+                if w.in_mode {
+                    details.push(format!("{}: {}", tmux::IN_MODE, tmux::leave_mode_hint(id)));
+                }
+                if !details.is_empty() {
+                    row.detail = Some(details.join("; "));
                 }
             }
         }
@@ -1458,40 +1513,42 @@ fn pending(dir: &Path) -> Option<String> {
 
 /// `brg status` as text: the team's tree with each member's vendor, model,
 /// state and details, then the plugin processes.
+/// The columns `status` and `status -i` show after a row's name: a
+/// member's vendor and model, state and details; a plugin's state and detail.
+pub fn status_cells(r: &StatusRow) -> Vec<String> {
+    if r.kind != "member" {
+        return vec![r.state.clone(), r.detail.clone().unwrap_or_default()];
+    }
+    let mut detail = Vec::new();
+    if r.posture.as_deref() == Some("locked") {
+        detail.push("locked".to_string());
+    }
+    detail.extend(r.detail.clone());
+    vec![
+        format!(
+            "{} {}",
+            r.vendor.as_deref().unwrap_or("-"),
+            r.model.as_deref().unwrap_or("default")
+        ),
+        state_label(r),
+        detail.join("; "),
+    ]
+}
+
 pub fn render_status(team: &str, rows: &[StatusRow]) -> String {
     let nodes: Vec<tree::Node> = rows
         .iter()
         .filter(|r| r.kind == "member")
-        .map(|r| {
-            let mut detail = Vec::new();
-            if r.posture.as_deref() == Some("locked") {
-                detail.push("locked".to_string());
-            }
-            detail.extend(r.detail.clone());
-            tree::Node {
-                id: r.name.clone(),
-                parent: r.parent.clone(),
-                cols: vec![
-                    format!(
-                        "{} {}",
-                        r.vendor.as_deref().unwrap_or("-"),
-                        r.model.as_deref().unwrap_or("default")
-                    ),
-                    state_label(r),
-                    detail.join("; "),
-                ],
-            }
+        .map(|r| tree::Node {
+            id: r.name.clone(),
+            parent: r.parent.clone(),
+            cols: status_cells(r),
         })
         .collect();
     let plugins: Vec<(String, Vec<String>)> = rows
         .iter()
         .filter(|r| r.kind == "plugin")
-        .map(|r| {
-            (
-                r.name.clone(),
-                vec![r.state.clone(), r.detail.clone().unwrap_or_default()],
-            )
-        })
+        .map(|r| (r.name.clone(), status_cells(r)))
         .collect();
     tree::render(team, &nodes, &plugins)
 }
@@ -1629,6 +1686,14 @@ pub fn send(
         }
         _ => {}
     }
+    // Keys would go to copy mode, not the member: its Enter would be lost.
+    if w.in_mode {
+        return Err(SendError::Blocked(format!(
+            "`{member}`: {}; nothing was sent. To send, {}",
+            tmux::IN_MODE,
+            tmux::leave_mode_hint(member)
+        )));
+    }
 
     let buffer = format!(
         "brg-{}-{}",
@@ -1648,14 +1713,22 @@ pub fn send(
         let _ = tmux.run(&["delete-buffer", "-b", &buffer]);
     }
     pasted?;
-    // Check again before pressing Enter, in case a dialog appeared meanwhile.
-    let title = tmux
-        .window(&session, member)
-        .map(|w| w.title)
-        .unwrap_or_default();
+    // Check again before pressing Enter, in case a dialog appeared or the
+    // pane went into copy mode meanwhile.
+    let now = tmux.window(&session, member);
+    let title = now.as_ref().map(|w| w.title.clone()).unwrap_or_default();
     if rules.read(&title, &tmux.capture(&session, member)).state == State::Blocked {
         return Err(SendError::Blocked(format!(
             "`{member}` showed a prompt while the text was being pasted; Enter was not pressed. Attach to check it (`brg attach {member}`)"
+        )));
+    }
+    // A window that can't be read now counts as one in copy mode: Enter is
+    // only pressed on a pane known to take it.
+    if now.as_ref().is_none_or(|w| w.in_mode) {
+        return Err(SendError::Blocked(format!(
+            "`{member}`: {} after the text was pasted; Enter was not pressed, and the text is in its input box. Check it: {}",
+            tmux::IN_MODE,
+            tmux::leave_mode_hint(member)
         )));
     }
     tmux.ok(&["send-keys", "-t", &t, "Enter"])

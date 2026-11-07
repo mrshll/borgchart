@@ -9,7 +9,7 @@
 | `brg validate [--json] [--probe]` | Check the team and deployment without starting anything; `--probe` also lists each vendor's MCP connectors (this starts your MCP servers) |
 | `brg up [--member ID]` | Start the team (members with `start: true` and plugin processes), or one member, and print the team as a tree with each member's vendor, model and outcome. Starting into a running team reuses its environment and plugin values, and refuses changed files (restart the team to apply them). With a `bus:`, a full `up` of a stopped team starts fresh message storage when its files or message format changed |
 | `brg down [--member ID]` | Stop the team, or one member |
-| `brg status [--json \| -w \| -i]` | Show the team as a tree with each member's vendor, model, state and details, then each plugin process. `--json` gives the rows in tree order (with `parent`, `model` and, with a `bus:`, `liveness`). `-w` refreshes the tree every `--interval` seconds; `-i` is an interactive screen (j/k to move, Enter to attach, your tmux prefix then `d` to come back, `r` to refresh, `q` to quit) |
+| `brg status [--json \| -w \| -i]` | Show the team as a tree with each member's vendor, model, state and details, then each plugin process. `--json` gives the rows in tree order (with `parent`, `model` and, with a `bus:`, `liveness`). `-w` refreshes the tree every `--interval` seconds; `-i` shows the same tree on an interactive screen (j/k to move, Enter to attach, your tmux prefix then `d` to come back, `r` to refresh, `q` or Esc to quit) |
 | `brg attach <member>` | Open a member's live session; detach with your tmux prefix, then `d` (press the prefix twice inside your own tmux) |
 | `brg logs <member> [-n LINES]` | Show recent output of a member or plugin process |
 | `brg send <member> <text…> [--force] [--from MEMBER] [--json]` | Paste text into a member and press Enter, as one submission. `--from` (for plugins relaying a member's message) requires the target to be that member's parent |
@@ -29,8 +29,9 @@
 
 - **tmux:** brg runs its own tmux server (`tmux -L borgchart`) with its own config; your `~/.tmux.conf` is not read. Each deployment is one session, with one window per member and per plugin process (`_<plugin>`).
 - **Environment:** windows start with a small environment copied from your shell (`PATH`, `HOME`, `LANG`, `TMPDIR`, `XDG_*`, …), plus what each needs. Plugin secrets live only in 0600 files under the state directory (`$XDG_STATE_HOME/borgchart`), read by brg's shims, and are removed at `brg down`.
-- **`locked` start-up check:** a `locked` member's gate must report in when it starts. If it doesn't, or the member stops at any prompt first, `up` stops it rather than let it run unprotected. The one exception is Claude's folder-trust prompt, since nothing runs before it is answered.
+- **`locked` start-up check:** a `locked` member's gate must report in when it starts. If it doesn't, or the member stops at any prompt first, `up` stops it rather than let it run unprotected. The one exception is its vendor's folder-trust screen (Claude or Codex): `up` leaves it there and says to attach. brg never answers Codex's, and answering either yourself is your decision to trust that folder; `send` still refuses the member until its gate reports in.
 - **Inactive gate:** `send` refuses any `locked` member whose gate has not reported in, and `status` shows it as `gate-inactive`.
+- **Copy mode:** a member's pane that tmux has in copy mode (or another mode, after scrolling back in `brg attach`) would send keys to tmux, not the member. So `send`, the wake and `up`'s folder-trust answering type nothing into it until it leaves that mode (usually `q`), and `status` adds that to the member's details.
 
 ## States
 
@@ -40,7 +41,7 @@
 | --- | --- |
 | `idle` | Waiting for input |
 | `working` | In a turn |
-| `blocked` | At a prompt that needs a person (a permission, a question, folder trust) |
+| `blocked` | At a prompt that needs a person (a permission, a question); `blocked (folder trust)` at its vendor's folder-trust screen, with the detail "waiting at folder trust: `brg attach <id>`" (`--json` keeps `"state": "blocked"` with `"rule": "trust-dialog"`) |
 | `unknown` | Running, but no rule matched (e.g. after a vendor update changed the screen) |
 | `gate-inactive` | A `locked` member whose gate hasn't reported in; it gets no input |
 | `exited` | The program ended (with its status when tmux knows it) |
@@ -52,8 +53,8 @@ States are advisory: they gate `send` for safety, not access.
 ## `brg send`
 
 - **One submission:** the text is pasted as one bracketed paste followed by Enter, so multi-line text arrives as one message. A per-member lock keeps concurrent sends from interleaving.
-- **Refusals:** a member that isn't running, is `blocked`, or is `unknown` (unless `--force`); a `vendor`-posture member that is mid-turn; text with control characters other than newline and tab; text over 16 KiB; text starting with `/` or `!`.
-- **Second check:** after pasting, `send` reads the screen again and presses Enter only if no prompt appeared. If one did, the pasted text stays in the member's input box (exit 4); attach to deal with both.
+- **Refusals:** a member that isn't running, is `blocked`, or is `unknown` (unless `--force`); a `vendor`-posture member that is mid-turn; a member whose pane is in tmux copy mode (exit 4, even with `--force`); text with control characters other than newline and tab; text over 16 KiB; text starting with `/` or `!`.
+- **Second check:** after pasting, `send` reads the screen again and presses Enter only if no prompt appeared and the pane didn't go into copy mode. If either happened, the pasted text stays in the member's input box (exit 4); attach to deal with both.
 - **Paste mode:** text goes in as a bracketed paste when the member's CLI has turned that mode on, as Claude Code and Codex do. Otherwise tmux turns each newline into Enter, so multi-line text arrives as several lines.
 - **Exit codes:** `--json` prints the same as `{ok, code, message}`.
 
@@ -62,6 +63,6 @@ States are advisory: they gate `send` for safety, not access.
 | 0 | Submitted (not proof the agent started working) |
 | 2 | Usage |
 | 3 | Member not running |
-| 4 | Member blocked at a prompt |
+| 4 | Needs a person: the member is blocked at a prompt, or its pane is in tmux copy mode |
 | 5 | State unknown, or text refused |
 | 6 | Busy: a `vendor`-posture member is mid-turn (a dialog could appear and catch the Enter) |

@@ -356,6 +356,10 @@ fn pre_paste_decisions_on_real_screens() {
         )
         .is_some()
     );
+    // The reminder is in the box, but copy mode would catch the Enter.
+    let mut s = snap(t, codex("reminder"), at(200, 78, 46));
+    s.in_mode = true;
+    assert!(wake::before_enter(Vendor::Codex, &x, &s).is_some());
     // The title can lag; the working line alone (either bullet) says busy.
     for title in ["\u{2838} example", t] {
         assert_eq!(
@@ -381,6 +385,10 @@ fn only_a_seen_empty_box_confirms_a_submission() {
     assert!(ok(Vendor::Claude, claude("small"), at(100, 2, 9)).is_err());
     assert!(ok(Vendor::Claude, screen!("claude-permission.txt"), None).is_err());
     assert!(wake::after_enter(Vendor::Codex, None).is_err());
+    // An empty box under copy mode doesn't show the Enter reached the member.
+    let mut s = snap("t", claude("empty"), at(200, 2, 47));
+    s.in_mode = true;
+    assert!(wake::after_enter(Vendor::Claude, Some(&s)).is_err());
 }
 
 // ---- attempts against the fake composer ----
