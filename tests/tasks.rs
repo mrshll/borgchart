@@ -1,7 +1,8 @@
 //! Task facts and recovery: the task fold, transition and authority checks
 //! at publication, `brg task list|show`, and carrying work into a linked run.
 //! Runs are built from fixtures (hand-written `run.json` and incarnations)
-//! in the team's storage (`<root>/<deployment-id>/rN`, named by `current`).
+//! in the instance's storage (`<state>/<instance>/messages/rN`, named by
+//! `current`).
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -16,6 +17,8 @@ use sha2::{Digest, Sha256};
 
 const RUN: &str = "r1";
 const NEXT: &str = "r2";
+/// The instance the fixture registers.
+const INSTANCE: &str = "oncall-2a3b";
 
 struct Fixture {
     dir: tempfile::TempDir,
@@ -45,28 +48,60 @@ impl Fixture {
         let f = Fixture {
             dir: tempfile::tempdir().unwrap(),
         };
-        fs::create_dir_all(f.dep_file().parent().unwrap()).unwrap();
-        fs::write(
-            f.dep_file(),
-            format!("schema: 1\nbus:\n  root: {}\n", f.root().display()),
-        )
-        .unwrap();
+        f.register();
         f.start_run(RUN, None);
         f.configure(RUN, None);
         fs::write(f.agreement(), "Build the parser. Tests first.\n").unwrap();
         f
     }
 
-    fn dep_file(&self) -> PathBuf {
-        self.dir.path().join("deploy/borgchart.yaml")
-    }
+    /// brg's state folder.
     fn root(&self) -> PathBuf {
-        self.dir.path().join("runs")
+        self.dir.path().join("state")
     }
-    /// The team's storage directory.
+    /// The instance's state folder.
+    fn state_root(&self) -> PathBuf {
+        self.root().join(INSTANCE)
+    }
+    /// The instance's message storage.
     fn team_dir(&self) -> PathBuf {
-        self.root()
-            .join(borgchart::state::deployment_id(&self.dep_file()))
+        self.state_root().join("messages")
+    }
+
+    /// The instance in the registry; its members go by bare names.
+    fn register(&self) {
+        fs::create_dir_all(self.state_root()).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(self.state_root(), fs::Permissions::from_mode(0o700)).unwrap();
+        let members: BTreeMap<&str, Value> = ["lead", "helper", "helper2"]
+            .iter()
+            .map(|m| (*m, json!({"role": m})))
+            .collect();
+        fs::write(
+            self.root().join("registry.json"),
+            json!({
+                "schema": 1,
+                "instances": {INSTANCE: {
+                    "team": "oncall", "team_dir": self.dir.path().join("oncall"),
+                    "folder": self.dir.path().join("work"), "created_at": "2026-11-05T19:00:00.000Z",
+                }},
+                "issued": {"oncall": ["2a3b"]},
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(
+            self.state_root().join("instance.json"),
+            json!({
+                "schema": 1, "id": INSTANCE, "team": "oncall",
+                "team_dir": self.dir.path().join("oncall"),
+                "folder": self.dir.path().join("work"),
+                "created_at": "2026-11-05T19:00:00.000Z",
+                "members": members,
+            })
+            .to_string(),
+        )
+        .unwrap();
     }
     fn run_dir(&self, run: &str) -> PathBuf {
         self.team_dir().join(run)
@@ -110,10 +145,10 @@ impl Fixture {
             "schema": 1,
             "run": run,
             "created_at": borgchart::bus::time::utc_now(),
-            "deployment": borgchart::state::deployment_id(&self.dep_file()),
-            "source": self.dep_file(),
+            "instance": INSTANCE,
+            "source": self.dir.path().join("oncall"),
             "config": {"version": 1, "digest": "00", "inputs": {}},
-            "members": members,
+            "roles": members,
         });
         if let Some(from) = linked_from {
             manifest["linked_from"] =
@@ -181,9 +216,10 @@ impl Fixture {
         cmd.env_clear()
             .env("HOME", self.dir.path())
             .env("PATH", "/usr/bin:/bin")
+            .env("BORGCHART_STATE_HOME", self.root())
+            .env("BORGCHART_CONFIG", self.dir.path().join("config.yaml"))
             .args(args)
-            .arg("-f")
-            .arg(self.dep_file());
+            .args(["--instance", INSTANCE]);
         let run = self.current();
         match who {
             As::Ops => {
@@ -191,12 +227,14 @@ impl Fixture {
             }
             As::Operator => {}
             As::Member(m) => {
-                cmd.env("BORGCHART_MEMBER", m)
+                cmd.env("BORGCHART_INSTANCE", INSTANCE)
+                    .env("BORGCHART_MEMBER", m)
                     .env("BORGCHART_RUN", &run)
                     .env("BORGCHART_INCARNATION", format!("{m}-1"));
             }
             As::Inc(m, i) => {
-                cmd.env("BORGCHART_MEMBER", m)
+                cmd.env("BORGCHART_INSTANCE", INSTANCE)
+                    .env("BORGCHART_MEMBER", m)
                     .env("BORGCHART_RUN", &run)
                     .env("BORGCHART_INCARNATION", i);
             }
@@ -700,9 +738,8 @@ fn release_waits_until_the_writer_is_gone() {
         "v1",
         &verify("helper", "t-1", &res, "accepted"),
     );
-    let mut report = borgchart::diag::Report::default();
-    let deployment = borgchart::deploy::load(&f.dep_file(), &mut report).unwrap();
-    let bus = store::open(&deployment).unwrap();
+    let state = borgchart::state::StateDir::from_root(&f.state_root());
+    let bus = store::open(&state).unwrap();
     let snap = store::scan(&bus.paths, RUN);
     let lead = Actor::Member {
         member: "lead".into(),
@@ -936,9 +973,8 @@ fn rollover_carries_while_holding_the_old_runs_lock() {
     f.start_run(NEXT, Some(RUN));
     let lock = borgchart::state::open_lock(&f.run_dir(RUN).join("bus/lock")).unwrap();
     lock.lock().unwrap();
-    let mut report = borgchart::diag::Report::default();
-    let deployment = borgchart::deploy::load(&f.dep_file(), &mut report).unwrap();
-    let carried = borgchart::bus::carry::carry_at_rollover(&deployment, RUN, NEXT).unwrap();
+    let state = borgchart::state::StateDir::from_root(&f.state_root());
+    let carried = borgchart::bus::carry::carry_at_rollover(&state, RUN, NEXT).unwrap();
     assert!(carried.failure().is_none(), "{carried:?}");
     assert_eq!(carried.into, NEXT);
     assert!(!carried.carried.is_empty());
@@ -959,7 +995,7 @@ fn rollover_carries_while_holding_the_old_runs_lock() {
         "{items:?}"
     );
     // Only from the linked run.
-    assert!(borgchart::bus::carry::carry_at_rollover(&deployment, "r9", NEXT).is_err());
+    assert!(borgchart::bus::carry::carry_at_rollover(&state, "r9", NEXT).is_err());
 }
 
 #[test]
@@ -1234,7 +1270,8 @@ fn the_publish_help_example_publishes_and_its_outcomes_are_documented() {
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", f.dir.path())
         .env("BORGCHART_BIN", env!("CARGO_BIN_EXE_brg"))
-        .env("BORGCHART_FILE", f.dep_file())
+        .env("BORGCHART_STATE_HOME", f.root())
+        .env("BORGCHART_INSTANCE", INSTANCE)
         .env("BORGCHART_MEMBER", "helper")
         .env("BORGCHART_RUN", f.current())
         .env("BORGCHART_INCARNATION", "helper-1")

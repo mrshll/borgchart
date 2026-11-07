@@ -38,6 +38,7 @@ fn status_i_attaches_detaches_and_quits() {
     write("team/alpha.md", "---\nrole: helper\n---\nYou are alpha.\n");
     fs::create_dir_all(root.join("bin")).unwrap();
     fs::create_dir_all(root.join("home")).unwrap();
+    fs::create_dir_all(root.join("work")).unwrap();
     std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_fake-agent"), root.join("bin/claude")).unwrap();
 
     // Both servers, brg's and the outer one, in the test's private directory.
@@ -45,7 +46,7 @@ fn status_i_attaches_detaches_and_quits() {
     let inner = private.socket("brg-tui-in");
     let outer = private.socket("brg-tui-out");
     let env_line = format!(
-        "export PATH={guard}:{bin}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin HOME={home} LANG=C.UTF-8 TERM=xterm-256color BORGCHART_STATE_HOME={state} BORGCHART_TMUX_TMPDIR={tmpdir} BORGCHART_TMUX_SOCKET={inner}\ncd {team}\n",
+        "export PATH={guard}:{bin}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin HOME={home} LANG=C.UTF-8 TERM=xterm-256color BORGCHART_STATE_HOME={state} BORGCHART_CONFIG={home}/config.yaml BORGCHART_TMUX_TMPDIR={tmpdir} BORGCHART_TMUX_SOCKET={inner}\ncd {team}\n",
         guard = private.bin().display(),
         bin = root.join("bin").display(),
         home = root.join("home").display(),
@@ -57,7 +58,11 @@ fn status_i_attaches_detaches_and_quits() {
     let script = root.join("run.sh");
     fs::write(
         &script,
-        format!("#!/bin/sh\n{env_line}{brg} up >/dev/null || exit 9\nexec {brg} status -i\n"),
+        format!(
+            "#!/bin/sh\n{env_line}id=$({brg} create {team} {work} | head -n 1 | cut -d' ' -f1) || exit 9\nexec {brg} status \"$id\" -i\n",
+            team = root.join("team").display(),
+            work = root.join("work").display(),
+        ),
     )
     .unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();

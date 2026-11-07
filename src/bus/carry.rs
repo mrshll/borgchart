@@ -163,11 +163,22 @@ fn open_run(state: &StateDir, run: &str) -> Result<Bus, Failure> {
             format!("run `{run}`'s manifest names another run or instance"),
         ));
     }
-    manifest.resolve_members(&bus.manifest.issued());
+    manifest.resolve_members(&issued(&bus)?);
     bus.run = run.to_string();
     bus.paths = paths;
     bus.manifest = manifest;
     Ok(bus)
+}
+
+/// Every member the instance issued, with its role.
+fn issued(bus: &Bus) -> Result<std::collections::BTreeMap<String, String>, Failure> {
+    let record =
+        crate::registry::read_instance(&bus.state).map_err(|e| Failure::new(Code::Error, e))?;
+    Ok(record
+        .members
+        .into_iter()
+        .map(|(id, m)| (id, m.role))
+        .collect())
 }
 
 fn carry_linked(bus: &Bus, from: &str, old_lock: OldLock) -> Result<Report, Failure> {
@@ -191,7 +202,7 @@ fn carry_linked(bus: &Bus, from: &str, old_lock: OldLock) -> Result<Report, Fail
     let mut old = manifest::load_manifest(&old_paths)
         .map_err(|e| Failure::new(Code::Error, e.message(&bus.instance, &bus.restart)))?
         .ok_or_else(|| Failure::new(Code::NotFound, format!("no run `{from}`")))?;
-    old.resolve_members(&bus.manifest.issued());
+    old.resolve_members(&issued(bus)?);
     let snap = match old_lock {
         OldLock::Take => store::snapshot_of(&old_paths, from)?,
         OldLock::HeldByCaller => store::scan(&old_paths, from),

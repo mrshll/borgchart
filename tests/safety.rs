@@ -317,3 +317,34 @@ fn locked_members_cant_work_around_the_team_folder_and_vendor_ones_get_a_note() 
         "{err}"
     );
 }
+
+// --- A start that never reached tmux ---
+
+#[test]
+fn a_start_that_never_reached_tmux_leaves_nothing_held() {
+    let env = Env::new();
+    // A socket directory whose socket path is too long for tmux.
+    let long = env.path(&format!("t{}", "x".repeat(120)));
+    fs::create_dir_all(&long).unwrap();
+    let unusable = |args: &[&str]| {
+        env.cmd(args)
+            .env("BORGCHART_TMUX_TMPDIR", &long)
+            .output()
+            .unwrap()
+    };
+    // A first start: the new instance is taken back.
+    let out = unusable(&["create", "oncall", &env.folder("work/a")]);
+    assert!(!out.status.success(), "{}", both(&out));
+    assert_eq!(env.registry()["instances"], json!({}));
+    // A later start of an existing instance: stop and delete still work.
+    let a = env.create("oncall", "work/a");
+    env.ok(&["stop", &a]);
+    let out = unusable(&["start", &a]);
+    assert!(!out.status.success(), "{}", both(&out));
+    let out = env.ok(&["stop", &a]);
+    assert!(stdout(&out).contains("not running"), "{}", both(&out));
+    env.ok(&["delete", &a]);
+    // The tmux guard refused the unusable directory, as tmux would.
+    assert!(!env.tmux.refused().is_empty());
+    env.tmux.clear_refused();
+}

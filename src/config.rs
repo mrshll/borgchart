@@ -157,7 +157,12 @@ pub fn expand_home(base: &Path, value: &str) -> PathBuf {
 /// Load the configuration. A missing file means the defaults; problems go
 /// into `report`, and `None` means there were errors.
 pub fn load(report: &mut Report) -> Option<Config> {
-    let file = path();
+    load_file(&path(), report)
+}
+
+/// Load the configuration from `file` (a missing file means the defaults).
+pub fn load_file(file: &Path, report: &mut Report) -> Option<Config> {
+    let file = file.to_path_buf();
     let text = match std::fs::read_to_string(&file) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(Config::default()),

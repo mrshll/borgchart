@@ -51,6 +51,20 @@ pub fn validate(team_dir: &Path) -> (Report, Option<Validated>) {
     let Some(config) = config::load(&mut report) else {
         return (report, None);
     };
+    validate_into(team_dir, config, report)
+}
+
+/// [`validate`] with a configuration already loaded (tests, and callers
+/// that must not read the caller's configuration file).
+pub fn validate_with(team_dir: &Path, config: Config) -> (Report, Option<Validated>) {
+    validate_into(team_dir, config, Report::default())
+}
+
+fn validate_into(
+    team_dir: &Path,
+    config: Config,
+    mut report: Report,
+) -> (Report, Option<Validated>) {
     let Some(team) = team::load(team_dir, &mut report) else {
         return (report, None);
     };

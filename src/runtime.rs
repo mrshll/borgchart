@@ -48,6 +48,7 @@ const BASE_ENV: &[&str] = &[
     "CODEX_HOME",
     "CLAUDE_CONFIG_DIR",
     state::ENV_STATE_HOME,
+    crate::config::ENV_CONFIG,
     state::ENV_TMUX_SOCKET,
     state::ENV_TMUX_TMPDIR,
 ];
@@ -329,15 +330,7 @@ fn start_members(
             state.root.display()
         ));
     }
-    // Members get it in their environment and run in their own folders.
-    if let Some(dir) = std::env::var_os(state::ENV_TMUX_TMPDIR)
-        && !Path::new(&dir).is_absolute()
-    {
-        return Err(format!(
-            "{} must be an absolute path; nothing was started",
-            state::ENV_TMUX_TMPDIR
-        ));
-    }
+    check_tmux_tmpdir()?;
     // Every window, shim, gate hook and plugin process this start starts
     // runs the brg running now, as in v0: brg isn't pinned.
     let brg = brg_path();
@@ -394,20 +387,9 @@ fn start_members(
             }
         }
     }
-    refuse_legacy_sessions()?;
+    refuse_legacy_sessions(&tmux_for(state))?;
     let wanted: Vec<(String, PathBuf)> = cwds.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     crate::checkouts::reserve(&lock, &inst.id, &wanted)?;
-    {
-        let mut updated = registry::read_instance(state)?;
-        for (id, cwd) in &cwds {
-            if let Some(m) = updated.members.get_mut(id) {
-                m.cwd = Some(cwd.clone());
-            }
-        }
-        if &updated != record {
-            lock.save_instance(state, &updated)?;
-        }
-    }
     let (values, missing) = plugin_values(v);
     let keys = api_keys(v, record, &member_ids)?;
     let missing_error = || {
@@ -559,6 +541,21 @@ fn start_members(
         None => tmux,
     };
 
+    // The folders these members start in, held from now on: recorded
+    // under the registry lock, before any window starts.
+    {
+        let mut updated = registry::read_instance(state)?;
+        for (id, cwd) in &cwds {
+            if let Some(m) = updated.members.get_mut(id) {
+                m.cwd = Some(cwd.clone());
+            }
+        }
+        if &updated != record {
+            lock.save_instance(state, &updated)?;
+        }
+    }
+    // Whether this start has created a window yet.
+    let mut any_window = false;
     let mut outcomes: BTreeMap<String, String> = BTreeMap::new();
     let mut plugin_outcomes: Vec<(String, String)> = Vec::new();
     let mut failed = false;
@@ -716,7 +713,11 @@ fn start_members(
             // tmux didn't create the window, so nothing runs it.
             let _ = lifecycle::end_incarnation(&b.paths, id, lifecycle::ENDED_START_FAILED);
         }
+        if result.is_err() {
+            unrecord_windows(state, &mut meta, fresh && !any_window, may_still_run);
+        }
         result?;
+        any_window = true;
         // Without a bus, the team's state is where `status` learns that a
         // member ran.
         if binding.is_none()
@@ -802,7 +803,7 @@ fn start_members(
                 env.insert("BORGCHART_DELIVER_TO".into(), target);
             }
             let cwd = cwd.unwrap_or_else(|| meta.team_dir.clone());
-            start_window(
+            let result = start_window(
                 &tmux,
                 &brg,
                 state,
@@ -810,7 +811,12 @@ fn start_members(
                 &session,
                 &window,
                 &ExecSpec { argv, env, cwd },
-            )?;
+            );
+            if result.is_err() {
+                unrecord_windows(state, &mut meta, fresh && !any_window, may_still_run);
+            }
+            result?;
+            any_window = true;
             plugin_outcomes.push((name.clone(), "started".into()));
         }
     }
@@ -1097,6 +1103,18 @@ fn member_nodes(
     nodes
 }
 
+/// Members get `BORGCHART_TMUX_TMPDIR` in their environment and run in
+/// their own folders, so it must be absolute.
+fn check_tmux_tmpdir() -> Result<(), String> {
+    match std::env::var_os(state::ENV_TMUX_TMPDIR) {
+        Some(dir) if !Path::new(&dir).is_absolute() => Err(format!(
+            "{} must be an absolute path; nothing was started",
+            state::ENV_TMUX_TMPDIR
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// Refuse a member folder that is the same as, inside or around brg's state
 /// folder or the instance's own: Codex makes a member's folder writable.
 fn check_state_overlap(folder: &Path, instance_state: &Path) -> Result<(), String> {
@@ -1118,8 +1136,7 @@ fn check_state_overlap(folder: &Path, instance_state: &Path) -> Result<(), Strin
 /// Refuse every member start while a tmux session from before instances
 /// (any `brg-*` session that isn't a registered instance's) is alive on
 /// brg's server: brg can't tell which folders it uses.
-fn refuse_legacy_sessions() -> Result<(), String> {
-    let tmux = Tmux::new(&state::state_home().join("tmux.conf"), base_env());
+fn refuse_legacy_sessions(tmux: &Tmux) -> Result<(), String> {
     let Ok(out) = tmux.ok(&["list-sessions", "-F", "#{session_name}"]) else {
         return Ok(());
     };
@@ -1151,11 +1168,11 @@ fn validate_printing(dir: &Path) -> Result<Validated, String> {
 }
 
 /// Checks a start would fail on, made before anything is registered: the
-/// secrets the plugins need and, with `auth: api_key`, the starting roles'
-/// keys.
-fn precheck(v: &Validated, roles: &[&crate::team::Member]) -> Result<(), String> {
+/// secrets the plugins need (unless the instance runs, and so has its
+/// values already) and, with `auth: api_key`, the starting roles' keys.
+fn precheck(v: &Validated, roles: &[&crate::team::Member], secrets: bool) -> Result<(), String> {
     let (_, missing) = plugin_values(v);
-    if !missing.is_empty() {
+    if secrets && !missing.is_empty() {
         return Err(format!(
             "set these secrets in your environment first (brg stores none); nothing was created: {}",
             missing.join(", ")
@@ -1207,11 +1224,15 @@ pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
         })?;
     state::check_state_home()?;
     let starting: Vec<&crate::team::Member> = v.team.members.values().filter(|m| m.start).collect();
-    precheck(&v, &starting)?;
+    check_tmux_tmpdir()?;
+    precheck(&v, &starting, true)?;
     check_state_overlap(&folder, &state::state_home())
         .map_err(|e| format!("the working {e}; nothing was created"))?;
+    refuse_legacy_sessions(&Tmux::new(
+        &state::state_home().join("tmux.conf"),
+        base_env(),
+    ))?;
     let lock = registry::lock()?;
-    refuse_legacy_sessions()?;
     crate::checkouts::check_folder(&lock, &folder)?;
     let (state, mut record) =
         registry::create(&lock, &v.team.name, &v.team.dir, &folder, &utc_now())?;
@@ -1263,7 +1284,7 @@ pub fn create_member(mut inst: Instance, role: &str) -> Result<UpOutcome, String
                 .join(", ")
         ));
     };
-    precheck(&v, &[member])?;
+    precheck(&v, &[member], !is_running(&inst))?;
     let lock = registry::lock()?;
     inst.reload()?;
     if let Some(existing) = inst.record.members_of(role).first() {
@@ -1675,6 +1696,20 @@ pub fn render_ls(listed: &[Listed]) -> String {
         out.push_str("no teams in the search paths and no instances\n");
     }
     out
+}
+
+/// After a window failed to start: when `nothing_started` (a fresh start
+/// that created no window of the instance), the instance is as stopped as
+/// before, so `stop`, liveness and `delete` aren't left unsure of a server
+/// that never ran it.
+fn unrecord_windows(state: &StateDir, meta: &mut Meta, nothing_started: bool, before: bool) {
+    if !nothing_started {
+        return;
+    }
+    meta.windows_started = Some(before);
+    if let Ok(body) = serde_json::to_vec_pretty(meta) {
+        let _ = write_private(&state.meta_file(), &body);
+    }
 }
 
 fn start_window(

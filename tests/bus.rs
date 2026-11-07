@@ -15,8 +15,8 @@ use sha2::{Digest, Sha256};
 /// The team's internal current run. Users never see it: every command's
 /// output is checked for it (see [`output`]).
 const RUN: &str = "r41";
-/// The team's name in messages: its deployment directory's name.
-const TEAM: &str = "oncall";
+/// The instance, as messages name it.
+const TEAM: &str = "oncall-2a3b";
 
 struct Fixture {
     dir: tempfile::TempDir,
@@ -44,13 +44,8 @@ impl Fixture {
         let f = Fixture {
             dir: tempfile::tempdir().unwrap(),
         };
-        fs::create_dir_all(f.dep_dir()).unwrap();
-        fs::write(
-            f.dep_file(),
-            format!("schema: 1\nbus:\n  root: {}\n", f.root().display()),
-        )
-        .unwrap();
-        f.write_manifest(&borgchart::state::deployment_id(&f.dep_file()));
+        f.register();
+        f.write_manifest(TEAM);
         fs::write(f.store_dir().join("current"), format!("{RUN}\n")).unwrap();
         for m in ["lead", "helper", "helper2", "sub"] {
             f.write_incarnation(m, &format!("{m}-1"), false);
@@ -58,19 +53,42 @@ impl Fixture {
         f
     }
 
-    fn dep_dir(&self) -> PathBuf {
-        self.dir.path().join(TEAM)
-    }
-    fn dep_file(&self) -> PathBuf {
-        self.dep_dir().join("borgchart.yaml")
-    }
+    /// brg's state folder.
     fn root(&self) -> PathBuf {
-        self.dir.path().join("teams")
+        self.dir.path().join("state")
     }
-    /// The deployment's message storage: `<root>/<deployment-id>/`.
+    /// The instance's message storage: `<state>/<instance>/messages/`.
     fn store_dir(&self) -> PathBuf {
-        self.root()
-            .join(borgchart::state::deployment_id(&self.dep_file()))
+        self.root().join(TEAM).join("messages")
+    }
+
+    /// The instance in the registry, with its members by bare names.
+    fn register(&self) {
+        let members: BTreeMap<&str, Value> = ["lead", "helper", "helper2", "sub"]
+            .iter()
+            .map(|m| (*m, json!({"role": m})))
+            .collect();
+        self.write_private(
+            &self.root().join("registry.json"),
+            &json!({
+                "schema": 1,
+                "instances": {TEAM: {
+                    "team": "oncall", "team_dir": self.dir.path().join("oncall"),
+                    "folder": self.dir.path().join("work"), "created_at": "2026-11-05T19:00:00.000Z",
+                }},
+                "issued": {"oncall": ["2a3b"]},
+            }),
+        );
+        self.write_private(
+            &self.root().join(TEAM).join("instance.json"),
+            &json!({
+                "schema": 1, "id": TEAM, "team": "oncall",
+                "team_dir": self.dir.path().join("oncall"),
+                "folder": self.dir.path().join("work"),
+                "created_at": "2026-11-05T19:00:00.000Z",
+                "members": members,
+            }),
+        );
     }
     fn run_dir(&self) -> PathBuf {
         self.store_dir().join(RUN)
@@ -96,10 +114,10 @@ impl Fixture {
             "schema": 1,
             "run": run,
             "created_at": borgchart::bus::time::utc_now(),
-            "deployment": deployment,
-            "source": self.dep_file(),
+            "instance": deployment,
+            "source": self.dir.path().join("oncall"),
             "config": {"version": 1, "digest": "00", "inputs": {}},
-            "members": members,
+            "roles": members,
         });
         self.write_private(&self.store_dir().join(run).join("run.json"), &manifest);
     }
@@ -109,8 +127,7 @@ impl Fixture {
     /// switched to while holding the old storage's `bus/lock`, the way
     /// rollover does it.
     fn roll_over(&self, run: &str, record: Option<(&str, &str)>) {
-        let id = borgchart::state::deployment_id(&self.dep_file());
-        self.write_manifest_for(run, &id);
+        self.write_manifest_for(run, TEAM);
         if let Some((to, body)) = record {
             self.write_private(
                 &self
@@ -131,16 +148,14 @@ impl Fixture {
         drop(lock);
     }
 
-    /// How brg says to restart the team (from the tests' working directory).
+    /// How brg says to restart the instance.
     fn restart(&self) -> String {
-        borgchart::state::restart_hint(&self.dep_file())
+        borgchart::state::restart_hint(TEAM)
     }
 
     /// How brg says to start one member.
     fn start_member(&self, member: &str) -> String {
-        let restart = self.restart();
-        let (_, up) = restart.split_once(" && ").unwrap();
-        format!("{up} --member {member}")
+        format!("brg start {TEAM}/{member}")
     }
 
     fn write_private(&self, path: &Path, v: &Value) {
@@ -180,15 +195,17 @@ impl Fixture {
         cmd.env_clear()
             .env("HOME", self.dir.path())
             .env("PATH", "/usr/bin:/bin")
+            .env("BORGCHART_STATE_HOME", self.root())
+            .env("BORGCHART_CONFIG", self.dir.path().join("config.yaml"))
             .args(args)
-            .arg("-f")
-            .arg(self.dep_file());
+            .args(["--instance", TEAM]);
         let (m, run, inc) = match who {
             As::Operator => return cmd,
             As::Member(m) => (m.to_string(), RUN.to_string(), format!("{m}-1")),
             As::MemberWith(m, r, i) => (m.to_string(), r.to_string(), i.to_string()),
         };
-        cmd.env("BORGCHART_MEMBER", m)
+        cmd.env("BORGCHART_INSTANCE", TEAM)
+            .env("BORGCHART_MEMBER", m)
             .env("BORGCHART_RUN", run)
             .env("BORGCHART_INCARNATION", inc);
         cmd
@@ -283,7 +300,7 @@ fn assert_team_words(text: &str) {
         "run wording in output: {text}"
     );
     assert!(
-        !text.contains(&format!("/teams/{TEAM}-")),
+        !text.contains(&format!("/{TEAM}/messages")),
         "storage path in output: {text}"
     );
 }
@@ -887,16 +904,9 @@ mod background_wait {
     #[test]
     fn background_wait_leading_file_error_backs_off() {
         let f = Fixture::new();
-        let file = f.dep_file();
         let mut cmd = f.command(
             &As::Member("lead"),
-            &[
-                "-f",
-                file.to_str().unwrap(),
-                "inbox",
-                "wait",
-                "--background",
-            ],
+            &["--file", "removed", "inbox", "wait", "--background"],
         );
         cmd.env("BORGCHART_WAIT_MIN_MS", "400")
             .stdout(Stdio::piped())
@@ -1242,14 +1252,14 @@ fn a_member_from_before_a_restart_is_fenced_in_team_terms() {
     assert_eq!(
         msg,
         format!(
-            "oncall/helper is from before the team was restarted; restart it: {}",
+            "oncall-2a3b/helper is from before the instance was restarted; restart it: {}",
             f.start_member("helper")
         )
     );
     let text = f.brg(&stale, &["inbox"], None);
     assert_eq!(text.code, 8);
     assert!(
-        text.stderr.contains("oncall/helper is from before"),
+        text.stderr.contains("oncall-2a3b/helper is from before"),
         "{}",
         text.stderr
     );
@@ -1263,7 +1273,7 @@ fn a_member_from_before_a_restart_is_fenced_in_team_terms() {
         out.json["message"]
             .as_str()
             .unwrap()
-            .starts_with("oncall/helper "),
+            .starts_with("oncall-2a3b/helper "),
         "{:?}",
         out.json
     );
@@ -1290,7 +1300,7 @@ fn another_message_format_is_refused_with_the_restart_command() {
     fs::write(&manifest_path, serde_json::to_vec(&m).unwrap()).unwrap();
     let before = f.tree();
     let expected = format!(
-        "team `oncall`'s messages use format 999; this brg uses format 1.\nRestart the team to start fresh storage in the new format: {}\n(Open work in the old format isn't carried over; the old messages stay on disk.)",
+        "instance `oncall-2a3b`'s messages use format 999; this brg uses format 1.\nRestart the instance to start fresh storage in the new format: {}\n(Open work in the old format isn't carried over; the old messages stay on disk.)",
         f.restart()
     );
     let commands: Vec<(As, Vec<&str>)> = vec![
@@ -1322,26 +1332,25 @@ fn another_message_format_is_refused_with_the_restart_command() {
 }
 
 #[test]
-fn restart_hints_are_bare_in_the_team_folder() {
+fn restart_hints_name_the_instance() {
     let f = Fixture::new();
     let manifest_path = f.run_dir().join("run.json");
     let mut m: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
     m["schema"] = json!(999);
     fs::write(&manifest_path, serde_json::to_vec(&m).unwrap()).unwrap();
-    let out = f
-        .command(&As::Operator, &["bus", "check"])
-        .current_dir(f.dep_dir())
-        .output()
-        .unwrap();
-    let out = output(out);
+    let out = output(
+        f.command(&As::Operator, &["bus", "check"])
+            .output()
+            .unwrap(),
+    );
     assert_eq!(out.code, 4);
     assert!(
-        out.stderr.contains("new format: brg down && brg up\n"),
+        out.stderr.contains(&format!(
+            "new format: brg stop {TEAM} && brg start {TEAM}\n"
+        )),
         "{}",
         out.stderr
     );
-    // From elsewhere, the hint names the deployment file.
-    assert!(f.restart().contains("--file"), "{}", f.restart());
 }
 
 #[test]
@@ -1362,8 +1371,7 @@ fn writers_follow_the_team_to_new_storage() {
     ];
     let child = spawn(&f, &As::Operator, &args, &draft);
     std::thread::sleep(Duration::from_millis(500));
-    let id = borgchart::state::deployment_id(&f.dep_file());
-    f.write_manifest_for("r42", &id);
+    f.write_manifest_for("r42", TEAM);
     fs::write(f.run_dir().join("retired"), "").unwrap();
     fs::write(f.store_dir().join("current"), "r42\n").unwrap();
     drop(lock);
@@ -1408,8 +1416,7 @@ fn an_ack_queued_behind_a_rollover_is_refused() {
     );
     std::thread::sleep(Duration::from_millis(500));
     assert!(child.try_wait().is_ok_and(|s| s.is_none()), "the ack waits");
-    let id = borgchart::state::deployment_id(&f.dep_file());
-    f.write_manifest_for("r42", &id);
+    f.write_manifest_for("r42", TEAM);
     f.write_private(
         &f.store_dir().join("r42/bus/records/0000000001.json"),
         &json!({
@@ -1426,7 +1433,7 @@ fn an_ack_queued_behind_a_rollover_is_refused() {
     assert_eq!(out.code, 8, "{:?} {}", out.json, out.stderr);
     assert_eq!(
         out.json["message"],
-        "team `oncall` was restarted, so `m1` may now be a different message; list the inbox again"
+        "instance `oncall-2a3b` was restarted, so `m1` may now be a different message; list the inbox again"
     );
     assert!(!f.store_dir().join("r42/bus/acks/m1.json").exists());
     assert!(!f.run_dir().join("bus/acks/m1.json").exists());
@@ -1436,7 +1443,7 @@ fn an_ack_queued_behind_a_rollover_is_refused() {
 fn a_reply_queued_behind_a_rollover_is_refused() {
     let f = Fixture::new();
     assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
-    let id = borgchart::state::deployment_id(&f.dep_file());
+    let id = TEAM;
     for (key, draft) in [
         (
             "reply",
@@ -1472,7 +1479,7 @@ fn a_reply_queued_behind_a_rollover_is_refused() {
         std::thread::sleep(Duration::from_millis(500));
         // Roll over to storage that has its own m1, for lead.
         let next = if key == "reply" { "r42" } else { "r43" };
-        f.write_manifest_for(next, &id);
+        f.write_manifest_for(next, id);
         for m in ["lead", "helper", "helper2", "sub"] {
             f.write_private(
                 &f.store_dir()
@@ -1569,7 +1576,7 @@ fn inbox_wait_after_a_cursor_refuses_new_storage() {
     assert_eq!(out.code, 8, "{:?} {}", out.json, out.stderr);
     assert_eq!(
         out.json["message"],
-        "team `oncall` was restarted while waiting, so `--after m1` no longer applies; list the inbox again"
+        "instance `oncall-2a3b` was restarted while waiting, so `--after m1` no longer applies; list the inbox again"
     );
 }
 
@@ -1591,7 +1598,7 @@ fn inbox_wait_rechecks_the_member_and_format() {
         out.json["message"]
             .as_str()
             .unwrap()
-            .starts_with("oncall/lead is from before the team was restarted"),
+            .starts_with("oncall-2a3b/lead is from before the instance was restarted"),
         "{:?}",
         out.json
     );
@@ -1612,8 +1619,7 @@ fn inbox_wait_rechecks_the_member_and_format() {
         b"",
     );
     std::thread::sleep(Duration::from_millis(500));
-    let id = borgchart::state::deployment_id(&g.dep_file());
-    g.write_manifest_for("r42", &id);
+    g.write_manifest_for("r42", TEAM);
     let path = g.store_dir().join("r42/run.json");
     let mut m: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     m["schema"] = json!(999);
@@ -1690,7 +1696,7 @@ fn damaged_storage_errors_name_the_team_not_paths() {
             out.stderr.clone()
         };
         assert!(
-            msg.contains("oncall/lead's session record is unreadable (EOF"),
+            msg.contains("oncall-2a3b/lead's session record is unreadable (EOF"),
             "{msg}"
         );
     }
@@ -1723,7 +1729,7 @@ fn damaged_storage_errors_name_the_team_not_paths() {
     assert_eq!(out.code, 1, "{:?}", out.json);
     assert_eq!(
         out.json["message"],
-        "team `oncall`'s message storage can't be used: its folder is writable by group or others"
+        "instance `oncall-2a3b`'s message storage can't be used: its folder is writable by group or others"
     );
     let text = h.brg(
         &As::Operator,
@@ -1752,7 +1758,7 @@ fn storage_without_current_is_damaged_not_new() {
         assert_eq!(out.code, 7, "{args:?}: {:?}", out.json);
         let msg = out.json["message"].as_str().unwrap();
         assert!(
-            msg.starts_with("team `oncall`'s message storage is damaged"),
+            msg.starts_with("instance `oncall-2a3b`'s message storage is damaged"),
             "{msg}"
         );
     }
@@ -1805,14 +1811,17 @@ fn a_team_not_started_yet_is_not_configured() {
         let out = f.brg(who, args, Some(&draft));
         assert_eq!(out.code, 3, "{args:?}: {:?}", out.json);
         assert_eq!(out.json["outcome"], "not-configured");
-        assert_eq!(out.json["message"], "team `oncall` hasn't been started yet");
+        assert_eq!(
+            out.json["message"],
+            "instance `oncall-2a3b` has no messages: its team has no `bus:`, or it hasn't started with one"
+        );
     }
     assert_eq!(f.tree(), before, "nothing created");
-    // Nor when there is no storage for the team at all.
-    fs::remove_dir_all(f.root()).unwrap();
+    // Nor when there is no message storage at all.
+    fs::remove_dir_all(f.store_dir()).unwrap();
     let out = f.brg(&As::Operator, &["bus", "check", "--json"], None);
     assert_eq!(out.code, 3, "{:?}", out.json);
-    assert!(!f.root().exists());
+    assert!(!f.store_dir().exists());
 }
 
 #[test]
@@ -1833,10 +1842,6 @@ fn deployment_and_storage_must_match() {
     let out = g.brg(&As::Operator, &["bus", "check", "--json"], None);
     assert_eq!(out.code, 3);
     assert_eq!(out.json["outcome"], "not-configured");
-
-    let h = Fixture::new();
-    fs::write(h.dep_file(), "schema: 1\n").unwrap();
-    assert_eq!(h.brg(&As::Operator, &["bus", "check"], None).code, 3);
 }
 
 #[test]
@@ -1914,7 +1919,7 @@ fn inspect_summarizes_the_team() {
     );
     assert_eq!(out.code, 0);
     let v = &out.json;
-    assert_eq!(v["team"], TEAM);
+    assert_eq!(v["instance"], TEAM);
     assert!(v.get("run").is_none(), "{v}");
     assert_eq!(v["members"]["sub"]["parent"], "helper");
     assert_eq!(v["records"], 2);

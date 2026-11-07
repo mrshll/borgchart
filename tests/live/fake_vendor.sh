@@ -26,7 +26,8 @@
 set -u
 vendor=$(basename "$0")
 fake="$HOME/fake"
-member=${BORGCHART_MEMBER:-}
+# Behaviour is keyed on the role: members carry a suffixed ID.
+member=${BORGCHART_ROLE:-}
 for a in "$@"; do
   if [ "$a" = --version ]; then
     [ -e "$fake/hang-version-$vendor" ] && exec sleep 3600
@@ -130,7 +131,7 @@ if [ "$scenario" = approval ]; then
 fi
 
 nonce_word() { # the nonce from the inbox, read without marking it shown
-  "$BORGCHART_BIN" inbox --member waiter --full | grep -o 'nonce [0-9a-z]*' | tail -1 | cut -d' ' -f2
+  "$BORGCHART_BIN" inbox --member "$BORGCHART_MEMBER" --full | grep -o 'nonce [0-9a-z]*' | tail -1 | cut -d' ' -f2
 }
 
 reply() { say "● REPLY $(printf '%s' "$1" | rev)"; draw idle; }

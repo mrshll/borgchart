@@ -6,9 +6,10 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
+use borgchart::config::Config;
 use borgchart::diag::Report;
 use borgchart::team::{Grant, Posture, Vendor};
-use borgchart::validate::{Input, Validated, validate};
+use borgchart::validate::{Validated, validate_with};
 
 use team_fixture::Fixture;
 
@@ -257,24 +258,46 @@ fn grant_of_undeclared_action_is_an_error() {
 }
 
 #[test]
-fn undeclared_env_in_deployment_is_an_error() {
+fn plugin_env_names_are_listed_once() {
     let f = Fixture::new();
     f.edit(
-        "borgchart.yaml",
-        "SLACK_CHANNEL_ID: C0000EXAMPLE",
-        "SLACK_CHANNEL_ID: C0000EXAMPLE, EXTRA: x",
+        "team.yaml",
+        "{SLACK_CHANNEL_ID: C0000EXAMPLE}",
+        "{SLACK_CHANNEL_ID: C0000EXAMPLE}, SLACK_CHANNEL_ID",
     );
-    expect_error(&f, "env `EXTRA` is not declared");
+    expect_error(&f, "env `SLACK_CHANNEL_ID` is listed twice");
+}
+
+#[test]
+fn plugin_env_takes_plain_values_and_secrets() {
+    let f = Fixture::new();
+    let (report, validated) = f.run();
+    let v = validated.unwrap_or_else(|| panic!("{}", errors(&report)));
+    let p = &v.team.plugins["slackbot"];
+    assert_eq!(p.env, ["SLACK_BOT_TOKEN", "SLACK_CHANNEL_ID"]);
+    assert_eq!(p.values["SLACK_CHANNEL_ID"], "C0000EXAMPLE");
+    assert_eq!(p.secrets().collect::<Vec<_>>(), ["SLACK_BOT_TOKEN"]);
+    // The map form: a name without a value is a secret.
+    f.edit(
+        "team.yaml",
+        "env: [SLACK_BOT_TOKEN, {SLACK_CHANNEL_ID: C0000EXAMPLE}]",
+        "env:\n      SLACK_BOT_TOKEN:\n      SLACK_CHANNEL_ID: C0000EXAMPLE",
+    );
+    let (report, validated) = f.run();
+    let v = validated.unwrap_or_else(|| panic!("{}", errors(&report)));
+    let p = &v.team.plugins["slackbot"];
+    assert_eq!(p.secrets().collect::<Vec<_>>(), ["SLACK_BOT_TOKEN"]);
+    assert_eq!(p.values["SLACK_CHANNEL_ID"], "C0000EXAMPLE");
 }
 
 #[test]
 fn missing_secret_names_warn() {
     let f = Fixture::new();
-    f.write("borgchart.yaml", "schema: 1\n");
     let (report, validated) = f.run();
     assert!(validated.is_some(), "{}", errors(&report));
     let w = warnings(&report);
     assert!(w.contains("SLACK_BOT_TOKEN"), "{w}");
+    assert!(!w.contains("SLACK_CHANNEL_ID"), "{w}");
 }
 
 #[test]
@@ -306,9 +329,10 @@ fn unknown_and_reserved_postures_are_errors() {
 #[test]
 fn untrusted_input_needs_locked_or_accept_risk() {
     let f = Fixture::new();
-    f.write(
-        "borgchart.yaml",
-        "schema: 1\nmembers:\n  lead: {posture: vendor}\nplugins:\n  slackbot:\n    env: {SLACK_CHANNEL_ID: C0000EXAMPLE, SLACK_BOT_TOKEN: x}\n",
+    f.edit(
+        "team.yaml",
+        "    prompt: lead.md\n    posture: locked\n",
+        "    prompt: lead.md\n    posture: vendor\n",
     );
     expect_error(&f, "must be `locked`");
 
@@ -358,11 +382,7 @@ fn api_key_with_claude_connectors_is_an_error() {
         "    plugins: {slackbot: [read, reply]}",
         "    plugins: {slackbot: [read, reply]}\n    connectors: {claude.ai Example: [read_thing]}",
     );
-    f.edit(
-        "borgchart.yaml",
-        "schema: 1\n",
-        "schema: 1\nauth: api_key\n",
-    );
+    f.edit("config.yaml", "schema: 1\n", "schema: 1\nauth: api_key\n");
     expect_error(&f, "auth: api_key");
 }
 
@@ -395,7 +415,7 @@ fn shared_plugin_needs_plugins_dir() {
         fs::set_permissions(dir.join(name), fs::Permissions::from_mode(0o755)).unwrap();
     }
     f.edit(
-        "borgchart.yaml",
+        "config.yaml",
         "schema: 1\n",
         &format!("schema: 1\nplugins_dir: {}\n", shared.path().display()),
     );
@@ -440,75 +460,29 @@ fn parse_errors_name_the_file_once() {
 }
 
 #[test]
-fn auto_trust_warns_about_project_settings_for_vendor_members() {
+fn auto_trust_warns_about_locked_codex_members() {
+    // Catches: a `locked` Codex member silently left at its trust screen.
     let f = Fixture::new();
     f.edit(
         "team.yaml",
-        "    prompt: lead.md\n    posture: locked\n    untrusted_input: true\n",
-        "    prompt: lead.md\n    accept_risk: true\n    untrusted_input: true\n",
+        "    prompt: lead.md\n    posture: locked\n",
+        "    prompt: lead.md\n    vendor: codex\n    posture: locked\n",
     );
-    f.write("work/.mcp.json", "{}");
     f.edit(
-        "borgchart.yaml",
+        "config.yaml",
         "schema: 1\n",
-        &format!(
-            "schema: 1\nauto_trust: true\nmembers:\n  lead: {{cwd: {}}}\n",
-            f.path("work").display()
-        ),
+        "schema: 1\nauto_trust: true\n",
     );
     let (report, validated) = f.run();
     assert!(validated.is_some(), "{}", errors(&report));
     assert!(
-        warnings(&report).contains("has project settings"),
+        warnings(&report).contains("doesn't trust"),
         "{}",
         warnings(&report)
     );
-}
-
-#[test]
-fn auto_trust_warns_about_codex_project_settings_and_locked_codex_members() {
-    // Catches: a Codex folder whose `.codex/` would load without a warning, a
-    // `locked` Codex member silently left at its trust screen, and a warning
-    // that brg will trust a folder when the member's own `projects` args win.
-    for (posture, args, want, warned) in [
-        (
-            "    accept_risk: true\n",
-            "",
-            "has project settings (`.codex/`)",
-            true,
-        ),
-        ("    posture: locked\n", "", "doesn't trust", true),
-        (
-            "    accept_risk: true\n",
-            ", args: [-c, 'projects={}']",
-            "has project settings (`.codex/`)",
-            false,
-        ),
-    ] {
-        let f = Fixture::new();
-        f.edit(
-            "team.yaml",
-            "    prompt: lead.md\n    posture: locked\n",
-            &format!("    prompt: lead.md\n    vendor: codex\n{posture}"),
-        );
-        f.write("work/.codex/config.toml", "");
-        f.edit(
-            "borgchart.yaml",
-            "schema: 1\n",
-            &format!(
-                "schema: 1\nauto_trust: true\nmembers:\n  lead: {{cwd: {}{args}}}\n",
-                f.path("work").display()
-            ),
-        );
-        let (report, validated) = f.run();
-        assert!(validated.is_some(), "{}", errors(&report));
-        assert_eq!(
-            warnings(&report).contains(want),
-            warned,
-            "{args}: {}",
-            warnings(&report)
-        );
-    }
+    f.edit("config.yaml", "auto_trust: true", "auto_trust: false");
+    let (report, _) = f.run();
+    assert!(!warnings(&report).contains("doesn't trust"));
 }
 
 #[test]
@@ -532,7 +506,7 @@ fn user_tmux_config_risks_are_warned_with_their_lines() {
         "bind r source-file ~/.tmux.conf\nrun -b 'sleep 1'\n",
     );
     f.edit(
-        "borgchart.yaml",
+        "config.yaml",
         "schema: 1\n",
         &format!(
             "schema: 1\ntmux: {{user_config: {}}}\n",
@@ -562,7 +536,7 @@ fn user_tmux_config_risks_are_warned_with_their_lines() {
     let f = Fixture::new();
     f.write("user[1].conf", "");
     f.edit(
-        "borgchart.yaml",
+        "config.yaml",
         "schema: 1\n",
         &format!(
             "schema: 1\ntmux: {{user_config: '{}'}}\n",
@@ -573,7 +547,7 @@ fn user_tmux_config_risks_are_warned_with_their_lines() {
 
     let f = Fixture::new();
     f.edit(
-        "borgchart.yaml",
+        "config.yaml",
         "schema: 1\n",
         &format!(
             "schema: 1\ntmux: {{user_config: {}}}\n",
@@ -584,39 +558,47 @@ fn user_tmux_config_risks_are_warned_with_their_lines() {
 }
 
 #[test]
-fn deployment_must_match_the_team() {
+fn the_configuration_is_strict() {
     let f = Fixture::new();
-    f.edit(
-        "borgchart.yaml",
-        "schema: 1\n",
-        "schema: 1\nmembers:\n  ghost: {task: x}\n",
-    );
-    expect_error(&f, "member `ghost` is not in the team");
+    f.edit("config.yaml", "schema: 1\n", "schema: 1\nmembers: {}\n");
+    expect_error(&f, "unknown field `members`");
 }
 
 #[test]
 fn wrong_schema_is_an_error() {
     let f = Fixture::new();
-    f.edit("borgchart.yaml", "schema: 1", "schema: 2");
+    f.edit("config.yaml", "schema: 1", "schema: 2");
     expect_error(&f, "unsupported `schema: 2`");
 }
 
 #[test]
-fn team_alone_validates_without_deployment() {
+fn removed_team_fields_are_errors() {
+    let f = Fixture::new();
+    f.edit(
+        "team.yaml",
+        "default: claude\n",
+        "default: claude\nname: other\n",
+    );
+    expect_error(&f, "unknown field `name`");
+}
+
+#[test]
+fn a_missing_configuration_means_the_defaults() {
     let f = Fixture::new();
     let (report, validated) = f.run_team();
     assert!(validated.is_some(), "{}", errors(&report));
 }
 
-/// A vendor-posture pair with an alert plugin, deployed with a bus whose
-/// run root sits beside (not inside) the team.
-fn bus_fixture() -> (Fixture, PathBuf) {
+/// A vendor-posture pair with an alert plugin and a bus.
+fn bus_fixture() -> Fixture {
     let f = Fixture {
         dir: tempfile::tempdir().unwrap(),
     };
     f.write(
         "team/team.yaml",
         r#"
+bus:
+  alert: {plugin: notify, action: alert}
 plugins:
   notify:
     path: plugins/notify
@@ -633,35 +615,33 @@ members:
     f.write("team/lead.md", "---\nrole: lead\n---\nLead.\n");
     f.write("team/helper.md", "---\nrole: helper\n---\nHelp.\n");
     f.exec("team/plugins/notify/notify");
-    let runs = f.path("runs");
-    f.write(
-        "team/borgchart.yaml",
-        &format!(
-            "schema: 1\nbus:\n  root: {}\n  alert: {{plugin: notify, action: alert}}\n",
-            runs.display()
-        ),
-    );
-    (f, runs)
+    f
 }
 
 fn run_bus(f: &Fixture) -> (Report, Option<Validated>) {
-    validate(&Input::Deployment(f.path("team/borgchart.yaml")))
+    validate_with(&f.path("team"), Config::default())
 }
 
 #[test]
 fn bus_config_loads() {
-    let (f, runs) = bus_fixture();
+    let f = bus_fixture();
     let (report, validated) = run_bus(&f);
     let v = validated.unwrap_or_else(|| panic!("{}", errors(&report)));
-    let bus = v.deployment.unwrap().bus.unwrap();
-    assert_eq!(bus.root, runs);
-    assert_eq!(bus.warn_age_days, 7);
-    assert_eq!(bus.max_age_days, 14);
-    let alert = bus.alert.unwrap();
+    let alert = v.team.bus.unwrap().alert.unwrap();
     assert_eq!(
         (alert.plugin.as_str(), alert.action.as_str()),
         ("notify", "alert")
     );
+    // `bus: {}` turns the bus on without an alert.
+    f.edit(
+        "team/team.yaml",
+        "  alert: {plugin: notify, action: alert}\n",
+        "",
+    );
+    f.edit("team/team.yaml", "bus:\n", "bus: {}\n");
+    let (report, validated) = run_bus(&f);
+    let v = validated.unwrap_or_else(|| panic!("{}", errors(&report)));
+    assert_eq!(v.team.bus.unwrap().alert, None);
 }
 
 #[test]
@@ -679,11 +659,15 @@ fn bus_config_is_checked() {
             "alert plugin `pager` is not in the team",
         ),
         ("  alert:", "  warn_age_days: 14\n  alert:", "warn_age_days"),
-        ("  alert:", "  extra: 1\n  alert:", "unknown field"),
+        (
+            "  alert:",
+            "  root: /somewhere\n  alert:",
+            "unknown field `root`",
+        ),
     ];
     for (from, to, needle) in cases {
-        let (f, _) = bus_fixture();
-        f.edit("team/borgchart.yaml", from, to);
+        let f = bus_fixture();
+        f.edit("team/team.yaml", from, to);
         let (report, validated) = run_bus(&f);
         let errs = errors(&report);
         assert!(validated.is_none(), "{to}: expected failure");
@@ -692,31 +676,8 @@ fn bus_config_is_checked() {
 }
 
 #[test]
-fn bus_root_must_be_absolute_and_outside_the_team() {
-    let (f, runs) = bus_fixture();
-    f.edit("team/borgchart.yaml", &runs.display().to_string(), "runs");
-    let (report, _) = run_bus(&f);
-    assert!(errors(&report).contains("must be an absolute path"));
-
-    let (f, runs) = bus_fixture();
-    let inside = f.path("team/runs");
-    f.edit(
-        "team/borgchart.yaml",
-        &runs.display().to_string(),
-        &inside.display().to_string(),
-    );
-    let (report, validated) = run_bus(&f);
-    assert!(validated.is_none());
-    assert!(
-        errors(&report).contains("keep team messages outside"),
-        "{}",
-        errors(&report)
-    );
-}
-
-#[test]
 fn bus_refuses_locked_members() {
-    let (f, _) = bus_fixture();
+    let f = bus_fixture();
     f.edit(
         "team/team.yaml",
         "    prompt: helper.md\n",
@@ -733,27 +694,37 @@ fn bus_refuses_locked_members() {
 
 #[test]
 fn config_snapshot_follows_file_bytes_not_paths() {
-    let (f, _) = bus_fixture();
-    let snap = |path: PathBuf| {
-        let (report, v) = validate(&Input::Deployment(path));
+    let f = bus_fixture();
+    let snap = |path: PathBuf, config: Config| {
+        let (report, v) = validate_with(&path, config);
         v.unwrap_or_else(|| panic!("{}", errors(&report)))
             .config_snapshot()
     };
-    let a = snap(f.path("team/borgchart.yaml"));
+    let a = snap(f.path("team"), Config::default());
     assert_eq!(a.version, 1);
-    assert!(a.inputs.contains_key("deployment"));
+    assert!(a.inputs.contains_key("config/auth"));
+    assert!(a.inputs.contains_key("config/auto_trust"));
     assert!(a.inputs.contains_key("members/helper/instruction"));
 
     let alias = f.path("alias");
     std::os::unix::fs::symlink(f.path("team"), &alias).unwrap();
-    assert_eq!(
-        snap(alias.join("borgchart.yaml")),
-        a,
-        "same bytes, other path"
-    );
+    assert_eq!(snap(alias, Config::default()), a, "same bytes, other path");
+
+    // The global settings that reach members are frozen too.
+    let api = Config {
+        auth: borgchart::config::Auth::ApiKey,
+        ..Config::default()
+    };
+    let c = snap(f.path("team"), api);
+    assert_ne!(a.inputs["config/auth"], c.inputs["config/auth"]);
+    let trust = Config {
+        auto_trust: Some(true),
+        ..Config::default()
+    };
+    assert_ne!(snap(f.path("team"), trust).digest, a.digest);
 
     f.edit("team/helper.md", "Help.", "Help more.");
-    let b = snap(f.path("team/borgchart.yaml"));
+    let b = snap(f.path("team"), Config::default());
     assert_ne!(a.digest, b.digest);
     assert_ne!(
         a.inputs["members/helper/prompt"],
@@ -764,7 +735,7 @@ fn config_snapshot_follows_file_bytes_not_paths() {
 
 #[test]
 fn snapshot_describes_what_was_validated() {
-    let (f, _) = bus_fixture();
+    let f = bus_fixture();
     let (report, old) = run_bus(&f);
     let old = old.unwrap_or_else(|| panic!("{}", errors(&report)));
     let before = old.config_snapshot();
@@ -778,20 +749,26 @@ fn snapshot_describes_what_was_validated() {
 }
 
 #[test]
-fn missing_bus_root_through_a_symlink_is_placed_correctly() {
-    let (f, runs) = bus_fixture();
-    std::os::unix::fs::symlink(f.path("team"), f.path("alias")).unwrap();
-    let sneaky = f.path("alias/not-created/yet");
-    f.edit(
-        "team/borgchart.yaml",
-        &runs.display().to_string(),
-        &sneaky.display().to_string(),
-    );
-    let (report, validated) = run_bus(&f);
-    assert!(validated.is_none());
-    assert!(
-        errors(&report).contains("keep team messages outside"),
-        "{}",
-        errors(&report)
-    );
+fn a_role_cwd_must_stay_inside_the_folder() {
+    for (cwd, ok) in [
+        ("sub", true),
+        ("copies/{member}", true),
+        ("../x", false),
+        ("/abs", false),
+        ("~/x", false),
+        ("{instance}", false),
+    ] {
+        let f = Fixture::new();
+        f.edit(
+            "team.yaml",
+            "    prompt: lead.md\n",
+            &format!("    prompt: lead.md\n    cwd: '{cwd}'\n    args: [--x]\n"),
+        );
+        let (report, validated) = f.run();
+        assert_eq!(validated.is_some(), ok, "{cwd}: {}", errors(&report));
+        if let Some(v) = validated {
+            assert_eq!(v.team.members["lead"].args, ["--x"]);
+            assert_eq!(v.team.members["lead"].cwd.as_deref(), Some(cwd));
+        }
+    }
 }

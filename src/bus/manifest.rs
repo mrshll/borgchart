@@ -227,14 +227,6 @@ pub fn manifest_for(
 }
 
 impl RunManifest {
-    /// The resolved members' roles, by member ID.
-    pub fn issued(&self) -> BTreeMap<String, String> {
-        self.members
-            .iter()
-            .filter_map(|(id, m)| Some((id.clone(), m.role.clone()?)))
-            .collect()
-    }
-
     /// Fill [`RunManifest::members`] from the instance's issued members.
     pub fn resolve_members(&mut self, issued: &BTreeMap<String, String>) {
         let member_of = |role: &str| {
