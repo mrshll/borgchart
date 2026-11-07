@@ -16,7 +16,7 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
-use super::lock::Lock;
+use super::lock::{Lock, StateLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CrashLimits {
@@ -86,6 +86,7 @@ pub fn count_start(
     now: SystemTime,
     binary: &str,
 ) -> Result<Begin, String> {
+    let _state = StateLock::acquire(dir)?;
     let planned_file = planned_path(dir);
     let planned = super::load::<Planned>(&planned_file)?.is_some();
     let mut st: Starts = super::load(&starts_path(dir))?.unwrap_or_default();
@@ -132,8 +133,10 @@ pub fn parked(dir: &Path) -> Result<Option<String>, String> {
 }
 
 /// The instance was started: forget the start history and any parking.
-/// Called by the start command, which doesn't hold the watcher's lock.
+/// Called by the start command, which doesn't hold the watcher's lock;
+/// the state lock keeps it from interleaving with [`count_start`].
 pub fn instance_started(dir: &Path) -> Result<(), String> {
+    let _state = StateLock::acquire(dir)?;
     super::save(&starts_path(dir), &Starts::default())
 }
 

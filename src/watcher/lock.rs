@@ -37,3 +37,32 @@ impl Lock {
         }
     }
 }
+
+/// A short-lived lock on `state.lock` in the state folder, held (flock,
+/// exclusive, waiting) only for one read-modify-write of a state file
+/// that someone besides the watcher also writes: the start command's
+/// [`super::restart::instance_started`] and the watcher's
+/// [`super::restart::count_start`]. Released when dropped.
+#[derive(Debug)]
+pub struct StateLock {
+    _file: std::fs::File,
+}
+
+impl StateLock {
+    pub fn acquire(dir: &Path) -> Result<StateLock, String> {
+        super::ensure_dir(dir)?;
+        let path = dir.join("state.lock");
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(OFlags::NOFOLLOW.bits() as i32)
+            .open(&path)
+            .map_err(|e| format!("cannot open {}: {e}", path.display()))?;
+        flock(file.as_fd(), FlockOperation::LockExclusive)
+            .map_err(|e| format!("cannot lock {}: {e}", path.display()))?;
+        Ok(StateLock { _file: file })
+    }
+}

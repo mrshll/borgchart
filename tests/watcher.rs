@@ -4,6 +4,8 @@
 
 use std::fs;
 use std::path::Path;
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, SystemTime};
 
 use borgchart::watcher::alerts::{self, Book, Kind, Subject};
@@ -13,7 +15,7 @@ use borgchart::watcher::decide::{
     Action, Attempt, Defer, NeedsPerson, Outcome, Quiet, ReadProgress, Screen, Start,
 };
 use borgchart::watcher::heartbeat::{self, Health, Heartbeat, Limits, State};
-use borgchart::watcher::lock::Lock;
+use borgchart::watcher::lock::{Lock, StateLock};
 use borgchart::watcher::methods::Method;
 use borgchart::watcher::restart::{self, Begin, CrashLimits};
 
@@ -107,6 +109,52 @@ fn a_crash_loop_parks_until_the_instance_starts_or_brg_changes() {
     assert_eq!(start(t(502), "a"), Begin::Run { planned: false });
     assert!(matches!(start(t(503), "a"), Begin::Park(_)));
     assert_eq!(start(t(504), "b"), Begin::Run { planned: false });
+}
+
+// Catches: the start command's reset lost to a count_start that read the
+// history before it and saved after it, leaving the watcher parked. Both
+// must wait for the state lock, which the test holds to stop each one
+// between its read and its write.
+#[test]
+fn an_instance_start_never_interleaves_with_counting_a_start() {
+    let (_tmp, dir) = folder();
+    let held = lock(&dir);
+    restart::count_start(&held, &dir, &LIMITS, t(0), "a").unwrap();
+    restart::count_start(&held, &dir, &LIMITS, t(1), "a").unwrap();
+
+    let state = StateLock::acquire(&dir).unwrap();
+    let (done, finished) = mpsc::channel();
+    let counting = {
+        let (dir, done) = (dir.clone(), done.clone());
+        thread::spawn(move || {
+            // The crash too many: this would park.
+            let begin = restart::count_start(&held, &dir, &LIMITS, t(2), "a").unwrap();
+            done.send("count").unwrap();
+            begin
+        })
+    };
+    let starting = {
+        let dir = dir.clone();
+        thread::spawn(move || {
+            restart::instance_started(&dir).unwrap();
+            done.send("start").unwrap();
+        })
+    };
+    assert_eq!(
+        finished.recv_timeout(Duration::from_millis(300)),
+        Err(mpsc::RecvTimeoutError::Timeout),
+        "a writer went ahead while the state lock was held"
+    );
+    drop(state);
+    let order = [finished.recv().unwrap(), finished.recv().unwrap()];
+    let begin = counting.join().unwrap();
+    starting.join().unwrap();
+    // Whichever ran first, the instance start wins over the crash count:
+    // either it cleared the parking after, or the count started afresh.
+    assert!(
+        restart::parked(&dir).unwrap().is_none(),
+        "{order:?} {begin:?}"
+    );
 }
 
 // Catches: a planned restart counted as a crash (an upgrade parking the
