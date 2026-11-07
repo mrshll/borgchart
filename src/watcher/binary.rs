@@ -4,7 +4,9 @@
 //! be wasteful, so each pass compares the installed file's device, inode,
 //! mtime and size with the running brg's. A difference must hold steady
 //! for a quiet period (an install in progress keeps changing them) before
-//! the file is hashed, and only different bytes are a change. The caller
+//! the file is hashed, through one opened descriptor whose metadata, and
+//! the file the path names, must be unchanged after the read. Only
+//! different bytes, read steadily, are a change. The caller
 //! restarts at a pass boundary, through [`super::restart::mark_planned`].
 
 use std::io::Read;
@@ -26,14 +28,17 @@ struct Stat {
 
 impl Stat {
     fn of(path: &Path) -> std::io::Result<Stat> {
-        let m = std::fs::metadata(path)?;
-        Ok(Stat {
+        Ok(Stat::from(&std::fs::metadata(path)?))
+    }
+
+    fn from(m: &std::fs::Metadata) -> Stat {
+        Stat {
             dev: m.dev(),
             ino: m.ino(),
             mtime: m.mtime(),
             mtime_nsec: m.mtime_nsec(),
             size: m.size(),
-        })
+        }
     }
 }
 
@@ -45,8 +50,14 @@ pub struct BinaryId {
     pub sha256: String,
 }
 
-fn hash(path: &Path) -> std::io::Result<String> {
+/// Hash the file at `path` through one opened descriptor, and check that
+/// nothing changed meanwhile: the descriptor's metadata after the read
+/// matches before it, and `path` still names that same file. `None` if
+/// anything moved. `between` runs after the read, before the checks (a
+/// test seam).
+fn read_steady(path: &Path, between: &mut dyn FnMut()) -> std::io::Result<Option<BinaryId>> {
     let mut file = std::fs::File::open(path)?;
+    let before = Stat::from(&file.metadata()?);
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 64 * 1024];
     loop {
@@ -56,17 +67,25 @@ fn hash(path: &Path) -> std::io::Result<String> {
         }
         hasher.update(&buf[..n]);
     }
-    Ok(crate::bus::manifest::hex(&hasher.finalize()))
+    between();
+    let after = Stat::from(&file.metadata()?);
+    let named = Stat::of(path)?;
+    if after != before || named != before {
+        return Ok(None);
+    }
+    Ok(Some(BinaryId {
+        path: path.to_path_buf(),
+        stat: before,
+        sha256: crate::bus::manifest::hex(&hasher.finalize()),
+    }))
 }
 
 impl BinaryId {
     /// The file at `path` now (following symlinks, as running it would).
+    /// An error if it changed while being read.
     pub fn read(path: &Path) -> std::io::Result<Self> {
-        let stat = Stat::of(path)?;
-        Ok(BinaryId {
-            path: path.to_path_buf(),
-            stat,
-            sha256: hash(path)?,
+        read_steady(path, &mut || {})?.ok_or_else(|| {
+            std::io::Error::other(format!("{} changed while being read", path.display()))
         })
     }
 }
@@ -115,6 +134,16 @@ impl BinaryWatch {
         now: SystemTime,
         quiet: Duration,
     ) -> std::io::Result<Poll> {
+        self.poll_with(installed, now, quiet, &mut || {})
+    }
+
+    fn poll_with(
+        &mut self,
+        installed: &Path,
+        now: SystemTime,
+        quiet: Duration,
+        while_hashing: &mut dyn FnMut(),
+    ) -> std::io::Result<Poll> {
         let stat = Stat::of(installed)?;
         if installed == self.running.path && stat == self.running.stat {
             self.settling = None;
@@ -136,16 +165,18 @@ impl BinaryWatch {
         }
         let id = match &s.id {
             Some(id) => id.clone(),
-            None => {
-                let id = BinaryId::read(installed)?;
-                if id.stat != stat {
-                    // Changed while hashing: start the quiet period again.
+            None => match read_steady(installed, while_hashing)? {
+                Some(id) if id.stat == stat => {
+                    s.id = Some(id.clone());
+                    id
+                }
+                _ => {
+                    // Changed since the quiet period, or while hashing:
+                    // start the quiet period again.
                     self.settling = None;
                     return Ok(Poll::Settling);
                 }
-                s.id = Some(id.clone());
-                id
-            }
+            },
         };
         if id.sha256 == self.running.sha256 {
             // Same bytes, new file: adopt its stat so later passes are cheap.
@@ -154,5 +185,55 @@ impl BinaryWatch {
             return Ok(Poll::Same);
         }
         Ok(Poll::Changed(id))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn t(secs: u64) -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000 + secs)
+    }
+
+    // Catches: a restart onto bytes read while the install was still
+    // writing or replacing the file, so the hash is of a partial file or
+    // of the old one.
+    #[test]
+    fn a_change_while_hashing_restarts_the_quiet_period() {
+        let tmp = tempfile::tempdir().unwrap();
+        let brg = tmp.path().join("brg");
+        fs::write(&brg, b"version one").unwrap();
+        let quiet = Duration::from_secs(10);
+        let replace = |bytes: &[u8]| {
+            let next = tmp.path().join("brg.next");
+            fs::write(&next, bytes).unwrap();
+            fs::rename(&next, &brg).unwrap();
+        };
+        let changes: [&dyn Fn(); 2] = [
+            // Rewritten in place, a different length.
+            &|| fs::write(&brg, b"version two, still writing").unwrap(),
+            // Replaced by another file.
+            &|| replace(b"version two, other file"),
+        ];
+        for change in changes {
+            fs::write(&brg, b"version one").unwrap();
+            let mut watch = BinaryWatch::new(BinaryId::read(&brg).unwrap());
+            replace(b"version two");
+            assert_eq!(watch.poll(&brg, t(0), quiet).unwrap(), Poll::Settling);
+            let mut hook = || change();
+            assert_eq!(
+                watch.poll_with(&brg, t(10), quiet, &mut hook).unwrap(),
+                Poll::Settling
+            );
+            // The quiet period starts again from the next look.
+            assert_eq!(watch.poll(&brg, t(11), quiet).unwrap(), Poll::Settling);
+            assert_eq!(watch.poll(&brg, t(20), quiet).unwrap(), Poll::Settling);
+            assert!(matches!(
+                watch.poll(&brg, t(21), quiet).unwrap(),
+                Poll::Changed(_)
+            ));
+        }
     }
 }
