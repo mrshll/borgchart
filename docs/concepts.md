@@ -154,7 +154,7 @@ dev-team-k3f9                       team ~/.config/borgchart/teams/dev-team/ · 
 | errors: "team `x` was restarted", "no team named `x`" | instance | "instance `x`" |
 | `BORGCHART_DEPLOYMENT` (a storage key), `BORGCHART_TEAM` (earlier proposal) | instance | `BORGCHART_INSTANCE` |
 | JSON `team` (earlier proposal) | instance | `instance`, plus `team` (the team's name) |
-| `--team DIR`, or a lone `./team.yaml`: a team run without a deployment | the definition | every team runs this way now, as `brg create <team>`. There's no discovery from the current folder. `--team` remains only on `start`, to re-point a moved team. |
+| `--team DIR`, or a lone `./team.yaml`: a team run without a deployment | the definition | every team runs this way now, as `brg create <team> <folder>`. There's no discovery from the current folder. `--team` remains only on `start`, to re-point a moved team. |
 | `team:` in `borgchart.yaml` | the team folder | removed, with the file |
 | "team directory", `team.yaml` | the definition | unchanged ("team folder") |
 | tmux session `brg-<name>-<hash>` | instance | `brg-<instance>` |
