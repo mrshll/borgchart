@@ -130,6 +130,7 @@ fn a_planned_restart_is_not_a_crash() {
         at: t(2),
         tries: 1,
         wakes: 1,
+        maybe_delivered: false,
         outcome: None,
     };
     attempts::record(&held, &dir, "coder", &intent).unwrap();

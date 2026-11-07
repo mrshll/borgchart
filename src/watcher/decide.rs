@@ -13,10 +13,15 @@
 //!   caller records before acting and resolves with the outcome after. An
 //!   unresolved intent (a watcher that died mid-wake) isn't resent until
 //!   its retry time, like an `uncertain` outcome.
-//! - **Uncertain means no fallback.** An `uncertain` outcome may have
-//!   delivered, so it's retried with the same method, a bounded number of
-//!   times, then needs a person. Only `rejected` or `unavailable` moves on
-//!   to the next method.
+//! - **An outstanding wake isn't reset by new messages.** While the last
+//!   attempt is unresolved or `uncertain`, a newer message keeps its
+//!   method, retry time and retry budget. Only the member's reading or a
+//!   new start ends it.
+//! - **Maybe delivered means no fallback.** Once any try of a wake may
+//!   have delivered, it's retried with the same method, a bounded number
+//!   of times, then needs a person, even if a later try is refused. Only
+//!   `rejected` or `unavailable` with no possible delivery before it moves
+//!   on to the next method.
 //! - **Repeats without progress stop.** A member woken repeatedly with
 //!   nothing read needs a person, and gets no more wakes until it reads.
 //! - **Missing evidence isn't evidence.** Unknown evidence defers.
@@ -27,7 +32,7 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
-use super::methods::{Method, WakeRules};
+use super::methods::{Entry, Method, WakeRules};
 use crate::team::Vendor;
 
 /// Evidence the caller may not have been able to read.
@@ -110,6 +115,12 @@ pub struct Attempt {
     pub tries: u32,
     /// Wakes in this start since the read cursor last moved, counting this one.
     pub wakes: u32,
+    /// An earlier try of this wake may have delivered (an `uncertain`
+    /// outcome, or an unresolved intent that was retried). It holds until
+    /// read progress or a new start, and while it does nothing falls back
+    /// to another method.
+    #[serde(default)]
+    pub maybe_delivered: bool,
     #[serde(default)]
     pub outcome: Option<Outcome>,
 }
@@ -119,6 +130,7 @@ impl Attempt {
     pub fn resolved(&self, outcome: Outcome) -> Attempt {
         Attempt {
             outcome: Some(outcome),
+            maybe_delivered: self.maybe_delivered || outcome == Outcome::Uncertain,
             ..self.clone()
         }
     }
@@ -250,27 +262,33 @@ pub fn decide(obs: &Observation, rules: &WakeRules, policy: &Policy, now: System
             Wait::None => {}
         }
     }
-    let last = obs.last.as_ref().filter(|a| a.start == obs.start);
-    let (index, tries, wakes) = match last {
-        None => (0, 1, 1),
-        Some(a) if a.progress == progress => match a.outcome {
-            Some(Outcome::Dispatched) => return Action::Nothing(Quiet::Woken),
-            None | Some(Outcome::Uncertain) => {
-                if now.duration_since(a.at).unwrap_or_default() < policy.retry_after {
-                    return Action::Nothing(Quiet::RetryNotDue);
+    // The last attempt counts only within this start and at this read
+    // cursor: a new start, or the member's reading, ends it.
+    let last = obs
+        .last
+        .as_ref()
+        .filter(|a| a.start == obs.start && a.progress.read == progress.read);
+    let (index, tries, wakes, maybe_delivered) = match last {
+        None => (0, 1, 1, false),
+        Some(a) => match a.outcome {
+            // Outstanding: it may have delivered. New messages don't reset
+            // it; it's retried with the same method, within its budget.
+            None | Some(Outcome::Uncertain) => match retry(a, entry, policy, now) {
+                Ok(next) => next,
+                Err(action) => return *action,
+            },
+            Some(Outcome::Rejected | Outcome::Unavailable) if a.maybe_delivered => {
+                match retry(a, entry, policy, now) {
+                    Ok(next) => next,
+                    Err(action) => return *action,
                 }
-                if a.tries >= policy.max_tries {
-                    return Action::NeedsPerson(NeedsPerson::RetriesExhausted {
-                        method: a.method,
-                        tries: a.tries,
-                    });
-                }
-                let Some(i) = entry.methods.iter().position(|m| *m == a.method) else {
-                    return Action::NeedsPerson(NeedsPerson::MethodWithdrawn(a.method));
-                };
-                (i, a.tries + 1, a.wakes)
             }
-            Some(outcome @ (Outcome::Rejected | Outcome::Unavailable)) => {
+            Some(Outcome::Dispatched) if a.progress.newest == progress.newest => {
+                return Action::Nothing(Quiet::Woken);
+            }
+            Some(outcome @ (Outcome::Rejected | Outcome::Unavailable))
+                if a.progress.newest == progress.newest =>
+            {
                 let next = entry
                     .methods
                     .iter()
@@ -283,16 +301,16 @@ pub fn decide(obs: &Observation, rules: &WakeRules, policy: &Policy, now: System
                         outcome,
                     });
                 };
-                (i, 1, a.wakes)
+                (i, 1, a.wakes, false)
+            }
+            // Delivered or refused, and new messages since: a new wake.
+            Some(_) => {
+                if a.wakes >= policy.max_wakes {
+                    return Action::NeedsPerson(NeedsPerson::Repeats { wakes: a.wakes });
+                }
+                (0, 1, a.wakes + 1, false)
             }
         },
-        Some(a) if progress.read == a.progress.read => {
-            if a.wakes >= policy.max_wakes {
-                return Action::NeedsPerson(NeedsPerson::Repeats { wakes: a.wakes });
-            }
-            (0, 1, a.wakes + 1)
-        }
-        Some(_) => (0, 1, 1),
     };
     let method = entry.methods[index];
     if method == Method::Typed {
@@ -315,9 +333,38 @@ pub fn decide(obs: &Observation, rules: &WakeRules, policy: &Policy, now: System
             at: now,
             tries,
             wakes,
+            maybe_delivered,
             outcome: None,
         },
     }
+}
+
+/// Retry an attempt that may have delivered: the same method, after its
+/// retry time and within its budget, and never a fallback. `Err` is the
+/// action to return instead (boxed: an `Action` is large, and this is rare).
+fn retry(
+    a: &Attempt,
+    entry: &Entry,
+    policy: &Policy,
+    now: SystemTime,
+) -> Result<(usize, u32, u32, bool), Box<Action>> {
+    if now.duration_since(a.at).unwrap_or_default() < policy.retry_after {
+        return Err(Box::new(Action::Nothing(Quiet::RetryNotDue)));
+    }
+    if a.tries >= policy.max_tries {
+        return Err(Box::new(Action::NeedsPerson(
+            NeedsPerson::RetriesExhausted {
+                method: a.method,
+                tries: a.tries,
+            },
+        )));
+    }
+    let Some(i) = entry.methods.iter().position(|m| *m == a.method) else {
+        return Err(Box::new(Action::NeedsPerson(NeedsPerson::MethodWithdrawn(
+            a.method,
+        ))));
+    };
+    Ok((i, a.tries + 1, a.wakes, true))
 }
 
 #[cfg(test)]
@@ -482,6 +529,91 @@ mod tests {
         }
     }
 
+    // Catches: a new message resetting an outstanding wake to a fresh one,
+    // which resends at once while the first may still be delivering, and
+    // could fall back to typing when the rules change meanwhile.
+    #[test]
+    fn new_messages_do_not_reset_an_outstanding_wake() {
+        let outstanding = |outcome: Option<Outcome>| {
+            let mut obs = codex();
+            let first = intent(decide_at(&obs, t(0)));
+            obs.last = Some(match outcome {
+                Some(o) => first.resolved(o),
+                None => first,
+            });
+            obs.progress = progress(3, 1); // a new message, nothing read
+            obs
+        };
+        for outcome in [None, Some(Outcome::Uncertain)] {
+            let obs = outstanding(outcome);
+            assert_eq!(
+                decide_at(&obs, t(10)),
+                Action::Nothing(Quiet::RetryNotDue),
+                "{outcome:?}"
+            );
+            let retry = intent(decide_at(&obs, t(200)));
+            assert_eq!(
+                (retry.method, retry.tries, retry.maybe_delivered),
+                (Method::Queue, 2, true),
+                "{outcome:?}"
+            );
+        }
+        // The budget carries over too.
+        let mut obs = outstanding(Some(Outcome::Uncertain));
+        if let Some(a) = obs.last.as_mut() {
+            a.tries = 3;
+        }
+        assert!(matches!(
+            decide_at(&obs, t(200)),
+            Action::NeedsPerson(NeedsPerson::RetriesExhausted { .. })
+        ));
+        // Queue withdrawn by changed rules: a person, not the typed fallback.
+        let typed_only = methods::parse(
+            "wake:\n  - vendor: codex\n    version: \"0.165.0\"\n    methods: [typed]\n",
+            "test",
+        )
+        .unwrap();
+        let obs = outstanding(Some(Outcome::Uncertain));
+        assert_eq!(
+            decide(&obs, &typed_only, &Policy::default(), t(200)),
+            Action::NeedsPerson(NeedsPerson::MethodWithdrawn(Method::Queue))
+        );
+        // Reading ends it: a fresh wake.
+        let mut obs = outstanding(Some(Outcome::Uncertain));
+        obs.progress = progress(3, 2);
+        let fresh = intent(decide_at(&obs, t(10)));
+        assert_eq!((fresh.tries, fresh.maybe_delivered), (1, false));
+    }
+
+    // Catches: a refused retry erasing an earlier possible delivery, so the
+    // next scan falls back to typing on top of a message that may have
+    // arrived (Uncertain then Rejected; an orphaned intent then Unavailable).
+    #[test]
+    fn a_possible_delivery_never_falls_back_to_typing() {
+        for (first, later) in [
+            (Some(Outcome::Uncertain), Outcome::Rejected),
+            (None, Outcome::Unavailable),
+        ] {
+            let mut obs = codex();
+            let a = intent(decide_at(&obs, t(0)));
+            obs.last = Some(match first {
+                Some(o) => a.resolved(o),
+                None => a,
+            });
+            let mut now = 0;
+            loop {
+                assert!(now < 3600, "retries never ran out");
+                now += 60;
+                match scan(&mut obs, t(now), later) {
+                    Action::Wake { method, .. } => assert_eq!(method, Method::Queue),
+                    Action::Nothing(Quiet::RetryNotDue) => {}
+                    Action::NeedsPerson(NeedsPerson::RetriesExhausted { .. }) => break,
+                    other => panic!("{first:?} then {later:?}: unexpected {other:?}"),
+                }
+            }
+        }
+    }
+
     // Catches: waking a start that's no longer the live one (an old or
     // replaced pane), or treating an unreadable pane as live.
     #[test]
@@ -509,7 +641,8 @@ mod tests {
     }
 
     // Catches: guessing a wake for a CLI nobody tested, including a prefix
-    // match too loose (2.10 for 2.1.*) or too strict (0.165.1 for 0.165.0).
+    // match too loose (2.10 for 2.1.*) or too strict (0.165.1 for 0.165.0),
+    // and trusting an armed wait from an untested version.
     #[test]
     fn an_unknown_version_needs_a_person() {
         for (vendor, version) in [
@@ -518,14 +651,17 @@ mod tests {
             (Vendor::Claude, Some("2.10.0")),
             (Vendor::Claude, Some("2.1")),
         ] {
-            let mut obs = codex();
-            obs.vendor = vendor;
-            obs.version = version.map(str::to_string);
-            assert_eq!(
-                decide_at(&obs, t(0)),
-                Action::NeedsPerson(NeedsPerson::UnknownVersion),
-                "{vendor:?} {version:?}"
-            );
+            for wait in [Wait::None, Wait::Armed] {
+                let mut obs = codex();
+                obs.vendor = vendor;
+                obs.version = version.map(str::to_string);
+                obs.wait = wait;
+                assert_eq!(
+                    decide_at(&obs, t(0)),
+                    Action::NeedsPerson(NeedsPerson::UnknownVersion),
+                    "{vendor:?} {version:?} {wait:?}"
+                );
+            }
         }
     }
 
