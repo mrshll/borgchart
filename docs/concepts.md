@@ -43,10 +43,10 @@ Each definition noun has an active noun, created from it by `brg create`.
   ```
 
   It's the same for every team, for now. A hosted brg would use `api_key` only.
-- **Secrets** are set with `brg secret`, never written in a file you edit.
-  - `brg secret set NAME` reads the value from standard input, never from an argument. `brg secret ls` lists names only, and `brg secret rm NAME` removes one.
-  - A plugin receives a secret only when its `env` names it, through its shims, as today.
-  - `brg validate` reports a named secret that isn't set.
+- **Secrets** are never stored by brg, and never written in a file you edit. A secret's value comes from the environment of the shell that runs `create` or `start` (for example, under your password manager's `run`), as today.
+  - `brg secret <team>` lists the secret names the team's plugins need, and whether each is set in your environment. It stores and prints no values.
+  - Members' windows start from a small base environment, so secrets don't reach them that way. A plugin receives a secret only when its `env` names it: brg writes it to that plugin's private file (mode 0600), which the plugin's shims read, and removes the file at stop.
+  - **0600 keeps other users out, not the members.** Members run as you. A member that isn't `locked` and has shell or file access could read that file while it exists. Only `locked` members are kept from it, by their gate.
 - **Prompts** come only from the team: each role file and the includes it names. The vendor's own instruction files load as normal (`~/.claude/CLAUDE.md`, the repo's `CLAUDE.md`, `AGENTS.md`). brg neither adds nor suppresses anything else.
   - **Standing rules** go in the team's own files, without repeating what the vendors' files already give every member. There's no separate overlay for local rules.
 - **Context for one piece of work,** such as a tracking issue or a handover note, goes to the lead in a message. It isn't configuration.
@@ -176,13 +176,13 @@ dev-team-k3f9                       team ~/.config/borgchart/teams/dev-team/ · 
 | | `brg down` | `brg stop` |
 | | `--forget` (sessions design) | `delete` |
 | | `--file`/`-f`, `$BORGCHART_FILE`, `./borgchart.yaml` | removed |
-| | secrets from the environment `brg up` runs in | `brg secret` |
+| | secrets from the environment `brg up` runs in | unchanged: the environment `create` or `start` runs in; `brg secret <team>` checks which are set |
 | | `brg bus carry --from RUN` | removed |
 | Output | `status --json` `name`, `kind` | `member`, `role`, `instance`, `team`, `start`; `kind` stays |
 | | `not started` | `not created` |
 | Records | `actor: {type: member, member, incarnation}`, `writer_incarnation`, the internal `run` field | `actor: {type: member, member, start}`, `writer_start`, no `run`: one message-format change, with the single store |
 | On disk | `<bus.root>/<name>-<hash>/current`, `r1/…`, `runtime/incarnations/…` | `…/borgchart/<instance>/messages/…`, `members/<member>/starts/<n>.json` |
-| | brg state `…/borgchart/<name>-<hash>/` | `…/borgchart/<instance>/`, with `messages/` and `notes/`, plus the registry of instances and the secrets |
+| | brg state `…/borgchart/<name>-<hash>/` | `…/borgchart/<instance>/`, with `messages/` and `notes/`, plus the registry of instances |
 | Docs | "member" for both the part and the agent, "run", "incarnation", "deployment", "team" for the running thing, `up` | "role", "member", "start", "instance", the four verbs. Covers `format.md` (its `borgchart.yaml` section becomes `config.yaml`'s, and its older-shape steps), `teams.md`, `sessions.md`, `bus.md`, `cli.md`, the `--help` text, the example, and the `dev-team/` role files. |
 
 ## Environment variables
