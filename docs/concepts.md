@@ -49,7 +49,7 @@ Each definition noun has an active noun, created from it by `brg create`.
   - A plugin receives a secret only when its `env` names it, through its shims, as today.
   - `brg validate` reports a named secret that isn't set.
 - **Prompts** come only from the team: each role file and the includes it names. The vendor's own instruction files load as normal (`~/.claude/CLAUDE.md`, the repo's `CLAUDE.md`, `AGENTS.md`). brg neither adds nor suppresses anything else.
-  - **Your own rules for a shared team:** copy the team into your search path and put them in the copy's includes. Each role file of a shared team names an `includes/local.md` that ships empty.
+  - **Standing rules** go in the team's own files, without repeating what the vendors' files already give every member. There's no separate overlay for local rules.
 - **Context for one piece of work,** such as a tracking issue or a handover note, goes to the lead in a message. It isn't configuration.
 
 ## Commands
