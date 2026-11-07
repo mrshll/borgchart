@@ -192,8 +192,9 @@ members:
     }
 
     fn script(&self, rel: &str, text: &str) {
-        self.write(rel, text);
-        fs::set_permissions(self.path(rel), fs::Permissions::from_mode(0o755)).unwrap();
+        let p = self.path(rel);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        common::write_executable(&p, text);
     }
 
     fn brg_cmd(&self, args: &[&str]) -> Command {

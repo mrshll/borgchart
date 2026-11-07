@@ -387,6 +387,12 @@ fn start_members(
             }
         }
     }
+    for (id, cwd) in &cwds {
+        let member = role_of(id)?;
+        if let Some(note) = project_settings_note(v, member, cwd) {
+            pre_notes.push(format!("note: {}: {note}", inst.at(id)));
+        }
+    }
     refuse_legacy_sessions(&tmux_for(state))?;
     let wanted: Vec<(String, PathBuf)> = cwds.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     crate::checkouts::reserve(&lock, &inst.id, &wanted)?;
@@ -554,6 +560,12 @@ fn start_members(
             lock.save_instance(state, &updated)?;
         }
     }
+    // The folders every `vendor`-posture member may write: the instance's
+    // messages and notes, never brg's own files.
+    let shared: Vec<PathBuf> = [state.messages_dir(), state.notes_dir()]
+        .into_iter()
+        .map(|d| d.canonicalize().unwrap_or(d))
+        .collect();
     // Whether this start has created a window yet.
     let mut any_window = false;
     let mut outcomes: BTreeMap<String, String> = BTreeMap::new();
@@ -631,6 +643,7 @@ fn start_members(
             &help,
             &settings_path,
             codex_trust.as_deref(),
+            &shared,
         );
         if let Some(rules) = &spec.gate {
             write_private(
@@ -1101,6 +1114,35 @@ fn member_nodes(
         }
     }
     nodes
+}
+
+/// What `auto_trust: true` will load in a `vendor` member's folder: its
+/// project settings, which brg's trust lets the vendor read.
+fn project_settings_note(
+    v: &Validated,
+    member: &crate::team::Member,
+    cwd: &Path,
+) -> Option<String> {
+    if v.config.auto_trust != Some(true) || v.posture(&member.id) != Posture::Vendor {
+        return None;
+    }
+    match member.vendor {
+        Vendor::Claude if cwd.join(".claude").exists() || cwd.join(".mcp.json").exists() => {
+            Some(format!(
+                "`auto_trust: true` trusts {}, which has project settings (`.claude/` or `.mcp.json`) that will load in `vendor` posture",
+                cwd.display()
+            ))
+        }
+        Vendor::Codex
+            if cwd.join(".codex").exists() && !launch::codex_args_set(&member.args, "projects") =>
+        {
+            Some(format!(
+                "`auto_trust: true` trusts {}, which has project settings (`.codex/`): its config, hooks and MCP servers will load",
+                cwd.display()
+            ))
+        }
+        _ => None,
+    }
 }
 
 /// Members get `BORGCHART_TMUX_TMPDIR` in their environment and run in
@@ -1592,6 +1634,37 @@ pub fn delete(inst: Instance, force: bool) -> Result<Vec<String>, String> {
         inst.id,
         inst.record.folder.display()
     )])
+}
+
+/// `brg secret <team>`: each secret its plugins need (plugin, name), and
+/// whether the caller's environment sets it. No value is read out.
+pub fn secrets(team: &str) -> Result<Vec<(String, String, bool)>, String> {
+    let mut report = crate::diag::Report::default();
+    let config = crate::config::load(&mut report).ok_or_else(|| {
+        report
+            .errors()
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    })?;
+    let dir = crate::team::find(team, &config.teams)?;
+    let (report, validated) = crate::validate::validate_with(&dir, config);
+    let v = validated.ok_or_else(|| {
+        report
+            .errors()
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    })?;
+    Ok(v.team
+        .plugins
+        .values()
+        .flat_map(|p| {
+            p.secrets()
+                .map(|n| (p.name.clone(), n.clone(), std::env::var_os(n).is_some()))
+                .collect::<Vec<_>>()
+        })
+        .collect())
 }
 
 /// One team in `brg ls`, with its instances.

@@ -382,9 +382,7 @@ exec '{real}' "$@"
 "#
         );
         std::fs::create_dir_all(self.bin()).unwrap();
-        let guard = self.guard();
-        std::fs::write(&guard, script).unwrap();
-        std::fs::set_permissions(&guard, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(&self.guard(), &script);
     }
 }
 
@@ -432,6 +430,17 @@ impl Drop for PrivateTmux {
             panic!("the tmux guard refused:\n{refused}");
         }
     }
+}
+
+/// Write an executable script under a temporary name, then rename it into
+/// place. Writing it in place could leave it open for writing in a child
+/// another test thread forks meanwhile, and running it would then fail with
+/// "Text file busy" (`ETXTBSY`).
+pub fn write_executable(path: &Path, text: &str) {
+    let tmp = path.with_extension("brg-tmp");
+    std::fs::write(&tmp, text).unwrap();
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::rename(&tmp, path).unwrap();
 }
 
 /// Remove a file or symbolic link, or a directory with everything in it

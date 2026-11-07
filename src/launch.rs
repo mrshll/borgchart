@@ -300,6 +300,7 @@ pub fn member_launch(
     help: &BTreeMap<String, String>,
     settings_path: &Path,
     codex_trust: Option<&Path>,
+    shared: &[PathBuf],
 ) -> LaunchSpec {
     let granted = granted(team, member);
     let shim_dir = state.member_bin(member_id);
@@ -346,6 +347,13 @@ pub fn member_launch(
                 argv.extend(["--settings".into(), settings_path.display().to_string()]);
                 settings = Some(claude_settings(brg, state, member_id));
                 gate = Some(rules);
+            }
+            // `vendor` posture: the instance's messages and notes, as
+            // added folders, unless the role's own args add folders.
+            if posture == Posture::Vendor && !extra_args.iter().any(|a| a == "--add-dir") {
+                for dir in shared {
+                    argv.extend(["--add-dir".into(), dir.display().to_string()]);
+                }
             }
             argv.extend(extra_args);
             argv.push("--".into());
@@ -396,6 +404,25 @@ pub fn member_launch(
                     codex_hook_config(brg, state, member_id),
                 ]);
                 gate = Some(gate_rules(&granted, &shim_dir, mcp_tools));
+            }
+            // `vendor` posture: the instance's messages and notes are
+            // writable in the sandbox, unless the role's own args set the
+            // writable roots.
+            if posture == Posture::Vendor
+                && !shared.is_empty()
+                && !codex_args_set(&extra_args, "sandbox_workspace_write.writable_roots")
+            {
+                argv.extend([
+                    "-c".into(),
+                    format!(
+                        "sandbox_workspace_write.writable_roots=[{}]",
+                        shared
+                            .iter()
+                            .map(|p| toml_string(&p.display().to_string()))
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    ),
+                ]);
             }
             if let Some(dir) = codex_trust {
                 argv.extend(["-c".into(), codex_trust_config(dir)]);
