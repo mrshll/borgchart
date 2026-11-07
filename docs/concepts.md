@@ -106,6 +106,8 @@ Two folders with the same name can both run. Their instances are told apart by t
 
 **Parents are roles.** `parent: lead` names a role, and a member's parent is the member filling that role. So a parent role must have one member: `validate` refuses a `parent:` that names a role with `max > 1`. The same goes for a plugin's `delivers_to:`.
 
+**Recipients.** A message goes to one member, or from a team's root member to `external:NAME`. An instance isn't a recipient: a message naming only an instance (`dev-design-k3f9`) is refused, listing its members. A member's messages stay inside its own instance. To hand work to another instance, such as a design panel, a lead creates it and passes the brief and results through files, until #25 makes such a team a department.
+
 **Departments (#25).** A role can be a team, named as any team is. Its members (`ws-a7k2`) have their own sub-members (`dev-k3f9/ws-a7k2/lead-q8m3`), inside the department's instance, its one message store and its working folder.
 
 ## Lifetimes
@@ -141,14 +143,14 @@ dev-team-k3f9                       team ~/.config/borgchart/teams/dev-team/ · 
 └─ lead-q8m3            claude opus high          working
    ├─ implementer-x7k2  codex gpt-6.1-sol high    working
    ├─ implementer-c4nd  codex gpt-6.1-sol high    idle
-   ├─ reviewer          not created (start: false)
-   └─ researcher     on demand (none running)
+   ├─ reviewer          on demand (none created)
+   └─ researcher        on demand (none created)
 ```
 
 - **Header line:** the instance, then its team folder and working folder.
 - **Tree lines:**
   - one line per member;
-  - a role with copies and none running (here `researcher`, `max: 2`) gets one dim line;
+  - a `start: false` role with no members yet gets one dim line, `on demand (none created)`, whatever its `max`. A created member that isn't running shows on its own line as `stopped`;
   - department members nest.
 - **`--json` member rows:** `instance`, `team`, `member`, `role`, `parent` (a member ID), `start`, and the existing fields. Plugin-process rows keep `kind: plugin` and their name.
 
@@ -188,7 +190,7 @@ dev-team-k3f9                       team ~/.config/borgchart/teams/dev-team/ · 
 | | secrets from the environment `brg up` runs in | unchanged: the environment `create` or `start` runs in; `brg secret <team>` checks which are set |
 | | `brg bus carry --from RUN` | removed |
 | Output | `status --json` `name`, `kind` | `member`, `role`, `instance`, `team`, `start`; `kind` stays |
-| | `not started` | `not created` |
+| | `not started` | `on demand (none created)`, for a role; `stopped`, for a member |
 | Records | `actor: {type: member, member, incarnation}`, `writer_incarnation`, the internal `run` field | `actor: {type: member, member, start}`, `writer_start`, no `run`: one message-format change, with the single store |
 | On disk | `<bus.root>/<name>-<hash>/current`, `r1/…`, `runtime/incarnations/…` | `…/borgchart/<instance>/messages/…`, `members/<member>/starts/<n>.json` |
 | | brg state `…/borgchart/<name>-<hash>/` | `…/borgchart/<instance>/`, with `messages/` and `notes/`, plus the registry of instances |
