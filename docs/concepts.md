@@ -24,13 +24,21 @@ Each definition noun has an active noun, created from it by `brg create`.
   - whether the team uses the message bus, and its alert action (`bus:`);
   - each role's `posture`, its extra launch arguments (`args`, such as the researcher's `--search`), and optionally a `cwd` inside the instance's folder;
   - plain plugin values, such as a channel ID.
-- **The instance's working folder** is given at `create` and recorded on the instance for its whole life. Members start there, or in their role's `cwd` inside it. The folder is required: there's no default for now.
+- **The instance's working folder** is given at `create` and recorded on the instance for its whole life. Members start there, or in their role's `cwd` inside it. The folder is required: there's no default for now. It can't be the same as, inside or around brg's state folder, and neither can a role's `cwd`, so a member's own folder never exposes brg's files.
 - **The instance's state folder,** `~/.local/state/borgchart/<instance>/`, holds:
   - `messages/`, its one message store;
   - `notes/`, for members' reports and other files the members share (`$BORGCHART_NOTES`);
   - brg's own files.
 
-  brg makes `messages/` and `notes/` writable for every member (Codex's sandbox writable roots, Claude's added folders). It never does that for its own files: gate rules, shims, launch files and secrets.
+  brg makes `messages/` and `notes/` writable for every `vendor`-posture member (Codex's sandbox writable roots, Claude's added folders). It never does that for its own files: gate rules, shims, launch files and secrets.
+
+  `locked` members keep today's launch unchanged:
+  - their gate;
+  - no automatic trust for Codex;
+  - writes limited to their granted plugins' data and their temp folder;
+  - for Codex, a start in the temp folder unless the role sets a `cwd`.
+
+  A team with `bus:` still can't have `locked` members.
 - **brg's global configuration,** `~/.config/borgchart/config.yaml`, holds what belongs to you rather than to a team:
 
   ```yaml
@@ -40,12 +48,13 @@ Each definition noun has an active noun, created from it by `brg create`.
   teams:                        # where team names are looked up
     - ~/.config/borgchart/teams # the default
   plugins_dir: ~/borgchart-plugins   # where shared:<name> plugins live
+  tmux: {user_config: true}     # load your own tmux config on brg's server (default: false)
   ```
 
-  It's the same for every team, for now. A hosted brg would use `api_key` only.
+  It's the same for every team, for now. `tmux.user_config` keeps today's meaning: it's read when brg's tmux server starts, and a change applies once every instance on that server is stopped. A hosted brg would use `api_key` only.
 - **Secrets** are never stored by brg, and never written in a file you edit. A secret's value comes from the environment of the shell that runs `create` or `start` (for example, under your password manager's `run`), as today.
   - `brg secret <team>` lists the secret names the team's plugins need, and whether each is set in your environment. It stores and prints no values.
-  - Members' windows start from a small base environment, so secrets don't reach them that way. A plugin receives a secret only when its `env` names it: brg writes it to that plugin's private file (mode 0600), which the plugin's shims read, and removes the file at stop.
+  - Members' windows start from a small base environment, so secrets don't reach them that way. The one exception is the vendor's own key: with `auth: api_key`, brg passes `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` to that vendor's members by name, and with `login` it passes neither. A plugin receives a secret only when its `env` names it: brg writes it to that plugin's private file (mode 0600), which the plugin's shims read, and removes the file at stop.
   - **0600 keeps other users out, not the members.** Members run as you. A member that isn't `locked` and has shell or file access could read that file while it exists. Only `locked` members are kept from it, by their gate.
 - **Prompts** come only from the team: each role file and the includes it names. The vendor's own instruction files load as normal (`~/.claude/CLAUDE.md`, the repo's `CLAUDE.md`, `AGENTS.md`). brg neither adds nor suppresses anything else.
   - **Standing rules** go in the team's own files, without repeating what the vendors' files already give every member. There's no separate overlay for local rules.
@@ -107,7 +116,7 @@ Two folders with the same name can both run. Their instances are told apart by t
 - **Its team folder:** the instance records the folder's path, not its name, so a same-named team elsewhere never takes its place. If the folder moves, `start` refuses, and `start <instance> --team <new path>` points it there. That's a change of files like any other: it applies only from a full stop, and the orphaned-work check applies.
 - **Its working folder** is fixed at `create`. If it's gone, `start` refuses; create a new instance.
 - **Message store:** one per instance for its whole life, in its state folder, so message numbers never restart.
-- **Frozen configuration:** the team's files, with includes expanded, and the global settings that reach members (`auth`, `auto_trust`) are frozen from a start to the next full stop. `start` applies changes only after a full `stop`, once every member is positively stopped.
+- **Frozen configuration:** the team's files, with includes expanded, and the global settings that reach members (`auth`, `auto_trust`, and where `plugins_dir` puts each shared plugin) are frozen from a start to the next full stop. `start` applies changes only after a full `stop`, once every member is positively stopped.
 - **Orphaned work:** `start` refuses while the new configuration orphans open work (a removed role that holds a task or checkout, say), and says what to cancel or restore.
 - **Checkouts:** every operation that starts a member (`create`, `start`, `start --team`) checks its resolved working folder. It refuses if that folder is the same as, inside, or around a folder that another instance's member holds, running or stopped with an open checkout. Members of one instance may share a folder. The check and the reservation happen together, under one lock, so two starts can't race.
 - **A new message format:** brg refuses to start an instance whose messages it can't read, and points to `brg create` for a fresh instance (its open work has to be sent again). `stop` and liveness never parse messages, so they still work on the old instance. Its checkouts stay reserved, and `delete` of it needs `--force` ("its contents can't be inspected"). No storage generations are needed.
@@ -169,7 +178,7 @@ dev-team-k3f9                       team ~/.config/borgchart/teams/dev-team/ · 
 | | `parent:`, `delivers_to:` name a member | name a role |
 | | frontmatter `role:` (required, unused) | dropped |
 | | plugin `env:` lists names | names, or `NAME: value` for a plain value; a name without a value is a secret |
-| `borgchart.yaml` | the whole file | removed. `auth`, `auto_trust` and `plugins_dir` go to `config.yaml`; `bus:` (without `root` or the ages), each member's `args` and `posture`, and plugin values go to `team.yaml`; `cwd` becomes the folder given at `create`; `task:` becomes the team's includes, or a message to the lead; `bus.root` becomes the instance's state folder. |
+| `borgchart.yaml` | the whole file | removed. `auth`, `auto_trust`, `plugins_dir` and `tmux` go to `config.yaml`; `bus:` (without `root` or the ages), each member's `args` and `posture`, and plugin values go to `team.yaml`; `cwd` becomes the folder given at `create`; `task:` becomes the team's includes, or a message to the lead; `bus.root` becomes the instance's state folder. |
 | | `{instance}` in `cwd` | not needed: each instance has its own folder. `{member}` stays, for copies. |
 | CLI | `brg up` | `create` (new instance or member) and `start` (existing ones) |
 | | `brg up --member X`, `brg down --member X` | `create <instance>/X` (a role), then `start` or `stop <instance>/<member>` |
