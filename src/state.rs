@@ -15,7 +15,7 @@ pub const ENV_STATE_HOME: &str = "BORGCHART_STATE_HOME";
 pub const ENV_TMUX_SOCKET: &str = "BORGCHART_TMUX_SOCKET";
 /// The directory brg's tmux servers keep their sockets in, passed to tmux as
 /// `TMUX_TMPDIR`. brg never takes `TMUX_TMPDIR` itself from your environment:
-/// a member's own setting must not move its team's server.
+/// a member's own setting must not move its instance's server.
 pub const ENV_TMUX_TMPDIR: &str = "BORGCHART_TMUX_TMPDIR";
 pub const DEFAULT_SOCKET: &str = "borgchart";
 
@@ -155,31 +155,31 @@ pub struct Meta {
     /// The instance's working folder.
     #[serde(default)]
     pub folder: PathBuf,
-    /// The absolute path of the `brg` that started the deployment (plugins
+    /// The absolute path of the `brg` that started the instance (plugins
     /// get it as `BORGCHART_BIN`).
     pub brg: PathBuf,
-    /// The configuration the deployment started with. Members started into
+    /// The configuration the instance started with. Members started into
     /// it later must see the same.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<ConfigSnapshot>,
-    /// The run (internal) holding the team's messages, if it has a bus.
+    /// The run (internal) holding the instance's messages, if it has a bus.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<RunBinding>,
-    /// The tmux socket name the deployment was started on.
+    /// The tmux socket name the instance was started on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub socket: Option<String>,
     /// The tmux server's absolute socket path, read from tmux once the
-    /// first window started. `down` and liveness address the
+    /// first window started. `stop` and liveness address the
     /// server by this, never by the caller's tmux environment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub socket_path: Option<PathBuf>,
-    /// Set by a `down` that stopped the whole deployment (or found it gone
-    /// on a server that answered); cleared by the next fresh `up`.
+    /// Set by a `stop` that stopped the whole instance (or found it gone
+    /// on a server that answered); cleared by the next fresh start.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stopped_at: Option<String>,
-    /// Whether `up` may have started a window, and so a tmux server, since
-    /// the deployment was last confirmed stopped: set before each start.
-    /// `Some(false)` lets `down` say a team whose server can't be reached
+    /// Whether a start may have started a window, and so a tmux server, since
+    /// the instance was last confirmed stopped: set before each start.
+    /// `Some(false)` lets `stop` say a team whose server can't be reached
     /// isn't running; `None` (state from an earlier brg) means unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub windows_started: Option<bool>,
@@ -204,9 +204,9 @@ pub struct MemberMeta {
     pub posture: String,
     pub parent: Option<String>,
     pub vendor_version: Option<String>,
-    /// Whether `up` has started the member's window since the team last
+    /// Whether a start has started the member's window since the instance last
     /// started afresh (`status` tells `not started` from `stopped` by it
-    /// when the team has no bus). `None` in state from an earlier brg,
+    /// when the instance has no bus). `None` in state from an earlier brg,
     /// which didn't record it: history unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started: Option<bool>,

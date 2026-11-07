@@ -6,8 +6,8 @@
 //! come from the records themselves: the record is the commit point, and the
 //! key index beside it is a cache that is repaired when found missing.
 //!
-//! Everything works on the team's current run (internal: users never see
-//! runs, so messages here talk about the team and its members). Reads hold
+//! Everything works on the instance's current run (internal: users never see
+//! runs, so messages here talk about the instance and its members). Reads hold
 //! `bus/lock` shared and never create anything.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -173,9 +173,9 @@ fn reason(e: &str, path: &Path) -> String {
         .unwrap_or_else(|| hide_paths(e, path.parent().unwrap_or(path), None))
 }
 
-/// `text` without the internal paths of a team's storage: paths inside the
+/// `text` without the internal paths of a instance's storage: paths inside the
 /// run become relative (`bus/records`), the run itself "its messages
-/// folder", and the team's directory "its folder".
+/// folder", and the instance's directory "its folder".
 fn hide_paths(text: &str, run_root: &Path, team_dir: Option<&Path>) -> String {
     let root = run_root.display().to_string();
     let mut out = text
@@ -188,7 +188,7 @@ fn hide_paths(text: &str, run_root: &Path, team_dir: Option<&Path>) -> String {
 }
 
 impl Bus {
-    /// `text` without this team's internal storage paths.
+    /// `text` without this instance's internal storage paths.
     fn hide_paths(&self, text: &str) -> String {
         hide_paths(text, &self.paths.root, Some(&self.store.dir))
     }
@@ -276,8 +276,8 @@ const MAX_ROLLOVER_FOLLOWS: usize = 3;
 /// Create the store if needed and take `bus/lock` exclusive. The lock is
 /// released when the returned file drops.
 ///
-/// If the run was retired (the team's storage rolled over) by the time the
-/// lock is held, release it, re-resolve the team's current run and lock
+/// If the run was retired (the instance's storage rolled over) by the time the
+/// lock is held, release it, re-resolve the instance's current run and lock
 /// that instead, so nothing is written to storage that rollover has already
 /// carried from. Returns the run that is locked, and whether that meant
 /// following a rollover: the caller re-checks everything it checked before
@@ -394,7 +394,7 @@ fn read_lock_until(paths: &RunPaths, deadline: Option<Instant>) -> Result<ReadLo
 /// What one poll of a wait saw.
 pub enum WaitSnapshot {
     Ready(Snapshot),
-    /// The storage was retired (the team rolled over): resolve it again.
+    /// The storage was retired (the instance rolled over): resolve it again.
     Retired,
     /// The deadline passed while a writer held the lock.
     TimedOut,
@@ -1413,7 +1413,7 @@ pub fn check(bus: &Bus) -> Result<CheckReport, Failure> {
     Ok(report)
 }
 
-/// A summary of the team's messages and their store, for `brg bus inspect`.
+/// A summary of the instance's messages and their store, for `brg bus inspect`.
 pub fn inspect(bus: &Bus, snap: &Snapshot, last: usize) -> Value {
     let mut recipients: BTreeMap<String, (usize, usize)> = BTreeMap::new();
     for m in bus.manifest.members.keys() {

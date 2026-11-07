@@ -267,7 +267,7 @@ pub fn codex_hook_config(brg: &Path, state: &StateDir, member: &str) -> String {
 
 /// What a sandboxed member's plugin commands may write: each granted plugin's
 /// own state directory and its own temp directory. Codex also makes the
-/// session's cwd writable; `up` defaults a `locked` Codex member's cwd to its
+/// session's cwd writable; a start defaults a `locked` Codex member's cwd to its
 /// temp directory, and `brg validate` warns about risky declared ones. Never the directories
 /// holding gate rules, shims, launch files or plugin secrets.
 pub fn writable_roots(state: &StateDir, member: &str, granted: &[Granted]) -> Vec<PathBuf> {

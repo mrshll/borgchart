@@ -1,18 +1,17 @@
-# Team and deployment format
+# Team and configuration format
 
-A **team** is a directory you can share: who the members are, what each one is told, and which plugin programs they may use. A **deployment** (`borgchart.yaml`) fills in values for one place the team runs: working directories, extra tasks, non-secret settings and auth.
+A **team** is a folder you can share: its roles (under `members:`), what each one is told, which plugin programs they may use, and whether they share a message bus. **brg's configuration** (`config.yaml`) holds what belongs to you rather than to a team: auth, folder trust, where team names are looked up, shared plugins and tmux. An **instance** is a team running in one working folder, given at `brg create <team> <folder>` ([concepts](concepts.md)).
 
 ```
 examples/slack-devops/
-├── team.yaml           # members and plugins
-├── triager.md          # one Markdown file per member
+├── team.yaml           # roles, plugins, bus
+├── triager.md          # one Markdown role file per role
 ├── lead.md
 ├── includes/           # shared text, pulled in with {{includes/<stem>}}
-├── plugins/slackbot/   # a colocated plugin
-└── borgchart.yaml      # one deployment of this team
+└── plugins/slackbot/   # a colocated plugin
 ```
 
-`brg validate` checks all of it before anything starts and reports every problem at once.
+`brg validate <team>` checks the team and the configuration before anything starts and reports every problem at once. A `borgchart.yaml` in a team folder is not read.
 
 ## YAML rules
 
@@ -27,27 +26,32 @@ Every borgchart file is YAML 1.2 parsed strictly:
 ## `team.yaml`
 
 ```yaml
-default: claude                 # vendor for members that don't name one: claude | codex
+default: claude                 # vendor for roles that don't name one: claude | codex
 includes: includes              # optional; directory for {{includes/…}} (default: includes)
+bus: {}                         # optional: the members share a message bus; `bus: {alert: {plugin: notify, action: alert}}` adds an alert
 
 plugins:
   slackbot:
     path: plugins/slackbot      # relative to the team dir; or shared:<name>; or omit to use PATH
     process: [./watch.py]       # optional: a long-running program brg starts and stops
-    delivers_to: triager        # optional: the member the process hands work to
-    env: [SLACK_BOT_TOKEN, SLACK_CHANNEL_ID]   # the only variables the plugin receives
+    delivers_to: triager        # optional: the role whose member the process hands work to
+    env:                        # the only variables the plugin receives
+      SLACK_BOT_TOKEN:          # no value: a secret, from the environment brg runs in
+      SLACK_CHANNEL_ID: C0000EXAMPLE   # a plain value
     actions:                    # optional: named command lines
       read: slackbot read <ts>
       reply: slackbot reply <thread_ts> <text>
       escalate: slackbot escalate <ts> <severity> <reason>
 
-members:
+members:                        # the roles
   triager:
-    prompt: triager.md          # the member file, relative to the team dir
+    prompt: triager.md          # the role file, relative to the team dir
     vendor: claude              # optional; default from `default`
-    parent: lead                # optional; another member
-    start: true                 # optional; false = started only with `brg up --member`
+    parent: lead                # optional; another role
+    start: true                 # optional; false = its member is made with `brg create <instance>/triager`
     posture: locked             # optional: vendor (default) | locked
+    cwd: ops                    # optional: where its member starts, inside the instance's folder
+    args: []                    # optional: extra vendor launch arguments
     untrusted_input: true       # it reads text from outside (a channel, an inbox)
     plugins: {slackbot: [read, escalate]}
   lead:
@@ -57,9 +61,15 @@ members:
     plugins: {slackbot: [read, reply]}
 ```
 
-**Names.** Member, plugin and action names match `[a-z][a-z0-9_-]{0,31}`. Environment names match `[A-Z_][A-Z0-9_]*`.
+**Names.** Role, plugin and action names match `[a-z][a-z0-9_-]{0,31}`. A role's member is `<role>-<suffix>` (`triager-x7k2`). Environment names match `[A-Z_][A-Z0-9_]*`. The team's name is its folder's name, lowercased, with anything outside `[a-z0-9_-]` turned into `-`.
 
-**Parents.** A `parent` must be another member, and parent links can't form a cycle. Messages a plugin routes "to the parent" go along this edge.
+**Parents.** A `parent` must be another role, and parent links can't form a cycle. A member's parent is the member of its parent role. Messages a plugin routes "to the parent" go along this edge.
+
+**`env`.** A list of names (`[A, B]`, each a secret), list items with a value (`[A, {B: value}]`), or a map (`{A: , B: value}`); a name without a value is a secret. Secrets come from the environment `brg create` or `brg start` runs in: brg stores none. `brg secret <team>` lists them and whether each is set.
+
+**`cwd`.** Relative to the instance's working folder and inside it (no `..`, no absolute path, and it may not leave the folder through a symlink); it may use `{member}`, the member's ID. It must exist when the member starts. A role without one starts in the working folder (a `locked` Codex member: in its temp folder).
+
+**`args`.** Extra vendor launch arguments. Treat them as trusted, like the rest of the team: they can widen an agent's permissions. A `-c check_for_update_on_startup=…` (Codex) overrides brg's default of turning the update check off, so an unattended member doesn't stop at Codex's "Update available" prompt; a `-c sandbox_workspace_write.writable_roots=…` (Codex) or `--add-dir` (Claude) replaces the folders brg makes writable, and a `-c projects…` replaces brg's Codex trust.
 
 ## Member files
 
@@ -102,10 +112,10 @@ A plugin is a plain script or program, in any language, that members run themsel
 - **What brg runs:** brg launches only the programs `team.yaml` lists. This limits what brg starts; it is not a sandbox. A listed program, or a member with a shell, can run anything.
 - **Location:**
   - `path: plugins/<dir>`: a directory inside the team. It is also the programs' working directory.
-  - `path: shared:<name>`: `<plugins_dir>/<name>`, where `plugins_dir` is set in `borgchart.yaml`.
-  - No `path`: the commands are whatever those names resolve to on `PATH` when you run `brg up`.
+  - `path: shared:<name>`: `<plugins_dir>/<name>`, where `plugins_dir` is set in brg's configuration. Where it resolves is frozen while an instance runs.
+  - No `path`: the commands are whatever those names resolve to on `PATH` when the instance starts.
 - **`process`:** a long-running program, e.g. a watcher.
-  - `brg up` starts it and `brg down` stops it; it is not restarted.
+  - A full `brg start` (and `create`) starts it and `brg stop` stops it; it is not restarted.
   - It gets a small base environment plus the names in `env`, and `BORGCHART_DELIVER_TO` when `delivers_to` is set.
   - It may write `health.json` (`{"ok": true, "at": "<UTC time>", "detail": "…"}`) in its state directory, which `brg status` shows.
 - **`actions`:** named command lines.
@@ -120,7 +130,7 @@ A plugin is a plain script or program, in any language, that members run themsel
 
 ## Postures
 
-How much a member may do is set per member, overridable per deployment.
+How much a member may do is set per role, in `team.yaml`.
 
 - **`vendor`** (default): brg passes no permission flags.
   - The agent runs with your own Claude or Codex settings (e.g. auto mode, a sandbox, approval rules) and your MCP connectors.
@@ -132,7 +142,7 @@ How much a member may do is set per member, overridable per deployment.
 
 **What `locked` does and doesn't do.** The gate is the barrier: it decides every tool call.
 - **Claude:** `locked` has no sandbox. Granted plugin commands run with your full rights.
-- **Codex:** `locked` keeps network on, and Codex's sandbox lets commands read any file. Writes are limited to the granted plugins' data directories, the member's temp directory and its working directory. A `locked` Codex member without a declared `cwd` starts in its temp directory. Plugin programs that need to write elsewhere, such as `uv` writing its cache, fail inside the sandbox; give such a plugin a program that doesn't (e.g. plain `python3` for a standard-library script). brg doesn't move caches into member-writable directories, because a member could then plant code there.
+- **Codex:** `locked` keeps network on, and Codex's sandbox lets commands read any file. Writes are limited to the granted plugins' data directories, the member's temp directory and its working directory. A `locked` Codex member whose role sets no `cwd` starts in its temp directory. It never gets the instance's messages or notes, and its folder can't overlap the team folder. Plugin programs that need to write elsewhere, such as `uv` writing its cache, fail inside the sandbox; give such a plugin a program that doesn't (e.g. plain `python3` for a standard-library script). brg doesn't move caches into member-writable directories, because a member could then plant code there.
 - **The tmux socket:** brg's tmux socket is a full capability. Anything that can reach it can type into, read or stop any member. That is why `locked` members get no general shell.
 - **Fail closed:** if a `locked` member's gate doesn't report in when it starts, it is stopped, or (behind Claude's folder-trust prompt) gets no input until the gate does report in.
 
@@ -162,43 +172,32 @@ members:
 - **Names:** use server names exactly as `claude mcp list` / `codex mcp list` print them.
 - **Acting as you:** connector actions act as **you**, not as a bot. A connector that reads mail or messages is untrusted input.
 - **Auth:** Claude's own connectors need your login, so `auth: api_key` can't be used with members that declare them.
-- **Probing:** `brg validate --probe` asks each vendor CLI which servers are configured (`claude mcp list`, `codex mcp list --json`, run in the member's `cwd`), and warns about missing names. Listing health-checks, and so starts, your MCP servers, which is why it only runs when asked. Claude's list is parsed from its text output and may need updating across versions. It can't check that a connector is signed in, which account it acts as, or its scopes.
+- **Probing:** `brg validate --probe` asks each vendor CLI which servers are configured (`claude mcp list`, `codex mcp list --json`, run in the team folder), and warns about missing names. Listing health-checks, and so starts, your MCP servers, which is why it only runs when asked. Claude's list is parsed from its text output and may need updating across versions. It can't check that a connector is signed in, which account it acts as, or its scopes.
 
-## `borgchart.yaml`
+## `config.yaml`
+
+brg's configuration is `~/.config/borgchart/config.yaml`, or the file `$BORGCHART_CONFIG` names. It is optional: a missing file means the defaults. Relative paths in it are relative to its folder, and `~/` is your home.
 
 ```yaml
 schema: 1
-team: .                       # the team directory, relative to this file (default: .)
 auth: login                   # login (default) | api_key, for every member
-auto_trust: true              # trust a declared cwd without a person (Claude default: locked members only)
+auto_trust: true              # trust each member's folder without a person (Claude default: locked members only)
+teams:                        # where team names are looked up, each a folder of teams
+  - ~/.config/borgchart/teams # the default
 plugins_dir: ~/borgchart-plugins   # where shared:<name> plugins live
 tmux: {user_config: true}     # load your own tmux config on brg's server (default: false)
-
-members:
-  lead:
-    task: Also post a short summary at 17:00 UTC.   # appended to the standing instruction
-    cwd: ~/work/ops           # the member's working directory
-    posture: locked           # override the team's posture
-    args: []                  # extra vendor launch arguments
-
-plugins:
-  slackbot:
-    env: {SLACK_CHANNEL_ID: C0000EXAMPLE}   # non-secret values only
 ```
 
-- **`bus`:** optional; turns on the coordination bus for this deployment. See [bus.md](bus.md).
-- **Secrets** are never written here. They come by name from the environment `brg up` runs in. `brg validate` warns about a declared name that nothing supplies yet.
-- **Trust:** treat this file as trusted, like the team: `posture` and `args` can widen an agent's permissions.
-- **Codex updates:** brg starts Codex members with `-c check_for_update_on_startup=false`, so an unattended member doesn't stop at Codex's "Update available" prompt; update Codex yourself. A `-c check_for_update_on_startup=…` (or `--config`) in `args` overrides this.
+- **Frozen:** `auth`, `auto_trust` and where `plugins_dir` puts each shared plugin are frozen from a start to the next full stop, with the team's files. A member started into a running instance with any of them changed is refused; stop the instance fully and start it again to apply them. The search paths aren't frozen: an instance records its team's folder.
 - **`auth: login`:** brg passes no API-key variables, so a stray key in your shell can't replace your login.
-- **`auth: api_key`:** brg passes `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` by name.
-- **`auto_trust`:** trusts a member's `cwd` declared here, so the member doesn't stop at its vendor's folder-trust screen. Declaring the folder is your consent. Each trust is printed and shown in `brg status --json` (`trust_accepted`). Set `auto_trust: false` to attach and answer the screen yourself.
-  - **Claude:** `brg up` answers Claude's folder-trust dialog for exactly that folder by sending keys through tmux. It acts only on the plain trust screen showing that folder; it never answers any other dialog. By default this applies to `locked` members only, because they ignore project settings. `auto_trust: true` extends it to every member; `brg validate` then warns if a declared folder has project settings (`.claude/`, `.mcp.json`), which would load in `vendor` posture.
-  - **Codex:** only with `auto_trust: true`, and only in `vendor` posture. brg starts the member with `-c projects={"<folder>"={trust_level="trusted"}}`, so Codex never shows its trust screen. That trusts exactly that folder, for that session only: nothing is written to `~/.codex/config.toml`. Answering the screen yourself trusts the whole Git repository (every worktree too) and saves it. Trust lets the folder's `.codex/` config, hooks and MCP servers load, and selects Codex's default permissions for a trusted folder; `brg validate` warns if the folder has a `.codex/`. A `-c projects…` in the member's `args` replaces brg's.
+- **`auth: api_key`:** brg passes each member its own vendor's key by name: `ANTHROPIC_API_KEY` to Claude members, `OPENAI_API_KEY` to Codex members, from the environment `create` or `start` runs in. Nothing stores the key.
+- **`auto_trust`:** trusts each member's folder (the instance's working folder, or its role's `cwd`), so the member doesn't stop at its vendor's folder-trust screen. Choosing the folder at `create` is your consent. Each trust is printed and shown in `brg status --json` (`trust_accepted`). Set `auto_trust: false` to attach and answer the screen yourself.
+  - **Claude:** brg answers Claude's folder-trust dialog for exactly that folder by sending keys through tmux. It acts only on the plain trust screen showing that folder; it never answers any other dialog. By default this applies to `locked` members only, because they ignore project settings. `auto_trust: true` extends it to every member; a start then notes if the folder has project settings (`.claude/`, `.mcp.json`), which would load in `vendor` posture.
+  - **Codex:** only with `auto_trust: true`, and only in `vendor` posture. brg starts the member with `-c projects={"<folder>"={trust_level="trusted"}}`, so Codex never shows its trust screen. That trusts exactly that folder, for that session only: nothing is written to `~/.codex/config.toml`. Answering the screen yourself trusts the whole Git repository (every worktree too) and saves it. Trust lets the folder's `.codex/` config, hooks and MCP servers load, and selects Codex's default permissions for a trusted folder; a start notes if the folder has a `.codex/`. A `-c projects…` in the role's `args` replaces brg's.
   - A `locked` Codex member is never trusted this way. It can write its own folder, so it could write a `.codex/` that would load outside its gate on its next start. `brg validate` warns, and its trust screen is left for you.
 - **`tmux.user_config`:** brg's private tmux server normally reads only brg's own config, so `brg attach` doesn't have your prefix, key bindings, mouse settings or status bar (key bindings belong to the tmux server, not to the client that attaches). Set it to `true` to load the first of `~/.tmux.conf`, `$XDG_CONFIG_HOME/tmux/tmux.conf` and `~/.config/tmux/tmux.conf` that exists, or to a path. Off by default.
   - The path can't contain `'`, `*`, `?`, `[`, `\` or a newline (tmux would read it as a glob pattern).
-  - The config is read once, when brg's tmux server starts. Every team on that server shares it, so it comes from the team whose `brg up` started the server. If the server is already running with a different setting, `brg up` says so; the change takes effect once every team on it is down. Its scripts run with brg's cleared environment.
+  - The config is read once, when brg's tmux server starts. Every instance on that server shares it, so it is the setting brg's configuration had when the server started. If the server is already running with a different setting, a start says so; the change takes effect once every instance on it is stopped. Its scripts run with brg's cleared environment.
   - After your config loads, brg sets again the options it relies on, so your config can't change them:
     - `allow-rename off` and `automatic-rename off`: brg finds members by window name.
     - `remain-on-exit on` and `history-limit 20000`: brg reads a member's screen and its exit.
@@ -211,6 +210,6 @@ plugins:
     - shell commands at load (`run`, `run-shell`, `if-shell`): a background script or one that sets options later can still override brg's;
     - hooks (`set-hook`) and plugin managers (tpm);
     - session save/restore plugins (resurrect, continuum): on brg's server they can save brg's sessions over the ones you saved from your own tmux, or restore yours into it;
-    - sessions created or attached as the config loads: brg's server then outlives `brg down`.
-    The check is best effort. It reads each line's first command, skips key bindings, and follows files your config sources by an absolute or `~/` path. A relative include is reported, not followed: tmux finds it from the folder `brg up` runs in.
+    - sessions created or attached as the config loads: brg's server then outlives `brg stop`.
+    The check is best effort. It reads each line's first command, skips key bindings, and follows files your config sources by an absolute or `~/` path. A relative include is reported, not followed: tmux finds it from the folder brg runs in.
   - To keep your own bindings without this, run `brg attach` from inside your own tmux: your outer server's prefix and bindings still work around it (press the prefix twice to reach brg's).

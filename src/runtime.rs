@@ -53,7 +53,7 @@ const BASE_ENV: &[&str] = &[
     state::ENV_TMUX_TMPDIR,
 ];
 
-/// How long `up` waits for a `locked` member's gate to report in.
+/// How long a start waits for a `locked` member's gate to report in.
 fn gate_wait() -> Duration {
     std::env::var("BORGCHART_GATE_WAIT_MS")
         .ok()
@@ -136,13 +136,13 @@ struct Started {
     id: String,
     vendor: Vendor,
     locked: bool,
-    /// The declared cwd whose Claude folder-trust dialog `up` may accept.
+    /// The declared cwd whose Claude folder-trust dialog a start may accept.
     trust_dir: Option<PathBuf>,
-    /// The pane this `up` launched; nothing after the wait touches another.
+    /// The pane this start launched; nothing after the wait touches another.
     pane: Option<PaneIdentity>,
 }
 
-/// Whether `s`'s window still runs the pane this `up` launched.
+/// Whether `s`'s window still runs the pane this start launched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Launched {
     Same,
@@ -177,7 +177,7 @@ pub fn trust_dialog_path(screen: &str) -> Option<PathBuf> {
     path.starts_with('/').then(|| PathBuf::from(path))
 }
 
-/// What `up` reports for a member another start replaced while this one
+/// What a start reports for a member another start replaced while this one
 /// waited on it.
 const REPLACED: &str = "replaced while starting; left alone";
 
@@ -541,7 +541,7 @@ fn start_members(
     }
     let base = meta.base_env.clone();
     let tmux = Tmux::new(&state.tmux_conf(), base.clone());
-    // A running team's server is the one recorded for it.
+    // A running instance's server is the one recorded for it.
     let tmux = match &meta.socket_path {
         Some(path) => tmux.with_socket(&path.display().to_string()),
         None => tmux,
@@ -731,7 +731,7 @@ fn start_members(
         }
         result?;
         any_window = true;
-        // Without a bus, the team's state is where `status` learns that a
+        // Without a bus, the instance's state is where `status` learns that a
         // member ran.
         if binding.is_none()
             && let Some(m) = meta.members.get_mut(id)
@@ -834,7 +834,7 @@ fn start_members(
         }
     }
 
-    // Record where the tmux server is, so `down` and liveness
+    // Record where the tmux server is, so `stop` and liveness
     // checks ask it directly, whatever the caller's tmux environment.
     if fresh {
         let path = started
@@ -856,11 +856,11 @@ fn start_members(
         }
     }
 
-    // Members may use the bus while they start up; another `up --member`
+    // Members may use the bus while they start up; another a member start
     // may proceed too. The checks below read screens without the locks, and
     // take them again for anything they change (a key press, a trust marker,
     // stopping a `locked` member), and only while the window still runs the
-    // pane this `up` launched.
+    // pane this start launched.
     let run_paths = binding.as_ref().map(|b| b.paths.clone());
     drop(binding);
     drop(state_lock);
@@ -890,7 +890,7 @@ fn start_members(
             };
             if launched(&tmux, &session, s) == Launched::Replaced {
                 set(&mut outcomes, id, REPLACED.to_string());
-                // Its own gate never reported in to this `up`.
+                // Its own gate never reported in to this start.
                 failed |= s.locked;
                 break;
             }
@@ -1237,7 +1237,7 @@ fn precheck(v: &Validated, roles: &[&crate::team::Member], secrets: bool) -> Res
     Ok(())
 }
 
-/// `brg create <team> <folder>`: a new instance of the team working in
+/// `brg create <team> <folder>`: a new instance of the instance working in
 /// `folder`, with its `start: true` roles' members, started.
 pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
     let mut report = crate::diag::Report::default();
@@ -1422,7 +1422,7 @@ fn full_start_members(
     if issued {
         lock.save_instance(&inst.state, &inst.record)?;
     }
-    // Only members whose role is still in the team.
+    // Only members whose role is still in the instance.
     Ok(ids
         .into_iter()
         .filter(|id| {
@@ -1434,7 +1434,7 @@ fn full_start_members(
 }
 
 /// Refuse a start whose files orphan open work: a task held by a member
-/// whose role the team no longer has.
+/// whose role the instance no longer has.
 fn refuse_orphans(inst: &Instance, v: &Validated) -> Result<(), String> {
     let Ok(work) = lifecycle::open_work(&inst.state) else {
         return Ok(());
@@ -1794,7 +1794,7 @@ fn start_window(
     window: &str,
     spec: &ExecSpec,
 ) -> Result<(), String> {
-    // Recorded first: once tmux runs, `down` must not take an unreachable
+    // Recorded first: once tmux runs, `stop` must not take an unreachable
     // server for one that never started.
     if meta.windows_started != Some(true) {
         meta.windows_started = Some(true);
@@ -1898,7 +1898,7 @@ pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> 
             .identity()
             .and_then(|(socket, pid)| proctree::snapshot(&panes, pid, &socket))
     };
-    // Panes that are certainly stopped now: killed by this `down`, or not on
+    // Panes that are certainly stopped now: killed by this `stop`, or not on
     // the server that answered.
     let mut killed: Vec<String> = Vec::new();
     let mut whole = false;
@@ -2018,7 +2018,7 @@ pub struct StatusRow {
     /// `member`, `role` (no member yet) or `plugin`.
     pub kind: &'static str,
     pub instance: String,
-    /// The team's name.
+    /// The instance's name.
     pub team: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub member: Option<String>,
@@ -2039,7 +2039,7 @@ pub struct StatusRow {
     pub detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vendor_version: Option<String>,
-    /// The folder `up` accepted Claude's trust dialog for, if it did.
+    /// The folder a start accepted Claude's trust dialog for, if it did.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trust_accepted: Option<String>,
     /// With a bus: whether the member's current incarnation may still be
@@ -2047,7 +2047,7 @@ pub struct StatusRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub liveness: Option<Liveness>,
     /// A `start: true` member that ran and is `stopped` while the rest of
-    /// the team runs: it should be running.
+    /// the instance runs: it should be running.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub expected_running: bool,
     /// The member's declared `start`.
@@ -2055,12 +2055,12 @@ pub struct StatusRow {
     pub start: bool,
 }
 
-/// A member's state when it has never run in the team's current storage.
+/// A member's state when it has never run in the instance's current storage.
 pub const NOT_STARTED: &str = "not started";
 /// A member's state when it ran and has ended.
 pub const STOPPED: &str = "stopped";
 
-/// What `up` and `status` print for a member that has never run.
+/// What a start and `status` print for a member that has never run.
 pub fn not_started(start: bool) -> String {
     if start {
         NOT_STARTED.into()
@@ -2149,9 +2149,9 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
         };
         let member = &v.team.members[role];
         let posture = v.posture(role);
-        // Whether it ever ran here: with a bus, an incarnation in the team's
+        // Whether it ever ran here: with a bus, an incarnation in the instance's
         // current storage (one that can't be read counts); without one, a
-        // start recorded since the team last started afresh (or no record).
+        // start recorded since the instance last started afresh (or no record).
         let incarnation = match &run {
             Some(paths) => crate::bus::manifest::load_incarnation(paths, id),
             None => Ok(None),
@@ -2316,7 +2316,7 @@ fn pending(dir: &Path) -> Option<String> {
     (n > 0).then(|| format!("{n} undelivered"))
 }
 
-/// `brg status` as text: the team's tree with each member's vendor, model,
+/// `brg status` as text: the instance's tree with each member's vendor, model,
 /// state and details, then the plugin processes.
 pub fn render_status(header: &str, rows: &[StatusRow]) -> String {
     let nodes: Vec<tree::Node> = rows
@@ -2465,7 +2465,7 @@ pub fn send(
     let session = state.session();
     let tmux = tmux_for(state);
 
-    // Lock files are created at `up`, outside any sandbox; inside one, `send`
+    // Lock files are created at a start, outside any sandbox; inside one, `send`
     // only opens its member's existing file read-only.
     let lock = state::open_lock(&state.lock_file(member))
         .map_err(|e| SendError::Refused(format!("cannot open the send lock: {e}")))?;

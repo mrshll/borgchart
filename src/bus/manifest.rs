@@ -1,7 +1,7 @@
 //! Run identity: the manifest written when a run starts, and member
 //! incarnations (one per member start).
 //!
-//! A run is internal: one stretch of a team's message storage with a fixed
+//! A run is internal: one stretch of a instance's message storage with a fixed
 //! message format and frozen configuration. Users never see or name runs;
 //! brg starts a new one (carrying unfinished work) when the configuration
 //! or format changes.
@@ -279,7 +279,7 @@ pub enum ManifestError {
 }
 
 impl ManifestError {
-    /// The message to show, in terms of the team. `restart` is how to
+    /// The message to show, in terms of the instance. `restart` is how to
     /// restart this team (see `state::restart_hint`).
     pub fn message(&self, team: &str, restart: &str) -> String {
         match self {
@@ -293,7 +293,7 @@ impl ManifestError {
 ///
 /// Restarting starts fresh storage in this brg's format. Messages in the old
 /// format can't be read by this brg, so they are left where they are rather
-/// than carried over; `up` lists what was left behind.
+/// than carried over; a start lists what was left behind.
 pub fn format_mismatch(team: &str, found: u64, restart: &str) -> String {
     format!(
         "instance `{team}`'s messages use format {found}; this brg uses format {}.\nRestart the instance to start fresh storage in the new format: {restart}\n(Open work in the old format isn't carried over; the old messages stay on disk.)",

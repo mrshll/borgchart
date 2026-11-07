@@ -1,6 +1,6 @@
 # Sessions, names and the watcher (proposed)
 
-**Status: proposed, not implemented.** This describes how brg is meant to work from anywhere, with tmux as its server. Nothing here exists in code yet; the commands below are proposed names. The bus pieces under review are described in [bus.md](bus.md) under their current (pre-rename) command names.
+**Status: proposed, not implemented, and partly superseded by [concepts.md](concepts.md).** Where this page differs from it, concepts.md wins: instances (`<team>-<suffix>`) replace deployments and teams-as-running-things, `create`, `start`, `stop` and `delete` replace `up`, `down` and `--forget`, and addresses are `[instance/]member`. `brg ls` and running from anywhere already work that way. The watcher below is still a proposal. This describes how brg is meant to work from anywhere, with tmux as its server. Nothing here exists in code yet; the commands below are proposed names. The bus pieces under review are described in [bus.md](bus.md) under their current (pre-rename) command names.
 
 ## The idea
 
