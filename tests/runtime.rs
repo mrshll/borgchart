@@ -10,33 +10,23 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 const SECRET: &str = "xoxb-not-a-real-token-41f3";
 
-static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
 struct Env {
+    /// First, so its servers stop before the test's directory goes.
+    tmux: common::PrivateTmux,
     dir: tempfile::TempDir,
     socket: String,
-}
-
-impl Drop for Env {
-    fn drop(&mut self) {
-        crate::common::kill_server(&self.socket);
-    }
 }
 
 impl Env {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let socket = format!(
-            "brg-test-{}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::SeqCst)
-        );
-        let env = Env { dir, socket };
+        let tmux = common::PrivateTmux::new();
+        let socket = tmux.socket("brg-test");
+        let env = Env { tmux, dir, socket };
         let bin = env.path("bin");
         fs::create_dir_all(&bin).unwrap();
         let fake = env!("CARGO_BIN_EXE_fake-agent");
@@ -115,19 +105,19 @@ members:
         cmd.env_clear()
             .env(
                 "PATH",
-                format!(
+                self.tmux.path_with(&format!(
                     "{}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
                     self.path("bin").display()
-                ),
+                )),
             )
             .env("HOME", self.path("home"))
             .env("LANG", "C.UTF-8")
             .env("BORGCHART_STATE_HOME", self.path("state"))
-            .env("BORGCHART_TMUX_SOCKET", &self.socket)
             .env("BORGCHART_GATE_WAIT_MS", "8000")
             .env("PAGER_TOKEN", SECRET)
             .current_dir(self.path("team"))
             .args(args);
+        self.tmux.brg_env(&mut cmd, &self.socket);
         cmd
     }
 
@@ -136,10 +126,7 @@ members:
     }
 
     fn tmux(&self, args: &[&str]) -> String {
-        let out = crate::common::tmux(&self.socket)
-            .args(args)
-            .output()
-            .unwrap();
+        let out = self.tmux.tmux(&self.socket).args(args).output().unwrap();
         String::from_utf8_lossy(&out.stdout).to_string()
     }
 
@@ -618,6 +605,80 @@ fn windows_get_tmux_terminal_and_colour_not_the_callers() {
         "{plugin_env}"
     );
     assert!(lines.contains(&"COLORTERM=truecolor"), "{plugin_env}");
+}
+
+/// tmux's own `default-terminal`, from a server that reads no config.
+fn built_in_default_terminal() -> String {
+    // Its server stops when `tmux` drops.
+    let tmux = common::PrivateTmux::new();
+    let socket = tmux.socket("builtin");
+    let out = tmux
+        .tmux(&socket)
+        .args(["start-server", ";", "show", "-gv", "default-terminal"])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+#[test]
+fn user_tmux_config_loads_only_when_opted_in_and_brg_options_win() {
+    // Catches: brg reading your tmux config without the opt-in; your bindings
+    // missing with it; and your config's options breaking brg (windows renamed
+    // away from member names, a short history, another terminal or shell, a
+    // server or session that ends while detached), including options a
+    // blocking `run` script sets and lines after an error.
+    let built_in = built_in_default_terminal();
+    for opted_in in [false, true] {
+        let env = Env::new();
+        env.write(
+            "home/.tmux.conf",
+            "set -g prefix C-a\nbind-key -n F12 split-window\nset -g bogus-option 1\nsetw -g automatic-rename on\nset -g default-terminal screen-256color\nset -g default-shell /bin/false\nset -g history-limit 100\nset -g destroy-unattached on\nset -s exit-unattached on\nrun 'tmux -S #{socket_path} set -g @ran yes; tmux -S #{socket_path} set -g history-limit 200'\n",
+        );
+        if opted_in {
+            env.write(
+                "team/borgchart.yaml",
+                "schema: 1\ntmux: {user_config: true}\nplugins:\n  pager:\n    env: {PAGER_ROOM: R0000EXAMPLE}\n",
+            );
+        }
+        env.up();
+        let keys = env.tmux(&["list-keys", "-T", "root"]);
+        assert_eq!(keys.contains("F12"), opted_in, "{keys}");
+        let prefix = env.tmux(&["show", "-gv", "prefix"]);
+        assert_eq!(prefix.trim() == "C-a", opted_in, "prefix {prefix}");
+        let ran = env.tmux(&["show", "-gqv", "@ran"]);
+        assert_eq!(ran.trim() == "yes", opted_in, "the config's run script");
+        let names = env.tmux(&["list-windows", "-a", "-F", "#{window_name}"]);
+        assert!(
+            names.lines().any(|n| n == "alpha") && names.lines().any(|n| n == "beta"),
+            "{names}"
+        );
+        for (option, want) in [
+            ("history-limit", "20000"),
+            ("destroy-unattached", "off"),
+            ("default-terminal", built_in.as_str()),
+        ] {
+            assert_eq!(
+                env.tmux(&["show", "-gv", option]).trim(),
+                want,
+                "{option}, opted in: {opted_in}"
+            );
+        }
+        assert_eq!(env.tmux(&["show", "-sv", "exit-unattached"]).trim(), "off");
+        let start = env
+            .events("alpha")
+            .into_iter()
+            .find(|e| e["event"] == "start")
+            .unwrap();
+        assert_eq!(start["env"]["TERM"], built_in.as_str());
+        assert_eq!(start["env"]["COLORTERM"], "truecolor");
+        let out = env.brg(&["down"]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(env.tmux(&["list-sessions"]), "");
+    }
 }
 
 #[test]

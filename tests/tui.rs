@@ -9,21 +9,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-struct Servers {
-    inner: String,
-    outer: String,
-}
-
-impl Drop for Servers {
-    fn drop(&mut self) {
-        for s in [&self.inner, &self.outer] {
-            common::kill_server(s);
-        }
-    }
-}
-
-fn tmux(socket: &str, args: &[&str]) -> String {
-    let out = common::tmux(socket).args(args).output().unwrap();
+fn tmux(private: &common::PrivateTmux, socket: &str, args: &[&str]) -> String {
+    let out = private.tmux(socket).args(args).output().unwrap();
     String::from_utf8_lossy(&out.stdout).to_string()
 }
 
@@ -53,16 +40,17 @@ fn status_i_attaches_detaches_and_quits() {
     fs::create_dir_all(root.join("home")).unwrap();
     std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_fake-agent"), root.join("bin/claude")).unwrap();
 
-    let servers = Servers {
-        inner: format!("brg-tui-in-{}", std::process::id()),
-        outer: format!("brg-tui-out-{}", std::process::id()),
-    };
+    // Both servers, brg's and the outer one, in the test's private directory.
+    let private = common::PrivateTmux::new();
+    let inner = private.socket("brg-tui-in");
+    let outer = private.socket("brg-tui-out");
     let env_line = format!(
-        "export PATH={bin}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin HOME={home} LANG=C.UTF-8 TERM=xterm-256color BORGCHART_STATE_HOME={state} BORGCHART_TMUX_SOCKET={sock}\ncd {team}\n",
+        "export PATH={guard}:{bin}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin HOME={home} LANG=C.UTF-8 TERM=xterm-256color BORGCHART_STATE_HOME={state} BORGCHART_TMUX_TMPDIR={tmpdir} BORGCHART_TMUX_SOCKET={inner}\ncd {team}\n",
+        guard = private.bin().display(),
         bin = root.join("bin").display(),
         home = root.join("home").display(),
         state = root.join("state").display(),
-        sock = servers.inner,
+        tmpdir = private.dir().display(),
         team = root.join("team").display(),
     );
     let brg = env!("CARGO_BIN_EXE_brg");
@@ -74,8 +62,8 @@ fn status_i_attaches_detaches_and_quits() {
     .unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
 
-    let outer = servers.outer.clone();
-    common::tmux(&outer)
+    private
+        .tmux(&outer)
         .args([
             "-f",
             "/dev/null",
@@ -91,8 +79,8 @@ fn status_i_attaches_detaches_and_quits() {
         .arg(script.display().to_string())
         .status()
         .unwrap();
-    let screen = || tmux(&outer, &["capture-pane", "-p", "-t", "=o:"]);
-    let clients = || tmux(&servers.inner, &["list-clients"]).lines().count();
+    let screen = || tmux(&private, &outer, &["capture-pane", "-p", "-t", "=o:"]);
+    let clients = || tmux(&private, &inner, &["list-clients"]).lines().count();
     let dump = || format!("outer screen:\n{}", screen());
 
     wait(
@@ -102,7 +90,7 @@ fn status_i_attaches_detaches_and_quits() {
     );
     wait("alpha idle", || screen().contains("idle"), dump);
 
-    tmux(&outer, &["send-keys", "-t", "=o:", "Enter"]);
+    tmux(&private, &outer, &["send-keys", "-t", "=o:", "Enter"]);
     wait(
         "attached to alpha",
         || clients() == 1 && screen().contains("don't ask on"),
@@ -110,18 +98,19 @@ fn status_i_attaches_detaches_and_quits() {
     );
 
     // The detach key reaches brg's tmux client, which returns to the screen.
-    tmux(&outer, &["send-keys", "-t", "=o:", "C-b", "d"]);
+    tmux(&private, &outer, &["send-keys", "-t", "=o:", "C-b", "d"]);
     wait(
         "back in the status screen",
         || clients() == 0 && screen().contains("back from alpha"),
         dump,
     );
 
-    tmux(&outer, &["send-keys", "-t", "=o:", "q"]);
+    tmux(&private, &outer, &["send-keys", "-t", "=o:", "q"]);
     wait(
         "the screen to close",
         || {
-            !common::tmux(&outer)
+            !private
+                .tmux(&outer)
                 .args(["has-session", "-t", "=o"])
                 .status()
                 .unwrap()

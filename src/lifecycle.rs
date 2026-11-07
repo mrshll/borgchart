@@ -189,7 +189,7 @@ fn record_count(paths: &RunPaths) -> usize {
 /// storage, whatever the new configuration's members are) is ended or
 /// `gone`. Anything that can't be read or listed refuses: the message names
 /// the member when it can.
-fn check_stopped(paths: &RunPaths, team: &str, restart: &str) -> Result<(), String> {
+pub fn check_stopped(paths: &RunPaths, team: &str, restart: &str) -> Result<(), String> {
     let refuse = |who: &str| {
         Err(format!(
             "brg can't tell that {who} has stopped, so the team can't start with fresh messages; stop the team and start it again: {restart}"
@@ -551,10 +551,13 @@ impl Server {
 
     fn command(&self) -> Command {
         let mut cmd = Command::new("tmux");
-        // Only what's needed to find tmux; nothing that moves the socket.
+        // Only what's needed to find tmux, and brg's own socket directory.
         cmd.env_clear();
         if let Some(path) = std::env::var_os("PATH") {
             cmd.env("PATH", path);
+        }
+        if let Some(dir) = std::env::var_os(state::ENV_TMUX_TMPDIR) {
+            cmd.env("TMUX_TMPDIR", dir);
         }
         match self {
             Server::Name(name) => cmd.arg("-L").arg(name),
@@ -836,75 +839,6 @@ mod tests {
         assert!(aged("2000-01-01T00:00:00Z", 14));
         assert!(!aged(&utc_now(), 14));
         assert!(!aged("not a time", 14));
-    }
-
-    #[test]
-    fn liveness_without_a_pane_or_after_ending() {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = RunPaths::from_root(dir.path());
-        let mut inc = Incarnation {
-            member: "lead".into(),
-            incarnation: "lead.1.abcd".into(),
-            started_at: utc_now(),
-            vendor_version: None,
-            pane: None,
-            ended_at: None,
-            ended_reason: None,
-        };
-        begin_incarnation(&paths, &inc).unwrap();
-        assert_eq!(liveness(&paths, "lead", "lead.1.abcd"), Liveness::Unknown);
-        assert_eq!(liveness(&paths, "lead", "lead.other"), Liveness::Unknown);
-        inc.pane = Some(PaneIdentity {
-            socket: format!("/nonexistent/brg-no-such-socket-{}", std::process::id()),
-            session: "s".into(),
-            window: "lead".into(),
-            pane_id: "%0".into(),
-            pane_pid: 1,
-        });
-        complete_incarnation(&paths, &inc).unwrap();
-        // A server that can't be reached proves nothing.
-        assert_eq!(liveness(&paths, "lead", "lead.1.abcd"), Liveness::Unknown);
-        assert!(end_incarnation(&paths, "lead", ENDED_STOPPED).unwrap());
-        assert!(!end_incarnation(&paths, "lead", ENDED_STOPPED).unwrap());
-        assert_eq!(liveness(&paths, "lead", "lead.1.abcd"), Liveness::Gone);
-        let stored = manifest::load_incarnation(&paths, "lead").unwrap().unwrap();
-        assert_eq!(stored.ended_reason.as_deref(), Some(ENDED_STOPPED));
-    }
-
-    #[test]
-    fn an_unreachable_server_shows_a_pane_gone_only_once_its_process_exited() {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = RunPaths::from_root(dir.path());
-        // A pane process that ignores the hang-up outlives its tmux server.
-        let mut survivor = Command::new("sh")
-            .args(["-c", "trap '' HUP; exec sleep 30"])
-            .spawn()
-            .unwrap();
-        let inc = Incarnation {
-            member: "lead".into(),
-            incarnation: "lead.1.abcd".into(),
-            started_at: utc_now(),
-            vendor_version: None,
-            pane: Some(PaneIdentity {
-                socket: dir.path().join("brg-exited").display().to_string(),
-                session: "s".into(),
-                window: "lead".into(),
-                pane_id: "%0".into(),
-                pane_pid: survivor.id(),
-            }),
-            ended_at: None,
-            ended_reason: None,
-        };
-        begin_incarnation(&paths, &inc).unwrap();
-        complete_incarnation(&paths, &inc).unwrap();
-        assert_eq!(liveness(&paths, "lead", "lead.1.abcd"), Liveness::Unknown);
-        assert!(check_stopped(&paths, "t", "brg up").is_err());
-
-        survivor.kill().unwrap();
-        survivor.wait().unwrap();
-        assert_eq!(liveness(&paths, "lead", "lead.1.abcd"), Liveness::Gone);
-        // So a rollover can go ahead.
-        check_stopped(&paths, "t", "brg up").unwrap();
     }
 
     #[test]

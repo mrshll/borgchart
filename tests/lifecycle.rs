@@ -14,7 +14,6 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use borgchart::bus::mentions_runs;
@@ -22,17 +21,11 @@ use serde_json::Value;
 
 const SECRET: &str = "pager-token-not-real-7c2e";
 
-static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
 struct Env {
+    /// First, so its servers stop before the test's directory goes.
+    tmux: common::PrivateTmux,
     dir: tempfile::TempDir,
     socket: String,
-}
-
-impl Drop for Env {
-    fn drop(&mut self) {
-        crate::common::kill_server(&self.socket);
-    }
 }
 
 const TEAM: &str = r#"
@@ -62,12 +55,9 @@ impl Env {
     /// deployment with `bus: {root}`.
     fn new(bus: bool) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let socket = format!(
-            "brg-lc-{}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::SeqCst)
-        );
-        let env = Env { dir, socket };
+        let tmux = common::PrivateTmux::new();
+        let socket = tmux.socket("brg-lc");
+        let env = Env { tmux, dir, socket };
         let bin = env.path("bin");
         fs::create_dir_all(&bin).unwrap();
         let fake = env!("CARGO_BIN_EXE_fake-agent");
@@ -106,10 +96,15 @@ impl Env {
     }
 
     fn base_path(&self) -> String {
-        format!(
+        self.tmux.path_with(&format!(
             "{}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
             self.path("bin").display()
-        )
+        ))
+    }
+
+    /// A minimal caller PATH: the tmux guard and the system directories.
+    fn minimal_path(&self, extra_first: &str) -> String {
+        format!("{extra_first}{}", self.tmux.path_with("/usr/bin:/bin"))
     }
 
     /// `brg` (or another binary) with the usual test environment, run in
@@ -121,10 +116,10 @@ impl Env {
             .env("HOME", self.path("home"))
             .env("LANG", "C.UTF-8")
             .env("BORGCHART_STATE_HOME", self.path("state"))
-            .env("BORGCHART_TMUX_SOCKET", &self.socket)
             .env("PAGER_TOKEN", SECRET)
             .current_dir(self.path("oncall"))
             .args(args);
+        self.tmux.brg_env(&mut cmd, &self.socket);
         cmd
     }
 
@@ -143,10 +138,7 @@ impl Env {
     }
 
     fn tmux(&self, args: &[&str]) -> String {
-        let out = crate::common::tmux(&self.socket)
-            .args(args)
-            .output()
-            .unwrap();
+        let out = self.tmux.tmux(&self.socket).args(args).output().unwrap();
         String::from_utf8_lossy(&out.stdout).to_string()
     }
 
@@ -258,25 +250,6 @@ impl Env {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         path
     }
-}
-
-/// The directory holding the `tmux` the harness itself uses, so a caller
-/// PATH built for a test still finds it (e.g. /opt/homebrew/bin on macOS).
-fn tmux_dir() -> PathBuf {
-    let search = std::env::var_os("PATH").unwrap_or_default();
-    std::env::split_paths(&search)
-        .chain(
-            ["/usr/bin", "/bin", "/usr/local/bin", "/opt/homebrew/bin"]
-                .iter()
-                .map(PathBuf::from),
-        )
-        .find(|d| d.join("tmux").is_file())
-        .expect("tmux on PATH")
-}
-
-/// A minimal caller PATH: tmux's directory and the system directories.
-fn minimal_path(extra_first: &str) -> String {
-    format!("{extra_first}{}:/usr/bin:/bin", tmux_dir().display())
 }
 
 fn both(out: &Output) -> String {
@@ -543,7 +516,7 @@ fn a_start_true_member_never_started_is_not_started() {
 
 /// Start `helper` into the running team from a caller environment built by
 /// `caller`, and return helper's environment.
-fn child_start_env(caller: impl Fn(&mut Command)) -> (Env, BTreeMap<String, String>) {
+fn child_start_env(caller: impl Fn(&Env, &mut Command)) -> (Env, BTreeMap<String, String>) {
     let env = Env::new(true);
     env.up();
     let lead_env = env.starts("lead")[0]["env"].clone();
@@ -553,7 +526,7 @@ fn child_start_env(caller: impl Fn(&mut Command)) -> (Env, BTreeMap<String, Stri
     let lead_shim_before = fs::read(state.join("members/lead/bin/pager")).unwrap();
 
     let mut cmd = env.brg_cmd(&["up", "--member", "helper"]);
-    caller(&mut cmd);
+    caller(&env, &mut cmd);
     let out = cmd.output().unwrap();
     assert!(out.status.success(), "{}", both(&out));
     assert_eq!(
@@ -595,8 +568,8 @@ fn child_start_env(caller: impl Fn(&mut Command)) -> (Env, BTreeMap<String, Stri
 
 #[test]
 fn child_start_ignores_a_contaminated_caller_env() {
-    let (_env, helper) = child_start_env(|cmd| {
-        cmd.env("PATH", minimal_path("/contaminated/bin:"))
+    let (_env, helper) = child_start_env(|env, cmd| {
+        cmd.env("PATH", env.minimal_path("/contaminated/bin:"))
             .env("TMPDIR", "/tmp/contaminated")
             .env("LANG", "xx_XX.UTF-8")
             .env("LEAKY_SETTING", "from-the-caller")
@@ -613,9 +586,9 @@ fn child_start_ignores_a_contaminated_caller_env() {
 
 #[test]
 fn child_start_ignores_a_scrubbed_caller_env() {
-    let (env, helper) = child_start_env(|cmd| {
+    let (env, helper) = child_start_env(|env, cmd| {
         // Brg needs tmux on the caller's PATH; nothing else.
-        cmd.env("PATH", minimal_path(""))
+        cmd.env("PATH", env.minimal_path(""))
             .env_remove("HOME")
             .env_remove("LANG")
             .env_remove("PAGER_TOKEN");
@@ -1704,4 +1677,146 @@ fn storage_errors_name_the_team_not_its_files() {
             && !text.contains("lifecycle.lock"),
         "{text}"
     );
+}
+
+/// The tmux server sockets in the test's private directory.
+fn sockets(env: &Env) -> Vec<PathBuf> {
+    use std::os::unix::fs::FileTypeExt;
+    walk(env.tmux.dir())
+        .into_iter()
+        .filter(|p| fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_socket()))
+        .collect()
+}
+
+#[test]
+fn a_running_team_is_reached_by_its_recorded_server() {
+    let env = Env::new(true);
+    env.up();
+    assert_eq!(sockets(&env).len(), 1, "{:?}", sockets(&env));
+    // A caller without brg's socket directory setting (a member's own
+    // tool process, say) still reaches the team's server, not a new one.
+    let caller = |args: &[&str]| {
+        let mut cmd = env.brg_cmd(args);
+        cmd.env_remove("BORGCHART_TMUX_TMPDIR");
+        cmd.output().unwrap()
+    };
+    let out = caller(&["up"]);
+    assert!(out.status.success(), "{}", both(&out));
+    assert_eq!(outcomes(&stdout(&out), "lead"), ["already running"]);
+    assert_eq!(sockets(&env).len(), 1, "{:?}", sockets(&env));
+
+    let out = caller(&["status", "--json"]);
+    let rows: Vec<Value> =
+        serde_json::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{}", both(&out)));
+    let lead = rows.iter().find(|r| r["name"] == "lead").unwrap();
+    assert_eq!(lead["state"], "idle", "{lead}");
+    assert_eq!(lead["liveness"], "alive", "{lead}");
+
+    let out = caller(&["down"]);
+    assert!(out.status.success(), "{}", both(&out));
+    assert!(both(&out).contains("stopped"), "{}", both(&out));
+    assert_eq!(env.tmux(&["list-sessions"]), "");
+    assert_eq!(env.tmux.refused(), "");
+}
+
+#[test]
+fn up_refuses_a_relative_tmux_directory() {
+    let env = Env::new(true);
+    let out = env
+        .brg_cmd(&["up"])
+        .env("BORGCHART_TMUX_TMPDIR", "tmux")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
+    assert!(
+        both(&out).contains("must be an absolute path"),
+        "{}",
+        both(&out)
+    );
+    assert!(env.snapshot().is_empty(), "{:?}", env.snapshot().keys());
+    assert!(sockets(&env).is_empty());
+}
+
+/// Liveness when the recorded server can't be reached: these start `tmux`,
+/// `ps` and a child process, so they run here and not in the fast tier.
+mod liveness {
+    use std::process::Command;
+
+    use borgchart::bus::layout::RunPaths;
+    use borgchart::bus::manifest;
+    use borgchart::bus::manifest::{Incarnation, Liveness, PaneIdentity};
+    use borgchart::bus::time::utc_now;
+    use borgchart::lifecycle::{
+        ENDED_STOPPED, begin_incarnation, check_stopped, complete_incarnation, end_incarnation,
+        liveness,
+    };
+
+    #[test]
+    fn liveness_without_a_pane_or_after_ending() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = RunPaths::from_root(dir.path());
+        let mut inc = Incarnation {
+            member: "lead".into(),
+            incarnation: "lead.1.abcd".into(),
+            started_at: utc_now(),
+            vendor_version: None,
+            pane: None,
+            ended_at: None,
+            ended_reason: None,
+        };
+        begin_incarnation(&paths, &inc).unwrap();
+        assert_eq!(liveness(&paths, "lead", "lead.1.abcd"), Liveness::Unknown);
+        assert_eq!(liveness(&paths, "lead", "lead.other"), Liveness::Unknown);
+        inc.pane = Some(PaneIdentity {
+            socket: format!("/nonexistent/brg-no-such-socket-{}", std::process::id()),
+            session: "s".into(),
+            window: "lead".into(),
+            pane_id: "%0".into(),
+            pane_pid: 1,
+        });
+        complete_incarnation(&paths, &inc).unwrap();
+        // A server that can't be reached proves nothing.
+        assert_eq!(liveness(&paths, "lead", "lead.1.abcd"), Liveness::Unknown);
+        assert!(end_incarnation(&paths, "lead", ENDED_STOPPED).unwrap());
+        assert!(!end_incarnation(&paths, "lead", ENDED_STOPPED).unwrap());
+        assert_eq!(liveness(&paths, "lead", "lead.1.abcd"), Liveness::Gone);
+        let stored = manifest::load_incarnation(&paths, "lead").unwrap().unwrap();
+        assert_eq!(stored.ended_reason.as_deref(), Some(ENDED_STOPPED));
+    }
+
+    #[test]
+    fn an_unreachable_server_shows_a_pane_gone_only_once_its_process_exited() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = RunPaths::from_root(dir.path());
+        // A pane process that ignores the hang-up outlives its tmux server.
+        let mut survivor = Command::new("sh")
+            .args(["-c", "trap '' HUP; exec sleep 30"])
+            .spawn()
+            .unwrap();
+        let inc = Incarnation {
+            member: "lead".into(),
+            incarnation: "lead.1.abcd".into(),
+            started_at: utc_now(),
+            vendor_version: None,
+            pane: Some(PaneIdentity {
+                socket: dir.path().join("brg-exited").display().to_string(),
+                session: "s".into(),
+                window: "lead".into(),
+                pane_id: "%0".into(),
+                pane_pid: survivor.id(),
+            }),
+            ended_at: None,
+            ended_reason: None,
+        };
+        begin_incarnation(&paths, &inc).unwrap();
+        complete_incarnation(&paths, &inc).unwrap();
+        assert_eq!(liveness(&paths, "lead", "lead.1.abcd"), Liveness::Unknown);
+        assert!(check_stopped(&paths, "t", "brg up").is_err());
+
+        survivor.kill().unwrap();
+        survivor.wait().unwrap();
+        assert_eq!(liveness(&paths, "lead", "lead.1.abcd"), Liveness::Gone);
+        // So a rollover can go ahead.
+        check_stopped(&paths, "t", "brg up").unwrap();
+    }
 }

@@ -123,26 +123,23 @@ fn which(name: &str) -> Option<PathBuf> {
 }
 
 struct Run {
+    /// First, so its server stops before the test's directory goes.
+    tmux: crate::common::PrivateTmux,
     dir: tempfile::TempDir,
     socket: String,
     path: String,
 }
 
-impl Drop for Run {
-    fn drop(&mut self) {
-        crate::common::kill_server(&self.socket);
-    }
-}
-
 impl Run {
     fn brg(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_brg"))
-            .env_clear()
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_brg"));
+        cmd.env_clear();
+        self.tmux
+            .brg_env(&mut cmd, &self.socket)
             .env("PATH", &self.path)
             .env("HOME", self.dir.path().join("home"))
             .env("LANG", "C.UTF-8")
             .env("BORGCHART_STATE_HOME", self.dir.path().join("state"))
-            .env("BORGCHART_TMUX_SOCKET", &self.socket)
             .env("BORGCHART_GATE_WAIT_MS", "15000")
             .env("SLACK_BOT_TOKEN", TOKEN)
             .current_dir(self.dir.path().join("team"))
@@ -235,13 +232,15 @@ fn slack_round_trip_through_the_example_team() {
     fs::create_dir_all(&bin).unwrap();
     std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_fake-agent"), bin.join("claude")).unwrap();
     fs::create_dir_all(dir.path().join("home")).unwrap();
-    let path = format!(
+    let tmux = crate::common::PrivateTmux::new();
+    let path = tmux.path_with(&format!(
         "{}:{}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
         bin.display(),
         uv.parent().unwrap().display()
-    );
+    ));
     let run = Run {
-        socket: format!("brg-slack-test-{}", std::process::id()),
+        socket: tmux.socket("brg-slack-test"),
+        tmux,
         dir,
         path,
     };

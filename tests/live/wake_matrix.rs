@@ -1,29 +1,15 @@
-//! Real-vendor qualification for the guarded wake. Ignored by default.
-//!
-//! Starts the real `claude` and `codex` with your own configuration on a
-//! private tmux socket and checks how `wake` reads and treats their input
-//! boxes. Typing without submitting costs nothing; each vendor gets two real
+//! The guarded wake's input-box matrix against the real CLIs (formerly
+//! `tests/qualify.rs`): how `wake` reads and treats their input boxes.
+//! Typing without submitting costs nothing; each vendor gets two real
 //! submissions of the reminder (vim insert mode, with clients attached and a
-//! resize during the attempt; and vim normal mode). Approval prompts are never
-//! answered: one that appears is recorded and left.
-//!
-//! ```text
-//! BORGCHART_QUALIFY=1 cargo test --locked --test qualify -- --ignored --nocapture --test-threads=1
-//! ```
-//!
-//! `BORGCHART_QUALIFY_VENDORS=claude` (or `codex`) limits the run;
-//! `BORGCHART_QUALIFY_SUBMIT=0` skips the submissions. The vendors run in
-//! `target/qualify/work`, which must be inside a folder both CLIs already
-//! trust (no trust prompt is answered). The matrix is printed and written to
-//! `target/qualify/matrix.md`; raw screens go to `target/qualify/screens/`
-//! (they show your real screen: sanitize before keeping any as fixtures).
-
-mod common;
+//! resize during the attempt; and vim normal mode). Approval prompts are
+//! never answered: one that appears is recorded and left.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use borgchart::bus::manifest::PaneIdentity;
@@ -34,16 +20,50 @@ use borgchart::team::Vendor;
 use borgchart::tmux::{self, Tmux};
 use borgchart::wake::{self, Defer, LaunchFacts, Qualification, REMINDER, Snapshot, WakeResult};
 
+use super::common;
+
 const SESSION: &str = "brg-qualify";
 const WINDOW: &str = "member";
 
+/// Where the matrix works: `work` is inside a folder Claude already trusts
+/// (Codex gets session-only trust for it); screens and state are kept
+/// beside the run's matrix.
+pub struct Dirs {
+    pub work: PathBuf,
+    pub keep: PathBuf,
+    /// The whole matrix's limit, for each vendor's watchdog.
+    pub limit: Duration,
+}
+
+static DIRS: OnceLock<Dirs> = OnceLock::new();
+
+pub fn set_dirs(d: Dirs) {
+    let _ = DIRS.set(d);
+}
+
+fn dirs() -> &'static Dirs {
+    DIRS.get().expect("wake_matrix::set_dirs first")
+}
+
+fn work() -> PathBuf {
+    dirs().work.clone()
+}
+
 fn root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/qualify")
+    dirs().keep.clone()
 }
 
 fn base_env() -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
-    for key in ["HOME", "USER", "LANG", "PATH"] {
+    // Your own configuration homes, in place (nothing is copied).
+    for key in [
+        "HOME",
+        "USER",
+        "LANG",
+        "PATH",
+        "CLAUDE_CONFIG_DIR",
+        "CODEX_HOME",
+    ] {
         if let Ok(v) = std::env::var(key) {
             env.insert(key.to_string(), v);
         }
@@ -54,6 +74,8 @@ fn base_env() -> BTreeMap<String, String> {
 }
 
 struct Run {
+    /// First, so its servers stop before anything else goes.
+    private: common::PrivateTmux,
     vendor: Vendor,
     socket: String,
     tmux: Tmux,
@@ -62,13 +84,6 @@ struct Run {
     facts: LaunchFacts,
     rows: Vec<[String; 4]>,
     qualified: bool,
-}
-
-impl Drop for Run {
-    fn drop(&mut self) {
-        common::kill_server(&self.socket);
-        common::kill_server(&format!("{}-outer", self.socket));
-    }
 }
 
 fn show(r: &WakeResult) -> String {
@@ -95,36 +110,37 @@ fn show_reading(r: &Reading) -> String {
 }
 
 impl Run {
-    fn new(vendor: Vendor) -> Run {
-        let socket = format!("brg-qualify-{}-{}", vendor.as_str(), std::process::id());
-        std::fs::create_dir_all(root().join("work")).unwrap();
+    fn new(vendor: Vendor, version: Option<String>) -> Run {
+        let private = common::PrivateTmux::with_watchdog(dirs().limit);
+        let socket = private.socket(&format!("brg-qualify-{}", vendor.as_str()));
+        std::fs::create_dir_all(work()).unwrap();
         std::fs::create_dir_all(root().join("screens")).unwrap();
         let conf = root().join(format!("tmux-{}.conf", vendor.as_str()));
         std::fs::write(&conf, tmux::CONFIG).unwrap();
-        let tmux = Tmux::on_socket(&socket, &conf, base_env());
+        let mut tmux_env = base_env();
+        let path = tmux_env.get("PATH").cloned().unwrap_or_default();
+        tmux_env.insert("PATH".into(), private.path_with(&path));
+        tmux_env.insert(
+            "BORGCHART_TMUX_TMPDIR".into(),
+            private.dir().display().to_string(),
+        );
+        let tmux = Tmux::on_socket(&socket, &conf, tmux_env);
         let argv: Vec<String> = match vendor {
             Vendor::Claude => vec!["claude".into()],
             // The update check would show a startup dialog; brg answers none.
-            Vendor::Codex => ["codex", "-c", "check_for_update_on_startup=false"]
-                .map(String::from)
-                .to_vec(),
+            // Trust for the work folder is for this session only, as
+            // `auto_trust` passes it: nothing is written to your config.
+            Vendor::Codex => vec![
+                "codex".into(),
+                "-c".into(),
+                "check_for_update_on_startup=false".into(),
+                "-c".into(),
+                borgchart::launch::codex_trust_config(&work()),
+            ],
         };
-        let version = Command::new(vendor.as_str())
-            .arg("--version")
-            .env_clear()
-            .envs(base_env())
-            .stderr(Stdio::null())
-            .output()
-            .ok()
-            .map(|o| {
-                String::from_utf8_lossy(&o.stdout)
-                    .lines()
-                    .next()
-                    .unwrap_or("")
-                    .to_string()
-            });
-        let facts = LaunchFacts::measure(vendor, version, &argv, &root().join("work"), &base_env());
+        let facts = LaunchFacts::measure(vendor, version, &argv, &work(), &base_env());
         Run {
+            private,
             vendor,
             state: StateDir::from_root(&root().join(format!("state-{}", vendor.as_str()))),
             socket,
@@ -134,6 +150,16 @@ impl Run {
             rows: Vec::new(),
             qualified: false,
         }
+    }
+
+    /// A tmux client for `socket` in the private directory, with the
+    /// vendors' environment.
+    fn client(&self, socket: &str) -> Command {
+        let mut cmd = self.private.tmux(socket);
+        cmd.env_clear()
+            .envs(base_env())
+            .env("TMUX_TMPDIR", self.private.dir());
+        cmd
     }
 
     /// (Re)start the vendor in a fresh pane and wait for its empty input box.
@@ -146,7 +172,7 @@ impl Run {
             .map(|a| borgchart::state::shell_quote(a))
             .collect::<Vec<_>>()
             .join(" ");
-        let cwd = root().join("work").display().to_string();
+        let cwd = work().display().to_string();
         let (c, r) = (cols.to_string(), rows.to_string());
         let args = [
             "new-session",
@@ -380,17 +406,10 @@ impl Run {
     }
 }
 
-fn vendors() -> Vec<Vendor> {
-    let only = std::env::var("BORGCHART_QUALIFY_VENDORS").unwrap_or_default();
-    [Vendor::Claude, Vendor::Codex]
-        .into_iter()
-        .filter(|v| only.is_empty() || only.split(',').any(|o| o == v.as_str()))
-        .collect()
-}
-
-fn qualify(vendor: Vendor) -> Vec<[String; 4]> {
-    let mut run = Run::new(vendor);
-    let submit = std::env::var("BORGCHART_QUALIFY_SUBMIT").as_deref() != Ok("0");
+/// The matrix's rows for one vendor, and whether its wake qualified (typed
+/// attempts and submissions ran).
+pub fn qualify(vendor: Vendor, version: Option<String>, submit: bool) -> (Vec<[String; 4]>, bool) {
+    let mut run = Run::new(vendor, version);
     println!(
         "\n{}: version {:?}, editor {:?}, suggestions {:?}, qualification {:?}",
         vendor.as_str(),
@@ -500,10 +519,9 @@ fn qualify(vendor: Vendor) -> Vec<[String; 4]> {
     run.start(200, 50);
     run.keys(&["-l", "a draft left overnight"]);
     let outer = format!("{}-outer", run.socket);
-    let _ = Command::new("tmux")
+    let _ = run
+        .client(&outer)
         .args([
-            "-L",
-            &outer,
             "-f",
             "/dev/null",
             "new-session",
@@ -513,21 +531,15 @@ fn qualify(vendor: Vendor) -> Vec<[String; 4]> {
             "-y",
             "45",
         ])
-        .arg(format!("tmux -L {} attach -t ={SESSION}", run.socket))
-        .env_clear()
-        .envs(base_env())
+        .arg(format!(
+            "{} -L {} attach -t ={SESSION}",
+            run.private.guard().display(),
+            run.socket
+        ))
         .status();
-    let mut control = Command::new("tmux")
-        .args([
-            "-L",
-            &run.socket,
-            "-C",
-            "attach",
-            "-t",
-            &format!("={SESSION}"),
-        ])
-        .env_clear()
-        .envs(base_env())
+    let mut control = run
+        .client(&run.socket)
+        .args(["-C", "attach", "-t", &format!("={SESSION}")])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .spawn()
@@ -578,19 +590,18 @@ fn qualify(vendor: Vendor) -> Vec<[String; 4]> {
     run.record("pane 100x12", "deferred:uncertain", show(&r));
     let _ = control.kill();
     let _ = control.wait();
-    common::kill_server(&outer);
+    let _ = run.client(&outer).arg("kill-server").output();
 
     if !qualified || !submit {
         run.record("submissions", "", "skipped".into());
-        return std::mem::take(&mut run.rows);
+        return (std::mem::take(&mut run.rows), qualified);
     }
 
     // Submission 1: insert mode, clients attached, resize during the attempt.
     run.start(200, 50);
-    let _ = Command::new("tmux")
+    let _ = run
+        .client(&outer)
         .args([
-            "-L",
-            &outer,
             "-f",
             "/dev/null",
             "new-session",
@@ -600,37 +611,33 @@ fn qualify(vendor: Vendor) -> Vec<[String; 4]> {
             "-y",
             "45",
         ])
-        .arg(format!("tmux -L {} attach -t ={SESSION}", run.socket))
-        .env_clear()
-        .envs(base_env())
+        .arg(format!(
+            "{} -L {} attach -t ={SESSION}",
+            run.private.guard().display(),
+            run.socket
+        ))
         .status();
-    let mut control = Command::new("tmux")
-        .args([
-            "-L",
-            &run.socket,
-            "-C",
-            "attach",
-            "-t",
-            &format!("={SESSION}"),
-        ])
-        .env_clear()
-        .envs(base_env())
+    let mut control = run
+        .client(&run.socket)
+        .args(["-C", "attach", "-t", &format!("={SESSION}")])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .spawn()
         .unwrap();
-    let socket = run.socket.clone();
     let target = run.target();
-    let resizer = std::thread::spawn(move || {
-        for (x, y) in [("190", "50"), ("200", "48"), ("200", "50")] {
-            std::thread::sleep(Duration::from_millis(150));
-            let _ = common::tmux(&socket)
-                .args(["resize-window", "-t", &target, "-x", x, "-y", y])
-                .output();
-        }
+    let (r, _) = std::thread::scope(|scope| {
+        let run = &run;
+        scope.spawn(|| {
+            for (x, y) in [("190", "50"), ("200", "48"), ("200", "50")] {
+                std::thread::sleep(Duration::from_millis(150));
+                let _ = run
+                    .client(&run.socket)
+                    .args(["resize-window", "-t", &target, "-x", x, "-y", y])
+                    .output();
+            }
+        });
+        run.attempt()
     });
-    let (r, _) = run.attempt();
-    let _ = resizer.join();
     // A redraw mid-resize can make the box unreadable: that defers, safely.
     run.record(
         "attempt during a resize",
@@ -667,7 +674,7 @@ fn qualify(vendor: Vendor) -> Vec<[String; 4]> {
     run.record("turn 1 ended", "idle", end);
     let _ = control.kill();
     let _ = control.wait();
-    common::kill_server(&outer);
+    let _ = run.client(&outer).arg("kill-server").output();
 
     // Submission 2: vim normal mode.
     run.start(200, 50);
@@ -687,38 +694,25 @@ fn qualify(vendor: Vendor) -> Vec<[String; 4]> {
     let end = run.wait_turn();
     run.save("after-turn-2");
     run.record("turn 2 ended", "idle", end);
-    std::mem::take(&mut run.rows)
+    (std::mem::take(&mut run.rows), qualified)
 }
 
-#[test]
-#[ignore = "launches the real vendor CLIs; set BORGCHART_QUALIFY=1"]
-fn qualification_matrix() {
-    if std::env::var("BORGCHART_QUALIFY").as_deref() != Ok("1") {
-        eprintln!("set BORGCHART_QUALIFY=1 to run");
-        return;
-    }
+/// The rows as a Markdown table.
+pub fn table(vendor: Vendor, rows: &[[String; 4]]) -> String {
     let mut md =
         String::from("| vendor | case | expected | got | ok |\n| --- | --- | --- | --- | --- |\n");
-    let mut failed = 0;
-    println!("| vendor | case | expected | got | ok |");
-    for v in vendors() {
-        for row in qualify(v) {
-            if row[3] == "FAIL" {
-                failed += 1;
-            }
-            let _ = writeln!(
-                md,
-                "| {} | {} | {} | {} | {} |",
-                v.as_str(),
-                row[0],
-                row[1],
-                row[2],
-                row[3]
-            );
-        }
+    for row in rows {
+        let _ = writeln!(
+            md,
+            "| {} | {} | {} | {} | {} |",
+            vendor.as_str(),
+            row[0],
+            row[1],
+            row[2],
+            row[3]
+        );
     }
-    std::fs::write(root().join("matrix.md"), &md).unwrap();
-    assert_eq!(failed, 0, "qualification failures:\n{md}");
+    md
 }
 
 /// A row passes when the result has one of the `|`-separated prefixes and

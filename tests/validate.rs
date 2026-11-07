@@ -1,6 +1,6 @@
 //! Loader and `brg validate` tests against teams built in temporary directories.
 
-mod common;
+mod team_fixture;
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -10,91 +10,7 @@ use borgchart::diag::Report;
 use borgchart::team::{Grant, Posture, Vendor};
 use borgchart::validate::{Input, Validated, validate};
 
-struct Fixture {
-    dir: tempfile::TempDir,
-}
-
-impl Fixture {
-    /// A small valid team: a locked triager and a lead, with a script plugin.
-    fn new() -> Self {
-        let f = Fixture {
-            dir: tempfile::tempdir().unwrap(),
-        };
-        f.write(
-            "team.yaml",
-            r#"
-default: claude
-plugins:
-  slackbot:
-    path: plugins/slackbot
-    process: [./watch.py]
-    delivers_to: triager
-    env: [SLACK_BOT_TOKEN, SLACK_CHANNEL_ID]
-    actions:
-      read: slackbot read <ts>
-      reply: slackbot reply <thread_ts> <text>
-      escalate: slackbot escalate <ts> <severity> <reason>
-members:
-  triager:
-    prompt: triager.md
-    parent: lead
-    posture: locked
-    untrusted_input: true
-    plugins: {slackbot: [read, escalate]}
-  lead:
-    prompt: lead.md
-    posture: locked
-    untrusted_input: true
-    plugins: {slackbot: [read, reply]}
-"#,
-        );
-        f.write(
-            "triager.md",
-            "---\nrole: triager\nmodels: {claude: haiku}\n---\nDecide whether to escalate.\n{{includes/shared}}\n",
-        );
-        f.write(
-            "lead.md",
-            "---\nrole: lead\nmodels: {claude: opus high, codex: example-model medium}\n---\nTriage escalations.\n",
-        );
-        f.write("includes/shared.md", "Be brief.\n");
-        f.exec("plugins/slackbot/slackbot");
-        f.exec("plugins/slackbot/watch.py");
-        f.write(
-            "borgchart.yaml",
-            "schema: 1\nplugins:\n  slackbot:\n    env: {SLACK_CHANNEL_ID: C0000EXAMPLE, SLACK_BOT_TOKEN: not-a-real-token}\n",
-        );
-        f
-    }
-
-    fn path(&self, rel: &str) -> PathBuf {
-        self.dir.path().join(rel)
-    }
-
-    fn write(&self, rel: &str, text: &str) {
-        let p = self.path(rel);
-        fs::create_dir_all(p.parent().unwrap()).unwrap();
-        fs::write(p, text).unwrap();
-    }
-
-    fn exec(&self, rel: &str) {
-        self.write(rel, "#!/bin/sh\necho ok\n");
-        fs::set_permissions(self.path(rel), fs::Permissions::from_mode(0o755)).unwrap();
-    }
-
-    fn edit(&self, rel: &str, from: &str, to: &str) {
-        let text = fs::read_to_string(self.path(rel)).unwrap();
-        assert!(text.contains(from), "fixture {rel} lacks {from:?}");
-        self.write(rel, &text.replacen(from, to, 1));
-    }
-
-    fn run(&self) -> (Report, Option<Validated>) {
-        validate(&Input::Deployment(self.path("borgchart.yaml")))
-    }
-
-    fn run_team(&self) -> (Report, Option<Validated>) {
-        validate(&Input::Team(self.dir.path().to_path_buf()))
-    }
-}
+use team_fixture::Fixture;
 
 fn errors(report: &Report) -> String {
     report
@@ -596,6 +512,78 @@ fn auto_trust_warns_about_codex_project_settings_and_locked_codex_members() {
 }
 
 #[test]
+fn user_tmux_config_risks_are_warned_with_their_lines() {
+    // Catches: a user tmux config whose scripts, hooks, session-restore
+    // plugins or load-time sessions could undo brg's options or outlive
+    // `brg down` passing validation silently, including in a file it sources;
+    // a relative include (which tmux finds from wherever `brg up` runs)
+    // passing as checked; warnings for key bindings, which act only on a key
+    // press; and a missing or glob-like config path passing as fine.
+    let f = Fixture::new();
+    f.write(
+        "tmux/main.conf",
+        &format!(
+            "set -g mouse on\nrun-shell 'echo hi'\nset-hook -g after-new-window 'rename-window x'\nset -g @plugin 'tmux-plugins/tmux-resurrect'\nsource-file -q {}\n# run 'commented out'\nbind-key R run-shell 'echo only on a key press'\nif-shell 'true' 'set -g status on'\nnew-session -A -s main\nsource-file extra.conf\n",
+            f.path("tmux/extra.conf").display()
+        ),
+    );
+    f.write(
+        "tmux/extra.conf",
+        "bind r source-file ~/.tmux.conf\nrun -b 'sleep 1'\n",
+    );
+    f.edit(
+        "borgchart.yaml",
+        "schema: 1\n",
+        &format!(
+            "schema: 1\ntmux: {{user_config: {}}}\n",
+            f.path("tmux/main.conf").display()
+        ),
+    );
+    let (report, validated) = f.run();
+    assert!(validated.is_some(), "{}", errors(&report));
+    let w = warnings(&report);
+    // (file, what it's about, where). The key binding on line 7 runs only on
+    // a key press, so nothing names it.
+    for (file, about, at) in [
+        ("main.conf", "run-shell", "lines 2, 8;"),
+        ("main.conf", "set-hook", "line 3;"),
+        ("main.conf", "save/restore", "line 4;"),
+        ("main.conf", "sessions", "line 9;"),
+        ("main.conf", "relative path", "line 10;"),
+        ("extra.conf", "run-shell", "line 2;"),
+    ] {
+        assert!(
+            w.lines()
+                .any(|l| l.contains(file) && l.contains(about) && l.contains(at)),
+            "{file} {about} {at}\n{w}"
+        );
+    }
+
+    let f = Fixture::new();
+    f.write("user[1].conf", "");
+    f.edit(
+        "borgchart.yaml",
+        "schema: 1\n",
+        &format!(
+            "schema: 1\ntmux: {{user_config: '{}'}}\n",
+            f.path("user[1].conf").display()
+        ),
+    );
+    expect_error(&f, "can't load a path");
+
+    let f = Fixture::new();
+    f.edit(
+        "borgchart.yaml",
+        "schema: 1\n",
+        &format!(
+            "schema: 1\ntmux: {{user_config: {}}}\n",
+            f.path("missing.conf").display()
+        ),
+    );
+    expect_error(&f, "is not a file");
+}
+
+#[test]
 fn deployment_must_match_the_team() {
     let f = Fixture::new();
     f.edit(
@@ -618,36 +606,6 @@ fn team_alone_validates_without_deployment() {
     let f = Fixture::new();
     let (report, validated) = f.run_team();
     assert!(validated.is_some(), "{}", errors(&report));
-}
-
-#[test]
-fn cli_reports_json_and_exit_codes() {
-    let f = Fixture::new();
-    let ok = common::command(env!("CARGO_BIN_EXE_brg"))
-        .args(["validate", "--json", "--file"])
-        .arg(f.path("borgchart.yaml"))
-        .output()
-        .unwrap();
-    assert!(ok.status.success());
-    let parsed: serde_json::Value = serde_json::from_slice(&ok.stdout).unwrap();
-    assert_eq!(parsed["ok"], true);
-
-    f.edit("team.yaml", "parent: lead", "parent: boss");
-    let bad = common::command(env!("CARGO_BIN_EXE_borgchart"))
-        .args(["validate", "--file"])
-        .arg(f.path("borgchart.yaml"))
-        .output()
-        .unwrap();
-    assert_eq!(bad.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&bad.stderr).contains("parent `boss`"));
-
-    let empty = tempfile::tempdir().unwrap();
-    let usage = common::command(env!("CARGO_BIN_EXE_brg"))
-        .arg("validate")
-        .current_dir(empty.path())
-        .output()
-        .unwrap();
-    assert_eq!(usage.status.code(), Some(2));
 }
 
 /// A vendor-posture pair with an alert plugin, deployed with a bus whose
