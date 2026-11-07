@@ -160,6 +160,9 @@ struct Started {
     locked: bool,
     /// The declared cwd whose Claude folder-trust dialog `up` may accept.
     trust_dir: Option<PathBuf>,
+    /// A Codex member started without session trust: `up` watches for its
+    /// trust screen, only to say so; it never answers it.
+    watch_codex_trust: bool,
     /// The pane this `up` launched; nothing after the wait touches another.
     pane: Option<PaneIdentity>,
 }
@@ -701,6 +704,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             vendor: member.vendor,
             locked: posture == Posture::Locked,
             trust_dir,
+            watch_codex_trust: member.vendor == Vendor::Codex && codex_trust.is_none(),
             pane,
         });
         set(&mut outcomes, id, "started".into());
@@ -797,7 +801,10 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
 
     // Accept Claude's folder trust for a declared cwd, and make every locked
     // member prove its gate is active, or stop it.
-    for s in started.iter().filter(|s| s.locked || s.trust_dir.is_some()) {
+    for s in started
+        .iter()
+        .filter(|s| s.locked || s.trust_dir.is_some() || s.watch_codex_trust)
+    {
         let id = &s.id;
         let deadline = Instant::now() + gate_wait();
         let mut trusted = false;
@@ -928,8 +935,8 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                 continue;
             }
             match reading.map(|r| r.state) {
-                // Nothing runs before the vendor's folder trust is answered,
-                // and the gate must still report in afterwards (`send` checks).
+                // Left for a person, never answered here; a `locked` member's
+                // gate must still report in afterwards (`send` checks).
                 Some(State::Blocked) if is_trust => {
                     append(
                         &mut outcomes,
@@ -1395,7 +1402,7 @@ pub fn status(input: &Input) -> Result<Vec<StatusRow>, String> {
                     }
                 }
                 let mut details: Vec<String> = row.detail.take().into_iter().collect();
-                // Nothing runs until a person answers it.
+                // It waits for a person to answer it.
                 if row.state == "blocked" && row.rule.as_deref() == Some(TRUST_RULE) {
                     details.insert(0, format!("waiting at folder trust: `brg attach {id}`"));
                 }

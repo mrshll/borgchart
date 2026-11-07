@@ -1012,15 +1012,18 @@ fn codex_trust_screen_is_left_for_a_person_unless_auto_trust_covers_the_folder()
         assert!(trusts.is_empty(), "{deploy}: {trusts:?}");
         let beta = status_of(&env, "beta");
         assert!(beta["trust_accepted"].is_null(), "{deploy}: {beta}");
-        // At its trust screen, and still there for a person, `locked` too.
+        // At its trust screen, and still there for a person, `locked` too;
+        // `up` says to attach.
         assert_eq!(beta["state"], "blocked", "{deploy}: {beta}");
         assert_eq!(beta["rule"], "trust-dialog", "{deploy}: {beta}");
+        assert!(
+            stdout(&out).contains(
+                "waiting at Codex's folder-trust prompt; answer it with `brg attach beta`"
+            ),
+            "{deploy}: {}",
+            stdout(&out)
+        );
         if deploy.contains("locked") {
-            assert!(
-                stdout(&out).contains("waiting at Codex's folder-trust prompt"),
-                "{deploy}: {}",
-                stdout(&out)
-            );
             // Its gate hasn't reported in, so it gets no input.
             assert_eq!(
                 env.brg(&["send", "--force", "beta", "hi"]).status.code(),
