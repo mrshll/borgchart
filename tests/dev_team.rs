@@ -340,15 +340,11 @@ mod round {
     use std::time::{Duration, Instant};
 
     struct Team {
+        /// First, so its servers stop before the test's directory goes.
+        tmux: crate::common::PrivateTmux,
         dir: tempfile::TempDir,
         file: PathBuf,
         socket: String,
-    }
-
-    impl Drop for Team {
-        fn drop(&mut self) {
-            crate::common::kill_server(&self.socket);
-        }
     }
 
     impl Team {
@@ -362,18 +358,18 @@ mod round {
             cmd.env_clear()
                 .env(
                     "PATH",
-                    format!(
+                    self.tmux.path_with(&format!(
                         "{}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
                         bin.display()
-                    ),
+                    )),
                 )
                 .env("HOME", self.dir.path().join("home"))
                 .env("LANG", "C.UTF-8")
                 .env("BORGCHART_STATE_HOME", self.dir.path().join("state"))
-                .env("BORGCHART_TMUX_SOCKET", &self.socket)
                 .args(args)
                 .arg("--file")
                 .arg(&self.file);
+            self.tmux.brg_env(&mut cmd, &self.socket);
             cmd
         }
 
@@ -514,8 +510,10 @@ mod round {
         for vendor in ["claude", "codex"] {
             std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_fake-agent"), bin.join(vendor)).unwrap();
         }
+        let tmux = crate::common::PrivateTmux::new();
         Team {
-            socket: format!("brg-dev-team-{tag}-{}", std::process::id()),
+            socket: tmux.socket(&format!("brg-dev-team-{tag}")),
+            tmux,
             file,
             dir,
         }
@@ -753,14 +751,17 @@ mod round {
         let down = run("panel-down", "down");
         assert!(down.ends_with("exit 0\n"), "{down}");
         // The panel is down; the dev team still runs.
-        let status = Command::new(env!("CARGO_BIN_EXE_brg"))
+        let mut status = Command::new(env!("CARGO_BIN_EXE_brg"));
+        status
             .env_clear()
-            .env("PATH", "/usr/bin:/bin")
+            .env("PATH", team.tmux.path_with("/usr/bin:/bin"))
             .env("HOME", team.path("home"))
             .env("BORGCHART_STATE_HOME", team.path("state"))
-            .env("BORGCHART_TMUX_SOCKET", &team.socket)
             .args(["status", "--json", "--file"])
-            .arg(&panel)
+            .arg(&panel);
+        let status = team
+            .tmux
+            .brg_env(&mut status, &team.socket)
             .output()
             .unwrap();
         let rows: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();

@@ -30,11 +30,27 @@ jobs:
         run: rustup show active-toolchain
       - run: .githooks/checks fmt
       - run: .githooks/checks clippy
-      - run: .githooks/checks test
-      - name: No tmux sockets left behind
+      # The runner has no tmux servers of its own: after the tests, there
+      # must be none, and no new file in tmux's default socket directory.
+      - name: Before the tests
         run: |
-          left=$(ls "/tmp/tmux-$(id -u)" 2>/dev/null | grep '^brg-' || true)
-          [ -z "$left" ] || { echo "the tests left these tmux sockets: $left"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/brg-tests"
+          ls -A "/tmp/tmux-$(id -u)" 2>/dev/null | sort > "$RUNNER_TEMP/tmux-before.txt" || true
+      - run: .githooks/checks test
+        env:
+          TMPDIR: ${{ runner.temp }}/brg-tests
+      - name: No tmux left behind
+        if: always()
+        run: |
+          fail=0
+          ls -A "/tmp/tmux-$(id -u)" 2>/dev/null | sort > "$RUNNER_TEMP/tmux-after.txt" || true
+          new=$(comm -13 "$RUNNER_TEMP/tmux-before.txt" "$RUNNER_TEMP/tmux-after.txt")
+          [ -z "$new" ] || { echo "new in /tmp/tmux-$(id -u): $new"; fail=1; }
+          socks=$({ find "$RUNNER_TEMP/brg-tests" -type s; find /tmp/ -maxdepth 4 -path '*/brg*' -type s; } 2>/dev/null || true)
+          [ -z "$socks" ] || { echo "tmux sockets left: $socks"; fail=1; }
+          procs=$(pgrep -x tmux || true)
+          [ -z "$procs" ] || { echo "tmux servers still running:"; ps -o pid,args -p $(echo $procs | tr ' ' ',') || true; fail=1; }
+          exit $fail
 
   slackbot-plugin:
     runs-on: ubuntu-24.04

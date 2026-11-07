@@ -54,6 +54,8 @@ fn base_env() -> BTreeMap<String, String> {
 }
 
 struct Run {
+    /// First, so its servers stop before anything else goes.
+    private: common::PrivateTmux,
     vendor: Vendor,
     socket: String,
     tmux: Tmux,
@@ -62,13 +64,6 @@ struct Run {
     facts: LaunchFacts,
     rows: Vec<[String; 4]>,
     qualified: bool,
-}
-
-impl Drop for Run {
-    fn drop(&mut self) {
-        common::kill_server(&self.socket);
-        common::kill_server(&format!("{}-outer", self.socket));
-    }
 }
 
 fn show(r: &WakeResult) -> String {
@@ -96,12 +91,20 @@ fn show_reading(r: &Reading) -> String {
 
 impl Run {
     fn new(vendor: Vendor) -> Run {
-        let socket = format!("brg-qualify-{}-{}", vendor.as_str(), std::process::id());
+        let private = common::PrivateTmux::new();
+        let socket = private.socket(&format!("brg-qualify-{}", vendor.as_str()));
         std::fs::create_dir_all(root().join("work")).unwrap();
         std::fs::create_dir_all(root().join("screens")).unwrap();
         let conf = root().join(format!("tmux-{}.conf", vendor.as_str()));
         std::fs::write(&conf, tmux::CONFIG).unwrap();
-        let tmux = Tmux::on_socket(&socket, &conf, base_env());
+        let mut tmux_env = base_env();
+        let path = tmux_env.get("PATH").cloned().unwrap_or_default();
+        tmux_env.insert("PATH".into(), private.path_with(&path));
+        tmux_env.insert(
+            "BORGCHART_TMUX_TMPDIR".into(),
+            private.dir().display().to_string(),
+        );
+        let tmux = Tmux::on_socket(&socket, &conf, tmux_env);
         let argv: Vec<String> = match vendor {
             Vendor::Claude => vec!["claude".into()],
             // The update check would show a startup dialog; brg answers none.
@@ -125,6 +128,7 @@ impl Run {
             });
         let facts = LaunchFacts::measure(vendor, version, &argv, &root().join("work"), &base_env());
         Run {
+            private,
             vendor,
             state: StateDir::from_root(&root().join(format!("state-{}", vendor.as_str()))),
             socket,
@@ -134,6 +138,16 @@ impl Run {
             rows: Vec::new(),
             qualified: false,
         }
+    }
+
+    /// A tmux client for `socket` in the private directory, with the
+    /// vendors' environment.
+    fn client(&self, socket: &str) -> Command {
+        let mut cmd = self.private.tmux(socket);
+        cmd.env_clear()
+            .envs(base_env())
+            .env("TMUX_TMPDIR", self.private.dir());
+        cmd
     }
 
     /// (Re)start the vendor in a fresh pane and wait for its empty input box.
@@ -500,10 +514,9 @@ fn qualify(vendor: Vendor) -> Vec<[String; 4]> {
     run.start(200, 50);
     run.keys(&["-l", "a draft left overnight"]);
     let outer = format!("{}-outer", run.socket);
-    let _ = Command::new("tmux")
+    let _ = run
+        .client(&outer)
         .args([
-            "-L",
-            &outer,
             "-f",
             "/dev/null",
             "new-session",
@@ -513,21 +526,15 @@ fn qualify(vendor: Vendor) -> Vec<[String; 4]> {
             "-y",
             "45",
         ])
-        .arg(format!("tmux -L {} attach -t ={SESSION}", run.socket))
-        .env_clear()
-        .envs(base_env())
+        .arg(format!(
+            "{} -L {} attach -t ={SESSION}",
+            run.private.guard().display(),
+            run.socket
+        ))
         .status();
-    let mut control = Command::new("tmux")
-        .args([
-            "-L",
-            &run.socket,
-            "-C",
-            "attach",
-            "-t",
-            &format!("={SESSION}"),
-        ])
-        .env_clear()
-        .envs(base_env())
+    let mut control = run
+        .client(&run.socket)
+        .args(["-C", "attach", "-t", &format!("={SESSION}")])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .spawn()
@@ -578,7 +585,7 @@ fn qualify(vendor: Vendor) -> Vec<[String; 4]> {
     run.record("pane 100x12", "deferred:uncertain", show(&r));
     let _ = control.kill();
     let _ = control.wait();
-    common::kill_server(&outer);
+    let _ = run.client(&outer).arg("kill-server").output();
 
     if !qualified || !submit {
         run.record("submissions", "", "skipped".into());
@@ -587,10 +594,9 @@ fn qualify(vendor: Vendor) -> Vec<[String; 4]> {
 
     // Submission 1: insert mode, clients attached, resize during the attempt.
     run.start(200, 50);
-    let _ = Command::new("tmux")
+    let _ = run
+        .client(&outer)
         .args([
-            "-L",
-            &outer,
             "-f",
             "/dev/null",
             "new-session",
@@ -600,37 +606,33 @@ fn qualify(vendor: Vendor) -> Vec<[String; 4]> {
             "-y",
             "45",
         ])
-        .arg(format!("tmux -L {} attach -t ={SESSION}", run.socket))
-        .env_clear()
-        .envs(base_env())
+        .arg(format!(
+            "{} -L {} attach -t ={SESSION}",
+            run.private.guard().display(),
+            run.socket
+        ))
         .status();
-    let mut control = Command::new("tmux")
-        .args([
-            "-L",
-            &run.socket,
-            "-C",
-            "attach",
-            "-t",
-            &format!("={SESSION}"),
-        ])
-        .env_clear()
-        .envs(base_env())
+    let mut control = run
+        .client(&run.socket)
+        .args(["-C", "attach", "-t", &format!("={SESSION}")])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .spawn()
         .unwrap();
-    let socket = run.socket.clone();
     let target = run.target();
-    let resizer = std::thread::spawn(move || {
-        for (x, y) in [("190", "50"), ("200", "48"), ("200", "50")] {
-            std::thread::sleep(Duration::from_millis(150));
-            let _ = common::tmux(&socket)
-                .args(["resize-window", "-t", &target, "-x", x, "-y", y])
-                .output();
-        }
+    let (r, _) = std::thread::scope(|scope| {
+        let run = &run;
+        scope.spawn(|| {
+            for (x, y) in [("190", "50"), ("200", "48"), ("200", "50")] {
+                std::thread::sleep(Duration::from_millis(150));
+                let _ = run
+                    .client(&run.socket)
+                    .args(["resize-window", "-t", &target, "-x", x, "-y", y])
+                    .output();
+            }
+        });
+        run.attempt()
     });
-    let (r, _) = run.attempt();
-    let _ = resizer.join();
     // A redraw mid-resize can make the box unreadable: that defers, safely.
     run.record(
         "attempt during a resize",
@@ -667,7 +669,7 @@ fn qualify(vendor: Vendor) -> Vec<[String; 4]> {
     run.record("turn 1 ended", "idle", end);
     let _ = control.kill();
     let _ = control.wait();
-    common::kill_server(&outer);
+    let _ = run.client(&outer).arg("kill-server").output();
 
     // Submission 2: vim normal mode.
     run.start(200, 50);

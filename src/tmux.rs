@@ -77,6 +77,9 @@ impl Tmux {
     fn command(&self) -> Command {
         let mut cmd = Command::new("tmux");
         cmd.env_clear().envs(&self.env);
+        if let Some(dir) = self.env.get(crate::state::ENV_TMUX_TMPDIR) {
+            cmd.env("TMUX_TMPDIR", dir);
+        }
         // An absolute socket path (as tmux reports it) or a socket name.
         let flag = if self.socket.starts_with('/') {
             "-S"

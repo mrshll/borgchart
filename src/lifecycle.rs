@@ -551,10 +551,13 @@ impl Server {
 
     fn command(&self) -> Command {
         let mut cmd = Command::new("tmux");
-        // Only what's needed to find tmux; nothing that moves the socket.
+        // Only what's needed to find tmux, and brg's own socket directory.
         cmd.env_clear();
         if let Some(path) = std::env::var_os("PATH") {
             cmd.env("PATH", path);
+        }
+        if let Some(dir) = std::env::var_os(state::ENV_TMUX_TMPDIR) {
+            cmd.env("TMUX_TMPDIR", dir);
         }
         match self {
             Server::Name(name) => cmd.arg("-L").arg(name),
