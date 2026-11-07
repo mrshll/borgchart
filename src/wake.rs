@@ -46,7 +46,7 @@ const SUBMIT_WAIT: Duration = Duration::from_secs(3);
 const POLL: Duration = Duration::from_millis(100);
 
 /// Vendor, version and settings combinations the wake has been qualified
-/// against with real CLIs (`tests/qualify.rs`). Anything else gets alerts only.
+/// against with real CLIs (the live tier, `tests/live.rs`). Anything else gets alerts only.
 struct Qualified {
     vendor: Vendor,
     /// The first line of `<cli> --version`, exactly.

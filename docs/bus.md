@@ -391,18 +391,20 @@ It never clears input, forces, answers a dialog, presses Enter after a crash or 
 
 Any other text in the box is a draft: typed text, recalled history, a pasted image's tag, a suggestion. So is a box of more than one line, even if its visible lines are blank (the rest may be scrolled out of view). A pane under 20 rows, or a screen that doesn't match the layout (a popup, a dialog, a resize in progress), reads as uncertain.
 
-**Qualification.** Typing is allowed only for these exact combinations, each tested with the real CLI by `tests/qualify.rs` (empty, single-line, multiline, wrapped and scrolled drafts; vim insert and normal mode; history recall; a draft that clears and one that stays; a short pane; whitespace-only drafts; the Enter check on a pasted, never-submitted reminder, plain, wrapped at 60 columns, with a typed trailing space and with a space removed; a resize and two attached clients, one in control mode, during attempts; a submission in each vim mode, where Claude in normal mode now defers):
+**Qualification.** Typing is allowed only for these exact combinations, each tested with the real CLI by the live tier's wake matrix in `tests/live.rs` (empty, single-line, multiline, wrapped and scrolled drafts; vim insert and normal mode; history recall; a draft that clears and one that stays; a short pane; whitespace-only drafts; the Enter check on a pasted, never-submitted reminder, plain, wrapped at 60 columns, with a typed trailing space and with a space removed; a resize and two attached clients, one in control mode, during attempts; a submission in each vim mode, where Claude in normal mode now defers):
 
 | Vendor | `--version` | Input mode | Other settings |
 | --- | --- | --- | --- |
 | Claude Code | `2.1.318 (Claude Code)` | `editorMode: vim` | `promptSuggestionEnabled: false` |
 | Codex | `codex-cli 0.165.0` | `[tui] vim_mode_default = true` | |
 
-The input mode and settings are measured from the files the vendor reads (Claude: `~/.claude.json`, `~/.claude/settings.json`, the project's `.claude/settings{,.local}.json`, a `--settings` argument and managed settings; Codex: `$CODEX_HOME/config.toml` or `~/.codex/config.toml`, the project's `.codex/config.toml` and `-c tui.…` arguments). A missing settings file counts as unset. One that exists but can't be read or parsed, a value of the wrong type, a setting written in a form the reader doesn't follow (an inline `tui = {…}` table, a `-c` override other than `tui.vim_mode_default=true|false`, the key under another table), a `--profile`, or anything not in the table means alerts only. To qualify another version, run the harness (it needs a folder both CLIs already trust, and makes two real submissions per vendor) and add a row only if every case passes:
+The input mode and settings are measured from the files the vendor reads (Claude: `~/.claude.json`, `~/.claude/settings.json`, the project's `.claude/settings{,.local}.json`, a `--settings` argument and managed settings; Codex: `$CODEX_HOME/config.toml` or `~/.codex/config.toml`, the project's `.codex/config.toml` and `-c tui.…` arguments). A missing settings file counts as unset. One that exists but can't be read or parsed, a value of the wrong type, a setting written in a form the reader doesn't follow (an inline `tui = {…}` table, a `-c` override other than `tui.vim_mode_default=true|false`, the key under another table), a `--profile`, or anything not in the table means alerts only. To qualify another version, run the live tier and add a row only if the run qualifies (every required case PASS):
 
 ```text
-BORGCHART_QUALIFY=1 cargo test --locked --test qualify -- --ignored --nocapture --test-threads=1
+BORGCHART_LIVE=1 cargo test --locked --test live -- --ignored --nocapture --test-threads=1
 ```
+
+It starts the real CLIs with your own login and configuration, through real `brg up` on a private tmux server, and makes a few small real turns per vendor (two real submissions of the reminder each). It needs this checkout to be inside a folder Claude already trusts; Codex gets session-only trust. `BORGCHART_LIVE_VENDORS=claude` (or `codex`) and `BORGCHART_LIVE_SUBMIT=0` make a partial run, which qualifies nothing; `BORGCHART_LIVE_DRY=1` runs the same harness against owned fake CLIs instead. The matrix is written to `target/live/<run>/matrix.md`.
 
 **What is not guaranteed.** A person typing into the member between the last check and Enter can have their text submitted along with the reminder; nothing here can close that gap. A typed newline exactly where the vendor would have wrapped, or extra spaces at a wrap point, can't be seen in a capture and would pass the Enter check. There is no warning before typing.
 
