@@ -8,7 +8,7 @@ use std::process::{Command, Output, Stdio};
 use crate::state::tmux_socket;
 
 /// The tmux config brg's private server runs with. Your own `~/.tmux.conf` is
-/// read only when the deployment opts in (`tmux.user_config`).
+/// read only when brg's configuration opts in (`tmux.user_config`).
 pub const CONFIG: &str = "\
 set -g remain-on-exit on
 set -g history-limit 20000
@@ -40,7 +40,7 @@ set -as terminal-features ',*:RGB'
 ";
 
 /// The server option recording which of your configs it loaded ('' for none),
-/// so a later `up` can tell when the running server differs from what it asks.
+/// so a later start can tell when the running server differs from what it asks.
 pub const USER_CONFIG_OPTION: &str = "@brg-user-config";
 
 /// The config text: brg's own, or, with `user` (a path without `'` or a

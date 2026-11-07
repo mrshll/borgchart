@@ -1,4 +1,4 @@
-//! Errors and warnings collected while validating a team and deployment.
+//! Errors and warnings collected while validating a team and brg's configuration.
 
 use std::fmt;
 use std::path::{Path, PathBuf};

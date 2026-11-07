@@ -1,13 +1,13 @@
-# A development team: a lead and four helpers it starts on demand.
-# Machine-specific values (checkouts, message storage, local rules) live in a
-# deployment file outside git; see README.md.
+# A development team: a lead and four helpers it starts on demand, working
+# in one shared checkout, the folder given at `brg create dev-team <folder>`.
+# See README.md.
 #
 # Every member uses `vendor` posture: the bus doesn't support `locked`
 # members yet. Each member file names both vendors' models, so moving a
 # member to the other vendor is a change to its `vendor:` line here.
 #
-# The lead seats the design panel, a separate team (../dev-design-team),
-# before costly-to-reverse design choices.
+# The lead seats the design panel, a separate team (../dev-design-team), as
+# its own instance before costly-to-reverse design choices.
 default: claude
 bus: {}
 
@@ -31,6 +31,7 @@ members:
     vendor: codex
     parent: lead
     start: false
+    args: [--search]    # Codex's web search
   monitor:
     prompt: monitor.md
     vendor: claude

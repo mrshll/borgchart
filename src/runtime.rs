@@ -53,7 +53,7 @@ const BASE_ENV: &[&str] = &[
     state::ENV_TMUX_TMPDIR,
 ];
 
-/// How long `up` waits for a `locked` member's gate to report in.
+/// How long a start waits for a `locked` member's gate to report in.
 fn gate_wait() -> Duration {
     std::env::var("BORGCHART_GATE_WAIT_MS")
         .ok()
@@ -143,16 +143,16 @@ struct Started {
     id: String,
     vendor: Vendor,
     locked: bool,
-    /// The declared cwd whose Claude folder-trust dialog `up` may accept.
+    /// The declared cwd whose Claude folder-trust dialog a start may accept.
     trust_dir: Option<PathBuf>,
-    /// A Codex member started without session trust: `up` watches for its
-    /// trust screen, only to say so; it never answers it.
+    /// A Codex member started without session trust: the start watches for
+    /// its trust screen, only to say so; it never answers it.
     watch_codex_trust: bool,
-    /// The pane this `up` launched; nothing after the wait touches another.
+    /// The pane this start launched; nothing after the wait touches another.
     pane: Option<PaneIdentity>,
 }
 
-/// Whether `s`'s window still runs the pane this `up` launched.
+/// Whether `s`'s window still runs the pane this start launched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Launched {
     Same,
@@ -187,7 +187,7 @@ pub fn trust_dialog_path(screen: &str) -> Option<PathBuf> {
     path.starts_with('/').then(|| PathBuf::from(path))
 }
 
-/// What `up` reports for a member another start replaced while this one
+/// What a start reports for a member another start replaced while this one
 /// waited on it.
 const REPLACED: &str = "replaced while starting; left alone";
 
@@ -341,6 +341,7 @@ fn start_members(
         ));
     }
     check_tmux_tmpdir()?;
+    let shared = shared_folders(state)?;
     // Every window, shim, gate hook and plugin process this start starts
     // runs the brg running now, as in v0: brg isn't pinned.
     let brg = brg_path();
@@ -395,6 +396,12 @@ fn start_members(
             if !pre_notes.contains(&note) {
                 pre_notes.push(note);
             }
+        }
+    }
+    for (id, cwd) in &cwds {
+        let member = role_of(id)?;
+        if let Some(note) = project_settings_note(v, member, cwd) {
+            pre_notes.push(format!("note: {}: {note}", inst.at(id)));
         }
     }
     refuse_legacy_sessions(&tmux_for(state))?;
@@ -554,7 +561,7 @@ fn start_members(
     }
     let base = meta.base_env.clone();
     let tmux = Tmux::new(&state.tmux_conf(), base.clone());
-    // A running team's server is the one recorded for it.
+    // A running instance's server is the one recorded for it.
     let tmux = match &meta.socket_path {
         Some(path) => tmux.with_socket(&path.display().to_string()),
         None => tmux,
@@ -650,6 +657,7 @@ fn start_members(
             &help,
             &settings_path,
             codex_trust.as_deref(),
+            &shared,
         );
         if let Some(rules) = &spec.gate {
             write_private(
@@ -737,7 +745,7 @@ fn start_members(
         }
         result?;
         any_window = true;
-        // Without a bus, the team's state is where `status` learns that a
+        // Without a bus, the instance's state is where `status` learns that a
         // member ran.
         if binding.is_none()
             && let Some(m) = meta.members.get_mut(id)
@@ -841,7 +849,7 @@ fn start_members(
         }
     }
 
-    // Record where the tmux server is, so `down` and liveness
+    // Record where the tmux server is, so `stop` and liveness
     // checks ask it directly, whatever the caller's tmux environment.
     if fresh {
         let path = started
@@ -863,11 +871,11 @@ fn start_members(
         }
     }
 
-    // Members may use the bus while they start up; another `up --member`
+    // Members may use the bus while they start up; another a member start
     // may proceed too. The checks below read screens without the locks, and
     // take them again for anything they change (a key press, a trust marker,
     // stopping a `locked` member), and only while the window still runs the
-    // pane this `up` launched.
+    // pane this start launched.
     let run_paths = binding.as_ref().map(|b| b.paths.clone());
     drop(binding);
     drop(state_lock);
@@ -900,7 +908,7 @@ fn start_members(
             };
             if launched(&tmux, &session, s) == Launched::Replaced {
                 set(&mut outcomes, id, REPLACED.to_string());
-                // Its own gate never reported in to this `up`.
+                // Its own gate never reported in to this start.
                 failed |= s.locked;
                 break;
             }
@@ -1161,6 +1169,76 @@ fn member_nodes(
     nodes
 }
 
+/// The folders every `vendor`-posture member may write: the instance's
+/// `messages/` and `notes/`, never brg's own files. Each must be a real
+/// folder (not a symlink), yours, and not writable by group or others, and
+/// resolve to exactly its own place in the instance's state folder: anything
+/// else, or any error finding out, refuses the start.
+fn shared_folders(state: &StateDir) -> Result<Vec<PathBuf>, String> {
+    let refuse = |dir: &Path, why: String| {
+        format!(
+            "the instance's {} folder {} {why}, so members can't be given it; nothing was started",
+            dir.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            dir.display()
+        )
+    };
+    let root = state
+        .root
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve {}: {e}", state.root.display()))?;
+    let mut out = Vec::new();
+    for dir in [state.messages_dir(), state.notes_dir()] {
+        crate::bus::fsx::check_private_dir(&dir).map_err(|e| {
+            let text = e.to_string();
+            let why = text
+                .strip_prefix(&format!("{} ", dir.display()))
+                .unwrap_or(&text)
+                .to_string();
+            refuse(&dir, why)
+        })?;
+        let real = dir
+            .canonicalize()
+            .map_err(|e| refuse(&dir, format!("can't be resolved ({e})")))?;
+        let want = root.join(dir.file_name().unwrap_or_default());
+        if real != want {
+            return Err(refuse(&dir, format!("resolves to {}", real.display())));
+        }
+        out.push(real);
+    }
+    Ok(out)
+}
+
+/// What `auto_trust: true` will load in a `vendor` member's folder: its
+/// project settings, which brg's trust lets the vendor read.
+fn project_settings_note(
+    v: &Validated,
+    member: &crate::team::Member,
+    cwd: &Path,
+) -> Option<String> {
+    if v.config.auto_trust != Some(true) || v.posture(&member.id) != Posture::Vendor {
+        return None;
+    }
+    match member.vendor {
+        Vendor::Claude if cwd.join(".claude").exists() || cwd.join(".mcp.json").exists() => {
+            Some(format!(
+                "`auto_trust: true` trusts {}, which has project settings (`.claude/` or `.mcp.json`) that will load in `vendor` posture",
+                cwd.display()
+            ))
+        }
+        Vendor::Codex
+            if cwd.join(".codex").exists() && !launch::codex_args_set(&member.args, "projects") =>
+        {
+            Some(format!(
+                "`auto_trust: true` trusts {}, which has project settings (`.codex/`): its config, hooks and MCP servers will load",
+                cwd.display()
+            ))
+        }
+        _ => None,
+    }
+}
+
 /// Members get `BORGCHART_TMUX_TMPDIR` in their environment and run in
 /// their own folders, so it must be absolute.
 fn check_tmux_tmpdir() -> Result<(), String> {
@@ -1253,7 +1331,7 @@ fn precheck(v: &Validated, roles: &[&crate::team::Member], secrets: bool) -> Res
     Ok(())
 }
 
-/// `brg create <team> <folder>`: a new instance of the team working in
+/// `brg create <team> <folder>`: a new instance of the instance working in
 /// `folder`, with its `start: true` roles' members, started.
 pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
     let mut report = crate::diag::Report::default();
@@ -1465,7 +1543,7 @@ fn full_start_members(
     if issued {
         lock.save_instance(&inst.state, &inst.record)?;
     }
-    // Only members whose role is still in the team.
+    // Only members whose role is still in the instance.
     Ok(ids
         .into_iter()
         .filter(|id| {
@@ -1485,7 +1563,7 @@ fn unreadable_store(inst: &Instance, e: &str) -> String {
 }
 
 /// Refuse a start whose files orphan open work: a task held by a member
-/// whose role the team no longer has.
+/// whose role the instance no longer has.
 fn refuse_orphans(inst: &Instance, v: &Validated) -> Result<(), String> {
     // Messages that can't be read are refused by the start itself
     // (`start_members`), before anything starts.
@@ -1689,6 +1767,37 @@ pub fn delete(inst: Instance, force: bool) -> Result<Vec<String>, String> {
     )])
 }
 
+/// `brg secret <team>`: each secret its plugins need (plugin, name), and
+/// whether the caller's environment sets it. No value is read out.
+pub fn secrets(team: &str) -> Result<Vec<(String, String, bool)>, String> {
+    let mut report = crate::diag::Report::default();
+    let config = crate::config::load(&mut report).ok_or_else(|| {
+        report
+            .errors()
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    })?;
+    let dir = crate::team::find(team, &config.teams)?;
+    let (report, validated) = crate::validate::validate_with(&dir, config);
+    let v = validated.ok_or_else(|| {
+        report
+            .errors()
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    })?;
+    Ok(v.team
+        .plugins
+        .values()
+        .flat_map(|p| {
+            p.secrets()
+                .map(|n| (p.name.clone(), n.clone(), std::env::var_os(n).is_some()))
+                .collect::<Vec<_>>()
+        })
+        .collect())
+}
+
 /// One team in `brg ls`, with its instances.
 #[derive(Debug, Serialize)]
 pub struct Listed {
@@ -1816,7 +1925,7 @@ fn start_window(
     window: &str,
     spec: &ExecSpec,
 ) -> Result<(), String> {
-    // Recorded first: once tmux runs, `down` must not take an unreachable
+    // Recorded first: once tmux runs, `stop` must not take an unreachable
     // server for one that never started.
     if meta.windows_started != Some(true) {
         meta.windows_started = Some(true);
@@ -1920,7 +2029,7 @@ pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> 
             .identity()
             .and_then(|(socket, pid)| proctree::snapshot(&panes, pid, &socket))
     };
-    // Panes that are certainly stopped now: killed by this `down`, or not on
+    // Panes that are certainly stopped now: killed by this `stop`, or not on
     // the server that answered.
     let mut killed: Vec<String> = Vec::new();
     let mut whole = false;
@@ -2040,7 +2149,7 @@ pub struct StatusRow {
     /// `member`, `role` (no member yet) or `plugin`.
     pub kind: &'static str,
     pub instance: String,
-    /// The team's name.
+    /// The instance's name.
     pub team: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub member: Option<String>,
@@ -2061,7 +2170,7 @@ pub struct StatusRow {
     pub detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vendor_version: Option<String>,
-    /// The folder `up` accepted Claude's trust dialog for, if it did.
+    /// The folder a start accepted Claude's trust dialog for, if it did.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trust_accepted: Option<String>,
     /// With a bus: whether the member's current incarnation may still be
@@ -2069,7 +2178,7 @@ pub struct StatusRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub liveness: Option<Liveness>,
     /// A `start: true` member that ran and is `stopped` while the rest of
-    /// the team runs: it should be running.
+    /// the instance runs: it should be running.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub expected_running: bool,
     /// The member's declared `start`.
@@ -2077,12 +2186,12 @@ pub struct StatusRow {
     pub start: bool,
 }
 
-/// A member's state when it has never run in the team's current storage.
+/// A member's state when it has never run in the instance's current storage.
 pub const NOT_STARTED: &str = "not started";
 /// A member's state when it ran and has ended.
 pub const STOPPED: &str = "stopped";
 
-/// What `up` and `status` print for a member that has never run.
+/// What a start and `status` print for a member that has never run.
 pub fn not_started(start: bool) -> String {
     if start {
         NOT_STARTED.into()
@@ -2172,9 +2281,9 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
         };
         let member = &v.team.members[role];
         let posture = v.posture(role);
-        // Whether it ever ran here: with a bus, an incarnation in the team's
+        // Whether it ever ran here: with a bus, an incarnation in the instance's
         // current storage (one that can't be read counts); without one, a
-        // start recorded since the team last started afresh (or no record).
+        // start recorded since the instance last started afresh (or no record).
         let incarnation = match &run {
             Some(paths) => crate::bus::manifest::load_incarnation(paths, id),
             None => Ok(None),
@@ -2359,7 +2468,7 @@ fn pending(dir: &Path) -> Option<String> {
     (n > 0).then(|| format!("{n} undelivered"))
 }
 
-/// `brg status` as text: the team's tree with each member's vendor, model,
+/// `brg status` as text: the instance's tree with each member's vendor, model,
 /// state and details, then the plugin processes.
 /// The columns `status` and `status -i` show after a row's name: a
 /// member's vendor and model, state and details; a role with no member
@@ -2506,7 +2615,7 @@ pub fn send(
     let session = state.session();
     let tmux = tmux_for(state);
 
-    // Lock files are created at `up`, outside any sandbox; inside one, `send`
+    // Lock files are created at a start, outside any sandbox; inside one, `send`
     // only opens its member's existing file read-only.
     let lock = state::open_lock(&state.lock_file(member))
         .map_err(|e| SendError::Refused(format!("cannot open the send lock: {e}")))?;

@@ -1,4 +1,4 @@
-//! The team as a tree: `brg up` and `brg status` print the team's name,
+//! The team as a tree: a start and `brg status` print an instance's header line,
 //! then each member under its parent with aligned columns, then the
 //! plugin processes.
 //!
@@ -99,7 +99,7 @@ fn columns(rows: &[Vec<String>]) -> Vec<String> {
         .collect()
 }
 
-/// The team's tree, then one `plugin <name>` line per plugin process.
+/// The instance's tree, then one `plugin <name>` line per plugin process.
 pub fn render(team: &str, nodes: &[Node], plugins: &[(String, Vec<String>)]) -> String {
     let rows: Vec<Vec<String>> = order(nodes)
         .into_iter()

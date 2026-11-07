@@ -174,7 +174,7 @@ def brg_send(member: str, text: str, sender: str | None = None) -> tuple[int, st
     return proc.returncode, message
 
 
-MEMBER_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+MEMBER_RE = re.compile(r"^[a-z][a-z0-9_-]{0,39}$")  # a member ID: <role>-<suffix>
 
 
 def notice_for(entry: dict[str, Any]) -> tuple[str, str, str | None]:

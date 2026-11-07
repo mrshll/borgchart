@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::names::is_plain_word;
 use crate::state::{StateDir, write_private};
 
-/// What one member may do, written at `up`.
+/// What one member may do, written at a start.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GateRules {
     /// Granted command prefixes, e.g. `["slackbot", "read"]`.
