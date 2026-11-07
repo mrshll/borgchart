@@ -843,24 +843,6 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                 && s.trust_dir.is_some()
                 && trust_dialog_path(&screen).as_deref() == s.trust_dir.as_deref()
                 && has_line(&screen, TRUST_NO_SELECTED);
-            // Keys would go to copy mode, not the dialog: wait for the pane
-            // to leave it, and answer then.
-            if accept && w.in_mode {
-                if Instant::now() > deadline {
-                    append(
-                        &mut outcomes,
-                        id,
-                        format!(
-                            "waiting at Claude's folder-trust prompt: {}; {}, then answer it",
-                            tmux::IN_MODE,
-                            tmux::leave_mode_hint(id)
-                        ),
-                    );
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(200));
-                continue;
-            }
             if accept {
                 let dir = s
                     .trust_dir
@@ -882,17 +864,43 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                     failed |= s.locked;
                     break;
                 }
-                // It may have gone into copy mode since the screen was read.
-                if tmux.window(&session, id).is_none_or(|w| w.in_mode) {
-                    std::thread::sleep(Duration::from_millis(200));
-                    continue;
+                // Keys would go to copy mode, not the dialog: read the very
+                // pane they go to, with the locks held. Wait for it to leave
+                // copy mode, and answer then.
+                match tmux.pane_in_mode(&pane) {
+                    Some(false) => {}
+                    Some(true) if Instant::now() > deadline => {
+                        append(
+                            &mut outcomes,
+                            id,
+                            format!(
+                                "waiting at Claude's folder-trust prompt: {}; {}, then answer it",
+                                tmux::IN_MODE,
+                                tmux::leave_mode_hint(id)
+                            ),
+                        );
+                        break;
+                    }
+                    Some(true) => {
+                        std::thread::sleep(Duration::from_millis(200));
+                        continue;
+                    }
+                    None => {
+                        append(
+                            &mut outcomes,
+                            id,
+                            format!(
+                                "couldn't read its pane, so the folder-trust dialog was left for you; run `brg attach {id}`"
+                            ),
+                        );
+                        break;
+                    }
                 }
                 let t = pane.as_str();
                 tmux.ok(&["send-keys", "-t", t, "Down"])?;
                 std::thread::sleep(Duration::from_millis(250));
                 let after = tmux.capture(&session, id);
-                let in_mode = tmux.window(&session, id).is_none_or(|w| w.in_mode);
-                if in_mode
+                if tmux.pane_in_mode(t) != Some(false)
                     || !(has_line(&after, TRUST_YES_SELECTED)
                         && trust_dialog_path(&after).as_deref() == s.trust_dir.as_deref())
                 {
@@ -1384,7 +1392,7 @@ pub fn status(input: &Input) -> Result<Vec<StatusRow>, String> {
                         row.detail = Some(e);
                     }
                 }
-                let mut details = Vec::new();
+                let mut details: Vec<String> = row.detail.take().into_iter().collect();
                 if posture == Posture::Locked && !state.gate_marker(id).exists() {
                     details.push("gate not active: gets no input".to_string());
                     if row.state != "blocked" {

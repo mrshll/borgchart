@@ -219,6 +219,21 @@ impl Tmux {
             .collect()
     }
 
+    /// Whether the pane with this ID is in a mode, if it can be read.
+    pub fn pane_in_mode(&self, pane_id: &str) -> Option<bool> {
+        let out = self
+            .ok(&[
+                "display-message",
+                "-p",
+                "-t",
+                pane_id,
+                "#{pane_id}\t#{pane_in_mode}",
+            ])
+            .ok()?;
+        let (id, mode) = out.trim_end_matches('\n').split_once('\t')?;
+        (id == pane_id).then(|| in_mode(mode))
+    }
+
     pub fn window(&self, session: &str, name: &str) -> Option<WindowInfo> {
         self.windows(session).into_iter().find(|w| w.name == name)
     }
