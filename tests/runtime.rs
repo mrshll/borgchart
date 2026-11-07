@@ -1061,6 +1061,118 @@ fn send_from_must_target_the_senders_parent() {
     );
 }
 
+/// The tmux pane ID of `member`'s window.
+fn pane_of(env: &Env, member: &str) -> Option<String> {
+    env.tmux(&["list-panes", "-a", "-F", "#{window_name} #{pane_id}"])
+        .lines()
+        .find_map(|l| l.strip_prefix(&format!("{member} ")).map(String::from))
+}
+
+fn in_copy_mode(env: &Env, pane: &str) -> bool {
+    env.tmux(&["display", "-p", "-t", pane, "#{pane_in_mode}"])
+        .trim()
+        == "1"
+}
+
+#[test]
+fn send_refuses_a_pane_in_copy_mode_until_it_leaves() {
+    // Catches: in copy mode a paste still reaches the member but Enter goes
+    // to tmux, so `send` said "sent" and left the text unsubmitted.
+    let env = Env::new();
+    env.up();
+    let pane = pane_of(&env, "beta").unwrap();
+    env.tmux(&["copy-mode", "-t", &pane]);
+    assert!(in_copy_mode(&env, &pane));
+    for args in [
+        &["send", "beta", "first"][..],
+        &["send", "--force", "beta", "forced"],
+    ] {
+        let out = env.brg(args);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(4), "{args:?}: {err}");
+        assert!(err.contains("`beta`") && err.contains("copy mode"), "{err}");
+    }
+    env.tmux(&["send-keys", "-X", "-t", &pane, "cancel"]);
+    assert!(!in_copy_mode(&env, &pane));
+    assert!(env.brg(&["send", "beta", "second"]).status.success());
+    env.wait_for("second", |e| !submissions(e, "beta").is_empty());
+    // Exactly the second text: the refused sends typed nothing.
+    assert_eq!(submissions(&env, "beta"), ["second"]);
+}
+
+/// A team whose `alpha` shows Claude's trust dialog for its declared cwd
+/// only once `trust-go` exists, with the pane already in copy mode.
+fn trust_in_copy_mode(gate_wait_ms: &str) -> (Env, std::process::Child, String) {
+    let env = trust_env(
+        "schema: 1\nmembers:\n  alpha: {cwd: WORK}\nplugins:\n  pager:\n    env: {PAGER_ROOM: R0}\n",
+    );
+    fs::write(env.path("home/fake-agent/trust-hold"), "").unwrap();
+    let up = env
+        .brg_cmd(&["up"])
+        .env("BORGCHART_GATE_WAIT_MS", gate_wait_ms)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    env.wait_for("alpha's window", |e| pane_of(e, "alpha").is_some());
+    let pane = pane_of(&env, "alpha").unwrap();
+    env.tmux(&["copy-mode", "-t", &pane]);
+    assert!(in_copy_mode(&env, &pane));
+    fs::write(env.path("home/fake-agent/trust-go"), "").unwrap();
+    env.wait_for("the trust dialog", |e| {
+        e.tmux(&["capture-pane", "-p", "-t", &pane])
+            .contains("Yes, I trust this folder")
+    });
+    (env, up, pane)
+}
+
+fn trust_events(env: &Env) -> Vec<String> {
+    env.events("alpha")
+        .iter()
+        .filter_map(|e| e["event"].as_str())
+        .filter(|e| e.starts_with("trust-"))
+        .map(String::from)
+        .collect()
+}
+
+#[test]
+fn folder_trust_waits_while_the_pane_is_in_copy_mode() {
+    // Catches: `up` sent the trust keys into copy mode, where they moved
+    // tmux's cursor, then gave up on the dialog for good.
+    let (env, mut up, pane) = trust_in_copy_mode("8000");
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(up.try_wait().unwrap().is_none(), "up stopped waiting");
+    assert!(trust_events(&env).is_empty());
+    env.tmux(&["send-keys", "-X", "-t", &pane, "cancel"]);
+    let out = up.wait_with_output().unwrap();
+    assert!(
+        stdout(&out).contains("started; accepted folder trust for"),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(trust_events(&env), ["trust-accepted"]);
+}
+
+#[test]
+fn folder_trust_still_in_copy_mode_when_up_stops_waiting_is_reported() {
+    // Catches: `up` reporting the dialog as unexpected (or answering it)
+    // instead of saying the pane is in copy mode and how to leave it.
+    let (env, up, _pane) = trust_in_copy_mode("1500");
+    let out = up.wait_with_output().unwrap();
+    assert!(
+        stdout(&out).contains("waiting at Claude's folder-trust prompt: the pane is in tmux copy mode; attach (`brg attach alpha`)"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(trust_events(&env).is_empty());
+    // Still running, at the dialog, and `status` says why nothing is typed.
+    let alpha = status_of(&env, "alpha");
+    assert_eq!(alpha["state"], "blocked", "{alpha}");
+    assert!(
+        alpha["detail"].as_str().unwrap_or("").contains("copy mode"),
+        "{alpha}"
+    );
+}
+
 fn walk(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let Ok(entries) = fs::read_dir(root) else {

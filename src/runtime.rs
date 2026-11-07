@@ -22,7 +22,7 @@ use crate::state::{
     self, MemberMeta, Meta, PluginMeta, StateDir, shell_quote, write_private, write_script,
 };
 use crate::team::{PluginLocation, Posture, Vendor};
-use crate::tmux::{Tmux, target};
+use crate::tmux::{self, Tmux, target};
 use crate::tree;
 use crate::validate::{Input, Validated, validate};
 
@@ -843,6 +843,24 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                 && s.trust_dir.is_some()
                 && trust_dialog_path(&screen).as_deref() == s.trust_dir.as_deref()
                 && has_line(&screen, TRUST_NO_SELECTED);
+            // Keys would go to copy mode, not the dialog: wait for the pane
+            // to leave it, and answer then.
+            if accept && w.in_mode {
+                if Instant::now() > deadline {
+                    append(
+                        &mut outcomes,
+                        id,
+                        format!(
+                            "waiting at Claude's folder-trust prompt: {}; {}, then answer it",
+                            tmux::IN_MODE,
+                            tmux::leave_mode_hint(id)
+                        ),
+                    );
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(200));
+                continue;
+            }
             if accept {
                 let dir = s
                     .trust_dir
@@ -864,12 +882,19 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                     failed |= s.locked;
                     break;
                 }
+                // It may have gone into copy mode since the screen was read.
+                if tmux.window(&session, id).is_none_or(|w| w.in_mode) {
+                    std::thread::sleep(Duration::from_millis(200));
+                    continue;
+                }
                 let t = pane.as_str();
                 tmux.ok(&["send-keys", "-t", t, "Down"])?;
                 std::thread::sleep(Duration::from_millis(250));
                 let after = tmux.capture(&session, id);
-                if !(has_line(&after, TRUST_YES_SELECTED)
-                    && trust_dialog_path(&after).as_deref() == s.trust_dir.as_deref())
+                let in_mode = tmux.window(&session, id).is_none_or(|w| w.in_mode);
+                if in_mode
+                    || !(has_line(&after, TRUST_YES_SELECTED)
+                        && trust_dialog_path(&after).as_deref() == s.trust_dir.as_deref())
                 {
                     append(
                         &mut outcomes,
@@ -1359,11 +1384,20 @@ pub fn status(input: &Input) -> Result<Vec<StatusRow>, String> {
                         row.detail = Some(e);
                     }
                 }
+                let mut details = Vec::new();
                 if posture == Posture::Locked && !state.gate_marker(id).exists() {
-                    row.detail = Some("gate not active: gets no input".into());
+                    details.push("gate not active: gets no input".to_string());
                     if row.state != "blocked" {
                         row.state = "gate-inactive".into();
                     }
+                }
+                // Nothing is typed into it (`send`, the wake, folder trust)
+                // until it leaves copy mode.
+                if w.in_mode {
+                    details.push(format!("{}: {}", tmux::IN_MODE, tmux::leave_mode_hint(id)));
+                }
+                if !details.is_empty() {
+                    row.detail = Some(details.join("; "));
                 }
             }
         }
@@ -1629,6 +1663,14 @@ pub fn send(
         }
         _ => {}
     }
+    // Keys would go to copy mode, not the member: its Enter would be lost.
+    if w.in_mode {
+        return Err(SendError::Blocked(format!(
+            "`{member}`: {}; nothing was sent. To send, {}",
+            tmux::IN_MODE,
+            tmux::leave_mode_hint(member)
+        )));
+    }
 
     let buffer = format!(
         "brg-{}-{}",
@@ -1648,14 +1690,22 @@ pub fn send(
         let _ = tmux.run(&["delete-buffer", "-b", &buffer]);
     }
     pasted?;
-    // Check again before pressing Enter, in case a dialog appeared meanwhile.
-    let title = tmux
-        .window(&session, member)
-        .map(|w| w.title)
-        .unwrap_or_default();
+    // Check again before pressing Enter, in case a dialog appeared or the
+    // pane went into copy mode meanwhile.
+    let now = tmux.window(&session, member);
+    let title = now.as_ref().map(|w| w.title.clone()).unwrap_or_default();
     if rules.read(&title, &tmux.capture(&session, member)).state == State::Blocked {
         return Err(SendError::Blocked(format!(
             "`{member}` showed a prompt while the text was being pasted; Enter was not pressed. Attach to check it (`brg attach {member}`)"
+        )));
+    }
+    // A window that can't be read now counts as one in copy mode: Enter is
+    // only pressed on a pane known to take it.
+    if now.as_ref().is_none_or(|w| w.in_mode) {
+        return Err(SendError::Blocked(format!(
+            "`{member}`: {} after the text was pasted; Enter was not pressed, and the text is in its input box. Check it: {}",
+            tmux::IN_MODE,
+            tmux::leave_mode_hint(member)
         )));
     }
     tmux.ok(&["send-keys", "-t", &t, "Enter"])

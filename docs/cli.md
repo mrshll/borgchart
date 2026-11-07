@@ -31,6 +31,7 @@
 - **Environment:** windows start with a small environment copied from your shell (`PATH`, `HOME`, `LANG`, `TMPDIR`, `XDG_*`, …), plus what each needs. Plugin secrets live only in 0600 files under the state directory (`$XDG_STATE_HOME/borgchart`), read by brg's shims, and are removed at `brg down`.
 - **`locked` start-up check:** a `locked` member's gate must report in when it starts. If it doesn't, or the member stops at any prompt first, `up` stops it rather than let it run unprotected. The one exception is Claude's folder-trust prompt, since nothing runs before it is answered.
 - **Inactive gate:** `send` refuses any `locked` member whose gate has not reported in, and `status` shows it as `gate-inactive`.
+- **Copy mode:** a member's pane that tmux has in copy mode (or another mode, after scrolling back in `brg attach`) would send keys to tmux, not the member. So `send`, the wake and `up`'s folder-trust answering type nothing into it until it leaves that mode (usually `q`), and `status` adds that to the member's details.
 
 ## States
 
@@ -52,8 +53,8 @@ States are advisory: they gate `send` for safety, not access.
 ## `brg send`
 
 - **One submission:** the text is pasted as one bracketed paste followed by Enter, so multi-line text arrives as one message. A per-member lock keeps concurrent sends from interleaving.
-- **Refusals:** a member that isn't running, is `blocked`, or is `unknown` (unless `--force`); a `vendor`-posture member that is mid-turn; text with control characters other than newline and tab; text over 16 KiB; text starting with `/` or `!`.
-- **Second check:** after pasting, `send` reads the screen again and presses Enter only if no prompt appeared. If one did, the pasted text stays in the member's input box (exit 4); attach to deal with both.
+- **Refusals:** a member that isn't running, is `blocked`, or is `unknown` (unless `--force`); a `vendor`-posture member that is mid-turn; a member whose pane is in tmux copy mode (exit 4, even with `--force`); text with control characters other than newline and tab; text over 16 KiB; text starting with `/` or `!`.
+- **Second check:** after pasting, `send` reads the screen again and presses Enter only if no prompt appeared and the pane didn't go into copy mode. If either happened, the pasted text stays in the member's input box (exit 4); attach to deal with both.
 - **Paste mode:** text goes in as a bracketed paste when the member's CLI has turned that mode on, as Claude Code and Codex do. Otherwise tmux turns each newline into Enter, so multi-line text arrives as several lines.
 - **Exit codes:** `--json` prints the same as `{ok, code, message}`.
 
@@ -62,6 +63,6 @@ States are advisory: they gate `send` for safety, not access.
 | 0 | Submitted (not proof the agent started working) |
 | 2 | Usage |
 | 3 | Member not running |
-| 4 | Member blocked at a prompt |
+| 4 | Needs a person: the member is blocked at a prompt, or its pane is in tmux copy mode |
 | 5 | State unknown, or text refused |
 | 6 | Busy: a `vendor`-posture member is mid-turn (a dialog could appear and catch the Enter) |

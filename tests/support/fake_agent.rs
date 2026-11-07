@@ -410,6 +410,11 @@ fn main() {
         trust_choice: if flag("trust-yes") { 1 } else { 0 },
         start_hooks,
     };
+    // `trust-hold`: keep the screen blank until `trust-go` exists, so a test
+    // can put the pane into copy mode before the trust dialog shows.
+    while trust_first && flag("trust-hold") && !flag("trust-go") {
+        std::thread::sleep(Duration::from_millis(50));
+    }
     agent.draw();
 
     let (tx, rx) = mpsc::channel::<u8>();
