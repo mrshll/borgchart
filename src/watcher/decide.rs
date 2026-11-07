@@ -468,6 +468,7 @@ mod tests {
         let mut obs = codex();
         let mut now = 0;
         loop {
+            assert!(now < 3600, "retries never ran out");
             match scan(&mut obs, t(now), Outcome::Uncertain) {
                 Action::Wake { method, .. } => assert_eq!(method, Method::Queue),
                 Action::Nothing(Quiet::RetryNotDue) => {}
