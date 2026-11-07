@@ -1,9 +1,0 @@
-# One deployment of the slack-devops team. Secrets are never written here:
-# export SLACK_BOT_TOKEN in the shell you run `brg up` from.
-schema: 1
-auth: api_key
-
-plugins:
-  slackbot:
-    env:
-      SLACK_CHANNEL_ID: C0000EXAMPLE   # replace with your channel's ID

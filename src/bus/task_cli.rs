@@ -5,8 +5,6 @@ use std::process::ExitCode;
 use clap::Subcommand;
 use serde_json::{Value, json};
 
-use crate::validate::Input;
-
 use super::cli::{Output, finish, open_bus};
 use super::outcome::{Code, Failure, ok_json};
 use super::{carry as carrying, store, tasks};
@@ -38,16 +36,16 @@ fn store_label(complete: bool) -> &'static str {
     if complete { "ok" } else { "incomplete" }
 }
 
-pub fn task(input: &Input, command: TaskCommand) -> ExitCode {
+pub fn task(instance: Option<&str>, command: TaskCommand) -> ExitCode {
     let (json_out, result) = match command {
-        TaskCommand::List { json } => (json, list(input)),
-        TaskCommand::Show { task, json } => (json, show(input, &task)),
+        TaskCommand::List { json } => (json, list(instance)),
+        TaskCommand::Show { task, json } => (json, show(instance, &task)),
     };
     finish(json_out, result)
 }
 
-fn list(input: &Input) -> Result<Output, Failure> {
-    let bus = open_bus(input)?;
+fn list(instance: Option<&str>) -> Result<Output, Failure> {
+    let bus = open_bus(instance)?;
     let snap = store::snapshot(&bus)?;
     let fold = tasks::fold(&bus.manifest, &snap);
     let probe = |m: &str, i: &str| tasks::recorded_liveness(&bus.paths, m, i);
@@ -108,8 +106,8 @@ fn list(input: &Input) -> Result<Output, Failure> {
     })
 }
 
-fn show(input: &Input, id: &str) -> Result<Output, Failure> {
-    let bus = open_bus(input)?;
+fn show(instance: Option<&str>, id: &str) -> Result<Output, Failure> {
+    let bus = open_bus(instance)?;
     let snap = store::snapshot(&bus)?;
     let fold = tasks::fold(&bus.manifest, &snap);
     let t = fold.tasks.get(id).ok_or_else(|| {
@@ -201,7 +199,7 @@ fn show(input: &Input, id: &str) -> Result<Output, Failure> {
     })
 }
 
-pub fn carry(input: &Input, from: &str, json_out: bool) -> ExitCode {
+pub fn carry(instance: Option<&str>, from: &str, json_out: bool) -> ExitCode {
     let result = (|| {
         if !super::is_valid_run_id(from) {
             return Err(Failure::new(
@@ -209,7 +207,7 @@ pub fn carry(input: &Input, from: &str, json_out: bool) -> ExitCode {
                 format!("`--from {from}`: not a run ID"),
             ));
         }
-        let bus = open_bus(input)?;
+        let bus = open_bus(instance)?;
         let report = carrying::carry(&bus, from)?;
         if let Some(f) = report.failure() {
             return Err(f);

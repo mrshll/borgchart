@@ -119,7 +119,7 @@ impl Recipient {
         match to.strip_prefix(EXTERNAL_PREFIX) {
             Some(name) if is_valid_id(name) => Some(Recipient::External(name.to_string())),
             Some(_) => None,
-            None if is_valid_id(to) => Some(Recipient::Member(to.to_string())),
+            None if crate::names::is_valid_member_id(to) => Some(Recipient::Member(to.to_string())),
             None => None,
         }
     }

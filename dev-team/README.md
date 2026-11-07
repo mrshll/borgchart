@@ -17,17 +17,9 @@ Each member file names both vendors' models; `vendor:` in `team.yaml` picks one.
 
 ```yaml
 schema: 1
-team: /path/to/repo/dev-team
 auth: login
-bus:
-  root: ~/.local/state/brg-teams
-members:
-  lead:
-    cwd: /path/to/work/lead
-    task: "Local rules: act on GitHub as @example-bot; private notes in /path/to/work/notes; the checks are `make check`."
-  implementer:
-    cwd: /path/to/work/impl
-    task: "Local rules: commit as @example-bot; run `make check` before reporting."
+teams:
+  - /path/to/teams   # holds a pinned copy of dev-team/ and dev-design-team/
 ```
 
 `team:` is absolute. Give each member that writes its own checkout (one writer per checkout); the researcher and monitor can read the lead's. `task:` holds each member's standing local rules: the lead's also name the owner's handle, the tracking issue, the review checkout and the design panel (its deployment file, checkout, design directory and deadline).

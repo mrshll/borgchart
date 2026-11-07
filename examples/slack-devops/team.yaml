@@ -9,7 +9,9 @@ plugins:
     path: plugins/slackbot
     process: [./watch.py]
     delivers_to: triager
-    env: [SLACK_BOT_TOKEN, SLACK_CHANNEL_ID]
+    env:
+      SLACK_BOT_TOKEN:                 # a secret: export it in the shell you run brg from
+      SLACK_CHANNEL_ID: C0000EXAMPLE   # replace with your channel's ID
     actions:
       read: slackbot read <ts>
       thread: slackbot thread <ts>

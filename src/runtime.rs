@@ -1,4 +1,5 @@
-//! The tmux runtime: `up`, `down`, `status`, `attach`, `logs` and `send`.
+//! The tmux runtime: `create`, `start`, `stop`, `delete`, `status`, `ls`,
+//! `attach`, `logs` and `send`, on instances and their members.
 
 use std::collections::BTreeMap;
 use std::os::unix::process::CommandExt;
@@ -8,23 +9,26 @@ use std::time::{Duration, Instant, SystemTime};
 
 use serde::Serialize;
 
+use crate::address::{self, Instance};
 use crate::bus::context;
 use crate::bus::layout::RunPaths;
 use crate::bus::manifest::{Incarnation, Liveness, PaneIdentity};
 use crate::bus::time::utc_now;
-use crate::deploy::Auth;
+use crate::config::Auth;
 use crate::exec::{ExecSpec, PluginEnv, identity_env};
 use crate::launch;
 use crate::lifecycle;
+use crate::paths::overlaps;
 use crate::proctree;
+use crate::registry;
 use crate::rules::{self, State};
 use crate::state::{
     self, MemberMeta, Meta, PluginMeta, StateDir, shell_quote, write_private, write_script,
 };
-use crate::team::{PluginLocation, Posture, Vendor};
+use crate::team::{Posture, Vendor};
 use crate::tmux::{self, Tmux, target};
 use crate::tree;
-use crate::validate::{Input, Validated, validate};
+use crate::validate::{Validated, validate};
 
 /// Environment names copied from your shell into every window. Nothing else is.
 const BASE_ENV: &[&str] = &[
@@ -44,6 +48,7 @@ const BASE_ENV: &[&str] = &[
     "CODEX_HOME",
     "CLAUDE_CONFIG_DIR",
     state::ENV_STATE_HOME,
+    crate::config::ENV_CONFIG,
     state::ENV_TMUX_SOCKET,
     state::ENV_TMUX_TMPDIR,
 ];
@@ -65,6 +70,13 @@ pub fn base_env() -> BTreeMap<String, String> {
             env.insert((*name).to_string(), value);
         }
     }
+    // Members run in other folders, so the configuration they inherit is
+    // named by its absolute path.
+    if let Some(value) = env.get_mut(crate::config::ENV_CONFIG)
+        && let Ok(abs) = std::path::absolute(&*value)
+    {
+        *value = abs.display().to_string();
+    }
     env.entry("LANG".into()).or_insert_with(|| "C.UTF-8".into());
     env
 }
@@ -73,25 +85,7 @@ fn brg_path() -> PathBuf {
     std::env::current_exe().unwrap_or_else(|_| PathBuf::from("brg"))
 }
 
-/// A deployment, resolved from `--file`/`--team`.
-pub struct Deployment {
-    pub state: StateDir,
-    pub source: PathBuf,
-}
-
-pub fn state_for(input: &Input) -> Deployment {
-    let source = match input {
-        Input::Deployment(f) => f.clone(),
-        Input::Team(d) => d.clone(),
-    };
-    let source = source.canonicalize().unwrap_or(source);
-    Deployment {
-        state: StateDir::new(&state::deployment_id(&source)),
-        source,
-    }
-}
-
-/// The deployment's tmux server: the socket path recorded at `up` once
+/// The instance's tmux server: the socket path recorded at a start once
 /// there is one, whatever the caller's tmux settings say; until then, the
 /// socket brg's settings name.
 fn tmux_for(state: &StateDir) -> Tmux {
@@ -100,15 +94,6 @@ fn tmux_for(state: &StateDir) -> Tmux {
         Some(path) => tmux.with_socket(&path.display().to_string()),
         None => tmux,
     }
-}
-
-fn plugin_dir(v: &Validated, name: &str) -> Option<PathBuf> {
-    let plugin = v.team.plugins.get(name)?;
-    let dir = match plugin.location.as_ref()? {
-        PluginLocation::Team(rel) => v.team.dir.join(rel),
-        PluginLocation::Shared(shared) => v.deployment.as_ref()?.plugins_dir.as_ref()?.join(shared),
-    };
-    Some(dir.canonicalize().unwrap_or(dir))
 }
 
 fn vendor_version(vendor: Vendor, env: &BTreeMap<String, String>) -> Option<String> {
@@ -237,15 +222,13 @@ fn plugin_values(v: &Validated) -> (PluginValues, Vec<String>) {
     let mut all = BTreeMap::new();
     let mut missing = Vec::new();
     for (name, plugin) in &v.team.plugins {
-        let mut values = BTreeMap::new();
-        let configured = v.deployment.as_ref().and_then(|d| d.plugins.get(name));
-        for env_name in &plugin.env {
-            if let Some(value) = configured.and_then(|p| p.env.get(env_name)) {
-                values.insert(env_name.clone(), value.clone());
-            } else if let Ok(value) = std::env::var(env_name) {
-                values.insert(env_name.clone(), value);
-            } else {
-                missing.push(format!("{name}: {env_name}"));
+        let mut values = plugin.values.clone();
+        for env_name in plugin.secrets() {
+            match std::env::var(env_name) {
+                Ok(value) => {
+                    values.insert(env_name.clone(), value);
+                }
+                Err(_) => missing.push(format!("{name}: {env_name}")),
             }
         }
         all.insert(name.clone(), values);
@@ -253,18 +236,31 @@ fn plugin_values(v: &Validated) -> (PluginValues, Vec<String>) {
     (all, missing)
 }
 
+/// The vendor's own key a member gets with `auth: api_key`.
+fn key_name(vendor: Vendor) -> &'static str {
+    match vendor {
+        Vendor::Claude => "ANTHROPIC_API_KEY",
+        Vendor::Codex => "OPENAI_API_KEY",
+    }
+}
+
 /// With `auth: api_key`, each starting member's key, from your environment.
-fn api_keys(v: &Validated, ids: &[String]) -> Result<BTreeMap<String, (String, String)>, String> {
+/// With `login`, none: a key in your shell never replaces your login.
+fn api_keys(
+    v: &Validated,
+    record: &registry::InstanceRecord,
+    ids: &[String],
+) -> Result<BTreeMap<String, (String, String)>, String> {
     let mut keys = BTreeMap::new();
     if v.auth() != Auth::ApiKey {
         return Ok(keys);
     }
     let mut missing = Vec::new();
     for id in ids {
-        let key = match v.team.members[id].vendor {
-            Vendor::Claude => "ANTHROPIC_API_KEY",
-            Vendor::Codex => "OPENAI_API_KEY",
+        let Some(role) = record.role_of(id).and_then(|r| v.team.members.get(r)) else {
+            continue;
         };
+        let key = key_name(role.vendor);
         match std::env::var(key) {
             Ok(value) => {
                 keys.insert(id.clone(), (key.to_string(), value));
@@ -281,29 +277,57 @@ fn api_keys(v: &Validated, ids: &[String]) -> Result<BTreeMap<String, (String, S
     Ok(keys)
 }
 
-/// `brg up [--member ID]`.
+/// Where a member starts: its role's `cwd` inside the instance's folder
+/// (with `{member}` expanded), else the folder. The folder must exist, and a
+/// role's `cwd` must stay inside it once symlinks are resolved.
+fn member_cwd(folder: &Path, cwd: Option<&str>, member: &str) -> Result<PathBuf, String> {
+    let folder = folder.canonicalize().map_err(|_| {
+        format!(
+            "the instance's working folder {} is gone; create a new instance for another folder",
+            folder.display()
+        )
+    })?;
+    let Some(cwd) = cwd else {
+        return Ok(folder);
+    };
+    let rel = cwd.replace("{member}", member);
+    let dir = folder.join(&rel);
+    let real = dir
+        .canonicalize()
+        .map_err(|_| format!("`{member}`'s cwd {} does not exist", dir.display()))?;
+    if !real.starts_with(&folder) {
+        return Err(format!(
+            "`{member}`'s cwd `{rel}` resolves outside the instance's folder {} (through a symlink)",
+            folder.display()
+        ));
+    }
+    Ok(real)
+}
+
+/// Start `member_ids` of the instance, from validated files `v`. `full` is a
+/// start of the whole instance (its plugin processes too); otherwise one
+/// member's start.
 ///
 /// Everything is checked before anything is written. Starting into a
-/// running team (its session exists and `deployment.json` is there) reuses
-/// the base environment and plugin values it started with, and refuses a
-/// changed configuration. With a bus, a full `up` of a stopped team rolls
-/// its message storage over when the configuration or format changed. The lifecycle
-/// locks are held while files are written and windows started, and released
-/// before waiting for gates and folder trust.
-pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
-    let (report, validated) = validate(input);
-    for diag in &report.diags {
-        eprintln!("{diag}");
-    }
-    let v = validated.ok_or("validation failed; nothing was started")?;
-    if let Some(id) = only
-        && !v.team.members.contains_key(id)
-    {
-        return Err(format!("`{id}` is not a member of this team"));
-    }
-    let dep = state_for(input);
-    let state = &dep.state;
+/// running instance (its session exists and its start record is there)
+/// reuses the base environment and plugin values it started with, and
+/// refuses a changed configuration. With a bus, a full start of a stopped
+/// instance rolls its message storage over when the configuration or format
+/// changed. The registry and lifecycle locks are held while files are
+/// written and windows started, and released before waiting for gates and
+/// folder trust.
+fn start_members(
+    lock: registry::Lock,
+    inst: &Instance,
+    v: &Validated,
+    member_ids: Vec<String>,
+    full: bool,
+) -> Result<UpOutcome, String> {
+    let only = !full;
+    let state = &inst.state;
+    let record = &inst.record;
     let session = state.session();
+    state::check_state_home()?;
     if state
         .root
         .display()
@@ -312,39 +336,29 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
         .any(char::is_whitespace)
     {
         return Err(format!(
-            "the state directory {} contains whitespace, which `locked` command rules can't match; set BORGCHART_STATE_HOME to a path without spaces",
+            "the state folder {} contains whitespace, which `locked` command rules can't match; set BORGCHART_STATE_HOME to a path without spaces",
             state.root.display()
         ));
     }
-    // Members get it in their environment and run in their own folders.
-    if let Some(dir) = std::env::var_os(state::ENV_TMUX_TMPDIR)
-        && !Path::new(&dir).is_absolute()
-    {
-        return Err(format!(
-            "{} must be an absolute path; nothing was started",
-            state::ENV_TMUX_TMPDIR
-        ));
-    }
-    // Every window, shim, gate hook and plugin process this `up` starts
+    check_tmux_tmpdir()?;
+    // Every window, shim, gate hook and plugin process this start starts
     // runs the brg running now, as in v0: brg isn't pinned.
     let brg = brg_path();
-    let team = state::team_name(&dep.source);
-    let restart = state::restart_hint(&dep.source);
+    let team = inst.id.clone();
+    let restart = state::restart_hint(&inst.id);
     let snapshot = v.config_snapshot();
-    let bus = v.deployment.as_ref().and_then(|d| d.bus.clone());
-    let member_ids: Vec<String> = v
-        .team
-        .members
-        .values()
-        .filter(|m| match only {
-            Some(id) => m.id == id,
-            None => m.start,
-        })
-        .map(|m| m.id.clone())
-        .collect();
+    let bus = v.team.bus.clone();
+    let role_of = |id: &str| -> Result<&crate::team::Member, String> {
+        record
+            .role_of(id)
+            .and_then(|r| v.team.members.get(r))
+            .ok_or_else(|| format!("`{id}`'s role is not in the team any more"))
+    };
+    let mut cwds: BTreeMap<String, PathBuf> = BTreeMap::new();
     // Checks that need nothing written.
     for id in &member_ids {
-        let granted = launch::granted(&v.team, &v.team.members[id]);
+        let member = role_of(id)?;
+        let granted = launch::granted(&v.team, member);
         if let Some((plugin, command)) = launch::shim_commands(&granted)
             .into_iter()
             .find(|(_, c)| launch::RESERVED_COMMANDS.contains(&c.as_str()))
@@ -353,12 +367,44 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                 "plugin `{plugin}`'s command `{command}` would hide the installed `{command}` from {team}/{id}, so its message commands would call the plugin; rename it. Nothing was started"
             ));
         }
+        cwds.insert(
+            id.clone(),
+            member_cwd(&record.folder, member.cwd.as_deref(), id)
+                .map_err(|e| format!("{e}; nothing was started"))?,
+        );
     }
-    let (values, missing) = plugin_values(&v);
-    let keys = api_keys(&v, &member_ids)?;
+    let mut pre_notes = Vec::new();
+    for (id, cwd) in &cwds {
+        let member = role_of(id)?;
+        check_state_overlap(cwd, &state.root)
+            .map_err(|e| format!("{}'s {e}; nothing was started", inst.at(id)))?;
+        if overlaps(cwd, &v.team.dir) {
+            if v.posture(&member.id) == Posture::Locked {
+                return Err(format!(
+                    "{} is `locked`, and its folder {} overlaps the team folder {}, so it could change its own role files; give it a folder apart from the team. Nothing was started",
+                    inst.at(id),
+                    cwd.display(),
+                    v.team.dir.display()
+                ));
+            }
+            let note = format!(
+                "note: the team folder {} is inside the members' folder {}; they can change the team's files",
+                v.team.dir.display(),
+                cwd.display()
+            );
+            if !pre_notes.contains(&note) {
+                pre_notes.push(note);
+            }
+        }
+    }
+    refuse_legacy_sessions(&tmux_for(state))?;
+    let wanted: Vec<(String, PathBuf)> = cwds.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    crate::checkouts::reserve(&lock, &inst.id, &wanted)?;
+    let (values, missing) = plugin_values(v);
+    let keys = api_keys(v, record, &member_ids)?;
     let missing_error = || {
         format!(
-            "set these before `brg up` (in your environment, or non-secret ones in borgchart.yaml); nothing was started: {}",
+            "set these secrets in your environment first (brg stores none); nothing was started: {}",
             missing.join(", ")
         )
     };
@@ -373,8 +419,8 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
         .map_err(|e| format!("cannot create {}: {e}", state.root.display()))?;
     let state_lock = lifecycle::lock_state(state)?;
     let previous = state::read_meta(state);
-    // Unless the last deployment here was confirmed stopped, or never
-    // started a window, a server this caller can't see may still run it.
+    // Unless the last start here was confirmed stopped, or never started a
+    // window, a server this caller can't see may still run it.
     let may_still_run = previous
         .as_ref()
         .is_some_and(|m| m.stopped_at.is_none() && m.windows_started != Some(false));
@@ -385,29 +431,24 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
         None if !missing.is_empty() => return Err(missing_error()),
         None => {}
     }
+    // Every start, of the instance or one member, needs messages it can
+    // read: records brg can't read hide open work. The storage checks below
+    // say more about some damage (a lost `current`, another format), so
+    // their refusal comes first; any start they let through still refuses.
+    let readable = match &bus {
+        Some(_) => lifecycle::open_work(state).map(|_| ()),
+        None => Ok(()),
+    };
     let binding = match &bus {
-        Some(bus) => Some(lifecycle::bind_run(
-            &v,
-            bus,
-            state,
-            &dep.source,
-            joining,
-            only.is_some(),
-        )?),
+        Some(_) => Some(lifecycle::bind_run(v, state, joining, only)?),
         None => None,
     };
-    let mut notes: Vec<String> = binding
-        .as_ref()
-        .and_then(|b| b.note.clone())
-        .into_iter()
-        .collect();
-    let user_config = v
-        .deployment
-        .as_ref()
-        .and_then(|d| d.tmux_user_config.as_ref())
-        .and_then(|u| u.resolve());
-    // The server reads its config once, when it starts, and every team on
-    // it shares it.
+    readable.map_err(|e| unreadable_store(inst, &e))?;
+    let mut notes: Vec<String> = pre_notes;
+    notes.extend(binding.as_ref().and_then(|b| b.note.clone()));
+    let user_config = v.config.tmux_user_config.as_ref().and_then(|u| u.resolve());
+    // The server reads its config once, when it starts, and every instance
+    // on it shares it.
     let wanted = user_config
         .as_ref()
         .map(|p| p.display().to_string())
@@ -417,7 +458,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
         && loaded.trim() != wanted
     {
         notes.push(format!(
-            "brg's tmux server is already running {}, so this team's `tmux.user_config` ({}) takes effect only once every team on it is down and it starts again",
+            "brg's tmux server is already running {}, so `tmux.user_config` ({}) takes effect only once every instance on it is stopped and it starts again",
             if loaded.trim().is_empty() {
                 "without your tmux config".to_string()
             } else {
@@ -427,6 +468,28 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
         ));
     }
 
+    let member_meta = |id: &str, base: &BTreeMap<String, String>| -> Option<MemberMeta> {
+        let role = record.role_of(id)?;
+        let member = v.team.members.get(role)?;
+        let parent = member.parent.as_ref().map(|p| {
+            record
+                .members_of(p)
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| p.clone())
+        });
+        Some(MemberMeta {
+            role: role.to_string(),
+            vendor: member.vendor.as_str().into(),
+            posture: match v.posture(role) {
+                Posture::Vendor => "vendor".into(),
+                Posture::Locked => "locked".into(),
+            },
+            parent,
+            vendor_version: vendor_version(member.vendor, base),
+            started: Some(false),
+        })
+    };
     let fresh = existing.is_none();
     let mut meta = match existing {
         Some(meta) => meta,
@@ -436,8 +499,8 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                 .write_config(user_config.as_deref())
                 .map_err(|e| format!("cannot write tmux config: {e}"))?;
             let mut meta = Meta {
-                source: dep.source.clone(),
-                team_dir: v.team.dir.canonicalize().unwrap_or(v.team.dir.clone()),
+                team_dir: v.team.dir.clone(),
+                folder: record.folder.clone(),
                 brg: brg.clone(),
                 socket: Some(state::tmux_socket()),
                 config: Some(snapshot.clone()),
@@ -461,39 +524,34 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                 meta.plugins.insert(
                     name.clone(),
                     PluginMeta {
-                        dir: plugin_dir(&v, name),
+                        dir: v.plugin_dir(name),
                         has_process: plugin.process.is_some(),
                     },
                 );
             }
-            for id in v.team.members.keys() {
-                state::open_lock(&state.lock_file(id))
-                    .map_err(|e| format!("cannot create send lock: {e}"))?;
-            }
-            for (id, member) in &v.team.members {
-                let posture = v.posture(id);
-                meta.members.insert(
-                    id.clone(),
-                    MemberMeta {
-                        vendor: member.vendor.as_str().into(),
-                        posture: match posture {
-                            Posture::Vendor => "vendor".into(),
-                            Posture::Locked => "locked".into(),
-                        },
-                        parent: member.parent.clone(),
-                        vendor_version: vendor_version(member.vendor, &base),
-                        started: Some(false),
-                    },
-                );
-            }
-            write_private(
-                &state.meta_file(),
-                &serde_json::to_vec_pretty(&meta).map_err(|e| e.to_string())?,
-            )
-            .map_err(|e| format!("cannot write state: {e}"))?;
             meta
         }
     };
+    // Every member of the instance is known to the start record, including
+    // ones created since the instance started.
+    let mut added = fresh;
+    for id in record.members.keys() {
+        if !meta.members.contains_key(id)
+            && let Some(m) = member_meta(id, &meta.base_env)
+        {
+            meta.members.insert(id.clone(), m);
+            added = true;
+        }
+        state::open_lock(&state.lock_file(id))
+            .map_err(|e| format!("cannot create send lock: {e}"))?;
+    }
+    if added {
+        write_private(
+            &state.meta_file(),
+            &serde_json::to_vec_pretty(&meta).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| format!("cannot write state: {e}"))?;
+    }
     let base = meta.base_env.clone();
     let tmux = Tmux::new(&state.tmux_conf(), base.clone());
     // A running team's server is the one recorded for it.
@@ -502,13 +560,28 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
         None => tmux,
     };
 
+    // The folders these members start in, held from now on: recorded
+    // under the registry lock, before any window starts.
+    {
+        let mut updated = registry::read_instance(state)?;
+        for (id, cwd) in &cwds {
+            if let Some(m) = updated.members.get_mut(id) {
+                m.cwd = Some(cwd.clone());
+            }
+        }
+        if &updated != record {
+            lock.save_instance(state, &updated)?;
+        }
+    }
+    // Whether this start has created a window yet.
+    let mut any_window = false;
     let mut outcomes: BTreeMap<String, String> = BTreeMap::new();
     let mut plugin_outcomes: Vec<(String, String)> = Vec::new();
     let mut failed = false;
     let mut started: Vec<Started> = Vec::new();
 
     for id in &member_ids {
-        let member = &v.team.members[id];
+        let member = role_of(id)?;
         if let Some(w) = tmux.window(&session, id) {
             if !w.dead {
                 set(&mut outcomes, id, "already running".into());
@@ -516,8 +589,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             }
             let _ = tmux.kill_window(&session, id);
         }
-        let posture = v.posture(id);
-        let deploy_member = v.deployment.as_ref().and_then(|d| d.members.get(id));
+        let posture = v.posture(&member.id);
         let granted = launch::granted(&v.team, member);
 
         // Shims for granted commands.
@@ -538,30 +610,34 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             }
         }
 
-        let auto_trust = v.deployment.as_ref().and_then(|d| d.auto_trust);
-        let declared_cwd = deploy_member
-            .and_then(|d| d.cwd.as_ref())
-            .map(|c| c.canonicalize().unwrap_or_else(|_| c.clone()));
-        // Claude: `up` answers its trust dialog. By default only for `locked`
-        // members, which ignore project settings.
-        let trust_dir = declared_cwd
-            .clone()
-            .filter(|_| member.vendor == Vendor::Claude)
-            .filter(|_| auto_trust.unwrap_or(posture == Posture::Locked));
+        let auto_trust = v.config.auto_trust;
+        // Codex's sandbox can write its cwd, so a `locked` Codex member whose
+        // role sets none starts in its own temp dir rather than the folder.
+        let cwd =
+            if member.cwd.is_none() && posture == Posture::Locked && member.vendor == Vendor::Codex
+            {
+                state.member_tmp(id)
+            } else {
+                cwds[id].clone()
+            };
+        let in_folder = cwd != state.member_tmp(id);
+        // Claude: brg answers its trust dialog for the member's folder. By
+        // default only for `locked` members, which ignore project settings.
+        let trust_dir = (in_folder
+            && member.vendor == Vendor::Claude
+            && auto_trust.unwrap_or(posture == Posture::Locked))
+        .then(|| cwd.clone());
         // Codex: trust passed as session config, only with `auto_trust: true`
         // and only in `vendor` posture. A trusted folder's `.codex/` loads, and a
         // `locked` Codex member can write its folder, so it could configure its
-        // own next start outside its gate. The deployment's own `projects`
-        // setting wins.
-        let codex_trust = declared_cwd
-            .filter(|_| member.vendor == Vendor::Codex)
-            .filter(|_| auto_trust == Some(true) && posture == Posture::Vendor)
-            .filter(|_| {
-                !launch::codex_args_set(
-                    deploy_member.map(|d| d.args.as_slice()).unwrap_or_default(),
-                    "projects",
-                )
-            });
+        // own next start outside its gate. The role's own `projects` setting
+        // wins.
+        let codex_trust = (in_folder
+            && member.vendor == Vendor::Codex
+            && auto_trust == Some(true)
+            && posture == Posture::Vendor
+            && !launch::codex_args_set(&member.args, "projects"))
+        .then(|| cwd.clone());
 
         let settings_path = state.member_dir(id).join("claude-settings.json");
         let spec = launch::member_launch(
@@ -569,7 +645,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             state,
             &v.team,
             member,
-            deploy_member,
+            id,
             posture,
             &help,
             &settings_path,
@@ -599,29 +675,22 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             base.get("PATH").cloned().unwrap_or_default()
         );
         env.insert("PATH".into(), path);
-        env.insert("BORGCHART_DEPLOYMENT".into(), state.id.clone());
+        env.insert(address::ENV_INSTANCE.into(), state.id.clone());
         env.insert(context::ENV_MEMBER.into(), id.clone());
+        env.insert(crate::exec::ENV_ROLE.into(), member.id.clone());
+        env.insert(
+            crate::exec::ENV_NOTES.into(),
+            state.notes_dir().display().to_string(),
+        );
         // The brg that starts this member, so its own brg calls don't depend
         // on what its shell puts first on `PATH`.
         env.insert("BORGCHART_BIN".into(), brg.display().to_string());
         let tmp = state.member_tmp(id);
         state::ensure_dir(&tmp).map_err(|e| e.to_string())?;
         env.insert("TMPDIR".into(), tmp.display().to_string());
-        env.insert(state::ENV_FILE.into(), dep.source.display().to_string());
         if let Some((key, value)) = keys.get(id) {
             env.insert(key.clone(), value.clone());
         }
-        // Codex's sandbox can write its cwd, so a `locked` Codex member that
-        // declares none starts in its own temp dir rather than the team dir.
-        let cwd = deploy_member
-            .and_then(|d| d.cwd.clone())
-            .unwrap_or_else(|| {
-                if posture == Posture::Locked && member.vendor == Vendor::Codex {
-                    state.member_tmp(id)
-                } else {
-                    meta.team_dir.clone()
-                }
-            });
         // With a bus, each start is a new incarnation, recorded before its
         // window exists and again once its pane is known.
         let incarnation = match &binding {
@@ -663,7 +732,11 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             // tmux didn't create the window, so nothing runs it.
             let _ = lifecycle::end_incarnation(&b.paths, id, lifecycle::ENDED_START_FAILED);
         }
+        if result.is_err() {
+            unrecord_windows(state, &mut meta, fresh && !any_window, may_still_run);
+        }
         result?;
+        any_window = true;
         // Without a bus, the team's state is where `status` learns that a
         // member ran.
         if binding.is_none()
@@ -722,8 +795,8 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
         }
     }
 
-    // Plugin processes start with the whole team.
-    if only.is_none() {
+    // Plugin processes start with the whole instance.
+    if full {
         for (name, plugin) in &v.team.plugins {
             let window = format!("_{name}");
             let dir = meta.plugins.get(name).and_then(|p| p.dir.clone());
@@ -744,11 +817,13 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
             let mut env = base.clone();
             env.extend(secrets.env);
             env.extend(identity_env(&meta, state, "", None, name));
-            if let Some(target) = &plugin.delivers_to {
-                env.insert("BORGCHART_DELIVER_TO".into(), target.clone());
+            if let Some(role) = &plugin.delivers_to
+                && let Some(target) = record.members_of(role).into_iter().next()
+            {
+                env.insert("BORGCHART_DELIVER_TO".into(), target);
             }
             let cwd = cwd.unwrap_or_else(|| meta.team_dir.clone());
-            start_window(
+            let result = start_window(
                 &tmux,
                 &brg,
                 state,
@@ -756,7 +831,12 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                 &session,
                 &window,
                 &ExecSpec { argv, env, cwd },
-            )?;
+            );
+            if result.is_err() {
+                unrecord_windows(state, &mut meta, fresh && !any_window, may_still_run);
+            }
+            result?;
+            any_window = true;
             plugin_outcomes.push((name.clone(), "started".into()));
         }
     }
@@ -791,6 +871,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
     let run_paths = binding.as_ref().map(|b| b.paths.clone());
     drop(binding);
     drop(state_lock);
+    drop(lock);
     let relock = |s: &Started| -> Result<(Launched, Vec<std::fs::File>), String> {
         let mut locks = vec![lifecycle::lock_state(state)?];
         if let Some(paths) = &run_paths {
@@ -865,7 +946,8 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                         &mut outcomes,
                         id,
                         format!(
-                            "couldn't confirm it is still the member this `up` started, so the folder-trust dialog was left for you; run `brg attach {id}`"
+                            "couldn't confirm it is still the member this start started, so the folder-trust dialog was left for you; run `brg attach {}`",
+                            inst.at(id)
                         ),
                     );
                     failed |= s.locked;
@@ -883,7 +965,7 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                             format!(
                                 "waiting at Claude's folder-trust prompt: {}; {}, then answer it",
                                 tmux::IN_MODE,
-                                tmux::leave_mode_hint(id)
+                                tmux::leave_mode_hint(&inst.at(id))
                             ),
                         );
                         break;
@@ -897,7 +979,8 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                             &mut outcomes,
                             id,
                             format!(
-                                "couldn't read its pane, so the folder-trust dialog was left for you; run `brg attach {id}`"
+                                "couldn't read its pane, so the folder-trust dialog was left for you; run `brg attach {}`",
+                                inst.at(id)
                             ),
                         );
                         break;
@@ -915,7 +998,8 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                         &mut outcomes,
                         id,
                         format!(
-                            "the folder-trust dialog didn't look as expected, so it was left for you: brg attach {id}"
+                            "the folder-trust dialog didn't look as expected, so it was left for you: brg attach {}",
+                            inst.at(id)
                         ),
                     );
                     break;
@@ -942,8 +1026,9 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                         &mut outcomes,
                         id,
                         format!(
-                            "waiting at {}'s folder-trust prompt; answer it with `brg attach {id}`",
-                            s.vendor.display_name()
+                            "waiting at {}'s folder-trust prompt; answer it with `brg attach {}`",
+                            s.vendor.display_name(),
+                            inst.at(id)
                         ),
                     );
                     break;
@@ -974,7 +1059,10 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                     append(
                         &mut outcomes,
                         id,
-                        format!("waiting at a prompt; answer it with `brg attach {id}`"),
+                        format!(
+                            "waiting at a prompt; answer it with `brg attach {}`",
+                            inst.at(id)
+                        ),
                     );
                     break;
                 }
@@ -1009,32 +1097,714 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
         }
     }
 
-    let nodes: Vec<tree::Node> = v
-        .team
-        .members
-        .values()
-        .map(|m| {
-            let outcome = match outcomes.get(&m.id) {
-                Some(o) => o.clone(),
-                None if only.is_none() && !m.start => not_started(false),
-                None => String::new(),
-            };
-            tree::Node {
-                id: m.id.clone(),
-                parent: m.parent.clone(),
-                cols: vec![tree::vendor_model(m), outcome],
-            }
-        })
-        .collect();
+    let nodes = member_nodes(inst, v, |id| outcomes.get(id).cloned().unwrap_or_default());
     let plugins: Vec<(String, Vec<String>)> = plugin_outcomes
         .into_iter()
         .map(|(name, o)| (name, vec![o]))
         .collect();
     Ok(UpOutcome {
-        tree: tree::render(&team, &nodes, &plugins),
+        tree: tree::render(&header(inst), &nodes, &plugins),
         notes,
         failed,
     })
+}
+
+/// The first line of an instance's tree: its ID, team folder and working
+/// folder.
+pub fn header(inst: &Instance) -> String {
+    format!(
+        "{}  team {} · folder {}",
+        inst.id,
+        inst.record.team_dir.display(),
+        inst.record.folder.display()
+    )
+}
+
+/// What `status` and a start show for a role with no member yet.
+pub const ON_DEMAND: &str = "on demand (none created)";
+
+/// One node per member of the instance (each under its parent role's
+/// member), and one per role with no member yet. `outcome` gives a member's
+/// last column.
+fn member_nodes(
+    inst: &Instance,
+    v: &Validated,
+    outcome: impl Fn(&str) -> String,
+) -> Vec<tree::Node> {
+    let parent_of = |role: &crate::team::Member| {
+        role.parent.as_ref().map(|p| {
+            inst.record
+                .members_of(p)
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| p.clone())
+        })
+    };
+    let mut nodes = Vec::new();
+    for (role_name, role) in &v.team.members {
+        let ids = inst.record.members_of(role_name);
+        if ids.is_empty() {
+            nodes.push(tree::Node {
+                id: role_name.clone(),
+                parent: parent_of(role),
+                cols: vec![ON_DEMAND.into()],
+            });
+        }
+        for id in ids {
+            nodes.push(tree::Node {
+                cols: vec![tree::vendor_model(role), outcome(&id)],
+                id,
+                parent: parent_of(role),
+            });
+        }
+    }
+    nodes
+}
+
+/// Members get `BORGCHART_TMUX_TMPDIR` in their environment and run in
+/// their own folders, so it must be absolute.
+fn check_tmux_tmpdir() -> Result<(), String> {
+    match std::env::var_os(state::ENV_TMUX_TMPDIR) {
+        Some(dir) if !Path::new(&dir).is_absolute() => Err(format!(
+            "{} must be an absolute path; nothing was started",
+            state::ENV_TMUX_TMPDIR
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Refuse a member folder that is the same as, inside or around brg's state
+/// folder or the instance's own: Codex makes a member's folder writable.
+fn check_state_overlap(folder: &Path, instance_state: &Path) -> Result<(), String> {
+    for (what, dir) in [
+        ("brg's state folder", state::state_home()),
+        ("the instance's state folder", instance_state.to_path_buf()),
+    ] {
+        if overlaps(folder, &dir) {
+            return Err(format!(
+                "folder {} is the same as, inside or around {what} {}, so members could change brg's own files",
+                folder.display(),
+                dir.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Refuse every member start while a tmux session from before instances
+/// (any `brg-*` session that isn't a registered instance's) is alive on
+/// brg's server: brg can't tell which folders it uses.
+fn refuse_legacy_sessions(tmux: &Tmux) -> Result<(), String> {
+    let Ok(out) = tmux.ok(&["list-sessions", "-F", "#{session_name}"]) else {
+        return Ok(());
+    };
+    let registry = registry::load()?;
+    let old: Vec<&str> = out
+        .lines()
+        .map(str::trim)
+        .filter(|s| {
+            s.strip_prefix("brg-")
+                .is_some_and(|id| !registry.instances.contains_key(id))
+        })
+        .collect();
+    if old.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "tmux sessions from before instances are still running on brg's server ({}); brg can't tell which folders they use, so it starts nothing until they stop. Stop them with the brg that started them",
+        old.join(", ")
+    ))
+}
+
+/// Validate a team folder, printing what validation found; `Err` on errors.
+fn validate_printing(dir: &Path) -> Result<Validated, String> {
+    let (report, validated) = validate(dir);
+    for diag in &report.diags {
+        eprintln!("{diag}");
+    }
+    validated.ok_or_else(|| "validation failed; nothing was started".to_string())
+}
+
+/// Checks a start would fail on, made before anything is registered: the
+/// secrets the plugins need (unless the instance runs, and so has its
+/// values already) and, with `auth: api_key`, the starting roles' keys.
+fn precheck(v: &Validated, roles: &[&crate::team::Member], secrets: bool) -> Result<(), String> {
+    let (_, missing) = plugin_values(v);
+    if secrets && !missing.is_empty() {
+        return Err(format!(
+            "set these secrets in your environment first (brg stores none); nothing was created: {}",
+            missing.join(", ")
+        ));
+    }
+    if v.auth() == Auth::ApiKey {
+        let missing: Vec<String> = roles
+            .iter()
+            .map(|r| key_name(r.vendor))
+            .filter(|k| std::env::var_os(k).is_none())
+            .map(str::to_string)
+            .collect();
+        if !missing.is_empty() {
+            return Err(format!(
+                "`auth: api_key` needs these in your environment; nothing was created: {}",
+                missing.join(", ")
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// `brg create <team> <folder>`: a new instance of the team working in
+/// `folder`, with its `start: true` roles' members, started.
+pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
+    let mut report = crate::diag::Report::default();
+    let config = crate::config::load(&mut report).ok_or_else(|| {
+        report
+            .errors()
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    })?;
+    let dir = crate::team::find(team_arg, &config.teams)?;
+    let v = validate_printing(&dir)?;
+    let folder_path = match folder.strip_prefix("~/") {
+        Some(rest) => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest),
+        None => PathBuf::from(folder),
+    };
+    let folder = folder_path
+        .canonicalize()
+        .ok()
+        .filter(|p| p.is_dir())
+        .ok_or_else(|| {
+            format!(
+                "the working folder {} does not exist; create it first",
+                folder_path.display()
+            )
+        })?;
+    state::check_state_home()?;
+    let starting: Vec<&crate::team::Member> = v.team.members.values().filter(|m| m.start).collect();
+    check_tmux_tmpdir()?;
+    precheck(&v, &starting, true)?;
+    check_state_overlap(&folder, &state::state_home())
+        .map_err(|e| format!("the working {e}; nothing was created"))?;
+    refuse_legacy_sessions(&Tmux::new(
+        &state::state_home().join("tmux.conf"),
+        base_env(),
+    ))?;
+    let lock = registry::lock()?;
+    crate::checkouts::check_folder(&lock, &folder)?;
+    let (state, mut record) =
+        registry::create(&lock, &v.team.name, &v.team.dir, &folder, &utc_now())?;
+    for role in &starting {
+        record.issue_member(&role.id)?;
+    }
+    lock.save_instance(&state, &record)?;
+    let ids: Vec<String> = record.members.keys().cloned().collect();
+    let inst = Instance {
+        id: state.id.clone(),
+        state,
+        record,
+    };
+    let result = start_members(lock, &inst, &v, ids, true);
+    if result.is_err() {
+        unregister_if_never_started(&inst);
+    }
+    result
+}
+
+/// After a `create` whose start failed before any window could start:
+/// remove the new instance again (its suffix stays issued). Decided under
+/// the registry lock, from what is true then: another start may have
+/// started the instance since this one failed.
+fn unregister_if_never_started(inst: &Instance) {
+    rollback_pause();
+    let Ok(lock) = registry::lock() else { return };
+    let Ok(mut registry) = lock.load() else {
+        return;
+    };
+    if !registry.instances.contains_key(&inst.id) {
+        return;
+    }
+    let started = state::read_meta(&inst.state).is_some_and(|m| m.windows_started != Some(false));
+    let live = liveness_of(inst).values().any(|l| *l != Liveness::Gone);
+    if started || live || is_running(inst) {
+        return;
+    }
+    let _ = std::fs::remove_dir_all(&inst.state.root);
+    registry.instances.remove(&inst.id);
+    let _ = lock.save(&registry);
+}
+
+/// Test builds: `BORGCHART_TEST_ROLLBACK_PAUSE=<path>` makes a failed
+/// `create` write `<path>.waiting` and wait (up to 30 s) for `<path>` before
+/// it takes its instance back, so a test can start the instance meanwhile.
+#[cfg(feature = "test-support")]
+fn rollback_pause() {
+    let Some(path) = std::env::var_os("BORGCHART_TEST_ROLLBACK_PAUSE").map(PathBuf::from) else {
+        return;
+    };
+    let _ = std::fs::write(path.with_extension("waiting"), "");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !path.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[cfg(not(feature = "test-support"))]
+fn rollback_pause() {}
+
+/// `brg create <instance>/<role>`: a new member of the role, started.
+pub fn create_member(mut inst: Instance, role: &str) -> Result<UpOutcome, String> {
+    let v = validated(&inst)?;
+    let Some(member) = v.team.members.get(role) else {
+        return Err(format!(
+            "instance `{}`'s team has no role `{role}`; its roles: {}",
+            inst.id,
+            v.team
+                .members
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    };
+    precheck(&v, &[member], !is_running(&inst))?;
+    let lock = registry::lock()?;
+    inst.reload()?;
+    if let Some(existing) = inst.record.members_of(role).first() {
+        return Err(format!(
+            "role `{role}` already has its member `{existing}` (one per role for now), running or stopped; start it with `brg start {}`",
+            inst.at(existing)
+        ));
+    }
+    let id = inst.record.issue_member(role)?;
+    lock.save_instance(&inst.state, &inst.record)?;
+    start_members(lock, &inst, &v, vec![id], false)
+}
+
+/// Whether any member or plugin process of the instance has a live window
+/// on the server its start recorded.
+pub fn is_running(inst: &Instance) -> bool {
+    let tmux = tmux_for(&inst.state);
+    tmux.windows(&inst.state.session()).iter().any(|w| !w.dead)
+}
+
+/// `brg start <instance> --team <path>`: point a stopped instance at its
+/// team folder's new place.
+fn repoint(inst: &mut Instance, team: &Path) -> Result<(), String> {
+    let dir = team
+        .canonicalize()
+        .map_err(|_| format!("{} does not exist", team.display()))?;
+    if !dir.join(crate::team::TEAM_FILE).is_file() {
+        return Err(format!(
+            "{} is not a team folder (no {} in it)",
+            dir.display(),
+            crate::team::TEAM_FILE
+        ));
+    }
+    let name = crate::team::team_name(&dir);
+    if name != inst.record.team {
+        return Err(format!(
+            "{} is team `{name}`, not instance `{}`'s team `{}`",
+            dir.display(),
+            inst.id,
+            inst.record.team
+        ));
+    }
+    let lock = registry::lock()?;
+    inst.reload()?;
+    if is_running(inst) {
+        return Err(format!(
+            "instance `{}` is running; a new team folder applies only from a full stop: brg stop {}",
+            inst.id, inst.id
+        ));
+    }
+    let mut registry = lock.load()?;
+    if let Some(entry) = registry.instances.get_mut(&inst.id) {
+        entry.team_dir = dir.clone();
+    }
+    inst.record.team_dir = dir;
+    lock.save_instance(&inst.state, &inst.record)?;
+    lock.save(&registry)
+}
+
+/// Which members a full start brings up: the `start: true` roles' members
+/// (issuing one for a role that has none), the members running at the last
+/// stop, and members holding open work. Called with the registry lock held;
+/// saves the record when it issued a member.
+fn full_start_members(
+    lock: &registry::Lock,
+    inst: &mut Instance,
+    v: &Validated,
+) -> Result<Vec<String>, String> {
+    let mut ids = std::collections::BTreeSet::new();
+    let mut issued = false;
+    for role in v.team.members.values().filter(|m| m.start) {
+        let members = inst.record.members_of(&role.id);
+        if members.is_empty() {
+            ids.insert(inst.record.issue_member(&role.id)?);
+            issued = true;
+        }
+        ids.extend(members);
+    }
+    if let Some(set) = &inst.record.running_at_stop {
+        ids.extend(set.iter().cloned());
+    }
+    // Running members are left alone, and shown as running.
+    let windows = tmux_for(&inst.state).windows(&inst.state.session());
+    ids.extend(
+        windows
+            .iter()
+            .filter(|w| !w.dead && inst.record.members.contains_key(&w.name))
+            .map(|w| w.name.clone()),
+    );
+    // Messages that can't be read are refused by the start itself
+    // (`start_members`), so no member starts without its holders known.
+    if let Ok(work) = lifecycle::open_work(&inst.state) {
+        ids.extend(work.holders);
+    }
+    if issued {
+        lock.save_instance(&inst.state, &inst.record)?;
+    }
+    // Only members whose role is still in the team.
+    Ok(ids
+        .into_iter()
+        .filter(|id| {
+            inst.record
+                .role_of(id)
+                .is_some_and(|r| v.team.members.contains_key(r))
+        })
+        .collect())
+}
+
+/// Why a start refuses an instance whose messages can't be read.
+fn unreadable_store(inst: &Instance, e: &str) -> String {
+    format!(
+        "instance `{}`'s messages can't be read ({e}), so nothing was started; create a new instance instead (`brg create`), and send its open work again",
+        inst.id
+    )
+}
+
+/// Refuse a start whose files orphan open work: a task held by a member
+/// whose role the team no longer has.
+fn refuse_orphans(inst: &Instance, v: &Validated) -> Result<(), String> {
+    // Messages that can't be read are refused by the start itself
+    // (`start_members`), before anything starts.
+    let Ok(work) = lifecycle::open_work(&inst.state) else {
+        return Ok(());
+    };
+    let orphaned: Vec<String> = work
+        .tasks
+        .iter()
+        .filter(|(_, assignee, _)| {
+            inst.record
+                .role_of(assignee)
+                .is_some_and(|r| !v.team.members.contains_key(r))
+        })
+        .map(|(task, assignee, _)| {
+            format!(
+                "task `{task}` held by {assignee}, whose role `{}` the team no longer has",
+                inst.record.role_of(assignee).unwrap_or_default()
+            )
+        })
+        .collect();
+    if orphaned.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "instance `{}`'s team files orphan open work; restore the role, or cancel the work first. Nothing was started:\n  {}",
+        inst.id,
+        orphaned.join("\n  ")
+    ))
+}
+
+/// `brg start <instance>[/<member>] [--team <path>]`.
+pub fn start(
+    mut inst: Instance,
+    member: Option<&str>,
+    team: Option<&Path>,
+) -> Result<UpOutcome, String> {
+    if let Some(dir) = team {
+        if member.is_some() {
+            return Err(
+                "`--team` points the whole instance at a team folder; leave the member out".into(),
+            );
+        }
+        repoint(&mut inst, dir)?;
+    }
+    let member = member.map(|m| address::member(&inst, m)).transpose()?;
+    if !inst.record.team_dir.join(crate::team::TEAM_FILE).is_file() {
+        return Err(format!(
+            "instance `{}`'s team folder {} is gone; if it moved, point the instance at it: brg start {} --team <path>",
+            inst.id,
+            inst.record.team_dir.display(),
+            inst.id
+        ));
+    }
+    if !inst.record.folder.is_dir() {
+        return Err(format!(
+            "instance `{}`'s working folder {} is gone; create a new instance (`brg create`) for another folder",
+            inst.id,
+            inst.record.folder.display()
+        ));
+    }
+    let v = validate_printing(&inst.record.team_dir)?;
+    if member.is_none() {
+        refuse_orphans(&inst, &v)?;
+    }
+    let lock = registry::lock()?;
+    inst.reload()?;
+    match member {
+        Some(id) => start_members(lock, &inst, &v, vec![id], false),
+        None => {
+            let ids = full_start_members(&lock, &mut inst, &v)?;
+            start_members(lock, &inst, &v, ids, true)
+        }
+    }
+}
+
+/// Whether each member's current start may still be running, as `stop`
+/// and liveness see it: `Gone` only when that is certain.
+pub fn liveness_of(inst: &Instance) -> BTreeMap<String, Liveness> {
+    let state = &inst.state;
+    let session = state.session();
+    let meta = state::read_meta(state);
+    let rows = meta.as_ref().map(|m| lifecycle::Server::of(m).panes());
+    let run = meta
+        .as_ref()
+        .and_then(|m| m.run.as_ref())
+        .map(|r| RunPaths::from_root(&r.dir));
+    let mut out = BTreeMap::new();
+    for id in inst.record.members.keys() {
+        let by_window = match (&meta, &rows) {
+            // Never started a window here.
+            (None, _) => Liveness::Gone,
+            (Some(_), Some(Ok(rows))) => {
+                if rows
+                    .iter()
+                    .any(|r| r.session == session && &r.window == id && !r.dead)
+                {
+                    Liveness::Alive
+                } else {
+                    Liveness::Gone
+                }
+            }
+            (Some(m), _) if m.stopped_at.is_some() || m.windows_started == Some(false) => {
+                Liveness::Gone
+            }
+            _ => Liveness::Unknown,
+        };
+        let by_record = match &run {
+            Some(paths) => match crate::bus::manifest::load_incarnation(paths, id) {
+                Ok(None) => Liveness::Gone,
+                Ok(Some(inc)) => lifecycle::liveness(paths, id, &inc.incarnation),
+                Err(_) => Liveness::Unknown,
+            },
+            None => Liveness::Gone,
+        };
+        let l = match (by_window, by_record) {
+            (Liveness::Alive, _) | (_, Liveness::Alive) => Liveness::Alive,
+            (Liveness::Gone, Liveness::Gone) => Liveness::Gone,
+            _ => Liveness::Unknown,
+        };
+        out.insert(id.clone(), l);
+    }
+    out
+}
+
+/// `brg delete <instance> [--force]`: remove a stopped instance's state
+/// folder (messages, notes, brg's files) and its registration. Its working
+/// folder is never touched.
+pub fn delete(inst: Instance, force: bool) -> Result<Vec<String>, String> {
+    let lock = registry::lock()?;
+    let state_lock = lifecycle::lock_state(&inst.state)?;
+    let live = liveness_of(&inst);
+    let alive: Vec<&String> = live
+        .iter()
+        .filter(|(_, l)| **l == Liveness::Alive)
+        .map(|(id, _)| id)
+        .collect();
+    if !alive.is_empty() || is_running(&inst) {
+        return Err(format!(
+            "instance `{}` is running{}; stop it first: brg stop {}",
+            inst.id,
+            if alive.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " ({})",
+                    alive
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            },
+            inst.id
+        ));
+    }
+    let unknown: Vec<&String> = live
+        .iter()
+        .filter(|(_, l)| **l == Liveness::Unknown)
+        .map(|(id, _)| id)
+        .collect();
+    if !unknown.is_empty() {
+        return Err(format!(
+            "brg can't tell that {} of instance `{}` stopped, so it can't be deleted, even with --force; stop it again once its tmux server can be reached: brg stop {}",
+            unknown
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+            inst.id,
+            inst.id
+        ));
+    }
+    match lifecycle::open_work(&inst.state) {
+        Ok(work) if work.items.is_empty() || force => {}
+        Ok(work) => {
+            return Err(format!(
+                "instance `{}` holds open work; settle it, or delete it anyway with --force:\n  {}",
+                inst.id,
+                work.items.join("\n  ")
+            ));
+        }
+        Err(_) if force => {}
+        Err(e) => {
+            return Err(format!(
+                "instance `{}`'s messages can't be read ({e}), so its contents can't be inspected; delete it anyway with --force",
+                inst.id
+            ));
+        }
+    }
+    drop(state_lock);
+    std::fs::remove_dir_all(&inst.state.root)
+        .map_err(|e| format!("cannot remove {}: {e}", inst.state.root.display()))?;
+    let mut registry = lock.load()?;
+    registry.instances.remove(&inst.id);
+    lock.save(&registry)?;
+    Ok(vec![format!(
+        "deleted {}; its working folder {} was left as it is",
+        inst.id,
+        inst.record.folder.display()
+    )])
+}
+
+/// One team in `brg ls`, with its instances.
+#[derive(Debug, Serialize)]
+pub struct Listed {
+    /// `None` for instances whose team is outside the search paths.
+    pub team: Option<String>,
+    pub dir: Option<PathBuf>,
+    pub instances: Vec<ListedInstance>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ListedInstance {
+    pub instance: String,
+    pub team: String,
+    pub team_dir: PathBuf,
+    pub folder: PathBuf,
+    pub running: bool,
+    pub created_at: String,
+}
+
+/// `brg ls`: the teams in the search paths, each with its instances, then
+/// instances whose team is elsewhere.
+pub fn ls() -> Result<Vec<Listed>, String> {
+    let mut report = crate::diag::Report::default();
+    let config = crate::config::load(&mut report).ok_or_else(|| {
+        report
+            .errors()
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    })?;
+    let registry = registry::load()?;
+    let listed = |id: &String, e: &registry::Entry| ListedInstance {
+        instance: id.clone(),
+        team: e.team.clone(),
+        team_dir: e.team_dir.clone(),
+        folder: e.folder.clone(),
+        running: address::instance(id).is_ok_and(|i| is_running(&i)),
+        created_at: e.created_at.clone(),
+    };
+    let mut out = Vec::new();
+    let mut shown = std::collections::BTreeSet::new();
+    for (name, dir) in crate::team::list(&config.teams) {
+        let instances = registry
+            .instances
+            .iter()
+            .filter(|(_, e)| e.team_dir == dir)
+            .map(|(id, e)| {
+                shown.insert(id.clone());
+                listed(id, e)
+            })
+            .collect();
+        out.push(Listed {
+            team: Some(name),
+            dir: Some(dir),
+            instances,
+        });
+    }
+    let elsewhere: Vec<ListedInstance> = registry
+        .instances
+        .iter()
+        .filter(|(id, _)| !shown.contains(*id))
+        .map(|(id, e)| listed(id, e))
+        .collect();
+    if !elsewhere.is_empty() {
+        out.push(Listed {
+            team: None,
+            dir: None,
+            instances: elsewhere,
+        });
+    }
+    Ok(out)
+}
+
+/// `brg ls` as text.
+pub fn render_ls(listed: &[Listed]) -> String {
+    let mut out = String::new();
+    for l in listed {
+        match (&l.team, &l.dir) {
+            (Some(name), Some(dir)) => out.push_str(&format!("{name}  {}\n", dir.display())),
+            _ => out.push_str("instances of teams outside the search paths\n"),
+        }
+        if l.instances.is_empty() {
+            out.push_str("  (no instances)\n");
+        }
+        for i in &l.instances {
+            out.push_str(&format!(
+                "  {}  {}  folder {}{}\n",
+                i.instance,
+                if i.running { "running" } else { "stopped" },
+                i.folder.display(),
+                if l.team.is_none() {
+                    format!("  team {}", i.team_dir.display())
+                } else {
+                    String::new()
+                }
+            ));
+        }
+    }
+    if out.is_empty() {
+        out.push_str("no teams in the search paths and no instances\n");
+    }
+    out
+}
+
+/// After a window failed to start: when `nothing_started` (a fresh start
+/// that created no window of the instance), the instance is as stopped as
+/// before, so `stop`, liveness and `delete` aren't left unsure of a server
+/// that never ran it.
+fn unrecord_windows(state: &StateDir, meta: &mut Meta, nothing_started: bool, before: bool) {
+    if !nothing_started {
+        return;
+    }
+    meta.windows_started = Some(before);
+    if let Ok(body) = serde_json::to_vec_pretty(meta) {
+        let _ = write_private(&state.meta_file(), &body);
+    }
 }
 
 fn start_window(
@@ -1069,21 +1839,22 @@ fn start_window(
         .map_err(|e| format!("cannot start `{window}`: {e}"))
 }
 
-/// `brg down [--member ID]`.
+/// `brg stop <instance>[/<member>]`.
 ///
-/// Works on the tmux server recorded at `up`, refusing a caller whose
+/// Works on the tmux server recorded at the start, refusing a caller whose
 /// `BORGCHART_TMUX_SOCKET` names another, and changes nothing unless that
 /// server answers. A member's incarnation is marked ended, and launch files
 /// and secrets removed, only once its pane was stopped or the server showed
-/// it gone.
-pub fn down(input: &Input, only: Option<&str>) -> Result<Vec<String>, String> {
-    let dep = state_for(input);
-    let state = &dep.state;
+/// it gone. A full stop of a running instance records which members were
+/// running, for the next `start`; stopping a stopped one changes nothing.
+pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> {
+    let state = &inst.state;
     let session = state.session();
-    let team = state::team_name(&dep.source);
-    if !state.root.is_dir() {
-        return Ok(vec!["not running".into()]);
+    let team = inst.id.clone();
+    if let Some(id) = only {
+        address::member(inst, id)?;
     }
+    let lock = registry::lock()?;
     let _state_lock = lifecycle::lock_state(state)?;
     let Some(mut meta) = state::read_meta(state) else {
         // Nothing was ever recorded here, so brg started nothing to stop.
@@ -1094,7 +1865,7 @@ pub fn down(input: &Input, only: Option<&str>) -> Result<Vec<String>, String> {
         && *name != caller_socket
     {
         return Err(format!(
-            "team `{team}` is on tmux socket `{name}`, not `{caller_socket}`; stop it with BORGCHART_TMUX_SOCKET={name} brg down. Nothing was changed"
+            "instance `{team}` is on tmux socket `{name}`, not `{caller_socket}`; stop it with BORGCHART_TMUX_SOCKET={name} brg stop {team}. Nothing was changed"
         ));
     }
     let server = lifecycle::Server::of(&meta);
@@ -1114,13 +1885,20 @@ pub fn down(input: &Input, only: Option<&str>) -> Result<Vec<String>, String> {
         Err(_) if meta.stopped_at.is_some() || meta.windows_started == Some(false) => Vec::new(),
         Err(e) => {
             return Err(format!(
-                "{e}; nothing was changed. If team `{team}` is really gone (for example after a reboot), `brg up` and then `brg down` clear it"
+                "{e}; nothing was changed. If instance `{team}` is really gone (for example after a reboot), `brg start {team}` and then `brg stop {team}` clear it"
             ));
         }
     };
     let in_session = |r: &&lifecycle::PaneRow| r.session == session;
     let mut messages = Vec::new();
-    // The processes under the panes this `down` stops, found before tmux
+    // The members running now, for the next full start.
+    let running: std::collections::BTreeSet<String> = rows
+        .iter()
+        .filter(in_session)
+        .filter(|r| !r.dead && inst.record.members.contains_key(&r.window))
+        .map(|r| r.window.clone())
+        .collect();
+    // The processes under the panes this `stop` stops, found before tmux
     // kills the panes: some may have left the pane's session, and would
     // outlive it. Only live panes in this session on the recorded server,
     // and with `--member`, only those in the one window it kills.
@@ -1235,13 +2013,39 @@ pub fn down(input: &Input, only: Option<&str>) -> Result<Vec<String>, String> {
         )
         .map_err(|e| format!("cannot write state: {e}"))?;
     }
+    // A full stop of a running instance records who ran; a second stop
+    // keeps the first's record. Stopping one member takes it off.
+    let mut record = registry::read_instance(state)?;
+    let before = record.running_at_stop.clone();
+    match only {
+        None if !running.is_empty() => record.running_at_stop = Some(running),
+        None => {}
+        Some(id) => {
+            if let Some(set) = record.running_at_stop.as_mut() {
+                set.remove(id);
+            }
+        }
+    }
+    if record.running_at_stop != before {
+        lock.save_instance(state, &record)?;
+    }
     Ok(messages)
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct StatusRow {
+    /// The member's ID, a role's name (a role with no member yet), or a
+    /// plugin's name.
     pub name: String,
+    /// `member`, `role` (no member yet) or `plugin`.
     pub kind: &'static str,
+    pub instance: String,
+    /// The team's name.
+    pub team: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub member: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
     pub vendor: Option<String>,
     /// `"<model>"` or `"<model> <effort>"`, as declared.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1297,48 +2101,77 @@ pub fn state_label(row: &StatusRow) -> String {
     }
 }
 
-/// The name a deployment's team goes by in messages.
-pub fn team_name(input: &Input) -> String {
-    state::team_name(&state_for(input).source)
-}
-
-/// One snapshot of the team.
-pub fn status(input: &Input) -> Result<Vec<StatusRow>, String> {
-    let (report, validated) = validate(input);
-    let v = validated.ok_or_else(|| {
+/// Validate the instance's team folder, as recorded.
+fn validated(inst: &Instance) -> Result<Validated, String> {
+    if !inst.record.team_dir.join(crate::team::TEAM_FILE).is_file() {
+        return Err(format!(
+            "instance `{}`'s team folder {} is gone; if it moved, point the instance at it after a full stop: brg start {} --team <path>",
+            inst.id,
+            inst.record.team_dir.display(),
+            inst.id
+        ));
+    }
+    let (report, validated) = validate(&inst.record.team_dir);
+    validated.ok_or_else(|| {
         report
             .errors()
             .map(|d| d.to_string())
             .collect::<Vec<_>>()
             .join("\n")
-    })?;
-    let dep = state_for(input);
-    let state = &dep.state;
+    })
+}
+
+/// One snapshot of the instance.
+pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
+    let v = validated(inst)?;
+    let state = &inst.state;
     let session = state.session();
     let tmux = tmux_for(state);
     let windows = tmux.windows(&session);
     let meta = state::read_meta(state).unwrap_or_default();
     let run = meta.run.as_ref().map(|r| RunPaths::from_root(&r.dir));
-    let nodes: Vec<tree::Node> = v
-        .team
-        .members
-        .values()
-        .map(|m| tree::Node {
-            id: m.id.clone(),
-            parent: m.parent.clone(),
-            cols: Vec::new(),
-        })
-        .collect();
-    // The team runs while any member has a live window; a team stopped on
+    let nodes = member_nodes(inst, &v, |_| String::new());
+    // The instance runs while any member has a live window; one stopped on
     // purpose expects no one to be running.
     let team_running = windows
         .iter()
-        .any(|w| !w.dead && v.team.members.contains_key(&w.name));
+        .any(|w| !w.dead && inst.record.members.contains_key(&w.name));
     let mut rows = Vec::new();
     for (i, _) in tree::order(&nodes) {
         let id = &nodes[i].id;
-        let member = &v.team.members[id];
-        let posture = v.posture(id);
+        let Some(role) = inst.record.role_of(id) else {
+            // A role with no member yet.
+            let member = &v.team.members[id];
+            rows.push(StatusRow {
+                name: id.clone(),
+                kind: "role",
+                instance: inst.id.clone(),
+                team: inst.record.team.clone(),
+                member: None,
+                role: Some(id.clone()),
+                vendor: Some(member.vendor.as_str().into()),
+                model: member.model.as_ref().map(|m| match &m.effort {
+                    Some(e) => format!("{} {e}", m.name),
+                    None => m.name.clone(),
+                }),
+                parent: nodes[i].parent.clone(),
+                posture: Some(match member.posture {
+                    Posture::Vendor => "vendor".into(),
+                    Posture::Locked => "locked".into(),
+                }),
+                state: ON_DEMAND.into(),
+                rule: None,
+                detail: None,
+                vendor_version: None,
+                trust_accepted: None,
+                liveness: None,
+                expected_running: false,
+                start: member.start,
+            });
+            continue;
+        };
+        let member = &v.team.members[role];
+        let posture = v.posture(role);
         // Whether it ever ran here: with a bus, an incarnation in the team's
         // current storage (one that can't be read counts); without one, a
         // start recorded since the team last started afresh (or no record).
@@ -1358,12 +2191,16 @@ pub fn status(input: &Input) -> Result<Vec<StatusRow>, String> {
         let mut row = StatusRow {
             name: id.clone(),
             kind: "member",
+            instance: inst.id.clone(),
+            team: inst.record.team.clone(),
+            member: Some(id.clone()),
+            role: Some(role.to_string()),
             vendor: Some(member.vendor.as_str().into()),
             model: member.model.as_ref().map(|m| match &m.effort {
                 Some(e) => format!("{} {e}", m.name),
                 None => m.name.clone(),
             }),
-            parent: member.parent.clone(),
+            parent: nodes[i].parent.clone(),
             liveness: incarnation
                 .as_ref()
                 .ok()
@@ -1404,7 +2241,10 @@ pub fn status(input: &Input) -> Result<Vec<StatusRow>, String> {
                 let mut details: Vec<String> = row.detail.take().into_iter().collect();
                 // It waits for a person to answer it.
                 if row.state == "blocked" && row.rule.as_deref() == Some(TRUST_RULE) {
-                    details.insert(0, format!("waiting at folder trust: `brg attach {id}`"));
+                    details.insert(
+                        0,
+                        format!("waiting at folder trust: `brg attach {}`", inst.at(id)),
+                    );
                 }
                 if posture == Posture::Locked && !state.gate_marker(id).exists() {
                     details.push("gate not active: gets no input".to_string());
@@ -1415,7 +2255,11 @@ pub fn status(input: &Input) -> Result<Vec<StatusRow>, String> {
                 // Nothing is typed into it (`send`, the wake, folder trust)
                 // until it leaves copy mode.
                 if w.in_mode {
-                    details.push(format!("{}: {}", tmux::IN_MODE, tmux::leave_mode_hint(id)));
+                    details.push(format!(
+                        "{}: {}",
+                        tmux::IN_MODE,
+                        tmux::leave_mode_hint(&inst.at(id))
+                    ));
                 }
                 if !details.is_empty() {
                     row.detail = Some(details.join("; "));
@@ -1433,6 +2277,10 @@ pub fn status(input: &Input) -> Result<Vec<StatusRow>, String> {
         let mut row = StatusRow {
             name: name.clone(),
             kind: "plugin",
+            instance: inst.id.clone(),
+            team: inst.record.team.clone(),
+            member: None,
+            role: None,
             vendor: None,
             model: None,
             parent: None,
@@ -1514,10 +2362,13 @@ fn pending(dir: &Path) -> Option<String> {
 /// `brg status` as text: the team's tree with each member's vendor, model,
 /// state and details, then the plugin processes.
 /// The columns `status` and `status -i` show after a row's name: a
-/// member's vendor and model, state and details; a plugin's state and detail.
+/// member's vendor and model, state and details; a role with no member
+/// yet, `on demand (none created)`; a plugin's state and detail.
 pub fn status_cells(r: &StatusRow) -> Vec<String> {
-    if r.kind != "member" {
-        return vec![r.state.clone(), r.detail.clone().unwrap_or_default()];
+    match r.kind {
+        "member" => {}
+        "role" => return vec![ON_DEMAND.into()],
+        _ => return vec![r.state.clone(), r.detail.clone().unwrap_or_default()],
     }
     let mut detail = Vec::new();
     if r.posture.as_deref() == Some("locked") {
@@ -1535,10 +2386,10 @@ pub fn status_cells(r: &StatusRow) -> Vec<String> {
     ]
 }
 
-pub fn render_status(team: &str, rows: &[StatusRow]) -> String {
+pub fn render_status(header: &str, rows: &[StatusRow]) -> String {
     let nodes: Vec<tree::Node> = rows
         .iter()
-        .filter(|r| r.kind == "member")
+        .filter(|r| r.kind == "member" || r.kind == "role")
         .map(|r| tree::Node {
             id: r.name.clone(),
             parent: r.parent.clone(),
@@ -1550,7 +2401,7 @@ pub fn render_status(team: &str, rows: &[StatusRow]) -> String {
         .filter(|r| r.kind == "plugin")
         .map(|r| (r.name.clone(), status_cells(r)))
         .collect();
-    tree::render(team, &nodes, &plugins)
+    tree::render(header, &nodes, &plugins)
 }
 
 /// Why `send` refused, with its exit code.
@@ -1612,23 +2463,27 @@ pub fn check_text(text: &str) -> Result<(), SendError> {
     Ok(())
 }
 
-/// `brg send <member> <text>`.
+/// `brg send <instance>/<member> <text>`.
 pub fn send(
-    input: &Input,
+    inst: &Instance,
     member: &str,
     text: &str,
     force: bool,
     from: Option<&str>,
 ) -> Result<String, SendError> {
     check_text(text)?;
-    let dep = state_for(input);
-    let state = &dep.state;
+    let member = &address::member(inst, member).map_err(SendError::Usage)?;
+    let from = from
+        .map(|f| address::member(inst, f).map_err(SendError::Usage))
+        .transpose()?;
+    let from = from.as_deref();
+    let state = &inst.state;
     let meta = state::read_meta(state)
-        .ok_or_else(|| SendError::NotAlive("the team isn't running".into()))?;
+        .ok_or_else(|| SendError::NotAlive(format!("instance `{}` isn't running", inst.id)))?;
     let member_meta = meta
         .members
         .get(member)
-        .ok_or_else(|| SendError::Usage(format!("`{member}` is not a member")))?;
+        .ok_or_else(|| SendError::NotAlive(format!("`{}` hasn't started", inst.at(member))))?;
     let vendor = match member_meta.vendor.as_str() {
         "codex" => Vendor::Codex,
         _ => Vendor::Claude,
@@ -1644,7 +2499,8 @@ pub fn send(
     }
     if locked && !state.gate_marker(member).exists() {
         return Err(SendError::Refused(format!(
-            "`{member}` is `locked` but its gate is not active; it gets no input until it is (restart it with `brg up --member {member}`)"
+            "`{member}` is `locked` but its gate is not active; it gets no input until it is (restart it with `brg stop {0}` and `brg start {0}`)",
+            inst.at(member)
         )));
     }
     let session = state.session();
@@ -1668,7 +2524,8 @@ pub fn send(
     match reading.state {
         State::Blocked => {
             return Err(SendError::Blocked(format!(
-                "`{member}` is waiting at a prompt; attach to answer it (`brg attach {member}`)"
+                "`{member}` is waiting at a prompt; attach to answer it (`brg attach {}`)",
+                inst.at(member)
             )));
         }
         State::Unknown if !force => {
@@ -1691,7 +2548,7 @@ pub fn send(
         return Err(SendError::Blocked(format!(
             "`{member}`: {}; nothing was sent. To send, {}",
             tmux::IN_MODE,
-            tmux::leave_mode_hint(member)
+            tmux::leave_mode_hint(&inst.at(member))
         )));
     }
 
@@ -1719,7 +2576,8 @@ pub fn send(
     let title = now.as_ref().map(|w| w.title.clone()).unwrap_or_default();
     if rules.read(&title, &tmux.capture(&session, member)).state == State::Blocked {
         return Err(SendError::Blocked(format!(
-            "`{member}` showed a prompt while the text was being pasted; Enter was not pressed. Attach to check it (`brg attach {member}`)"
+            "`{member}` showed a prompt while the text was being pasted; Enter was not pressed. Attach to check it (`brg attach {}`)",
+            inst.at(member)
         )));
     }
     // A window that can't be read now counts as one in copy mode: Enter is
@@ -1728,7 +2586,7 @@ pub fn send(
         return Err(SendError::Blocked(format!(
             "`{member}`: {} after the text was pasted; Enter was not pressed, and the text is in its input box. Check it: {}",
             tmux::IN_MODE,
-            tmux::leave_mode_hint(member)
+            tmux::leave_mode_hint(&inst.at(member))
         )));
     }
     tmux.ok(&["send-keys", "-t", &t, "Enter"])
@@ -1737,38 +2595,38 @@ pub fn send(
     Ok(format!("sent to {member}"))
 }
 
-/// `brg logs <member>`.
-pub fn logs(input: &Input, name: &str, lines: usize) -> Result<String, String> {
-    let dep = state_for(input);
-    let session = dep.state.session();
-    let tmux = tmux_for(&dep.state);
-    let window = window_name(&tmux, &session, name)?;
+/// `brg logs <instance>/<member>` (or a plugin process).
+pub fn logs(inst: &Instance, name: &str, lines: usize) -> Result<String, String> {
+    let session = inst.state.session();
+    let tmux = tmux_for(&inst.state);
+    let window = window_name(inst, &tmux, &session, name)?;
     Ok(tmux.history(&session, &window, lines))
 }
 
-fn window_name(tmux: &Tmux, session: &str, name: &str) -> Result<String, String> {
-    if tmux.window(session, name).is_some() {
-        return Ok(name.to_string());
-    }
-    let plugin = format!("_{name}");
-    if tmux.window(session, &plugin).is_some() {
+/// A member's window (named in full), or a plugin process's (`_<plugin>`).
+fn window_name(inst: &Instance, tmux: &Tmux, session: &str, name: &str) -> Result<String, String> {
+    let plugin = format!("_{}", name.strip_prefix('_').unwrap_or(name));
+    if !inst.record.members.contains_key(name) && tmux.window(session, &plugin).is_some() {
         return Ok(plugin);
     }
-    Err(format!("`{name}` is not running"))
+    let member = address::member(inst, name)?;
+    if tmux.window(session, &member).is_some() {
+        return Ok(member);
+    }
+    Err(format!("`{}` is not running", inst.at(&member)))
 }
 
-fn attach_command(input: &Input, name: &str) -> Result<Command, String> {
-    let dep = state_for(input);
-    let session = dep.state.session();
-    let tmux = tmux_for(&dep.state);
-    let window = window_name(&tmux, &session, name)?;
+fn attach_command(inst: &Instance, name: &str) -> Result<Command, String> {
+    let session = inst.state.session();
+    let tmux = tmux_for(&inst.state);
+    let window = window_name(inst, &tmux, &session, name)?;
     let mut cmd = Command::new("tmux");
-    match state::read_meta(&dep.state).and_then(|m| m.socket_path) {
+    match state::read_meta(&inst.state).and_then(|m| m.socket_path) {
         Some(path) => cmd.arg("-S").arg(path),
         None => cmd.arg("-L").arg(state::tmux_socket()),
     };
     cmd.arg("-f")
-        .arg(dep.state.tmux_conf())
+        .arg(inst.state.tmux_conf())
         .args(["attach-session", "-t", &target(&session, &window)])
         // Works from inside your own tmux too: brg's server is a separate one.
         .env_remove("TMUX");
@@ -1779,15 +2637,15 @@ fn attach_command(input: &Input, name: &str) -> Result<Command, String> {
     Ok(cmd)
 }
 
-/// `brg attach <member>`: replaces this process with a tmux client.
-pub fn attach(input: &Input, name: &str) -> Result<(), String> {
-    let err = attach_command(input, name)?.exec();
+/// `brg attach <instance>/<member>`: replaces this process with a tmux client.
+pub fn attach(inst: &Instance, name: &str) -> Result<(), String> {
+    let err = attach_command(inst, name)?.exec();
     Err(format!("cannot start tmux: {err}"))
 }
 
 /// Attach, and return when the client detaches (used by `status -i`).
-pub fn attach_and_wait(input: &Input, name: &str) -> Result<(), String> {
-    let status = attach_command(input, name)?
+pub fn attach_and_wait(inst: &Instance, name: &str) -> Result<(), String> {
+    let status = attach_command(inst, name)?
         .status()
         .map_err(|e| format!("cannot start tmux: {e}"))?;
     if status.success() {
@@ -1830,6 +2688,36 @@ mod tests {
             None
         );
         assert_eq!(trust_dialog_path("no dialog here\n"), None);
+    }
+
+    #[test]
+    fn member_cwds_stay_inside_the_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("work");
+        std::fs::create_dir_all(folder.join("copies/lead-2a3b")).unwrap();
+        std::fs::create_dir_all(dir.path().join("elsewhere")).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("elsewhere"), folder.join("out")).unwrap();
+        let real = folder.canonicalize().unwrap();
+        assert_eq!(member_cwd(&folder, None, "lead-2a3b").unwrap(), real);
+        assert_eq!(
+            member_cwd(&folder, Some("copies/{member}"), "lead-2a3b").unwrap(),
+            real.join("copies/lead-2a3b")
+        );
+        assert!(
+            member_cwd(&folder, Some("out"), "lead-2a3b")
+                .unwrap_err()
+                .contains("outside")
+        );
+        assert!(
+            member_cwd(&folder, Some("missing"), "lead-2a3b")
+                .unwrap_err()
+                .contains("does not exist")
+        );
+        assert!(
+            member_cwd(&dir.path().join("gone"), None, "lead-2a3b")
+                .unwrap_err()
+                .contains("is gone")
+        );
     }
 
     #[test]

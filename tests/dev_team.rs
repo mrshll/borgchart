@@ -19,9 +19,9 @@ fn dev_team() -> PathBuf {
     team_dir("dev-team")
 }
 
-/// The ```yaml blocks of the dev team's README: the deployments a reader
-/// copies.
-fn readme_deployments() -> Vec<String> {
+/// The ```yaml blocks of the dev team's README: the configuration a
+/// reader copies.
+fn readme_configs() -> Vec<String> {
     let text = fs::read_to_string(dev_team().join("README.md")).unwrap();
     let mut blocks = Vec::new();
     let mut lines = text.lines();
@@ -34,36 +34,34 @@ fn readme_deployments() -> Vec<String> {
     blocks
 }
 
-/// A README deployment with its placeholders filled with paths under `dir`
-/// (checkouts and notes under `dir/work`), written to `dir/config/<name>.yaml`.
-/// The bus root stays `~/…`, so `HOME` decides where it lands.
-fn fill(dir: &Path, name: &str, text: &str) -> PathBuf {
-    let work = dir.join("work");
-    for w in ["lead", "impl", "design", "notes/design/current"] {
-        fs::create_dir_all(work.join(w)).unwrap();
+/// A pinned copy of both teams in `dir/teams`, as the README sets them up,
+/// with a README configuration block pointing there (`dir/config.yaml`).
+/// The instance works in `dir/work/repo`; the panel in `dir/work/design`.
+fn setup(dir: &Path, text: &str) -> PathBuf {
+    for w in ["repo", "design"] {
+        fs::create_dir_all(dir.join("work").join(w)).unwrap();
     }
-    let filled = text
-        .replace(
-            "/path/to/repo/",
-            &format!("{}/", env!("CARGO_MANIFEST_DIR")),
-        )
-        .replace("/path/to/work", &work.display().to_string());
+    for team in TEAMS {
+        copy_dir(&team_dir(team), &dir.join("teams").join(team));
+    }
+    let filled = text.replace("/path/to/teams", &dir.join("teams").display().to_string());
     assert!(!filled.contains("/path/to"), "{filled}");
-    let file = dir.join(format!("config/{name}.yaml"));
-    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let file = dir.join("config.yaml");
     fs::write(&file, filled).unwrap();
     fs::create_dir_all(dir.join("home")).unwrap();
     file
 }
 
-/// The value of the first `key:` line in a deployment's text, unquoted.
-fn yaml_value(text: &str, key: &str) -> String {
-    let line = text
-        .lines()
-        .find_map(|l| l.trim().strip_prefix(&format!("{key}:")))
-        .unwrap_or_else(|| panic!("no {key}: in {text}"));
-    let value = line.split(" #").next().unwrap().trim();
-    value.trim_matches('"').to_string()
+fn copy_dir(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for e in fs::read_dir(from).unwrap().flatten() {
+        let target = to.join(e.file_name());
+        if e.file_type().unwrap().is_dir() {
+            copy_dir(&e.path(), &target);
+        } else {
+            fs::copy(e.path(), &target).unwrap();
+        }
+    }
 }
 
 /// A member file's standing instruction: its text after the front matter.
@@ -72,58 +70,43 @@ fn member_body(file: &Path) -> String {
     text.splitn(3, "---\n").nth(2).unwrap().to_string()
 }
 
-/// The README's (first) dev-team deployment, filled in under `dir`.
-fn fill_example(dir: &Path) -> PathBuf {
-    fill(dir, "dev-team", &readme_deployments()[0])
-}
-
-/// A design-panel deployment, as the README describes it: no bus; each
-/// designer's local rules name the brief and the design directory.
-fn fill_panel(dir: &Path) -> PathBuf {
-    let mut text =
-        String::from("schema: 1\nteam: /path/to/repo/dev-design-team\nauth: login\nmembers:\n");
-    for designer in ["designer-claude", "designer-codex"] {
-        text.push_str(&format!(
-            "  {designer}:\n    cwd: /path/to/work/design\n    task: \"Local rules: brief /path/to/work/notes/design/current/brief.md; design directory /path/to/work/notes/design/current; deadline 30 minutes.\"\n"
-        ));
-    }
-    fill(dir, "dev-design-team", &text)
-}
-
-fn validate(dir: &Path, file: &Path) -> Output {
+fn validate(dir: &Path, config: &Path, team: &str) -> Output {
     Command::new(env!("CARGO_BIN_EXE_brg"))
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", dir.join("home"))
         .env("BORGCHART_STATE_HOME", dir.join("state"))
-        .args(["validate", "--json", "--file"])
-        .arg(file)
+        .env("BORGCHART_CONFIG", config)
+        .args(["validate", "--json", team])
         .output()
         .unwrap()
 }
 
-/// What a reader copies from the README works as written: no errors and no
-/// warnings once the placeholders are filled.
+/// What a reader copies from the README works as written: both teams
+/// validate by name with no errors and no warnings.
 #[test]
-fn the_readme_deployments_validate_cleanly() {
-    let dir = tempfile::tempdir().unwrap();
-    let blocks = readme_deployments();
+fn the_readme_configuration_validates_cleanly() {
+    let blocks = readme_configs();
     assert!(!blocks.is_empty());
     for (i, text) in blocks.iter().enumerate() {
-        let file = fill(dir.path(), &format!("readme-{i}"), text);
-        let out = validate(dir.path(), &file);
-        let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-        assert!(out.status.success(), "block {i}: {report}");
-        assert_eq!(
-            report["errors"],
-            serde_json::json!([]),
-            "block {i}: {report}"
-        );
-        assert_eq!(
-            report["warnings"],
-            serde_json::json!([]),
-            "block {i}: {report}"
-        );
+        let dir = tempfile::tempdir().unwrap();
+        let config = setup(dir.path(), text);
+        for team in TEAMS {
+            let out = validate(dir.path(), &config, team);
+            let report: serde_json::Value = serde_json::from_slice(&out.stdout)
+                .unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&out.stderr)));
+            assert!(out.status.success(), "block {i} {team}: {report}");
+            assert_eq!(
+                report["errors"],
+                serde_json::json!([]),
+                "block {i} {team}: {report}"
+            );
+            assert_eq!(
+                report["warnings"],
+                serde_json::json!([]),
+                "block {i} {team}: {report}"
+            );
+        }
     }
 }
 /// Each team's member files, by the `prompt:` lines of its `team.yaml`.
@@ -343,7 +326,7 @@ mod round {
         /// First, so its servers stop before the test's directory goes.
         tmux: crate::common::PrivateTmux,
         dir: tempfile::TempDir,
-        file: PathBuf,
+        config: PathBuf,
         socket: String,
     }
 
@@ -366,9 +349,8 @@ mod round {
                 .env("HOME", self.dir.path().join("home"))
                 .env("LANG", "C.UTF-8")
                 .env("BORGCHART_STATE_HOME", self.dir.path().join("state"))
-                .args(args)
-                .arg("--file")
-                .arg(&self.file);
+                .env("BORGCHART_CONFIG", &self.config)
+                .args(args);
             self.tmux.brg_env(&mut cmd, &self.socket);
             cmd
         }
@@ -388,23 +370,77 @@ mod round {
             self.dir.path().join(rel)
         }
 
-        /// Run a shell script inside `member`, as its own tool call.
-        fn run_in(&self, member: &str, name: &str, script: &str) {
+        fn read(&self, rel: &str) -> Option<serde_json::Value> {
+            serde_json::from_slice(&fs::read(self.path(rel)).ok()?).ok()
+        }
+
+        /// The instance of `team`, once created.
+        fn instance_of(&self, team: &str) -> Option<String> {
+            let reg = self.read("state/registry.json")?;
+            reg["instances"]
+                .as_object()?
+                .iter()
+                .find(|(_, e)| e["team"] == team)
+                .map(|(id, _)| id.clone())
+        }
+
+        /// The dev team's instance.
+        fn inst(&self) -> String {
+            self.instance_of("dev-team")
+                .expect("the dev team's instance")
+        }
+
+        /// The member of `role` in `instance`.
+        fn member_in(&self, instance: &str, role: &str) -> String {
+            let rec = self
+                .read(&format!("state/{instance}/instance.json"))
+                .expect("its record");
+            rec["members"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .find(|(_, m)| m["role"] == role)
+                .map(|(id, _)| id.clone())
+                .unwrap_or_else(|| panic!("no member of `{role}` in {instance}"))
+        }
+
+        /// The dev team's member of `role`.
+        fn m(&self, role: &str) -> String {
+            self.member_in(&self.inst(), role)
+        }
+
+        /// `role`'s member, addressed in full.
+        fn at(&self, role: &str) -> String {
+            format!("{}/{}", self.inst(), self.m(role))
+        }
+
+        /// `role`'s member's fake-agent log.
+        fn log(&self, role: &str) -> String {
+            fs::read_to_string(self.path(&format!("home/fake-agent/{}.jsonl", self.m(role))))
+                .unwrap()
+        }
+
+        /// Run a shell script inside `role`'s member, as its own tool call.
+        fn run_in(&self, role: &str, name: &str, script: &str) {
             let path = self.path(&format!("s/{name}.sh"));
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(&path, script).unwrap();
-            self.wait_idle(member);
-            self.ok(&["send", member, &format!("tool sh {}", path.display())]);
+            self.wait_idle(role);
+            self.ok(&[
+                "send",
+                &self.at(role),
+                &format!("tool sh {}", path.display()),
+            ]);
         }
 
-        fn wait_idle(&self, member: &str) {
-            self.wait_for(&format!("{member} idle"), || {
+        fn wait_idle(&self, role: &str) {
+            self.wait_for(&format!("{role} idle"), || {
                 let rows: serde_json::Value =
-                    serde_json::from_slice(&self.brg(&["status", "--json"]).stdout)
+                    serde_json::from_slice(&self.brg(&["status", &self.inst(), "--json"]).stdout)
                         .unwrap_or_default();
                 rows.as_array().is_some_and(|rows| {
                     rows.iter()
-                        .any(|r| r["name"] == member && r["state"] == "idle")
+                        .any(|r| r["role"] == role && r["kind"] == "member" && r["state"] == "idle")
                 })
             });
         }
@@ -435,11 +471,11 @@ mod round {
         }
 
         /// A background `inbox wait`, the way a Claude member self-wakes.
-        fn background_wait(&self, member: &str, name: &str, after: Option<&str>, timeout: u32) {
+        fn background_wait(&self, role: &str, name: &str, after: Option<&str>, timeout: u32) {
             let out = self.path(&format!("s/{name}.out"));
             let after = after.map(|a| format!("--after {a} ")).unwrap_or_default();
             self.run_in(
-                member,
+                role,
                 name,
                 &format!(
                     "( \"$BORGCHART_BIN\" inbox wait {after}--timeout {timeout} --json > {o} 2>&1; echo \"exit $?\" >> {o} ) </dev/null >/dev/null 2>&1 &\n",
@@ -448,25 +484,25 @@ mod round {
             );
         }
 
-        /// Publish a draft from inside `member`.
-        fn publish(&self, member: &str, key: &str, draft: serde_json::Value) -> serde_json::Value {
-            let json = self.publish_as(member, key, key, draft);
+        /// Publish a draft from inside `role`'s member.
+        fn publish(&self, role: &str, key: &str, draft: serde_json::Value) -> serde_json::Value {
+            let json = self.publish_as(role, key, key, draft);
             assert_eq!(json["outcome"], "committed", "{key}: {json}");
             json
         }
 
-        /// Publish from inside `member`, its output kept under `name` (so a
-        /// retry of the same key gets its own output file).
+        /// Publish from inside `role`'s member, its output kept under `name`
+        /// (so a retry of the same key gets its own output file).
         fn publish_as(
             &self,
-            member: &str,
+            role: &str,
             name: &str,
             key: &str,
             draft: serde_json::Value,
         ) -> serde_json::Value {
             let out = self.path(&format!("s/{name}.out"));
             self.run_in(
-                member,
+                role,
                 name,
                 &format!(
                     "\"$BORGCHART_BIN\" msg publish --key {key} --json > {o} 2>&1 <<'DRAFT'\n{draft}\nDRAFT\necho \"exit $?\" >> {o}\n",
@@ -478,11 +514,11 @@ mod round {
             json
         }
 
-        fn ack(&self, member: &str, id: &str) {
-            let name = format!("ack-{member}-{id}");
+        fn ack(&self, role: &str, id: &str) {
+            let name = format!("ack-{role}-{id}");
             let out = self.path(&format!("s/{name}.out"));
             self.run_in(
-                member,
+                role,
                 &name,
                 &format!(
                     "\"$BORGCHART_BIN\" msg ack {id} --json > {o} 2>&1; echo \"exit $?\" >> {o}\n",
@@ -490,6 +526,17 @@ mod round {
                 ),
             );
             assert_eq!(self.output(&name).1, 0);
+        }
+
+        /// Create the dev team's instance in the repo checkout.
+        fn create(&self) -> String {
+            let out = self.ok(&[
+                "create",
+                "dev-team",
+                &self.path("work/repo").display().to_string(),
+            ]);
+            self.wait_idle("lead");
+            out
         }
     }
 
@@ -504,7 +551,7 @@ mod round {
 
     fn new_team(tag: &str) -> Team {
         let dir = tempfile::tempdir().unwrap();
-        let file = fill_example(dir.path());
+        let config = setup(dir.path(), &readme_configs()[0]);
         let bin = dir.path().join("bin");
         fs::create_dir_all(&bin).unwrap();
         for vendor in ["claude", "codex"] {
@@ -514,7 +561,7 @@ mod round {
         Team {
             socket: tmux.socket(&format!("brg-dev-team-{tag}")),
             tmux,
-            file,
+            config,
             dir,
         }
     }
@@ -523,20 +570,24 @@ mod round {
     fn one_task_round_with_fake_agents() {
         let team = new_team("round");
         // Resolved, as brg records paths (macOS: /var is /private/var).
-        let work = team.path("work").canonicalize().unwrap();
+        let repo = team.path("work/repo").canonicalize().unwrap();
 
-        let up = team.ok(&["up"]);
+        let up = team.create();
+        let lead = team.m("lead");
         assert!(
             up.lines()
-                .any(|l| l.contains("lead") && l.ends_with("started")),
+                .any(|l| l.contains(&lead) && l.ends_with("started")),
             "{up}"
         );
-        assert!(up.contains("not started (start: false)"), "{up}");
-        team.wait_idle("lead");
+        assert!(
+            up.contains("implementer   on demand (none created)")
+                || up.contains("on demand (none created)"),
+            "{up}"
+        );
 
-        // The lead's opening prompt is its expanded member file plus its task.
-        let log = fs::read_to_string(team.path("home/fake-agent/lead.jsonl")).unwrap();
-        let start: serde_json::Value = serde_json::from_str(log.lines().next().unwrap()).unwrap();
+        // The lead's opening prompt is its expanded role file.
+        let start: serde_json::Value =
+            serde_json::from_str(team.log("lead").lines().next().unwrap()).unwrap();
         let prompt = start["argv"]
             .as_array()
             .unwrap()
@@ -544,37 +595,30 @@ mod round {
             .unwrap()
             .as_str()
             .unwrap();
-        // The prompt is the lead's member file with its include expanded,
-        // plus the deployment's local rules.
         let lead_body = member_body(&dev_team().join("orchestrator.md"));
         let base = fs::read_to_string(dev_team().join("includes/base.md")).unwrap();
         let opening = lead_body.lines().find(|l| !l.trim().is_empty()).unwrap();
         assert!(prompt.starts_with(opening.trim()), "{prompt}");
         assert!(prompt.contains(base.lines().next().unwrap()), "{prompt}");
-        let deployment = fs::read_to_string(&team.file).unwrap();
-        assert!(
-            prompt.contains(&yaml_value(&deployment, "task")),
-            "{prompt}"
-        );
         assert!(!prompt.contains("{{"), "{prompt}");
         assert_eq!(start["env"]["BORGCHART_BIN"], env!("CARGO_BIN_EXE_brg"));
-        assert_eq!(start["cwd"], work.join("lead").display().to_string());
-        // The bus root `~/…` landed under HOME.
-        let root = yaml_value(&readme_deployments()[0], "root");
-        assert!(
-            team.path(&format!("home/{}", root.strip_prefix("~/").unwrap()))
-                .is_dir()
-        );
+        assert_eq!(start["cwd"], repo.display().to_string());
+        let notes = PathBuf::from(start["env"]["BORGCHART_NOTES"].as_str().unwrap());
+        assert!(notes.is_dir(), "{notes:?}");
 
-        // The assignment is waiting before the implementer starts.
-        let agreement = work.join("notes/t1-agreement.md");
+        // The implementer exists, stopped, and its assignment waits for it.
+        team.ok(&["create", &format!("{}/implementer", team.inst())]);
+        team.wait_idle("implementer");
+        let implementer = team.m("implementer");
+        team.ok(&["stop", &team.at("implementer")]);
+        let agreement = notes.join("t1-agreement.md");
         fs::write(&agreement, "Task t1: a fictional change.\n").unwrap();
         let sha = borgchart::bus::manifest::sha256_hex(&fs::read(&agreement).unwrap());
-        let checkout = work.join("impl").display().to_string();
+        let checkout = repo.display().to_string();
         let assign = team.publish(
             "lead",
             "t1.assign.1.1",
-            serde_json::json!({"to": "implementer", "kind": "assign", "task": "t1", "attempt": 1,
+            serde_json::json!({"to": implementer, "kind": "assign", "task": "t1", "attempt": 1,
                 "body": "Make a fictional change.",
                 "facts": {"agreement": {"path": agreement, "sha256": sha}, "scope": "tests", "checkout": checkout}}),
         );
@@ -582,10 +626,15 @@ mod round {
 
         // The lead has listed nothing yet, so it waits without `--after`.
         team.background_wait("lead", "wait-1", None, 30);
-        team.ok(&["up", "--member", "implementer"]);
+        team.ok(&["start", &team.at("implementer")]);
         team.wait_idle("implementer");
-        let log = fs::read_to_string(team.path("home/fake-agent/implementer.jsonl")).unwrap();
-        let start: serde_json::Value = serde_json::from_str(log.lines().next().unwrap()).unwrap();
+        let log = team.log("implementer");
+        // Its latest start: the one after the assignment.
+        let start: serde_json::Value = log
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .rfind(|e| e["event"] == "start")
+            .unwrap();
         assert_eq!(start["cwd"], checkout);
         // The implementer is Codex, on the model its file names.
         let argv = start["argv"].to_string();
@@ -608,7 +657,7 @@ mod round {
         team.publish(
             "implementer",
             "t1.accept.1.1",
-            serde_json::json!({"to": "lead", "kind": "accept", "task": "t1", "attempt": 1, "reply_to": ["m1"]}),
+            serde_json::json!({"to": lead, "kind": "accept", "task": "t1", "attempt": 1, "reply_to": ["m1"]}),
         );
         let (woke, code) = team.output("wait-1");
         assert_eq!((code, ids(&woke)), (0, vec!["m2".to_string()]));
@@ -625,7 +674,7 @@ mod round {
         // Two questions in one attempt: each its own key (`.<n>` counts that
         // kind within the attempt); an identical retry is a duplicate.
         let question = |n: u32| {
-            serde_json::json!({"to": "lead", "kind": "question", "task": "t1", "attempt": 1,
+            serde_json::json!({"to": lead, "kind": "question", "task": "t1", "attempt": 1,
                 "body": format!("Fictional question {n}?")})
         };
         let q1 = team.publish("implementer", "t1.question.1.1", question(1));
@@ -658,7 +707,7 @@ mod round {
         team.publish(
             "lead",
             "t1.decision.1.1",
-            serde_json::json!({"to": "implementer", "kind": "decision", "task": "t1", "attempt": 1,
+            serde_json::json!({"to": implementer, "kind": "decision", "task": "t1", "attempt": 1,
                 "reply_to": ["m4"], "body": "Fictional answer."}),
         );
         let (answered, code) = team.output("impl-answer");
@@ -666,12 +715,12 @@ mod round {
         team.ack("implementer", "m5");
 
         team.background_wait("lead", "wait-3", Some("m5"), 30);
-        let report = work.join("notes/t1-report.md");
+        let report = notes.join("t1-report.md");
         fs::write(&report, "status: complete\naction-needed: none\n").unwrap();
         team.publish(
             "implementer",
             "t1.result.1.1",
-            serde_json::json!({"to": "lead", "kind": "result", "task": "t1", "attempt": 1, "reply_to": ["m1"],
+            serde_json::json!({"to": lead, "kind": "result", "task": "t1", "attempt": 1, "reply_to": ["m1"],
                 "body": "action-needed: none",
                 "artifacts": [{"path": report, "label": "report"}],
                 "facts": {"status": "complete", "checks": [{"name": "cargo test", "outcome": "pass"}]}}),
@@ -684,34 +733,35 @@ mod round {
         team.publish(
             "lead",
             "t1.verify.1.1",
-            serde_json::json!({"to": "implementer", "kind": "verify", "task": "t1", "attempt": 1,
+            serde_json::json!({"to": implementer, "kind": "verify", "task": "t1", "attempt": 1,
                 "reply_to": ["m6"], "facts": {"result": "m6", "outcome": "accepted"}}),
         );
-        team.ok(&["down", "--member", "implementer"]);
-        let show = team.ok(&["task", "show", "t1"]);
+        team.ok(&["stop", &team.at("implementer")]);
+        let inst = team.inst();
+        let show = team.ok(&["task", "show", "t1", "--instance", &inst]);
         assert!(show.contains("(gone, current)"), "{show}");
         team.publish(
             "lead",
             "t1.release.1.1",
-            serde_json::json!({"to": "implementer", "kind": "release", "task": "t1", "attempt": 1,
+            serde_json::json!({"to": implementer, "kind": "release", "task": "t1", "attempt": 1,
                 "facts": {"evidence": "verified m6; implementer stopped", "checkout": checkout}}),
         );
-        let list = team.ok(&["task", "list"]);
-        assert!(list.contains("t1  implementer#1  released"), "{list}");
+        let list = team.ok(&["task", "list", "--instance", &inst]);
+        assert!(
+            list.contains(&format!("t1  {implementer}#1  released")),
+            "{list}"
+        );
 
-        team.ok(&["down"]);
+        team.ok(&["stop", &inst]);
     }
 
-    /// The lead seats the design panel the way orchestrator.md says: `up`
-    /// and `down` of the panel's own deployment, by `--file`, from inside
-    /// the lead. Each designer's opening prompt names the brief.
+    /// The lead seats the design panel as a separate instance, from inside
+    /// the lead: `create` from the panel's team in the design checkout, then
+    /// `stop` and `delete` by the instance's ID.
     #[test]
-    fn the_lead_seats_the_design_panel_by_file() {
+    fn the_lead_seats_the_design_panel_as_an_instance() {
         let team = new_team("design");
-        let panel = fill_panel(team.dir.path());
-        let brief = team.path("work/notes/design/current/brief.md");
-        team.ok(&["up"]);
-        team.wait_idle("lead");
+        team.create();
 
         let run = |name: &str, args: &str| {
             let out = team.path(&format!("s/{name}.out"));
@@ -719,8 +769,7 @@ mod round {
                 "lead",
                 name,
                 &format!(
-                    "\"$BORGCHART_BIN\" {args} --file {f} > {o} 2>&1; echo \"exit $?\" >> {o}\n",
-                    f = panel.display(),
+                    "\"$BORGCHART_BIN\" {args} > {o} 2>&1; echo \"exit $?\" >> {o}\n",
                     o = out.display()
                 ),
             );
@@ -729,54 +778,64 @@ mod round {
             });
             fs::read_to_string(&out).unwrap()
         };
-        let up = run("panel-up", "up");
+        let up = run(
+            "panel-up",
+            &format!(
+                "create dev-design-team {}",
+                team.path("work/design").display()
+            ),
+        );
         assert!(up.ends_with("exit 0\n"), "{up}");
+        let panel = up.split_whitespace().next().unwrap().to_string();
+        assert!(panel.starts_with("dev-design-team-"), "{up}");
         for designer in ["designer-claude", "designer-codex"] {
+            let member = team.member_in(&panel, designer);
             assert!(
                 up.lines()
-                    .any(|l| l.contains(designer) && l.ends_with("started")),
+                    .any(|l| l.contains(&member) && l.ends_with("started")),
                 "{up}"
             );
-            let log = team.path(&format!("home/fake-agent/{designer}.jsonl"));
+            let log = team.path(&format!("home/fake-agent/{member}.jsonl"));
             team.wait_for(designer, || log.exists());
             let start: serde_json::Value =
                 serde_json::from_str(fs::read_to_string(&log).unwrap().lines().next().unwrap())
                     .unwrap();
             let argv = start["argv"].to_string();
-            assert!(argv.contains(&brief.display().to_string()), "{argv}");
             assert!(argv.contains("You are a designer"), "{argv}");
-            assert_eq!(start["env"]["BORGCHART_MEMBER"], designer);
+            assert_eq!(start["env"]["BORGCHART_MEMBER"], member.as_str());
+            assert_eq!(start["env"]["BORGCHART_INSTANCE"], panel.as_str());
         }
 
-        let down = run("panel-down", "down");
+        let down = run("panel-down", &format!("stop {panel}"));
         assert!(down.ends_with("exit 0\n"), "{down}");
-        // The panel is down; the dev team still runs.
-        let mut status = Command::new(env!("CARGO_BIN_EXE_brg"));
-        status
-            .env_clear()
-            .env("PATH", team.tmux.path_with("/usr/bin:/bin"))
-            .env("HOME", team.path("home"))
-            .env("BORGCHART_STATE_HOME", team.path("state"))
-            .args(["status", "--json", "--file"])
-            .arg(&panel);
-        let status = team
-            .tmux
-            .brg_env(&mut status, &team.socket)
-            .output()
-            .unwrap();
-        let rows: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+        let rows: serde_json::Value =
+            serde_json::from_slice(&team.brg(&["status", &panel, "--json"]).stdout).unwrap();
         for row in rows.as_array().unwrap() {
             assert_eq!(row["state"], "stopped", "{rows}");
         }
+        let gone = run("panel-delete", &format!("delete {panel}"));
+        assert!(gone.ends_with("exit 0\n"), "{gone}");
+        assert!(team.instance_of("dev-design-team").is_none());
+        // The dev team still runs.
         team.wait_idle("lead");
-        team.ok(&["down"]);
+        team.ok(&["stop", &team.inst()]);
     }
 
     /// Run brg with exactly the environment the lead was started with, as a
     /// tool process the lead left running would.
     fn lead_cmd(team: &Team) -> Command {
-        let log = fs::read_to_string(team.path("home/fake-agent/lead.jsonl")).unwrap();
-        let start: serde_json::Value = serde_json::from_str(log.lines().next().unwrap()).unwrap();
+        lead_cmd_at(team, 0)
+    }
+
+    /// As [`lead_cmd`], with the environment of the lead's `n`th start.
+    fn lead_cmd_at(team: &Team, n: usize) -> Command {
+        let log = team.log("lead");
+        let start: serde_json::Value = log
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|e| e["event"] == "start")
+            .nth(n)
+            .unwrap();
         let env: std::collections::BTreeMap<String, String> =
             serde_json::from_value(start["env"].clone()).unwrap();
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_brg"));
@@ -812,12 +871,13 @@ mod round {
         assert!(wake.contains("start no more waits"), "{wake}");
 
         let team = new_team("fenced");
-        team.ok(&["up"]);
-        team.wait_idle("lead");
+        team.create();
+        let inst = team.inst();
+        let lead = team.m("lead");
         let note = team.path("note.json");
         fs::write(
             &note,
-            r#"{"to": "lead", "kind": "note", "body": "Fictional note."}"#,
+            format!(r#"{{"to": "{lead}", "kind": "note", "body": "Fictional note."}}"#),
         )
         .unwrap();
         let note = note.display().to_string();
@@ -830,6 +890,8 @@ mod round {
             "n1",
             "--record",
             &note,
+            "--instance",
+            &inst,
         ]);
         assert_eq!(
             json(&as_lead(&team, &["inbox", "--json"])).0["records"][0]["id"],
@@ -851,7 +913,7 @@ mod round {
             std::thread::spawn(move || cmd.output().unwrap())
         };
         std::thread::sleep(Duration::from_millis(500));
-        team.ok(&["down"]);
+        team.ok(&["stop", &inst]);
         let (stale, code) = json(&waiting.join().unwrap());
         assert_eq!(
             (code, &stale["outcome"]),
@@ -859,7 +921,10 @@ mod round {
             "{stale}"
         );
         let message = stale["message"].as_str().unwrap();
-        assert!(message.contains("lead was stopped"), "{message}");
+        assert!(
+            message.contains(&format!("{lead} was stopped")),
+            "{message}"
+        );
         assert!(!message.contains("list the inbox again"), "{message}");
         // Listing again from that session is fenced the same way.
         let (relist, code) = json(&as_lead(&team, &["inbox", "--json"]));
@@ -873,14 +938,25 @@ mod round {
 
         // A restart with changed files under a waiting cursor is the one case
         // that says "list the inbox again", and there listing again works.
+        // (Open work isn't carried to fresh messages yet, so the note is
+        // read first.)
         let owner = |args: &[&str]| {
             let mut all = vec!["inbox"];
             all.extend_from_slice(args);
-            all.extend_from_slice(&["--external", "owner", "--json"]);
+            all.extend_from_slice(&["--external", "owner", "--json", "--instance", &inst]);
             all.iter().map(|s| s.to_string()).collect::<Vec<_>>()
         };
-        team.ok(&["up"]);
+        team.ok(&["start", &inst]);
         team.wait_idle("lead");
+        let ack = lead_cmd_at(&team, 1)
+            .args(["msg", "ack", "m1", "--json"])
+            .output()
+            .unwrap();
+        assert!(
+            ack.status.success(),
+            "{}",
+            String::from_utf8_lossy(&ack.stdout)
+        );
         let args = owner(&["wait", "--after", "m1", "--timeout", "30"]);
         let waiter = {
             let args: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -888,11 +964,12 @@ mod round {
             std::thread::spawn(move || cmd.output().unwrap())
         };
         std::thread::sleep(Duration::from_millis(500));
-        team.ok(&["down"]);
-        let mut text = fs::read_to_string(&team.file).unwrap();
+        team.ok(&["stop", &inst]);
+        let file = team.path("teams/dev-team/team.yaml");
+        let mut text = fs::read_to_string(&file).unwrap();
         text.push_str("# changed\n");
-        fs::write(&team.file, text).unwrap();
-        team.ok(&["up"]);
+        fs::write(&file, text).unwrap();
+        team.ok(&["start", &inst]);
         let (restarted, code) = json(&waiter.join().unwrap());
         assert_eq!(code, Some(8), "{restarted}");
         assert!(
@@ -905,6 +982,6 @@ mod round {
         let relist = owner(&[]);
         let relist: Vec<&str> = relist.iter().map(String::as_str).collect();
         team.ok(&relist);
-        team.ok(&["down"]);
+        team.ok(&["stop", &inst]);
     }
 }

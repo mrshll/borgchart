@@ -9,6 +9,7 @@
 # The lead seats the design panel, a separate team (../dev-design-team),
 # before costly-to-reverse design choices.
 default: claude
+bus: {}
 
 members:
   lead:

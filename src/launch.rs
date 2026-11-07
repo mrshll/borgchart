@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use crate::deploy::MemberDeploy;
 use crate::gate::GateRules;
 use crate::state::{StateDir, shell_quote};
 use crate::team::{Grant, Member, Plugin, Posture, Team, Vendor};
@@ -94,21 +93,16 @@ pub fn shim_script(
 /// would run the plugin instead.
 pub const RESERVED_COMMANDS: [&str; 2] = ["brg", "borgchart"];
 
-/// The member's opening prompt: its standing instruction, the deployment's
-/// extra task, and the commands it may run (shims by absolute path).
+/// The member's opening prompt: its role's standing instruction and the
+/// commands it may run (shims by absolute path).
 pub fn opening_prompt(
     member: &Member,
-    deploy: Option<&MemberDeploy>,
     granted: &[Granted],
     shim_dir: &Path,
     posture: Posture,
     help: &BTreeMap<String, String>,
 ) -> String {
     let mut prompt = member.instruction.trim_end().to_string();
-    if let Some(task) = deploy.and_then(|d| d.task.as_deref()) {
-        prompt.push_str("\n\n");
-        prompt.push_str(task.trim_end());
-    }
     if !granted.is_empty() {
         prompt.push_str("\n\n## Commands you can run\n\n");
         for g in granted {
@@ -301,17 +295,17 @@ pub fn member_launch(
     state: &StateDir,
     team: &Team,
     member: &Member,
-    deploy: Option<&MemberDeploy>,
+    member_id: &str,
     posture: Posture,
     help: &BTreeMap<String, String>,
     settings_path: &Path,
     codex_trust: Option<&Path>,
 ) -> LaunchSpec {
     let granted = granted(team, member);
-    let shim_dir = state.member_bin(&member.id);
-    let prompt = opening_prompt(member, deploy, &granted, &shim_dir, posture, help);
+    let shim_dir = state.member_bin(member_id);
+    let prompt = opening_prompt(member, &granted, &shim_dir, posture, help);
     let mcp_tools = mcp_tool_names(member.vendor, member);
-    let extra_args = deploy.map(|d| d.args.clone()).unwrap_or_default();
+    let extra_args = member.args.clone();
     let mut argv: Vec<String> = Vec::new();
     let mut gate = None;
     let mut settings = None;
@@ -350,7 +344,7 @@ pub fn member_launch(
                     argv.push("--strict-mcp-config".into());
                 }
                 argv.extend(["--settings".into(), settings_path.display().to_string()]);
-                settings = Some(claude_settings(brg, state, &member.id));
+                settings = Some(claude_settings(brg, state, member_id));
                 gate = Some(rules);
             }
             argv.extend(extra_args);
@@ -369,7 +363,7 @@ pub fn member_launch(
                 }
             }
             // A member runs unattended, so it must not stop at Codex's
-            // "Update available" prompt. The deployment's `args` can say otherwise.
+            // "Update available" prompt. The role's `args` can say otherwise.
             if !codex_args_set(&extra_args, "check_for_update_on_startup") {
                 argv.extend(["-c".into(), "check_for_update_on_startup=false".into()]);
             }
@@ -384,7 +378,7 @@ pub fn member_launch(
                     "-c".into(),
                     format!(
                         "sandbox_workspace_write.writable_roots=[{}]",
-                        writable_roots(state, &member.id, &granted)
+                        writable_roots(state, member_id, &granted)
                             .iter()
                             .map(|p| toml_string(&p.display().to_string()))
                             .collect::<Vec<_>>()
@@ -399,7 +393,7 @@ pub fn member_launch(
                     "-c".into(),
                     "sandbox_workspace_write.exclude_tmpdir_env_var=true".into(),
                     "-c".into(),
-                    codex_hook_config(brg, state, &member.id),
+                    codex_hook_config(brg, state, member_id),
                 ]);
                 gate = Some(gate_rules(&granted, &shim_dir, mcp_tools));
             }

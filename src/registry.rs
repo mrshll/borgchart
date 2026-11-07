@@ -1,0 +1,364 @@
+//! The registry of instances, the suffixes that make instance and member
+//! IDs, and each instance's own record.
+//!
+//! - `<state home>/registry.json` lists every instance: its ID, its team's
+//!   name and folder, its working folder, and when it was created. It also
+//!   keeps every suffix ever issued for a team's name, so an ID is never
+//!   issued twice, even after `delete`.
+//! - `<state home>/registry.lock` is the one lock over the registry, suffix
+//!   issue, checkout reservation, and the lifecycle steps that need them.
+//! - `<state home>/<instance>/instance.json` is the instance's record: its
+//!   team folder, working folder, issued members, and the members that were
+//!   running at the last stop.
+//!
+//! Both files are written whole (a temporary file, then a rename, 0600) while
+//! the lock is held, so a reader without the lock sees the old file or the
+//! new one.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs::File;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use crate::state::{self, StateDir};
+
+pub const SCHEMA: u32 = 1;
+
+/// The characters a suffix is made of: no `0 1 i l o`.
+pub const ALPHABET: &[u8] = b"23456789abcdefghjkmnpqrstuvwxyz";
+pub const SUFFIX_LEN: usize = 4;
+
+/// Whether `s` is a well-formed suffix.
+pub fn is_suffix(s: &str) -> bool {
+    s.len() == SUFFIX_LEN && s.bytes().all(|b| ALPHABET.contains(&b))
+}
+
+/// `<base>-<suffix>` split from the right, so a base with `-` in it works:
+/// `dev-team-k3f9` is (`dev-team`, `k3f9`).
+pub fn split_id(id: &str) -> Option<(&str, &str)> {
+    let (base, suffix) = id.rsplit_once('-')?;
+    (!base.is_empty() && is_suffix(suffix)).then_some((base, suffix))
+}
+
+/// Test builds: `BORGCHART_SUFFIX_SEED=<number>` makes the suffixes a fixed
+/// sequence, the same in every process, so a test can force collisions.
+#[cfg(feature = "test-support")]
+fn seeded(n: usize) -> Option<Vec<u8>> {
+    use std::sync::Mutex;
+    static STATE: Mutex<Option<u64>> = Mutex::new(None);
+    let mut state = STATE.lock().ok()?;
+    if state.is_none() {
+        let seed: u64 = std::env::var("BORGCHART_SUFFIX_SEED").ok()?.parse().ok()?;
+        *state = Some(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+    }
+    let x = state.as_mut()?;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        // xorshift64
+        *x ^= *x << 13;
+        *x ^= *x >> 7;
+        *x ^= *x << 17;
+        out.push((*x >> 24) as u8);
+    }
+    Some(out)
+}
+
+#[cfg(not(feature = "test-support"))]
+fn seeded(_n: usize) -> Option<Vec<u8>> {
+    None
+}
+
+fn random_bytes(n: usize) -> Result<Vec<u8>, String> {
+    if let Some(bytes) = seeded(n) {
+        return Ok(bytes);
+    }
+    let mut buf = vec![0u8; n];
+    File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut buf))
+        .map_err(|e| format!("cannot read /dev/urandom: {e}"))?;
+    Ok(buf)
+}
+
+/// One random suffix. Bytes past the largest multiple of the alphabet's
+/// size are skipped, so every character is equally likely.
+fn random_suffix() -> Result<String, String> {
+    let limit = (256 / ALPHABET.len() * ALPHABET.len()) as u8;
+    let mut out = String::with_capacity(SUFFIX_LEN);
+    while out.len() < SUFFIX_LEN {
+        for b in random_bytes(SUFFIX_LEN * 2)? {
+            if b < limit && out.len() < SUFFIX_LEN {
+                out.push(ALPHABET[b as usize % ALPHABET.len()] as char);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The one suffix generator: a random suffix that `taken` doesn't hold,
+/// retried on collision.
+pub fn new_suffix(taken: impl Fn(&str) -> bool) -> Result<String, String> {
+    for _ in 0..10_000 {
+        let s = random_suffix()?;
+        if !taken(&s) {
+            return Ok(s);
+        }
+    }
+    Err("brg couldn't find a free suffix; too many have been issued".into())
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Registry {
+    pub schema: u32,
+    pub instances: BTreeMap<String, Entry>,
+    /// Every suffix issued for each team name, kept after `delete`.
+    pub issued: BTreeMap<String, BTreeSet<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Entry {
+    pub team: String,
+    pub team_dir: PathBuf,
+    pub folder: PathBuf,
+    pub created_at: String,
+}
+
+/// `instance.json`: one instance's record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstanceRecord {
+    pub schema: u32,
+    pub id: String,
+    pub team: String,
+    pub team_dir: PathBuf,
+    pub folder: PathBuf,
+    pub created_at: String,
+    /// Every member issued in this instance, by ID, with its role. A
+    /// member's ID is never issued again in the instance.
+    pub members: BTreeMap<String, IssuedMember>,
+    /// The members running when the instance was last fully stopped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub running_at_stop: Option<BTreeSet<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IssuedMember {
+    pub role: String,
+    /// The working folder its latest start resolved (symlinks resolved).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<PathBuf>,
+}
+
+impl InstanceRecord {
+    /// The members of `role`, by ID.
+    pub fn members_of(&self, role: &str) -> Vec<String> {
+        self.members
+            .iter()
+            .filter(|(_, m)| m.role == role)
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    /// The role a member fills.
+    pub fn role_of(&self, member: &str) -> Option<&str> {
+        self.members.get(member).map(|m| m.role.as_str())
+    }
+
+    /// Issue a new member of `role`: `<role>-<suffix>`, never one this
+    /// instance issued before.
+    pub fn issue_member(&mut self, role: &str) -> Result<String, String> {
+        let suffix = new_suffix(|s| {
+            self.members
+                .keys()
+                .any(|id| split_id(id).is_some_and(|(_, t)| t == s))
+        })?;
+        let id = format!("{role}-{suffix}");
+        self.members.insert(
+            id.clone(),
+            IssuedMember {
+                role: role.to_string(),
+                cwd: None,
+            },
+        );
+        Ok(id)
+    }
+}
+
+fn registry_file() -> PathBuf {
+    state::state_home().join("registry.json")
+}
+
+fn lock_path() -> PathBuf {
+    state::state_home().join("registry.lock")
+}
+
+fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Option<T>, String> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|e| format!("{} can't be read: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("cannot read {}: {e}", path.display())),
+    }
+}
+
+fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    let body = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
+    state::write_private(path, &body).map_err(|e| format!("cannot write {}: {e}", path.display()))
+}
+
+/// The registry as it is now, read without the lock. Creates nothing.
+pub fn load() -> Result<Registry, String> {
+    Ok(read_json(&registry_file())?.unwrap_or(Registry {
+        schema: SCHEMA,
+        ..Registry::default()
+    }))
+}
+
+/// The registry lock, held while it lives. Everything that changes the
+/// registry or an instance's record goes through it.
+pub struct Lock {
+    _file: File,
+}
+
+/// Take the registry lock, waiting for it. Never take it twice in one
+/// process: the second waits for the first for ever.
+pub fn lock() -> Result<Lock, String> {
+    let home = state::state_home();
+    state::ensure_dir(&home).map_err(|e| format!("cannot create {}: {e}", home.display()))?;
+    let path = lock_path();
+    let file =
+        state::open_lock(&path).map_err(|e| format!("cannot open {}: {e}", path.display()))?;
+    file.lock()
+        .map_err(|e| format!("cannot lock {}: {e}", path.display()))?;
+    Ok(Lock { _file: file })
+}
+
+impl Lock {
+    pub fn load(&self) -> Result<Registry, String> {
+        load()
+    }
+
+    pub fn save(&self, registry: &Registry) -> Result<(), String> {
+        write_json(&registry_file(), registry)
+    }
+
+    pub fn save_instance(&self, state: &StateDir, record: &InstanceRecord) -> Result<(), String> {
+        write_json(&state.instance_file(), record)
+    }
+}
+
+/// An instance's record, read without the lock.
+pub fn read_instance(state: &StateDir) -> Result<InstanceRecord, String> {
+    read_json(&state.instance_file())?
+        .ok_or_else(|| format!("instance `{}` has no record", state.id))
+}
+
+/// Register a new instance of `team` (its name and folder) working in
+/// `folder`: a fresh suffix, the registry entry, the state folder and its
+/// record. Called with the lock held.
+pub fn create(
+    lock: &Lock,
+    team: &str,
+    team_dir: &Path,
+    folder: &Path,
+    created_at: &str,
+) -> Result<(StateDir, InstanceRecord), String> {
+    let mut registry = lock.load()?;
+    let issued = registry.issued.entry(team.to_string()).or_default();
+    let taken: Vec<String> = registry.instances.keys().cloned().collect();
+    let suffix =
+        new_suffix(|s| issued.contains(s) || taken.iter().any(|id| id == &format!("{team}-{s}")))?;
+    // An ID nobody else used, even outside the registry (a stray folder).
+    let id = format!("{team}-{suffix}");
+    issued.insert(suffix);
+    let state = StateDir::new(&id);
+    if state.root.exists() {
+        lock.save(&registry)?;
+        return Err(format!(
+            "{} already exists, though no instance `{id}` is registered; try again",
+            state.root.display()
+        ));
+    }
+    for dir in [&state.root, &state.messages_dir(), &state.notes_dir()] {
+        state::ensure_dir(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    }
+    let record = InstanceRecord {
+        schema: SCHEMA,
+        id: id.clone(),
+        team: team.to_string(),
+        team_dir: team_dir.to_path_buf(),
+        folder: folder.to_path_buf(),
+        created_at: created_at.to_string(),
+        members: BTreeMap::new(),
+        running_at_stop: None,
+    };
+    lock.save_instance(&state, &record)?;
+    registry.instances.insert(
+        id,
+        Entry {
+            team: team.to_string(),
+            team_dir: team_dir.to_path_buf(),
+            folder: folder.to_path_buf(),
+            created_at: created_at.to_string(),
+        },
+    );
+    lock.save(&registry)?;
+    Ok((state, record))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn suffixes_are_well_formed() {
+        for _ in 0..50 {
+            let s = random_suffix().unwrap();
+            assert!(is_suffix(&s), "{s}");
+        }
+        assert!(!is_suffix("k3f0"));
+        assert!(!is_suffix("k3f"));
+        assert!(!is_suffix("K3F9"));
+    }
+
+    #[test]
+    fn ids_split_from_the_right() {
+        assert_eq!(split_id("dev-team-k3f9"), Some(("dev-team", "k3f9")));
+        assert_eq!(split_id("lead-q8m3"), Some(("lead", "q8m3")));
+        assert_eq!(split_id("lead"), None);
+        assert_eq!(split_id("dev-tea1"), None);
+        assert_eq!(split_id("-k3f9"), None);
+    }
+
+    #[test]
+    fn collisions_are_retried() {
+        let first = new_suffix(|_| false).unwrap();
+        let next = new_suffix(|s| s == first).unwrap();
+        assert_ne!(first, next);
+    }
+
+    #[test]
+    fn members_are_issued_once() {
+        let mut r = InstanceRecord {
+            schema: SCHEMA,
+            id: "t-2222".into(),
+            team: "t".into(),
+            team_dir: "/x".into(),
+            folder: "/y".into(),
+            created_at: "now".into(),
+            members: BTreeMap::new(),
+            running_at_stop: None,
+        };
+        let a = r.issue_member("my-role").unwrap();
+        let (role, suffix) = split_id(&a).unwrap();
+        assert_eq!(role, "my-role");
+        assert!(is_suffix(suffix));
+        assert_eq!(r.members_of("my-role"), vec![a.clone()]);
+        assert_eq!(r.role_of(&a), Some("my-role"));
+    }
+}

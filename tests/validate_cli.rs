@@ -10,8 +10,9 @@ use team_fixture::Fixture;
 fn cli_reports_json_and_exit_codes() {
     let f = Fixture::new();
     let ok = common::command(env!("CARGO_BIN_EXE_brg"))
-        .args(["validate", "--json", "--file"])
-        .arg(f.path("borgchart.yaml"))
+        .args(["validate", "--json"])
+        .arg(f.dir.path())
+        .env("BORGCHART_CONFIG", f.path("config.yaml"))
         .output()
         .unwrap();
     assert!(ok.status.success());
@@ -20,8 +21,9 @@ fn cli_reports_json_and_exit_codes() {
 
     f.edit("team.yaml", "parent: lead", "parent: boss");
     let bad = common::command(env!("CARGO_BIN_EXE_borgchart"))
-        .args(["validate", "--file"])
-        .arg(f.path("borgchart.yaml"))
+        .arg("validate")
+        .arg(f.dir.path())
+        .env("BORGCHART_CONFIG", f.path("config.yaml"))
         .output()
         .unwrap();
     assert_eq!(bad.status.code(), Some(1));

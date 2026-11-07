@@ -9,16 +9,16 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, TableState};
 
+use crate::address::Instance;
 use crate::runtime::{self, StatusRow};
 use crate::tree;
-use crate::validate::Input;
 
 const REFRESH: Duration = Duration::from_secs(2);
 
 /// `brg status -w`: print the table every few seconds until interrupted.
-pub fn watch(input: &Input, interval: Duration) -> Result<(), String> {
+pub fn watch(inst: &Instance, interval: Duration) -> Result<(), String> {
     loop {
-        let rows = runtime::status(input)?;
+        let rows = runtime::status(inst)?;
         let mut out = std::io::stdout();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -27,7 +27,7 @@ pub fn watch(input: &Input, interval: Duration) -> Result<(), String> {
         let _ = write!(
             out,
             "\x1b[H\x1b[2J{}\nrefreshed at {} (UTC epoch); Ctrl-C to stop\n",
-            runtime::render_status(&runtime::team_name(input), &rows),
+            runtime::render_status(&runtime::header(inst), &rows),
             now
         );
         let _ = out.flush();
@@ -59,7 +59,7 @@ fn draw(
     // The same tree and columns as `brg status`.
     let nodes: Vec<tree::Node> = rows
         .iter()
-        .filter(|r| r.kind == "member")
+        .filter(|r| r.kind == "member" || r.kind == "role")
         .map(|r| tree::Node {
             id: r.name.clone(),
             parent: r.parent.clone(),
@@ -74,7 +74,7 @@ fn draw(
         .iter()
         .map(|r| {
             let name = match r.kind {
-                "member" => format!(
+                "member" | "role" => format!(
                     "{}{}",
                     prefixes.get(&r.name).cloned().unwrap_or_default(),
                     r.name
@@ -82,8 +82,14 @@ fn draw(
                 _ => format!("plugin {}", r.name),
             };
             let mut cols = runtime::status_cells(r);
-            if r.kind != "member" {
-                cols.insert(0, String::new());
+            match r.kind {
+                "member" => {}
+                // A role with no member yet: `on demand (none created)` as its state.
+                "role" => {
+                    cols.insert(0, String::new());
+                    cols.push(String::new());
+                }
+                _ => cols.insert(0, String::new()),
             }
             let [vendor, state, detail] = <[String; 3]>::try_from(cols).unwrap_or_default();
             [name, vendor, state, detail]
@@ -130,9 +136,11 @@ fn draw(
 }
 
 /// `brg status -i`.
-pub fn interactive(input: &Input) -> Result<(), String> {
-    let mut rows = runtime::status(input)?;
-    let team = runtime::team_name(input);
+pub fn interactive(inst: &Instance) -> Result<(), String> {
+    let mut rows = runtime::status(inst)?;
+    // The same header line as `brg status`: the instance, its team folder
+    // and its working folder.
+    let team = runtime::header(inst);
     let mut table_state = TableState::default().with_selected(Some(0));
     let mut message = String::new();
     let mut terminal = ratatui::try_init().map_err(|e| format!("cannot start the screen: {e}"))?;
@@ -146,7 +154,7 @@ pub fn interactive(input: &Input) -> Result<(), String> {
         match polled {
             Err(e) => break Err(e),
             Ok(false) => {
-                if let Ok(r) = runtime::status(input) {
+                if let Ok(r) = runtime::status(inst) {
                     rows = r;
                 }
                 last = Instant::now();
@@ -173,7 +181,7 @@ pub fn interactive(input: &Input) -> Result<(), String> {
                 table_state.select(Some(selected.saturating_sub(1)))
             }
             KeyCode::Char('r') => {
-                if let Ok(r) = runtime::status(input) {
+                if let Ok(r) = runtime::status(inst) {
                     rows = r;
                 }
                 message.clear();
@@ -188,7 +196,7 @@ pub fn interactive(input: &Input) -> Result<(), String> {
                 }
                 let name = row.name.clone();
                 ratatui::restore();
-                let outcome = runtime::attach_and_wait(input, &name);
+                let outcome = runtime::attach_and_wait(inst, &name);
                 terminal = match ratatui::try_init() {
                     Ok(t) => t,
                     Err(e) => break Err(format!("cannot restore the screen: {e}")),
@@ -198,7 +206,7 @@ pub fn interactive(input: &Input) -> Result<(), String> {
                     Ok(()) => format!("back from {name}"),
                     Err(e) => e,
                 };
-                if let Ok(r) = runtime::status(input) {
+                if let Ok(r) = runtime::status(inst) {
                     rows = r;
                 }
                 last = Instant::now();

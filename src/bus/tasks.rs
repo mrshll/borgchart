@@ -841,6 +841,7 @@ mod tests {
                 (
                     m.to_string(),
                     ManifestMember {
+                        role: None,
                         vendor: "claude".into(),
                         parent: p.map(str::to_string),
                         model: None,
@@ -852,8 +853,9 @@ mod tests {
             schema: 1,
             run: "r1".into(),
             created_at: "2026-11-05T19:00:00.000Z".into(),
-            deployment: "d".into(),
-            source: "/x/borgchart.yaml".into(),
+            instance: "d-2222".into(),
+            source: "/x/team".into(),
+            roles: BTreeMap::new(),
             config: ConfigSnapshot {
                 version: 1,
                 digest: "00".into(),

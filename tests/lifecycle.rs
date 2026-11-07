@@ -32,7 +32,7 @@ const TEAM: &str = r#"
 plugins:
   pager:
     path: plugins/pager
-    env: [PAGER_TOKEN, PAGER_ROOM]
+    env: [PAGER_TOKEN, {PAGER_ROOM: R0000EXAMPLE}]
     actions:
       read: pager read <id>
 members:
@@ -51,8 +51,8 @@ const HELPER: &str =
     "---\nrole: helper\nmodels:\n  codex: example-model\n---\nYou are the helper.\n";
 
 impl Env {
-    /// A two-member team in a folder called `oncall`; with `bus`, a
-    /// deployment with `bus: {root}`.
+    /// A two-member team in a folder called `oncall`, its instance working
+    /// in `work`; with `bus`, the team has `bus: {}`.
     fn new(bus: bool) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let tmux = common::PrivateTmux::new();
@@ -71,12 +71,11 @@ impl Env {
             "oncall/plugins/pager/pager",
             "#!/bin/sh\necho \"pager $* member=$BORGCHART_MEMBER token_len=${#PAGER_TOKEN}\" >> \"$BORGCHART_STATE_DIR/calls.log\"\necho ok\n",
         );
-        let mut deploy =
-            "schema: 1\nplugins:\n  pager:\n    env: {PAGER_ROOM: R0000EXAMPLE}\n".to_string();
         if bus {
-            deploy.push_str(&format!("bus:\n  root: {}\n", env.path("teams").display()));
+            env.write("oncall/team.yaml", &format!("bus: {{}}\n{TEAM}"));
         }
-        env.write("oncall/borgchart.yaml", &deploy);
+        fs::create_dir_all(env.path("work")).unwrap();
+        env.write("config.yaml", "schema: 1\n");
         env
     }
 
@@ -116,11 +115,129 @@ impl Env {
             .env("HOME", self.path("home"))
             .env("LANG", "C.UTF-8")
             .env("BORGCHART_STATE_HOME", self.path("state"))
+            .env("BORGCHART_CONFIG", self.path("config.yaml"))
             .env("PAGER_TOKEN", SECRET)
             .current_dir(self.path("oncall"))
-            .args(args);
+            .args(self.translate(args));
         self.tmux.brg_env(&mut cmd, &self.socket);
         cmd
+    }
+
+    /// The fixture's one instance, once created.
+    fn instance(&self) -> Option<String> {
+        let reg: Value =
+            serde_json::from_slice(&fs::read(self.path("state/registry.json")).ok()?).ok()?;
+        reg["instances"].as_object()?.keys().next().cloned()
+    }
+
+    /// The member of `role` in the instance, once created.
+    fn member_id(&self, role: &str) -> Option<String> {
+        let inst = self.instance()?;
+        let rec: Value = serde_json::from_slice(
+            &fs::read(self.path(&format!("state/{inst}/instance.json"))).ok()?,
+        )
+        .ok()?;
+        rec["members"]
+            .as_object()?
+            .iter()
+            .find(|(_, m)| m["role"] == role)
+            .map(|(id, _)| id.clone())
+    }
+
+    /// The member of `role` (it must exist).
+    fn m(&self, role: &str) -> String {
+        self.member_id(role)
+            .unwrap_or_else(|| panic!("no member of `{role}` yet"))
+    }
+
+    /// The instance (it must exist).
+    fn inst(&self) -> String {
+        self.instance().expect("an instance")
+    }
+
+    /// Printed trees with the instance line as `oncall`, and member IDs as
+    /// their roles padded to the same width, so they compare exactly.
+    fn shown(&self, text: &str) -> String {
+        let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+        if let Some(first) = lines.first_mut() {
+            *first = "oncall".into();
+        }
+        let mut out = lines.join("\n") + "\n";
+        for role in ["lead", "helper"] {
+            if let Some(id) = self.member_id(role) {
+                out = out.replace(&id, &format!("{role:<width$}", width = id.len()));
+            }
+        }
+        out
+    }
+
+    /// A member's incarnation record, by role.
+    fn incarnation_file(&self, role: &str) -> PathBuf {
+        self.run_dir()
+            .join(format!("runtime/incarnations/{}.json", self.m(role)))
+    }
+
+    /// The tests act on the team's one instance, and name members by role
+    /// (each role has one member): `start` creates the instance the first
+    /// time and starts it after, `start <role>` creates or starts its
+    /// member, `stop [<role>]`, `status`, `logs`, `attach` and `send` go to
+    /// the instance.
+    fn translate(&self, args: &[&str]) -> Vec<String> {
+        let inst = self.instance();
+        let at = |role: &str| match (&inst, self.member_id(role)) {
+            (Some(i), Some(m)) => format!("{i}/{m}"),
+            (Some(i), None) => format!("{i}/{role}"),
+            (None, _) => role.to_string(),
+        };
+        let own = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        match args {
+            ["start", rest @ ..] if rest.is_empty() || rest[0].starts_with('-') => match &inst {
+                None => {
+                    let mut v = vec![
+                        "create".to_string(),
+                        self.path("oncall").display().to_string(),
+                        self.path("work").display().to_string(),
+                    ];
+                    v.extend(own(rest));
+                    v
+                }
+                Some(i) => {
+                    let mut v = vec!["start".to_string(), i.clone()];
+                    v.extend(own(rest));
+                    v
+                }
+            },
+            ["start", role, rest @ ..] => {
+                let mut v = match (&inst, self.member_id(role)) {
+                    (Some(i), None) => vec!["create".to_string(), format!("{i}/{role}")],
+                    _ => vec!["start".to_string(), at(role)],
+                };
+                v.extend(own(rest));
+                v
+            }
+            ["stop", rest @ ..] if rest.is_empty() || rest[0].starts_with('-') => {
+                let mut v = vec!["stop".to_string(), inst.clone().unwrap_or_default()];
+                v.extend(own(rest));
+                v
+            }
+            ["stop", role, rest @ ..] => {
+                let mut v = vec!["stop".to_string(), at(role)];
+                v.extend(own(rest));
+                v
+            }
+            ["status", rest @ ..] => {
+                let mut v = vec!["status".to_string()];
+                v.extend(inst.clone());
+                v.extend(own(rest));
+                v
+            }
+            [cmd @ ("logs" | "attach" | "send"), role, rest @ ..] => {
+                let mut v = vec![cmd.to_string(), at(role)];
+                v.extend(own(rest));
+                v
+            }
+            _ => own(args),
+        }
     }
 
     fn brg_cmd(&self, args: &[&str]) -> Command {
@@ -142,7 +259,8 @@ impl Env {
         String::from_utf8_lossy(&out.stdout).to_string()
     }
 
-    fn events(&self, member: &str) -> Vec<Value> {
+    fn events(&self, role: &str) -> Vec<Value> {
+        let member = self.member_id(role).unwrap_or_else(|| role.to_string());
         fs::read_to_string(self.path(&format!("home/fake-agent/{member}.jsonl")))
             .unwrap_or_default()
             .lines()
@@ -176,10 +294,13 @@ impl Env {
         serde_json::from_slice(&out.stdout).unwrap()
     }
 
+    /// A role's member's row (or the role's, with no member), or a plugin's.
     fn row(&self, name: &str) -> Value {
-        self.rows()
-            .into_iter()
-            .find(|r| r["name"] == name)
+        let rows = self.rows();
+        rows.iter()
+            .find(|r| r["role"] == name)
+            .or_else(|| rows.iter().find(|r| r["name"] == name))
+            .cloned()
             .unwrap_or(Value::Null)
     }
 
@@ -188,25 +309,19 @@ impl Env {
     }
 
     fn up(&self) -> Output {
-        let out = self.ok(&["up"]);
+        let out = self.ok(&["start"]);
         self.wait_for("lead idle", |e| e.state_of("lead") == "idle");
         out
     }
 
     fn up_helper(&self) {
-        self.ok(&["up", "--member", "helper"]);
+        self.ok(&["start", "helper"]);
         self.wait_for("helper idle", |e| e.state_of("helper") == "idle");
     }
 
-    /// The team's message storage: the one directory under the bus root.
+    /// The instance's message storage.
     fn store(&self) -> PathBuf {
-        let dirs: Vec<PathBuf> = fs::read_dir(self.path("teams"))
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .collect();
-        assert_eq!(dirs.len(), 1, "{dirs:?}");
-        dirs[0].clone()
+        self.state_dir().join("messages")
     }
 
     /// The run (internal) the team's storage uses now.
@@ -222,18 +337,13 @@ impl Env {
     }
 
     fn state_dir(&self) -> PathBuf {
-        fs::read_dir(self.path("state"))
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .find(|p| p.is_dir())
-            .expect("a deployment state dir")
+        self.path(&format!("state/{}", self.instance().expect("an instance")))
     }
 
-    /// Every file under the state home and the bus root, with its bytes.
+    /// Every file under the state home, with its bytes.
     fn snapshot(&self) -> BTreeMap<PathBuf, Vec<u8>> {
         let mut out = BTreeMap::new();
-        for root in [self.path("state"), self.path("teams")] {
+        for root in [self.path("state")] {
             for p in walk(&root) {
                 out.insert(p.clone(), fs::read(&p).unwrap_or_default());
             }
@@ -326,24 +436,24 @@ fn missing_values_write_nothing() {
     for bus in [false, true] {
         let env = Env::new(bus);
         let out = env
-            .brg_cmd(&["up"])
+            .brg_cmd(&["start"])
             .env_remove("PAGER_TOKEN")
             .output()
             .unwrap();
         assert_eq!(out.status.code(), Some(1), "{}", both(&out));
         assert!(both(&out).contains("pager: PAGER_TOKEN"), "{}", both(&out));
         assert!(
-            env.snapshot().is_empty() && !env.path("state").exists() && !env.path("teams").exists(),
+            env.snapshot().is_empty() && !env.path("state").exists(),
             "a refused first start wrote {:?}",
             env.snapshot().keys().collect::<Vec<_>>()
         );
 
         // A later fresh start, refused the same way, changes nothing either.
         env.up();
-        env.ok(&["down"]);
+        env.ok(&["stop"]);
         let before = env.snapshot();
         let out = env
-            .brg_cmd(&["up"])
+            .brg_cmd(&["start"])
             .env_remove("PAGER_TOKEN")
             .output()
             .unwrap();
@@ -357,20 +467,33 @@ fn missing_values_write_nothing() {
 fn up_prints_the_team_as_a_tree() {
     let env = Env::new(true);
     let out = env.up();
+    let header = stdout(&out).lines().next().unwrap().to_string();
     assert_eq!(
-        stdout(&out),
-        "oncall\n\
-         └─ lead      claude opus high     started\n   \
-         └─ helper codex example-model  not started (start: false)\n"
+        header,
+        format!(
+            "{}  team {} · folder {}",
+            env.inst(),
+            env.path("oncall").canonicalize().unwrap().display(),
+            env.path("work").canonicalize().unwrap().display()
+        )
     );
-    let again = env.ok(&["up"]);
-    assert_eq!(outcomes(&stdout(&again), "lead"), ["already running"]);
-    let child = env.ok(&["up", "--member", "helper"]);
     assert_eq!(
-        stdout(&child),
+        env.shown(&stdout(&out)),
         "oncall\n\
-         └─ lead      claude opus high\n   \
-         └─ helper codex example-model  started\n"
+         └─ lead      claude opus high          started\n   \
+         └─ helper on demand (none created)\n"
+    );
+    let again = env.ok(&["start"]);
+    assert_eq!(
+        outcomes(&stdout(&again), &env.m("lead")),
+        ["already running"]
+    );
+    let child = env.ok(&["start", "helper"]);
+    assert_eq!(
+        env.shown(&stdout(&child)),
+        "oncall\n\
+         └─ lead           claude opus high\n   \
+         └─ helper      codex example-model  started\n"
     );
     for out in [&out, &again, &child] {
         assert!(!mentions_runs(&both(out)), "{}", both(out));
@@ -383,38 +506,39 @@ fn status_prints_the_same_tree_with_live_states() {
     env.up();
     let out = env.ok(&["status"]);
     assert_eq!(
-        stdout(&out),
+        env.shown(&stdout(&out)),
         "oncall\n\
-         └─ lead      claude opus high     idle\n   \
-         └─ helper codex example-model  not started (start: false)\n"
+         └─ lead      claude opus high          idle\n   \
+         └─ helper on demand (none created)\n"
     );
     let rows = env.rows();
     let names: Vec<&str> = rows.iter().map(|r| r["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["lead", "helper"], "tree order");
-    assert_eq!(rows[1]["parent"], "lead");
+    assert_eq!(names, [env.m("lead").as_str(), "helper"], "tree order");
+    assert_eq!(rows[0]["kind"], "member");
+    assert_eq!(rows[0]["member"], env.m("lead"));
+    assert_eq!(rows[0]["role"], "lead");
+    assert_eq!(rows[0]["instance"], env.inst());
+    assert_eq!(rows[0]["team"], "oncall");
+    assert_eq!(rows[1]["kind"], "role");
+    assert_eq!(rows[1]["parent"], env.m("lead"));
     assert_eq!(rows[0]["model"], "opus high");
     assert_eq!(rows[0]["liveness"], "alive");
     assert!(rows[1].get("liveness").is_none(), "{}", rows[1]);
-    assert_eq!(rows[1]["state"], "not started");
+    assert_eq!(rows[1]["state"], "on demand (none created)");
     assert!(rows[1].get("expected_running").is_none(), "{}", rows[1]);
 }
 
 #[test]
-fn a_team_that_never_started_is_all_not_started() {
-    for bus in [true, false] {
-        let env = Env::new(bus);
-        let out = env.ok(&["status"]);
-        assert_eq!(
-            stdout(&out),
-            "oncall\n\
-             └─ lead      claude opus high     not started\n   \
-             └─ helper codex example-model  not started (start: false)\n",
-            "bus: {bus}"
-        );
-        for row in env.rows() {
-            assert_eq!(row["state"], "not started", "{row}");
-        }
-    }
+fn status_without_instances_says_so() {
+    let env = Env::new(true);
+    let out = env.ok(&["status"]);
+    assert!(
+        stdout(&out).contains("there are no instances"),
+        "{}",
+        both(&out)
+    );
+    let rows: Vec<Value> = serde_json::from_slice(&env.ok(&["status", "--json"]).stdout).unwrap();
+    assert!(rows.is_empty());
 }
 
 #[test]
@@ -423,13 +547,13 @@ fn members_that_ran_and_ended_are_stopped() {
         let env = Env::new(bus);
         env.up();
         env.up_helper();
-        env.ok(&["down", "--member", "helper"]);
+        env.ok(&["stop", "helper"]);
         let out = env.ok(&["status"]);
         assert_eq!(
-            stdout(&out),
+            env.shown(&stdout(&out)),
             "oncall\n\
-             └─ lead      claude opus high     idle\n   \
-             └─ helper codex example-model  stopped\n",
+             └─ lead           claude opus high     idle\n   \
+             └─ helper      codex example-model  stopped\n",
             "bus: {bus}"
         );
         let helper = env.row("helper");
@@ -439,13 +563,13 @@ fn members_that_ran_and_ended_are_stopped() {
         // While the team runs, a `start: true` member that ended should be
         // running: it stands out.
         env.up_helper();
-        env.ok(&["down", "--member", "lead"]);
+        env.ok(&["stop", "lead"]);
         let out = env.ok(&["status"]);
         assert_eq!(
-            stdout(&out),
+            env.shown(&stdout(&out)),
             "oncall\n\
-             └─ lead      claude opus high     stopped (should be running)\n   \
-             └─ helper codex example-model  idle\n",
+             └─ lead           claude opus high     stopped (should be running)\n   \
+             └─ helper      codex example-model  idle\n",
             "bus: {bus}"
         );
         let lead = env.row("lead");
@@ -454,13 +578,13 @@ fn members_that_ran_and_ended_are_stopped() {
         assert!(!mentions_runs(&both(&out)), "{}", both(&out));
 
         // A team stopped on purpose: ended members are plain `stopped`.
-        env.ok(&["down"]);
+        env.ok(&["stop"]);
         let out = env.ok(&["status"]);
         assert_eq!(
-            stdout(&out),
+            env.shown(&stdout(&out)),
             "oncall\n\
-             └─ lead      claude opus high     stopped\n   \
-             └─ helper codex example-model  stopped\n",
+             └─ lead           claude opus high     stopped\n   \
+             └─ helper      codex example-model  stopped\n",
             "bus: {bus}"
         );
         let lead = env.row("lead");
@@ -473,11 +597,13 @@ fn members_that_ran_and_ended_are_stopped() {
 fn state_from_an_earlier_brg_reads_as_stopped_not_never_started() {
     let env = Env::new(false);
     env.up();
-    let meta_file = env.state_dir().join("deployment.json");
+    env.up_helper();
+    env.ok(&["stop", "helper"]);
+    let meta_file = env.state_dir().join("start.json");
     let mut meta = read_json(&meta_file);
     // New state records every member's start history explicitly.
-    assert_eq!(meta["members"]["lead"]["started"], true);
-    assert_eq!(meta["members"]["helper"]["started"], false);
+    assert_eq!(meta["members"][env.m("lead")]["started"], true);
+    assert_eq!(meta["members"][env.m("helper")]["role"], "helper");
 
     // An earlier brg wrote no `started` field: history unknown.
     for m in meta["members"].as_object_mut().unwrap().values_mut() {
@@ -489,29 +615,15 @@ fn state_from_an_earlier_brg_reads_as_stopped_not_never_started() {
     assert!(helper.get("expected_running").is_none(), "{helper}");
 
     env.up_helper();
-    env.ok(&["down", "--member", "lead"]);
+    env.ok(&["stop", "lead"]);
     let out = env.ok(&["status"]);
     assert_eq!(
-        stdout(&out),
+        env.shown(&stdout(&out)),
         "oncall\n\
-         └─ lead      claude opus high     stopped (should be running)\n   \
-         └─ helper codex example-model  idle\n"
+         └─ lead           claude opus high     stopped (should be running)\n   \
+         └─ helper      codex example-model  idle\n"
     );
     assert_eq!(env.row("lead")["expected_running"], true);
-}
-
-#[test]
-fn a_start_true_member_never_started_is_not_started() {
-    let env = Env::new(true);
-    env.up_helper();
-    let out = env.ok(&["status"]);
-    assert_eq!(
-        stdout(&out),
-        "oncall\n\
-         └─ lead      claude opus high     not started\n   \
-         └─ helper codex example-model  idle\n"
-    );
-    assert!(env.row("lead").get("expected_running").is_none());
 }
 
 /// Start `helper` into the running team from a caller environment built by
@@ -521,37 +633,47 @@ fn child_start_env(caller: impl Fn(&Env, &mut Command)) -> (Env, BTreeMap<String
     env.up();
     let lead_env = env.starts("lead")[0]["env"].clone();
     let state = env.state_dir();
-    let meta_before = fs::read(state.join("deployment.json")).unwrap();
+    let meta_before = fs::read(state.join("start.json")).unwrap();
     let secrets_before = fs::read(state.join("secrets/pager.json")).unwrap();
-    let lead_shim_before = fs::read(state.join("members/lead/bin/pager")).unwrap();
+    let lead_shim_before =
+        fs::read(state.join(format!("members/{}/bin/pager", env.m("lead")))).unwrap();
 
-    let mut cmd = env.brg_cmd(&["up", "--member", "helper"]);
+    let mut cmd = env.brg_cmd(&["start", "helper"]);
     caller(&env, &mut cmd);
     let out = cmd.output().unwrap();
     assert!(out.status.success(), "{}", both(&out));
     assert_eq!(
-        outcomes(&stdout(&out), "helper"),
+        outcomes(&stdout(&out), &env.m("helper")),
         ["started"],
         "{}",
         both(&out)
     );
     env.wait_for("helper start", |e| !e.starts("helper").is_empty());
 
+    // The new member joins the start record; nothing else changes.
+    let mut meta_now = read_json(&state.join("start.json"));
+    meta_now["members"]
+        .as_object_mut()
+        .unwrap()
+        .remove(&env.m("helper"));
     assert_eq!(
-        fs::read(state.join("deployment.json")).unwrap(),
-        meta_before
+        meta_now,
+        serde_json::from_slice::<Value>(&meta_before).unwrap()
     );
     assert_eq!(
         fs::read(state.join("secrets/pager.json")).unwrap(),
         secrets_before
     );
     assert_eq!(
-        fs::read(state.join("members/lead/bin/pager")).unwrap(),
+        fs::read(state.join(format!("members/{}/bin/pager", env.m("lead")))).unwrap(),
         lead_shim_before
     );
     let helper: BTreeMap<String, String> =
         serde_json::from_value(env.starts("helper")[0]["env"].clone()).unwrap();
-    let shims = state.join("members/helper/bin").display().to_string();
+    let shims = state
+        .join(format!("members/{}/bin", env.m("helper")))
+        .display()
+        .to_string();
     let lead_path = lead_env["PATH"].as_str().unwrap();
     let base_path = lead_path.split_once(':').unwrap().1;
     assert_eq!(helper["PATH"], format!("{shims}:{base_path}"));
@@ -559,7 +681,10 @@ fn child_start_env(caller: impl Fn(&Env, &mut Command)) -> (Env, BTreeMap<String
     assert_eq!(helper["LANG"], "C.UTF-8");
     assert_eq!(
         helper["TMPDIR"],
-        state.join("tmp/helper").display().to_string()
+        state
+            .join(format!("tmp/{}", env.m("helper")))
+            .display()
+            .to_string()
     );
     assert_eq!(helper["BORGCHART_BIN"], env!("CARGO_BIN_EXE_brg"));
     assert!(!helper.contains_key("PAGER_TOKEN"));
@@ -609,28 +734,31 @@ fn members_run_the_brg_that_started_them() {
         assert_eq!(lead.get("BORGCHART_INCARNATION").is_some(), bus);
         let state = env.state_dir();
         for name in ["brg", "borgchart"] {
-            assert!(!state.join("members/lead/bin").join(name).exists());
+            assert!(
+                !state
+                    .join(format!("members/{}/bin", env.m("lead")))
+                    .join(name)
+                    .exists()
+            );
         }
-        let plugin_shim = fs::read_to_string(state.join("members/lead/bin/pager")).unwrap();
+        let plugin_shim =
+            fs::read_to_string(state.join(format!("members/{}/bin/pager", env.m("lead")))).unwrap();
         assert!(
             plugin_shim.contains(&format!("exec {built} _run")),
             "{plugin_shim}"
         );
         let started = env.tmux(&["list-panes", "-a", "-F", "#{pane_start_command}"]);
         assert!(started.contains(&format!("{built} _exec")), "{started}");
-        assert_eq!(read_json(&state.join("deployment.json"))["brg"], built);
+        assert_eq!(read_json(&state.join("start.json"))["brg"], built);
         if bus {
             assert!(!env.run_dir().join("runtime/bin").exists());
         }
 
         // Another build starts a member into the running team with itself.
         let other = env.other_brg("brg-rebuilt");
-        let out = env
-            .cmd_with(&other, &["up", "--member", "helper"])
-            .output()
-            .unwrap();
+        let out = env.cmd_with(&other, &["start", "helper"]).output().unwrap();
         assert!(out.status.success(), "{}", both(&out));
-        assert_eq!(outcomes(&stdout(&out), "helper"), ["started"]);
+        assert_eq!(outcomes(&stdout(&out), &env.m("helper")), ["started"]);
         let started = env.tmux(&["list-panes", "-a", "-F", "#{pane_start_command}"]);
         assert!(
             started.contains(&format!("{} _exec", other.display())),
@@ -652,47 +780,33 @@ fn members_run_the_brg_that_started_them() {
 fn a_changed_member_file_refuses_a_child_start() {
     let env = Env::new(true);
     env.up();
+    env.up_helper();
+    env.ok(&["stop", "helper"]);
     env.write(
         "oncall/helper.md",
         &HELPER.replace("You are the helper.", "You are the helper, edited."),
     );
-    let refusal = "brg: oncall/helper's instruction file changed since the team started; restart the team to apply it: brg down && brg up\n";
-    let before = env.snapshot();
-    let out = env.brg(&["up", "--member", "helper"]);
-    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
-    assert_eq!(last_line(&out.stderr), refusal);
-    assert_unchanged(&before, &env.snapshot());
-    assert!(env.starts("helper").is_empty());
-
-    // A full `up` of the running team refuses the same way.
-    let out = env.brg(&["up"]);
-    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
-    assert_eq!(last_line(&out.stderr), refusal);
-    assert_unchanged(&before, &env.snapshot());
-
-    // From elsewhere, the restart names the team's file.
-    let out = env
-        .brg_cmd(&[
-            "up",
-            "--member",
-            "helper",
-            "--file",
-            "oncall/borgchart.yaml",
-        ])
-        .current_dir(env.dir.path())
-        .output()
-        .unwrap();
-    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
-    assert!(
-        both(&out).contains("brg down --file ") && both(&out).contains("&& brg up --file "),
-        "{}",
-        both(&out)
+    let inst = env.inst();
+    let refusal = format!(
+        "brg: {inst}/helper's role file changed since the instance started; stop it fully and start it again to apply it: brg stop {inst} && brg start {inst}\n"
     );
-
-    // A stopped team's child start never rolls over: it refuses too.
-    env.ok(&["down"]);
     let before = env.snapshot();
-    let out = env.brg(&["up", "--member", "helper"]);
+    let out = env.brg(&["start", "helper"]);
+    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
+    assert_eq!(last_line(&out.stderr), refusal);
+    assert_unchanged(&before, &env.snapshot());
+    assert_eq!(env.starts("helper").len(), 1);
+
+    // A full start of the running instance refuses the same way.
+    let out = env.brg(&["start"]);
+    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
+    assert_eq!(last_line(&out.stderr), refusal);
+    assert_unchanged(&before, &env.snapshot());
+
+    // A stopped instance's member start never rolls over: it refuses too.
+    env.ok(&["stop"]);
+    let before = env.snapshot();
+    let out = env.brg(&["start", "helper"]);
     assert_eq!(out.status.code(), Some(1), "{}", both(&out));
     assert_eq!(last_line(&out.stderr), refusal);
     assert_unchanged(&before, &env.snapshot());
@@ -700,12 +814,12 @@ fn a_changed_member_file_refuses_a_child_start() {
 }
 
 #[test]
-fn concurrent_child_starts_start_once() {
+fn concurrent_member_creates_create_once() {
     let env = Env::new(true);
     env.up();
     let children: Vec<_> = (0..2)
         .map(|_| {
-            env.brg_cmd(&["up", "--member", "helper"])
+            env.brg_cmd(&["start", "helper"])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
@@ -716,15 +830,20 @@ fn concurrent_child_starts_start_once() {
         .into_iter()
         .map(|c| c.wait_with_output().unwrap())
         .collect();
-    for out in &outs {
-        assert!(out.status.success(), "{}", both(out));
-    }
-    let mut got: Vec<String> = outs
-        .iter()
-        .flat_map(|o| outcomes(&stdout(o), "helper"))
-        .collect();
-    got.sort();
-    assert_eq!(got, ["already running", "started"]);
+    let won: Vec<&Output> = outs.iter().filter(|o| o.status.success()).collect();
+    assert_eq!(
+        won.len(),
+        1,
+        "{:?}",
+        outs.iter().map(both).collect::<Vec<_>>()
+    );
+    assert_eq!(outcomes(&stdout(won[0]), &env.m("helper")), ["started"]);
+    let lost = outs.iter().find(|o| !o.status.success()).unwrap();
+    assert!(
+        both(lost).contains("already has its member"),
+        "{}",
+        both(lost)
+    );
     env.wait_for("helper start", |e| !e.starts("helper").is_empty());
     std::thread::sleep(Duration::from_millis(500));
     assert_eq!(env.starts("helper").len(), 1);
@@ -740,16 +859,17 @@ fn storage_is_reused_until_the_configuration_changes() {
     let m = read_json(&manifest);
     assert_eq!(m["run"], "r1");
     assert_eq!(m["schema"], 1);
-    assert_eq!(m["members"]["helper"]["parent"], "lead");
+    assert_eq!(m["roles"]["helper"]["parent"], "lead");
+    assert_eq!(m["instance"], env.inst());
     assert!(m.get("linked_from").is_none());
     assert_eq!(env.starts("lead")[0]["env"]["BORGCHART_RUN"], "r1");
 
     // Unchanged: the same storage.
-    env.ok(&["down"]);
+    env.ok(&["stop"]);
     env.up();
     assert_eq!(env.current(), "r1");
     assert_eq!(fs::read(&manifest).unwrap(), first);
-    env.ok(&["down"]);
+    env.ok(&["stop"]);
 
     // Changed: new storage, linked to the old, which is left as it was.
     let r1_files: BTreeMap<PathBuf, Vec<u8>> = walk(&env.run_dir())
@@ -761,7 +881,7 @@ fn storage_is_reused_until_the_configuration_changes() {
         &LEAD.replace("You are the lead.", "You are the lead, edited."),
     );
     let out = env.up();
-    assert_eq!(outcomes(&stdout(&out), "lead"), ["started"]);
+    assert_eq!(outcomes(&stdout(&out), &env.m("lead")), ["started"]);
     assert!(!mentions_runs(&both(&out)), "{}", both(&out));
     assert_eq!(env.current(), "r2");
     let m2 = read_json(&env.run_dir().join("run.json"));
@@ -774,14 +894,14 @@ fn storage_is_reused_until_the_configuration_changes() {
     for (p, bytes) in &r1_files {
         assert_eq!(&fs::read(p).unwrap(), bytes, "{}", p.display());
     }
-    env.ok(&["down"]);
+    env.ok(&["stop"]);
 }
 
 #[test]
-fn a_format_change_starts_fresh_messages_and_says_what_was_left() {
+fn a_format_change_refuses_until_a_new_instance() {
     let env = Env::new(true);
     env.up();
-    env.ok(&["down"]);
+    env.ok(&["stop"]);
     let run = env.run_dir();
     // As if a future brg had written this storage.
     let mut m = read_json(&run.join("run.json"));
@@ -793,46 +913,47 @@ fn a_format_change_starts_fresh_messages_and_says_what_was_left() {
         fs::write(p, "{}").unwrap();
     }
 
-    // A child start refuses, in team terms.
-    let out = env.brg(&["up", "--member", "helper"]);
+    // A member start refuses, in instance terms.
+    let inst = env.inst();
+    let out = env.brg(&["start", "lead"]);
     assert_eq!(out.status.code(), Some(1), "{}", both(&out));
     assert!(
-        both(&out).contains("team `oncall`'s messages use format 99; this brg uses format 1"),
+        both(&out).contains(&format!(
+            "instance `{inst}`'s messages use format 99; this brg uses format 1"
+        )),
         "{}",
         both(&out)
     );
     assert!(!mentions_runs(&both(&out)), "{}", both(&out));
     assert_eq!(env.current(), "r1");
 
-    // A full `up` starts fresh storage, carries nothing, and says so.
-    let out = env.up();
+    // A full start would move to fresh messages, but brg can't read the old
+    // ones to check for open work: it refuses and points to a new instance.
+    let before = env.snapshot();
+    let out = env.brg(&["start"]);
+    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
     assert!(
-        stdout(&out).contains(
-            "team `oncall`'s messages were in another format, so it starts with fresh ones; 2 messages in the old format were left on disk"
-        ),
+        both(&out).contains("can't be read") && both(&out).contains("brg create"),
         "{}",
         both(&out)
     );
     assert!(!mentions_runs(&both(&out)), "{}", both(&out));
-    assert_eq!(env.current(), "r2");
-    let m2 = read_json(&env.run_dir().join("run.json"));
-    assert_eq!(m2["linked_from"]["reason"], "format");
-    assert!(env.store().join("r1/retired").exists());
-    assert!(env.store().join("r1/bus/records/0000000002.json").exists());
+    assert_unchanged(&before, &env.snapshot());
+    assert_eq!(env.current(), "r1");
 }
 
 #[test]
 fn old_storage_rolls_over_at_its_age_limit() {
     let env = Env::new(true);
     env.up();
-    env.ok(&["down"]);
+    env.ok(&["stop"]);
     let manifest = env.run_dir().join("run.json");
     let mut m = read_json(&manifest);
     m["created_at"] = "2000-01-01T00:00:00.000Z".into();
     fs::write(&manifest, serde_json::to_vec(&m).unwrap()).unwrap();
     // A child start never rolls over, whatever the age.
     env.up_helper();
-    env.ok(&["down"]);
+    env.ok(&["stop"]);
     assert_eq!(env.current(), "r1");
     env.up();
     assert_eq!(env.current(), "r2");
@@ -846,23 +967,24 @@ fn old_storage_rolls_over_at_its_age_limit() {
 fn rollover_needs_every_member_positively_stopped() {
     let env = Env::new(true);
     env.up();
-    env.ok(&["down"]);
+    env.up_helper();
+    env.ok(&["stop"]);
     // A start that never recorded its pane: it can't be shown stopped.
-    let inc = env.run_dir().join("runtime/incarnations/helper.json");
-    fs::write(
-        &inc,
-        r#"{"member":"helper","incarnation":"helper.20261105000000000.abcd","started_at":"2026-11-05T00:00:00.000Z"}"#,
-    )
-    .unwrap();
+    let inc = env.incarnation_file("helper");
+    fs::write(&inc, unknown_helper(&env)).unwrap();
     env.write(
         "oncall/lead.md",
         &LEAD.replace("You are the lead.", "You are the lead, edited."),
     );
     let before = env.snapshot();
-    let out = env.brg(&["up"]);
+    let out = env.brg(&["start"]);
     assert_eq!(out.status.code(), Some(1), "{}", both(&out));
     assert!(
-        both(&out).contains("brg can't tell that oncall/helper has stopped"),
+        both(&out).contains(&format!(
+            "brg can't tell that {}/{} has stopped",
+            env.inst(),
+            env.m("helper")
+        )),
         "{}",
         both(&out)
     );
@@ -875,13 +997,16 @@ fn rollover_needs_every_member_positively_stopped() {
 fn a_lost_current_file_is_not_a_first_start() {
     let env = Env::new(true);
     env.up();
-    env.ok(&["down"]);
+    env.ok(&["stop"]);
     fs::remove_file(env.store().join("current")).unwrap();
     let before = env.snapshot();
-    let out = env.brg(&["up"]);
+    let out = env.brg(&["start"]);
     assert_eq!(out.status.code(), Some(1), "{}", both(&out));
     assert!(
-        both(&out).contains("team `oncall` was started before but its messages are missing"),
+        both(&out).contains(&format!(
+            "instance `{}` was started before but its messages are missing",
+            env.inst()
+        )),
         "{}",
         both(&out)
     );
@@ -893,20 +1018,20 @@ fn incarnations_are_recorded() {
     let env = Env::new(true);
     env.up();
     let run = env.run_dir();
-    let inc = read_json(&run.join("runtime/incarnations/lead.json"));
+    let inc = read_json(&env.incarnation_file("lead"));
     let id = inc["incarnation"].as_str().unwrap().to_string();
     let parts: Vec<&str> = id.split('.').collect();
     assert_eq!(parts.len(), 3, "{id}");
-    assert_eq!(parts[0], "lead");
+    assert_eq!(parts[0], env.m("lead"));
     let lead_env = &env.starts("lead")[0]["env"];
     assert_eq!(lead_env["BORGCHART_INCARNATION"], id.as_str());
-    assert_eq!(lead_env["BORGCHART_MEMBER"], "lead");
+    assert_eq!(lead_env["BORGCHART_MEMBER"], env.m("lead"));
     assert!(inc.get("generation").is_none(), "{inc}");
     assert_eq!(inc["vendor_version"], "fake-agent 0.0.0 (claude)");
     let pane = &inc["pane"];
     assert!(pane["pane_id"].as_str().unwrap().starts_with('%'), "{inc}");
     assert!(pane["pane_pid"].as_u64().unwrap() > 0);
-    assert_eq!(pane["window"], "lead");
+    assert_eq!(pane["window"], env.m("lead"));
     let socket = pane["socket"].as_str().unwrap();
     assert!(
         socket.starts_with('/') && socket.ends_with(&format!("/{}", env.socket)),
@@ -920,42 +1045,43 @@ fn incarnations_are_recorded() {
     ]);
     assert!(
         listed.contains(&format!(
-            "{} {} lead",
+            "{} {} {}",
             pane["pane_id"].as_str().unwrap(),
-            pane["pane_pid"]
+            pane["pane_pid"],
+            env.m("lead")
         )),
         "{listed}"
     );
     assert!(inc.get("ended_at").is_none());
     assert_eq!(
-        read_json(&run.join(format!("runtime/incarnations/lead/{id}.json"))),
+        read_json(&run.join(format!("runtime/incarnations/{}/{id}.json", env.m("lead")))),
         inc
     );
 
     env.up_helper();
-    let helper = read_json(&run.join("runtime/incarnations/helper.json"));
+    let helper = read_json(&env.incarnation_file("helper"));
     assert_eq!(helper["vendor_version"], "fake-agent 0.0.0 (codex)");
-    env.ok(&["down", "--member", "helper"]);
-    let helper = read_json(&run.join("runtime/incarnations/helper.json"));
+    env.ok(&["stop", "helper"]);
+    let helper = read_json(&env.incarnation_file("helper"));
     assert_eq!(helper["ended_reason"], "stopped");
     assert!(
-        read_json(&run.join("runtime/incarnations/lead.json"))
+        read_json(&env.incarnation_file("lead"))
             .get("ended_at")
             .is_none()
     );
 
-    env.ok(&["down"]);
-    let ended = read_json(&run.join("runtime/incarnations/lead.json"));
+    env.ok(&["stop"]);
+    let ended = read_json(&env.incarnation_file("lead"));
     assert_eq!(ended["incarnation"], id.as_str());
     assert_eq!(ended["ended_reason"], "stopped");
     assert!(ended["ended_at"].as_str().unwrap().ends_with('Z'));
 
     // A new start is a new incarnation; the old one stays in the history.
     env.up();
-    let again = read_json(&run.join("runtime/incarnations/lead.json"));
+    let again = read_json(&env.incarnation_file("lead"));
     assert_ne!(again["incarnation"], id.as_str());
     assert!(
-        run.join(format!("runtime/incarnations/lead/{id}.json"))
+        run.join(format!("runtime/incarnations/{}/{id}.json", env.m("lead")))
             .exists()
     );
 }
@@ -964,8 +1090,8 @@ fn incarnations_are_recorded() {
 fn liveness_is_alive_gone_or_unknown() {
     let env = Env::new(true);
     env.up();
-    let live = |rows: &[Value], member: &str| -> String {
-        rows.iter().find(|r| r["name"] == member).unwrap()["liveness"]
+    let live = |rows: &[Value], role: &str| -> String {
+        rows.iter().find(|r| r["role"] == role).unwrap()["liveness"]
             .as_str()
             .unwrap_or("none")
             .to_string()
@@ -985,12 +1111,10 @@ fn liveness_is_alive_gone_or_unknown() {
     assert_eq!(live(&rows, "lead"), "unknown");
 
     // A start that never recorded its pane: unknown.
-    let run = env.run_dir();
-    fs::write(
-        run.join("runtime/incarnations/helper.json"),
-        r#"{"member":"helper","incarnation":"helper.20261105000000000.abcd","started_at":"2026-11-05T00:00:00.000Z"}"#,
-    )
-    .unwrap();
+    env.up_helper();
+    env.ok(&["stop", "helper"]);
+    assert_eq!(live(&env.rows(), "helper"), "gone");
+    fs::write(env.incarnation_file("helper"), unknown_helper(&env)).unwrap();
     assert_eq!(live(&env.rows(), "helper"), "unknown");
 
     // A caller whose tmux environment points elsewhere still asks the
@@ -1004,8 +1128,8 @@ fn liveness_is_alive_gone_or_unknown() {
     assert_eq!(live(&rows, "lead"), "alive");
 
     // The pane went away outside brg, on a server that still answers: gone.
-    env.tmux(&["new-session", "-d", "-s", "brg-keep", "sleep 60"]);
-    let lead_pane = read_json(&run.join("runtime/incarnations/lead.json"))["pane"]["pane_id"]
+    env.tmux(&["new-session", "-d", "-s", "keep", "sleep 60"]);
+    let lead_pane = read_json(&env.incarnation_file("lead"))["pane"]["pane_id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -1014,7 +1138,8 @@ fn liveness_is_alive_gone_or_unknown() {
 
     // The whole server exited: it can't be asked, so the pane's own process
     // decides. It exits on the hang-up: gone once it has.
-    fs::remove_file(run.join("runtime/incarnations/helper.json")).unwrap();
+    env.up_helper();
+    env.ok(&["stop", "helper"]);
     env.up();
     assert_eq!(live(&env.rows(), "lead"), "alive");
     env.tmux(&["kill-server"]);
@@ -1031,13 +1156,13 @@ fn liveness_is_alive_gone_or_unknown() {
     // Ended through brg after a confirmed stop: gone.
     env.up();
     assert_eq!(live(&env.rows(), "lead"), "alive");
-    env.ok(&["down"]);
+    env.ok(&["stop"]);
     assert_eq!(live(&env.rows(), "lead"), "gone");
 }
 
 /// Is `lead`'s recorded pane still running? Asked of the recorded server.
 fn lead_pane_alive(env: &Env) -> bool {
-    let inc = read_json(&env.run_dir().join("runtime/incarnations/lead.json"));
+    let inc = read_json(&env.incarnation_file("lead"));
     let pane = inc["pane"]["pane_id"].as_str().unwrap().to_string();
     env.tmux(&["list-panes", "-a", "-F", "#{pane_id} #{pane_dead}"])
         .lines()
@@ -1046,9 +1171,10 @@ fn lead_pane_alive(env: &Env) -> bool {
 
 /// Is a live `lead` window on the team's server, with or without a bus?
 fn lead_window_alive(env: &Env) -> bool {
+    let want = format!("{} 0", env.m("lead"));
     env.tmux(&["list-panes", "-a", "-F", "#{window_name} #{pane_dead}"])
         .lines()
-        .any(|l| l == "lead 0")
+        .any(|l| l == want)
 }
 
 #[test]
@@ -1056,7 +1182,7 @@ fn down_refuses_a_different_tmux_socket() {
     let env = Env::new(true);
     env.up();
     env.up_helper();
-    for args in [&["down"][..], &["down", "--member", "lead"][..]] {
+    for args in [&["stop"][..], &["stop", "lead"][..]] {
         let before = env.snapshot();
         let out = env
             .brg_cmd(args)
@@ -1081,7 +1207,7 @@ fn down_refuses_when_tmux_cannot_be_reached() {
 fn refuses_when_unreachable(bus: bool) {
     let env = Env::new(bus);
     env.up();
-    for args in [&["down"][..], &["down", "--member", "lead"][..]] {
+    for args in [&["stop"][..], &["stop", "lead"][..]] {
         let before = env.snapshot();
         let out = env
             .brg_cmd(args)
@@ -1097,7 +1223,7 @@ fn refuses_when_unreachable(bus: bool) {
     // A redirected tmux environment still stops the recorded server.
     fs::create_dir_all(env.path("empty-tmux")).unwrap();
     let out = env
-        .brg_cmd(&["down"])
+        .brg_cmd(&["stop"])
         .env("TMUX_TMPDIR", env.path("empty-tmux"))
         .output()
         .unwrap();
@@ -1105,7 +1231,7 @@ fn refuses_when_unreachable(bus: bool) {
     assert!(both(&out).contains("stopped"), "{}", both(&out));
     assert_eq!(env.tmux(&["list-sessions"]), "");
     // Stopping again is harmless, even though the server has exited.
-    let out = env.ok(&["down"]);
+    let out = env.ok(&["stop"]);
     assert!(both(&out).contains("not running"), "{}", both(&out));
 }
 
@@ -1120,16 +1246,17 @@ fn down_on_a_team_that_never_started_says_not_running() {
                 "    prompt: lead.md\n    start: false\n",
             ),
         );
-        env.ok(&["up"]);
+        env.ok(&["start"]);
         assert_eq!(env.tmux(&["list-sessions"]), "", "bus: {bus}");
-        for args in [&["down", "--member", "lead"][..], &["down"][..]] {
-            let out = env.ok(args);
-            assert!(
-                both(&out).contains("not running"),
-                "bus: {bus}: {}",
-                both(&out)
-            );
-        }
+        let out = env.ok(&["stop"]);
+        assert!(
+            both(&out).contains("not running"),
+            "bus: {bus}: {}",
+            both(&out)
+        );
+        // A role with no member yet isn't a member.
+        let err = both(&env.brg(&["stop", "lead"]));
+        assert!(err.contains("no member `lead`"), "bus: {bus}: {err}");
     }
 }
 
@@ -1144,19 +1271,20 @@ fn an_up_that_cannot_see_the_server_does_not_make_down_say_not_running() {
                 "    prompt: lead.md\n    start: false\n",
             ),
         );
-        env.ok(&["up", "--member", "lead"]);
+        env.ok(&["start"]);
+        env.ok(&["start", "lead"]);
         env.wait_for("lead idle", |e| e.state_of("lead") == "idle");
-        // A caller without tmux finds no session, so it starts the team
-        // afresh, with nothing to start.
+        // A caller without tmux finds no session, so it starts the
+        // instance afresh, with nothing to start.
         let no_tmux = |args: &[&str]| {
             env.brg_cmd(args)
                 .env("PATH", env.path("bin"))
                 .output()
                 .unwrap()
         };
-        let out = no_tmux(&["up"]);
+        let out = no_tmux(&["start"]);
         assert!(out.status.success(), "bus: {bus}: {}", both(&out));
-        let out = no_tmux(&["down"]);
+        let out = no_tmux(&["stop"]);
         assert_eq!(out.status.code(), Some(1), "bus: {bus}: {}", both(&out));
         assert!(both(&out).contains("nothing was changed"), "{}", both(&out));
         assert!(lead_window_alive(&env), "bus: {bus}");
@@ -1180,12 +1308,12 @@ fn down_still_refuses_when_only_a_plugin_process_ran() {
                 ),
         );
         env.script("oncall/plugins/pager/watch", "#!/bin/sh\nexec sleep 300\n");
-        env.ok(&["up"]);
+        env.ok(&["start"]);
         env.wait_for("the plugin's window", |e| {
             e.tmux(&["list-windows", "-a"]).contains("_pager")
         });
         env.tmux(&["kill-server"]);
-        let out = env.brg(&["down"]);
+        let out = env.brg(&["stop"]);
         assert_eq!(out.status.code(), Some(1), "bus: {bus}: {}", both(&out));
         assert!(both(&out).contains("nothing was changed"), "{}", both(&out));
     }
@@ -1295,6 +1423,7 @@ fn down_ends_children_that_left_the_pane() {
         env.up_helper();
         let lead = detach_children(&env, "lead", &mut strays);
         let helper = detach_children(&env, "helper", &mut strays);
+        let lead_id = env.m("lead");
         // Another window that happens to be called `lead`: not lead's.
         let session = env.tmux(&["list-sessions", "-F", "#{session_name}"]);
         let target = format!("={}:", session.trim());
@@ -1308,7 +1437,7 @@ fn down_ends_children_that_left_the_pane() {
                 "-t",
                 &target,
                 "-n",
-                "lead",
+                &lead_id,
                 "sleep 300",
             ])
             .trim()
@@ -1316,7 +1445,7 @@ fn down_ends_children_that_left_the_pane() {
             .unwrap();
         strays.add(namesake);
 
-        env.ok(&["down", "--member", "lead"]);
+        env.ok(&["stop", "lead"]);
         for pid in lead {
             assert!(
                 !running(pid),
@@ -1330,7 +1459,7 @@ fn down_ends_children_that_left_the_pane() {
             );
         }
 
-        env.ok(&["down"]);
+        env.ok(&["stop"]);
         for pid in helper {
             assert!(
                 !running(pid),
@@ -1358,7 +1487,7 @@ fn a_stale_gate_waiter_leaves_a_replacement_alone() {
     fs::write(env.path("home/fake-agent/no-hooks"), "").unwrap();
     let started = Instant::now();
     let first = env
-        .brg_cmd(&["up"])
+        .brg_cmd(&["start"])
         .env("BORGCHART_GATE_WAIT_MS", "4000")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1383,16 +1512,17 @@ fn a_stale_gate_waiter_leaves_a_replacement_alone() {
             .unwrap();
         std::thread::sleep(Duration::from_millis(50));
     }
-    env.ok(&["down"]);
+    env.ok(&["stop"]);
     let second = env
-        .brg_cmd(&["up"])
+        .brg_cmd(&["start"])
         .env("BORGCHART_GATE_WAIT_MS", "10000")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
     env.wait_for("second lead start", |e| e.starts("lead").len() == 2);
-    let pane = || env.tmux(&["list-panes", "-t", "=lead", "-F", "#{pane_id} #{pane_pid}"]);
+    let target = format!("=brg-{}:={}", env.inst(), env.m("lead"));
+    let pane = || env.tmux(&["list-panes", "-t", &target, "-F", "#{pane_id} #{pane_pid}"]);
     let replacement = pane();
     while started.elapsed() < Duration::from_millis(4500) {
         std::thread::sleep(Duration::from_millis(100));
@@ -1403,7 +1533,7 @@ fn a_stale_gate_waiter_leaves_a_replacement_alone() {
         .unwrap();
     let first = first.wait_with_output().unwrap();
     assert_eq!(
-        outcomes(&stdout(&first), "lead"),
+        outcomes(&stdout(&first), &env.m("lead")),
         ["replaced while starting; left alone"],
         "{}",
         both(&first)
@@ -1415,7 +1545,7 @@ fn a_stale_gate_waiter_leaves_a_replacement_alone() {
     );
     let second = second.wait_with_output().unwrap();
     assert_eq!(
-        outcomes(&stdout(&second), "lead"),
+        outcomes(&stdout(&second), &env.m("lead")),
         ["stopped: its `locked` gate did not report in, so it would be unprotected"],
         "{}",
         both(&second)
@@ -1425,12 +1555,8 @@ fn a_stale_gate_waiter_leaves_a_replacement_alone() {
 #[test]
 fn api_key_child_starts_take_the_key_from_the_caller() {
     let env = Env::new(true);
-    let deploy = fs::read_to_string(env.path("oncall/borgchart.yaml")).unwrap();
-    env.write(
-        "oncall/borgchart.yaml",
-        &deploy.replace("schema: 1\n", "schema: 1\nauth: api_key\n"),
-    );
-    env.brg_cmd(&["up"])
+    env.write("config.yaml", "schema: 1\nauth: api_key\n");
+    env.brg_cmd(&["start"])
         .env("ANTHROPIC_API_KEY", "fake-key-first")
         .output()
         .map(|o| assert!(o.status.success(), "{}", both(&o)))
@@ -1441,20 +1567,16 @@ fn api_key_child_starts_take_the_key_from_the_caller() {
         "fake-key-first"
     );
 
-    // The key is not frozen: a child start needs it from the caller...
+    // The key is not frozen: a member start needs it from the caller...
     let before = env.snapshot();
-    let out = env.brg(&["up", "--member", "helper"]);
+    let out = env.brg(&["start", "helper"]);
     assert_eq!(out.status.code(), Some(1), "{}", both(&out));
-    assert!(
-        both(&out).contains("helper: OPENAI_API_KEY"),
-        "{}",
-        both(&out)
-    );
+    assert!(both(&out).contains("OPENAI_API_KEY"), "{}", both(&out));
     assert_unchanged(&before, &env.snapshot());
 
     // ...and passes the caller's key on, and nothing stores it.
     let out = env
-        .brg_cmd(&["up", "--member", "helper"])
+        .brg_cmd(&["start", "helper"])
         .env("OPENAI_API_KEY", "fake-key-second")
         .output()
         .unwrap();
@@ -1492,26 +1614,39 @@ fn a_plugin_command_may_not_hide_brg() {
             .replace("plugins: {pager: [read]}", "plugins: {pager: [read, run]}"),
     );
     env.script("oncall/plugins/pager/brg", "#!/bin/sh\necho plugin\n");
-    let out = env.brg(&["up"]);
+    let out = env.brg(&["start"]);
     assert_eq!(out.status.code(), Some(1), "{}", both(&out));
     assert!(
-        both(&out).contains("would hide the installed `brg` from oncall/lead"),
+        both(&out).contains("would hide the installed `brg` from"),
         "{}",
         both(&out)
     );
-    assert!(!env.path("state").exists());
+    assert!(
+        env.instance().is_none(),
+        "the refused create was taken back"
+    );
 }
 
-const UNKNOWN_HELPER: &str = r#"{"member":"helper","incarnation":"helper.20261105000000000.abcd","started_at":"2026-11-05T00:00:00.000Z"}"#;
+/// A helper start that never recorded its pane.
+fn unknown_helper(env: &Env) -> String {
+    let m = env.m("helper");
+    format!(
+        r#"{{"member":"{m}","incarnation":"{m}.20261105000000000.abcd","started_at":"2026-11-05T00:00:00.000Z"}}"#
+    )
+}
 
 /// Run a refused full `up` and check it changed nothing and named
 /// `oncall/<member>` without run wording.
 fn assert_rollover_refused(env: &Env, member: &str) {
     let before = env.snapshot();
-    let out = env.brg(&["up"]);
+    let out = env.brg(&["start"]);
     assert_eq!(out.status.code(), Some(1), "{}", both(&out));
     assert!(
-        both(&out).contains(&format!("brg can't tell that oncall/{member} has stopped")),
+        both(&out).contains(&format!(
+            "brg can't tell that {}/{} has stopped",
+            env.inst(),
+            env.m(member)
+        )),
         "{}",
         both(&out)
     );
@@ -1524,16 +1659,13 @@ fn assert_rollover_refused(env: &Env, member: &str) {
 fn rollover_checks_members_the_new_configuration_dropped() {
     let env = Env::new(true);
     env.up();
-    env.ok(&["down"]);
-    fs::write(
-        env.run_dir().join("runtime/incarnations/helper.json"),
-        UNKNOWN_HELPER,
-    )
-    .unwrap();
+    env.up_helper();
+    env.ok(&["stop"]);
+    fs::write(env.incarnation_file("helper"), unknown_helper(&env)).unwrap();
     // helper is removed from the team (and lead's file changes with it).
     env.write(
         "oncall/team.yaml",
-        TEAM.split("  helper:\n").next().unwrap(),
+        &format!("bus: {{}}\n{}", TEAM.split("  helper:\n").next().unwrap()),
     );
     assert_rollover_refused(&env, "helper");
 }
@@ -1543,16 +1675,18 @@ fn a_format_rollover_refuses_unreadable_incarnations() {
     for bad in ["malformed", "unreadable"] {
         let env = Env::new(true);
         env.up();
-        env.ok(&["down"]);
+        env.up_helper();
+        env.ok(&["stop"]);
         let run = env.run_dir();
         let mut m = read_json(&run.join("run.json"));
         m["schema"] = 99.into();
         fs::write(run.join("run.json"), serde_json::to_vec(&m).unwrap()).unwrap();
-        let inc = run.join("runtime/incarnations/helper.json");
+        let inc = env.incarnation_file("helper");
         if bad == "malformed" {
             fs::write(&inc, "not json").unwrap();
         } else {
             // A directory where the record should be: reading it fails.
+            fs::remove_file(&inc).unwrap();
             fs::create_dir_all(&inc).unwrap();
         }
         assert_rollover_refused(&env, "helper");
@@ -1563,13 +1697,14 @@ fn a_format_rollover_refuses_unreadable_incarnations() {
 fn an_interrupted_rollover_is_finished_before_starting() {
     let env = Env::new(true);
     env.up();
-    env.ok(&["down"]);
+    env.up_helper();
+    env.ok(&["stop"]);
     env.write(
         "oncall/lead.md",
         &LEAD.replace("You are the lead.", "You are the lead, edited."),
     );
     env.up();
-    env.ok(&["down"]);
+    env.ok(&["stop"]);
     assert_eq!(env.current(), "r2");
     // As if the rollover had stopped after retiring r1, before switching,
     // and the person then reverted the change.
@@ -1578,12 +1713,13 @@ fn an_interrupted_rollover_is_finished_before_starting() {
 
     // A child start doesn't finish it; it says how.
     let before = env.snapshot();
-    let out = env.brg(&["up", "--member", "helper"]);
+    let out = env.brg(&["start", "helper"]);
     assert_eq!(out.status.code(), Some(1), "{}", both(&out));
     assert!(
-        both(&out).contains(
-            "an earlier start of team `oncall` was interrupted while moving to fresh messages"
-        ),
+        both(&out).contains(&format!(
+            "an earlier start of instance `{}` was interrupted while moving to fresh messages",
+            env.inst()
+        )),
         "{}",
         both(&out)
     );
@@ -1616,16 +1752,18 @@ fn an_interrupted_rollover_is_finished_before_starting() {
 fn retired_storage_with_no_successor_is_refused() {
     let env = Env::new(true);
     env.up();
-    env.ok(&["down"]);
+    env.up_helper();
+    env.ok(&["stop"]);
     fs::write(env.run_dir().join("retired"), "r2\n").unwrap();
-    for args in [&["up"][..], &["up", "--member", "helper"][..]] {
+    for args in [&["start"][..], &["start", "helper"][..]] {
         let before = env.snapshot();
         let out = env.brg(args);
         assert_eq!(out.status.code(), Some(1), "{args:?}: {}", both(&out));
         assert!(
-            both(&out).contains(
-                "an earlier start of team `oncall` was interrupted while moving to fresh messages"
-            ),
+            both(&out).contains(&format!(
+                "an earlier start of instance `{}` was interrupted while moving to fresh messages",
+                env.inst()
+            )),
             "{}",
             both(&out)
         );
@@ -1639,18 +1777,22 @@ fn retired_storage_with_no_successor_is_refused() {
 fn a_lost_manifest_is_damaged_storage() {
     let env = Env::new(true);
     env.up();
-    env.ok(&["down"]);
+    env.up_helper();
+    env.ok(&["stop"]);
     fs::remove_file(env.run_dir().join("run.json")).unwrap();
     env.write(
         "oncall/lead.md",
         &LEAD.replace("You are the lead.", "You are the lead, edited."),
     );
-    for args in [&["up"][..], &["up", "--member", "helper"][..]] {
+    for args in [&["start"][..], &["start", "helper"][..]] {
         let before = env.snapshot();
         let out = env.brg(args);
         assert_eq!(out.status.code(), Some(1), "{args:?}: {}", both(&out));
         assert!(
-            both(&out).contains("team `oncall` was started before but its messages are missing"),
+            both(&out).contains(&format!(
+                "instance `{}` was started before but its messages are missing",
+                env.inst()
+            )),
             "{}",
             both(&out)
         );
@@ -1663,18 +1805,20 @@ fn a_lost_manifest_is_damaged_storage() {
 fn storage_errors_name_the_team_not_its_files() {
     let env = Env::new(true);
     env.up();
-    env.ok(&["down"]);
+    env.ok(&["stop"]);
     let lock = env.run_dir().join("runtime/lifecycle.lock");
     fs::remove_file(&lock).unwrap();
     fs::create_dir(&lock).unwrap();
-    let out = env.brg(&["up"]);
+    let out = env.brg(&["start"]);
     assert_eq!(out.status.code(), Some(1), "{}", both(&out));
     let text = both(&out);
-    assert!(text.contains("team `oncall`"), "{text}");
+    assert!(
+        text.contains(&format!("instance `{}`", env.inst())),
+        "{text}"
+    );
     assert!(!mentions_runs(&text), "{text}");
     assert!(
-        !text.contains(&env.path("teams").display().to_string())
-            && !text.contains("lifecycle.lock"),
+        !text.contains(&env.store().display().to_string()) && !text.contains("lifecycle.lock"),
         "{text}"
     );
 }
@@ -1700,19 +1844,19 @@ fn a_running_team_is_reached_by_its_recorded_server() {
         cmd.env_remove("BORGCHART_TMUX_TMPDIR");
         cmd.output().unwrap()
     };
-    let out = caller(&["up"]);
+    let out = caller(&["start"]);
     assert!(out.status.success(), "{}", both(&out));
-    assert_eq!(outcomes(&stdout(&out), "lead"), ["already running"]);
+    assert_eq!(outcomes(&stdout(&out), &env.m("lead")), ["already running"]);
     assert_eq!(sockets(&env).len(), 1, "{:?}", sockets(&env));
 
     let out = caller(&["status", "--json"]);
     let rows: Vec<Value> =
         serde_json::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{}", both(&out)));
-    let lead = rows.iter().find(|r| r["name"] == "lead").unwrap();
+    let lead = rows.iter().find(|r| r["role"] == "lead").unwrap();
     assert_eq!(lead["state"], "idle", "{lead}");
     assert_eq!(lead["liveness"], "alive", "{lead}");
 
-    let out = caller(&["down"]);
+    let out = caller(&["stop"]);
     assert!(out.status.success(), "{}", both(&out));
     assert!(both(&out).contains("stopped"), "{}", both(&out));
     assert_eq!(env.tmux(&["list-sessions"]), "");
@@ -1723,7 +1867,7 @@ fn a_running_team_is_reached_by_its_recorded_server() {
 fn up_refuses_a_relative_tmux_directory() {
     let env = Env::new(true);
     let out = env
-        .brg_cmd(&["up"])
+        .brg_cmd(&["start"])
         .env("BORGCHART_TMUX_TMPDIR", "tmux")
         .output()
         .unwrap();

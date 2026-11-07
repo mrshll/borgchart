@@ -140,19 +140,64 @@ impl Run {
             .env("HOME", self.dir.path().join("home"))
             .env("LANG", "C.UTF-8")
             .env("BORGCHART_STATE_HOME", self.dir.path().join("state"))
+            .env("BORGCHART_CONFIG", self.dir.path().join("config.yaml"))
             .env("BORGCHART_GATE_WAIT_MS", "15000")
             .env("SLACK_BOT_TOKEN", TOKEN)
             .current_dir(self.dir.path().join("team"))
-            .args(args)
+            .args(self.translate(args))
             .output()
             .unwrap()
+    }
+
+    fn read(&self, rel: &str) -> Option<serde_json::Value> {
+        serde_json::from_slice(&fs::read(self.dir.path().join(rel)).ok()?).ok()
+    }
+
+    /// The example's one instance, once created.
+    fn instance(&self) -> Option<String> {
+        let reg = self.read("state/registry.json")?;
+        reg["instances"].as_object()?.keys().next().cloned()
+    }
+
+    /// The member of `role`, or the name as it is (a plugin process).
+    fn member(&self, role: &str) -> String {
+        let found = self.instance().and_then(|inst| {
+            let rec = self.read(&format!("state/{inst}/instance.json"))?;
+            rec["members"]
+                .as_object()?
+                .iter()
+                .find(|(_, m)| m["role"] == role)
+                .map(|(id, _)| id.clone())
+        });
+        found.unwrap_or_else(|| role.to_string())
+    }
+
+    /// `start` creates the instance (working in `work`); `stop`, `status`,
+    /// `send` and `logs` go to it, with members named by role.
+    fn translate(&self, args: &[&str]) -> Vec<String> {
+        let inst = self.instance().unwrap_or_default();
+        let mut v: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        match args {
+            ["start"] => {
+                v = vec![
+                    "create".into(),
+                    self.dir.path().join("team").display().to_string(),
+                    self.dir.path().join("work").display().to_string(),
+                ]
+            }
+            ["stop"] => v.push(inst),
+            ["status", ..] => v.insert(1, inst),
+            ["send" | "logs", name, ..] => v[1] = format!("{inst}/{}", self.member(name)),
+            _ => {}
+        }
+        v
     }
 
     fn submissions(&self, member: &str) -> Vec<String> {
         fs::read_to_string(
             self.dir
                 .path()
-                .join(format!("home/fake-agent/{member}.jsonl")),
+                .join(format!("home/fake-agent/{}.jsonl", self.member(member))),
         )
         .unwrap_or_default()
         .lines()
@@ -214,19 +259,19 @@ fn slack_round_trip_through_the_example_team() {
     }
 
     // Point the plugin at the fake API (tests only), and poll quickly.
-    let team_yaml = fs::read_to_string(team.join("team.yaml")).unwrap().replace(
-        "env: [SLACK_BOT_TOKEN, SLACK_CHANNEL_ID]",
-        "env: [SLACK_BOT_TOKEN, SLACK_CHANNEL_ID, SLACK_API_BASE, SLACK_POLL_SECONDS, UV_CACHE_DIR]",
-    );
-    fs::write(team.join("team.yaml"), team_yaml).unwrap();
-    fs::write(
-        team.join("borgchart.yaml"),
-        format!(
-            "schema: 1\nauth: login\nplugins:\n  slackbot:\n    env:\n      SLACK_CHANNEL_ID: C0000EXAMPLE\n      SLACK_API_BASE: http://127.0.0.1:{port}/api\n      SLACK_POLL_SECONDS: '1'\n      UV_CACHE_DIR: {}\n",
+    let team_yaml = fs::read_to_string(team.join("team.yaml")).unwrap();
+    let channel = "      SLACK_CHANNEL_ID: C0000EXAMPLE";
+    assert!(team_yaml.contains(channel), "{team_yaml}");
+    let team_yaml = team_yaml.replacen(
+        channel,
+        &format!(
+            "      SLACK_CHANNEL_ID: C0000EXAMPLE\n      SLACK_API_BASE: http://127.0.0.1:{port}/api\n      SLACK_POLL_SECONDS: '1'\n      UV_CACHE_DIR: {}",
             dir.path().join("uv-cache").display()
         ),
-    )
-    .unwrap();
+        1,
+    );
+    fs::write(team.join("team.yaml"), team_yaml).unwrap();
+    fs::create_dir_all(dir.path().join("work")).unwrap();
 
     let bin = dir.path().join("bin");
     fs::create_dir_all(&bin).unwrap();
@@ -245,7 +290,7 @@ fn slack_round_trip_through_the_example_team() {
         path,
     };
 
-    let up = run.brg(&["up"]);
+    let up = run.brg(&["start"]);
     assert!(
         up.status.success(),
         "{}{}",
@@ -273,7 +318,8 @@ fn slack_round_trip_through_the_example_team() {
     run.wait("lead escalation", || {
         run.submissions("lead").iter().any(|s| {
             s.starts_with(&format!(
-                "Escalation from triager: message ts={urgent}, severity=high, reason=deploy"
+                "Escalation from {}: message ts={urgent}, severity=high, reason=deploy",
+                run.member("triager")
             ))
         })
     });
@@ -303,5 +349,5 @@ fn slack_round_trip_through_the_example_team() {
         .unwrap()
         .clone();
     assert_eq!(watcher["state"], "alive", "{watcher}");
-    assert!(run.brg(&["down"]).status.success());
+    assert!(run.brg(&["stop"]).status.success());
 }

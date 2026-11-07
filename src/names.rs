@@ -12,6 +12,18 @@ pub fn is_valid_id(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
 }
 
+/// Member and instance IDs: like [`is_valid_id`], up to 40 characters, so
+/// a 32-character role or team name with its `-<suffix>` fits.
+pub fn is_valid_member_id(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    name.len() <= 40
+        && (first.is_ascii_lowercase() || first.is_ascii_digit())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+}
+
 /// Environment variable names: `[A-Z_][A-Z0-9_]*`.
 pub fn is_valid_env_name(name: &str) -> bool {
     let mut chars = name.chars();

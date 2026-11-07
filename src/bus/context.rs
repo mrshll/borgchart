@@ -4,6 +4,7 @@
 //! This prevents mistakes, not spoofing: anything running as the same user
 //! can set these variables.
 
+pub use crate::address::ENV_INSTANCE;
 use crate::names::is_valid_id;
 
 use super::outcome::{Code, Failure};
@@ -42,6 +43,47 @@ impl Caller {
     }
 }
 
+/// The instance a bus command acts on: inside a member (or a plugin
+/// process), its own, and `--instance` may only repeat it; outside, the
+/// `--instance` given, which is required.
+pub fn instance(flag: Option<&str>) -> Result<String, Failure> {
+    instance_from(flag, |k| std::env::var(k).ok())
+}
+
+pub fn instance_from(
+    flag: Option<&str>,
+    get: impl Fn(&str) -> Option<String>,
+) -> Result<String, Failure> {
+    // A partial member context is refused before any store is chosen, for
+    // reads as well as writes: it would otherwise act as an operator. An
+    // instance alone (a plugin process) is not a member context.
+    let set = |k: &str| get(k).is_some_and(|v| !v.is_empty());
+    let parts = [ENV_MEMBER, ENV_RUN, ENV_INCARNATION];
+    if parts.iter().any(|k| set(k)) && !(parts.iter().all(|k| set(k)) && set(ENV_INSTANCE)) {
+        return Err(Failure::new(
+            Code::Refused,
+            format!(
+                "incomplete member context: {ENV_INSTANCE}, {ENV_MEMBER}, {ENV_RUN} and {ENV_INCARNATION} must all be set (was this member started by a brg with bus support?)"
+            ),
+        ));
+    }
+    match (get(ENV_INSTANCE).filter(|v| !v.is_empty()), flag) {
+        (Some(own), Some(other)) if other != own => Err(Failure::new(
+            Code::Refused,
+            format!("this is a member of instance `{own}`; it can't act on instance `{other}`"),
+        )),
+        (Some(own), _) => Ok(own),
+        (None, Some(id)) => Ok(id.to_string()),
+        (None, None) => Err(Failure::new(
+            Code::Usage,
+            format!(
+                "name the instance with `--instance ID`; {}",
+                crate::address::known()
+            ),
+        )),
+    }
+}
+
 /// Work out the caller from the environment and an optional `--external NAME`.
 pub fn caller(external: Option<&str>) -> Result<Caller, Failure> {
     caller_from(external, |k| std::env::var(k).ok())
@@ -54,6 +96,7 @@ pub fn caller_from(
     let member = get(ENV_MEMBER).filter(|v| !v.is_empty());
     let incarnation = get(ENV_INCARNATION).filter(|v| !v.is_empty());
     let run = get(ENV_RUN).filter(|v| !v.is_empty());
+    let instance = get(ENV_INSTANCE).filter(|v| !v.is_empty());
     if member.is_some() || incarnation.is_some() {
         if external.is_some() {
             return Err(Failure::new(
@@ -61,8 +104,8 @@ pub fn caller_from(
                 "`--external` can't be used from inside a member; members publish as themselves",
             ));
         }
-        return match (member, run, incarnation) {
-            (Some(member), Some(run), Some(incarnation)) => Ok(Caller::Member {
+        return match (member, run, incarnation, instance) {
+            (Some(member), Some(run), Some(incarnation), Some(_)) => Ok(Caller::Member {
                 member,
                 run,
                 incarnation,
@@ -70,7 +113,7 @@ pub fn caller_from(
             _ => Err(Failure::new(
                 Code::Refused,
                 format!(
-                    "incomplete member context: {ENV_MEMBER}, {ENV_RUN} and {ENV_INCARNATION} must all be set (was this member started by a brg with bus support?)"
+                    "incomplete member context: {ENV_INSTANCE}, {ENV_MEMBER}, {ENV_RUN} and {ENV_INCARNATION} must all be set (was this member started by a brg with bus support?)"
                 ),
             )),
         };
@@ -103,6 +146,7 @@ mod tests {
     #[test]
     fn member_context() {
         let e = env(&[
+            (ENV_INSTANCE, "oncall-2a3b"),
             (ENV_MEMBER, "lead"),
             (ENV_RUN, "r1"),
             (ENV_INCARNATION, "lead-1"),
@@ -122,7 +166,32 @@ mod tests {
     }
 
     #[test]
+    fn the_instance_is_the_members_own() {
+        let inside = env(&[(ENV_INSTANCE, "oncall-2a3b")]);
+        assert_eq!(instance_from(None, &inside).unwrap(), "oncall-2a3b");
+        assert_eq!(
+            instance_from(Some("oncall-2a3b"), &inside).unwrap(),
+            "oncall-2a3b"
+        );
+        assert_eq!(
+            instance_from(Some("other-4c5d"), &inside).unwrap_err().code,
+            Code::Refused
+        );
+        let outside = env(&[]);
+        assert_eq!(
+            instance_from(Some("other-4c5d"), &outside).unwrap(),
+            "other-4c5d"
+        );
+    }
+
+    #[test]
     fn partial_context_is_refused() {
+        let e = env(&[
+            (ENV_MEMBER, "lead"),
+            (ENV_RUN, "r1"),
+            (ENV_INCARNATION, "lead-1"),
+        ]);
+        assert_eq!(caller_from(None, &e).unwrap_err().code, Code::Refused);
         let e = env(&[(ENV_MEMBER, "lead")]);
         assert_eq!(caller_from(None, &e).unwrap_err().code, Code::Refused);
         let e = env(&[(ENV_INCARNATION, "x")]);

@@ -22,13 +22,19 @@ pub struct RunManifest {
     pub schema: u32,
     pub run: String,
     pub created_at: String,
-    /// The deployment ID (`brg-<id>` is its tmux session).
-    pub deployment: String,
-    /// The deployment file or team directory the run was started from.
+    /// The instance (`brg-<instance>` is its tmux session).
+    pub instance: String,
+    /// The team folder the run was started from.
     pub source: PathBuf,
     /// What configuration the run was started with.
     pub config: ConfigSnapshot,
-    /// The frozen topology.
+    /// The frozen topology, by role. A role's `parent` names a role.
+    pub roles: BTreeMap<String, ManifestMember>,
+    /// The instance's members, by ID, each with its role's entry and its
+    /// parent as a member ID: filled from the instance's record when the
+    /// storage is opened, never stored. A parent role with no member yet
+    /// stays named by its role, which no caller can act as.
+    #[serde(skip)]
     pub members: BTreeMap<String, ManifestMember>,
     /// Set when this run continues an earlier one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -38,6 +44,8 @@ pub struct RunManifest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManifestMember {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
     pub vendor: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
@@ -62,9 +70,11 @@ pub struct LinkedRun {
 pub struct ConfigSnapshot {
     pub version: u32,
     pub digest: String,
-    /// Input name → SHA-256: `deployment`, `team.yaml`,
-    /// `members/<id>/prompt` (the member file) and `members/<id>/instruction`
-    /// (its body with includes expanded).
+    /// Input name → SHA-256: `team.yaml`, `members/<role>/prompt` (the
+    /// role file), `members/<role>/instruction` (its body with includes
+    /// expanded), and the global settings that reach members:
+    /// `config/auth`, `config/auto_trust` and `config/plugins/<name>` (where
+    /// a shared plugin resolves).
     pub inputs: BTreeMap<String, String>,
 }
 
@@ -125,8 +135,25 @@ impl Validated {
     /// so the snapshot always describes this validated configuration.
     pub fn config_snapshot(&self) -> ConfigSnapshot {
         let mut inputs = BTreeMap::new();
-        if let Some(d) = &self.deployment {
-            inputs.insert("deployment".to_string(), d.file_sha256.clone());
+        inputs.insert(
+            "config/auth".to_string(),
+            sha256_hex(self.config.auth.as_str().as_bytes()),
+        );
+        inputs.insert(
+            "config/auto_trust".to_string(),
+            sha256_hex(format!("{:?}", self.config.auto_trust).as_bytes()),
+        );
+        for (name, plugin) in &self.team.plugins {
+            if matches!(
+                plugin.location,
+                Some(crate::team::PluginLocation::Shared(_))
+            ) {
+                let dir = self.plugin_dir(name).unwrap_or_default();
+                inputs.insert(
+                    format!("config/plugins/{name}"),
+                    sha256_hex(dir.as_os_str().as_encoded_bytes()),
+                );
+            }
         }
         inputs.insert(
             crate::team::TEAM_FILE.to_string(),
@@ -163,11 +190,11 @@ pub fn hex(bytes: &[u8]) -> String {
 pub fn manifest_for(
     v: &Validated,
     run: &str,
-    deployment: &str,
+    instance: &str,
     source: PathBuf,
     created_at: String,
 ) -> RunManifest {
-    let members = v
+    let roles = v
         .team
         .members
         .iter()
@@ -175,6 +202,7 @@ pub fn manifest_for(
             (
                 id.clone(),
                 ManifestMember {
+                    role: None,
                     vendor: m.vendor.as_str().into(),
                     parent: m.parent.clone(),
                     model: m.model.as_ref().map(|model| match &model.effort {
@@ -189,11 +217,43 @@ pub fn manifest_for(
         schema: super::SCHEMA,
         run: run.to_string(),
         created_at,
-        deployment: deployment.to_string(),
+        instance: instance.to_string(),
         source,
         config: v.config_snapshot(),
-        members,
+        roles,
+        members: BTreeMap::new(),
         linked_from: None,
+    }
+}
+
+impl RunManifest {
+    /// Fill [`RunManifest::members`] from the instance's issued members.
+    pub fn resolve_members(&mut self, issued: &BTreeMap<String, String>) {
+        let member_of = |role: &str| {
+            issued
+                .iter()
+                .find(|(_, r)| r.as_str() == role)
+                .map(|(id, _)| id.clone())
+        };
+        self.members = issued
+            .iter()
+            .filter_map(|(id, role)| {
+                let entry = self.roles.get(role)?;
+                let parent = entry
+                    .parent
+                    .as_ref()
+                    .map(|p| member_of(p).unwrap_or_else(|| p.clone()));
+                Some((
+                    id.clone(),
+                    ManifestMember {
+                        role: Some(role.clone()),
+                        vendor: entry.vendor.clone(),
+                        parent,
+                        model: entry.model.clone(),
+                    },
+                ))
+            })
+            .collect();
     }
 }
 
@@ -229,14 +289,14 @@ impl ManifestError {
     }
 }
 
-/// "team `oncall`'s messages use format 1; this brg uses format 2. …"
+/// "instance `oncall-2a3b`'s messages use format 1; this brg uses format 2. …"
 ///
 /// Restarting starts fresh storage in this brg's format. Messages in the old
 /// format can't be read by this brg, so they are left where they are rather
 /// than carried over; `up` lists what was left behind.
 pub fn format_mismatch(team: &str, found: u64, restart: &str) -> String {
     format!(
-        "team `{team}`'s messages use format {found}; this brg uses format {}.\nRestart the team to start fresh storage in the new format: {restart}\n(Open work in the old format isn't carried over; the old messages stay on disk.)",
+        "instance `{team}`'s messages use format {found}; this brg uses format {}.\nRestart the instance to start fresh storage in the new format: {restart}\n(Open work in the old format isn't carried over; the old messages stay on disk.)",
         super::SCHEMA
     )
 }
@@ -282,6 +342,7 @@ mod tests {
         members.insert(
             "helper".to_string(),
             ManifestMember {
+                role: None,
                 vendor: "claude".into(),
                 parent: Some("lead".into()),
                 model: Some("example-model medium".into()),
@@ -291,14 +352,15 @@ mod tests {
             schema: 1,
             run: "r1".into(),
             created_at: "2026-11-05T19:00:00.000Z".into(),
-            deployment: "team-0a1b2c3d".into(),
-            source: "/tmp/example/borgchart.yaml".into(),
+            instance: "team-2a3b".into(),
+            source: "/tmp/example/team".into(),
             config: ConfigSnapshot {
                 version: CONFIG_DIGEST_VERSION,
                 digest: "00".into(),
                 inputs: BTreeMap::new(),
             },
-            members,
+            roles: members,
+            members: BTreeMap::new(),
             linked_from: None,
         };
         let dir = tempfile::tempdir().unwrap();
@@ -325,7 +387,7 @@ mod tests {
             "{big_msg}"
         );
         assert!(
-            msg.contains("team `oncall`'s messages use format 2; this brg uses format 1"),
+            msg.contains("instance `oncall`'s messages use format 2; this brg uses format 1"),
             "{msg}"
         );
         assert!(msg.contains("brg down && brg up"), "{msg}");

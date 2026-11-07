@@ -6,8 +6,9 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
+use borgchart::config::{self, Config};
 use borgchart::diag::Report;
-use borgchart::validate::{Input, Validated, validate};
+use borgchart::validate::{Validated, validate_with};
 
 pub struct Fixture {
     pub dir: tempfile::TempDir,
@@ -28,7 +29,7 @@ plugins:
     path: plugins/slackbot
     process: [./watch.py]
     delivers_to: triager
-    env: [SLACK_BOT_TOKEN, SLACK_CHANNEL_ID]
+    env: [SLACK_BOT_TOKEN, {SLACK_CHANNEL_ID: C0000EXAMPLE}]
     actions:
       read: slackbot read <ts>
       reply: slackbot reply <thread_ts> <text>
@@ -58,10 +59,8 @@ members:
         f.write("includes/shared.md", "Be brief.\n");
         f.exec("plugins/slackbot/slackbot");
         f.exec("plugins/slackbot/watch.py");
-        f.write(
-            "borgchart.yaml",
-            "schema: 1\nplugins:\n  slackbot:\n    env: {SLACK_CHANNEL_ID: C0000EXAMPLE, SLACK_BOT_TOKEN: not-a-real-token}\n",
-        );
+        // brg's configuration for the tests, beside the team's files.
+        f.write("config.yaml", "schema: 1\n");
         f
     }
 
@@ -86,11 +85,17 @@ members:
         self.write(rel, &text.replacen(from, to, 1));
     }
 
+    /// Validate the team with the fixture's `config.yaml`.
     pub fn run(&self) -> (Report, Option<Validated>) {
-        validate(&Input::Deployment(self.path("borgchart.yaml")))
+        let mut report = Report::default();
+        match config::load_file(&self.path("config.yaml"), &mut report) {
+            Some(c) => validate_with(self.dir.path(), c),
+            None => (report, None),
+        }
     }
 
+    /// Validate the team with the default configuration.
     pub fn run_team(&self) -> (Report, Option<Validated>) {
-        validate(&Input::Team(self.dir.path().to_path_buf()))
+        validate_with(self.dir.path(), Config::default())
     }
 }

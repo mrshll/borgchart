@@ -21,7 +21,6 @@ use crate::bus::manifest::{
     self, ConfigSnapshot, Incarnation, LinkedRun, Liveness, ManifestError, PaneIdentity, hex,
 };
 use crate::bus::time::{parse_utc, utc_now};
-use crate::deploy::BusConfig;
 use crate::state::{self, Meta, StateDir};
 use crate::validate::Validated;
 
@@ -78,8 +77,18 @@ pub fn changed_since_start(
         .filter(|k| differs(k))
         .collect();
     let mut things: Vec<String> = Vec::new();
-    if keys.iter().any(|k| *k == "deployment") {
-        things.push(format!("{team}'s deployment file (borgchart.yaml)"));
+    for (key, what) in [
+        ("config/auth", "`auth`"),
+        ("config/auto_trust", "`auto_trust`"),
+    ] {
+        if keys.iter().any(|k| *k == key) {
+            things.push(format!("{what} in brg's configuration"));
+        }
+    }
+    for k in &keys {
+        if let Some(name) = k.strip_prefix("config/plugins/") {
+            things.push(format!("where `plugins_dir` puts plugin `{name}`"));
+        }
     }
     if keys.iter().any(|k| *k == crate::team::TEAM_FILE) {
         things.push(format!("{team}'s team file ({})", crate::team::TEAM_FILE));
@@ -90,7 +99,7 @@ pub fn changed_since_start(
             .and_then(|rest| rest.split_once('/'))
             .map(|(id, _)| id)
         {
-            let thing = format!("{team}/{id}'s instruction file");
+            let thing = format!("{team}/{id}'s role file");
             if !things.contains(&thing) {
                 things.push(thing);
             }
@@ -105,7 +114,9 @@ pub fn changed_since_start(
         [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
         [] => unreachable!(),
     };
-    format!("{list} changed since the team started; restart the team to apply it: {restart}")
+    format!(
+        "{list} changed since the instance started; stop it fully and start it again to apply it: {restart}"
+    )
 }
 
 // --- child starts into a running team ---
@@ -125,14 +136,14 @@ pub fn check_join(
         Some(c) => return Err(changed_since_start(team, restart, c, snapshot)),
         None => {
             return Err(format!(
-                "team `{team}` was started by an older brg; restart the team: {restart}"
+                "instance `{team}` was started by an older brg; restart it: {restart}"
             ));
         }
     }
     for name in meta.plugins.keys() {
         if !state.plugin_env_file(name).exists() {
             return Err(format!(
-                "plugin `{name}`'s values from the team's start are missing; restart the team: {restart}"
+                "plugin `{name}`'s values from the instance's start are missing; restart it: {restart}"
             ));
         }
     }
@@ -192,7 +203,7 @@ fn record_count(paths: &RunPaths) -> usize {
 pub fn check_stopped(paths: &RunPaths, team: &str, restart: &str) -> Result<(), String> {
     let refuse = |who: &str| {
         Err(format!(
-            "brg can't tell that {who} has stopped, so the team can't start with fresh messages; stop the team and start it again: {restart}"
+            "brg can't tell that {who} has stopped, so the instance can't start with fresh messages; stop it and start it again: {restart}"
         ))
     };
     let dir = paths.runtime_dir().join("incarnations");
@@ -231,7 +242,7 @@ pub fn check_stopped(paths: &RunPaths, team: &str, restart: &str) -> Result<(), 
 /// Where an interrupted rollover of `old` was going: its `retired` marker
 /// names a run that exists, belongs to this deployment and links back to
 /// `old`. Returns that run and the rollover's reason.
-fn successor(store: &TeamStore, old: &str, deployment: &str) -> Option<(String, String)> {
+fn successor(store: &TeamStore, old: &str, instance: &str) -> Option<(String, String)> {
     let next = fs::read_to_string(store.run(old).retired()).ok()?;
     let next = next.trim();
     if !store.runs().ok()?.iter().any(|r| r == next) {
@@ -239,7 +250,7 @@ fn successor(store: &TeamStore, old: &str, deployment: &str) -> Option<(String, 
     }
     let m = manifest::load_manifest(&store.run(next)).ok()??;
     let link = m.linked_from?;
-    (m.deployment == deployment && link.run == old).then(|| (next.to_string(), link.reason))
+    (m.instance == instance && link.run == old).then(|| (next.to_string(), link.reason))
 }
 
 enum Plan {
@@ -263,21 +274,19 @@ enum Plan {
 ///   stopped. A format change carries nothing.
 pub fn bind_run(
     v: &Validated,
-    bus: &BusConfig,
     state: &StateDir,
-    source: &Path,
     joining: bool,
     child: bool,
 ) -> Result<Binding, String> {
-    let team = state::team_name(source);
-    let restart = state::restart_hint(source);
-    let store = TeamStore::new(bus, &state.id);
-    let unreadable = || format!("team `{team}`'s messages can't be read; nothing was started");
+    let team = state.id.clone();
+    let restart = state::restart_hint(&team);
+    let store = TeamStore::new(state);
+    let unreadable = || format!("instance `{team}`'s messages can't be read; nothing was started");
     let current = store.current().map_err(|_| unreadable())?;
     let snapshot = v.config_snapshot();
     let missing = || {
         format!(
-            "team `{team}` was started before but its messages are missing; nothing was started"
+            "instance `{team}` was started before but its messages are missing; nothing was started"
         )
     };
     // Never start into retired storage. A full `up` finishes a rollover
@@ -285,7 +294,7 @@ pub fn bind_run(
     // to the run the marker names, carrying again) when that run is clearly
     // its successor; anything else refuses.
     let interrupted =
-        "an earlier start of team `{team}` was interrupted while moving to fresh messages";
+        "an earlier start of instance `{team}` was interrupted while moving to fresh messages";
     let interrupted = interrupted.replace("{team}", &team);
     let mut finish: Option<(String, String, String)> = None;
     let current = match current {
@@ -293,7 +302,7 @@ pub fn bind_run(
             Ok(false) => Some(id),
             Ok(true) if joining || child => {
                 return Err(format!(
-                    "{interrupted}; start the whole team to finish it: {restart}"
+                    "{interrupted}; start the whole instance to finish it: {restart}"
                 ));
             }
             Ok(true) => match successor(&store, &id, &state.id) {
@@ -322,9 +331,9 @@ pub fn bind_run(
         None if !store.runs().map_err(|_| unreadable())?.is_empty() => return Err(missing()),
         None => Plan::New { previous: None },
         Some(id) => match manifest::load_manifest(&store.run(&id)) {
-            Ok(Some(m)) if m.deployment != state.id => {
+            Ok(Some(m)) if m.instance != state.id => {
                 return Err(format!(
-                    "team `{team}`'s messages belong to another team; nothing was started"
+                    "instance `{team}`'s messages belong to another instance; nothing was started"
                 ));
             }
             Ok(Some(m)) if m.config.digest != snapshot.digest => {
@@ -335,7 +344,9 @@ pub fn bind_run(
                     previous: Some((id, ROLL_CONFIG)),
                 }
             }
-            Ok(Some(m)) if !joining && !child && aged(&m.created_at, bus.max_age_days) => {
+            Ok(Some(m))
+                if !joining && !child && aged(&m.created_at, crate::bus::layout::MAX_AGE_DAYS) =>
+            {
                 Plan::New {
                     previous: Some((id, ROLL_AGE)),
                 }
@@ -358,12 +369,28 @@ pub fn bind_run(
     } = &plan
     {
         check_stopped(&store.run(prev), &team, &restart)?;
+        // Carrying open work into fresh messages isn't wired yet, so a
+        // rollover never leaves any behind.
+        match open_work(state) {
+            Ok(work) if work.items.is_empty() => {}
+            Ok(work) => {
+                return Err(format!(
+                    "instance `{team}` would start with fresh messages (its files or message format changed, or its messages are old), and it holds open work that isn't carried over yet; settle it first, or restore the files. Nothing was started:\n  {}",
+                    work.items.join("\n  ")
+                ));
+            }
+            Err(e) => {
+                return Err(format!(
+                    "instance `{team}` would start with fresh messages, but its messages can't be read ({e}), so its open work can't be checked; nothing was started. Create a new instance instead (`brg create`)"
+                ));
+            }
+        }
     }
 
     let storage_error = |e: io::Error| {
-        format!("cannot use team `{team}`'s message storage ({e}); nothing was started")
+        format!("cannot use instance `{team}`'s message storage ({e}); nothing was started")
     };
-    let team_error = |e: String| format!("cannot use team `{team}`'s message storage ({e})");
+    let team_error = |e: String| format!("cannot use instance `{team}`'s message storage ({e})");
     if let Some((old, next, reason)) = &finish {
         let old = store.run(old);
         let _old_bus = lock_bus(&old).map_err(team_error)?;
@@ -387,7 +414,7 @@ pub fn bind_run(
             let id = store.next_id().map_err(storage_error)?;
             let paths = store.ensure_run(&id).map_err(storage_error)?;
             let lock = lock_run(&paths).map_err(team_error)?;
-            let mut m = manifest::manifest_for(v, &id, &state.id, source.to_path_buf(), utc_now());
+            let mut m = manifest::manifest_for(v, &id, &state.id, v.team.dir.clone(), utc_now());
             m.linked_from = previous.as_ref().map(|(prev, reason)| LinkedRun {
                 run: prev.clone(),
                 root: store.dir.clone(),
@@ -408,7 +435,7 @@ pub fn bind_run(
                         // carry from it; the old messages stay where they are.
                         let n = record_count(&old);
                         note = Some(format!(
-                            "team `{team}`'s messages were in another format, so it starts with fresh ones; {n} message{} in the old format {} left on disk, and open work in it wasn't carried over",
+                            "instance `{team}`'s messages were in another format, so it starts with fresh ones; {n} message{} in the old format {} left on disk, and open work in it wasn't carried over",
                             if n == 1 { "" } else { "s" },
                             if n == 1 { "was" } else { "were" }
                         ));
@@ -443,6 +470,66 @@ fn write_json_new<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), Str
 fn write_json_replace<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let body = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
     fsx::replace(path, &body).map_err(|e| format!("cannot write the team's records: {e}"))
+}
+
+// --- open work ---
+
+/// What an instance's messages hold open: unresolved tasks, open questions
+/// and unread messages, as lines to show, and the members that hold an
+/// unresolved task.
+#[derive(Debug, Default)]
+pub struct OpenWork {
+    pub items: Vec<String>,
+    pub holders: std::collections::BTreeSet<String>,
+    /// Each unresolved task: its ID, assignee and checkout.
+    pub tasks: Vec<(String, String, Option<String>)>,
+}
+
+/// The open work in `state`'s messages (none without a bus). `Err` when
+/// the messages can't be read: their contents can't be inspected.
+pub fn open_work(state: &StateDir) -> Result<OpenWork, String> {
+    use crate::bus::outcome::Code;
+    use crate::bus::{store, tasks};
+    let bus = match store::open(state) {
+        Ok(b) => b,
+        Err(f) if f.code == Code::NotConfigured => return Ok(OpenWork::default()),
+        Err(f) => return Err(f.message),
+    };
+    let snap = store::snapshot(&bus).map_err(|f| f.message)?;
+    if !snap.healthy() {
+        return Err(format!(
+            "instance `{}`'s messages are incomplete",
+            bus.instance
+        ));
+    }
+    let fold = tasks::fold(&bus.manifest, &snap);
+    let mut work = OpenWork::default();
+    for t in fold.tasks.values().filter(|t| !t.is_resolved()) {
+        work.items.push(format!(
+            "task `{}` ({}) held by {}{}",
+            t.task,
+            t.state.as_str(),
+            t.assignee,
+            t.checkout
+                .as_ref()
+                .map(|c| format!(", checkout {c}"))
+                .unwrap_or_default()
+        ));
+        work.holders.insert(t.assignee.clone());
+        work.tasks
+            .push((t.task.clone(), t.assignee.clone(), t.checkout.clone()));
+    }
+    for q in &fold.questions {
+        work.items.push(format!(
+            "open question {} from {} to {}",
+            q.id, q.from, q.to
+        ));
+    }
+    for r in snap.records.values().filter(|r| !snap.is_acked(r.seq)) {
+        work.items
+            .push(format!("unread {} ({}) to {}", r.id, r.kind.as_str(), r.to));
+    }
+    Ok(work)
 }
 
 // --- incarnations ---
@@ -793,9 +880,9 @@ mod tests {
     }
 
     #[test]
-    fn changes_are_named_in_team_and_member_terms() {
+    fn changes_are_named_in_instance_and_role_terms() {
         let was = snapshot(&[
-            ("deployment", "d"),
+            ("config/auth", "a"),
             ("team.yaml", "t"),
             ("members/helper/prompt", "hp"),
             ("members/helper/instruction", "hi"),
@@ -803,31 +890,33 @@ mod tests {
             ("members/lead/instruction", "li"),
         ]);
         let helper = snapshot(&[
-            ("deployment", "d"),
+            ("config/auth", "a"),
             ("team.yaml", "t"),
             ("members/helper/prompt", "hp2"),
             ("members/helper/instruction", "hi2"),
             ("members/lead/prompt", "lp"),
             ("members/lead/instruction", "li"),
         ]);
+        let restart = "brg stop oncall-2a3b && brg start oncall-2a3b";
         assert_eq!(
-            changed_since_start("oncall", "brg down && brg up", &was, &helper),
-            "oncall/helper's instruction file changed since the team started; restart the team to apply it: brg down && brg up"
+            changed_since_start("oncall-2a3b", restart, &was, &helper),
+            format!(
+                "oncall-2a3b/helper's role file changed since the instance started; stop it fully and start it again to apply it: {restart}"
+            )
         );
         let many = snapshot(&[
-            ("deployment", "d2"),
+            ("config/auth", "a2"),
+            ("config/plugins/pager", "p"),
             ("team.yaml", "t2"),
             ("members/helper/prompt", "hp"),
             ("members/helper/instruction", "hi"),
             ("members/lead/prompt", "lp"),
             ("members/lead/instruction", "li2"),
-            ("members/scout/prompt", "sp"),
-            ("members/scout/instruction", "si"),
         ]);
-        let msg = changed_since_start("oncall", "brg down && brg up", &was, &many);
+        let msg = changed_since_start("oncall-2a3b", restart, &was, &many);
         assert!(
             msg.starts_with(
-                "oncall's deployment file (borgchart.yaml), oncall's team file (team.yaml), oncall/lead's instruction file and oncall/scout's instruction file changed since the team started"
+                "`auth` in brg's configuration, where `plugins_dir` puts plugin `pager`, oncall-2a3b's team file (team.yaml) and oncall-2a3b/lead's role file changed since the instance started"
             ),
             "{msg}"
         );

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::state::{self, StateDir};
 
-/// What `_exec` starts: written by `up`, read once and deleted.
+/// What `_exec` starts: written at a start, read once and deleted.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ExecSpec {
     pub argv: Vec<String>,
@@ -20,7 +20,7 @@ pub struct ExecSpec {
 }
 
 /// The plugin's secret and non-secret values, kept in a 0600 file for the
-/// shims while the deployment runs.
+/// shims while the instance runs.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct PluginEnv {
     pub env: BTreeMap<String, String>,
@@ -76,7 +76,10 @@ pub fn run_main(
 ) -> ExitCode {
     let state = StateDir::from_root(state_root);
     let Some(meta) = state::read_meta(&state) else {
-        return fail("this deployment isn't running (no state); run `brg up`".into());
+        return fail(format!(
+            "instance `{}` isn't running (no state); start it with `brg start {}`",
+            state.id, state.id
+        ));
     };
     let Some(plugin_meta) = meta.plugins.get(plugin) else {
         return fail(format!("unknown plugin `{plugin}`"));
@@ -112,6 +115,11 @@ pub fn run_main(
     fail(format!("cannot run `{}`: {err}", program.display()))
 }
 
+/// Set for members and plugin actions: the member's role.
+pub const ENV_ROLE: &str = "BORGCHART_ROLE";
+/// Set for members: the instance's notes folder.
+pub const ENV_NOTES: &str = "BORGCHART_NOTES";
+
 /// The `BORGCHART_*` variables a plugin program sees.
 pub fn identity_env(
     meta: &state::Meta,
@@ -121,8 +129,7 @@ pub fn identity_env(
     plugin: &str,
 ) -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
-    env.insert("BORGCHART_DEPLOYMENT".into(), state.id.clone());
-    env.insert(state::ENV_FILE.into(), meta.source.display().to_string());
+    env.insert(crate::address::ENV_INSTANCE.into(), state.id.clone());
     env.insert("BORGCHART_BIN".into(), meta.brg.display().to_string());
     env.insert(
         "BORGCHART_STATE_DIR".into(),
@@ -130,6 +137,9 @@ pub fn identity_env(
     );
     if !member.is_empty() {
         env.insert("BORGCHART_MEMBER".into(), member.to_string());
+        if let Some(role) = meta.members.get(member).map(|m| m.role.clone()) {
+            env.insert(ENV_ROLE.into(), role);
+        }
     }
     if let Some(parent) = parent {
         env.insert("BORGCHART_PARENT".into(), parent.to_string());

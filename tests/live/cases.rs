@@ -1,5 +1,5 @@
-//! The cases that start real members through real `brg up`, each in a fresh
-//! team and folder. Each returns its outcome; none answers a tool approval,
+//! The cases that start real members through real `brg create`, each in a
+//! fresh team and folder. Each returns its outcome; none answers a tool approval,
 //! and the only screen brg answers is folder trust, through `auto_trust`.
 
 use std::path::{Path, PathBuf};
@@ -23,7 +23,7 @@ const FINE_POLL: Duration = Duration::from_millis(15);
 pub const WAITER: &str = "waiter";
 
 /// Commands the background-wait member may run, as session-only
-/// `--allowedTools` entries in its deployment's `args`: the wait and the
+/// `--allowedTools` entries in its role's `args`: the wait and the
 /// read of its own inbox. Nothing is saved to settings.
 pub const WAITER_TOOLS: &str = "Bash(brg inbox wait --background:*),Bash(brg inbox --full:*)";
 
@@ -36,13 +36,19 @@ const WAITER_PROMPT: &str = "This is an automated test of background commands. F
 3. When that background command has finished, run `brg inbox --full` with your Bash tool. One record's body is `nonce <word>`.
 4. Reply with one line: REPLY, a space, and that word written backwards, letter by letter. Then stop.";
 
-/// One case's team, started with `brg up`. Dropping it runs `brg down`.
+/// One case's team, started with `brg create`. Dropping it runs `brg stop`.
 pub struct Team<'w> {
     w: &'w World,
     rules: borgchart::rules::RuleSet,
-    pub file: PathBuf,
-    pub member: String,
-    pub session: String,
+    /// The team folder.
+    pub dir: PathBuf,
+    /// brg's configuration for this case (`auto_trust`).
+    pub config: PathBuf,
+    /// The instance's working folder.
+    cwd: PathBuf,
+    /// The role; its member's ID is learned once `create` registers it.
+    role: String,
+    ids: std::sync::OnceLock<(String, String)>,
 }
 
 pub struct Spec<'a> {
@@ -60,10 +66,12 @@ impl<'w> Team<'w> {
     pub fn new(w: &'w World, case: &str, s: &Spec) -> Team<'w> {
         let dir = w.scratch.join(w.fresh(case));
         std::fs::create_dir_all(&dir).unwrap();
+        let args = serde_json::to_string(s.args).unwrap();
         std::fs::write(
             dir.join("team.yaml"),
             format!(
-                "members:\n  {m}:\n    prompt: {m}.md\n    vendor: {v}\n{posture}",
+                "{bus}members:\n  {m}:\n    prompt: {m}.md\n    vendor: {v}\n    args: {args}\n{posture}",
+                bus = if s.bus { "bus: {}\n" } else { "" },
                 m = s.member,
                 v = s.who.as_str(),
                 posture = if s.locked {
@@ -79,21 +87,13 @@ impl<'w> Team<'w> {
             format!("---\nrole: tester\n---\n{}\n", s.instruction),
         )
         .unwrap();
-        let args = serde_json::to_string(s.args).unwrap();
-        let mut yaml = format!(
-            "schema: 1\nauto_trust: {}\nmembers:\n  {}:\n    cwd: {}\n    args: {args}\n",
-            s.auto_trust,
-            s.member,
-            serde_json::to_string(&s.cwd.display().to_string()).unwrap(),
-        );
-        if s.bus {
-            let root = w.scratch.join(w.fresh("bus"));
-            yaml.push_str(&format!("bus:\n  root: {}\n", root.display()));
-        }
-        let file = dir.join("borgchart.yaml");
-        std::fs::write(&file, yaml).unwrap();
-        let file = file.canonicalize().unwrap();
-        let id = borgchart::state::deployment_id(&file);
+        let dir = dir.canonicalize().unwrap();
+        let config = dir.with_extension("yaml");
+        std::fs::write(
+            &config,
+            format!("schema: 1\nteams: []\nauto_trust: {}\n", s.auto_trust),
+        )
+        .unwrap();
         let vendor = match s.who {
             Who::Claude => borgchart::team::Vendor::Claude,
             Who::Codex => borgchart::team::Vendor::Codex,
@@ -101,15 +101,64 @@ impl<'w> Team<'w> {
         Team {
             w,
             rules: borgchart::rules::load(vendor).unwrap(),
-            session: format!("brg-{id}"),
-            file,
-            member: s.member.to_string(),
+            dir,
+            config,
+            cwd: s.cwd.to_path_buf(),
+            role: s.member.to_string(),
+            ids: std::sync::OnceLock::new(),
         }
     }
 
-    pub fn brg(&self, args: &[&str], limit: Duration) -> Result<(bool, String), String> {
+    /// The instance and member, from brg's registry once `create` has
+    /// registered them (it does so before starting anything).
+    fn ids(&self) -> Option<(String, String)> {
+        if let Some(ids) = self.ids.get() {
+            return Some(ids.clone());
+        }
+        let state = PathBuf::from(self.w.env.get("BORGCHART_STATE_HOME")?);
+        let read =
+            |p: PathBuf| -> Option<Value> { serde_json::from_slice(&std::fs::read(p).ok()?).ok() };
+        let registry = read(state.join("registry.json"))?;
+        let dir = self.dir.display().to_string();
+        let instance = registry["instances"]
+            .as_object()?
+            .iter()
+            .find(|(_, e)| e["team_dir"] == dir.as_str())
+            .map(|(id, _)| id.clone())?;
+        let record = read(state.join(&instance).join("instance.json"))?;
+        let member = record["members"]
+            .as_object()?
+            .iter()
+            .find(|(_, m)| m["role"] == self.role.as_str())
+            .map(|(id, _)| id.clone())?;
+        let _ = self.ids.set((instance, member));
+        self.ids.get().cloned()
+    }
+
+    /// The instance's ID (empty until it is registered).
+    pub fn instance(&self) -> String {
+        self.ids().map(|i| i.0).unwrap_or_default()
+    }
+
+    /// The member's ID (empty until it is registered).
+    pub fn member(&self) -> String {
+        self.ids().map(|i| i.1).unwrap_or_default()
+    }
+
+    pub fn session(&self) -> String {
+        format!("brg-{}", self.instance())
+    }
+
+    /// `brg` with the world's environment and this case's configuration.
+    pub fn brg_command(&self) -> std::process::Command {
         let mut cmd = self.w.command(&self.w.brg);
-        cmd.args(args).arg("-f").arg(&self.file);
+        cmd.env("BORGCHART_CONFIG", &self.config);
+        cmd
+    }
+
+    pub fn brg(&self, args: &[&str], limit: Duration) -> Result<(bool, String), String> {
+        let mut cmd = self.brg_command();
+        cmd.args(args);
         let out = limited(&mut cmd, limit)?;
         Ok((
             out.status.success(),
@@ -122,13 +171,19 @@ impl<'w> Team<'w> {
     }
 
     pub fn up(&self) -> Result<(bool, String), String> {
-        self.brg(&["up"], self.w.limits.up)
-            .map_err(|e| format!("`brg up` {e}"))
+        let dir = self.dir.display().to_string();
+        let cwd = self.cwd.display().to_string();
+        self.brg(&["create", &dir, &cwd], self.w.limits.up)
+            .map_err(|e| format!("`brg create` {e}"))
     }
 
     /// The member's `brg status --json` row.
     pub fn row(&self) -> Value {
-        let Ok((true, text)) = self.brg(&["status", "--json"], self.w.limits.brg) else {
+        let instance = self.instance();
+        if instance.is_empty() {
+            return Value::Null;
+        }
+        let Ok((true, text)) = self.brg(&["status", &instance, "--json"], self.w.limits.brg) else {
             return Value::Null;
         };
         // stdout and stderr are joined; the JSON is the first line that parses.
@@ -140,7 +195,7 @@ impl<'w> Team<'w> {
         rows.as_array()
             .into_iter()
             .flatten()
-            .find(|r| r["name"] == self.member.as_str())
+            .find(|r| r["role"] == self.role.as_str() && r["kind"] == "member")
             .cloned()
             .unwrap_or(Value::Null)
     }
@@ -154,7 +209,7 @@ impl<'w> Team<'w> {
     }
 
     fn target(&self) -> String {
-        format!("={}:={}", self.session, self.member)
+        format!("={}:={}", self.session(), self.member())
     }
 
     /// The member's screen, styled (`capture-pane -e`).
@@ -255,11 +310,11 @@ impl Team<'_> {
                 return Err(format!("its window was gone at poll {polls}"));
             }
             if look.dead {
-                self.save(&format!("{}-left-trust", self.member));
+                self.save(&format!("{}-left-trust", self.role));
                 return Err(format!("the member exited at poll {polls}"));
             }
             if !at_trust(self, &look) {
-                self.save(&format!("{}-left-trust", self.member));
+                self.save(&format!("{}-left-trust", self.role));
                 return Err(format!("another screen at poll {polls}"));
             }
             if last {
@@ -272,10 +327,13 @@ impl Team<'_> {
 
 impl Drop for Team<'_> {
     fn drop(&mut self) {
-        let _ = self.brg(&["down"], self.w.limits.brg);
-        let _ = self
-            .w
-            .tmux(&["kill-session", "-t", &format!("={}", self.session)]);
+        let instance = self.instance();
+        if !instance.is_empty() {
+            let _ = self.brg(&["stop", &instance], self.w.limits.brg);
+            let _ = self
+                .w
+                .tmux(&["kill-session", "-t", &format!("={}", self.session())]);
+        }
     }
 }
 
@@ -720,12 +778,13 @@ pub fn background_wait(w: &World) -> Outcome {
     // 3. Only now: a fresh nonce, sent only as a bus message.
     let nonce = world::nonce();
     let reply = format!("REPLY {}", world::reversed(&nonce));
-    let draft = serde_json::json!({"to": WAITER, "kind": "note", "body": format!("nonce {nonce}")});
-    let mut cmd = w.command(&w.brg);
+    let draft =
+        serde_json::json!({"to": t.member(), "kind": "note", "body": format!("nonce {nonce}")});
+    let mut cmd = t.brg_command();
     cmd.args(["msg", "publish", "--external", "live", "--key"])
         .arg(format!("live-{nonce}"))
-        .args(["--record", "-", "--json", "-f"])
-        .arg(&t.file);
+        .args(["--record", "-", "--json", "--instance"])
+        .arg(t.instance());
     let published =
         match limited_with_stdin(&mut cmd, w.limits.brg, Some(draft.to_string().as_bytes())) {
             Ok(o) => serde_json::from_slice::<Value>(&o.stdout).unwrap_or(Value::Null),

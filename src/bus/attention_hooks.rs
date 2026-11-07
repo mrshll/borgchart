@@ -9,8 +9,6 @@ use std::fs;
 
 use serde::{Deserialize, Serialize};
 
-use crate::deploy::Deployment;
-
 use super::fsx;
 use super::layout::RunPaths;
 use super::record::{Record, parse_record_id, record_id};
@@ -63,7 +61,7 @@ impl Attention {
 }
 
 /// After a record is committed (not after a duplicate), outside `bus/lock`.
-pub fn after_publish(_paths: &RunPaths, _deployment: &Deployment, _record: &Record) -> Attention {
+pub fn after_publish(_paths: &RunPaths, _instance: &str, _record: &Record) -> Attention {
     Attention::None
 }
 
@@ -95,4 +93,4 @@ pub fn after_list(paths: &RunPaths, member: &str, incarnation: &str, ids: &[Stri
 
 /// From `publish`, `inbox`, `read` and `ack`: start the attention worker if
 /// attention is pending and none is running.
-pub fn ensure_if_pending(_paths: &RunPaths, _deployment: &Deployment) {}
+pub fn ensure_if_pending(_paths: &RunPaths, _instance: &str) {}

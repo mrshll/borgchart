@@ -72,9 +72,23 @@ pub fn parse_posture(value: &str) -> Result<Posture, String> {
 struct TeamFileRaw {
     default: Option<Vendor>,
     includes: Option<String>,
+    bus: Option<BusRaw>,
     #[serde(default)]
     plugins: BTreeMap<String, PluginRaw>,
     members: BTreeMap<String, MemberRaw>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BusRaw {
+    alert: Option<AlertRaw>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AlertRaw {
+    plugin: String,
+    action: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -85,9 +99,54 @@ struct PluginRaw {
     process: Option<Vec<String>>,
     delivers_to: Option<String>,
     #[serde(default)]
-    env: Vec<String>,
+    env: EnvRaw,
     #[serde(default)]
     actions: BTreeMap<String, String>,
+}
+
+/// A plugin's `env`: a list of names (each a secret, or a one-entry map
+/// `NAME: value` for a plain value), or a map of names to plain values
+/// (empty for a secret).
+#[derive(Debug, Deserialize)]
+#[serde(
+    untagged,
+    expecting = "`env` must be a list of names (or `NAME: value` entries), or a map of names to values"
+)]
+enum EnvRaw {
+    List(Vec<EnvItemRaw>),
+    Map(BTreeMap<String, Option<String>>),
+}
+
+impl Default for EnvRaw {
+    fn default() -> Self {
+        EnvRaw::List(Vec::new())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum EnvItemRaw {
+    Name(String),
+    Value(BTreeMap<String, String>),
+}
+
+impl EnvRaw {
+    /// Every name in order, each with its plain value if it has one.
+    fn entries(&self) -> Vec<(String, Option<String>)> {
+        match self {
+            EnvRaw::Map(map) => map.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            EnvRaw::List(items) => items
+                .iter()
+                .flat_map(|item| match item {
+                    EnvItemRaw::Name(n) => vec![(n.clone(), None)],
+                    EnvItemRaw::Value(map) => map
+                        .iter()
+                        .map(|(k, v)| (k.clone(), Some(v.clone())))
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -105,6 +164,9 @@ struct MemberRaw {
     #[serde(default)]
     plugins: BTreeMap<String, Vec<String>>,
     connectors: Option<ConnectorsRaw>,
+    #[serde(default)]
+    args: Vec<String>,
+    cwd: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -136,12 +198,140 @@ struct ModelsRaw {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Team {
+    /// The team folder, with symlinks resolved.
     pub dir: PathBuf,
+    /// The team's name: its folder's name (see [`team_name`]).
+    pub name: String,
     /// SHA-256 of `team.yaml` as it was read and parsed.
     pub file_sha256: String,
     pub default_vendor: Vendor,
+    /// The coordination bus, when the team uses one.
+    pub bus: Option<BusConfig>,
     pub members: BTreeMap<String, Member>,
     pub plugins: BTreeMap<String, Plugin>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BusConfig {
+    /// The plugin action brg invokes to alert a person (never a member's).
+    pub alert: Option<AlertConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AlertConfig {
+    pub plugin: String,
+    pub action: String,
+}
+
+/// Whether a command-line argument is a path: it starts with `/`, `./`,
+/// `../` or `~/`. Anything else is a name.
+pub fn is_path(arg: &str) -> bool {
+    arg.starts_with('/') || arg.starts_with("./") || arg.starts_with("../") || arg.starts_with("~/")
+}
+
+/// The teams in the search paths: each subfolder holding a `team.yaml`,
+/// with its name, in search-path order.
+pub fn list(search: &[PathBuf]) -> Vec<(String, PathBuf)> {
+    let mut out = Vec::new();
+    for root in search {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            continue;
+        };
+        let mut found: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.join(TEAM_FILE).is_file())
+            .collect();
+        found.sort();
+        for dir in found {
+            let dir = dir.canonicalize().unwrap_or(dir);
+            if !out.iter().any(|(_, d)| d == &dir) {
+                out.push((team_name(&dir), dir));
+            }
+        }
+    }
+    out
+}
+
+/// Find a team: a path (see [`is_path`]) to its folder, or a name looked up
+/// in every search path. Two folders with the name are refused, listing
+/// both; brg never picks the first.
+pub fn find(arg: &str, search: &[PathBuf]) -> Result<PathBuf, String> {
+    if is_path(arg) {
+        let path = match arg.strip_prefix("~/") {
+            Some(rest) => std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default()
+                .join(rest),
+            None => PathBuf::from(arg),
+        };
+        if !path.join(TEAM_FILE).is_file() {
+            return Err(format!(
+                "{} is not a team folder (no {TEAM_FILE} in it)",
+                path.display()
+            ));
+        }
+        return Ok(path.canonicalize().unwrap_or(path));
+    }
+    if arg.contains('/') {
+        return Err(format!(
+            "`{arg}` is not a team's name; for a folder, write `./{arg}`"
+        ));
+    }
+    let matches: Vec<PathBuf> = list(search)
+        .into_iter()
+        .filter(|(name, _)| name == arg)
+        .map(|(_, dir)| dir)
+        .collect();
+    match matches.as_slice() {
+        [one] => Ok(one.clone()),
+        [] => Err(format!(
+            "no team `{arg}` in {}; for a folder, give its path (`./{arg}`)",
+            if search.is_empty() {
+                "the search paths (none are set)".to_string()
+            } else {
+                search
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        )),
+        many => Err(format!(
+            "more than one team is called `{arg}`; name one by its path: {}",
+            many.iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
+/// The name a team goes by: its folder's name, lowercased, with anything
+/// outside `[a-z0-9_-]` turned into `-` (at most 32 characters).
+pub fn team_name(dir: &Path) -> String {
+    let clean: String = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .chars()
+        .take(32)
+        .collect();
+    if clean.is_empty() {
+        "team".to_string()
+    } else {
+        clean
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -162,6 +352,11 @@ pub struct Member {
     pub prompt_sha256: String,
     /// The member body with includes resolved: its standing instruction.
     pub instruction: String,
+    /// Extra arguments for the vendor CLI.
+    pub args: Vec<String>,
+    /// Where its members start, relative to the instance's folder; may hold
+    /// `{member}`.
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -201,15 +396,25 @@ pub struct Plugin {
     pub command: Option<String>,
     pub process: Option<Vec<String>>,
     pub delivers_to: Option<String>,
+    /// Every name the plugin gets, in order.
     pub env: Vec<String>,
+    /// The plain values the team gives; every other name is a secret.
+    pub values: BTreeMap<String, String>,
     pub actions: BTreeMap<String, Action>,
+}
+
+impl Plugin {
+    /// The names whose values come from the caller's environment.
+    pub fn secrets(&self) -> impl Iterator<Item = &String> {
+        self.env.iter().filter(|n| !self.values.contains_key(*n))
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub enum PluginLocation {
     /// A directory inside the team, relative to the team dir.
     Team(String),
-    /// `shared:<name>`, resolved under the deployment's `plugins_dir`.
+    /// `shared:<name>`, resolved under the configuration's `plugins_dir`.
     Shared(String),
 }
 
@@ -293,6 +498,8 @@ pub fn parse_model(value: &str) -> Result<Model, String> {
 /// Load and check a team directory. Problems go into `report`; a team is
 /// returned only when there were no errors.
 pub fn load(dir: &Path, report: &mut Report) -> Option<Team> {
+    let real = dir.canonicalize();
+    let dir = real.as_deref().unwrap_or(dir);
     let team_file = dir.join(TEAM_FILE);
     if !team_file.exists() {
         if dir.join(LEGACY_TEAM_FILE).exists() {
@@ -360,8 +567,15 @@ pub fn load(dir: &Path, report: &mut Report) -> Option<Team> {
     }
     Some(Team {
         dir: dir.to_path_buf(),
+        name: team_name(dir),
         file_sha256: crate::bus::manifest::sha256_hex(text.as_bytes()),
         default_vendor,
+        bus: raw.bus.map(|b| BusConfig {
+            alert: b.alert.map(|a| AlertConfig {
+                plugin: a.plugin,
+                action: a.action,
+            }),
+        }),
         members,
         plugins,
     })
@@ -422,13 +636,23 @@ fn load_plugin(
         },
     };
 
-    for env in &p.env {
-        if !is_valid_env_name(env) {
+    let mut env = Vec::new();
+    let mut values = BTreeMap::new();
+    for (name, value) in p.env.entries() {
+        if !is_valid_env_name(&name) {
             report.error(
                 Some(team_file),
-                at(format!("env name `{env}` must match `[A-Z_][A-Z0-9_]*`")),
+                at(format!("env name `{name}` must match `[A-Z_][A-Z0-9_]*`")),
             );
         }
+        if env.contains(&name) {
+            report.error(Some(team_file), at(format!("env `{name}` is listed twice")));
+            continue;
+        }
+        if let Some(value) = value {
+            values.insert(name.clone(), value);
+        }
+        env.push(name);
     }
 
     let mut actions = BTreeMap::new();
@@ -505,7 +729,8 @@ fn load_plugin(
         command: p.command.clone(),
         process: p.process.clone(),
         delivers_to: p.delivers_to.clone(),
-        env: p.env.clone(),
+        env,
+        values,
         actions,
     })
 }
@@ -630,6 +855,12 @@ fn load_member(
         }
     }
 
+    if let Some(cwd) = &m.cwd
+        && let Err(e) = check_cwd(cwd)
+    {
+        report.error(Some(team_file), at(e));
+    }
+
     // Member file.
     let prompt_path = match resolve_within(dir, &m.prompt) {
         Ok(p) => Some(p),
@@ -688,7 +919,37 @@ fn load_member(
         prompt_file: dir.join(&m.prompt),
         prompt_sha256,
         instruction,
+        args: m.args.clone(),
+        cwd: m.cwd.clone(),
     })
+}
+
+/// A role's `cwd`: relative, inside the instance's folder, with `{member}`
+/// as its only placeholder.
+fn check_cwd(cwd: &str) -> Result<(), String> {
+    let path = Path::new(cwd);
+    if cwd.is_empty() {
+        return Err("`cwd` is empty".into());
+    }
+    if path.is_absolute() || cwd.starts_with('~') {
+        return Err(format!(
+            "`cwd: {cwd}` must be relative: it is a folder inside the instance's folder"
+        ));
+    }
+    if path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(format!(
+            "`cwd: {cwd}` must stay inside the instance's folder (no `..`)"
+        ));
+    }
+    if cwd.replace("{member}", "").contains(['{', '}']) {
+        return Err(format!(
+            "`cwd: {cwd}`: the only placeholder is `{{member}}`"
+        ));
+    }
+    Ok(())
 }
 
 struct Front {
