@@ -20,6 +20,16 @@ rules:
     priority: 100
     bottom: 12
     all: ['^  Update available · \S+ → \S+\s*$', '^[› ] 1\. Update now', '^  enter continue · esc skip[ \t]*\z']
+  - id: trust-dialog
+    # The folder-trust screen at startup. brg never answers it (trust is
+    # session config, `auto_trust`); this only recognises it. Its footer must
+    # be the last line on screen, so quoted text can't match.
+    state: blocked
+    priority: 100
+    # Its heading is 13 lines above the footer at 80 columns, more when the
+    # folder or the text wraps further.
+    bottom: 30
+    all: ['^  Folder access\s*$', '^[› ] 1\. Trust and continue\s*$', '^[› ] 2\. Quit\s*$', '^  enter continue · esc quit[ \t]*\z']
   - id: working-title
     state: working
     priority: 50

@@ -69,7 +69,25 @@ pub struct WindowInfo {
     pub dead: bool,
     pub dead_status: Option<i32>,
     pub pid: Option<u32>,
+    /// tmux copy mode (or another mode) is showing over the program.
+    pub in_mode: bool,
     pub title: String,
+}
+
+/// A pane in a tmux mode (copy mode, view mode) sends keys to the mode, not
+/// the program, though a paste still reaches the program. `send`, folder-trust
+/// answering and the wake all refuse to type into one; this reads the
+/// `#{pane_in_mode}` field they all fetch.
+pub fn in_mode(pane_in_mode: &str) -> bool {
+    pane_in_mode != "0"
+}
+
+/// Why nothing is typed into a pane in a mode.
+pub const IN_MODE: &str = "the pane is in tmux copy mode";
+
+/// How a person gets `member`'s pane out of copy mode.
+pub fn leave_mode_hint(member: &str) -> String {
+    format!("attach (`brg attach {member}`) and leave copy mode (q, unless your tmux keys differ)")
 }
 
 impl Tmux {
@@ -176,28 +194,44 @@ impl Tmux {
     }
 
     pub fn windows(&self, session: &str) -> Vec<WindowInfo> {
-        let format =
-            "#{window_name}\t#{pane_dead}\t#{pane_dead_status}\t#{pane_pid}\t#{pane_title}";
+        let format = "#{window_name}\t#{pane_dead}\t#{pane_dead_status}\t#{pane_pid}\t#{pane_in_mode}\t#{pane_title}";
         let Ok(out) = self.ok(&["list-windows", "-t", &format!("={session}"), "-F", format]) else {
             return Vec::new();
         };
         out.lines()
             .filter_map(|line| {
-                let mut parts = line.splitn(5, '\t');
+                let mut parts = line.splitn(6, '\t');
                 let name = parts.next()?.to_string();
                 let dead = parts.next()? == "1";
                 let dead_status = parts.next().and_then(|s| s.parse().ok());
                 let pid = parts.next().and_then(|s| s.parse().ok());
+                let in_mode = in_mode(parts.next()?);
                 let title = parts.next().unwrap_or("").to_string();
                 Some(WindowInfo {
                     name,
                     dead,
                     dead_status,
                     pid,
+                    in_mode,
                     title,
                 })
             })
             .collect()
+    }
+
+    /// Whether the pane with this ID is in a mode, if it can be read.
+    pub fn pane_in_mode(&self, pane_id: &str) -> Option<bool> {
+        let out = self
+            .ok(&[
+                "display-message",
+                "-p",
+                "-t",
+                pane_id,
+                "#{pane_id}\t#{pane_in_mode}",
+            ])
+            .ok()?;
+        let (id, mode) = out.trim_end_matches('\n').split_once('\t')?;
+        (id == pane_id).then(|| in_mode(mode))
     }
 
     pub fn window(&self, session: &str, name: &str) -> Option<WindowInfo> {

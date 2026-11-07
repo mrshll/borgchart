@@ -1115,8 +1115,74 @@ fn codex_trust_screen_is_left_for_a_person_unless_auto_trust_covers_the_folder()
         assert!(trusts.is_empty(), "{deploy}: {trusts:?}");
         let beta = status_of(&env, "beta");
         assert!(beta["trust_accepted"].is_null(), "{deploy}: {beta}");
-        assert_ne!(beta["state"], "idle", "{deploy}: {beta}");
+        // At its trust screen, and still there for a person, `locked` too;
+        // `up` says to attach.
+        assert_eq!(beta["state"], "blocked", "{deploy}: {beta}");
+        assert_eq!(beta["rule"], "trust-dialog", "{deploy}: {beta}");
+        assert!(
+            stdout(&out).contains(&format!(
+                "waiting at Codex's folder-trust prompt; answer it with `brg attach {}/{}`",
+                env.instance().unwrap(),
+                env.m("beta")
+            )),
+            "{deploy}: {}",
+            stdout(&out)
+        );
+        if deploy.contains("locked") {
+            // Its gate hasn't reported in, so it gets no input.
+            assert_eq!(
+                env.brg(&["send", "--force", "beta", "hi"]).status.code(),
+                Some(5),
+                "{deploy}"
+            );
+        }
     }
+}
+
+#[test]
+fn status_shows_members_waiting_at_folder_trust_with_an_attach_hint() {
+    // Catches: a member at its vendor's folder-trust screen reading as a
+    // plain `blocked` (Claude) or `unknown` (Codex), with nothing saying
+    // to attach and answer it.
+    let env = trust_env("auto_trust: false\n");
+    fs::write(env.path("home/fake-agent/codex-trust"), "").unwrap();
+    assert!(env.brg(&["start"]).status.success());
+    env.wait_for("beta at its trust screen", |e| {
+        status_of(e, "beta")["rule"] == "trust-dialog"
+    });
+    let text = stdout(&env.brg(&["status"]));
+    let inst = env.instance().unwrap();
+    for role in ["alpha", "beta"] {
+        let member = env.m(role);
+        let line = text
+            .lines()
+            .find(|l| l.contains(&format!("─ {member} ")))
+            .unwrap_or_default();
+        assert!(
+            line.contains("blocked (folder trust)")
+                && line.contains(&format!(
+                    "waiting at folder trust: `brg attach {inst}/{member}`"
+                )),
+            "{member}: {text}"
+        );
+        let row = status_of(&env, role);
+        assert_eq!(row["state"], "blocked", "{row}");
+        assert_eq!(row["rule"], "trust-dialog", "{row}");
+        assert!(
+            row["detail"].as_str().unwrap_or("").starts_with(&format!(
+                "waiting at folder trust: `brg attach {inst}/{member}`"
+            )),
+            "{row}"
+        );
+    }
+    // The locked member's other detail stays.
+    assert!(
+        status_of(&env, "alpha")["detail"]
+            .as_str()
+            .unwrap_or("")
+            .contains("gate not active"),
+        "{text}"
+    );
 }
 
 #[test]
@@ -1163,6 +1229,171 @@ fn send_from_must_target_the_senders_parent() {
             .status
             .code(),
         Some(2)
+    );
+}
+
+/// The tmux pane ID of `role`'s member's window.
+fn pane_of(env: &Env, role: &str) -> Option<String> {
+    let member = env.member_id(role)?;
+    env.tmux(&["list-panes", "-a", "-F", "#{window_name} #{pane_id}"])
+        .lines()
+        .find_map(|l| l.strip_prefix(&format!("{member} ")).map(String::from))
+}
+
+fn in_copy_mode(env: &Env, pane: &str) -> bool {
+    env.tmux(&["display", "-p", "-t", pane, "#{pane_in_mode}"])
+        .trim()
+        == "1"
+}
+
+#[test]
+fn send_refuses_a_pane_in_copy_mode_until_it_leaves() {
+    // Catches: in copy mode a paste still reaches the member but Enter goes
+    // to tmux, so `send` said "sent" and left the text unsubmitted.
+    let env = Env::new();
+    env.up();
+    let pane = pane_of(&env, "beta").unwrap();
+    env.tmux(&["copy-mode", "-t", &pane]);
+    assert!(in_copy_mode(&env, &pane));
+    for args in [
+        &["send", "beta", "first"][..],
+        &["send", "--force", "beta", "forced"],
+    ] {
+        let out = env.brg(args);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(4), "{args:?}: {err}");
+        assert!(
+            err.contains(&format!("`{}`", env.m("beta"))) && err.contains("copy mode"),
+            "{err}"
+        );
+    }
+    // The copy-mode detail doesn't hide one `status` already gives: here, a
+    // broken rules override.
+    env.write("home/.config/borgchart/rules/codex.yaml", "not: [valid");
+    let detail = status_of(&env, "beta")["detail"].to_string();
+    assert!(
+        detail.contains("copy mode") && detail.contains("codex.yaml"),
+        "{detail}"
+    );
+    fs::remove_file(env.path("home/.config/borgchart/rules/codex.yaml")).unwrap();
+    env.tmux(&["send-keys", "-X", "-t", &pane, "cancel"]);
+    assert!(!in_copy_mode(&env, &pane));
+    assert!(env.brg(&["send", "beta", "second"]).status.success());
+    env.wait_for("second", |e| !submissions(e, "beta").is_empty());
+    // Exactly the second text: the refused sends typed nothing.
+    assert_eq!(submissions(&env, "beta"), ["second"]);
+}
+
+/// A team whose `alpha` shows Claude's trust dialog for its folder,
+/// on a server whose windows start in copy mode (a hook in the team's tmux
+/// config), so `up` only ever sees the dialog in copy mode.
+fn trust_in_copy_mode(gate_wait_ms: &str) -> (Env, std::process::Child, String) {
+    let env = trust_env("");
+    let hooks = env.path("copy-mode.conf");
+    fs::write(
+        &hooks,
+        "set-hook -g session-created copy-mode\nset-hook -g after-new-window copy-mode\n",
+    )
+    .unwrap();
+    env.config(&format!("tmux: {{user_config: {}}}\n", hooks.display()));
+    let up = env
+        .brg_cmd(&["start"])
+        .env("BORGCHART_GATE_WAIT_MS", gate_wait_ms)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    env.wait_for("alpha's window", |e| pane_of(e, "alpha").is_some());
+    let pane = pane_of(&env, "alpha").unwrap();
+    env.wait_for("the trust dialog in copy mode", |e| {
+        in_copy_mode(e, &pane)
+            && e.tmux(&["capture-pane", "-p", "-t", &pane])
+                .contains("Yes, I trust this folder")
+    });
+    (env, up, pane)
+}
+
+/// `up`'s output once it exits; fails the test if it runs past `limit`.
+fn finish(mut up: std::process::Child, limit: Duration) -> Output {
+    let deadline = Instant::now() + limit;
+    while up.try_wait().unwrap().is_none() {
+        if Instant::now() > deadline {
+            let _ = up.kill();
+            panic!("`up` was still running after {limit:?}");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    up.wait_with_output().unwrap()
+}
+
+fn trust_events(env: &Env) -> Vec<String> {
+    env.events("alpha")
+        .iter()
+        .filter_map(|e| e["event"].as_str())
+        .filter(|e| e.starts_with("trust-"))
+        .map(String::from)
+        .collect()
+}
+
+#[test]
+fn folder_trust_waits_while_the_pane_is_in_copy_mode() {
+    // Catches: once the pane leaves copy mode, `up` not answering the
+    // dialog (on main it had sent its keys into copy mode and given up).
+    let (env, mut up, pane) = trust_in_copy_mode("8000");
+    let held = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < held {
+        assert!(up.try_wait().unwrap().is_none(), "up stopped waiting");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(trust_events(&env).is_empty());
+    env.tmux(&["send-keys", "-X", "-t", &pane, "cancel"]);
+    let out = finish(up, Duration::from_secs(15));
+    assert!(
+        stdout(&out).contains("accepted folder trust for"),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(trust_events(&env), ["trust-accepted"]);
+}
+
+#[test]
+fn folder_trust_still_in_copy_mode_when_up_stops_waiting_is_reported() {
+    // Catches: `up` typing into the pane, or giving up on the dialog without
+    // saying why, while the pane its keys go to is in copy mode, including
+    // when another pane in the window is the active one and isn't.
+    let (env, up, pane) = trust_in_copy_mode("3000");
+    // A second pane, active and not in copy mode, showing the same dialog.
+    let split = env.tmux(&[
+        "split-window",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "-t",
+        &pane,
+        "-c",
+        &env.path("work").display().to_string(),
+        &env.path("bin/claude").display().to_string(),
+    ]);
+    let split = split.trim().to_string();
+    env.wait_for("the dialog in the active pane", |e| {
+        !in_copy_mode(e, &split)
+            && e.tmux(&["capture-pane", "-p", "-t", &split])
+                .contains("Yes, I trust this folder")
+    });
+    let out = finish(up, Duration::from_secs(15));
+    let text = stdout(&out);
+    assert!(
+        text.contains("waiting at Claude's folder-trust prompt") && text.contains("copy mode"),
+        "{text}"
+    );
+    assert!(trust_events(&env).is_empty());
+    // Still running, at the dialog, and `status` says why nothing is typed.
+    env.tmux(&["kill-pane", "-t", &split]);
+    let alpha = status_of(&env, "alpha");
+    assert_eq!(alpha["state"], "blocked", "{alpha}");
+    let detail = alpha["detail"].as_str().unwrap_or("");
+    assert!(
+        detail.contains("copy mode") && detail.contains("gate not active"),
+        "{alpha}"
     );
 }
 
