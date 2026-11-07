@@ -92,12 +92,7 @@ There's no `up`. There are four verbs. `create` always makes something new; `sta
 
 Two folders with the same name can both run. Their instances are told apart by their suffixes, and `brg ls` shows each one's folder.
 
-**Leaving the instance out.** An address may omit the instance:
-- inside a member, where it means that member's own instance;
-- when exactly one running instance has that member;
-- when a team's name is given and exactly one instance has that name (`brg start dev-team`).
-
-Otherwise brg lists the candidates and asks for the ID. It never picks by order. Message, inbox and task commands take the instance as `--instance`; inside a member it's always the member's own.
+**Leaving the instance out.** Inside a member, an address without an instance means that member's own instance, so a lead writes `implementer-x7k2`. Everywhere else the full instance ID is needed (`dev-team-k3f9/implementer-x7k2`, `brg start dev-team-k3f9`). There are no other shortcuts for now: brg never infers an instance from a team's name or from which instances are running. Message, inbox and task commands take the instance as `--instance`; inside a member it's always the member's own.
 
 **Members are always named in full.** Commands that act on a member (`attach`, `prompt`, `stop`), and messages, take its full ID (`lead-q8m3`). A role name there is refused, listing the role's members. There are no shortcuts for now.
 
