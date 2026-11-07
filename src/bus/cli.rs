@@ -11,10 +11,6 @@ use std::time::{Duration, Instant};
 use clap::{Args, Subcommand};
 use serde_json::{Value, json};
 
-use crate::deploy;
-use crate::diag::Report;
-use crate::validate::Input;
-
 use super::context::{self, Caller};
 use super::outcome::{Code, Failure, ok_json};
 use super::record::{Actor, MAX_RECORD_BYTES, Recipient, Record, parse_record_id};
@@ -123,7 +119,7 @@ pub enum InboxCommand {
 
 #[derive(Subcommand)]
 pub enum BusCommand {
-    /// Summarize the team's messages: members, per-recipient counts, recent records, store health.
+    /// Summarize the instance's messages: members, per-recipient counts, recent records, store health.
     Inspect {
         /// How many recent record headers to show.
         #[arg(long, default_value_t = 10)]
@@ -132,7 +128,7 @@ pub enum BusCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Check the team's message storage and its age. Never writes.
+    /// Check the instance's message storage and its age. Never writes.
     Check {
         /// Print the report as JSON.
         #[arg(long)]
@@ -176,28 +172,12 @@ pub(crate) fn finish(json: bool, result: Result<Output, Failure>) -> ExitCode {
     }
 }
 
-pub(crate) fn open_bus(input: &Input) -> Result<Bus, Failure> {
-    let file = match input {
-        Input::Team(_) => {
-            return Err(Failure::new(
-                Code::NotConfigured,
-                "a team directory on its own has no bus; use a deployment file with `bus:`",
-            ));
-        }
-        Input::Deployment(file) => file,
-    };
-    let mut report = Report::default();
-    let deployment = deploy::load(file, &mut report).ok_or_else(|| {
-        Failure::new(
-            Code::Error,
-            report
-                .errors()
-                .map(|d| d.to_string())
-                .collect::<Vec<_>>()
-                .join("; "),
-        )
-    })?;
-    store::open(&deployment)
+/// Open the message storage of the instance the caller names (`--instance`)
+/// or, inside a member, its own.
+pub(crate) fn open_bus(instance: Option<&str>) -> Result<Bus, Failure> {
+    let id = context::instance(instance)?;
+    let inst = crate::address::instance(&id).map_err(|e| Failure::new(Code::NotFound, e))?;
+    store::open(&inst.state)
 }
 
 fn parse_after(after: Option<&str>) -> Result<Option<u64>, Failure> {
@@ -235,7 +215,7 @@ fn read_draft(record: Option<&PathBuf>) -> Result<Vec<u8>, Failure> {
     Ok(bytes)
 }
 
-pub fn msg(input: &Input, command: MsgCommand) -> ExitCode {
+pub fn msg(instance: Option<&str>, command: MsgCommand) -> ExitCode {
     match command {
         MsgCommand::Publish {
             key,
@@ -246,7 +226,7 @@ pub fn msg(input: &Input, command: MsgCommand) -> ExitCode {
             json,
             (|| {
                 let caller = context::caller(external.as_deref())?;
-                let bus = open_bus(input)?;
+                let bus = open_bus(instance)?;
                 let draft = read_draft(record.as_ref())?;
                 let p = store::publish(&bus, &caller, &key, &draft)?;
                 let outcome = if p.duplicate {
@@ -279,7 +259,7 @@ pub fn msg(input: &Input, command: MsgCommand) -> ExitCode {
         MsgCommand::Read { id, json } => finish(
             json,
             (|| {
-                let bus = open_bus(input)?;
+                let bus = open_bus(instance)?;
                 if parse_record_id(&id).is_none() {
                     return Err(Failure::new(
                         Code::Usage,
@@ -291,7 +271,7 @@ pub fn msg(input: &Input, command: MsgCommand) -> ExitCode {
                     .get(&id)
                     .ok_or_else(|| Failure::new(Code::NotFound, format!("no record `{id}`")))?;
                 let acked = snap.is_acked(rec.seq);
-                super::attention_hooks::ensure_if_pending(&bus.paths, &bus.deployment);
+                super::attention_hooks::ensure_if_pending(&bus.paths, &bus.instance);
                 Ok(Output {
                     json: ok_json("ok", json!({"record": store::full(rec, acked)})),
                     text: render(rec, acked, true),
@@ -306,7 +286,7 @@ pub fn msg(input: &Input, command: MsgCommand) -> ExitCode {
             json,
             (|| {
                 let caller = context::caller(external.as_deref())?;
-                let bus = open_bus(input)?;
+                let bus = open_bus(instance)?;
                 let results = store::ack(&bus, &caller, &ids)?;
                 Ok(Output {
                     json: ok_json(
@@ -334,7 +314,7 @@ fn target(bus: &Bus, who: &Who) -> Result<Target, Failure> {
         if !bus.manifest.members.contains_key(m) {
             return Err(Failure::new(
                 Code::Invalid,
-                format!("`{m}` is not a member of team `{}`", bus.team),
+                store::not_a_member(&bus.manifest, m),
             ));
         }
         return Ok(Target {
@@ -453,7 +433,7 @@ fn render(r: &Record, acked: bool, full: bool) -> String {
     out
 }
 
-pub fn inbox(input: &Input, args: InboxArgs, started: Instant) -> ExitCode {
+pub fn inbox(instance: Option<&str>, args: InboxArgs, started: Instant) -> ExitCode {
     let parent_flags = args.who.member.is_some()
         || args.who.external.is_some()
         || args.after.is_some()
@@ -466,14 +446,14 @@ pub fn inbox(input: &Input, args: InboxArgs, started: Instant) -> ExitCode {
             (|| {
                 let limit = check_limit(args.limit.unwrap_or(store::DEFAULT_PAGE))?;
                 let after = parse_after(args.after.as_deref())?;
-                let bus = open_bus(input)?;
+                let bus = open_bus(instance)?;
                 let t = target(&bus, &args.who)?;
                 let snap = store::snapshot(&bus)?;
                 let page = store::list(&snap, &t.recipient, after, limit, args.all);
                 if let Some((m, i)) = &t.own {
                     store::observed(&bus, m, i, &page);
                 } else {
-                    super::attention_hooks::ensure_if_pending(&bus.paths, &bus.deployment);
+                    super::attention_hooks::ensure_if_pending(&bus.paths, &bus.instance);
                 }
                 Ok(page_output(&t, &page, &snap, args.full))
             })(),
@@ -535,7 +515,7 @@ pub fn inbox(input: &Input, args: InboxArgs, started: Instant) -> ExitCode {
                 let deadline = Instant::now() + duration;
                 let minimum = started + store::background_wait_minimum();
                 let mut start_mark = None;
-                let first = open_bus(input)?.run;
+                let first = open_bus(instance)?.run;
                 let timed_out = |t: &Target| {
                     Failure::new(
                         Code::Timeout,
@@ -547,13 +527,13 @@ pub fn inbox(input: &Input, args: InboxArgs, started: Instant) -> ExitCode {
                 // while waiting must not leave the wait on old storage.
                 loop {
                     let mut next_check = deadline;
-                    let bus = open_bus(input)?;
+                    let bus = open_bus(instance)?;
                     if background && bus.run != first {
                         return Err(Failure::new(
                             Code::Fenced,
                             format!(
-                                "team `{}` was restarted while waiting; this session is over",
-                                bus.team
+                                "instance `{}` was restarted while waiting; this session is over",
+                                bus.instance
                             ),
                         ));
                     }
@@ -563,8 +543,8 @@ pub fn inbox(input: &Input, args: InboxArgs, started: Instant) -> ExitCode {
                         return Err(Failure::new(
                             Code::Fenced,
                             format!(
-                                "team `{}` was restarted while waiting, so `--after {}` no longer applies; list the inbox again",
-                                bus.team,
+                                "instance `{}` was restarted while waiting, so `--after {}` no longer applies; list the inbox again",
+                                bus.instance,
                                 super::record::record_id(a)
                             ),
                         ));
@@ -646,17 +626,17 @@ pub fn inbox(input: &Input, args: InboxArgs, started: Instant) -> ExitCode {
     }
 }
 
-pub fn bus(input: &Input, command: BusCommand) -> ExitCode {
+pub fn bus(instance: Option<&str>, command: BusCommand) -> ExitCode {
     match command {
         BusCommand::Inspect { last, json } => finish(
             json,
             (|| {
-                let bus = open_bus(input)?;
+                let bus = open_bus(instance)?;
                 let snap = store::snapshot(&bus)?;
                 let v = store::inspect(&bus, &snap, last);
                 let mut text = format!(
-                    "team {}, deployment {}, storage created {}\n",
-                    bus.team, bus.manifest.deployment, bus.manifest.created_at
+                    "instance {}, storage created {}\n",
+                    bus.instance, bus.manifest.created_at
                 );
                 text.push_str("members:\n");
                 for (id, m) in &bus.manifest.members {
@@ -697,7 +677,7 @@ pub fn bus(input: &Input, command: BusCommand) -> ExitCode {
             })(),
         ),
         BusCommand::Check { json } => {
-            let result = open_bus(input).and_then(|bus| store::check(&bus));
+            let result = open_bus(instance).and_then(|bus| store::check(&bus));
             let report = match result {
                 Ok(r) => r,
                 Err(f) => return finish(json, Err(f)),
@@ -742,6 +722,6 @@ pub fn bus(input: &Input, command: BusCommand) -> ExitCode {
             }
             ExitCode::from(code.exit())
         }
-        BusCommand::Carry { from, json } => super::task_cli::carry(input, &from, json),
+        BusCommand::Carry { from, json } => super::task_cli::carry(instance, &from, json),
     }
 }

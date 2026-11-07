@@ -1,13 +1,12 @@
-//! Where a team's message storage lives.
+//! Where an instance's message storage lives.
 //!
-//! Each deployment has a directory under `bus.root`, named by its
-//! deployment ID. Inside it, `current` names the storage in use (a *run*,
-//! internally; users never see or name runs). brg starts a new one when a
-//! team's configuration or message format changes, or when the storage
-//! reaches its age limit, and carries unfinished work over.
+//! Each instance's state folder holds `messages/`. Inside it, `current`
+//! names the storage in use (a *run*, internally; users never see or name
+//! runs). brg starts a new one when the instance's configuration or message
+//! format changes, or when the storage reaches its age limit.
 //!
 //! ```text
-//! <bus.root>/<deployment-id>/           0700
+//! <state home>/<instance>/messages/     0700
 //!   current                             the run in use (e.g. `r2`)
 //!   r1/, r2/, …                         one run each:
 //!     run.json                          run manifest (immutable once written)
@@ -20,25 +19,31 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::deploy::BusConfig;
+use crate::state::StateDir;
+
+/// Age (days) at which an instance's message storage is reported as aging.
+pub const WARN_AGE_DAYS: u32 = 7;
+/// Age (days) at which brg rolls an instance's message storage over.
+pub const MAX_AGE_DAYS: u32 = 14;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunPaths {
     pub root: PathBuf,
 }
 
-/// One deployment's message storage: `<bus.root>/<deployment-id>/`.
+/// One instance's message storage: `<state folder>/messages/`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TeamStore {
+    /// The instance's state folder.
     pub base: PathBuf,
     pub dir: PathBuf,
 }
 
 impl TeamStore {
-    pub fn new(config: &BusConfig, deployment_id: &str) -> Self {
+    pub fn new(state: &StateDir) -> Self {
         TeamStore {
-            base: config.root.clone(),
-            dir: config.root.join(deployment_id),
+            base: state.root.clone(),
+            dir: state.messages_dir(),
         }
     }
 
@@ -242,18 +247,13 @@ mod tests {
     #[test]
     fn team_store_tracks_the_current_run() {
         let dir = tempfile::tempdir().unwrap();
-        let config = BusConfig {
-            root: dir.path().join("teams"),
-            alert: None,
-            warn_age_days: 7,
-            max_age_days: 14,
-        };
-        let store = TeamStore::new(&config, "oncall-0a1b2c3d");
+        let state = StateDir::from_root(&dir.path().join("oncall-2a3b"));
+        let store = TeamStore::new(&state);
         assert_eq!(store.current().unwrap(), None);
         assert!(!store.dir.exists(), "reading creates nothing");
         assert_eq!(store.next_id().unwrap(), "r1");
         let r1 = store.ensure_run("r1").unwrap();
-        assert!(r1.root.ends_with("oncall-0a1b2c3d/r1"));
+        assert!(r1.root.ends_with("oncall-2a3b/messages/r1"));
         store.set_current("r1").unwrap();
         assert_eq!(store.current().unwrap().as_deref(), Some("r1"));
         assert_eq!(store.next_id().unwrap(), "r2");

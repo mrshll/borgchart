@@ -20,8 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::deploy::{BusConfig, Deployment};
-use crate::state;
+use crate::state::{self, StateDir};
 
 use super::attention_hooks::{self, Attention};
 use super::context::Caller;
@@ -56,15 +55,15 @@ pub fn background_wait_minimum() -> Duration {
     Duration::from_secs(MIN_BACKGROUND_WAIT_SECS)
 }
 
-/// A team's opened message storage: the deployment's bus configuration and
-/// its current run's manifest.
+/// An instance's opened message storage: its current run's manifest, with
+/// the instance's members resolved into it.
 #[derive(Debug, Clone)]
 pub struct Bus {
-    pub deployment: Deployment,
-    pub config: BusConfig,
-    /// The team's name in messages.
-    pub team: String,
-    /// How to restart the team, from where the caller is (`state::restart_hint`).
+    /// The instance's state folder.
+    pub state: StateDir,
+    /// The instance's ID, in messages.
+    pub instance: String,
+    /// How to restart the instance (`state::restart_hint`).
     pub restart: String,
     pub store: TeamStore,
     /// The current run's ID (internal; never shown).
@@ -73,24 +72,21 @@ pub struct Bus {
     pub manifest: RunManifest,
 }
 
-/// Open the team's current run, read-only. Creates nothing.
-pub fn open(deployment: &Deployment) -> Result<Bus, Failure> {
-    let config = deployment.bus.clone().ok_or_else(|| {
-        Failure::new(
-            Code::NotConfigured,
-            format!("{} has no `bus:` section", deployment.file.display()),
-        )
-    })?;
-    let team = state::team_name(&deployment.file);
-    let restart = state::restart_hint(&deployment.file);
-    let id = state::deployment_id(&deployment.file);
-    let store = TeamStore::new(&config, &id);
+/// Open the instance's current run, read-only. Creates nothing.
+pub fn open(state: &StateDir) -> Result<Bus, Failure> {
+    let instance = state.id.clone();
+    let record =
+        crate::registry::read_instance(state).map_err(|e| Failure::new(Code::NotFound, e))?;
+    let restart = state::restart_hint(&instance);
+    let store = TeamStore::new(state);
     let unreadable =
-        |detail: &str| format!("team `{team}`'s message storage is unreadable ({detail})");
+        |detail: &str| format!("instance `{instance}`'s message storage is unreadable ({detail})");
     let not_started = || {
         Failure::new(
             Code::NotConfigured,
-            format!("team `{team}` hasn't been started yet"),
+            format!(
+                "instance `{instance}` has no messages: its team has no `bus:`, or it hasn't started with one"
+            ),
         )
     };
     let run = store
@@ -112,7 +108,7 @@ pub fn open(deployment: &Deployment) -> Result<Bus, Failure> {
                     Ok(_) => Err(Failure::new(
                         Code::Corrupt,
                         format!(
-                            "team `{team}`'s message storage is damaged: it holds messages but no longer says which are current. Repair it by hand; brg won't start the team over it"
+                            "instance `{instance}`'s message storage is damaged: it holds messages but no longer says which are current. Repair it by hand; brg won't start the instance over it"
                         ),
                     )),
                     Err(e) => Err(Failure::new(Code::Error, unreadable(&e.to_string()))),
@@ -121,12 +117,12 @@ pub fn open(deployment: &Deployment) -> Result<Bus, Failure> {
             Ok,
         )?;
     let paths = store.run(&run);
-    let manifest = match manifest::load_manifest(&paths) {
+    let mut manifest = match manifest::load_manifest(&paths) {
         Ok(Some(m)) => m,
         // `current` names storage that isn't set up yet.
         Ok(None) => return Err(not_started()),
         Err(e @ ManifestError::Format { .. }) => {
-            return Err(Failure::new(Code::Refused, e.message(&team, &restart)));
+            return Err(Failure::new(Code::Refused, e.message(&instance, &restart)));
         }
         Err(ManifestError::Unreadable(e)) => {
             let detail = reason(&e, &paths.manifest());
@@ -136,22 +132,29 @@ pub fn open(deployment: &Deployment) -> Result<Bus, Failure> {
     if manifest.run != run {
         return Err(Failure::new(
             Code::Corrupt,
-            format!("team `{team}`'s message storage is inconsistent (its manifest is misplaced)"),
-        ));
-    }
-    if manifest.deployment != id {
-        return Err(Failure::new(
-            Code::Refused,
             format!(
-                "team `{team}`'s message storage belongs to another deployment (`{}`), not this one (`{id}`)",
-                manifest.deployment
+                "instance `{instance}`'s message storage is inconsistent (its manifest is misplaced)"
             ),
         ));
     }
+    if manifest.instance != instance {
+        return Err(Failure::new(
+            Code::Refused,
+            format!(
+                "instance `{instance}`'s message storage belongs to another instance (`{}`)",
+                manifest.instance
+            ),
+        ));
+    }
+    let issued: BTreeMap<String, String> = record
+        .members
+        .iter()
+        .map(|(id, m)| (id.clone(), m.role.clone()))
+        .collect();
+    manifest.resolve_members(&issued);
     Ok(Bus {
-        deployment: deployment.clone(),
-        config,
-        team,
+        state: state.clone(),
+        instance,
         restart,
         store,
         run,
@@ -197,8 +200,8 @@ impl Bus {
         Failure::new(
             Code::Fenced,
             format!(
-                "team `{}` was restarted, so `{id}` may now be a different message; list the inbox again",
-                self.team
+                "instance `{}` was restarted, so `{id}` may now be a different message; list the inbox again",
+                self.instance
             ),
         )
     }
@@ -229,26 +232,21 @@ pub fn actor_for(bus: &Bus, caller: &Caller) -> Result<Actor, Failure> {
     }
 }
 
-/// How to start one member, from where the caller is: the `up` half of the
-/// team's restart hint, with `--member`.
+/// How to start one member.
 fn member_hint(bus: &Bus, member: &str) -> String {
-    let up = bus
-        .restart
-        .split_once(" && ")
-        .map_or("brg up", |(_, up)| up);
-    format!("{up} --member {member}")
+    format!("brg start {}/{member}", bus.instance)
 }
 
 fn fence_member(bus: &Bus, member: &str, run: &str, incarnation: &str) -> Result<(), Failure> {
     let fenced = |m: String| Err(Failure::new(Code::Fenced, m));
-    let team = &bus.team;
+    let team = &bus.instance;
     let start = member_hint(bus, member);
     if !bus.manifest.members.contains_key(member) {
-        return fenced(format!("`{member}` is not a member of team `{team}`"));
+        return fenced(format!("`{member}` is not a member of instance `{team}`"));
     }
     if run != bus.run {
         return fenced(format!(
-            "{team}/{member} is from before the team was restarted; restart it: {start}"
+            "{team}/{member} is from before the instance was restarted; restart it: {start}"
         ));
     }
     let current = manifest::load_incarnation(&bus.paths, member).map_err(|e| {
@@ -292,8 +290,8 @@ fn lock_for_mutation(bus: &Bus) -> Result<(Bus, fs::File, bool), Failure> {
             Failure::new(
                 Code::Error,
                 format!(
-                    "team `{}`'s message storage can't be used: {}",
-                    bus.team,
+                    "instance `{}`'s message storage can't be used: {}",
+                    bus.instance,
                     bus.hide_paths(&e.to_string())
                 ),
             )
@@ -311,13 +309,13 @@ fn lock_for_mutation(bus: &Bus) -> Result<(Bus, fs::File, bool), Failure> {
         }
         followed = true;
         drop(lock);
-        let next = open(&bus.deployment)?;
+        let next = open(&bus.state)?;
         if next.run == bus.run {
             return Err(Failure::new(
                 Code::Corrupt,
                 format!(
-                    "team `{}`'s message storage is damaged: its current messages are marked as moved, but nothing replaced them",
-                    bus.team
+                    "instance `{}`'s message storage is damaged: its current messages are marked as moved, but nothing replaced them",
+                    bus.instance
                 ),
             ));
         }
@@ -326,8 +324,8 @@ fn lock_for_mutation(bus: &Bus) -> Result<(Bus, fs::File, bool), Failure> {
     Err(Failure::new(
         Code::Error,
         format!(
-            "team `{}`'s message storage kept changing (is the team being restarted?); try again",
-            bus.team
+            "instance `{}`'s message storage kept changing (is the instance being restarted?); try again",
+            bus.instance
         ),
     ))
 }
@@ -909,7 +907,7 @@ pub fn check_route(manifest: &RunManifest, actor: &Actor, to: &str) -> Result<()
     let to = Recipient::parse(to).ok_or_else(|| format!("`to`: `{to}` is not a recipient"))?;
     match (actor, &to) {
         (_, Recipient::Member(m)) if !manifest.members.contains_key(m) => {
-            Err(format!("`{m}` is not a member of the team"))
+            Err(not_a_member(manifest, m))
         }
         (Actor::External { .. }, Recipient::Member(_)) => Ok(()),
         (Actor::External { .. }, Recipient::External(_)) => {
@@ -931,12 +929,50 @@ pub fn check_route(manifest: &RunManifest, actor: &Actor, to: &str) -> Result<()
             match manifest.members.get(member).and_then(|m| m.parent.as_ref()) {
                 None => Ok(()),
                 Some(parent) => Err(format!(
-                    "only the team's root may publish outside the team; `{member}` reports to `{parent}`"
+                    "only the team's root may publish outside the instance; `{member}` reports to `{parent}`"
                 )),
             }
         }
         (Actor::Bus, _) => Ok(()),
     }
+}
+
+/// Why `m` can't receive messages: an instance, a role, or no one.
+pub(crate) fn not_a_member(manifest: &RunManifest, m: &str) -> String {
+    let members: Vec<&str> = manifest.members.keys().map(|k| k.as_str()).collect();
+    let all = if members.is_empty() {
+        "it has no members".to_string()
+    } else {
+        format!("its members: {}", members.join(", "))
+    };
+    if m == manifest.instance {
+        return format!(
+            "`{m}` is an instance, not a recipient; send to one of its members ({all})"
+        );
+    }
+    if manifest.roles.contains_key(m) {
+        let of_role: Vec<&str> = manifest
+            .members
+            .iter()
+            .filter(|(_, e)| e.role.as_deref() == Some(m))
+            .map(|(id, _)| id.as_str())
+            .collect();
+        return if of_role.is_empty() {
+            format!(
+                "`{m}` is a role with no member yet; create one with `brg create {}/{m}`",
+                manifest.instance
+            )
+        } else {
+            format!(
+                "`{m}` is a role; send to its member in full: {}",
+                of_role.join(", ")
+            )
+        };
+    }
+    format!(
+        "`{m}` is not a member of instance `{}`; {all}",
+        manifest.instance
+    )
 }
 
 fn measure(draft: &Draft) -> Result<Vec<Artifact>, Failure> {
@@ -1114,7 +1150,7 @@ fn publish_actor(
     }
     write_key(&bus.paths, &slot, key, &rec.id, &digest)?;
     drop(lock);
-    let attention = attention_hooks::after_publish(&bus.paths, &bus.deployment, &rec);
+    let attention = attention_hooks::after_publish(&bus.paths, &bus.instance, &rec);
     ensure_attention(bus);
     Ok(Published {
         record: rec,
@@ -1144,7 +1180,7 @@ fn write_key(
 }
 
 fn ensure_attention(bus: &Bus) {
-    attention_hooks::ensure_if_pending(&bus.paths, &bus.deployment);
+    attention_hooks::ensure_if_pending(&bus.paths, &bus.instance);
 }
 
 // --- listing ---
@@ -1354,22 +1390,22 @@ pub fn check(bus: &Bus) -> Result<CheckReport, Failure> {
                 .as_secs_f64()
                 / 86_400.0;
             report.age_days = Some((age * 10.0).round() / 10.0);
-            let team = &bus.team;
+            let team = &bus.instance;
             let restart = &bus.restart;
-            if age >= bus.config.max_age_days as f64 && carry.retired {
+            if age >= super::layout::MAX_AGE_DAYS as f64 && carry.retired {
                 report.warnings.push(format!(
                     "run `{}` is {age:.1} days old, past max_age_days ({}), and was carried into a new run",
-                    bus.run, bus.config.max_age_days
+                    bus.run, super::layout::MAX_AGE_DAYS
                 ));
-            } else if age >= bus.config.max_age_days as f64 {
+            } else if age >= super::layout::MAX_AGE_DAYS as f64 {
                 report.errors.push(format!(
-                    "team `{team}`'s message storage is {age:.1} days old, past max_age_days ({}); restart the team to roll it over: {restart}",
-                    bus.config.max_age_days
+                    "instance `{team}`'s message storage is {age:.1} days old, past max_age_days ({}); restart the instance to roll it over: {restart}",
+                    super::layout::MAX_AGE_DAYS
                 ));
-            } else if age >= bus.config.warn_age_days as f64 {
+            } else if age >= super::layout::WARN_AGE_DAYS as f64 {
                 report.warnings.push(format!(
-                    "team `{team}`'s message storage is {age:.1} days old (warn_age_days {}); it rolls over at the first restart after {} days: {restart}",
-                    bus.config.warn_age_days, bus.config.max_age_days
+                    "instance `{team}`'s message storage is {age:.1} days old (warn_age_days {}); it rolls over at the first restart after {} days: {restart}",
+                    super::layout::WARN_AGE_DAYS, super::layout::MAX_AGE_DAYS
                 ));
             }
         }
@@ -1410,8 +1446,7 @@ pub fn inspect(bus: &Bus, snap: &Snapshot, last: usize) -> Value {
         .map(|r| header(r, snap.is_acked(r.seq)))
         .collect();
     json!({
-        "team": bus.team,
-        "deployment": bus.manifest.deployment,
+        "instance": bus.instance,
         "created_at": bus.manifest.created_at,
         "members": members,
         "recipients": recipients.iter().map(|(to, (total, unacked))| {
@@ -1437,19 +1472,21 @@ mod tests {
             schema: 1,
             run: "r1".into(),
             created_at: "2026-11-05T19:00:00.000Z".into(),
-            deployment: "d".into(),
-            source: "/x/borgchart.yaml".into(),
+            instance: "d-2222".into(),
+            source: "/x/team".into(),
             config: manifest::ConfigSnapshot {
                 version: 1,
                 digest: "00".into(),
                 inputs: BTreeMap::new(),
             },
+            roles: BTreeMap::new(),
             members: edges
                 .iter()
                 .map(|(m, p)| {
                     (
                         m.to_string(),
                         ManifestMember {
+                            role: None,
                             vendor: "claude".into(),
                             parent: p.map(str::to_string),
                             model: None,

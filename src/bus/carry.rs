@@ -19,10 +19,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::deploy::Deployment;
-use crate::state;
+use crate::state::StateDir;
 
-use super::layout::{RunPaths, TeamStore};
+use super::layout::RunPaths;
 use super::manifest;
 use super::outcome::{Code, Failure};
 use super::record::{Actor, Kind, Recipient, Record};
@@ -136,12 +135,8 @@ pub fn carry(bus: &Bus, from: &str) -> Result<Report, Failure> {
 /// current yet, and its manifest must be `linked_from` `from`. The caller
 /// already holds `from`'s `bus/lock` exclusive (and has written its
 /// `retired` marker), so the old store is read without locking it again.
-pub fn carry_at_rollover(
-    deployment: &Deployment,
-    from: &str,
-    into: &str,
-) -> Result<Report, Failure> {
-    let bus = open_run(deployment, into)?;
+pub fn carry_at_rollover(state: &StateDir, from: &str, into: &str) -> Result<Report, Failure> {
+    let bus = open_run(state, into)?;
     carry_linked(&bus, from, OldLock::HeldByCaller)
 }
 
@@ -154,38 +149,25 @@ enum OldLock {
     HeldByCaller,
 }
 
-/// The team's run `run` (current or not), for publishing into it.
-fn open_run(deployment: &Deployment, run: &str) -> Result<Bus, Failure> {
-    let config = deployment.bus.clone().ok_or_else(|| {
-        Failure::new(
-            Code::NotConfigured,
-            format!("{} has no `bus:` section", deployment.file.display()),
-        )
-    })?;
-    let team = state::team_name(&deployment.file);
-    let restart = state::restart_hint(&deployment.file);
-    let id = state::deployment_id(&deployment.file);
-    let store = TeamStore::new(&config, &id);
-    let paths = store.run(run);
-    let manifest = manifest::load_manifest(&paths)
-        .map_err(|e| Failure::new(Code::Error, e.message(&team, &restart)))?
+/// The instance's run `run` (current or not), for publishing into it.
+fn open_run(state: &StateDir, run: &str) -> Result<Bus, Failure> {
+    let mut bus = store::open(state)?;
+    let instance = bus.instance.clone();
+    let paths = bus.store.run(run);
+    let mut manifest = manifest::load_manifest(&paths)
+        .map_err(|e| Failure::new(Code::Error, e.message(&instance, &bus.restart)))?
         .ok_or_else(|| Failure::new(Code::NotFound, format!("no run `{run}`")))?;
-    if manifest.run != run || manifest.deployment != id {
+    if manifest.run != run || manifest.instance != instance {
         return Err(Failure::new(
             Code::Corrupt,
-            format!("run `{run}`'s manifest names another run or deployment"),
+            format!("run `{run}`'s manifest names another run or instance"),
         ));
     }
-    Ok(Bus {
-        deployment: deployment.clone(),
-        config,
-        team,
-        restart,
-        store,
-        run: run.to_string(),
-        paths,
-        manifest,
-    })
+    manifest.resolve_members(&bus.manifest.issued());
+    bus.run = run.to_string();
+    bus.paths = paths;
+    bus.manifest = manifest;
+    Ok(bus)
 }
 
 fn carry_linked(bus: &Bus, from: &str, old_lock: OldLock) -> Result<Report, Failure> {
@@ -206,9 +188,10 @@ fn carry_linked(bus: &Bus, from: &str, old_lock: OldLock) -> Result<Report, Fail
         }
     }
     let old_paths = bus.store.run(from);
-    let old = manifest::load_manifest(&old_paths)
-        .map_err(|e| Failure::new(Code::Error, e.message(&bus.team, &bus.restart)))?
+    let mut old = manifest::load_manifest(&old_paths)
+        .map_err(|e| Failure::new(Code::Error, e.message(&bus.instance, &bus.restart)))?
         .ok_or_else(|| Failure::new(Code::NotFound, format!("no run `{from}`")))?;
+    old.resolve_members(&bus.manifest.issued());
     let snap = match old_lock {
         OldLock::Take => store::snapshot_of(&old_paths, from)?,
         OldLock::HeldByCaller => store::scan(&old_paths, from),

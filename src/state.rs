@@ -1,4 +1,4 @@
-//! Where a deployment's runtime state lives, and the private files in it.
+//! Where an instance's state lives, and the private files in it.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -7,7 +7,6 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::bus::manifest::ConfigSnapshot;
 
@@ -18,11 +17,9 @@ pub const ENV_TMUX_SOCKET: &str = "BORGCHART_TMUX_SOCKET";
 /// `TMUX_TMPDIR`. brg never takes `TMUX_TMPDIR` itself from your environment:
 /// a member's own setting must not move its team's server.
 pub const ENV_TMUX_TMPDIR: &str = "BORGCHART_TMUX_TMPDIR";
-/// Set inside members and plugins: the deployment file, so `brg` run there finds it.
-pub const ENV_FILE: &str = "BORGCHART_FILE";
 pub const DEFAULT_SOCKET: &str = "borgchart";
 
-/// The root for all deployments' state.
+/// brg's state folder, holding the registry and every instance's state folder.
 pub fn state_home() -> PathBuf {
     if let Some(dir) = std::env::var_os(ENV_STATE_HOME) {
         return PathBuf::from(dir);
@@ -40,103 +37,34 @@ pub fn tmux_socket() -> String {
     std::env::var(ENV_TMUX_SOCKET).unwrap_or_else(|_| DEFAULT_SOCKET.to_string())
 }
 
-/// How to restart a team, as a command line that works from where the
-/// person is: the bare commands in the deployment's own folder, otherwise
-/// with its `--file` (or `--team`).
-pub fn restart_hint(source: &Path) -> String {
-    let canonical = source
-        .canonicalize()
-        .unwrap_or_else(|_| source.to_path_buf());
-    let dir = canonical
-        .parent()
-        .filter(|_| canonical.is_file())
-        .unwrap_or(&canonical);
-    let here = std::env::current_dir()
-        .ok()
-        .and_then(|c| c.canonicalize().ok());
-    if here.as_deref() == Some(dir) {
-        return "brg down && brg up".to_string();
+/// Whether `path` is somewhere cleaned by age (`/tmp`, `/var/tmp`), where an
+/// instance's messages could vanish. Test builds may use it.
+pub fn age_cleaned(path: &Path) -> bool {
+    let real = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    ["/tmp", "/var/tmp", "/private/tmp", "/private/var/tmp"]
+        .iter()
+        .any(|dir| path.starts_with(dir) || real.starts_with(dir))
+}
+
+/// Refuse a state home that age-based cleaning would empty, except in test
+/// builds.
+pub fn check_state_home() -> Result<(), String> {
+    let home = state_home();
+    if cfg!(feature = "test-support") || !age_cleaned(&home) {
+        return Ok(());
     }
-    let flag = if canonical.is_file() {
-        "--file"
-    } else {
-        "--team"
-    };
-    let path = shell_quote(&canonical.display().to_string());
-    format!("brg down {flag} {path} && brg up {flag} {path}")
+    Err(format!(
+        "brg's state folder {} is under a folder cleaned by age, so instances' messages could vanish; set {ENV_STATE_HOME} to a lasting folder",
+        home.display()
+    ))
 }
 
-/// The name a team goes by in messages: its deployment's directory name,
-/// lowercased, with anything outside `[a-z0-9_-]` turned into `-`.
-pub fn team_name(source: &Path) -> String {
-    let canonical = source
-        .canonicalize()
-        .unwrap_or_else(|_| source.to_path_buf());
-    let dir = canonical
-        .parent()
-        .filter(|_| canonical.is_file())
-        .unwrap_or(&canonical);
-    let clean: String = dir
-        .file_name()
-        .map(|n| n.to_string_lossy().to_lowercase())
-        .unwrap_or_default()
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .trim_matches('-')
-        .chars()
-        .take(32)
-        .collect();
-    if clean.is_empty() {
-        "team".to_string()
-    } else {
-        clean
-    }
+/// How to restart an instance: stop it, then start it.
+pub fn restart_hint(instance: &str) -> String {
+    format!("brg stop {instance} && brg start {instance}")
 }
 
-/// A stable id for a deployment: its directory name plus a short hash of its path.
-pub fn deployment_id(source: &Path) -> String {
-    let canonical = source
-        .canonicalize()
-        .unwrap_or_else(|_| source.to_path_buf());
-    let digest = Sha256::digest(canonical.as_os_str().as_encoded_bytes());
-    let hex: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
-    let stem = canonical
-        .parent()
-        .filter(|_| canonical.is_file())
-        .unwrap_or(&canonical)
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "team".to_string());
-    let clean: String = stem
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .trim_matches('-')
-        .chars()
-        .take(24)
-        .collect();
-    let clean = if clean.is_empty() {
-        "team".to_string()
-    } else {
-        clean
-    };
-    format!("{clean}-{hex}")
-}
-
-/// Paths inside one deployment's state directory.
+/// Paths inside one instance's state folder, `<state home>/<instance>/`.
 #[derive(Debug, Clone)]
 pub struct StateDir {
     pub root: PathBuf,
@@ -166,8 +94,21 @@ impl StateDir {
         format!("brg-{}", self.id)
     }
 
+    /// The instance's record (`instance.json`): see `registry`.
+    pub fn instance_file(&self) -> PathBuf {
+        self.root.join("instance.json")
+    }
+    /// The message store, shared by the members.
+    pub fn messages_dir(&self) -> PathBuf {
+        self.root.join("messages")
+    }
+    /// Files the members share (`BORGCHART_NOTES`).
+    pub fn notes_dir(&self) -> PathBuf {
+        self.root.join("notes")
+    }
+    /// What the last start recorded (brg's own).
     pub fn meta_file(&self) -> PathBuf {
-        self.root.join("deployment.json")
+        self.root.join("start.json")
     }
     pub fn exec_file(&self, window: &str) -> PathBuf {
         self.root.join("exec").join(format!("{window}.json"))
@@ -195,7 +136,7 @@ impl StateDir {
     pub fn member_tmp(&self, member: &str) -> PathBuf {
         self.root.join("tmp").join(member)
     }
-    /// Held by `up` and `down` while they change the deployment.
+    /// Held by `start` and `stop` while they change the instance.
     pub fn lifecycle_lock(&self) -> PathBuf {
         self.root.join("lifecycle.lock")
     }
@@ -207,11 +148,13 @@ impl StateDir {
     }
 }
 
-/// Facts written at `up` and read by `status`, `send`, shims and the gate.
+/// Facts written at a start and read by `status`, `send`, shims and the gate.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Meta {
-    pub source: PathBuf,
     pub team_dir: PathBuf,
+    /// The instance's working folder.
+    #[serde(default)]
+    pub folder: PathBuf,
     /// The absolute path of the `brg` that started the deployment (plugins
     /// get it as `BORGCHART_BIN`).
     pub brg: PathBuf,
@@ -255,6 +198,8 @@ pub struct RunBinding {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MemberMeta {
+    #[serde(default)]
+    pub role: String,
     pub vendor: String,
     pub posture: String,
     pub parent: Option<String>,
@@ -365,39 +310,11 @@ mod tests {
     }
 
     #[test]
-    fn restart_hints_work_from_elsewhere() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("borgchart.yaml");
-        std::fs::write(&file, "schema: 1\n").unwrap();
-        let real = file.canonicalize().unwrap();
-        let q = shell_quote(&real.display().to_string());
-        assert_eq!(
-            restart_hint(&file),
-            format!("brg down --file {q} && brg up --file {q}")
-        );
-    }
-
-    #[test]
-    fn team_names_come_from_the_directory() {
-        let dir = tempfile::tempdir().unwrap();
-        let team = dir.path().join("On Call");
-        std::fs::create_dir(&team).unwrap();
-        let file = team.join("borgchart.yaml");
-        std::fs::write(&file, "schema: 1\n").unwrap();
-        assert_eq!(team_name(&file), "on-call");
-        assert_eq!(team_name(&team), "on-call");
-    }
-
-    #[test]
-    fn ids_are_stable_and_tidy() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("borgchart.yaml");
-        std::fs::write(&file, "schema: 1\n").unwrap();
-        let a = deployment_id(&file);
-        assert_eq!(a, deployment_id(&file));
-        assert!(
-            a.chars()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-        );
+    fn age_cleaned_folders() {
+        assert!(age_cleaned(Path::new("/tmp/x/state")));
+        assert!(age_cleaned(Path::new("/var/tmp/state")));
+        assert!(!age_cleaned(Path::new(
+            "/home/someone/.local/state/borgchart"
+        )));
     }
 }

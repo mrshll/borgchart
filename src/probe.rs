@@ -83,12 +83,8 @@ pub fn probe(v: &Validated, report: &mut Report) {
         if member.connectors.is_empty() {
             continue;
         }
-        let cwd = v
-            .deployment
-            .as_ref()
-            .and_then(|d| d.members.get(id))
-            .and_then(|m| m.cwd.clone())
-            .unwrap_or_else(|| v.team.dir.clone());
+        // The instance's folder isn't known here: ask from the team folder.
+        let cwd = v.team.dir.clone();
         match list(member.vendor, &cwd) {
             Ok(names) => {
                 for server in member.connectors.servers.keys() {

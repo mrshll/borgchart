@@ -3,13 +3,11 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 
-use crate::deploy::DEPLOY_FILE;
+use crate::address::{self, Instance, Target};
 use crate::runtime;
-use crate::state::ENV_FILE;
-use crate::team::TEAM_FILE;
-use crate::validate::{Input, validate};
+use crate::validate::validate;
 
 #[derive(Parser)]
 #[command(
@@ -23,22 +21,13 @@ struct Cli {
     command: Command,
 }
 
-#[derive(Args, Clone)]
-struct Target {
-    /// Deployment file (default: $BORGCHART_FILE, ./borgchart.yaml, or ./team.yaml on its own).
-    #[arg(short, long, conflicts_with = "team", global = true)]
-    file: Option<PathBuf>,
-    /// Use a team directory on its own, without deployment values.
-    #[arg(long, global = true)]
-    team: Option<PathBuf>,
-}
-
 #[derive(Subcommand)]
 enum Command {
-    /// Check the team and deployment without starting anything.
+    /// Check a team folder and brg's configuration without starting anything.
     Validate {
-        #[command(flatten)]
-        target: Target,
+        /// The team: its name in the search paths, or a path to its folder
+        /// (starting with `/`, `./`, `../` or `~/`).
+        team: String,
         /// Print the report as JSON.
         #[arg(long)]
         json: bool,
@@ -47,26 +36,48 @@ enum Command {
         #[arg(long)]
         probe: bool,
     },
-    /// Start the team, or one member (including a `start: false` one).
-    Up {
-        #[command(flatten)]
-        target: Target,
-        /// Start only this member.
-        #[arg(long)]
-        member: Option<String>,
+    /// Make something new: an instance of a team working in a folder
+    /// (`create <team> <folder>`), or a member of a role
+    /// (`create <instance>/<role>`). Either is started.
+    Create {
+        /// `<team>` (a name, or a path starting with `/`, `./`, `../` or
+        /// `~/`), or `<instance>/<role>`.
+        target: String,
+        /// The instance's working folder (required for a team; it must exist).
+        folder: Option<String>,
     },
-    /// Stop the team, or one member.
-    Down {
-        #[command(flatten)]
-        target: Target,
-        /// Stop only this member.
+    /// Bring an instance to what should be running, or start one member.
+    Start {
+        /// `<instance>`, or `<instance>/<member>`.
+        target: String,
+        /// Point a stopped instance at its team folder's new place.
         #[arg(long)]
-        member: Option<String>,
+        team: Option<PathBuf>,
     },
-    /// Show who is running and what they are doing.
+    /// Stop an instance, or one member. Stopping a stopped one changes nothing.
+    Stop {
+        /// `<instance>`, or `<instance>/<member>`.
+        target: String,
+    },
+    /// Remove a stopped instance: its messages, notes, state and registration.
+    Delete {
+        /// The instance.
+        instance: String,
+        /// Delete even though it holds open work (or its messages can't be
+        /// read). Never deletes a running instance.
+        #[arg(long)]
+        force: bool,
+    },
+    /// List the teams in the search paths, each with its instances.
+    Ls {
+        /// Print the list as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show who is running and what they are doing: one instance, or every one.
     Status {
-        #[command(flatten)]
-        target: Target,
+        /// The instance (default: every instance).
+        instance: Option<String>,
         /// Print the rows as JSON.
         #[arg(long, conflicts_with_all = ["watch", "interactive"])]
         json: bool,
@@ -82,16 +93,13 @@ enum Command {
     },
     /// Open a member's live session (detach with your tmux prefix, then d).
     Attach {
-        #[command(flatten)]
-        target: Target,
-        /// The member to attach to.
+        /// The member: `<instance>/<member>`.
         member: String,
     },
     /// Show a member's or plugin's recent output.
     Logs {
-        #[command(flatten)]
-        target: Target,
-        /// The member, or a plugin process (`_<plugin>`).
+        /// The member (`<instance>/<member>`), or a plugin process
+        /// (`<instance>/_<plugin>`).
         member: String,
         /// How many lines of history.
         #[arg(short = 'n', long, default_value_t = 200)]
@@ -99,9 +107,7 @@ enum Command {
     },
     /// Paste text into a member and press Enter, as one submission.
     Send {
-        #[command(flatten)]
-        target: Target,
-        /// The member to type into.
+        /// The member to type into: `<instance>/<member>`.
         member: String,
         /// The text (several words are joined with spaces).
         #[arg(required = true, num_args = 1..)]
@@ -109,8 +115,8 @@ enum Command {
         /// Send even when the member's state is unknown.
         #[arg(long)]
         force: bool,
-        /// The sending member (for plugins relaying a member's message):
-        /// brg checks that the target is that member's parent.
+        /// The sending member, by ID (for plugins relaying a member's
+        /// message): brg checks that the target is that member's parent.
         #[arg(long)]
         from: Option<String>,
         /// Print {ok, code, message} as JSON.
@@ -119,8 +125,9 @@ enum Command {
     },
     /// Publish, read and acknowledge bus records.
     Msg {
-        #[command(flatten)]
-        target: Target,
+        /// The instance (outside a member; inside one, only its own).
+        #[arg(long, global = true)]
+        instance: Option<String>,
         #[command(subcommand)]
         command: crate::bus::cli::MsgCommand,
     },
@@ -130,23 +137,26 @@ enum Command {
         after_long_help = crate::bus::help::inbox()
     )]
     Inbox {
-        #[command(flatten)]
-        target: Target,
+        /// The instance (outside a member; inside one, only its own).
+        #[arg(long, global = true)]
+        instance: Option<String>,
         #[command(flatten)]
         args: crate::bus::cli::InboxArgs,
     },
-    /// List and show tasks folded from the team's messages.
+    /// List and show tasks folded from the instance's messages.
     #[command(after_long_help = crate::bus::help::task())]
     Task {
-        #[command(flatten)]
-        target: Target,
+        /// The instance (outside a member; inside one, only its own).
+        #[arg(long, global = true)]
+        instance: Option<String>,
         #[command(subcommand)]
         command: crate::bus::task_cli::TaskCommand,
     },
-    /// Inspect and check the team's message storage.
+    /// Inspect and check the instance's message storage.
     Bus {
-        #[command(flatten)]
-        target: Target,
+        /// The instance (outside a member; inside one, only its own).
+        #[arg(long, global = true)]
+        instance: Option<String>,
         #[command(subcommand)]
         command: crate::bus::cli::BusCommand,
     },
@@ -169,32 +179,44 @@ enum Command {
     },
 }
 
-fn resolve(target: &Target) -> Result<Input, ExitCode> {
-    let input = match (&target.file, &target.team) {
-        (Some(file), _) => Input::Deployment(file.clone()),
-        (None, Some(team)) => Input::Team(team.clone()),
-        (None, None) => match std::env::var_os(ENV_FILE) {
-            Some(file) => Input::Deployment(PathBuf::from(file)),
-            None if PathBuf::from(DEPLOY_FILE).exists() => {
-                Input::Deployment(PathBuf::from(DEPLOY_FILE))
-            }
-            None if PathBuf::from(TEAM_FILE).exists() => Input::Team(PathBuf::from(".")),
-            None => {
-                eprintln!("brg: no {DEPLOY_FILE} or {TEAM_FILE} here; pass --file or --team");
-                return Err(ExitCode::from(2));
-            }
-        },
-    };
-    Ok(input)
+/// Print an error and give the failing exit code.
+fn fail(e: impl std::fmt::Display) -> ExitCode {
+    eprintln!("brg: {e}");
+    ExitCode::from(1)
 }
 
-macro_rules! target_or_exit {
-    ($t:expr) => {
-        match resolve($t) {
-            Ok(input) => input,
-            Err(code) => return code,
+macro_rules! or_fail {
+    ($e:expr) => {
+        match $e {
+            Ok(v) => v,
+            Err(e) => return fail(e),
         }
     };
+}
+
+/// An instance and one member or role in it, from `<instance>/<name>` (or,
+/// inside a member, a bare name).
+fn instance_and_name(arg: &str) -> Result<(Instance, String), String> {
+    match address::resolve(arg)? {
+        (inst, Target::Member(m) | Target::Role(m)) => Ok((inst, m)),
+        (inst, Target::Instance) => Err(format!(
+            "`{arg}` is an instance; name a member in it: {}/<member> (its members: {})",
+            inst.id,
+            address::members_list(&inst)
+        )),
+    }
+}
+
+fn print_outcome(outcome: runtime::UpOutcome) -> ExitCode {
+    print!("{}", outcome.tree);
+    for n in &outcome.notes {
+        println!("{n}");
+    }
+    if outcome.failed {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 pub fn main() -> ExitCode {
@@ -234,127 +256,173 @@ pub fn main() -> ExitCode {
 
 fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
     match cli.command {
-        Command::Validate {
-            target,
-            json,
-            probe,
-        } => run_validate(&target_or_exit!(&target), json, probe),
-        Command::Up { target, member } => {
-            let input = target_or_exit!(&target);
-            match runtime::up(&input, member.as_deref()) {
-                Ok(outcome) => {
-                    print!("{}", outcome.tree);
-                    for n in &outcome.notes {
-                        println!("{n}");
-                    }
-                    if outcome.failed {
-                        ExitCode::from(1)
-                    } else {
-                        ExitCode::SUCCESS
-                    }
+        Command::Validate { team, json, probe } => run_validate(&team, json, probe),
+        Command::Create { target, folder } => {
+            let team_like = crate::team::is_path(&target) || !target.contains('/');
+            let result = if team_like {
+                match folder {
+                    Some(folder) => runtime::create(&target, &folder),
+                    None => Err(format!(
+                        "give the instance's working folder: brg create {target} <folder>"
+                    )),
                 }
-                Err(e) => {
-                    eprintln!("brg: {e}");
-                    ExitCode::from(1)
+            } else {
+                match address::resolve(&target) {
+                    Ok(_) if folder.is_some() => Err(format!(
+                        "`{target}` names a role, which takes no folder: its member works in the instance's folder"
+                    )),
+                    Ok((inst, Target::Role(role))) => runtime::create_member(inst, &role),
+                    Ok((inst, Target::Member(m))) => Err(format!(
+                        "`create` takes a role, not a member; `{m}` exists already: brg start {}",
+                        inst.at(&m)
+                    )),
+                    Ok((inst, Target::Instance)) => Err(format!(
+                        "`create` makes an instance from a team, or a member from `{}/<role>`",
+                        inst.id
+                    )),
+                    Err(e) => Err(e),
                 }
-            }
+            };
+            print_outcome(or_fail!(result))
         }
-        Command::Down { target, member } => {
-            let input = target_or_exit!(&target);
-            match runtime::down(&input, member.as_deref()) {
-                Ok(messages) => {
-                    for m in messages {
-                        println!("{m}");
-                    }
-                    ExitCode::SUCCESS
+        Command::Start { target, team } => {
+            let result = match or_fail!(address::resolve(&target)) {
+                (inst, Target::Instance) => runtime::start(inst, None, team.as_deref()),
+                (inst, Target::Member(m) | Target::Role(m)) => {
+                    runtime::start(inst, Some(&m), team.as_deref())
                 }
-                Err(e) => {
-                    eprintln!("brg: {e}");
-                    ExitCode::from(1)
-                }
+            };
+            print_outcome(or_fail!(result))
+        }
+        Command::Stop { target } => {
+            let result = match or_fail!(address::resolve(&target)) {
+                (inst, Target::Instance) => runtime::stop(&inst, None),
+                (inst, Target::Member(m) | Target::Role(m)) => runtime::stop(&inst, Some(&m)),
+            };
+            for m in or_fail!(result) {
+                println!("{m}");
             }
+            ExitCode::SUCCESS
+        }
+        Command::Delete { instance, force } => {
+            let inst = or_fail!(address::instance(&instance));
+            for m in or_fail!(runtime::delete(inst, force)) {
+                println!("{m}");
+            }
+            ExitCode::SUCCESS
+        }
+        Command::Ls { json } => {
+            let listed = or_fail!(runtime::ls());
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&listed).unwrap_or_default()
+                );
+            } else {
+                print!("{}", runtime::render_ls(&listed));
+            }
+            ExitCode::SUCCESS
         }
         Command::Status {
-            target,
+            instance,
             json,
             watch,
-            interval,
             interactive,
+            interval,
         } => {
-            let input = target_or_exit!(&target);
+            let one = match &instance {
+                Some(id) => match or_fail!(address::resolve(id)) {
+                    (inst, Target::Instance) => Some(inst),
+                    (inst, _) => {
+                        return fail(format!(
+                            "`status` takes an instance; `{id}` is in instance `{}`",
+                            inst.id
+                        ));
+                    }
+                },
+                None => None,
+            };
             if watch || interactive {
+                let Some(inst) = one else {
+                    return fail(format!(
+                        "name the instance to watch: brg status <instance> -w; {}",
+                        address::known()
+                    ));
+                };
                 let result = if interactive {
-                    crate::tui::interactive(&input)
+                    crate::tui::interactive(&inst)
                 } else {
-                    crate::tui::watch(&input, std::time::Duration::from_secs(interval.max(1)))
+                    crate::tui::watch(&inst, std::time::Duration::from_secs(interval.max(1)))
                 };
                 return match result {
                     Ok(()) => ExitCode::SUCCESS,
-                    Err(e) => {
-                        eprintln!("brg: {e}");
-                        ExitCode::from(1)
-                    }
+                    Err(e) => fail(e),
                 };
             }
-            match runtime::status(&input) {
-                Ok(rows) => {
-                    if json {
-                        println!(
-                            "{}",
-                            serde_json::to_string_pretty(&rows).unwrap_or_default()
-                        );
-                    } else {
-                        print!(
-                            "{}",
-                            runtime::render_status(&runtime::team_name(&input), &rows)
-                        );
+            let all: Vec<Instance> = match one {
+                Some(inst) => vec![inst],
+                None => {
+                    let registry = or_fail!(crate::registry::load());
+                    registry
+                        .instances
+                        .keys()
+                        .filter_map(|id| address::instance(id).ok())
+                        .collect()
+                }
+            };
+            let mut code = ExitCode::SUCCESS;
+            let mut rows = Vec::new();
+            let mut text = String::new();
+            for inst in &all {
+                match runtime::status(inst) {
+                    Ok(r) => {
+                        text.push_str(&runtime::render_status(&runtime::header(inst), &r));
+                        rows.extend(r);
                     }
-                    ExitCode::SUCCESS
-                }
-                Err(e) => {
-                    eprintln!("brg: {e}");
-                    ExitCode::from(1)
+                    Err(e) => {
+                        eprintln!("brg: {}: {e}", inst.id);
+                        code = ExitCode::from(1);
+                    }
                 }
             }
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&rows).unwrap_or_default()
+                );
+            } else if all.is_empty() {
+                println!("{}", address::known());
+            } else {
+                print!("{text}");
+            }
+            code
         }
-        Command::Attach { target, member } => {
-            let input = target_or_exit!(&target);
-            match runtime::attach(&input, &member) {
+        Command::Attach { member } => {
+            let (inst, name) = or_fail!(instance_and_name(&member));
+            match runtime::attach(&inst, &name) {
                 Ok(()) => ExitCode::SUCCESS,
-                Err(e) => {
-                    eprintln!("brg: {e}");
-                    ExitCode::from(1)
-                }
+                Err(e) => fail(e),
             }
         }
-        Command::Logs {
-            target,
-            member,
-            lines,
-        } => {
-            let input = target_or_exit!(&target);
-            match runtime::logs(&input, &member, lines) {
-                Ok(text) => {
-                    print!("{text}");
-                    ExitCode::SUCCESS
-                }
-                Err(e) => {
-                    eprintln!("brg: {e}");
-                    ExitCode::from(1)
-                }
-            }
+        Command::Logs { member, lines } => {
+            let (inst, name) = or_fail!(instance_and_name(&member));
+            let text = or_fail!(runtime::logs(&inst, &name, lines));
+            print!("{text}");
+            ExitCode::SUCCESS
         }
         Command::Send {
-            target,
             member,
             text,
             force,
             from,
             json,
         } => {
-            let input = target_or_exit!(&target);
             let text = text.join(" ");
-            let result = runtime::send(&input, &member, &text, force, from.as_deref());
+            let result = instance_and_name(&member)
+                .map_err(runtime::SendError::Usage)
+                .and_then(|(inst, name)| {
+                    runtime::send(&inst, &name, &text, force, from.as_deref())
+                });
             if json {
                 let out = match &result {
                     Ok(m) => serde_json::json!({"ok": true, "code": 0, "message": m}),
@@ -379,18 +447,14 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
                 }
             }
         }
-        Command::Msg { target, command } => {
-            crate::bus::cli::msg(&target_or_exit!(&target), command)
+        Command::Msg { instance, command } => crate::bus::cli::msg(instance.as_deref(), command),
+        Command::Inbox { instance, args } => {
+            crate::bus::cli::inbox(instance.as_deref(), args, started)
         }
-        Command::Inbox { target, args } => {
-            crate::bus::cli::inbox(&target_or_exit!(&target), args, started)
+        Command::Task { instance, command } => {
+            crate::bus::task_cli::task(instance.as_deref(), command)
         }
-        Command::Task { target, command } => {
-            crate::bus::task_cli::task(&target_or_exit!(&target), command)
-        }
-        Command::Bus { target, command } => {
-            crate::bus::cli::bus(&target_or_exit!(&target), command)
-        }
+        Command::Bus { instance, command } => crate::bus::cli::bus(instance.as_deref(), command),
         Command::Exec { state, window } => crate::exec::exec_main(&state, &window),
         Command::Run {
             state,
@@ -407,8 +471,21 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
     }
 }
 
-fn run_validate(input: &Input, json: bool, probe: bool) -> ExitCode {
-    let (mut report, validated) = validate(input);
+fn run_validate(team: &str, json: bool, probe: bool) -> ExitCode {
+    let mut config_report = crate::diag::Report::default();
+    let search = crate::config::load(&mut config_report)
+        .map(|c| c.teams)
+        .unwrap_or_default();
+    let dir = match crate::team::find(team, &search) {
+        Ok(dir) => dir,
+        Err(e) => {
+            for diag in &config_report.diags {
+                eprintln!("{diag}");
+            }
+            return fail(e);
+        }
+    };
+    let (mut report, validated) = validate(&dir);
     if probe && let Some(v) = &validated {
         crate::probe::probe(v, &mut report);
     }

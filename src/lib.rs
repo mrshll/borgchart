@@ -2,10 +2,11 @@
 //!
 //! This crate is not a public library: nothing here is promised stable.
 
+pub mod address;
 pub mod bus;
 pub mod cli;
 pub mod composer;
-pub mod deploy;
+pub mod config;
 pub mod diag;
 pub mod exec;
 pub mod frontmatter;
@@ -16,6 +17,7 @@ pub mod names;
 pub mod paths;
 pub mod probe;
 pub mod proctree;
+pub mod registry;
 pub mod rules;
 pub mod runtime;
 pub mod state;

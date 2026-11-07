@@ -1,60 +1,60 @@
-//! Whole-team validation: the team, its deployment, and the rules between them.
+//! Whole-team validation: the team, brg's global configuration, and the
+//! rules between them.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::deploy::{self, Auth, Deployment};
+use crate::config::{self, Auth, Config};
 use crate::diag::Report;
 use crate::paths::{find_on_path, is_executable, resolve_within};
 use crate::team::{self, Grant, Plugin, PluginLocation, Posture, Team, Vendor};
 
-/// What to validate.
-pub enum Input {
-    /// A `borgchart.yaml` and the team it names.
-    Deployment(PathBuf),
-    /// A team directory on its own, with no deployment values.
-    Team(PathBuf),
-}
-
 #[derive(Debug, Serialize)]
 pub struct Validated {
     pub team: Team,
-    pub deployment: Option<Deployment>,
+    pub config: Config,
 }
 
 impl Validated {
-    /// The posture a member runs with: the deployment's override, else the team's.
-    pub fn posture(&self, member: &str) -> Posture {
-        self.deployment
-            .as_ref()
-            .and_then(|d| d.members.get(member))
-            .and_then(|m| m.posture)
-            .or_else(|| self.team.members.get(member).map(|m| m.posture))
+    /// The posture a role runs with.
+    pub fn posture(&self, role: &str) -> Posture {
+        self.team
+            .members
+            .get(role)
+            .map(|m| m.posture)
             .unwrap_or(Posture::Vendor)
     }
 
     pub fn auth(&self) -> Auth {
-        self.deployment.as_ref().map(|d| d.auth).unwrap_or_default()
+        self.config.auth
+    }
+
+    /// Where a plugin's commands live: its folder in the team, or under
+    /// `plugins_dir`; `None` for commands on `PATH`.
+    pub fn plugin_dir(&self, name: &str) -> Option<PathBuf> {
+        let plugin = self.team.plugins.get(name)?;
+        let dir = match plugin.location.as_ref()? {
+            PluginLocation::Team(rel) => self.team.dir.join(rel),
+            PluginLocation::Shared(shared) => self.config.plugins_dir.as_ref()?.join(shared),
+        };
+        Some(dir.canonicalize().unwrap_or(dir))
     }
 }
 
-/// Validate everything before anything starts. Returns the report and, when
-/// there were no errors, the resolved team and deployment.
-pub fn validate(input: &Input) -> (Report, Option<Validated>) {
+/// Validate a team folder and the global configuration before anything
+/// starts. Returns the report and, when there were no errors, the resolved
+/// team and configuration.
+pub fn validate(team_dir: &Path) -> (Report, Option<Validated>) {
     let mut report = Report::default();
-    let (team_dir, deployment) = match input {
-        Input::Deployment(file) => match deploy::load(file, &mut report) {
-            Some(d) => (d.team_dir.clone(), Some(d)),
-            None => return (report, None),
-        },
-        Input::Team(dir) => (dir.clone(), None),
-    };
-    let Some(team) = team::load(&team_dir, &mut report) else {
+    let Some(config) = config::load(&mut report) else {
         return (report, None);
     };
-    let validated = Validated { team, deployment };
+    let Some(team) = team::load(team_dir, &mut report) else {
+        return (report, None);
+    };
+    let validated = Validated { team, config };
     cross_check(&validated, &mut report);
     if report.has_errors() {
         return (report, None);
@@ -65,6 +65,8 @@ pub fn validate(input: &Input) -> (Report, Option<Validated>) {
 fn cross_check(v: &Validated, report: &mut Report) {
     let team_file = v.team.dir.join(team::TEAM_FILE);
     let team_file = Some(team_file.as_path());
+    let config_file = v.config.file.clone();
+    let config_file = config_file.as_deref();
 
     if v.team.members.is_empty() {
         report.warning(team_file, "the team has no members");
@@ -77,127 +79,31 @@ fn cross_check(v: &Validated, report: &mut Report) {
             );
         }
     }
-    let deploy_file = v.deployment.as_ref().map(|d| d.file.clone());
-    let deploy_file = deploy_file.as_deref();
-
-    // Deployment entries must refer to the team.
-    if let Some(d) = &v.deployment {
-        for id in d.members.keys() {
-            if !v.team.members.contains_key(id) {
-                report.error(deploy_file, format!("member `{id}` is not in the team"));
-            }
-        }
-        for (name, p) in &d.plugins {
-            let Some(plugin) = v.team.plugins.get(name) else {
-                report.error(deploy_file, format!("plugin `{name}` is not in the team"));
-                continue;
-            };
-            for key in p.env.keys() {
-                if !plugin.env.contains(key) {
-                    report.error(
-                        deploy_file,
-                        format!(
-                            "plugin `{name}`: env `{key}` is not declared in the team's `env` list"
-                        ),
-                    );
-                }
-            }
-        }
-        for (id, m) in &d.members {
-            if let Some(member) = v.team.members.get(id)
-                && member.vendor == Vendor::Codex
-                && v.posture(id) == Posture::Locked
-                && let Some(cwd) = &m.cwd
-            {
-                let cwd_real = cwd.canonicalize().unwrap_or_else(|_| cwd.clone());
-                let inside = |p: &Path| {
-                    let p = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-                    p.starts_with(&cwd_real)
-                };
-                if inside(&crate::state::state_home()) || inside(&v.team.dir) {
-                    report.warning(
-                        deploy_file,
-                        format!(
-                            "member `{id}`: a `locked` Codex member can write its cwd, and {} contains the team or brg's state; pick a narrower folder",
-                            cwd.display()
-                        ),
-                    );
-                }
-            }
-            let vendor_claude = v
-                .team
-                .members
-                .get(id)
-                .is_some_and(|t| t.vendor == Vendor::Claude);
-            if d.auto_trust == Some(true)
-                && vendor_claude
-                && v.posture(id) == Posture::Vendor
-                && let Some(cwd) = &m.cwd
-                && (cwd.join(".claude").exists() || cwd.join(".mcp.json").exists())
-            {
-                report.warning(
-                    deploy_file,
-                    format!(
-                        "member `{id}`: `auto_trust: true` will trust {}, which has project settings (`.claude/` or `.mcp.json`) that will load in `vendor` posture",
-                        cwd.display()
-                    ),
-                );
-            }
-            let vendor_codex = v
-                .team
-                .members
-                .get(id)
-                .is_some_and(|t| t.vendor == Vendor::Codex);
-            if d.auto_trust == Some(true)
-                && vendor_codex
-                && let Some(cwd) = &m.cwd
-            {
-                if v.posture(id) == Posture::Locked {
-                    report.warning(
-                        deploy_file,
-                        format!(
-                            "member `{id}`: `auto_trust: true` doesn't trust {} for a `locked` Codex member, which can write that folder; a trusted folder's `.codex/` loads outside its gate. Its trust screen is left for you",
-                            cwd.display()
-                        ),
-                    );
-                } else if cwd.join(".codex").exists()
-                    && !crate::launch::codex_args_set(&m.args, "projects")
-                {
-                    report.warning(
-                        deploy_file,
-                        format!(
-                            "member `{id}`: `auto_trust: true` will trust {}, which has project settings (`.codex/`): its config, hooks and MCP servers will load",
-                            cwd.display()
-                        ),
-                    );
-                }
-            }
-            if let Some(cwd) = &m.cwd
-                && !cwd.is_dir()
-            {
-                report.warning(
-                    deploy_file,
-                    format!("member `{id}`: cwd {} does not exist", cwd.display()),
-                );
-            }
+    for (id, member) in &v.team.members {
+        if member.vendor == Vendor::Codex
+            && v.posture(id) == Posture::Locked
+            && v.config.auto_trust == Some(true)
+        {
+            report.warning(
+                config_file,
+                format!(
+                    "member `{id}`: `auto_trust: true` doesn't trust the folder of a `locked` Codex member, which can write that folder; a trusted folder's `.codex/` loads outside its gate. Its trust screen is left for you"
+                ),
+            );
         }
     }
 
-    if let Some(bus) = v.deployment.as_ref().and_then(|d| d.bus.as_ref()) {
-        check_bus(v, bus, deploy_file, report);
+    if let Some(bus) = &v.team.bus {
+        check_bus(v, bus, team_file, report);
     }
-    if let Some(user) = v
-        .deployment
-        .as_ref()
-        .and_then(|d| d.tmux_user_config.as_ref())
-    {
-        check_user_tmux_config(user, deploy_file, report);
+    if let Some(user) = &v.config.tmux_user_config {
+        check_user_tmux_config(user, config_file, report);
     }
 
-    // Shared plugins need the deployment's plugins_dir.
+    // Shared plugins need the configuration's plugins_dir.
     for plugin in v.team.plugins.values() {
         if let Some(PluginLocation::Shared(shared)) = &plugin.location {
-            check_shared_plugin(v, plugin, shared, team_file, deploy_file, report);
+            check_shared_plugin(v, plugin, shared, team_file, config_file, report);
         }
     }
 
@@ -240,7 +146,7 @@ fn cross_check(v: &Validated, report: &mut Report) {
             && !member.connectors.is_empty()
         {
             report.error(
-                deploy_file.or(team_file),
+                config_file.or(team_file),
                 at("Claude's own connectors need your login, so `auth: api_key` can't be used with members that declare connectors"),
             );
         }
@@ -330,17 +236,12 @@ fn cross_check(v: &Validated, report: &mut Report) {
         if !used {
             continue;
         }
-        for name in &plugin.env {
-            let in_deploy = v
-                .deployment
-                .as_ref()
-                .and_then(|d| d.plugins.get(&plugin.name))
-                .is_some_and(|p| p.env.contains_key(name));
-            if !in_deploy && std::env::var_os(name).is_none() {
+        for name in plugin.secrets() {
+            if std::env::var_os(name).is_none() {
                 report.warning(
-                    deploy_file.or(team_file),
+                    team_file,
                     format!(
-                        "plugin `{}`: `{name}` is not set in borgchart.yaml or your environment; `brg up` will need it",
+                        "plugin `{}`: the secret `{name}` is not set in your environment; `brg create` and `brg start` will need it",
                         plugin.name
                     ),
                 );
@@ -349,16 +250,11 @@ fn cross_check(v: &Validated, report: &mut Report) {
     }
 }
 
-fn check_bus(
-    v: &Validated,
-    bus: &deploy::BusConfig,
-    deploy_file: Option<&Path>,
-    report: &mut Report,
-) {
+fn check_bus(v: &Validated, bus: &team::BusConfig, team_file: Option<&Path>, report: &mut Report) {
     for id in v.team.members.keys() {
         if v.posture(id) == Posture::Locked {
             report.error(
-                deploy_file,
+                team_file,
                 format!(
                     "bus: member `{id}` is `locked`; the bus doesn't support `locked` members yet"
                 ),
@@ -368,13 +264,13 @@ fn check_bus(
     if let Some(alert) = &bus.alert {
         match v.team.plugins.get(&alert.plugin) {
             None => report.error(
-                deploy_file,
+                team_file,
                 format!("bus: alert plugin `{}` is not in the team", alert.plugin),
             ),
             Some(plugin) => {
                 if !plugin.actions.contains_key(&alert.action) {
                     report.error(
-                        deploy_file,
+                        team_file,
                         format!(
                             "bus: plugin `{}` has no action `{}`",
                             alert.plugin, alert.action
@@ -383,7 +279,7 @@ fn check_bus(
                 }
                 if plugin.location.is_none() {
                     report.error(
-                        deploy_file,
+                        team_file,
                         format!(
                             "bus: alert plugin `{}` needs a `path`, so brg runs a known program",
                             alert.plugin
@@ -393,57 +289,6 @@ fn check_bus(
             }
         }
     }
-    let root = resolve_existing_prefix(&bus.root);
-    for dir in [v.team.dir.clone(), crate::state::state_home()] {
-        let dir = dir.canonicalize().unwrap_or(dir);
-        if root.starts_with(&dir) {
-            report.error(
-                deploy_file,
-                format!(
-                    "bus: `root` {} is inside {}; keep team messages outside the team and brg's state",
-                    bus.root.display(),
-                    dir.display()
-                ),
-            );
-        }
-    }
-    let is_checkout = |d: &&Path| d.join(".git").is_file() || d.join(".git/HEAD").is_file();
-    if let Some(checkout) = root.ancestors().find(is_checkout) {
-        report.warning(
-            deploy_file,
-            format!(
-                "bus: `root` {} is inside the checkout {}; team messages belong outside checkouts",
-                bus.root.display(),
-                checkout.display()
-            ),
-        );
-    }
-}
-
-/// `path` with its longest existing prefix canonicalized (following
-/// symlinks) and the missing rest appended, so a root that doesn't exist yet
-/// is still placed correctly. `..` in the missing rest is applied lexically.
-fn resolve_existing_prefix(path: &Path) -> PathBuf {
-    let mut existing = path.to_path_buf();
-    let mut rest = Vec::new();
-    while existing.canonicalize().is_err() {
-        match (existing.file_name(), existing.parent()) {
-            (Some(name), Some(parent)) => {
-                rest.push(name.to_os_string());
-                existing = parent.to_path_buf();
-            }
-            _ => break,
-        }
-    }
-    let mut out = existing.canonicalize().unwrap_or(existing);
-    for name in rest.into_iter().rev() {
-        if name == ".." {
-            out.pop();
-        } else if name != "." {
-            out.push(name);
-        }
-    }
-    out
 }
 
 fn plugin_commands(plugin: &Plugin) -> Vec<String> {
@@ -465,15 +310,16 @@ fn check_shared_plugin(
     plugin: &Plugin,
     shared: &str,
     team_file: Option<&Path>,
-    deploy_file: Option<&Path>,
+    config_file: Option<&Path>,
     report: &mut Report,
 ) {
-    let Some(root) = v.deployment.as_ref().and_then(|d| d.plugins_dir.as_ref()) else {
+    let Some(root) = v.config.plugins_dir.as_ref() else {
         report.error(
             team_file,
             format!(
-                "plugin `{}`: `shared:{shared}` needs `plugins_dir` in borgchart.yaml",
-                plugin.name
+                "plugin `{}`: `shared:{shared}` needs `plugins_dir` in brg's configuration ({})",
+                plugin.name,
+                config::path().display()
             ),
         );
         return;
@@ -482,7 +328,7 @@ fn check_shared_plugin(
         Ok(dir) if dir.is_dir() => dir,
         Ok(_) | Err(_) => {
             report.error(
-                deploy_file,
+                config_file,
                 format!(
                     "plugin `{}`: shared plugin `{shared}` not found under {}",
                     plugin.name,
@@ -500,10 +346,10 @@ fn check_shared_plugin(
         match resolve_within(&dir, &program) {
             Ok(real) if is_executable(&real) => {}
             Ok(_) => report.error(
-                deploy_file,
+                config_file,
                 format!("plugin `{}`: `{program}` is not executable", plugin.name),
             ),
-            Err(e) => report.error(deploy_file, format!("plugin `{}`: {e}", plugin.name)),
+            Err(e) => report.error(config_file, format!("plugin `{}`: {e}", plugin.name)),
         }
     }
 }
@@ -512,13 +358,13 @@ fn check_shared_plugin(
 /// file it sources by a plain path) that can act after brg's required options
 /// are applied is reported with its lines.
 fn check_user_tmux_config(
-    user: &deploy::UserTmuxConfig,
-    deploy_file: Option<&Path>,
+    user: &config::UserTmuxConfig,
+    config_file: Option<&Path>,
     report: &mut Report,
 ) {
     let Some(path) = user.resolve() else {
         report.warning(
-            deploy_file,
+            config_file,
             "`tmux.user_config: true`, but none of ~/.tmux.conf, $XDG_CONFIG_HOME/tmux/tmux.conf or ~/.config/tmux/tmux.conf exists; nothing will be loaded",
         );
         return;
@@ -527,7 +373,7 @@ fn check_user_tmux_config(
     // tmux reads the path quoted, then expands it as a glob pattern.
     if shown.contains(['\'', '\n', '*', '?', '[', '\\']) {
         report.error(
-            deploy_file,
+            config_file,
             format!(
                 "`tmux.user_config`: brg can't load a path containing `'`, `*`, `?`, `[`, `\\` or a newline: {shown:?}"
             ),
@@ -536,7 +382,7 @@ fn check_user_tmux_config(
     }
     if !path.is_file() {
         report.error(
-            deploy_file,
+            config_file,
             format!("`tmux.user_config`: {shown} is not a file"),
         );
         return;
@@ -575,12 +421,12 @@ fn check_user_tmux_config(
             (
                 "creates or attaches sessions as it loads",
                 &scan.sessions,
-                "brg's server would then outlive `brg down` and keep this config until it's stopped",
+                "brg's server would then outlive `brg stop` and keep this config until it's stopped",
             ),
             (
                 "sources a file by a relative path",
                 &relative,
-                "tmux finds it from the folder `brg up` runs in, so brg didn't check it",
+                "tmux finds it from the folder brg runs in, so brg didn't check it",
             ),
         ] {
             if lines.is_empty() {
@@ -588,7 +434,7 @@ fn check_user_tmux_config(
             }
             let at: Vec<String> = lines.iter().map(usize::to_string).collect();
             report.warning(
-                deploy_file,
+                config_file,
                 format!(
                     "`tmux.user_config`: {} {what} at {} {}; {why}",
                     file.display(),
