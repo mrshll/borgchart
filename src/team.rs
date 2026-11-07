@@ -34,6 +34,14 @@ impl Vendor {
             Vendor::Codex => "codex",
         }
     }
+
+    /// The vendor's name in messages.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Vendor::Claude => "Claude",
+            Vendor::Codex => "Codex",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

@@ -34,12 +34,28 @@ fn status_i_attaches_detaches_and_quits() {
         fs::create_dir_all(p.parent().unwrap()).unwrap();
         fs::write(p, text).unwrap();
     };
-    write("team/team.yaml", "members:\n  alpha: {prompt: alpha.md}\n");
+    write(
+        "team/team.yaml",
+        "plugins:\n  watcher: {path: plugins/watcher, process: [./run.sh]}\nmembers:\n  alpha: {prompt: alpha.md}\n  beta: {prompt: beta.md, vendor: codex, parent: alpha}\n",
+    );
     write("team/alpha.md", "---\nrole: helper\n---\nYou are alpha.\n");
+    write(
+        "team/beta.md",
+        "---\nrole: helper\nmodels: {codex: example-model low}\n---\nYou are beta.\n",
+    );
+    write("team/plugins/watcher/run.sh", "#!/bin/sh\nexec sleep 600\n");
+    fs::set_permissions(
+        root.join("team/plugins/watcher/run.sh"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
     fs::create_dir_all(root.join("bin")).unwrap();
     fs::create_dir_all(root.join("home")).unwrap();
     fs::create_dir_all(root.join("work")).unwrap();
+    // beta (Codex) stops at its folder-trust screen.
+    write("home/fake-agent/codex-trust", "");
     std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_fake-agent"), root.join("bin/claude")).unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_fake-agent"), root.join("bin/codex")).unwrap();
 
     // Both servers, brg's and the outer one, in the test's private directory.
     let private = common::PrivateTmux::new();
@@ -90,10 +106,27 @@ fn status_i_attaches_detaches_and_quits() {
 
     wait(
         "the status screen",
-        || screen().contains("brg status") && screen().contains("alpha"),
+        || screen().contains(" team ") && screen().contains("alpha"),
         dump,
     );
     wait("alpha idle", || screen().contains("idle"), dump);
+    // The same tree and columns as `brg status`, and beta's row says to
+    // attach and answer its trust screen.
+    wait(
+        "the tree with beta waiting at folder trust",
+        || {
+            let s = screen();
+            s.lines().any(|l| {
+                l.contains("└─ beta")
+                    && l.contains("codex example-model low")
+                    && l.contains("blocked (folder trust)")
+                    // `brg attach <instance>/<beta's member>`
+                    && l.contains("brg attach team-")
+                    && l.contains("/beta-")
+            }) && s.contains("plugin watcher")
+        },
+        dump,
+    );
 
     tmux(&private, &outer, &["send-keys", "-t", "=o:", "Enter"]);
     wait(
@@ -107,6 +140,20 @@ fn status_i_attaches_detaches_and_quits() {
     wait(
         "back in the status screen",
         || clients() == 0 && screen().contains("back from alpha"),
+        dump,
+    );
+
+    // Enter on beta's row attaches to its trust screen.
+    tmux(&private, &outer, &["send-keys", "-t", "=o:", "j", "Enter"]);
+    wait(
+        "attached to beta",
+        || clients() == 1 && screen().contains("Trust and continue"),
+        dump,
+    );
+    tmux(&private, &outer, &["send-keys", "-t", "=o:", "C-b", "d"]);
+    wait(
+        "back from beta",
+        || clients() == 0 && screen().contains("back from beta"),
         dump,
     );
 

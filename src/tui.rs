@@ -49,18 +49,17 @@ fn state_style(row: &StatusRow) -> Style {
 
 fn draw(
     frame: &mut ratatui::Frame,
+    team: &str,
     rows: &[StatusRow],
     table_state: &mut TableState,
     message: &str,
 ) {
     let [top, bottom] =
         Layout::vertical([Constraint::Min(3), Constraint::Length(2)]).areas(frame.area());
-    let header = Row::new(["NAME", "KIND", "VENDOR", "POSTURE", "STATE", "DETAIL"])
-        .style(Style::default().add_modifier(Modifier::BOLD));
-    // Members show where they sit in the team's tree.
+    // The same tree and columns as `brg status`.
     let nodes: Vec<tree::Node> = rows
         .iter()
-        .filter(|r| r.kind == "member")
+        .filter(|r| r.kind == "member" || r.kind == "role")
         .map(|r| tree::Node {
             id: r.name.clone(),
             parent: r.parent.clone(),
@@ -71,38 +70,62 @@ fn draw(
         .into_iter()
         .map(|(i, p)| (nodes[i].id.clone(), p))
         .collect();
-    let body: Vec<Row> = rows
+    let cells: Vec<[String; 4]> = rows
         .iter()
         .map(|r| {
-            let prefix = match r.kind {
-                "member" => prefixes.get(&r.name).cloned().unwrap_or_default(),
-                _ => String::new(),
+            let name = match r.kind {
+                "member" | "role" => format!(
+                    "{}{}",
+                    prefixes.get(&r.name).cloned().unwrap_or_default(),
+                    r.name
+                ),
+                _ => format!("plugin {}", r.name),
             };
+            let mut cols = runtime::status_cells(r);
+            match r.kind {
+                "member" => {}
+                // A role with no member yet: `on demand (none created)` as its state.
+                "role" => {
+                    cols.insert(0, String::new());
+                    cols.push(String::new());
+                }
+                _ => cols.insert(0, String::new()),
+            }
+            let [vendor, state, detail] = <[String; 3]>::try_from(cols).unwrap_or_default();
+            [name, vendor, state, detail]
+        })
+        .collect();
+    // Each column as wide as its widest cell, as `brg status` aligns them.
+    let width = |i: usize| {
+        cells
+            .iter()
+            .map(|c| c[i].chars().count())
+            .max()
+            .unwrap_or(0) as u16
+            + 2
+    };
+    let widths = [
+        Constraint::Length(width(0)),
+        Constraint::Length(width(1)),
+        Constraint::Length(width(2)),
+        Constraint::Min(10),
+    ];
+    let body: Vec<Row> = cells
+        .into_iter()
+        .zip(rows)
+        .map(|([name, vendor, state, detail], r)| {
             Row::new(vec![
-                Cell::from(format!("{prefix}{}", r.name)),
-                Cell::from(r.kind),
-                Cell::from(r.vendor.clone().unwrap_or_else(|| "-".into())),
-                Cell::from(r.posture.clone().unwrap_or_else(|| "-".into())),
-                Cell::from(r.state.clone()).style(state_style(r)),
-                Cell::from(r.detail.clone().unwrap_or_default()),
+                Cell::from(name),
+                Cell::from(vendor),
+                Cell::from(state).style(state_style(r)),
+                Cell::from(detail),
             ])
         })
         .collect();
-    let table = Table::new(
-        body,
-        [
-            Constraint::Length(20),
-            Constraint::Length(7),
-            Constraint::Length(7),
-            Constraint::Length(8),
-            Constraint::Length(11),
-            Constraint::Min(10),
-        ],
-    )
-    .header(header)
-    .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-    .highlight_symbol("> ")
-    .block(Block::bordered().title(" brg status "));
+    let table = Table::new(body, widths)
+        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_symbol("> ")
+        .block(Block::bordered().title(format!(" {team} ")));
     frame.render_stateful_widget(table, top, table_state);
     let help =
         Line::from("j/k move · enter attach (detach: tmux prefix, then d) · r refresh · q quit");
@@ -115,12 +138,15 @@ fn draw(
 /// `brg status -i`.
 pub fn interactive(inst: &Instance) -> Result<(), String> {
     let mut rows = runtime::status(inst)?;
+    // The same header line as `brg status`: the instance, its team folder
+    // and its working folder.
+    let team = runtime::header(inst);
     let mut table_state = TableState::default().with_selected(Some(0));
     let mut message = String::new();
     let mut terminal = ratatui::try_init().map_err(|e| format!("cannot start the screen: {e}"))?;
     let mut last = Instant::now();
     let result = loop {
-        if let Err(e) = terminal.draw(|f| draw(f, &rows, &mut table_state, &message)) {
+        if let Err(e) = terminal.draw(|f| draw(f, &team, &rows, &mut table_state, &message)) {
             break Err(e.to_string());
         }
         let timeout = REFRESH.saturating_sub(last.elapsed());
