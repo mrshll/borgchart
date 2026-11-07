@@ -609,20 +609,14 @@ fn windows_get_tmux_terminal_and_colour_not_the_callers() {
 
 /// tmux's own `default-terminal`, from a server that reads no config.
 fn built_in_default_terminal() -> String {
-    let socket = format!("brg-test-builtin-{}", std::process::id());
-    let out = common::tmux(&socket)
-        .args([
-            "-f",
-            "/dev/null",
-            "start-server",
-            ";",
-            "show",
-            "-gv",
-            "default-terminal",
-        ])
+    // Its server stops when `tmux` drops.
+    let tmux = common::PrivateTmux::new();
+    let socket = tmux.socket("builtin");
+    let out = tmux
+        .tmux(&socket)
+        .args(["start-server", ";", "show", "-gv", "default-terminal"])
         .output()
         .unwrap();
-    common::kill_server(&socket);
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
@@ -638,7 +632,7 @@ fn user_tmux_config_loads_only_when_opted_in_and_brg_options_win() {
         let env = Env::new();
         env.write(
             "home/.tmux.conf",
-            "set -g prefix C-a\nbind-key -n F12 split-window\nset -g bogus-option 1\nsetw -g automatic-rename on\nset -g default-terminal screen-256color\nset -g default-shell /bin/false\nset -g history-limit 100\nset -g destroy-unattached on\nset -s exit-unattached on\nrun 'tmux set -g @ran yes; tmux set -g history-limit 200'\n",
+            "set -g prefix C-a\nbind-key -n F12 split-window\nset -g bogus-option 1\nsetw -g automatic-rename on\nset -g default-terminal screen-256color\nset -g default-shell /bin/false\nset -g history-limit 100\nset -g destroy-unattached on\nset -s exit-unattached on\nrun 'tmux -S #{socket_path} set -g @ran yes; tmux -S #{socket_path} set -g history-limit 200'\n",
         );
         if opted_in {
             env.write(
