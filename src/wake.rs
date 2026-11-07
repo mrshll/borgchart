@@ -31,7 +31,7 @@ use crate::composer::{self, Geometry, Reading};
 use crate::rules::{self, State};
 use crate::state::{self, StateDir};
 use crate::team::Vendor;
-use crate::tmux::Tmux;
+use crate::tmux::{self, Tmux};
 
 /// The only text the wake ever types. It carries no payload.
 pub const REMINDER: &str =
@@ -416,7 +416,7 @@ pub fn snapshot(tmux: &Tmux, expect: &PaneIdentity) -> Option<Snapshot> {
         title: f[9].to_string(),
         screen,
         geometry,
-        in_mode: f[5] != "0",
+        in_mode: tmux::in_mode(f[5]),
     })
 }
 
@@ -434,9 +434,7 @@ pub fn before_paste(vendor: Vendor, rules: &rules::RuleSet, snap: &Snapshot) -> 
         State::Idle | State::Unknown => {}
     }
     if snap.in_mode {
-        return Some(WakeResult::Deferred(Defer::Uncertain(
-            "the pane is in tmux copy mode".into(),
-        )));
+        return Some(WakeResult::Deferred(Defer::Uncertain(tmux::IN_MODE.into())));
     }
     match composer::read(vendor, &snap.screen, Some(snap.geometry)) {
         Reading::Busy => Some(WakeResult::Deferred(Defer::Busy)),
@@ -460,7 +458,7 @@ pub fn before_enter(vendor: Vendor, rules: &rules::RuleSet, snap: &Snapshot) -> 
         ));
     }
     if snap.in_mode {
-        return Some("the pane went into tmux copy mode; Enter was not pressed".into());
+        return Some(format!("{}; Enter was not pressed", tmux::IN_MODE));
     }
     match composer::view(vendor, &snap.screen, Some(snap.geometry)) {
         Ok(v) if v.holds(REMINDER) => None,
@@ -479,7 +477,7 @@ pub fn before_enter(vendor: Vendor, rules: &rules::RuleSet, snap: &Snapshot) -> 
 pub fn after_enter(vendor: Vendor, snap: Option<&Snapshot>) -> Result<(), String> {
     let snap = snap.ok_or("the pane changed or exited after Enter")?;
     if snap.in_mode {
-        return Err("the pane is in tmux copy mode after Enter".into());
+        return Err(format!("{} after Enter", tmux::IN_MODE));
     }
     let view = composer::view(vendor, &snap.screen, Some(snap.geometry))
         .map_err(|why| format!("the input box can't be read after Enter ({why})"))?;
