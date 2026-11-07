@@ -348,3 +348,150 @@ fn a_start_that_never_reached_tmux_leaves_nothing_held() {
     assert!(!env.tmux.refused().is_empty());
     env.tmux.clear_refused();
 }
+
+// --- Review fixes: damaged storage, partial contexts, config paths ---
+
+#[test]
+fn a_current_run_without_its_manifest_keeps_checkouts_and_needs_force() {
+    let env = Env::new();
+    let a = env.create("oncall", "work/a");
+    let lead = env.member(&a, "lead");
+    env.assign(&a, &lead);
+    env.ok(&["stop", &a]);
+    fs::remove_file(env.path(&format!("state/{a}/messages/r1/run.json"))).unwrap();
+    let err = env.fails(&["create", "oncall", &env.folder("work/a")]);
+    assert!(err.contains(&a), "{err}");
+    let err = env.fails(&["delete", &a]);
+    assert!(err.contains("can't be inspected"), "{err}");
+    env.ok(&["delete", &a, "--force"]);
+}
+
+#[test]
+fn a_start_refuses_unreadable_records_full_or_member() {
+    let env = Env::new();
+    let a = env.create("oncall", "work/a");
+    let lead = env.member(&a, "lead");
+    env.assign(&a, &lead);
+    env.ok(&["stop", &a]);
+    fs::write(
+        env.path(&format!(
+            "state/{a}/messages/r1/bus/records/0000000001.json"
+        )),
+        "bad json",
+    )
+    .unwrap();
+    for target in [a.clone(), format!("{a}/{lead}")] {
+        let err = env.fails(&["start", &target]);
+        assert!(
+            err.contains("can't be read") && err.contains("brg create"),
+            "{target}: {err}"
+        );
+    }
+    assert_eq!(env.tmux(&["list-sessions"]), "");
+}
+
+#[test]
+fn a_partial_member_context_is_refused_for_reads_too() {
+    let env = Env::new();
+    let a = env.create("oncall", "work/a");
+    let b = env.create("oncall", "work/b");
+    let lead = env.member(&a, "lead");
+    for (var, value) in [
+        ("BORGCHART_MEMBER", lead.as_str()),
+        ("BORGCHART_RUN", "r1"),
+        ("BORGCHART_INCARNATION", "x.1.abcd"),
+    ] {
+        for args in [
+            vec!["bus", "inspect", "--instance", b.as_str()],
+            vec!["msg", "read", "m1", "--instance", b.as_str()],
+            vec!["task", "list", "--instance", b.as_str()],
+            vec!["inbox", "--member", lead.as_str(), "--instance", a.as_str()],
+        ] {
+            let out = env.cmd(&args).env(var, value).output().unwrap();
+            assert!(!out.status.success(), "{var} {args:?}: {}", both(&out));
+            assert!(
+                both(&out).contains("incomplete member context"),
+                "{var} {args:?}: {}",
+                both(&out)
+            );
+        }
+    }
+    // A plugin process has only its instance: that still works.
+    let out = env
+        .cmd(&["bus", "inspect"])
+        .env("BORGCHART_INSTANCE", &a)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", both(&out));
+    env.ok(&["stop", &a]);
+    env.ok(&["stop", &b]);
+}
+
+#[test]
+fn a_relative_config_path_reaches_members_resolved() {
+    let env = Env::new();
+    let out = env
+        .cmd(&["create", "oncall", &env.folder("work/a")])
+        .env("BORGCHART_CONFIG", "config.yaml")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", both(&out));
+    let a = first_word(&stdout(&out));
+    env.wait_for("lead idle", || env.state_of(&a, "lead") == "idle");
+    let lead = env.member(&a, "lead");
+    let forwarded = env.starts(&lead)[0]["env"]["BORGCHART_CONFIG"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(forwarded, env.folder("config.yaml"));
+    // A nested create from the member's folder, with what it was given.
+    let out = env
+        .cmd(&["create", "oncall", &env.folder("work/b")])
+        .current_dir(env.path("work/a"))
+        .env("BORGCHART_CONFIG", &forwarded)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", both(&out));
+    let b = first_word(&stdout(&out));
+    env.ok(&["stop", &a]);
+    env.ok(&["stop", &b]);
+}
+
+#[test]
+fn a_failed_create_never_takes_back_an_instance_started_meanwhile() {
+    let env = Env::new();
+    let long = env.path(&format!("t{}", "x".repeat(120)));
+    fs::create_dir_all(&long).unwrap();
+    let pause = env.path("rollback-pause");
+    // A create that can't reach tmux, paused before it takes its instance back.
+    let failing = env
+        .cmd(&["create", "oncall", &env.folder("work/a")])
+        .env("BORGCHART_TMUX_TMPDIR", &long)
+        .env("BORGCHART_TEST_ROLLBACK_PAUSE", &pause)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let waiting = pause.with_extension("waiting");
+    env.wait_for("the rollback to pause", || waiting.exists());
+    // Meanwhile someone starts the registered instance.
+    let reg: serde_json::Value =
+        serde_json::from_slice(&fs::read(env.path("state/registry.json")).unwrap()).unwrap();
+    let a = reg["instances"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .next()
+        .unwrap()
+        .clone();
+    env.ok(&["start", &a]);
+    fs::write(&pause, "").unwrap();
+    let out = failing.wait_with_output().unwrap();
+    assert!(!out.status.success(), "{}", both(&out));
+    // The started instance is still there, and still runs.
+    assert!(env.registry()["instances"].get(&a).is_some(), "taken back");
+    assert!(env.path(&format!("state/{a}/instance.json")).exists());
+    env.wait_for("lead idle", || env.state_of(&a, "lead") == "idle");
+    env.ok(&["stop", &a]);
+    env.tmux.clear_refused();
+}

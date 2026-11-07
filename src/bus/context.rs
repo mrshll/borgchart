@@ -54,6 +54,19 @@ pub fn instance_from(
     flag: Option<&str>,
     get: impl Fn(&str) -> Option<String>,
 ) -> Result<String, Failure> {
+    // A partial member context is refused before any store is chosen, for
+    // reads as well as writes: it would otherwise act as an operator. An
+    // instance alone (a plugin process) is not a member context.
+    let set = |k: &str| get(k).is_some_and(|v| !v.is_empty());
+    let parts = [ENV_MEMBER, ENV_RUN, ENV_INCARNATION];
+    if parts.iter().any(|k| set(k)) && !(parts.iter().all(|k| set(k)) && set(ENV_INSTANCE)) {
+        return Err(Failure::new(
+            Code::Refused,
+            format!(
+                "incomplete member context: {ENV_INSTANCE}, {ENV_MEMBER}, {ENV_RUN} and {ENV_INCARNATION} must all be set (was this member started by a brg with bus support?)"
+            ),
+        ));
+    }
     match (get(ENV_INSTANCE).filter(|v| !v.is_empty()), flag) {
         (Some(own), Some(other)) if other != own => Err(Failure::new(
             Code::Refused,

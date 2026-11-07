@@ -70,6 +70,13 @@ pub fn base_env() -> BTreeMap<String, String> {
             env.insert((*name).to_string(), value);
         }
     }
+    // Members run in other folders, so the configuration they inherit is
+    // named by its absolute path.
+    if let Some(value) = env.get_mut(crate::config::ENV_CONFIG)
+        && let Ok(abs) = std::path::absolute(&*value)
+    {
+        *value = abs.display().to_string();
+    }
     env.entry("LANG".into()).or_insert_with(|| "C.UTF-8".into());
     env
 }
@@ -421,10 +428,19 @@ fn start_members(
         None if !missing.is_empty() => return Err(missing_error()),
         None => {}
     }
+    // Every start, of the instance or one member, needs messages it can
+    // read: records brg can't read hide open work. The storage checks below
+    // say more about some damage (a lost `current`, another format), so
+    // their refusal comes first; any start they let through still refuses.
+    let readable = match &bus {
+        Some(_) => lifecycle::open_work(state).map(|_| ()),
+        None => Ok(()),
+    };
     let binding = match &bus {
         Some(_) => Some(lifecycle::bind_run(v, state, joining, only)?),
         None => None,
     };
+    readable.map_err(|e| unreadable_store(inst, &e))?;
     let mut notes: Vec<String> = pre_notes;
     notes.extend(binding.as_ref().and_then(|b| b.note.clone()));
     let user_config = v.config.tmux_user_config.as_ref().and_then(|u| u.resolve());
@@ -1254,20 +1270,45 @@ pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
 }
 
 /// After a `create` whose start failed before any window could start:
-/// remove the new instance again (its suffix stays issued).
+/// remove the new instance again (its suffix stays issued). Decided under
+/// the registry lock, from what is true then: another start may have
+/// started the instance since this one failed.
 fn unregister_if_never_started(inst: &Instance) {
-    let started = state::read_meta(&inst.state).is_some_and(|m| m.windows_started == Some(true));
-    if started {
-        return;
-    }
+    rollback_pause();
     let Ok(lock) = registry::lock() else { return };
     let Ok(mut registry) = lock.load() else {
         return;
     };
+    if !registry.instances.contains_key(&inst.id) {
+        return;
+    }
+    let started = state::read_meta(&inst.state).is_some_and(|m| m.windows_started != Some(false));
+    let live = liveness_of(inst).values().any(|l| *l != Liveness::Gone);
+    if started || live || is_running(inst) {
+        return;
+    }
     let _ = std::fs::remove_dir_all(&inst.state.root);
     registry.instances.remove(&inst.id);
     let _ = lock.save(&registry);
 }
+
+/// Test builds: `BORGCHART_TEST_ROLLBACK_PAUSE=<path>` makes a failed
+/// `create` write `<path>.waiting` and wait (up to 30 s) for `<path>` before
+/// it takes its instance back, so a test can start the instance meanwhile.
+#[cfg(feature = "test-support")]
+fn rollback_pause() {
+    let Some(path) = std::env::var_os("BORGCHART_TEST_ROLLBACK_PAUSE").map(PathBuf::from) else {
+        return;
+    };
+    let _ = std::fs::write(path.with_extension("waiting"), "");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !path.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[cfg(not(feature = "test-support"))]
+fn rollback_pause() {}
 
 /// `brg create <instance>/<role>`: a new member of the role, started.
 pub fn create_member(mut inst: Instance, role: &str) -> Result<UpOutcome, String> {
@@ -1374,6 +1415,8 @@ fn full_start_members(
             .filter(|w| !w.dead && inst.record.members.contains_key(&w.name))
             .map(|w| w.name.clone()),
     );
+    // Messages that can't be read are refused by the start itself
+    // (`start_members`), so no member starts without its holders known.
     if let Ok(work) = lifecycle::open_work(&inst.state) {
         ids.extend(work.holders);
     }
@@ -1391,9 +1434,19 @@ fn full_start_members(
         .collect())
 }
 
+/// Why a start refuses an instance whose messages can't be read.
+fn unreadable_store(inst: &Instance, e: &str) -> String {
+    format!(
+        "instance `{}`'s messages can't be read ({e}), so nothing was started; create a new instance instead (`brg create`), and send its open work again",
+        inst.id
+    )
+}
+
 /// Refuse a start whose files orphan open work: a task held by a member
 /// whose role the team no longer has.
 fn refuse_orphans(inst: &Instance, v: &Validated) -> Result<(), String> {
+    // Messages that can't be read are refused by the start itself
+    // (`start_members`), before anything starts.
     let Ok(work) = lifecycle::open_work(&inst.state) else {
         return Ok(());
     };

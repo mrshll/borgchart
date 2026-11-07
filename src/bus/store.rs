@@ -119,8 +119,16 @@ pub fn open(state: &StateDir) -> Result<Bus, Failure> {
     let paths = store.run(&run);
     let mut manifest = match manifest::load_manifest(&paths) {
         Ok(Some(m)) => m,
-        // `current` names storage that isn't set up yet.
-        Ok(None) => return Err(not_started()),
+        // A start writes the manifest before it names the run `current`,
+        // so a named run without one is damaged, never new.
+        Ok(None) => {
+            return Err(Failure::new(
+                Code::Corrupt,
+                format!(
+                    "instance `{instance}`'s message storage is damaged: its current messages have no manifest. Repair it by hand, or create a new instance (`brg create`)"
+                ),
+            ));
+        }
         Err(e @ ManifestError::Format { .. }) => {
             return Err(Failure::new(Code::Refused, e.message(&instance, &restart)));
         }
