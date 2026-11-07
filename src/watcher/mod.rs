@@ -10,6 +10,8 @@
 //! - [`restart`]: counting unplanned starts, parking after a crash loop,
 //!   and planned restarts for a new installed brg;
 //! - [`binary`]: noticing that the installed brg changed, debounced;
+//! - [`alerts`]: what needs a person, for `status` to show; nothing is
+//!   invoked;
 //! - [`attempts`]: the record of each member's last wake attempt;
 //! - [`methods`]: which wake methods each vendor and version allows, from
 //!   `rules/wake.yaml`;
@@ -22,6 +24,7 @@
 //! records, they ignore fields they don't know, so a newer watcher's state
 //! doesn't stop an older one.
 
+pub mod alerts;
 pub mod attempts;
 pub mod binary;
 pub mod decide;

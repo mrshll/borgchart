@@ -192,7 +192,8 @@ pub enum Defer {
     Working,
 }
 
-/// Why a person is needed. Nothing acts on this in the library.
+/// Why a person is needed. It feeds the alert book ([`super::alerts`]);
+/// nothing else acts on it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NeedsPerson {
     /// No wake rule for this vendor and version.

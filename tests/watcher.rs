@@ -1,14 +1,17 @@
 //! The watcher's own state, against real files in a temporary folder: the
 //! lock, heartbeat health, crash accounting and parking, planned restarts,
-//! and noticing a new installed brg. Starts no process.
+//! noticing a new installed brg, and the alert book. Starts no process.
 
 use std::fs;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
+use borgchart::watcher::alerts::{self, Book, Kind, Subject};
 use borgchart::watcher::attempts;
 use borgchart::watcher::binary::{BinaryId, BinaryWatch, Poll};
-use borgchart::watcher::decide::{Attempt, Outcome, ReadProgress, Start};
+use borgchart::watcher::decide::{
+    Action, Attempt, Defer, NeedsPerson, Outcome, Quiet, ReadProgress, Screen, Start,
+};
 use borgchart::watcher::heartbeat::{self, Health, Heartbeat, Limits, State};
 use borgchart::watcher::lock::Lock;
 use borgchart::watcher::methods::Method;
@@ -168,4 +171,98 @@ fn a_new_brg_is_noticed_once_it_holds_steady() {
     fs::write(&brg, b"version two, complete").unwrap();
     assert_eq!(poll(&mut watch, t(20)), Poll::Settling);
     assert_eq!(poll(&mut watch, t(31)), Poll::Same);
+}
+
+fn repeats() -> Action {
+    Action::NeedsPerson(NeedsPerson::Repeats { wakes: 3 })
+}
+
+// Catches: an alert reopened (with a new time) on every scan or after a
+// watcher restart, and an alert lost by a restart.
+#[test]
+fn an_alert_opens_once_and_survives_a_restart() {
+    let (_tmp, dir) = folder();
+    let held = lock(&dir);
+    let mut book = Book::load(&dir).unwrap();
+    book.note_member("coder", &repeats(), t(0));
+    book.save(&held, &dir).unwrap();
+    drop((book, held));
+
+    let held = lock(&dir);
+    let mut book = Book::load(&dir).unwrap();
+    book.note_member("coder", &repeats(), t(50));
+    book.save(&held, &dir).unwrap();
+    let open = alerts::read(&dir).unwrap();
+    assert_eq!(open.len(), 1);
+    assert_eq!(
+        (open[0].kind, &open[0].subject, open[0].opened),
+        (Kind::Repeats, &Subject::Member("coder".to_string()), t(0))
+    );
+}
+
+// Catches: alerts that stay open after their cause cleared, and ones
+// cleared by a scan that only lacked evidence.
+#[test]
+fn an_alert_resolves_itself_when_its_cause_clears() {
+    let mut book = Book::default();
+    book.note_member("coder", &repeats(), t(0));
+    book.note_member("coder", &Action::Defer(Defer::ProgressUnknown), t(1));
+    assert_eq!(book.open().len(), 1);
+    book.note_member("coder", &Action::Nothing(Quiet::NoUnread), t(2));
+    assert!(book.open().is_empty());
+
+    book.note_watcher(&Health::Parked, t(3));
+    book.note_watcher(&Health::Stale(Duration::from_secs(90)), t(4));
+    assert_eq!(book.open().len(), 1);
+    book.note_watcher(&Health::Ok, t(5));
+    assert!(book.open().is_empty());
+
+    book.note_member("gone", &repeats(), t(6));
+    book.keep_members(&["coder"]);
+    assert!(book.open().is_empty());
+}
+
+// Catches: one cause opening two alerts as its details change (a draft,
+// then a refused queue; more wakes), and one member's alert clearing
+// another's.
+#[test]
+fn one_cause_never_opens_two_alerts() {
+    let mut book = Book::default();
+    let unreachable = [
+        NeedsPerson::Screen(Screen::Draft),
+        NeedsPerson::Unreachable {
+            method: Method::Queue,
+            outcome: Outcome::Rejected,
+        },
+        NeedsPerson::UnknownVersion,
+    ];
+    for (i, why) in unreachable.into_iter().enumerate() {
+        book.note_member("coder", &Action::NeedsPerson(why), t(i as u64));
+    }
+    book.note_member("lead", &repeats(), t(10));
+    book.note_member(
+        "lead",
+        &Action::NeedsPerson(NeedsPerson::Repeats { wakes: 4 }),
+        t(11),
+    );
+    book.note_watcher(&Health::Parked, t(12));
+    book.note_watcher(&Health::Parked, t(13));
+    let mut seen: Vec<_> = book
+        .open()
+        .iter()
+        .map(|a| (a.kind, a.subject.clone(), a.opened))
+        .collect();
+    seen.sort();
+    assert_eq!(
+        seen,
+        vec![
+            (Kind::Repeats, Subject::Member("lead".to_string()), t(10)),
+            (
+                Kind::Unreachable,
+                Subject::Member("coder".to_string()),
+                t(0)
+            ),
+            (Kind::Parked, Subject::Watcher, t(12)),
+        ]
+    );
 }
