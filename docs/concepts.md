@@ -24,11 +24,10 @@ Each definition noun has an active noun, created from it by `brg create`.
   - whether the team uses the message bus, and its alert action (`bus:`);
   - each role's `posture`, its extra launch arguments (`args`, such as the researcher's `--search`), and optionally a `cwd` inside the instance's folder;
   - plain plugin values, such as a channel ID.
-- **The instance's working folder** is given at `create` and recorded on the instance for its whole life. Members start there, or in their role's `cwd` inside it. With no folder given, the instance gets a new empty folder of its own (`work/`, below).
+- **The instance's working folder** is given at `create` and recorded on the instance for its whole life. Members start there, or in their role's `cwd` inside it. The folder is required: there's no default for now.
 - **The instance's state folder,** `~/.local/state/borgchart/<instance>/`, holds:
   - `messages/`, its one message store;
   - `notes/`, for members' reports and other files the members share (`$BORGCHART_NOTES`);
-  - `work/`, the instance's own working folder when none was given at `create`;
   - brg's own files.
 
   brg makes `messages/` and `notes/` writable for every member (Codex's sandbox writable roots, Claude's added folders). It never does that for its own files: gate rules, shims, launch files and secrets.
@@ -58,7 +57,7 @@ There's no `up`. There are four verbs. `create` always makes something new; `sta
 
 | Command | On an instance | On a member |
 | --- | --- | --- |
-| `brg create` | `create <team> [<folder>]` makes a new instance working in that folder, starts it, and prints its ID and tree. `<team>` is a team's name or a path to its folder. Run it twice and you have two instances. | `create <instance>/<role>` makes a new member of that role and starts it. `create` takes only a team or a role, never a member. It's refused past `max`; for a `max: 1` role whose member already exists, it points to `start`. |
+| `brg create` | `create <team> <folder>` makes a new instance working in that folder (required), starts it, and prints its ID and tree. `<team>` is a team's name or a path to its folder. Run it twice and you have two instances. | `create <instance>/<role>` makes a new member of that role and starts it. `create` takes only a team or a role, never a member. It's refused past `max`; for a `max: 1` role whose member already exists, it points to `start`. |
 | `brg start` | Brings the instance to what should be running. That's the `start: true` roles, the members that were running when it was last stopped, and every member holding an open task or checkout. Members already running are left alone. Changed files are applied only when the instance was fully stopped. It takes no folder. | Starts that member with a new start. If it's already running, it says so and changes nothing. |
 | `brg stop` | Stops every member. On a stopped instance, it says so and changes nothing. | Stops that member; the same on a stopped one. |
 | `brg delete` | Removes a stopped instance: its messages, notes, state and registration. It's refused while anything runs. If the instance holds open work, it lists that work and needs `--force`. | Removes a stopped member that holds no open work, freeing its place under `max`. Its number isn't reused. |
@@ -110,7 +109,7 @@ Two folders with the same name can both run. Their instances are told apart by t
 - **Message store:** one per instance for its whole life, in its state folder, so message numbers never restart.
 - **Frozen configuration:** the team's files, with includes expanded, and the global settings that reach members (`auth`, `auto_trust`) are frozen from a start to the next full stop. `start` applies changes only after a full `stop`, once every member is positively stopped.
 - **Orphaned work:** `start` refuses while the new configuration orphans open work (a removed role that holds a task or checkout, say), and says what to cancel or restore.
-- **Checkouts:** every operation that starts a member (`create`, `start`, `start --team`) checks its resolved working folder. It refuses if that folder is the same as, inside, or around a folder that another instance's member holds, running or stopped with an open checkout. Members of one instance may share a folder. The check and the reservation happen together, under one lock, so two starts can't race. An instance's own new folder never collides.
+- **Checkouts:** every operation that starts a member (`create`, `start`, `start --team`) checks its resolved working folder. It refuses if that folder is the same as, inside, or around a folder that another instance's member holds, running or stopped with an open checkout. Members of one instance may share a folder. The check and the reservation happen together, under one lock, so two starts can't race.
 - **A new message format:** brg refuses to start an instance whose messages it can't read, and points to `brg create` for a fresh instance (its open work has to be sent again). `stop` and liveness never parse messages, so they still work on the old instance. Its checkouts stay reserved, and `delete` of it needs `--force` ("its contents can't be inspected"). No storage generations are needed.
 - **No age-based rollover:** brg refuses a state folder under `/tmp` or any other path cleaned by age. An index keeps reads cheap as the store grows.
 - **The upgrade:** today's storage isn't converted. It stays on disk, unread. Stop every team before upgrading: brg refuses to start anything while a tmux session under an old name is alive.
