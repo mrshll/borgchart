@@ -11,12 +11,17 @@
 //! harness's own tmux calls as `TMUX_TMPDIR`. A `tmux` guard, first on the
 //! PATH tests give brg and run by the harness itself, refuses any call that
 //! would reach a server outside it, and the test fails if it refused one.
+//! A test that may outlive its drop (killed, or hung) can add a watchdog
+//! ([`PrivateTmux::with_watchdog`]) that stops those servers anyway.
 #![allow(dead_code)]
 
 use std::ffi::OsStr;
+use std::io::Write;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
 /// Remove every inherited variable that could point at the caller's team or
 /// tmux server. Variables the test sets afterwards still apply.
@@ -50,18 +55,178 @@ pub const ROOT_VAR: &str = "BRG_TEST_TMPDIR_ROOT";
 /// The guard's record of the calls it refused, inside the private directory.
 const REFUSED: &str = "refused";
 
+/// The paths [`PrivateTmux::also_remove`] registered, one per line, inside
+/// the private directory (so the watchdog reads the same list).
+const ALSO_REMOVE: &str = "also-remove";
+
+/// The watchdog's note of each server's PID and start time, inside the
+/// private directory.
+pub const SERVERS: &str = "watchdog-servers";
+
 /// A test's private tmux directory and its guard. Dropping it stops every
-/// server in the directory and removes it, then fails the test if the
-/// guard refused a call.
+/// server in the directory, removes the paths given to
+/// [`also_remove`](Self::also_remove) and the directory, then fails the test
+/// if the guard refused a call.
 pub struct PrivateTmux {
     dir: tempfile::TempDir,
     /// The directory as tmux reports socket paths (macOS: `/tmp` is
     /// `/private/tmp`). brg and the harness are given this form.
     path: PathBuf,
     uid: u32,
+    /// The watchdog, if [`with_watchdog`](Self::with_watchdog) started one.
+    watchdog: Option<std::process::Child>,
 }
 
 impl PrivateTmux {
+    /// A private directory with a watchdog: a detached process, started
+    /// before any server, that does the drop's cleanup if the test process
+    /// dies without dropping it (killed, or aborted) or once `limit` has
+    /// passed, whatever the test is doing then. It stops every server in the
+    /// directory (`-S` on each socket in `<dir>/tmux-<uid>/`, never through
+    /// a symbolic link), removes the paths given to
+    /// [`also_remove`](Self::also_remove) and then the directory, and
+    /// touches nothing else. Each tmux call it makes has a time limit. A
+    /// server that doesn't answer `kill-server` (stopped, or hung) is
+    /// killed by the PID it reported while it still answered, if that PID
+    /// still has the same start time. It runs in its own process group, so
+    /// an interrupt sent to the test's doesn't stop it.
+    pub fn with_watchdog(limit: Duration) -> Self {
+        let mut tmux = Self::new();
+        let script = tmux.path.join("watchdog");
+        std::fs::write(&script, tmux.watchdog_script(limit)).unwrap();
+        let child = Command::new("/bin/sh")
+            .arg(&script)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .unwrap_or_else(|e| panic!("cannot start the tmux watchdog: {e}"));
+        tmux.watchdog = Some(child);
+        tmux
+    }
+
+    /// Remove `path` too (a file, or a directory and everything in it,
+    /// never following a symbolic link out of it) when this is dropped, or
+    /// when the watchdog cleans up. For what a test keeps outside the
+    /// directory, such as scratch configuration.
+    pub fn also_remove(&self, path: impl AsRef<Path>) {
+        let path = std::path::absolute(path.as_ref()).unwrap();
+        let text = path.to_str().expect("a UTF-8 path");
+        assert!(
+            path.parent().is_some() && !text.contains('\n'),
+            "cannot register {path:?} for removal"
+        );
+        let mut list = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.path.join(ALSO_REMOVE))
+            .unwrap();
+        writeln!(list, "{text}").unwrap();
+    }
+
+    /// The uid the directory's `tmux-<uid>` socket folder is named for.
+    pub fn uid(&self) -> u32 {
+        self.uid
+    }
+
+    /// The watchdog's own pid, if it has one.
+    pub fn watchdog_pid(&self) -> Option<u32> {
+        self.watchdog.as_ref().map(|c| c.id())
+    }
+
+    fn watchdog_script(&self, limit: Duration) -> String {
+        let dir = self.path.to_str().unwrap();
+        let real = real_tmux(&self.bin());
+        let real = real.to_str().unwrap();
+        for s in [dir, real] {
+            assert!(!s.contains('\''), "{s}");
+        }
+        let (uid, pid) = (self.uid, std::process::id());
+        // Whole seconds, rounded up.
+        let limit = limit.as_millis().div_ceil(1000);
+        format!(
+            r#"#!/bin/sh
+# A test's tmux watchdog: clean up its private directory if the test
+# process dies, or after its time limit.
+trap '' HUP INT TERM
+dir='{dir}'
+socks="$dir/tmux-{uid}"
+known="$dir/{SERVERS}"
+started=$(date +%s)
+alive() {{
+  stat=$(ps -o stat= -p {pid} 2>/dev/null) || return 1
+  case $stat in Z*|'') return 1 ;; esac
+}}
+# Run a command for at most $1 seconds.
+bounded() {{
+  secs=$1
+  shift
+  "$@" &
+  p=$!
+  n=0
+  while kill -0 "$p" 2>/dev/null; do
+    if [ "$n" -ge $((secs * 10)) ]; then
+      kill -9 "$p" 2>/dev/null
+      break
+    fi
+    sleep 0.1
+    n=$((n + 1))
+  done
+  wait "$p"
+}}
+# The servers' sockets: real sockets in the real directory, never a
+# symbolic link to one elsewhere.
+sockets() {{
+  if [ -d "$socks" ] && [ ! -L "$socks" ]; then
+    for s in "$socks"/*; do
+      if [ -S "$s" ] && [ ! -L "$s" ]; then printf '%s\n' "$s"; fi
+    done
+  fi
+}}
+started_at() {{
+  ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//; s/ *$//'
+}}
+# Note each server's PID and start time while it answers.
+learn() {{
+  sockets | while IFS= read -r s; do
+    # Into a file, not a pipe: tmux hands the client's output to the
+    # server, so a stopped server would hold a pipe open for ever.
+    bounded 2 '{real}' -S "$s" display-message -p '#{{pid}}' >"$dir/.pid" 2>/dev/null || continue
+    spid=$(cat "$dir/.pid")
+    case $spid in '' | *[!0-9]*) continue ;; esac
+    grep -q "^$spid " "$known" 2>/dev/null && continue
+    printf '%s %s\n' "$spid" "$(started_at "$spid")" >>"$known"
+  done
+}}
+while alive && [ $(( $(date +%s) - started )) -lt {limit} ]; do
+  learn
+  sleep 1
+done
+sockets | while IFS= read -r s; do
+  bounded 3 '{real}' -S "$s" kill-server >/dev/null 2>&1
+done
+# A server that didn't answer: kill it by the PID it gave, if that is
+# still the same process.
+if [ -f "$known" ]; then
+  while read -r spid start; do
+    if [ -n "$spid" ] && [ "$(started_at "$spid")" = "$start" ]; then
+      kill -9 "$spid" 2>/dev/null
+    fi
+  done <"$known"
+fi
+if [ -f "$dir/{ALSO_REMOVE}" ]; then
+  while IFS= read -r path; do
+    [ -n "$path" ] && rm -rf -- "$path"
+  done <"$dir/{ALSO_REMOVE}"
+fi
+rm -rf -- "$dir"
+"#
+        )
+    }
+
     pub fn new() -> Self {
         let root = std::env::var_os(ROOT_VAR)
             .map(PathBuf::from)
@@ -73,7 +238,12 @@ impl PrivateTmux {
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let path = dir.path().canonicalize().unwrap();
         let uid = std::fs::metadata(&path).unwrap().uid();
-        let tmux = PrivateTmux { dir, path, uid };
+        let tmux = PrivateTmux {
+            dir,
+            path,
+            uid,
+            watchdog: None,
+        };
         tmux.write_guard();
         tmux
     }
@@ -176,6 +346,8 @@ tmpdir_ok() {{
 # Only where tmux itself puts sockets (and the drop finds them):
 # <dir>/tmux-<uid>/<name>.
 inside() {{
+  # Never through a symbolic link, to a socket or its directory.
+  if [ -L "$1" ] || [ -L "$dir/tmux-{uid}" ] || [ -L "$lit/tmux-{uid}" ]; then return 1; fi
   case $1 in
     */../*|*/..) return 1 ;;
     "$dir"/tmux-{uid}/*/*|"$lit"/tmux-{uid}/*/*) return 1 ;;
@@ -225,12 +397,30 @@ impl Default for PrivateTmux {
 impl Drop for PrivateTmux {
     fn drop(&mut self) {
         let sockets = self.path.join(format!("tmux-{}", self.uid));
-        for entry in std::fs::read_dir(&sockets).into_iter().flatten().flatten() {
+        let linked = std::fs::symlink_metadata(&sockets).is_ok_and(|m| m.is_symlink());
+        for entry in std::fs::read_dir(&sockets)
+            .into_iter()
+            .filter(|_| !linked)
+            .flatten()
+            .flatten()
+        {
+            // Never through a symbolic link to a server elsewhere.
+            if entry.file_type().map_or(true, |t| t.is_symlink()) {
+                continue;
+            }
             let _ = command(self.guard())
                 .arg("-S")
                 .arg(entry.path())
                 .arg("kill-server")
                 .output();
+        }
+        let also = std::fs::read_to_string(self.path.join(ALSO_REMOVE)).unwrap_or_default();
+        for path in also.lines().filter(|p| !p.is_empty()) {
+            remove(Path::new(path));
+        }
+        if let Some(mut watchdog) = self.watchdog.take() {
+            let _ = watchdog.kill();
+            let _ = watchdog.wait();
         }
         let refused = self.refused();
         if refused.is_empty() {
@@ -241,6 +431,20 @@ impl Drop for PrivateTmux {
         } else {
             panic!("the tmux guard refused:\n{refused}");
         }
+    }
+}
+
+/// Remove a file or symbolic link, or a directory with everything in it
+/// (`remove_dir_all` removes the links inside, never what they point at).
+fn remove(path: &Path) {
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.is_dir() => {
+            let _ = std::fs::remove_dir_all(path);
+        }
+        Ok(_) => {
+            let _ = std::fs::remove_file(path);
+        }
+        Err(_) => {}
     }
 }
 
