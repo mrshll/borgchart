@@ -216,9 +216,14 @@ fn a_new_brg_is_noticed_once_it_holds_steady() {
 
     // Same bytes, a new file: no change.
     let mut watch = BinaryWatch::new(BinaryId::read(&brg).unwrap());
+    // The new file can even reuse the inode and mtime tick, so its stat may
+    // match at once (seen on ext4 in CI); either way it is never a change.
     fs::remove_file(&brg).unwrap();
     fs::write(&brg, b"version two, complete").unwrap();
-    assert_eq!(poll(&mut watch, t(20)), Poll::Settling);
+    assert!(matches!(
+        poll(&mut watch, t(20)),
+        Poll::Settling | Poll::Same
+    ));
     assert_eq!(poll(&mut watch, t(31)), Poll::Same);
 }
 
