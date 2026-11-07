@@ -35,6 +35,55 @@ struct DeploymentRaw {
     #[serde(default)]
     plugins: BTreeMap<String, PluginDeployRaw>,
     bus: Option<BusRaw>,
+    tmux: Option<TmuxRaw>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TmuxRaw {
+    user_config: Option<UserConfigRaw>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(
+    untagged,
+    expecting = "`tmux.user_config` must be true, false or a path to a tmux config"
+)]
+enum UserConfigRaw {
+    On(bool),
+    Path(String),
+}
+
+/// Which of your own tmux configs brg's server loads before its own options.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum UserTmuxConfig {
+    /// `true`: the first of tmux's own per-user config files that exists.
+    Default,
+    /// A path (absolute once loaded).
+    Path(PathBuf),
+}
+
+impl UserTmuxConfig {
+    /// The file to load, if there is one.
+    pub fn resolve(&self) -> Option<PathBuf> {
+        match self {
+            UserTmuxConfig::Path(p) => Some(p.clone()),
+            UserTmuxConfig::Default => {
+                let home = std::env::var_os("HOME").map(PathBuf::from);
+                let xdg = std::env::var_os("XDG_CONFIG_HOME")
+                    .map(PathBuf::from)
+                    .filter(|p| p.is_absolute());
+                [
+                    home.as_ref().map(|h| h.join(".tmux.conf")),
+                    xdg.map(|x| x.join("tmux/tmux.conf")),
+                    home.map(|h| h.join(".config/tmux/tmux.conf")),
+                ]
+                .into_iter()
+                .flatten()
+                .find(|p| p.is_file())
+            }
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -87,6 +136,8 @@ pub struct Deployment {
     pub plugins: BTreeMap<String, PluginDeploy>,
     /// The coordination bus, when this deployment uses one.
     pub bus: Option<BusConfig>,
+    /// Your own tmux config, loaded on brg's server when you opt in.
+    pub tmux_user_config: Option<UserTmuxConfig>,
 }
 
 /// Default age (days) at which a team's message storage is reported as aging.
@@ -179,6 +230,11 @@ pub fn load(file: &Path, report: &mut Report) -> Option<Deployment> {
         .collect();
 
     let bus = raw.bus.and_then(|b| load_bus(b, file, report));
+    let tmux_user_config = match raw.tmux.and_then(|t| t.user_config) {
+        None | Some(UserConfigRaw::On(false)) => None,
+        Some(UserConfigRaw::On(true)) => Some(UserTmuxConfig::Default),
+        Some(UserConfigRaw::Path(p)) => Some(UserTmuxConfig::Path(expand_home(base, &p))),
+    };
 
     if report.errors().count() > before {
         return None;
@@ -193,6 +249,7 @@ pub fn load(file: &Path, report: &mut Report) -> Option<Deployment> {
         members,
         plugins,
         bus,
+        tmux_user_config,
     })
 }
 

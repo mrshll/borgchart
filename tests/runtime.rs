@@ -607,6 +607,86 @@ fn windows_get_tmux_terminal_and_colour_not_the_callers() {
     assert!(lines.contains(&"COLORTERM=truecolor"), "{plugin_env}");
 }
 
+/// tmux's own `default-terminal`, from a server that reads no config.
+fn built_in_default_terminal() -> String {
+    let socket = format!("brg-test-builtin-{}", std::process::id());
+    let out = common::tmux(&socket)
+        .args([
+            "-f",
+            "/dev/null",
+            "start-server",
+            ";",
+            "show",
+            "-gv",
+            "default-terminal",
+        ])
+        .output()
+        .unwrap();
+    common::kill_server(&socket);
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+#[test]
+fn user_tmux_config_loads_only_when_opted_in_and_brg_options_win() {
+    // Catches: brg reading your tmux config without the opt-in; your bindings
+    // missing with it; and your config's options breaking brg (windows renamed
+    // away from member names, a short history, another terminal or shell, a
+    // server or session that ends while detached), including options a
+    // blocking `run` script sets and lines after an error.
+    let built_in = built_in_default_terminal();
+    for opted_in in [false, true] {
+        let env = Env::new();
+        env.write(
+            "home/.tmux.conf",
+            "set -g prefix C-a\nbind-key -n F12 split-window\nset -g bogus-option 1\nsetw -g automatic-rename on\nset -g default-terminal screen-256color\nset -g default-shell /bin/false\nset -g history-limit 100\nset -g destroy-unattached on\nset -s exit-unattached on\nrun 'tmux set -g @ran yes; tmux set -g history-limit 200'\n",
+        );
+        if opted_in {
+            env.write(
+                "team/borgchart.yaml",
+                "schema: 1\ntmux: {user_config: true}\nplugins:\n  pager:\n    env: {PAGER_ROOM: R0000EXAMPLE}\n",
+            );
+        }
+        env.up();
+        let keys = env.tmux(&["list-keys", "-T", "root"]);
+        assert_eq!(keys.contains("F12"), opted_in, "{keys}");
+        let prefix = env.tmux(&["show", "-gv", "prefix"]);
+        assert_eq!(prefix.trim() == "C-a", opted_in, "prefix {prefix}");
+        let ran = env.tmux(&["show", "-gqv", "@ran"]);
+        assert_eq!(ran.trim() == "yes", opted_in, "the config's run script");
+        let names = env.tmux(&["list-windows", "-a", "-F", "#{window_name}"]);
+        assert!(
+            names.lines().any(|n| n == "alpha") && names.lines().any(|n| n == "beta"),
+            "{names}"
+        );
+        for (option, want) in [
+            ("history-limit", "20000"),
+            ("destroy-unattached", "off"),
+            ("default-terminal", built_in.as_str()),
+        ] {
+            assert_eq!(
+                env.tmux(&["show", "-gv", option]).trim(),
+                want,
+                "{option}, opted in: {opted_in}"
+            );
+        }
+        assert_eq!(env.tmux(&["show", "-sv", "exit-unattached"]).trim(), "off");
+        let start = env
+            .events("alpha")
+            .into_iter()
+            .find(|e| e["event"] == "start")
+            .unwrap();
+        assert_eq!(start["env"]["TERM"], built_in.as_str());
+        assert_eq!(start["env"]["COLORTERM"], "truecolor");
+        let out = env.brg(&["down"]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(env.tmux(&["list-sessions"]), "");
+    }
+}
+
 #[test]
 fn locked_member_without_an_active_gate_is_stopped() {
     let env = Env::new();
