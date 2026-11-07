@@ -511,6 +511,13 @@ impl Env {
             .collect()
     }
 
+    /// The fake's screen as tmux shows it.
+    fn screen(&self) -> String {
+        self.tmux
+            .ok(&["capture-pane", "-p", "-t", "=s:=m"])
+            .unwrap_or_default()
+    }
+
     fn events(&self, kind: &str) -> Vec<serde_json::Value> {
         self.log()
             .into_iter()
@@ -571,13 +578,16 @@ fn drafts_defer_without_typing_and_resume_once_cleared() {
     for v in VENDORS {
         let e = Env::new(v);
         e.keys(&["-l", "half a thought"]);
-        e.wait_for("the draft", |e| !e.events("key").is_empty());
+        // On screen, not just read by the fake: the wake reads the screen.
+        e.wait_for("the draft", |e| e.screen().contains("half a thought"));
         assert_eq!(e.attempt(v), (WakeResult::Deferred(Defer::Draft), 0));
         assert_eq!(e.attempt(v), (WakeResult::Deferred(Defer::Draft), 0));
         assert!(e.events("paste").is_empty());
         // The person clears it; the next attempt goes ahead.
         e.keys(&["C-u"]);
-        e.wait_for("the clear", |e| !e.events("clear").is_empty());
+        e.wait_for("the clear", |e| {
+            !e.events("clear").is_empty() && !e.screen().contains("half a thought")
+        });
         assert_eq!(e.attempt(v), (WakeResult::Submitted, 1), "{v:?}");
         assert_eq!(e.submissions(), vec![REMINDER.to_string()]);
     }

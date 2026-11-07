@@ -44,10 +44,34 @@ struct Fake {
     control: String,
     history: Vec<String>,
     width: usize,
+    /// Events from input being handled, written once the screen shows it,
+    /// so a test that sees an event also sees what it drew.
+    held: std::cell::RefCell<Option<Vec<serde_json::Value>>>,
 }
 
 impl Fake {
     fn log(&self, value: serde_json::Value) {
+        if let Some(held) = self.held.borrow_mut().as_mut() {
+            held.push(value);
+            return;
+        }
+        self.write_log(&value);
+    }
+
+    /// Hold events until `release`.
+    fn hold(&self) {
+        self.held.borrow_mut().get_or_insert_with(Vec::new);
+    }
+
+    /// Write the held events; call after drawing.
+    fn release(&self) {
+        let held = self.held.borrow_mut().take().unwrap_or_default();
+        for value in held {
+            self.write_log(&value);
+        }
+    }
+
+    fn write_log(&self, value: &serde_json::Value) {
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -276,6 +300,7 @@ fn main() {
         control: String::new(),
         history: Vec::new(),
         width: width(),
+        held: Default::default(),
     };
     fake.draw();
     fake.log(serde_json::json!({"event": "ready"}));
@@ -307,6 +332,7 @@ fn main() {
         if pending.is_empty() {
             continue;
         }
+        fake.hold();
         while !pending.is_empty() {
             if pending.starts_with(b"\x1b[200~") {
                 let Some(end) = pending.windows(6).position(|w| w == b"\x1b[201~") else {
@@ -355,6 +381,7 @@ fn main() {
             }
         }
         fake.draw();
+        fake.release();
     }
     let mut stdout = std::io::stdout();
     let _ = stdout.write_all(b"\x1b[?2004l");
