@@ -182,7 +182,7 @@ fn launched(tmux: &Tmux, session: &str, s: &Started) -> Launched {
     }
 }
 
-/// The id of the rule that recognizes Claude's folder-trust dialog.
+/// The id of the rules that recognize each vendor's folder-trust screen.
 const TRUST_RULE: &str = "trust-dialog";
 const TRUST_NO_SELECTED: &str = " ❯ No, exit";
 const TRUST_YES_SELECTED: &str = " ❯ Yes, I trust this folder";
@@ -928,14 +928,15 @@ pub fn up(input: &Input, only: Option<&str>) -> Result<UpOutcome, String> {
                 continue;
             }
             match reading.map(|r| r.state) {
-                // Nothing runs before Claude's folder trust is answered, and the
-                // gate must still report in afterwards (`send` checks).
+                // Nothing runs before the vendor's folder trust is answered,
+                // and the gate must still report in afterwards (`send` checks).
                 Some(State::Blocked) if is_trust => {
                     append(
                         &mut outcomes,
                         id,
                         format!(
-                            "waiting at Claude's folder-trust prompt; answer it with `brg attach {id}`"
+                            "waiting at {}'s folder-trust prompt; answer it with `brg attach {id}`",
+                            s.vendor.display_name()
                         ),
                     );
                     break;
@@ -1282,6 +1283,7 @@ pub fn not_started(start: bool) -> String {
 /// What `status` prints in a member's state column.
 pub fn state_label(row: &StatusRow) -> String {
     match row.state.as_str() {
+        "blocked" if row.rule.as_deref() == Some(TRUST_RULE) => "blocked (folder trust)".into(),
         NOT_STARTED => not_started(row.start),
         STOPPED if row.expected_running => format!("{STOPPED} (should be running)"),
         s => s.to_string(),
@@ -1393,6 +1395,10 @@ pub fn status(input: &Input) -> Result<Vec<StatusRow>, String> {
                     }
                 }
                 let mut details: Vec<String> = row.detail.take().into_iter().collect();
+                // Nothing runs until a person answers it.
+                if row.state == "blocked" && row.rule.as_deref() == Some(TRUST_RULE) {
+                    details.insert(0, format!("waiting at folder trust: `brg attach {id}`"));
+                }
                 if posture == Posture::Locked && !state.gate_marker(id).exists() {
                     details.push("gate not active: gets no input".to_string());
                     if row.state != "blocked" {
@@ -1500,40 +1506,42 @@ fn pending(dir: &Path) -> Option<String> {
 
 /// `brg status` as text: the team's tree with each member's vendor, model,
 /// state and details, then the plugin processes.
+/// The columns `status` and `status -i` show after a row's name: a
+/// member's vendor and model, state and details; a plugin's state and detail.
+pub fn status_cells(r: &StatusRow) -> Vec<String> {
+    if r.kind != "member" {
+        return vec![r.state.clone(), r.detail.clone().unwrap_or_default()];
+    }
+    let mut detail = Vec::new();
+    if r.posture.as_deref() == Some("locked") {
+        detail.push("locked".to_string());
+    }
+    detail.extend(r.detail.clone());
+    vec![
+        format!(
+            "{} {}",
+            r.vendor.as_deref().unwrap_or("-"),
+            r.model.as_deref().unwrap_or("default")
+        ),
+        state_label(r),
+        detail.join("; "),
+    ]
+}
+
 pub fn render_status(team: &str, rows: &[StatusRow]) -> String {
     let nodes: Vec<tree::Node> = rows
         .iter()
         .filter(|r| r.kind == "member")
-        .map(|r| {
-            let mut detail = Vec::new();
-            if r.posture.as_deref() == Some("locked") {
-                detail.push("locked".to_string());
-            }
-            detail.extend(r.detail.clone());
-            tree::Node {
-                id: r.name.clone(),
-                parent: r.parent.clone(),
-                cols: vec![
-                    format!(
-                        "{} {}",
-                        r.vendor.as_deref().unwrap_or("-"),
-                        r.model.as_deref().unwrap_or("default")
-                    ),
-                    state_label(r),
-                    detail.join("; "),
-                ],
-            }
+        .map(|r| tree::Node {
+            id: r.name.clone(),
+            parent: r.parent.clone(),
+            cols: status_cells(r),
         })
         .collect();
     let plugins: Vec<(String, Vec<String>)> = rows
         .iter()
         .filter(|r| r.kind == "plugin")
-        .map(|r| {
-            (
-                r.name.clone(),
-                vec![r.state.clone(), r.detail.clone().unwrap_or_default()],
-            )
-        })
+        .map(|r| (r.name.clone(), status_cells(r)))
         .collect();
     tree::render(team, &nodes, &plugins)
 }

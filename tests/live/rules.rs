@@ -45,10 +45,9 @@ pub const REQUIRED: &[(&str, Who)] = &[
 /// it.
 pub const RUN_CLAUDE_TRUST_ON: bool = false;
 
-/// With `auto_trust: false`, `brg status` should report the member waiting
-/// at folder trust with a `brg attach` hint (`*-trust-status`). brg doesn't
-/// say so yet (#54); flip this once it does.
-pub const CHECK_STATUS_TRUST_DETAIL: bool = false;
+/// With `auto_trust: false`, `brg status` reports the member waiting at
+/// folder trust with a `brg attach` hint (`*-trust-status`, #54).
+pub const CHECK_STATUS_TRUST_DETAIL: bool = true;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {

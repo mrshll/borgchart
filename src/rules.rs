@@ -484,6 +484,45 @@ mod tests {
     }
 
     #[test]
+    fn codex_trust_screen_is_blocked() {
+        // Recorded from codex-cli 0.165.0 at startup in an untrusted Git
+        // repository, at 120 and 80 columns; the title is the host name.
+        let wide = include_str!("../tests/fixtures/screens/codex-trust.txt");
+        let narrow = include_str!("../tests/fixtures/screens/codex-trust-80.txt");
+        // After Down, "Quit" is highlighted: still the same screen.
+        let quit = narrow
+            .replace("› 1. Trust and continue", "  1. Trust and continue")
+            .replace("  2. Quit", "› 2. Quit");
+        for screen in [wide, narrow, quit.as_str()] {
+            let reading = codex().read("example-host", screen);
+            assert_eq!(reading.rule.as_deref(), Some("trust-dialog"), "{screen}");
+            assert_eq!(reading.state, State::Blocked);
+        }
+        // Each marker is needed.
+        for marker in [
+            "  Folder access",
+            "› 1. Trust and continue",
+            "  2. Quit",
+            "  enter continue · esc quit",
+        ] {
+            assert!(narrow.contains(marker), "{marker}");
+            let without = narrow.replace(marker, "");
+            assert_ne!(
+                codex().read("example-host", &without).rule.as_deref(),
+                Some("trust-dialog"),
+                "without {marker}"
+            );
+        }
+        // The same text quoted in the transcript, above the prompt.
+        let idle = include_str!("../tests/fixtures/screens/codex-idle.txt");
+        let quoted = format!("{narrow}{idle}");
+        assert_ne!(
+            codex().read("example-host", &quoted).rule.as_deref(),
+            Some("trust-dialog")
+        );
+    }
+
+    #[test]
     fn quoted_update_text_above_the_composer_is_not_the_dialog() {
         let screen = include_str!("../tests/fixtures/screens/codex-update-quoted.txt");
         assert_eq!(

@@ -1012,8 +1012,68 @@ fn codex_trust_screen_is_left_for_a_person_unless_auto_trust_covers_the_folder()
         assert!(trusts.is_empty(), "{deploy}: {trusts:?}");
         let beta = status_of(&env, "beta");
         assert!(beta["trust_accepted"].is_null(), "{deploy}: {beta}");
-        assert_ne!(beta["state"], "idle", "{deploy}: {beta}");
+        // At its trust screen, and still there for a person, `locked` too.
+        assert_eq!(beta["state"], "blocked", "{deploy}: {beta}");
+        assert_eq!(beta["rule"], "trust-dialog", "{deploy}: {beta}");
+        if deploy.contains("locked") {
+            assert!(
+                stdout(&out).contains("waiting at Codex's folder-trust prompt"),
+                "{deploy}: {}",
+                stdout(&out)
+            );
+            // Its gate hasn't reported in, so it gets no input.
+            assert_eq!(
+                env.brg(&["send", "--force", "beta", "hi"]).status.code(),
+                Some(5),
+                "{deploy}"
+            );
+        }
     }
+}
+
+#[test]
+fn status_shows_members_waiting_at_folder_trust_with_an_attach_hint() {
+    // Catches: a member at its vendor's folder-trust screen reading as a
+    // plain `blocked` (Claude) or `unknown` (Codex), with nothing saying
+    // to attach and answer it.
+    let env = trust_env(
+        "schema: 1\nauto_trust: false\nmembers:\n  alpha: {cwd: WORK}\n  beta: {cwd: WORK}\nplugins:\n  pager:\n    env: {PAGER_ROOM: R0}\n",
+    );
+    fs::write(env.path("home/fake-agent/codex-trust"), "").unwrap();
+    assert!(env.brg(&["up"]).status.success());
+    env.wait_for("beta at its trust screen", |e| {
+        status_of(e, "beta")["rule"] == "trust-dialog"
+    });
+    let text = stdout(&env.brg(&["status"]));
+    for member in ["alpha", "beta"] {
+        let line = text
+            .lines()
+            .find(|l| l.contains(&format!("─ {member} ")))
+            .unwrap_or_default();
+        assert!(
+            line.contains("blocked (folder trust)")
+                && line.contains(&format!("waiting at folder trust: `brg attach {member}`")),
+            "{member}: {text}"
+        );
+        let row = status_of(&env, member);
+        assert_eq!(row["state"], "blocked", "{row}");
+        assert_eq!(row["rule"], "trust-dialog", "{row}");
+        assert!(
+            row["detail"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with(&format!("waiting at folder trust: `brg attach {member}`")),
+            "{row}"
+        );
+    }
+    // The locked member's other detail stays.
+    assert!(
+        status_of(&env, "alpha")["detail"]
+            .as_str()
+            .unwrap_or("")
+            .contains("gate not active"),
+        "{text}"
+    );
 }
 
 #[test]

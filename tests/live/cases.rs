@@ -496,9 +496,30 @@ fn codex_trust_case(w: &World, trust: Option<bool>, id: &str, status: &mut Outco
         });
         (seen, held, up.join().unwrap())
     });
+    // A `locked` member is left at the screen once `up` is done: `up`
+    // succeeds and says so, and the screen is still there afterwards.
+    let left_waiting = || -> Result<(), String> {
+        match &up {
+            Ok((true, text)) if text.contains("waiting at Codex's folder-trust prompt") => {}
+            Ok((_, text)) => return Err(format!("`up` didn't leave it waiting: {}", text.trim())),
+            Err(e) => return Err(e.clone()),
+        }
+        let look = t.look();
+        if look.gone || look.dead || !codex_trust_screen(&look.screen) {
+            return Err("the trust screen was gone after `up`".into());
+        }
+        Ok(())
+    };
+    let waiting = match (trust, &seen) {
+        (None, Seen::Trust) => left_waiting(),
+        _ => Ok(()),
+    };
     let outcome = match (trust, seen, held) {
         (_, Seen::Blocked(rule), _) => blocked_at(&rule, &repo),
         (_, _, _) if up.is_err() => Outcome::Fail(up.clone().unwrap_err()),
+        (None, Seen::Trust, Some(Ok(_))) if waiting.is_err() => {
+            Outcome::Fail(waiting.clone().unwrap_err())
+        }
         (Some(true), Seen::Idle, _) => {
             Outcome::Pass("reached its prompt with session-only trust".into())
         }
