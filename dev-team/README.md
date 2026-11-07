@@ -31,14 +31,14 @@ Keep the teams in the search path as a **pinned copy** of these folders, taken a
 1. **Use a stable brg,** installed outside any checkout the team changes: every member runs the brg that started it (`$BORGCHART_BIN`).
 2. **Check the teams:** `brg validate dev-team` and `brg validate dev-design-team`.
 3. **Create the instance** in the shared checkout: `brg create dev-team <checkout>`. It prints the instance's ID (`dev-team-k3f9`) and its tree: the lead `started`, every other role `on demand (none created)`. The lead creates and starts helpers as their work arrives.
-4. **Tell the lead what this work is:** publish a note to its member with the owner's GitHub handle, the tracking issue and any handover note (for example `brg msg publish --external owner --instance dev-team-k3f9 --key start-1` with the note on stdin).
+4. **Tell the lead what this work is:** publish a note to its member with the tracking issue and any handover note (for example `brg msg publish --external owner --instance dev-team-k3f9 --key start-1` with the note on stdin).
 5. **Answer the folder-trust screens,** once per folder: when `brg status dev-team-k3f9` shows a member `blocked`, run `brg attach dev-team-k3f9/<member>`, answer, and detach. brg makes the instance's messages and notes writable for every member, and adds nothing else.
 6. **Work with the lead** in its session (`brg attach dev-team-k3f9/<lead member>`). It reaches you on GitHub: review requests on the draft pull requests it hands off, and comments when it needs you.
 7. **Stop it:** `brg stop dev-team-k3f9`; `brg start dev-team-k3f9` brings back what was running. `brg delete dev-team-k3f9` removes its messages and notes once no work is open; the checkout is left as it is.
 
 ## Working rules
 
-- **The lead never merges.** It opens draft pull requests and requests the owner's review; the owner merges every pull request, unless they say otherwise for a specific one.
+- **The owner and reviewer is @mrshll; the lead opens draft pull requests and never merges.** It requests the owner's review on each one it hands off; the owner merges every pull request, unless he says otherwise for a specific one.
 - **One shared checkout, one writer:** the implementer, with at most one open task. Nobody edits the checkout while it holds a task; the lead does git work only between its tasks, and starts the reviewer after the push, at the pull request's head. The reviewer, researcher and monitor are read-only and write reports only.
 - **One writer at a time** until one pull request has gone cleanly through the whole team. A second writer needs the owner's OK on the tracking issue, and works in a worktree next to the checkout, removed once pushed.
 - **Helpers are started with their work** and stopped when done. They wait only for the answer to their own question: Codex in the foreground, Claude in the background. The monitor runs its watch the same way: Claude in the background, Codex in the foreground in commands of at most 10 minutes.

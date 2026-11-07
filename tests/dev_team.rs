@@ -291,6 +291,9 @@ fn denied_word(text: &str) -> Option<String> {
 #[test]
 fn the_team_files_stay_generic() {
     assert!(denied_word("the owner merges").is_none());
+    // Only the owner's handle is allowed, only in `dev-team/`, and only as
+    // `@<handle>`: other forms and other denied words stay denied.
+    assert!(denied_word("mrshll-agent").is_some());
 
     let mut files = Vec::new();
     for team in TEAMS {
@@ -301,8 +304,17 @@ fn the_team_files_stay_generic() {
     // Machine paths, private tooling and people stay in the private
     // deployment file, never here.
     let home = regex::Regex::new(r"/(home|Users)/[^/\s]+|/tmp/|/root/").unwrap();
+    // The one exception: `dev-team/` names the repository's owner and
+    // reviewer by his public handle, exactly as `@<handle>`.
+    let owner = regex::Regex::new(r"@mrshll([^A-Za-z0-9_-]|$)").unwrap();
+    let dev_team = team_dir("dev-team");
     for file in files {
         let text = fs::read_to_string(&file).unwrap();
+        let text = if file.starts_with(&dev_team) {
+            owner.replace_all(&text, "$1").to_string()
+        } else {
+            text
+        };
         assert_eq!(denied_word(&text), None, "{}", file.display());
         assert!(
             !home.is_match(&text),
