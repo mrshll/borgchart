@@ -338,6 +338,7 @@ fn start_members(
         ));
     }
     check_tmux_tmpdir()?;
+    let shared = shared_folders(state)?;
     // Every window, shim, gate hook and plugin process this start starts
     // runs the brg running now, as in v0: brg isn't pinned.
     let brg = brg_path();
@@ -576,12 +577,6 @@ fn start_members(
             lock.save_instance(state, &updated)?;
         }
     }
-    // The folders every `vendor`-posture member may write: the instance's
-    // messages and notes, never brg's own files.
-    let shared: Vec<PathBuf> = [state.messages_dir(), state.notes_dir()]
-        .into_iter()
-        .map(|d| d.canonicalize().unwrap_or(d))
-        .collect();
     // Whether this start has created a window yet.
     let mut any_window = false;
     let mut outcomes: BTreeMap<String, String> = BTreeMap::new();
@@ -1130,6 +1125,47 @@ fn member_nodes(
         }
     }
     nodes
+}
+
+/// The folders every `vendor`-posture member may write: the instance's
+/// `messages/` and `notes/`, never brg's own files. Each must be a real
+/// folder (not a symlink), yours, and not writable by group or others, and
+/// resolve to exactly its own place in the instance's state folder: anything
+/// else, or any error finding out, refuses the start.
+fn shared_folders(state: &StateDir) -> Result<Vec<PathBuf>, String> {
+    let refuse = |dir: &Path, why: String| {
+        format!(
+            "the instance's {} folder {} {why}, so members can't be given it; nothing was started",
+            dir.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            dir.display()
+        )
+    };
+    let root = state
+        .root
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve {}: {e}", state.root.display()))?;
+    let mut out = Vec::new();
+    for dir in [state.messages_dir(), state.notes_dir()] {
+        crate::bus::fsx::check_private_dir(&dir).map_err(|e| {
+            let text = e.to_string();
+            let why = text
+                .strip_prefix(&format!("{} ", dir.display()))
+                .unwrap_or(&text)
+                .to_string();
+            refuse(&dir, why)
+        })?;
+        let real = dir
+            .canonicalize()
+            .map_err(|e| refuse(&dir, format!("can't be resolved ({e})")))?;
+        let want = root.join(dir.file_name().unwrap_or_default());
+        if real != want {
+            return Err(refuse(&dir, format!("resolves to {}", real.display())));
+        }
+        out.push(real);
+    }
+    Ok(out)
 }
 
 /// What `auto_trust: true` will load in a `vendor` member's folder: its

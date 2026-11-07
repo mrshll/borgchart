@@ -148,11 +148,6 @@ impl Fixture {
         drop(lock);
     }
 
-    /// How brg says to restart the instance.
-    fn restart(&self) -> String {
-        borgchart::state::restart_hint(TEAM)
-    }
-
     /// How brg says to start one member.
     fn start_member(&self, member: &str) -> String {
         format!("brg start {TEAM}/{member}")
@@ -1299,10 +1294,7 @@ fn another_message_format_is_refused_with_the_restart_command() {
     m["schema"] = json!(999);
     fs::write(&manifest_path, serde_json::to_vec(&m).unwrap()).unwrap();
     let before = f.tree();
-    let expected = format!(
-        "instance `oncall-2a3b`'s messages use format 999; this brg uses format 1.\nRestart the instance to start fresh storage in the new format: {}\n(Open work in the old format isn't carried over; the old messages stay on disk.)",
-        f.restart()
-    );
+    let expected = "instance `oncall-2a3b`'s messages use format 999; this brg uses format 1.\nbrg can't read them or check them for open work, so the instance can't start again; create a new instance for fresh storage: brg create <team> <folder>\n(The old messages stay on disk; send their open work again.)".to_string();
     let commands: Vec<(As, Vec<&str>)> = vec![
         (
             As::Operator,
@@ -1332,7 +1324,7 @@ fn another_message_format_is_refused_with_the_restart_command() {
 }
 
 #[test]
-fn restart_hints_name_the_instance() {
+fn another_format_points_to_a_new_instance() {
     let f = Fixture::new();
     let manifest_path = f.run_dir().join("run.json");
     let mut m: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
@@ -1345,9 +1337,8 @@ fn restart_hints_name_the_instance() {
     );
     assert_eq!(out.code, 4);
     assert!(
-        out.stderr.contains(&format!(
-            "new format: brg stop {TEAM} && brg start {TEAM}\n"
-        )),
+        out.stderr
+            .contains("create a new instance for fresh storage: brg create <team> <folder>\n"),
         "{}",
         out.stderr
     );

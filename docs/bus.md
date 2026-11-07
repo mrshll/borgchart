@@ -79,11 +79,9 @@ Every bus command acts on one instance: inside a member (or a plugin process), i
 
 ```
 brg: instance `oncall-2a3b`'s messages use format 1; this brg uses format 2.
-Restart the instance to start fresh storage in the new format: brg stop oncall-2a3b && brg start oncall-2a3b
-(Open work in the old format isn't carried over; the old messages stay on disk.)
+brg can't read them or check them for open work, so the instance can't start again; create a new instance for fresh storage: brg create <team> <folder>
+(The old messages stay on disk; send their open work again.)
 ```
-
-A full start then refuses too, since the old messages can't be checked for open work; create a new instance (`brg create`) and send its open work again.
 
 ## Records
 
@@ -91,7 +89,7 @@ A caller writes a **draft**; brg adds identity and stores a **record**.
 
 ```json
 {
-  "to": "helper",
+  "to": "helper-x7k2",
   "kind": "assign",
   "task": "t-1",
   "attempt": 1,
@@ -155,9 +153,9 @@ Every command takes the instance as described under [Caller context](#caller-con
 
 ```console
 $ brg msg publish --external ops --key demo-1 --record demo.json --json
-{"at":"2026-11-05T19:38:32.766Z","attention":"none","code":0,"id":"m1","key":"demo-1","kind":"note","ok":true,"outcome":"committed","seq":1,"to":"lead"}
+{"at":"2026-11-05T19:38:32.766Z","attention":"none","code":0,"id":"m1","key":"demo-1","kind":"note","ok":true,"outcome":"committed","seq":1,"to":"lead-q8m3"}
 $ brg msg publish --external ops --key demo-1 --record demo.json --json
-{"at":"2026-11-05T19:38:32.766Z","attention":"none","code":0,"id":"m1","key":"demo-1","kind":"note","ok":true,"outcome":"duplicate","seq":1,"to":"lead"}
+{"at":"2026-11-05T19:38:32.766Z","attention":"none","code":0,"id":"m1","key":"demo-1","kind":"note","ok":true,"outcome":"duplicate","seq":1,"to":"lead-q8m3"}
 ```
 
 `attention` says whether anyone will be reminded; it is `none` until the attention worker exists.
@@ -171,9 +169,9 @@ $ brg msg publish --external ops --key demo-1 --record demo.json --json
 - Records are headers (everything but `body` and `facts`, plus `body_bytes` and `acked`); `--full` includes the body and facts.
 
 ```json
-{"ok": true, "code": 0, "outcome": "ok", "recipient": "lead",
+{"ok": true, "code": 0, "outcome": "ok", "recipient": "lead-q8m3",
  "records": [{"id": "m1", "seq": 1, "at": "…", "actor": {"type": "external", "name": "ops"},
-              "key": "demo-1", "to": "lead", "kind": "note", "schema": 1,
+              "key": "demo-1", "to": "lead-q8m3", "kind": "note", "schema": 1,
               "body_bytes": 29, "acked": false}],
  "next": null, "unacked": 1, "total": 1, "store": "ok"}
 ```
@@ -269,18 +267,18 @@ brg bus carry --from RUN [--json]
 ```console
 $ brg task show t-1
 task t-1: verified (attempt 1)
-  assignee: helper
-  authority: lead
+  assignee: helper-x7k2
+  authority: lead-q8m3
   agreement: /work/agreement.md (sha256 901932a5…)
   scope: the config parser
   checkout: /work/checkout
-  writer: helper-1 (unknown, current)
-  m1  assign  #1  lead
-  m2  accept  #1  helper
-  m4  result  #1  helper
-  m5  verify  #1  lead
-  next: lead (release or reopen)
-  open question m3 from helper
+  writer: helper-x7k2.20261105193812345.ab12 (unknown, current)
+  m1  assign  #1  lead-q8m3
+  m2  accept  #1  helper-x7k2
+  m4  result  #1  helper-x7k2
+  m5  verify  #1  lead-q8m3
+  next: lead-q8m3 (release or reopen)
+  open question m3 from helper-x7k2
 ```
 
 **`bus carry --from RUN`** continues work from the earlier run the team's current storage is linked from (its `run.json`'s `linked_from`, written when the storage rolls over). The lifecycle calls the same carry (`carry::carry_at_rollover`) while it rolls over, holding the old run's `bus/lock`; until that is wired in, a rollover leaves the work behind and this command carries it. It:
@@ -295,8 +293,8 @@ Carried work is a pointer, not a transfer: the new run has no tasks until the au
 
 ```console
 $ brg bus carry --from demo-run-1
-m3 (open-question) -> lead: m1 committed
-m7 (unacked) -> helper: m2 committed
+m3 (open-question) -> lead-q8m3: m1 committed
+m7 (unacked) -> helper-x7k2: m2 committed
 carried 2 item(s) from `demo-run-1` into `demo-run-2`
 ```
 

@@ -281,9 +281,9 @@ pub enum ManifestError {
 impl ManifestError {
     /// The message to show, in terms of the instance. `restart` is how to
     /// restart this team (see `state::restart_hint`).
-    pub fn message(&self, team: &str, restart: &str) -> String {
+    pub fn message(&self, team: &str, _restart: &str) -> String {
         match self {
-            ManifestError::Format { found } => format_mismatch(team, *found, restart),
+            ManifestError::Format { found } => format_mismatch(team, *found),
             ManifestError::Unreadable(e) => e.clone(),
         }
     }
@@ -291,12 +291,12 @@ impl ManifestError {
 
 /// "instance `oncall-2a3b`'s messages use format 1; this brg uses format 2. …"
 ///
-/// Restarting starts fresh storage in this brg's format. Messages in the old
-/// format can't be read by this brg, so they are left where they are rather
-/// than carried over; a start lists what was left behind.
-pub fn format_mismatch(team: &str, found: u64, restart: &str) -> String {
+/// This brg can't read messages in another format, nor check them for open
+/// work, so the instance can't start again: a new instance has fresh storage.
+/// The old messages are left where they are.
+pub fn format_mismatch(team: &str, found: u64) -> String {
     format!(
-        "instance `{team}`'s messages use format {found}; this brg uses format {}.\nRestart the instance to start fresh storage in the new format: {restart}\n(Open work in the old format isn't carried over; the old messages stay on disk.)",
+        "instance `{team}`'s messages use format {found}; this brg uses format {}.\nbrg can't read them or check them for open work, so the instance can't start again; create a new instance for fresh storage: brg create <team> <folder>\n(The old messages stay on disk; send their open work again.)",
         super::SCHEMA
     )
 }
@@ -390,7 +390,7 @@ mod tests {
             msg.contains("instance `oncall`'s messages use format 2; this brg uses format 1"),
             "{msg}"
         );
-        assert!(msg.contains("brg down && brg up"), "{msg}");
+        assert!(msg.contains("brg create <team> <folder>"), "{msg}");
         assert!(!super::super::mentions_runs(&msg), "no run wording: {msg}");
     }
 }

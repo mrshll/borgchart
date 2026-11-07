@@ -355,7 +355,7 @@ pub fn bind_run(
             // `current` names storage without its manifest: damaged.
             Ok(None) => return Err(missing()),
             Err(ManifestError::Format { found }) if joining || child => {
-                return Err(manifest::format_mismatch(&team, found, &restart));
+                return Err(manifest::format_mismatch(&team, found));
             }
             Err(ManifestError::Format { .. }) => Plan::New {
                 previous: Some((id, ROLL_FORMAT)),

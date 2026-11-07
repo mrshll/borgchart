@@ -152,7 +152,7 @@ members:
   ```
 
   Ended copies leave the tree; `brg status --all` could list them.
-- **Addressing.** `devteam/implementer-2` reaches one copy. A bare `implementer` works only while exactly one copy is running; otherwise brg errors and lists the copies, the same rule as for team names. 
+- **Addressing.** `devteam/implementer-2` reaches one copy. A bare `implementer` works only while exactly one copy is running; otherwise brg errors and lists the copies, the same rule as for team names.
 - **Messages to the role.** A message sent to `implementer`, rather than to one copy, waits in a shared queue for the role. The first copy to take it gets it.
 
 Proposed changes to this direction, and why:

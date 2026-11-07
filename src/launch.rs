@@ -350,7 +350,11 @@ pub fn member_launch(
             }
             // `vendor` posture: the instance's messages and notes, as
             // added folders, unless the role's own args add folders.
-            if posture == Posture::Vendor && !extra_args.iter().any(|a| a == "--add-dir") {
+            if posture == Posture::Vendor
+                && !extra_args
+                    .iter()
+                    .any(|a| a == "--add-dir" || a.starts_with("--add-dir="))
+            {
                 for dir in shared {
                     argv.extend(["--add-dir".into(), dir.display().to_string()]);
                 }

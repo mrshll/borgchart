@@ -818,6 +818,80 @@ mod round {
             assert_eq!(start["env"]["BORGCHART_INSTANCE"], panel.as_str());
         }
 
+        // The file exchange: each designer writes its questions and its
+        // proposal under the names designer.md gives, and the lead's
+        // documented wait finds them.
+        let designer_rule =
+            fs::read_to_string(team_dir("dev-design-team").join("designer.md")).unwrap();
+        for name in ["questions", "proposal"] {
+            assert!(
+                designer_rule.contains(&format!("`{name}-$BORGCHART_ROLE.md`")),
+                "designer.md names its {name} file by role"
+            );
+        }
+        let notes = team
+            .path("state")
+            .join(&panel)
+            .join("notes")
+            .canonicalize()
+            .unwrap();
+        for designer in ["designer-claude", "designer-codex"] {
+            let member = team.member_in(&panel, designer);
+            let script = team.path(&format!("s/{designer}.sh"));
+            fs::create_dir_all(script.parent().unwrap()).unwrap();
+            fs::write(
+                &script,
+                "for f in questions proposal; do echo none > \"$BORGCHART_NOTES/.tmp-$f\"; mv \"$BORGCHART_NOTES/.tmp-$f\" \"$BORGCHART_NOTES/$f-$BORGCHART_ROLE.md\"; done\n",
+            )
+            .unwrap();
+            team.wait_for(&format!("{designer} idle"), || {
+                let rows: serde_json::Value =
+                    serde_json::from_slice(&team.brg(&["status", &panel, "--json"]).stdout)
+                        .unwrap_or_default();
+                rows.as_array().is_some_and(|r| {
+                    r.iter()
+                        .any(|r| r["member"] == member.as_str() && r["state"] == "idle")
+                })
+            });
+            team.ok(&[
+                "send",
+                &format!("{panel}/{member}"),
+                &format!("tool sh {}", script.display()),
+            ]);
+        }
+        let rule = fs::read_to_string(dev_team().join("orchestrator.md")).unwrap();
+        let wait = rule
+            .lines()
+            .find(|l| l.contains("until {") && l.contains("questions-designer-claude.md"))
+            .unwrap()
+            .trim()
+            .trim_matches('`')
+            .replace("<deadline seconds>", "20")
+            .replace("<dir>", &notes.display().to_string());
+        // Once the designers have written (four files), the documented
+        // wait must end at once: its first check finds them.
+        team.wait_for("the designers' files", || {
+            fs::read_dir(&notes).map(|d| d.count()).unwrap_or(0) >= 4
+        });
+        for (name, wait) in [
+            ("questions", wait.clone()),
+            ("proposal", wait.replace("questions-", "proposal-")),
+        ] {
+            let started = std::time::Instant::now();
+            let out = Command::new("sh").args(["-c", &wait]).output().unwrap();
+            let listed = String::from_utf8_lossy(&out.stdout).to_string();
+            assert!(
+                started.elapsed() < Duration::from_secs(20),
+                "{name}: waited out: {listed}"
+            );
+            for designer in ["designer-claude", "designer-codex"] {
+                assert!(
+                    listed.contains(&format!("{name}-{designer}.md")),
+                    "{name}: {listed}"
+                );
+            }
+        }
+
         let down = run("panel-down", &format!("stop {panel}"));
         assert!(down.ends_with("exit 0\n"), "{down}");
         let rows: serde_json::Value =

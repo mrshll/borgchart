@@ -224,7 +224,8 @@ fn keyed(env: &Env, args: &[&str]) -> Output {
         .unwrap()
 }
 
-/// Every file under the test's state, home and work folders.
+/// Every file under the test's state, home and work folders, except the
+/// fake agents' own logs of what they were started with.
 fn every_file(env: &Env) -> Vec<(std::path::PathBuf, String)> {
     fn walk(dir: &std::path::Path, out: &mut Vec<(std::path::PathBuf, String)>) {
         for e in fs::read_dir(dir).into_iter().flatten().flatten() {
@@ -240,9 +241,11 @@ fn every_file(env: &Env) -> Vec<(std::path::PathBuf, String)> {
         }
     }
     let mut out = Vec::new();
-    for d in ["state", "work"] {
+    for d in ["state", "home", "work"] {
         walk(&env.path(d), &mut out);
     }
+    let agents = env.path("home/fake-agent");
+    out.retain(|(p, _)| !p.starts_with(&agents));
     out
 }
 
@@ -254,6 +257,9 @@ fn login_passes_no_key_and_api_key_only_the_members_own() {
         env.config(&format!("auth: {auth}\n"));
         let out = keyed(&env, &["create", "oncall", &env.folder("work/a")]);
         assert!(out.status.success(), "{}", both(&out));
+        for v in [ANTHROPIC, OPENAI, PAGER] {
+            assert!(!both(&out).contains(v), "create printed a value");
+        }
         let a = first_word(&stdout(&out));
         env.wait_for("lead start", || {
             !env.starts(&env.member(&a, "lead")).is_empty()
@@ -453,5 +459,58 @@ fn outside_callers_name_the_instance_and_a_stopped_one_can_be_inspected() {
         vec!["inbox", "--member", lead.as_str(), "--instance", a.as_str()],
     ] {
         env.ok(&args);
+    }
+}
+
+// --- Review fixes ---
+
+#[test]
+fn a_shared_folder_replaced_by_a_symlink_refuses_the_restart() {
+    for how in ["symlink", "group-writable"] {
+        let env = Env::new();
+        let a = env.create("oncall", "work/a");
+        env.ok(&["create", &format!("{a}/helper")]);
+        let lead = env.member(&a, "lead");
+        let helper = env.member(&a, "helper");
+        env.ok(&["stop", &a]);
+        let state = env.path(&format!("state/{a}"));
+        if how == "symlink" {
+            fs::remove_dir(state.join("notes")).unwrap();
+            std::os::unix::fs::symlink(".", state.join("notes")).unwrap();
+        } else {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(state.join("notes"), fs::Permissions::from_mode(0o777)).unwrap();
+        }
+        let err = env.fails(&["start", &a]);
+        assert!(err.contains("notes"), "{how}: {err}");
+        // Neither vendor started again, so neither got the folder.
+        assert_eq!(env.starts(&lead).len(), 1, "{how}");
+        assert_eq!(env.starts(&helper).len(), 1, "{how}");
+        assert_eq!(env.tmux(&["list-sessions"]), "", "{how}");
+    }
+}
+
+#[test]
+fn a_roles_added_folders_replace_brgs_in_either_form() {
+    for args in [
+        "['--add-dir', '/srv/example']",
+        "['--add-dir=/srv/example']",
+    ] {
+        let env = Env::new();
+        env.role_extra("lead", &format!("    args: {args}\n"));
+        let a = env.create("oncall", "work/a");
+        let claude = argv(&env.starts(&env.member(&a, "lead"))[0]);
+        let state = env.path(&format!("state/{a}")).canonicalize().unwrap();
+        assert!(
+            !claude
+                .iter()
+                .any(|x| x.contains(&state.join("messages").display().to_string())),
+            "{args}: {claude:?}"
+        );
+        assert!(
+            claude.iter().any(|x| x.contains("/srv/example")),
+            "{args}: {claude:?}"
+        );
+        env.ok(&["stop", &a]);
     }
 }
