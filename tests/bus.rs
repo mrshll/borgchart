@@ -1838,10 +1838,10 @@ fn deployment_and_storage_must_match() {
 
     let g = Fixture::new();
     fs::remove_file(g.run_dir().join("run.json")).unwrap();
-    // `current` names storage that isn't there (yet).
+    // `current` names storage without its manifest: damaged, never new.
     let out = g.brg(&As::Operator, &["bus", "check", "--json"], None);
-    assert_eq!(out.code, 3);
-    assert_eq!(out.json["outcome"], "not-configured");
+    assert_eq!(out.code, 7, "{:?}", out.json);
+    assert_eq!(out.json["outcome"], "corrupt");
 }
 
 #[test]
