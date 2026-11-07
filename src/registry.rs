@@ -148,6 +148,9 @@ pub struct InstanceRecord {
 #[serde(deny_unknown_fields)]
 pub struct IssuedMember {
     pub role: String,
+    /// The working folder its latest start resolved (symlinks resolved).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<PathBuf>,
 }
 
 impl InstanceRecord {
@@ -178,6 +181,7 @@ impl InstanceRecord {
             id.clone(),
             IssuedMember {
                 role: role.to_string(),
+                cwd: None,
             },
         );
         Ok(id)

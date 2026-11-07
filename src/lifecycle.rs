@@ -369,6 +369,22 @@ pub fn bind_run(
     } = &plan
     {
         check_stopped(&store.run(prev), &team, &restart)?;
+        // Carrying open work into fresh messages isn't wired yet, so a
+        // rollover never leaves any behind.
+        match open_work(state) {
+            Ok(work) if work.items.is_empty() => {}
+            Ok(work) => {
+                return Err(format!(
+                    "instance `{team}` would start with fresh messages (its files or message format changed, or its messages are old), and it holds open work that isn't carried over yet; settle it first, or restore the files. Nothing was started:\n  {}",
+                    work.items.join("\n  ")
+                ));
+            }
+            Err(e) => {
+                return Err(format!(
+                    "instance `{team}` would start with fresh messages, but its messages can't be read ({e}), so its open work can't be checked; nothing was started. Create a new instance instead (`brg create`)"
+                ));
+            }
+        }
     }
 
     let storage_error = |e: io::Error| {
@@ -465,6 +481,8 @@ fn write_json_replace<T: serde::Serialize>(path: &Path, value: &T) -> Result<(),
 pub struct OpenWork {
     pub items: Vec<String>,
     pub holders: std::collections::BTreeSet<String>,
+    /// Each unresolved task: its ID, assignee and checkout.
+    pub tasks: Vec<(String, String, Option<String>)>,
 }
 
 /// The open work in `state`'s messages (none without a bus). `Err` when
@@ -498,6 +516,8 @@ pub fn open_work(state: &StateDir) -> Result<OpenWork, String> {
                 .unwrap_or_default()
         ));
         work.holders.insert(t.assignee.clone());
+        work.tasks
+            .push((t.task.clone(), t.assignee.clone(), t.checkout.clone()));
     }
     for q in &fold.questions {
         work.items.push(format!(

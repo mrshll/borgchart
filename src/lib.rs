@@ -4,6 +4,7 @@
 
 pub mod address;
 pub mod bus;
+pub mod checkouts;
 pub mod cli;
 pub mod composer;
 pub mod config;

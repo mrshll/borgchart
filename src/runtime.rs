@@ -18,6 +18,7 @@ use crate::config::Auth;
 use crate::exec::{ExecSpec, PluginEnv, identity_env};
 use crate::launch;
 use crate::lifecycle;
+use crate::paths::overlaps;
 use crate::proctree;
 use crate::registry;
 use crate::rules::{self, State};
@@ -369,6 +370,44 @@ fn start_members(
                 .map_err(|e| format!("{e}; nothing was started"))?,
         );
     }
+    let mut pre_notes = Vec::new();
+    for (id, cwd) in &cwds {
+        let member = role_of(id)?;
+        check_state_overlap(cwd, &state.root)
+            .map_err(|e| format!("{}'s {e}; nothing was started", inst.at(id)))?;
+        if overlaps(cwd, &v.team.dir) {
+            if v.posture(&member.id) == Posture::Locked {
+                return Err(format!(
+                    "{} is `locked`, and its folder {} overlaps the team folder {}, so it could change its own role files; give it a folder apart from the team. Nothing was started",
+                    inst.at(id),
+                    cwd.display(),
+                    v.team.dir.display()
+                ));
+            }
+            let note = format!(
+                "note: the team folder {} is inside the members' folder {}; they can change the team's files",
+                v.team.dir.display(),
+                cwd.display()
+            );
+            if !pre_notes.contains(&note) {
+                pre_notes.push(note);
+            }
+        }
+    }
+    refuse_legacy_sessions()?;
+    let wanted: Vec<(String, PathBuf)> = cwds.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    crate::checkouts::reserve(&lock, &inst.id, &wanted)?;
+    {
+        let mut updated = registry::read_instance(state)?;
+        for (id, cwd) in &cwds {
+            if let Some(m) = updated.members.get_mut(id) {
+                m.cwd = Some(cwd.clone());
+            }
+        }
+        if &updated != record {
+            lock.save_instance(state, &updated)?;
+        }
+    }
     let (values, missing) = plugin_values(v);
     let keys = api_keys(v, record, &member_ids)?;
     let missing_error = || {
@@ -404,11 +443,8 @@ fn start_members(
         Some(_) => Some(lifecycle::bind_run(v, state, joining, only)?),
         None => None,
     };
-    let mut notes: Vec<String> = binding
-        .as_ref()
-        .and_then(|b| b.note.clone())
-        .into_iter()
-        .collect();
+    let mut notes: Vec<String> = pre_notes;
+    notes.extend(binding.as_ref().and_then(|b| b.note.clone()));
     let user_config = v.config.tmux_user_config.as_ref().and_then(|u| u.resolve());
     // The server reads its config once, when it starts, and every instance
     // on it shares it.
@@ -1061,6 +1097,50 @@ fn member_nodes(
     nodes
 }
 
+/// Refuse a member folder that is the same as, inside or around brg's state
+/// folder or the instance's own: Codex makes a member's folder writable.
+fn check_state_overlap(folder: &Path, instance_state: &Path) -> Result<(), String> {
+    for (what, dir) in [
+        ("brg's state folder", state::state_home()),
+        ("the instance's state folder", instance_state.to_path_buf()),
+    ] {
+        if overlaps(folder, &dir) {
+            return Err(format!(
+                "folder {} is the same as, inside or around {what} {}, so members could change brg's own files",
+                folder.display(),
+                dir.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Refuse every member start while a tmux session from before instances
+/// (any `brg-*` session that isn't a registered instance's) is alive on
+/// brg's server: brg can't tell which folders it uses.
+fn refuse_legacy_sessions() -> Result<(), String> {
+    let tmux = Tmux::new(&state::state_home().join("tmux.conf"), base_env());
+    let Ok(out) = tmux.ok(&["list-sessions", "-F", "#{session_name}"]) else {
+        return Ok(());
+    };
+    let registry = registry::load()?;
+    let old: Vec<&str> = out
+        .lines()
+        .map(str::trim)
+        .filter(|s| {
+            s.strip_prefix("brg-")
+                .is_some_and(|id| !registry.instances.contains_key(id))
+        })
+        .collect();
+    if old.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "tmux sessions from before instances are still running on brg's server ({}); brg can't tell which folders they use, so it starts nothing until they stop. Stop them with the brg that started them",
+        old.join(", ")
+    ))
+}
+
 /// Validate a team folder, printing what validation found; `Err` on errors.
 fn validate_printing(dir: &Path) -> Result<Validated, String> {
     let (report, validated) = validate(dir);
@@ -1128,7 +1208,11 @@ pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
     state::check_state_home()?;
     let starting: Vec<&crate::team::Member> = v.team.members.values().filter(|m| m.start).collect();
     precheck(&v, &starting)?;
+    check_state_overlap(&folder, &state::state_home())
+        .map_err(|e| format!("the working {e}; nothing was created"))?;
     let lock = registry::lock()?;
+    refuse_legacy_sessions()?;
+    crate::checkouts::check_folder(&lock, &folder)?;
     let (state, mut record) =
         registry::create(&lock, &v.team.name, &v.team.dir, &folder, &utc_now())?;
     for role in &starting {
@@ -1141,7 +1225,27 @@ pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
         state,
         record,
     };
-    start_members(lock, &inst, &v, ids, true)
+    let result = start_members(lock, &inst, &v, ids, true);
+    if result.is_err() {
+        unregister_if_never_started(&inst);
+    }
+    result
+}
+
+/// After a `create` whose start failed before any window could start:
+/// remove the new instance again (its suffix stays issued).
+fn unregister_if_never_started(inst: &Instance) {
+    let started = state::read_meta(&inst.state).is_some_and(|m| m.windows_started == Some(true));
+    if started {
+        return;
+    }
+    let Ok(lock) = registry::lock() else { return };
+    let Ok(mut registry) = lock.load() else {
+        return;
+    };
+    let _ = std::fs::remove_dir_all(&inst.state.root);
+    registry.instances.remove(&inst.id);
+    let _ = lock.save(&registry);
 }
 
 /// `brg create <instance>/<role>`: a new member of the role, started.
@@ -1266,6 +1370,37 @@ fn full_start_members(
         .collect())
 }
 
+/// Refuse a start whose files orphan open work: a task held by a member
+/// whose role the team no longer has.
+fn refuse_orphans(inst: &Instance, v: &Validated) -> Result<(), String> {
+    let Ok(work) = lifecycle::open_work(&inst.state) else {
+        return Ok(());
+    };
+    let orphaned: Vec<String> = work
+        .tasks
+        .iter()
+        .filter(|(_, assignee, _)| {
+            inst.record
+                .role_of(assignee)
+                .is_some_and(|r| !v.team.members.contains_key(r))
+        })
+        .map(|(task, assignee, _)| {
+            format!(
+                "task `{task}` held by {assignee}, whose role `{}` the team no longer has",
+                inst.record.role_of(assignee).unwrap_or_default()
+            )
+        })
+        .collect();
+    if orphaned.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "instance `{}`'s team files orphan open work; restore the role, or cancel the work first. Nothing was started:\n  {}",
+        inst.id,
+        orphaned.join("\n  ")
+    ))
+}
+
 /// `brg start <instance>[/<member>] [--team <path>]`.
 pub fn start(
     mut inst: Instance,
@@ -1297,6 +1432,9 @@ pub fn start(
         ));
     }
     let v = validate_printing(&inst.record.team_dir)?;
+    if member.is_none() {
+        refuse_orphans(&inst, &v)?;
+    }
     let lock = registry::lock()?;
     inst.reload()?;
     match member {
@@ -1310,7 +1448,7 @@ pub fn start(
 
 /// Whether each member's current start may still be running, as `stop`
 /// and liveness see it: `Gone` only when that is certain.
-fn liveness_of(inst: &Instance) -> BTreeMap<String, Liveness> {
+pub fn liveness_of(inst: &Instance) -> BTreeMap<String, Liveness> {
     let state = &inst.state;
     let session = state.session();
     let meta = state::read_meta(state);
