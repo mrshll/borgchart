@@ -1495,16 +1495,16 @@ pub fn create_member(mut inst: Instance, role: &str) -> Result<UpOutcome, String
     start_members(lock, &inst, &v, vec![id], false)
 }
 
-/// Create only a missing copy's `{member}` leaf, after checking its
+/// Create only a new member's missing `{member}` leaf, after checking its
 /// unresolved path. Ancestors must exist; an existing leaf is kept as is.
 /// The caller holds the registry lock across the checks and creation.
 fn create_copy_folder(inst: &Instance, role: &crate::team::Role, id: &str) -> Result<(), String> {
     check_copy_folder(inst, role, id)?;
-    let Some(cwd) = role
-        .cwd
-        .as_deref()
-        .filter(|c| role.max > 1 && c.contains("{member}"))
-    else {
+    let Some(cwd) = role.cwd.as_deref().filter(|c| {
+        Path::new(c)
+            .file_name()
+            .is_some_and(|name| name == "{member}")
+    }) else {
         return Ok(());
     };
     let folder = member_cwd(&inst.record.folder, None, id)?;
@@ -1705,10 +1705,11 @@ fn full_start_members(
     for role in v.team.roles.values().filter(|m| m.start) {
         let members = inst.record.members_of(&role.id);
         if members.is_empty() {
-            ids.insert(
-                inst.record
-                    .issue_member(&role.id, |id| v.team.roles.contains_key(id))?,
-            );
+            let id = inst
+                .record
+                .issue_member(&role.id, |id| v.team.roles.contains_key(id))?;
+            create_copy_folder(inst, role, &id)?;
+            ids.insert(id);
         }
         ids.extend(members);
     }

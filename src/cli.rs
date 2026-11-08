@@ -42,8 +42,9 @@ enum Command {
     /// is started. With a bus, a child role's parent role must have a member.
     /// For a role target with a bus, a member caller must be
     /// the role's parent, using its latest running start.
-    /// For copies with `cwd: copies/{member}`, create makes only the empty
-    /// leaf folder; its parent folder must already exist.
+    /// When `cwd` ends in `{member}`, brg makes the empty leaf when issuing
+    /// a new member (create, or start replacing a deleted member), for any
+    /// max. Its parent folder must already exist.
     Create {
         /// `<team>` (a name, or a path starting with `/`, `./`, `../` or
         /// `~/`), or `<instance>/<role>`.

@@ -453,17 +453,20 @@ fn start_true_copies_keep_members_when_max_is_lowered() {
     for id in &kept {
         env.ok(&["delete", &format!("{inst}/{id}")]);
     }
-    // Start never creates folders, including Q2's new replacement member.
-    fs::create_dir(env.path("work/a/copies/helper-at6v")).unwrap();
-    let out = env
-        .cmd(&["start", &inst])
-        .env("BORGCHART_SUFFIX_SEED", "7")
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "{}", both(&out));
+    env.ok(&["start", &inst]);
     let replacement = env.copies(&inst);
     assert_eq!(replacement.len(), 1);
     assert!(!kept.contains(&replacement[0]));
+    let folder = env.path(&format!("work/a/copies/{}", replacement[0]));
+    assert!(folder.is_dir());
+    assert!(fs::read_dir(&folder).unwrap().next().is_none());
+    env.wait_for("replacement started", || {
+        !env.starts(&replacement[0]).is_empty()
+    });
+    assert_eq!(
+        env.starts(&replacement[0])[0]["cwd"],
+        folder.display().to_string()
+    );
     env.ok(&["stop", &inst]);
 }
 
