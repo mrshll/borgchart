@@ -253,6 +253,37 @@ fn refused_replacement_starts_do_not_leave_unkept_copy_folders() {
 }
 
 #[test]
+fn refused_starts_keep_folders_for_members_saved_before_launch() {
+    let env = copies_env(2);
+    let path = env.path("teams/oncall/team.yaml");
+    fs::write(
+        &path,
+        fs::read_to_string(&path).unwrap().replace(
+            "    parent: lead\n    start: false",
+            "    parent: lead\n    start: true",
+        ),
+    )
+    .unwrap();
+    let inst = env.create("oncall", "work/a");
+    let first = env.member(&inst, "helper");
+    env.ok(&["stop", &inst]);
+    env.ok(&["delete", &format!("{inst}/{first}")]);
+    fs::remove_dir(env.path(&format!("work/a/copies/{first}"))).unwrap();
+    let tmp = env.path(&format!("state/{inst}/tmp"));
+    fs::remove_dir_all(&tmp).unwrap();
+    fs::write(&tmp, "obstruct startup").unwrap();
+
+    env.fails(&["start", &inst]);
+    let replacement = env.member(&inst, "helper");
+    assert!(!replacement.is_empty());
+    assert_ne!(replacement, first);
+    assert!(env.path(&format!("work/a/copies/{replacement}")).is_dir());
+    fs::remove_file(&tmp).unwrap();
+    env.ok(&["start", &format!("{inst}/{replacement}")]);
+    env.ok(&["stop", &inst]);
+}
+
+#[test]
 fn restarting_copies_refuses_changed_folder_aliases() {
     for full in [false, true] {
         let env = copies_env(2);

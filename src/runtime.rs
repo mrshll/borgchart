@@ -1406,16 +1406,14 @@ pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
         for id in &ids {
             let role = &v.team.roles[inst.record.role_of(id).expect("issued role")];
             if let Some(folder) = create_copy_folder(&inst, role, id)? {
-                created_folders.push(folder);
+                created_folders.push((id.clone(), folder));
             }
         }
         start_members(lock, &inst, &v, ids, true)
     })();
     if result.is_err() {
-        for folder in created_folders {
-            let _ = std::fs::remove_dir(folder);
-        }
         unregister_if_never_started(&inst);
+        remove_unkept_copy_folders(&inst, created_folders);
     }
     result
 }
@@ -1537,6 +1535,32 @@ fn create_copy_folder(
             dir.display()
         )),
         Err(e) => Err(format!("cannot create `{id}`'s cwd {}: {e}", dir.display())),
+    }
+}
+
+fn remove_unkept_copy_folders(inst: &Instance, created_folders: Vec<(String, PathBuf)>) {
+    // A failed start may already have saved members or launched them.
+    let registered = match registry::load() {
+        Ok(registry) => registry.instances.contains_key(&inst.id),
+        Err(_) => return,
+    };
+    let saved = if registered {
+        match registry::read_instance(&inst.state) {
+            Ok(record) => Some(record),
+            Err(_) if matches!(inst.state.instance_file().try_exists(), Ok(false)) => None,
+            Err(_) => return,
+        }
+    } else {
+        None
+    };
+    for (id, folder) in created_folders {
+        if saved
+            .as_ref()
+            .is_some_and(|record| record.role_of(&id).is_some())
+        {
+            continue;
+        }
+        let _ = std::fs::remove_dir(folder);
     }
 }
 
@@ -1714,7 +1738,7 @@ fn full_start_members(
     _lock: &registry::Lock,
     inst: &mut Instance,
     v: &Validated,
-    created_folders: &mut Vec<PathBuf>,
+    created_folders: &mut Vec<(String, PathBuf)>,
 ) -> Result<Vec<String>, String> {
     let mut ids = std::collections::BTreeSet::new();
     for role in v.team.roles.values().filter(|m| m.start) {
@@ -1724,7 +1748,7 @@ fn full_start_members(
                 .record
                 .issue_member(&role.id, |id| v.team.roles.contains_key(id))?;
             if let Some(folder) = create_copy_folder(inst, role, &id)? {
-                created_folders.push(folder);
+                created_folders.push((id.clone(), folder));
             }
             ids.insert(id);
         }
@@ -1806,9 +1830,7 @@ pub fn start(
                 start_members(lock, &inst, &v, ids, true)
             })();
             if result.is_err() {
-                for folder in created_folders {
-                    let _ = std::fs::remove_dir(folder);
-                }
+                remove_unkept_copy_folders(&inst, created_folders);
             }
             result
         }
