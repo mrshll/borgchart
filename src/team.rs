@@ -877,15 +877,15 @@ fn load_role(
         report.error(Some(team_file), at("`max` must be at least 1".into()));
     }
     if max > 1
-        && !m.cwd.as_ref().is_some_and(|cwd| {
-            Path::new(cwd)
-                .components()
-                .any(|c| c.as_os_str() == "{member}")
+        && m.cwd.as_ref().is_some_and(|cwd| {
+            cwd.contains("{member}")
+                && (Path::new(cwd).file_name().is_none_or(|c| c != "{member}")
+                    || cwd.matches("{member}").count() != 1)
         })
     {
         report.error(
             Some(team_file),
-            at("`max > 1` needs `cwd` with `{member}` as a whole folder name, for example `copies/{member}`".into()),
+            at("with `max > 1`, `{member}` must be cwd's last folder name, for example `copies/{member}`".into()),
         );
     }
     if let Some(cwd) = &m.cwd

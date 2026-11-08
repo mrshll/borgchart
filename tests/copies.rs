@@ -73,24 +73,29 @@ fn copies_env(max: usize) -> Env {
         "helper",
         &format!("    max: {max}\n    cwd: copies/{{member}}\n"),
     );
-    // The fixed test-support seed 7 issues these suffixes in order. The
-    // folders must exist before create; brg does not create checkouts.
-    for suffix in ["v4s4", "7gb5", "tqv5", "8vcw", "at6v"] {
-        fs::create_dir_all(env.path(&format!("work/a/copies/helper-{suffix}"))).unwrap();
-    }
+    fs::create_dir(env.path("work/a/copies")).unwrap();
     env
 }
 
 #[test]
-fn copies_keep_their_slots_and_restart_without_filling_max() {
+fn copies_create_empty_folders_and_keep_slots_without_filling_max() {
     let env = copies_env(2);
     let inst = env.create("oncall", "work/a");
     assert!(env.copies(&inst).is_empty());
     assert_eq!(env.state_of(&inst, "helper"), "on demand (none created)");
-    let first = env.copy(&inst);
+    env.ok(&["create", &format!("{inst}/helper")]);
+    let first = env.copies(&inst)[0].clone();
     assert_eq!(env.copies(&inst), std::slice::from_ref(&first));
-    let second = env.copy(&inst);
+    env.ok(&["create", &format!("{inst}/helper")]);
+    let second = env
+        .copies(&inst)
+        .into_iter()
+        .find(|id| id != &first)
+        .unwrap();
     for id in [&first, &second] {
+        let folder = env.path(&format!("work/a/copies/{id}"));
+        assert!(folder.is_dir());
+        assert!(fs::read_dir(&folder).unwrap().next().is_none());
         env.wait_for("copy idle", || !env.starts(id).is_empty());
         assert_eq!(
             env.starts(id)[0]["cwd"],
@@ -122,6 +127,7 @@ fn copies_keep_their_slots_and_restart_without_filling_max() {
     assert_eq!(env.starts(&first).len(), 2);
     env.ok(&["stop", &format!("{inst}/{first}")]);
     env.ok(&["delete", &format!("{inst}/{first}")]);
+    assert!(env.path(&format!("work/a/copies/{first}")).is_dir());
     let next = env.copy(&inst);
     assert_ne!(next, first);
     assert_eq!(env.copies(&inst).len(), 2);
@@ -131,6 +137,57 @@ fn copies_keep_their_slots_and_restart_without_filling_max() {
     env.ok(&["start", &inst]);
     assert_eq!(env.copies(&inst), [second]);
     env.ok(&["stop", &inst]);
+}
+
+#[test]
+fn copies_without_member_cwd_share_the_roles_folder() {
+    for cwd in [None, Some("shared")] {
+        let env = Env::new();
+        env.role_extra("helper", "    max: 2\n");
+        if let Some(cwd) = cwd {
+            env.role_extra("helper", &format!("    cwd: {cwd}\n"));
+            fs::create_dir(env.path(&format!("work/a/{cwd}"))).unwrap();
+        }
+        env.ok(&["validate", "oncall"]);
+        let inst = env.create("oncall", "work/a");
+        let first = env.copy(&inst);
+        let second = env.copy(&inst);
+        let folder = env
+            .path("work/a")
+            .join(cwd.unwrap_or(""))
+            .canonicalize()
+            .unwrap();
+        for id in [&first, &second] {
+            env.wait_for("copy started", || !env.starts(id).is_empty());
+            assert_eq!(env.starts(id)[0]["cwd"], folder.display().to_string());
+        }
+        env.ok(&["stop", &inst]);
+        env.ok(&["start", &inst]);
+        for id in [&first, &second] {
+            assert_eq!(env.starts(id).len(), 2);
+        }
+        env.ok(&["stop", &inst]);
+    }
+}
+
+#[test]
+fn creating_a_copy_requires_existing_ancestors_and_stays_inside_the_instance() {
+    for escape in [false, true] {
+        let env = copies_env(2);
+        fs::remove_dir(env.path("work/a/copies")).unwrap();
+        if escape {
+            symlink(env.path("work/b"), env.path("work/a/copies")).unwrap();
+        }
+        let inst = env.create("oncall", "work/a");
+        env.fails(&["create", &format!("{inst}/helper")]);
+        assert!(env.copies(&inst).is_empty());
+        if escape {
+            assert!(fs::read_dir(env.path("work/b")).unwrap().next().is_none());
+        } else {
+            assert!(!env.path("work/a/copies").exists());
+        }
+        env.ok(&["stop", &inst]);
+    }
 }
 
 #[test]
@@ -157,6 +214,8 @@ fn creating_a_copy_ignores_a_missing_kept_folder() {
     let first = env.copy(&inst);
     env.ok(&["stop", &format!("{inst}/{first}")]);
     fs::remove_dir(env.path(&format!("work/a/copies/{first}"))).unwrap();
+    env.fails(&["start", &format!("{inst}/{first}")]);
+    assert!(!env.path(&format!("work/a/copies/{first}")).exists());
     let second = env.copy(&inst);
     assert_ne!(first, second);
     env.wait_for("second copy idle", || !env.starts(&second).is_empty());
@@ -303,7 +362,6 @@ fn copies_refuse_aliases_and_nested_folders_even_concurrently() {
             if alias == folder {
                 continue;
             }
-            fs::remove_dir(&alias).unwrap();
             let target = if nested {
                 folder.join("sub")
             } else {
@@ -330,7 +388,6 @@ fn concurrent_copies_cannot_claim_overlapping_folders() {
         fs::create_dir_all(folder.join("sub")).unwrap();
         for suffix in ["v4s4", "7gb5", "tqv5", "8vcw", "at6v"] {
             let alias = env.path(&format!("work/a/copies/helper-{suffix}"));
-            fs::remove_dir(&alias).unwrap();
             let target = if nested && suffix != "v4s4" {
                 folder.join("sub")
             } else {
@@ -396,7 +453,8 @@ fn start_true_copies_keep_members_when_max_is_lowered() {
     for id in &kept {
         env.ok(&["delete", &format!("{inst}/{id}")]);
     }
-    // Restore the fixed seed for Q2's replacement folder.
+    // Start never creates folders, including Q2's new replacement member.
+    fs::create_dir(env.path("work/a/copies/helper-at6v")).unwrap();
     let out = env
         .cmd(&["start", &inst])
         .env("BORGCHART_SUFFIX_SEED", "7")
@@ -412,11 +470,20 @@ fn start_true_copies_keep_members_when_max_is_lowered() {
 #[test]
 fn different_roles_can_still_share_a_working_folder() {
     let env = copies_env(2);
+    fs::create_dir(env.path("work/a/copies/helper-v4s4")).unwrap();
+    env.write(
+        "work/a/copies/helper-v4s4/checkout.txt",
+        "existing checkout",
+    );
     env.role_extra("lead", "    cwd: copies/helper-v4s4\n");
     let inst = env.create("oncall", "work/a");
     let helper = env.copy(&inst);
     let lead = env.member(&inst, "lead");
     env.wait_for("helper idle", || !env.starts(&helper).is_empty());
     assert_eq!(env.starts(&lead)[0]["cwd"], env.starts(&helper)[0]["cwd"]);
+    assert_eq!(
+        fs::read_to_string(env.path("work/a/copies/helper-v4s4/checkout.txt")).unwrap(),
+        "existing checkout"
+    );
     env.ok(&["stop", &inst]);
 }

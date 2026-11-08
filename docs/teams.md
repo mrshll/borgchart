@@ -127,10 +127,10 @@ roles:
     parent: lead
     start: false
     max: 3                             # up to three kept copies, running or stopped
-    cwd: copies/{member}               # separate folders you prepare; brg does not create them
+    cwd: copies/{member}               # optional; brg creates the empty leaf; copies/ must exist
 ```
 
-- **Starting a copy.** Each `brg create <instance>/implementer` starts one new copy, with its own suffixed ID. Past `max` it's refused, listing all kept copies, stopped ones included. For `max: 1`, the refusal points to `start`. Each copy gets the same role file, plus its own name and checkout.
+- **Starting a copy.** Each `brg create <instance>/implementer` starts one new copy, with its own suffixed ID. Past `max` it's refused, listing all kept copies, stopped ones included. For `max: 1`, the refusal points to `start`. Each copy gets the same role file and its own name; its folder follows `cwd`.
 - **The tree** shows every kept copy with its state and unread count. A `max > 1` role with no kept members gets one dim line:
 
   ```
@@ -151,7 +151,7 @@ roles:
 
 - **Capacity and restarts.** `max` is optional, defaults to 1 and must be at least 1. `start: true` with `max > 1` makes one member at instance creation. `start` reuses kept members and never fills to `max`; a `start: true` role with none left gets one new member. Lowering `max` after a full stop keeps every member and refuses creation until enough are deleted. Deleted suffixes are never reused.
 - **Parents.** `parent:` and a plugin's `delivers_to:` require a `max: 1` role. With a bus, only a person or the declared parent's latest running start may create, start, stop or delete a child member. Members cannot manage themselves or siblings, and replaced starts and members of another instance are refused. Creating a child requires a kept parent member. No-bus teams and whole-instance commands retain their existing caller rules.
-- **Folders.** `max > 1` requires `{member}` as a whole folder name in `cwd`, with no `..`. The folders must already exist inside the instance's folder. Copies of one role may not use equal, nested or symlinked aliases of each other's folders, even while stopped. Creation and every start check folders under the registry lock. Different roles may share a folder; the team's instructions still enforce one writer per checkout.
+- **Folders.** `{member}` in `cwd` is optional. Without it, copies share the role's folder. For `max > 1`, if used, it must be the last folder name, with no `..`. `create` makes only the missing empty leaf inside the instance's folder; every ancestor must already exist, and an existing leaf is used as is. The parent puts a worktree in it before briefing the copy. `start` never creates folders, and `delete` leaves them alone. Copies of a `{member}` role may not use equal, nested or symlinked aliases of each other's folders, even while stopped. Creation and every start check folders under the registry lock. Different roles may share a folder; the team's instructions still enforce one writer per checkout.
 - **Taking work and attention** remain team rules. The lead chooses a member, gives it one brief, tracks its reply and checks its deadline. An ended copy remains addressable with unread counts until deleted; the lead can restart it with `brg start <instance>/<member>`.
 
 ## Teams as members (departments) (Open: design only, a later change)

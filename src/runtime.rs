@@ -19,7 +19,7 @@ use crate::exec::{ExecSpec, PluginEnv, identity_env};
 use crate::launch;
 use crate::lifecycle;
 use crate::lifecycle::{Incarnation, Liveness, PaneIdentity};
-use crate::paths::overlaps;
+use crate::paths::{overlaps, resolve_existing_prefix};
 use crate::proctree;
 use crate::registry;
 use crate::rules::{self, State};
@@ -1403,7 +1403,13 @@ pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
         state,
         record,
     };
-    let result = start_members(lock, &inst, &v, ids, true);
+    let result = (|| {
+        for id in &ids {
+            let role = &v.team.roles[inst.record.role_of(id).expect("issued role")];
+            create_copy_folder(&inst, role, id)?;
+        }
+        start_members(lock, &inst, &v, ids, true)
+    })();
     if result.is_err() {
         unregister_if_never_started(&inst);
     }
@@ -1484,15 +1490,49 @@ pub fn create_member(mut inst: Instance, role: &str) -> Result<UpOutcome, String
     let id = inst
         .record
         .issue_member(role, |id| v.team.roles.contains_key(id))?;
-    check_copy_folder(&inst, member, &id)?;
+    create_copy_folder(&inst, member, &id)?;
     lock.save_instance(&inst.state, &inst.record)?;
     start_members(lock, &inst, &v, vec![id], false)
 }
 
-/// Same-role copies keep separate folders until deleted, even while
-/// stopped. Resolve current paths as well as checking recorded folders so
-/// a moved symlink cannot give a copy another member's checkout.
+/// Create only a missing copy's `{member}` leaf, after checking its
+/// unresolved path. Ancestors must exist; an existing leaf is kept as is.
+/// The caller holds the registry lock across the checks and creation.
+fn create_copy_folder(inst: &Instance, role: &crate::team::Role, id: &str) -> Result<(), String> {
+    check_copy_folder(inst, role, id)?;
+    let Some(cwd) = role
+        .cwd
+        .as_deref()
+        .filter(|c| role.max > 1 && c.contains("{member}"))
+    else {
+        return Ok(());
+    };
+    let folder = member_cwd(&inst.record.folder, None, id)?;
+    let rel = cwd.replace("{member}", id);
+    let dir = folder.join(&rel);
+    if !resolve_existing_prefix(&dir).starts_with(&folder) {
+        return Err(format!(
+            "`{id}`'s cwd `{rel}` resolves outside the instance's folder {} (through a symlink)",
+            folder.display()
+        ));
+    }
+    match std::fs::create_dir(&dir) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && dir.is_dir() => Ok(()),
+        Err(e) => Err(format!(
+            "cannot create `{id}`'s cwd {}: {e}; its parent folder must already exist",
+            dir.display()
+        )),
+    }
+}
+
+/// Same-role copies with `{member}` keep separate folders until deleted,
+/// even while stopped. Resolve existing prefixes and check recorded folders
+/// so a missing folder or a moved symlink cannot hide an overlap.
 fn check_copy_folder(inst: &Instance, role: &crate::team::Role, id: &str) -> Result<(), String> {
+    let Some(cwd) = role.cwd.as_deref().filter(|c| c.contains("{member}")) else {
+        return Ok(());
+    };
     let others: Vec<String> = inst
         .record
         .members_of(&role.id)
@@ -1502,7 +1542,7 @@ fn check_copy_folder(inst: &Instance, role: &crate::team::Role, id: &str) -> Res
     if others.is_empty() {
         return Ok(());
     }
-    let cwd = member_cwd(&inst.record.folder, role.cwd.as_deref(), id)?;
+    let cwd = inst.record.folder.join(cwd.replace("{member}", id));
     for other in others {
         let issued = &inst.record.members[&other];
         let other_cwd = inst.record.folder.join(

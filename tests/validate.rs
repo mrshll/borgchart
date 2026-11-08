@@ -64,16 +64,18 @@ fn valid_team_loads() {
 }
 
 #[test]
-fn copy_limits_refuse_zero_and_require_a_whole_member_folder() {
+fn copy_limits_refuse_zero_and_require_member_as_the_last_folder() {
     for (max, cwd, accepted) in [
         (-1, Some("copies/{member}"), false),
         (0, Some("copies/{member}"), false),
         (1, None, true),
         (1, Some("shared"), true),
-        (2, None, false),
+        (1, Some("copies/{member}/src"), true),
+        (2, None, true),
         (2, Some("copies/{member}"), true),
-        (2, Some("copies/{member}/src"), true),
-        (2, Some("shared"), false),
+        (2, Some("copies/{member}/src"), false),
+        (2, Some("copies/{member}/{member}"), false),
+        (2, Some("shared"), true),
         (2, Some("copies/prefix-{member}"), false),
         (2, Some("copies/{member}-suffix"), false),
         (2, Some("copies/{member}/../shared"), false),
