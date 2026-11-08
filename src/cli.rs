@@ -39,7 +39,8 @@ enum Command {
     /// Make something new: an instance of a team working in a folder
     /// (`create <team> <folder>`), or a member of a role
     /// (`create <instance>/<role>`, up to its max of kept members). Either
-    /// is started. For a role target with a bus, a member caller must be
+    /// is started. With a bus, a child role's parent role must have a member.
+    /// For a role target with a bus, a member caller must be
     /// the role's parent, using its latest running start.
     Create {
         /// `<team>` (a name, or a path starting with `/`, `./`, `../` or

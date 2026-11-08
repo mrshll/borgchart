@@ -10,7 +10,6 @@
 //! ```
 
 use std::collections::BTreeSet;
-use std::io::IsTerminal;
 
 use crate::team::Role;
 
@@ -20,6 +19,7 @@ pub struct Node {
     pub id: String,
     pub parent: Option<String>,
     pub cols: Vec<String>,
+    pub dim: bool,
 }
 
 /// `"<vendor> <model>"`, as declared (`default` when the member names no
@@ -101,7 +101,12 @@ fn columns(rows: &[Vec<String>]) -> Vec<String> {
 }
 
 /// The instance's tree, then one `plugin <name>` line per plugin process.
-pub fn render(team: &str, nodes: &[Node], plugins: &[(String, Vec<String>)]) -> String {
+pub fn render(
+    team: &str,
+    nodes: &[Node],
+    plugins: &[(String, Vec<String>)],
+    colour: bool,
+) -> String {
     let ordered = order(nodes);
     let rows: Vec<Vec<String>> = ordered
         .iter()
@@ -113,11 +118,7 @@ pub fn render(team: &str, nodes: &[Node], plugins: &[(String, Vec<String>)]) -> 
         .collect();
     let mut out = format!("{team}\n");
     for (line, (i, _)) in columns(&rows).into_iter().zip(ordered) {
-        let dim = std::io::stdout().is_terminal()
-            && nodes[i]
-                .cols
-                .first()
-                .is_some_and(|c| c == "on demand (none created)");
+        let dim = colour && nodes[i].dim;
         if dim {
             out.push_str("\x1b[2m");
         }
@@ -151,6 +152,7 @@ mod tests {
             id: id.into(),
             parent: parent.map(String::from),
             cols: cols.iter().map(|c| c.to_string()).collect(),
+            dim: false,
         }
     }
 
@@ -166,7 +168,7 @@ mod tests {
             node("helper", Some("lead"), &["codex example-model", "started"]),
         ];
         assert_eq!(
-            render("oncall", &nodes, &[]),
+            render("oncall", &nodes, &[], false),
             "oncall\n\
              └─ lead        claude opus high      started\n   \
              ├─ helper   codex example-model   started\n   \
@@ -215,7 +217,7 @@ mod tests {
             ("pager".to_string(), vec!["stopped".to_string(), "".into()]),
         ];
         assert_eq!(
-            render("team", &nodes, &plugins),
+            render("team", &nodes, &plugins, false),
             "team\n\
              └─ lead      claude default  idle\n   \
              └─ helper codex o3        stopped  locked\n\

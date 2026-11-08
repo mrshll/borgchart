@@ -42,7 +42,7 @@ fn state_style(row: &StatusRow) -> Style {
         // A `start: true` member that ended.
         runtime::STOPPED if row.expected_running => alert,
         "working" => Style::default().add_modifier(Modifier::BOLD),
-        runtime::STOPPED | runtime::NOT_STARTED | "on demand (none created)" => {
+        runtime::STOPPED | runtime::NOT_STARTED | runtime::ON_DEMAND => {
             Style::default().add_modifier(Modifier::DIM)
         }
         _ => Style::default(),
@@ -66,6 +66,7 @@ fn draw(
             id: r.name.clone(),
             parent: r.parent.clone(),
             cols: Vec::new(),
+            dim: r.kind == "role" && r.state == runtime::ON_DEMAND,
         })
         .collect();
     let prefixes: std::collections::BTreeMap<String, String> = tree::order(&nodes)
@@ -122,7 +123,7 @@ fn draw(
                 Cell::from(state).style(state_style(r)),
                 Cell::from(detail),
             ]);
-            if r.kind == "role" && r.state == "on demand (none created)" {
+            if r.kind == "role" && r.state == runtime::ON_DEMAND {
                 row.style(Style::default().add_modifier(Modifier::DIM))
             } else {
                 row

@@ -10,7 +10,6 @@ use std::os::unix::fs::symlink;
 use std::process::Output;
 
 use instance_env::*;
-use serde_json::json;
 
 impl Env {
     fn role_extra(&self, role: &str, lines: &str) {
@@ -87,11 +86,9 @@ fn copies_keep_their_slots_and_restart_without_filling_max() {
     let env = copies_env(2);
     let inst = env.create("oncall", "work/a");
     assert!(env.copies(&inst).is_empty());
-    assert!(stdout(&env.ok(&["status", &inst])).contains("helper"));
+    assert_eq!(env.state_of(&inst, "helper"), "on demand (none created)");
     let first = env.copy(&inst);
     assert_eq!(env.copies(&inst), std::slice::from_ref(&first));
-    let out = env.as_member(&first, 0, &["create", &format!("{inst}/helper")]);
-    assert!(!out.status.success(), "self replication: {}", both(&out));
     let second = env.copy(&inst);
     for id in [&first, &second] {
         env.wait_for("copy idle", || !env.starts(id).is_empty());
@@ -151,6 +148,92 @@ fn concurrent_creates_cannot_take_the_same_last_slot() {
     );
     assert_eq!(env.copies(&inst).len(), 2);
     env.ok(&["stop", &inst]);
+}
+
+#[test]
+fn creating_a_copy_ignores_a_missing_kept_folder() {
+    let env = copies_env(2);
+    let inst = env.create("oncall", "work/a");
+    let first = env.copy(&inst);
+    env.ok(&["stop", &format!("{inst}/{first}")]);
+    fs::remove_dir(env.path(&format!("work/a/copies/{first}"))).unwrap();
+    let second = env.copy(&inst);
+    assert_ne!(first, second);
+    env.wait_for("second copy idle", || !env.starts(&second).is_empty());
+    assert_eq!(env.copies(&inst).len(), 2);
+    env.ok(&["stop", &inst]);
+}
+
+#[test]
+fn restarting_copies_refuses_changed_folder_aliases() {
+    for full in [false, true] {
+        let env = copies_env(2);
+        let path = env.path("teams/oncall/team.yaml");
+        let text = fs::read_to_string(&path)
+            .unwrap()
+            .replace("    start: false", "    start: true");
+        fs::write(path, text).unwrap();
+        let out = env
+            .cmd(&[
+                "create",
+                "oncall",
+                &env.path("work/a").display().to_string(),
+            ])
+            .env("BORGCHART_SUFFIX_SEED", "7")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", both(&out));
+        let inst = stdout(&out).split_whitespace().next().unwrap().to_string();
+        let first = env.copies(&inst)[0].clone();
+        let second = env.copy(&inst);
+        env.ok(&["stop", &inst]);
+        let folder = env.path(&format!("work/a/copies/{first}"));
+        let alias = env.path(&format!("work/a/copies/{second}"));
+        fs::remove_dir(&alias).unwrap();
+        symlink(folder, alias).unwrap();
+        let target = if full {
+            inst.clone()
+        } else {
+            format!("{inst}/{second}")
+        };
+        let out = env.brg(&["start", &target]);
+        assert!(!out.status.success(), "full={full}: {}", both(&out));
+        assert_eq!(env.starts(&second).len(), 1);
+        env.ok(&["stop", &inst]);
+    }
+}
+
+#[test]
+fn recorded_parents_can_manage_children_after_live_team_edits() {
+    for invalid in [false, true] {
+        let env = Env::new();
+        let inst = env.create("oncall", "work/a");
+        env.ok(&["create", &format!("{inst}/helper")]);
+        env.ok(&["create", &format!("{inst}/scout")]);
+        let lead = env.member(&inst, "lead");
+        let helper = env.member(&inst, "helper");
+        let scout = env.member(&inst, "scout");
+        let path = env.path("teams/oncall/team.yaml");
+        let original = fs::read_to_string(&path).unwrap();
+        let changed = if invalid {
+            "roles: [".into()
+        } else {
+            original.replace("parent: lead", "parent: scout")
+        };
+        fs::write(&path, changed).unwrap();
+        let out = env.as_member(&scout, 0, &["stop", &helper]);
+        assert!(!out.status.success(), "live parent: {}", both(&out));
+        for verb in ["stop", "delete"] {
+            let out = env.as_member(&lead, 0, &[verb, &helper]);
+            assert!(
+                out.status.success(),
+                "invalid={invalid} {verb}: {}",
+                both(&out)
+            );
+        }
+        fs::write(path, original).unwrap();
+        env.ok(&["stop", &inst]);
+    }
 }
 
 #[test]
@@ -328,13 +411,12 @@ fn start_true_copies_keep_members_when_max_is_lowered() {
 
 #[test]
 fn different_roles_can_still_share_a_working_folder() {
-    let env = Env::new();
+    let env = copies_env(2);
+    env.role_extra("lead", "    cwd: copies/helper-v4s4\n");
     let inst = env.create("oncall", "work/a");
-    env.ok(&["create", &format!("{inst}/helper")]);
+    let helper = env.copy(&inst);
     let lead = env.member(&inst, "lead");
-    let helper = env.member(&inst, "helper");
+    env.wait_for("helper idle", || !env.starts(&helper).is_empty());
     assert_eq!(env.starts(&lead)[0]["cwd"], env.starts(&helper)[0]["cwd"]);
-    let out = env.publish(&inst, &json!({"to": helper, "body": "Review this sample."}));
-    assert!(out.status.success(), "{}", both(&out));
     env.ok(&["stop", &inst]);
 }

@@ -2,6 +2,7 @@
 //! `attach`, `logs` and `send`, on instances and their members.
 
 use std::collections::BTreeMap;
+use std::io::IsTerminal;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -359,6 +360,9 @@ fn start_members(
     // Checks that need nothing written.
     for id in &member_ids {
         let member = role_of(id)?;
+        if member.max > 1 {
+            check_copy_folder(inst, member, id)?;
+        }
         let granted = launch::granted(&v.team, member);
         if let Some((plugin, command)) = launch::shim_commands(&granted)
             .into_iter()
@@ -1119,7 +1123,12 @@ fn start_members(
         .map(|(name, o)| (name, vec![o]))
         .collect();
     Ok(UpOutcome {
-        tree: tree::render(&header(inst), &nodes, &plugins),
+        tree: tree::render(
+            &header(inst),
+            &nodes,
+            &plugins,
+            std::io::stdout().is_terminal(),
+        ),
         notes,
         failed,
     })
@@ -1139,7 +1148,7 @@ pub fn header(inst: &Instance) -> String {
 /// What `status` and a start show for a role with no member yet.
 fn not_created(role: &crate::team::Role) -> String {
     if role.max > 1 {
-        "on demand (none created)".into()
+        ON_DEMAND.into()
     } else {
         format!("not created (start: {})", role.start)
     }
@@ -1170,6 +1179,7 @@ fn member_nodes(
                 id: role_name.clone(),
                 parent: parent_of(role),
                 cols: vec![not_created(role)],
+                dim: role.max > 1,
             });
         }
         for id in ids {
@@ -1177,6 +1187,7 @@ fn member_nodes(
                 cols: vec![tree::vendor_model(role), outcome(&id)],
                 id,
                 parent: parent_of(role),
+                dim: false,
             });
         }
     }
@@ -1453,7 +1464,7 @@ pub fn create_member(mut inst: Instance, role: &str) -> Result<UpOutcome, String
     precheck(&v, &[member], !is_running(&inst))?;
     let lock = registry::lock()?;
     inst.reload()?;
-    check_parent_authority(&inst, role, Some(&v), true)?;
+    check_parent_authority(&inst, role, Some(&v), None)?;
     let existing = inst.record.members_of(role);
     if existing.len() >= member.max {
         if member.max == 1 && existing.len() == 1 {
@@ -1494,11 +1505,16 @@ fn check_copy_folder(inst: &Instance, role: &crate::team::Role, id: &str) -> Res
     let cwd = member_cwd(&inst.record.folder, role.cwd.as_deref(), id)?;
     for other in others {
         let issued = &inst.record.members[&other];
-        let other_cwd = member_cwd(&inst.record.folder, role.cwd.as_deref(), &other)?;
+        let other_cwd = inst.record.folder.join(
+            role.cwd
+                .as_deref()
+                .unwrap_or("")
+                .replace("{member}", &other),
+        );
         if overlaps(&cwd, &other_cwd) || issued.cwd.as_ref().is_some_and(|old| overlaps(&cwd, old))
         {
             return Err(format!(
-                "`{id}`'s folder {} overlaps kept member `{other}`'s folder {}; give copies of `{}` separate folders before creating another",
+                "`{id}`'s folder {} overlaps kept member `{other}`'s folder {}; give copies of `{}` separate folders before creating or starting another",
                 cwd.display(),
                 other_cwd.display(),
                 role.id
@@ -1515,43 +1531,57 @@ fn check_parent_authority(
     inst: &Instance,
     role: &str,
     validated_team: Option<&Validated>,
-    creating: bool,
+    target: Option<&str>,
 ) -> Result<(), String> {
+    let creating = target.is_none();
     let has_member_context = [context::ENV_MEMBER, context::ENV_INCARNATION]
         .iter()
         .any(|key| std::env::var(key).is_ok_and(|value| !value.is_empty()));
     if !has_member_context && !creating {
         return Ok(());
     }
-    let loaded;
-    let v = match validated_team {
-        Some(v) => v,
-        None => {
-            loaded = validated(inst)?;
-            &loaded
+    let recorded = target.and_then(|id| state::read_meta(&inst.state)?.members.get(id).cloned());
+    let parent = if let Some(recorded) = recorded {
+        // The store records whether the instance started with a bus. A
+        // damaged bus must not make a caller a person or prevent stopping.
+        if crate::bus::store::open(&inst.state)
+            .is_err_and(|f| f.code == crate::bus::outcome::Code::NotConfigured)
+        {
+            return Ok(());
         }
+        recorded.parent
+    } else {
+        let loaded;
+        let v = match validated_team {
+            Some(v) => v,
+            None => {
+                loaded = validated(inst)?;
+                &loaded
+            }
+        };
+        if v.team.bus.is_none() {
+            return Ok(());
+        }
+        let definition = v.team.roles.get(role).ok_or_else(|| {
+            format!(
+                "role `{role}` is no longer in the team; ask a person to stop or delete its members"
+            )
+        })?;
+        let parent_role = definition.parent.as_deref();
+        let parent = parent_role.and_then(|p| inst.record.members_of(p).into_iter().next());
+        if creating
+            && parent.is_none()
+            && let Some(parent_role) = parent_role
+        {
+            return Err(format!(
+                "role `{role}`'s parent role `{}` has no member; create it first: brg create {}",
+                parent_role,
+                inst.at(parent_role)
+            ));
+        }
+        parent
     };
-    if v.team.bus.is_none() {
-        return Ok(());
-    }
     let caller = context::caller(None).map_err(|e| e.message)?;
-    let definition = v.team.roles.get(role).ok_or_else(|| {
-        format!(
-            "role `{role}` is no longer in the team; ask a person to stop or delete its members"
-        )
-    })?;
-    let parent_role = definition.parent.as_deref();
-    let parent = parent_role.and_then(|p| inst.record.members_of(p).into_iter().next());
-    if creating
-        && parent.is_none()
-        && let Some(parent_role) = parent_role
-    {
-        return Err(format!(
-            "role `{role}`'s parent role `{}` has no member; create it first: brg create {}",
-            parent_role,
-            inst.at(parent_role)
-        ));
-    }
     let context::Caller::Member {
         member,
         incarnation,
@@ -1707,7 +1737,7 @@ pub fn start(
     inst.reload()?;
     if let Some(id) = &member {
         address::member(&inst, id)?;
-        check_parent_authority(&inst, inst.record.role_of(id).unwrap(), Some(&v), false)?;
+        check_parent_authority(&inst, inst.record.role_of(id).unwrap(), Some(&v), Some(id))?;
     }
     match member {
         Some(id) => start_members(lock, &inst, &v, vec![id], false),
@@ -1768,7 +1798,7 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
     let _state_lock = lifecycle::lock_state(&inst.state)?;
     inst.reload()?;
     let id = address::member(&inst, name)?;
-    check_parent_authority(&inst, inst.record.role_of(&id).unwrap(), None, false)?;
+    check_parent_authority(&inst, inst.record.role_of(&id).unwrap(), None, Some(&id))?;
     if tmux_for(&inst.state)
         .window(&inst.state.session(), &id)
         .is_some_and(|w| !w.dead)
@@ -2149,7 +2179,7 @@ pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> 
     let team = inst.id.clone();
     if let Some(id) = only {
         address::member(inst, id)?;
-        check_parent_authority(inst, inst.record.role_of(id).unwrap(), None, false)?;
+        check_parent_authority(inst, inst.record.role_of(id).unwrap(), None, Some(id))?;
     }
     let _state_lock = lifecycle::lock_state(state)?;
     let Some(mut meta) = state::read_meta(state) else {
@@ -2374,6 +2404,8 @@ pub struct StatusRow {
 pub const NOT_STARTED: &str = "not started";
 /// A member's state when it ran and has ended.
 pub const STOPPED: &str = "stopped";
+/// A role that allows copies but has no kept member.
+pub const ON_DEMAND: &str = "on demand (none created)";
 
 /// What a start and `status` print for a member that has never run.
 pub fn not_started(start: bool) -> String {
@@ -2721,6 +2753,7 @@ pub fn render_status(header: &str, rows: &[StatusRow]) -> String {
             id: r.name.clone(),
             parent: r.parent.clone(),
             cols: status_cells(r),
+            dim: r.kind == "role" && r.state == ON_DEMAND,
         })
         .collect();
     let plugins: Vec<(String, Vec<String>)> = rows
@@ -2728,7 +2761,7 @@ pub fn render_status(header: &str, rows: &[StatusRow]) -> String {
         .filter(|r| r.kind == "plugin")
         .map(|r| (r.name.clone(), status_cells(r)))
         .collect();
-    tree::render(header, &nodes, &plugins)
+    tree::render(header, &nodes, &plugins, std::io::stdout().is_terminal())
 }
 
 /// Why `send` refused, with its exit code.
