@@ -33,7 +33,8 @@ impl StorePaths {
     }
 
     /// Recognise the store before reading any messages. An absent or empty
-    /// directory is new; every other layout needs our exact identity.
+    /// directory, or one holding only empty Codex masks, is new; every other
+    /// layout needs our exact identity.
     pub fn validate(&self, instance: &str) -> Result<bool, String> {
         let damaged = |detail: &str| {
             format!(
@@ -51,11 +52,25 @@ impl StorePaths {
         let mut identity = false;
         for entry in entries {
             let entry = entry.map_err(|_| damaged("its messages folder cannot be listed"))?;
-            any = true;
             let name = entry.file_name();
-            let kind = entry
-                .file_type()
-                .map_err(|_| damaged("a storage entry cannot be read"))?;
+            // Codex masks these names with empty directories in every writable
+            // root. Its temporary mount points can vanish during inspection.
+            let mask = matches!(name.to_str(), Some(".agents" | ".aws" | ".codex" | ".git"));
+            let kind = match entry.file_type() {
+                Ok(kind) => kind,
+                Err(e) if mask && e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => return Err(damaged("a storage entry cannot be read")),
+            };
+            if mask && kind.is_dir() {
+                let first = std::fs::read_dir(entry.path())
+                    .and_then(|mut contents| contents.next().transpose());
+                match first {
+                    Ok(None) => continue,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                    _ => {}
+                }
+            }
+            any = true;
             match name.to_str() {
                 Some("store.json") if kind.is_file() => identity = true,
                 Some("lock") if kind.is_file() => {}
@@ -83,7 +98,8 @@ impl StorePaths {
     }
 
     /// Called under the instance's lifecycle lock, after every start check.
-    /// Never initialise over a nonempty, unrecognised directory.
+    /// An absent or empty directory, or one holding only empty Codex masks,
+    /// may be initialised; other unrecognised layouts are refused.
     pub fn initialize(&self, state: &StateDir) -> Result<(), String> {
         if self.validate(&state.id)? {
             return Ok(());
