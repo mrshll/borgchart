@@ -28,12 +28,18 @@ fn publish(env: &Env, instance: &str, draft: &Value) -> Output {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = command.spawn().unwrap();
-    child
+    // brg may refuse and exit before reading the draft; its answer is in
+    // the output either way.
+    match child
         .stdin
         .take()
         .unwrap()
         .write_all(draft.to_string().as_bytes())
-        .unwrap();
+    {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+        Err(e) => panic!("cannot write the draft: {e}"),
+    }
     child.wait_with_output().unwrap()
 }
 
@@ -189,12 +195,19 @@ fn a_new_message_returns_before_the_minimum_with_the_whole_inbox() {
     let lead = env.member(&instance, "lead");
     send(&env, &instance, &lead, "old");
     let start = Instant::now();
-    let child = waiter(&env, &instance, &lead).spawn().unwrap();
+    // A longer minimum than the other cases, so a slow publish on a busy CI
+    // runner still lands well before it: only the new message can end the
+    // wait before 3 s.
+    let child = waiter(&env, &instance, &lead)
+        .env("BORGCHART_WAIT_MIN_MS", "3000")
+        .env("BORGCHART_WAIT_TIMEOUT_MS", "6000")
+        .spawn()
+        .unwrap();
     std::thread::sleep(Duration::from_millis(300));
     send(&env, &instance, &lead, "new");
     let out = finish(child);
     assert!(out.status.success(), "{}", both(&out));
-    assert!(start.elapsed() < Duration::from_millis(700));
+    assert!(start.elapsed() < Duration::from_millis(2500));
     let inbox: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(inbox["records"].as_array().unwrap().len(), 2);
     assert_eq!(inbox["records"][1]["body"], "new");

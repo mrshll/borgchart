@@ -221,12 +221,18 @@ impl Env {
             .spawn()
             .unwrap();
         use std::io::Write;
-        child
+        // brg may refuse (a damaged store, say) and exit before reading
+        // the draft; its answer is in the output either way.
+        match child
             .stdin
             .take()
             .unwrap()
             .write_all(record.to_string().as_bytes())
-            .unwrap();
+        {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+            Err(e) => panic!("cannot write the draft: {e}"),
+        }
         child.wait_with_output().unwrap()
     }
 
