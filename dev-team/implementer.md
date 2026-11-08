@@ -1,5 +1,4 @@
 ---
-role: implementer
 models:
   claude: opus medium
   codex: gpt-6.1-sol high

@@ -30,7 +30,7 @@ Keep the teams in the search path as a **pinned copy** of these folders, taken a
 
 1. **Use a stable brg,** installed outside any checkout the team changes: every member runs the brg that started it (`$BORGCHART_BIN`).
 2. **Check the teams:** `brg validate dev-team` and `brg validate dev-design-team`.
-3. **Create the instance** in the shared checkout: `brg create dev-team <checkout>`. It prints the instance's ID (`dev-team-k3f9`) and its tree: the lead `started`, every other role `on demand (none created)`. The lead creates and starts helpers as their work arrives.
+3. **Create the instance** in the shared checkout: `brg create dev-team <checkout>`. It prints the instance's ID (`dev-team-k3f9`) and its tree: the lead `started`, every other role `not created (start: false)`. The lead creates and starts helpers as their work arrives.
 4. **Tell the lead what this work is:** write `brief.json` with `{"to": "<lead member>", "body": "Tracking issue: <issue>; handover: <note path>."}`, then `brg msg publish --external owner --instance dev-team-k3f9 --record brief.json`. `brg status dev-team-k3f9` gives the full member ID. Messages are durable; if the lead misses one, nudge it with `brg send dev-team-k3f9/<lead member> 'check your inbox'`.
 5. **Answer the folder-trust screens,** once per folder: when `brg status dev-team-k3f9` shows a member `blocked`, run `brg attach dev-team-k3f9/<member>`, answer, and detach. brg makes the instance's messages and notes writable for every member, and adds nothing else.
 6. **Work with the lead** in its session (`brg attach dev-team-k3f9/<lead member>`). It reaches you on GitHub: review requests on the draft pull requests it hands off, and comments when it needs you.

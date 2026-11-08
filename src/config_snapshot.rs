@@ -54,7 +54,7 @@ impl Validated {
             crate::team::TEAM_FILE.to_string(),
             self.team.file_sha256.clone(),
         );
-        for (id, m) in &self.team.members {
+        for (id, m) in &self.team.roles {
             inputs.insert(format!("members/{id}/prompt"), m.prompt_sha256.clone());
             inputs.insert(
                 format!("members/{id}/instruction"),

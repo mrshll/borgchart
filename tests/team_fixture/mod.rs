@@ -34,7 +34,7 @@ plugins:
       read: slackbot read <ts>
       reply: slackbot reply <thread_ts> <text>
       escalate: slackbot escalate <ts> <severity> <reason>
-members:
+roles:
   triager:
     prompt: triager.md
     parent: lead
@@ -50,11 +50,11 @@ members:
         );
         f.write(
             "triager.md",
-            "---\nrole: triager\nmodels: {claude: haiku}\n---\nDecide whether to escalate.\n{{includes/shared}}\n",
+            "---\nmodels: {claude: haiku}\n---\nDecide whether to escalate.\n{{includes/shared}}\n",
         );
         f.write(
             "lead.md",
-            "---\nrole: lead\nmodels: {claude: opus high, codex: example-model medium}\n---\nTriage escalations.\n",
+            "---\nmodels: {claude: opus high, codex: example-model medium}\n---\nTriage escalations.\n",
         );
         f.write("includes/shared.md", "Be brief.\n");
         f.exec("plugins/slackbot/slackbot");

@@ -18,7 +18,7 @@ pub fn split(text: &str) -> Result<Split, String> {
     let text = text.replace("\r\n", "\n");
     let rest = text
         .strip_prefix("---\n")
-        .ok_or_else(|| "member file must start with a `---` frontmatter line".to_string())?;
+        .ok_or_else(|| "role file must start with a `---` frontmatter line".to_string())?;
     let mut offset = 0;
     for line in rest.split_inclusive('\n') {
         if line.trim_end_matches('\n') == "---" {
@@ -37,37 +37,37 @@ mod tests {
 
     #[test]
     fn basic() {
-        let s = split("---\nrole: lead\n---\nHello\n").unwrap();
-        assert_eq!(s.frontmatter, "role: lead\n");
+        let s = split("---\nmodels: {}\n---\nHello\n").unwrap();
+        assert_eq!(s.frontmatter, "models: {}\n");
         assert_eq!(s.body, "Hello\n");
     }
 
     #[test]
     fn bom_and_crlf() {
-        let s = split("\u{feff}---\r\nrole: lead\r\n---\r\nHi\r\n").unwrap();
-        assert_eq!(s.frontmatter, "role: lead\n");
+        let s = split("\u{feff}---\r\nmodels: {}\r\n---\r\nHi\r\n").unwrap();
+        assert_eq!(s.frontmatter, "models: {}\n");
         assert_eq!(s.body, "Hi\n");
     }
 
     #[test]
     fn dashes_in_body_are_body() {
-        let s = split("---\nrole: lead\n---\nabove\n---\nbelow\n").unwrap();
+        let s = split("---\nmodels: {}\n---\nabove\n---\nbelow\n").unwrap();
         assert_eq!(s.body, "above\n---\nbelow\n");
     }
 
     #[test]
     fn missing_open() {
-        assert!(split("role: lead\n---\n").is_err());
+        assert!(split("models: {}\n---\n").is_err());
     }
 
     #[test]
     fn missing_close() {
-        assert!(split("---\nrole: lead\nbody\n").is_err());
+        assert!(split("---\nmodels: {}\nbody\n").is_err());
     }
 
     #[test]
     fn empty_body_without_trailing_newline() {
-        let s = split("---\nrole: lead\n---").unwrap();
+        let s = split("---\nmodels: {}\n---").unwrap();
         assert_eq!(s.body, "");
     }
 }

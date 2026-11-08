@@ -1,6 +1,6 @@
-# Defining a brg team (proposal)
+# Defining a brg team
 
-**Status: proposal, partly superseded.** This page describes, in one place, how a team and its plugins are defined and used once the work in review lands. Teams, instances, roles, members and the four verbs (`create`, `start`, `stop`, `delete`) are decided in [concepts.md](concepts.md), which wins where this page differs. Today's shipped format is in [format.md](format.md). Items marked **Open** are not decided yet. For command syntax, `brg … --help` is the authority; the tables below are a short summary.
+Teams, instances, roles, members and the four verbs (`create`, `start`, `stop`, `delete`) work today, with one kept member per role. The sections on copies and departments below describe future work. [concepts.md](concepts.md) records the design; [format.md](format.md) describes the shipped format. Items marked **Open** are not decided yet. For command syntax, `brg … --help` is the authority; the tables below are a short summary.
 
 ## The files
 
@@ -9,7 +9,7 @@ A real team lives in [`dev-team/`](../dev-team/): the team this repository is de
 ```
 devteam/
 ├── team.yaml          # who is on the team, and which plugins they may use
-├── orchestrator.md    # one file per member: role, models, standing instruction
+├── orchestrator.md    # one file per role: models and standing instruction
 ├── implementer.md
 ├── reviewer.md
 └── includes/base.md   # shared text, pulled in with {{includes/base}}
@@ -22,7 +22,7 @@ The team folder is shareable: it says nothing about one machine or one project. 
 ```yaml
 default: claude                        # vendor for members that don't name one
 
-members:
+roles:
   lead:
     prompt: orchestrator.md
     vendor: claude                     # the lead wakes itself with a background wait
@@ -38,17 +38,16 @@ members:
     start: false
 ```
 
-- **Members** have a member file (`prompt`), an optional `vendor`, a `parent`, and `start`. `start: false` means the member is started on demand. They also have a `posture` (`vendor`, the default, or `locked` for members that read untrusted text) and plugin grants.
+- **Roles** have a role file (`prompt`), an optional `vendor`, a `parent`, and `start`. The key under `roles:` names the role; frontmatter `role:` and the old `members:` key are rejected. `start: false` means its member is created on demand. Each role keeps at most one member, running or stopped. Roles also have a `posture` (`vendor`, the default, or `locked` for members that read untrusted text) and plugin grants.
 - **`parent`** makes the org chart, and messages follow it: a member writes to its parent or its children. The top member can also write to an outside caller (`external:NAME`).
 - **Plugins** are plain programs, declared under `plugins:` (a folder in the team, or `shared:<name>`, with the variables they receive and the actions members may be granted). brg runs only what `team.yaml` lists. A member can use only the actions it's granted; each granted action appears in its instruction with an absolute path. Secrets reach the plugin through a private file, never the agent's environment.
-  - A plugin may also declare a long-running `process` (a watcher of some outside source) with `delivers_to: <member>`.
+  - A plugin may also declare a long-running `process` (a watcher of some outside source) with `delivers_to: <role>`.
   - An action that brg runs itself, like a bus `alert` action, gets fixed arguments and never any message text. The alert setting is validated, but neither the watcher nor alert dispatch is wired now; see "Getting a member's attention".
 
-### Member files
+### Role files
 
 ```markdown
 ---
-role: implementer
 models: {claude: opus medium, codex: gpt-6.1-sol high}
 ---
 You are the implementer on a development team. The lead assigns you one bounded task at a time, in your own checkout.
@@ -66,8 +65,8 @@ You are the implementer on a development team. The lead assigns you one bounded 
 $ brg create devteam ~/work/project
 devteam-k3f9  team ~/.config/borgchart/teams/devteam · folder ~/work/project
 └─ lead-q8m3            claude opus high          started
-   ├─ implementer       on demand (none created)
-   └─ reviewer          on demand (none created)
+   ├─ implementer       not created (start: false)
+   └─ reviewer          not created (start: false)
 ```
 
 - **`create`** makes a new instance in that folder, with a suffixed ID; run it twice and you have two. The team's `bus: {}` turns messages on.
@@ -83,8 +82,8 @@ A small top level for people. `brg --help` and `brg <command> --help` give the f
 | `brg validate <team>` | Check everything without starting anything |
 | `brg create <team> <folder>`, `brg create <instance>/<role>` | Make a new instance, or a role's member, and start it. Prints the tree with each member's model and what happened. |
 | `brg start <instance>[/<member>]`, `brg stop <instance>[/<member>]` | Bring it back, or stop it |
-| `brg delete <instance>` | Remove a stopped instance |
-| `brg status [instance] [--json \| -w \| -i]` | The live tree: who is idle, working or blocked, with positive unread message counts. JSON includes `unread`, including zero with a readable bus. No bus means no counts; an unreadable store omits counts and adds a check note. |
+| `brg delete <instance>[/<member>] [--force]` | Remove a stopped instance or member. Unread messages require `--force`; running or unknown liveness is always refused. A deleted member's ID stays issued. |
+| `brg status [instance] [--json \| -w \| -i]` | The live tree: who is idle, working or blocked, with positive unread message counts. JSON includes `member`, `role`, `parent` (a member ID), `start_id` (the current incarnation, when recorded), and `unread`, including zero with a readable bus. No bus means no counts; an unreadable store omits counts and adds a check note. |
 | `brg ls` | Your teams, each with its instances |
 | `brg attach <instance>/<member>`, `brg logs <instance>/<member>` | Watch a member |
 | `brg send <instance>/<member> TEXT` | Type into a member now |
@@ -101,7 +100,7 @@ A small top level for people. `brg --help` and `brg <command> --help` give the f
 | `brg inbox wait [--external NAME] [--timeout SECONDS] [--full] [--json]` | Wait for your inbox: new messages at once, existing ones after 60 seconds if still unacked; timeout 60–86400, default 86400. The 60 s floor matches the loop guard on every nonzero exit, including timeout |
 | `brg bus check [--json]` | Report gaps and unreadable files without writing |
 
-**Addressing.** `devteam-k3f9/lead-q8m3`. Inside a member, a bare member ID means its own instance; everywhere else the instance is named in full ([concepts](concepts.md#names-and-ids)). Bus commands take `--instance ID` outside a member. An outside caller, for example a person's script or a coordinating agent, adds `--external NAME` (refused inside a member) and is answered at `external:NAME`.
+**Addressing.** `devteam-k3f9/lead-q8m3`. Inside a member, a bare member ID means its own instance; everywhere else the instance is named in full ([concepts](concepts.md#names-and-ids)). Only `create` takes a role name. Member commands and messages refuse a role name, listing its kept members or naming `brg create <instance>/<role>` when it has none. Bus commands take `--instance ID` outside a member. An outside caller, for example a person's script or a coordinating agent, adds `--external NAME` (refused inside a member) and is answered at `external:NAME`.
 
 ## How members talk
 
@@ -122,7 +121,7 @@ Decided: brg stores no secrets. A plugin's secrets come from the environment `br
 Some roles are needed as work appears, sometimes several at once: three implementers on three tasks. The direction:
 
 ```yaml
-members:
+roles:
   implementer:
     prompt: implementer.md
     parent: lead
@@ -146,7 +145,7 @@ members:
   ```
 
   Ended copies stay in the tree as stopped members until deleted.
-- **Addressing.** `devteam/implementer-2` reaches one copy. A bare `implementer` works only while exactly one copy is running; otherwise brg errors and lists the copies, the same rule as for team names.
+- **Addressing.** `devteam/implementer-2` reaches one copy. A bare `implementer` is always refused where a member is expected, listing the kept members or naming `create` when it has none.
 - **Messages go to a member.** The lead chooses a full member ID; there is no role queue.
 
 Proposed changes to this direction, and why:
@@ -175,7 +174,7 @@ A member can be a whole team. A **department** is just a team whose members incl
 
 ```yaml
 # coding/team.yaml
-members:
+roles:
   lead:
     prompt: lead.md
   ws:                                  # a workstream: a whole sub-team

@@ -1,6 +1,6 @@
 # Team and configuration format
 
-A **team** is a folder you can share: its roles (under `members:`), what each one is told, which plugin programs they may use, and whether they share a message bus. **brg's configuration** (`config.yaml`) holds what belongs to you rather than to a team: auth, folder trust, where team names are looked up, shared plugins and tmux. An **instance** is a team running in one working folder, given at `brg create <team> <folder>` ([concepts](concepts.md)).
+A **team** is a folder you can share: its roles (under `roles:`), what each one is told, which plugin programs they may use, and whether they share a message bus. **brg's configuration** (`config.yaml`) holds what belongs to you rather than to a team: auth, folder trust, where team names are looked up, shared plugins and tmux. An **instance** is a team running in one working folder, given at `brg create <team> <folder>` ([concepts](concepts.md)).
 
 ```
 examples/slack-devops/
@@ -43,7 +43,7 @@ plugins:
       reply: slackbot reply <thread_ts> <text>
       escalate: slackbot escalate <ts> <severity> <reason>
 
-members:                        # the roles
+roles:
   triager:
     prompt: triager.md          # the role file, relative to the team dir
     vendor: claude              # optional; default from `default`
@@ -61,7 +61,9 @@ members:                        # the roles
     plugins: {slackbot: [read, reply]}
 ```
 
-**Names.** Role, plugin and action names match `[a-z][a-z0-9_-]{0,31}`. A role's member is `<role>-<suffix>` (`triager-x7k2`). Environment names match `[A-Z_][A-Z0-9_]*`. The team's name is its folder's name, lowercased, with anything outside `[a-z0-9_-]` turned into `-`.
+**Names.** Role, plugin and action names match `[a-z][a-z0-9_-]{0,31}`. A role's member is `<role>-<suffix>` (`triager-x7k2`). A role cannot be named `<another role>-<suffix>`, where the suffix is four characters from `23456789abcdefghjkmnpqrstuvwxyz`: that would also name a member. Environment names match `[A-Z_][A-Z0-9_]*`. The team's name is its folder's name, lowercased, with anything outside `[a-z0-9_-]` turned into `-`.
+
+The role's identity is its key under `roles:`. The old `members:` field and frontmatter `role:` are unknown fields, with no aliases. Each role has at most one kept member, running or stopped. `brg delete <instance>/<member>` removes a stopped member; its ID stays issued and is never reused. A later `create <instance>/<role>` gets a fresh ID. `start <instance>` also creates a fresh member for a `start: true` role whose member was deleted.
 
 **Messages.** With `bus:`, members publish plain `{to, body, reply_to?}` drafts, read and ack their inbox, and use one `inbox wait`. `brg status` (tree, `-i` and `--json`) shows unread message counts; no bus means no counts. The optional alert action and watcher are not wired now; the lead nudges with `brg send`. See [the bus](bus.md) for routing, storage, wait rules and commands.
 
@@ -73,11 +75,10 @@ members:                        # the roles
 
 **`args`.** Extra vendor launch arguments. Treat them as trusted, like the rest of the team: they can widen an agent's permissions. A `-c check_for_update_on_startup=…` (Codex) overrides brg's default of turning the update check off, so an unattended member doesn't stop at Codex's "Update available" prompt; a `-c sandbox_workspace_write.writable_roots=…` (Codex) or `--add-dir` (Claude) replaces the folders brg makes writable, and a `-c projects…` replaces brg's Codex trust.
 
-## Member files
+## Role files
 
 ```markdown
 ---
-role: triager
 models:
   claude: haiku
   codex: example-model low
@@ -88,9 +89,10 @@ You read each new message in the channel and decide whether it needs the lead.
 ```
 
 - **Frontmatter** sits between a first line `---` and the next line that is exactly `---`.
+  - Empty or whitespace-only frontmatter uses the vendor's default model.
   - A byte-order mark and CRLF line endings are accepted.
   - A later `---` is ordinary body text.
-- **`role`** is a free-form label.
+- The role's name comes from `roles:` in `team.yaml`; frontmatter holds only `models`.
 - **`models`** maps a vendor to `"<model>"` or `"<model> <effort>"`.
   - The effort is one of `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.
   - Only the member's own vendor needs an entry; without one, the vendor's default model is used (with a warning).
@@ -104,7 +106,7 @@ You read each new message in the channel and decide whether it needs the lead.
 A directory with `topology.yaml`, or member frontmatter with `name` and `claude_model`/`codex_model`, is the older shape. To convert it:
 
 1. Rename `topology.yaml` to `team.yaml`.
-2. In each member file, replace `name:` with `role:`.
+2. Rename `members:` to `roles:` in `team.yaml`. Remove `name:` or `role:` from each role file's frontmatter.
 3. Replace `claude_model: X` / `codex_model: Y` with `models: {claude: X, codex: Y}`.
 
 ## Plugins
@@ -161,7 +163,7 @@ How much a member may do is set per role, in `team.yaml`.
 A member can use MCP connections you've already set up in its vendor CLI, such as a personal Slack or mail connector. borgchart doesn't proxy or configure them.
 
 ```yaml
-members:
+roles:
   helper:
     prompt: helper.md
     connectors: [Example Mail]                    # vendor posture: server names

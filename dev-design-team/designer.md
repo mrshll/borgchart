@@ -1,5 +1,4 @@
 ---
-role: designer
 models:
   claude: opus high
   codex: gpt-6-astra medium

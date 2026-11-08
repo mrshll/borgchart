@@ -1,5 +1,4 @@
 ---
-role: on-call lead
 models:
   claude: opus high
 ---

@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 
 use crate::gate::GateRules;
 use crate::state::{StateDir, shell_quote};
-use crate::team::{Grant, Member, Plugin, Posture, Team, Vendor};
+use crate::team::{Grant, Plugin, Posture, Role, Team, Vendor};
 
 /// One granted command line as the member is told about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,7 +22,7 @@ pub struct Granted {
 }
 
 /// Every command line a member is granted, in a stable order.
-pub fn granted(team: &Team, member: &Member) -> Vec<Granted> {
+pub fn granted(team: &Team, member: &Role) -> Vec<Granted> {
     let mut out = Vec::new();
     for (plugin_name, grant) in &member.grants {
         let Some(plugin) = team.plugins.get(plugin_name) else {
@@ -96,7 +96,7 @@ pub const RESERVED_COMMANDS: [&str; 2] = ["brg", "borgchart"];
 /// The member's opening prompt: its role's standing instruction and the
 /// commands it may run (shims by absolute path).
 pub fn opening_prompt(
-    member: &Member,
+    member: &Role,
     granted: &[Granted],
     shim_dir: &Path,
     posture: Posture,
@@ -125,7 +125,7 @@ pub fn opening_prompt(
 }
 
 /// MCP tool names the vendor uses for a connector's tools.
-pub fn mcp_tool_names(vendor: Vendor, member: &Member) -> Vec<String> {
+pub fn mcp_tool_names(vendor: Vendor, member: &Role) -> Vec<String> {
     let mut names = Vec::new();
     for (server, tools) in &member.connectors.servers {
         let server = match vendor {
@@ -294,7 +294,7 @@ pub fn member_launch(
     brg: &Path,
     state: &StateDir,
     team: &Team,
-    member: &Member,
+    member: &Role,
     member_id: &str,
     posture: Posture,
     help: &BTreeMap<String, String>,

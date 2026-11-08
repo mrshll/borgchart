@@ -564,8 +564,8 @@ mod round {
             "{up}"
         );
         assert!(
-            up.contains("implementer   on demand (none created)")
-                || up.contains("on demand (none created)"),
+            up.contains("implementer   not created (start: false)")
+                || up.contains("not created (start: false)"),
             "{up}"
         );
 

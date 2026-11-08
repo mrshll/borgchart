@@ -22,7 +22,7 @@ pub struct Env {
 /// second root) are created on demand.
 pub const TEAM: &str = r#"
 bus: {}
-members:
+roles:
   lead:
     prompt: lead.md
   helper:
@@ -72,7 +72,7 @@ impl Env {
         ] {
             self.write(
                 &format!("{rel}/{role}.md"),
-                &format!("---\nrole: {role}\nmodels: {{{model}}}\n---\nYou are the {role}.\n"),
+                &format!("---\nmodels: {{{model}}}\n---\nYou are the {role}.\n"),
             );
         }
     }

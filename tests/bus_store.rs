@@ -124,7 +124,7 @@ fn changed_roles_keep_the_store_and_replies_to_removed_members() {
     );
     env.write(
         "teams/oncall/lead.md",
-        "---\nrole: lead\nmodels: {claude: opus high}\n---\nThe lead, edited.\n",
+        "---\nmodels: {claude: opus high}\n---\nThe lead, edited.\n",
     );
     env.ok(&["start", &instance]);
     env.wait_for("helper idle", || {

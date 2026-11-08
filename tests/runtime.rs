@@ -45,7 +45,7 @@ plugins:
     actions:
       read: pager read <id>
       ping: pager ping <id>
-members:
+roles:
   alpha:
     prompt: alpha.md
     posture: locked
@@ -63,13 +63,13 @@ members:
         );
         env.write(
             "team/alpha.md",
-            "---\nrole: triager\nmodels: {claude: haiku}\n---\nYou are alpha.\n",
+            "---\nmodels: {claude: haiku}\n---\nYou are alpha.\n",
         );
         env.write(
             "team/beta.md",
-            "---\nrole: helper\nmodels: {codex: example-model low}\n---\nYou are beta.\n",
+            "---\nmodels: {codex: example-model low}\n---\nYou are beta.\n",
         );
-        env.write("team/gamma.md", "---\nrole: spare\n---\nYou are gamma.\n");
+        env.write("team/gamma.md", "---\n---\nYou are gamma.\n");
         env.script(
             "team/plugins/pager/pager",
             "#!/bin/sh\necho \"pager $* member=$BORGCHART_MEMBER parent=${BORGCHART_PARENT:-} token_len=${#PAGER_TOKEN}\" >> \"$BORGCHART_STATE_DIR/calls.log\"\necho ok\n",
@@ -342,7 +342,7 @@ fn up_status_send_logs_down() {
     );
     assert_eq!(
         rows.iter().find(|r| r["role"] == "gamma").unwrap()["state"],
-        "on demand (none created)"
+        "not created (start: false)"
     );
     env.wait_for("plugin health", |e| {
         e.status()

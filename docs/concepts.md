@@ -1,6 +1,6 @@
 # Concepts
 
-**Status: agreed design, not built yet.** It drives the renames (#19), roles with copies (#24) and teams as members (#25). The old names go away outright, with no aliases or pointers.
+**Status: partly built.** Teams, instances, `roles:`, suffixed member IDs, the four lifecycle verbs, member deletion and member status work today, with one kept member per role. Copies (`max`), their creation permissions, departments and the remaining command renames are planned. The old file fields go away outright, with no aliases.
 
 ## Definitions and what runs from them
 
@@ -67,9 +67,9 @@ There's no `up`. There are four verbs. `create` always makes something new; `sta
 | Command | On an instance | On a member |
 | --- | --- | --- |
 | `brg create` | `create <team> <folder>` makes a new instance working in that folder (required), starts it, and prints its ID and tree. `<team>` is a team's name or a path to its folder. Run it twice and you have two instances. | `create <instance>/<role>` makes a new member of that role and starts it. `create` takes only a team or a role, never a member. It's refused past `max`; for a `max: 1` role whose member already exists, it points to `start`. |
-| `brg start` | Brings the instance to what should be running. That's the `start: true` roles and the members that were running when it was last stopped. Members already running are left alone. Changed files are applied only when the instance was fully stopped. It takes no folder. | Starts that member with a new start. If it's already running, it says so and changes nothing. |
+| `brg start` | Brings the instance to what should be running. That's the `start: true` roles and the members that were running when it was last stopped. A `start: true` role whose member was deleted gets a fresh member. Members already running are left alone. Changed files are applied only when the instance was fully stopped. It takes no folder. | Starts that member with a new start. If it's already running, it says so and changes nothing. A deleted ID is refused. |
 | `brg stop` | Stops every member. On a stopped instance, it says so and changes nothing. | Stops that member; the same on a stopped one. |
-| `brg delete` | Removes a stopped instance: its messages, notes, state and registration. It's refused while anything runs. Unacked messages, or messages it cannot read, are listed and need `--force`. | Removes a stopped member with no unacked messages, freeing its place under `max`. Its number isn't reused. |
+| `brg delete` | Removes a stopped instance: its messages, notes, state and registration. It's refused while anything runs. Unacked messages, or messages it cannot read, are listed and need `--force`. | Removes a stopped member. Unacked messages are listed with a count and require `--force`; running or unknown liveness is always refused. Its ID stays issued. Immutable messages remain as history; unread ones to a deleted member stop counting as open work. |
 
 **Restarting** is `stop` then `start`. That's also how changed files are applied.
 
@@ -134,17 +134,17 @@ dev-team-k3f9                       team ~/.config/borgchart/teams/dev-team/ · 
 └─ lead-q8m3            claude opus high          working
    ├─ implementer-x7k2  codex gpt-6.1-sol high    working
    ├─ implementer-c4nd  codex gpt-6.1-sol high    idle
-   ├─ reviewer          on demand (none created)
-   └─ researcher        on demand (none created)
+   ├─ reviewer          not created (start: false)
+   └─ researcher        not created (start: false)
 ```
 
 - **Header line:** the instance, then its team folder and working folder.
 - **Tree lines:**
   - one line per member;
-  - a `start: false` role with no members yet gets one dim line, `on demand (none created)`, whatever its `max`. A created member that isn't running shows on its own line as `stopped`;
+  - a role with no kept member gets `not created (start: false)` or `not created (start: true)`, following its `start` setting; copies will add `on demand (none created)` for `max > 1`. A created member that isn't running shows on its own line as `stopped`;
   - positive unread message counts appear beside members, also in `-i`; a zero adds nothing to the tree;
   - department members nest.
-- **`--json` member rows:** `instance`, `team`, `member`, `role`, `parent` (a member ID), and the existing fields; there is no numbered-start field. With a readable bus, `unread` gives each member's unacked count, including zero. Without a bus it is absent; if the store cannot be read, counts are absent and status adds a short note. Plugin-process rows keep `kind: plugin` and their name.
+- **`--json` member rows:** `instance`, `team`, `member`, `role`, `parent` (a member ID), `start_id` (the current incarnation, when recorded), and the existing fields. A stop retains `start_id`; restarting changes it. With a readable bus, `unread` gives each kept member's unacked count, including zero. Without a bus it is absent; if the store cannot be read, counts are absent and status adds a short note. Deleted members have no rows. Plugin-process rows keep `kind: plugin` and their name.
 
 ## Every use of "team" today
 
@@ -165,7 +165,7 @@ dev-team-k3f9                       team ~/.config/borgchart/teams/dev-team/ · 
 
 ## Other names
 
-| Where | Today | Proposed |
+| Where | Earlier name | Agreed name (partly built; see status above) |
 | --- | --- | --- |
 | `team.yaml` | `members:` | `roles:` |
 | | member file (`prompt: implementer.md`) | role file (same key) |
@@ -181,7 +181,7 @@ dev-team-k3f9                       team ~/.config/borgchart/teams/dev-team/ · 
 | | `--file`/`-f`, `$BORGCHART_FILE`, `./borgchart.yaml` | removed |
 | | secrets from the environment `brg up` runs in | unchanged: the environment `create` or `start` runs in; `brg secret <team>` checks which are set |
 | Output | `status --json` `name`, `kind` | `member`, `role`, `instance`, `team`, plus `unread` with a readable bus; `kind` stays |
-| | `not started` | `on demand (none created)`, for a role; `stopped`, for a member |
+| | `not started` | `not created (start: false)` or `not created (start: true)`, for a role; `stopped`, for a member |
 | Records | message identity | `from` is a member ID or `external:NAME`; fields are `schema`, `id`, `seq`, `at`, `from`, `to`, optional `reply_to`, and `body`. Start IDs stay in brg's own files and acknowledgement identity. |
 | On disk | message and start records | `…/borgchart/<instance>/messages/` holds `store.json`, `lock`, `records/` and `acks/`; the current start is `members/<member>/incarnation.json`, with history in `members/<member>/incarnations/<id>.json`. |
 | | brg state `…/borgchart/<name>-<hash>/` | `…/borgchart/<instance>/`, with `messages/` and `notes/`, plus the registry of instances |

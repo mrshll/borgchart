@@ -1,4 +1,4 @@
-//! The team format: `team.yaml` plus one Markdown file per member.
+//! The team format: `team.yaml` plus one Markdown file per role.
 //!
 //! See `docs/format.md` for the format itself.
 
@@ -75,7 +75,7 @@ struct TeamFileRaw {
     bus: Option<BusRaw>,
     #[serde(default)]
     plugins: BTreeMap<String, PluginRaw>,
-    members: BTreeMap<String, MemberRaw>,
+    roles: BTreeMap<String, RoleRaw>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -151,7 +151,7 @@ impl EnvRaw {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct MemberRaw {
+struct RoleRaw {
     prompt: String,
     vendor: Option<Vendor>,
     parent: Option<String>,
@@ -179,10 +179,9 @@ enum ConnectorsRaw {
     Tools(BTreeMap<String, Vec<String>>),
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FrontmatterRaw {
-    role: String,
     #[serde(default)]
     models: ModelsRaw,
 }
@@ -207,7 +206,7 @@ pub struct Team {
     pub default_vendor: Vendor,
     /// The coordination bus, when the team uses one.
     pub bus: Option<BusConfig>,
-    pub members: BTreeMap<String, Member>,
+    pub roles: BTreeMap<String, Role>,
     pub plugins: BTreeMap<String, Plugin>,
 }
 
@@ -335,9 +334,8 @@ pub fn team_name(dir: &Path) -> String {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct Member {
+pub struct Role {
     pub id: String,
-    pub role: String,
     pub vendor: Vendor,
     pub model: Option<Model>,
     pub parent: Option<String>,
@@ -539,14 +537,14 @@ pub fn load(dir: &Path, report: &mut Report) -> Option<Team> {
     // Plugins first, so member grants can be checked against them.
     let mut plugins = BTreeMap::new();
     for (name, p) in &raw.plugins {
-        if let Some(plugin) = load_plugin(dir, &team_file, name, p, &raw.members, report) {
+        if let Some(plugin) = load_plugin(dir, &team_file, name, p, &raw.roles, report) {
             plugins.insert(name.clone(), plugin);
         }
     }
 
-    let mut members = BTreeMap::new();
-    for (id, m) in &raw.members {
-        if let Some(member) = load_member(
+    let mut roles = BTreeMap::new();
+    for (id, m) in &raw.roles {
+        if let Some(member) = load_role(
             dir,
             &team_file,
             &includes_dir,
@@ -556,11 +554,21 @@ pub fn load(dir: &Path, report: &mut Report) -> Option<Team> {
             &raw,
             report,
         ) {
-            members.insert(id.clone(), member);
+            roles.insert(id.clone(), member);
         }
     }
 
-    check_parents(&team_file, &raw.members, report);
+    check_parents(&team_file, &raw.roles, report);
+    for name in raw.roles.keys() {
+        if crate::names::conflicts_with_member_id(name, |base| raw.roles.contains_key(base)) {
+            report.error(
+                Some(&team_file),
+                format!(
+                    "role `{name}` also names a member of another role; give it a different name"
+                ),
+            );
+        }
+    }
 
     if report.errors().count() > errors_before {
         return None;
@@ -576,7 +584,7 @@ pub fn load(dir: &Path, report: &mut Report) -> Option<Team> {
                 action: a.action,
             }),
         }),
-        members,
+        roles,
         plugins,
     })
 }
@@ -597,7 +605,7 @@ fn load_plugin(
     team_file: &Path,
     name: &str,
     p: &PluginRaw,
-    members: &BTreeMap<String, MemberRaw>,
+    roles: &BTreeMap<String, RoleRaw>,
     report: &mut Report,
 ) -> Option<Plugin> {
     let before = report.errors().count();
@@ -693,9 +701,9 @@ fn load_plugin(
             Some(team_file),
             at("`delivers_to` needs a `process`".into()),
         ),
-        (Some(target), Some(_)) if !members.contains_key(target) => report.error(
+        (Some(target), Some(_)) if !roles.contains_key(target) => report.error(
             Some(team_file),
-            at(format!("`delivers_to: {target}` is not a member")),
+            at(format!("`delivers_to: {target}` is not a role")),
         ),
         _ => {}
     }
@@ -750,18 +758,18 @@ fn check_executable(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn load_member(
+fn load_role(
     dir: &Path,
     team_file: &Path,
     includes_dir: &str,
     default_vendor: Vendor,
     id: &str,
-    m: &MemberRaw,
+    m: &RoleRaw,
     raw: &TeamFileRaw,
     report: &mut Report,
-) -> Option<Member> {
+) -> Option<Role> {
     let before = report.errors().count();
-    let at = |msg: String| format!("member `{id}`: {msg}");
+    let at = |msg: String| format!("role `{id}`: {msg}");
     if !is_valid_id(id) {
         report.error(
             Some(team_file),
@@ -861,7 +869,7 @@ fn load_member(
         report.error(Some(team_file), at(e));
     }
 
-    // Member file.
+    // Role file.
     let prompt_path = match resolve_within(dir, &m.prompt) {
         Ok(p) => Some(p),
         Err(e) => {
@@ -869,17 +877,15 @@ fn load_member(
             None
         }
     };
-    let mut role = String::new();
     let mut model = None;
     let mut instruction = String::new();
     let mut prompt_sha256 = String::new();
     if let Some(prompt_path) = &prompt_path {
         let shown = dir.join(&m.prompt);
         if let Some((front, body, sha)) =
-            read_member_file(dir, includes_dir, &shown, prompt_path, report)
+            read_role_file(dir, includes_dir, &shown, prompt_path, report)
         {
             prompt_sha256 = sha;
-            role = front.role;
             let configured = match vendor {
                 Vendor::Claude => front.models.claude,
                 Vendor::Codex => front.models.codex,
@@ -904,9 +910,8 @@ fn load_member(
     if report.errors().count() > before {
         return None;
     }
-    Some(Member {
+    Some(Role {
         id: id.to_string(),
-        role,
         vendor,
         model,
         parent: m.parent.clone(),
@@ -952,18 +957,13 @@ fn check_cwd(cwd: &str) -> Result<(), String> {
     Ok(())
 }
 
-struct Front {
-    role: String,
-    models: ModelsRaw,
-}
-
-fn read_member_file(
+fn read_role_file(
     dir: &Path,
     includes_dir: &str,
     shown: &Path,
     real: &Path,
     report: &mut Report,
-) -> Option<(Front, String, String)> {
+) -> Option<(FrontmatterRaw, String, String)> {
     let text = match read_text(real) {
         Ok(t) => t,
         Err(e) => {
@@ -982,27 +982,25 @@ fn read_member_file(
         report.error(
             Some(shown),
             format!(
-                "this member uses the older frontmatter (`name`, `claude_model`/`codex_model`); use `role` and `models` as described in {FORMAT_DOC}"
+                "this role file uses the older frontmatter (`name`, `claude_model`/`codex_model`); remove `name` and use `models` as described in {FORMAT_DOC}"
             ),
         );
         return None;
     }
-    let front: FrontmatterRaw = match yaml::parse(&split.frontmatter) {
-        Ok(f) => f,
-        Err(e) => {
-            report.error(Some(shown), e);
-            return None;
+    let front: FrontmatterRaw = if split.frontmatter.trim().is_empty() {
+        FrontmatterRaw::default()
+    } else {
+        match yaml::parse(&split.frontmatter) {
+            Ok(f) => f,
+            Err(e) => {
+                report.error(Some(shown), e);
+                return None;
+            }
         }
     };
-    if front.role.trim().is_empty() {
-        report.error(Some(shown), "`role` must not be empty");
-    }
     let body = resolve_includes(dir, includes_dir, shown, &split.body, report)?;
     Some((
-        Front {
-            role: front.role,
-            models: front.models,
-        },
+        front,
         body,
         crate::config_snapshot::sha256_hex(text.as_bytes()),
     ))
@@ -1097,26 +1095,26 @@ fn resolve_includes(
     ok.then_some(out)
 }
 
-fn check_parents(team_file: &Path, members: &BTreeMap<String, MemberRaw>, report: &mut Report) {
-    for (id, m) in members {
+fn check_parents(team_file: &Path, roles: &BTreeMap<String, RoleRaw>, report: &mut Report) {
+    for (id, m) in roles {
         let Some(parent) = &m.parent else { continue };
         if parent == id {
-            report.error(Some(team_file), format!("member `{id}`: is its own parent"));
+            report.error(Some(team_file), format!("role `{id}`: is its own parent"));
             continue;
         }
-        if !members.contains_key(parent) {
+        if !roles.contains_key(parent) {
             report.error(
                 Some(team_file),
-                format!("member `{id}`: parent `{parent}` is not a member"),
+                format!("role `{id}`: parent `{parent}` is not a role"),
             );
         }
     }
     // Cycle detection: walk up from each member.
-    for start in members.keys() {
+    for start in roles.keys() {
         let mut seen = vec![start.as_str()];
         let mut current = start.as_str();
-        while let Some(parent) = members.get(current).and_then(|m| m.parent.as_deref()) {
-            if !members.contains_key(parent) || parent == current {
+        while let Some(parent) = roles.get(current).and_then(|m| m.parent.as_deref()) {
+            if !roles.contains_key(parent) || parent == current {
                 break;
             }
             if seen.contains(&parent) {

@@ -36,12 +36,12 @@ fn status_i_attaches_detaches_and_quits() {
     };
     write(
         "team/team.yaml",
-        "bus: {}\nplugins:\n  watcher: {path: plugins/watcher, process: [./run.sh]}\nmembers:\n  alpha: {prompt: alpha.md}\n  beta: {prompt: beta.md, vendor: codex, parent: alpha}\n",
+        "bus: {}\nplugins:\n  watcher: {path: plugins/watcher, process: [./run.sh]}\nroles:\n  alpha: {prompt: alpha.md}\n  beta: {prompt: beta.md, vendor: codex, parent: alpha}\n",
     );
-    write("team/alpha.md", "---\nrole: helper\n---\nYou are alpha.\n");
+    write("team/alpha.md", "---\n---\nYou are alpha.\n");
     write(
         "team/beta.md",
-        "---\nrole: helper\nmodels: {codex: example-model low}\n---\nYou are beta.\n",
+        "---\nmodels: {codex: example-model low}\n---\nYou are beta.\n",
     );
     write("team/plugins/watcher/run.sh", "#!/bin/sh\nexec sleep 600\n");
     fs::set_permissions(

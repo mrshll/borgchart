@@ -84,7 +84,7 @@ fn draw(
             let mut cols = runtime::status_cells(r);
             match r.kind {
                 "member" => {}
-                // A role with no member yet: `on demand (none created)` as its state.
+                // A role with no member yet: `not created (start: false)` as its state.
                 "role" => {
                     cols.insert(0, String::new());
                     cols.push(String::new());

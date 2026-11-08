@@ -70,7 +70,7 @@ impl<'w> Team<'w> {
         std::fs::write(
             dir.join("team.yaml"),
             format!(
-                "{bus}members:\n  {m}:\n    prompt: {m}.md\n    vendor: {v}\n    args: {args}\n{posture}",
+                "{bus}roles:\n  {m}:\n    prompt: {m}.md\n    vendor: {v}\n    args: {args}\n{posture}",
                 bus = if s.bus { "bus: {}\n" } else { "" },
                 m = s.member,
                 v = s.who.as_str(),
@@ -84,7 +84,7 @@ impl<'w> Team<'w> {
         .unwrap();
         std::fs::write(
             dir.join(format!("{}.md", s.member)),
-            format!("---\nrole: tester\n---\n{}\n", s.instruction),
+            format!("---\n{{}}\n---\n{}\n", s.instruction),
         )
         .unwrap();
         let dir = dir.canonicalize().unwrap();

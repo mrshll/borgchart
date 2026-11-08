@@ -1,5 +1,4 @@
 ---
-role: triager
 models:
   claude: haiku
 ---

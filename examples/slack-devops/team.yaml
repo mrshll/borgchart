@@ -18,7 +18,7 @@ plugins:
       reply: slackbot reply <thread_ts> <text>
       escalate: slackbot escalate <ts> <severity> <reason>
 
-members:
+roles:
   triager:
     prompt: triager.md
     parent: lead
