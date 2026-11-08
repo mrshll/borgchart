@@ -286,8 +286,8 @@ const MAX_ROLLOVER_FOLLOWS: usize = 3;
 ///
 /// If the run was retired (the instance's storage rolled over) by the time the
 /// lock is held, release it, re-resolve the instance's current run and lock
-/// that instead, so nothing is written to storage that rollover has already
-/// carried from. Returns the run that is locked, and whether that meant
+/// that instead, so nothing is written to storage that rollover has retired.
+/// Returns the run that is locked, and whether that meant
 /// following a rollover: the caller re-checks everything it checked before
 /// against it, and refuses references to records it saw in the old storage.
 fn lock_for_mutation(bus: &Bus) -> Result<(Bus, fs::File, bool), Failure> {
@@ -429,7 +429,7 @@ pub fn snapshot(bus: &Bus) -> Result<Snapshot, Failure> {
     snapshot_of(&bus.paths, &bus.run)
 }
 
-/// The same for any run's store (an earlier run being carried from).
+/// The same for any run's store.
 pub fn snapshot_of(paths: &RunPaths, run: &str) -> Result<Snapshot, Failure> {
     let _lock = read_lock(paths)?;
     Ok(scan(paths, run))
@@ -768,8 +768,6 @@ pub struct Published {
 struct DigestView<'a> {
     to: &'a str,
     kind: Kind,
-    task: &'a Option<String>,
-    attempt: &'a Option<u32>,
     reply_to: &'a [String],
     body: &'a str,
     artifacts: &'a [Artifact],
@@ -785,8 +783,6 @@ fn record_digest(r: &Record) -> String {
     digest_of(&DigestView {
         to: &r.to,
         kind: r.kind,
-        task: &r.task,
-        attempt: &r.attempt,
         reply_to: &r.reply_to,
         body: &r.body,
         artifacts: &r.artifacts,
@@ -805,109 +801,7 @@ pub fn parse_draft(bytes: &[u8]) -> Result<Draft, Failure> {
     let draft: Draft =
         serde_json::from_slice(bytes).map_err(|e| invalid(format!("the draft: {e}")))?;
     draft.check_shape().map_err(invalid)?;
-    check_facts(&draft).map_err(invalid)?;
     Ok(draft)
-}
-
-fn text_fact(facts: &Map<String, Value>, name: &str, kind: Kind) -> Result<(), String> {
-    match facts.get(name) {
-        Some(Value::String(s)) if !s.trim().is_empty() => Ok(()),
-        _ => Err(format!(
-            "a `{}` record needs `facts.{name}` (non-empty text)",
-            kind.as_str()
-        )),
-    }
-}
-
-fn one_of(
-    facts: &Map<String, Value>,
-    name: &str,
-    allowed: &[&str],
-    kind: Kind,
-) -> Result<(), String> {
-    match facts.get(name).and_then(Value::as_str) {
-        Some(v) if allowed.contains(&v) => Ok(()),
-        _ => Err(format!(
-            "a `{}` record needs `facts.{name}`: {}",
-            kind.as_str(),
-            allowed.join(", ")
-        )),
-    }
-}
-
-fn checks_fact(facts: &Map<String, Value>) -> Result<(), String> {
-    let Some(checks) = facts.get("checks") else {
-        return Ok(());
-    };
-    let ok = checks.as_array().is_some_and(|a| {
-        a.iter().all(|c| {
-            c.get("name").and_then(Value::as_str).is_some()
-                && c.get("outcome").and_then(Value::as_str).is_some()
-        })
-    });
-    if ok {
-        Ok(())
-    } else {
-        Err("`facts.checks` must be a list of {name, outcome}".into())
-    }
-}
-
-/// The facts each kind requires (docs/bus.md "Records"). Unknown fact keys
-/// are allowed: `facts` is the envelope's extension point.
-pub fn check_facts(d: &Draft) -> Result<(), String> {
-    let f = &d.facts;
-    match d.kind {
-        Kind::Assign => {
-            if d.attempt.is_none() {
-                return Err("an `assign` record needs `attempt`".into());
-            }
-            let agreement = f.get("agreement");
-            let path_ok = agreement
-                .and_then(|a| a.get("path"))
-                .and_then(Value::as_str)
-                .is_some_and(|p| p.starts_with('/'));
-            let sha_ok = agreement
-                .and_then(|a| a.get("sha256"))
-                .and_then(Value::as_str)
-                .is_some_and(|s| s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit()));
-            if !path_ok || !sha_ok {
-                return Err(
-                    "an `assign` record needs `facts.agreement: {path (absolute), sha256}`".into(),
-                );
-            }
-            text_fact(f, "scope", d.kind)?;
-            if let Some(c) = f.get("checkout")
-                && !c.as_str().is_some_and(|p| p.starts_with('/'))
-            {
-                return Err("`facts.checkout` must be an absolute path".into());
-            }
-            Ok(())
-        }
-        Kind::Decline | Kind::CancelRequest | Kind::Reopen => text_fact(f, "reason", d.kind),
-        Kind::Result => {
-            one_of(f, "status", &["complete", "partial", "blocked"], d.kind)?;
-            checks_fact(f)
-        }
-        Kind::Verify => {
-            if !f
-                .get("result")
-                .and_then(Value::as_str)
-                .is_some_and(|r| parse_record_id(r).is_some())
-            {
-                return Err("a `verify` record needs `facts.result` (a record ID)".into());
-            }
-            one_of(f, "outcome", &["accepted", "rejected"], d.kind)?;
-            checks_fact(f)
-        }
-        Kind::CancelConfirm => {
-            if f.get("quiescent") != Some(&Value::Bool(true)) {
-                return Err("a `cancel-confirm` record needs `facts.quiescent: true`".into());
-            }
-            text_fact(f, "evidence", d.kind)
-        }
-        Kind::Release => text_fact(f, "evidence", d.kind),
-        Kind::Note | Kind::Accept | Kind::Question | Kind::Decision => Ok(()),
-    }
 }
 
 /// Who may address whom, from the run's frozen topology.
@@ -1050,8 +944,6 @@ fn publish_actor(
     let digest = digest_of(&DigestView {
         to: &draft.to,
         kind: draft.kind,
-        task: &draft.task,
-        attempt: &draft.attempt,
         reply_to: &draft.reply_to,
         body: &draft.body,
         artifacts: &artifacts,
@@ -1061,12 +953,7 @@ fn publish_actor(
 
     let (bus, lock, followed) = lock_for_mutation(bus)?;
     let bus = &bus;
-    let mut refs: Vec<&str> = draft.reply_to.iter().map(String::as_str).collect();
-    if draft.kind == Kind::Verify
-        && let Some(r) = draft.facts.get("result").and_then(Value::as_str)
-    {
-        refs.push(r);
-    }
+    let refs: Vec<&str> = draft.reply_to.iter().map(String::as_str).collect();
     if followed && let Some(first) = refs.first() {
         return Err(bus.stale_reference(first));
     }
@@ -1107,13 +994,6 @@ fn publish_actor(
             format!("`{missing}` names no record"),
         ));
     }
-    // Task transitions, authority and liveness, against exactly the
-    // records this one will follow.
-    let probe = |member: &str, incarnation: &str| {
-        super::tasks::recorded_liveness(&bus.paths, member, incarnation)
-    };
-    super::tasks::check_publish(bus, &snap, &actor, &draft, &probe)?;
-
     // A healthy store is contiguous from 1, so the next number is one past its size.
     let seq = snap.records.len() as u64 + 1;
     let rec = Record {
@@ -1126,8 +1006,6 @@ fn publish_actor(
         key: key.to_string(),
         to: draft.to,
         kind: draft.kind,
-        task: draft.task,
-        attempt: draft.attempt,
         reply_to: draft.reply_to,
         body: draft.body,
         artifacts,
@@ -1365,8 +1243,6 @@ pub struct CheckReport {
     pub age_days: Option<f64>,
     /// True when an error is about the store itself (rather than its age).
     pub corrupt: bool,
-    /// The linked runs this run's work was carried into.
-    pub carried_into: Vec<super::carry::Marker>,
 }
 
 pub fn check(bus: &Bus) -> Result<CheckReport, Failure> {
@@ -1383,9 +1259,6 @@ pub fn check(bus: &Bus) -> Result<CheckReport, Failure> {
             stray.display()
         ));
     }
-    report.carried_into = super::carry::carried_into(&bus.store.dir, &bus.run);
-    let carry = super::carry::check_notes(bus, &snap, &report.carried_into);
-    report.warnings.extend(carry.warnings);
     match time::parse_utc(&bus.manifest.created_at) {
         None => report.errors.push(format!(
             "the storage's manifest: `created_at` is not a UTC time: {}",
@@ -1400,12 +1273,7 @@ pub fn check(bus: &Bus) -> Result<CheckReport, Failure> {
             report.age_days = Some((age * 10.0).round() / 10.0);
             let team = &bus.instance;
             let restart = &bus.restart;
-            if age >= super::layout::MAX_AGE_DAYS as f64 && carry.retired {
-                report.warnings.push(format!(
-                    "run `{}` is {age:.1} days old, past max_age_days ({}), and was carried into a new run",
-                    bus.run, super::layout::MAX_AGE_DAYS
-                ));
-            } else if age >= super::layout::MAX_AGE_DAYS as f64 {
+            if age >= super::layout::MAX_AGE_DAYS as f64 {
                 report.errors.push(format!(
                     "instance `{team}`'s message storage is {age:.1} days old, past max_age_days ({}); restart the instance to roll it over: {restart}",
                     super::layout::MAX_AGE_DAYS
@@ -1529,64 +1397,6 @@ mod tests {
     }
 
     #[test]
-    fn required_facts() {
-        let ok = |v: Value| parse_draft(&serde_json::to_vec(&v).unwrap());
-        let sha = "a".repeat(64);
-        assert!(
-            ok(
-                json!({"to": "a", "kind": "assign", "task": "t", "attempt": 1,
-            "facts": {"agreement": {"path": "/x", "sha256": sha}, "scope": "all"}})
-            )
-            .is_ok()
-        );
-        assert!(
-            ok(json!({"to": "a", "kind": "assign", "task": "t",
-            "facts": {"agreement": {"path": "/x", "sha256": sha}, "scope": "all"}}))
-            .is_err(),
-            "attempt"
-        );
-        assert!(
-            ok(
-                json!({"to": "a", "kind": "assign", "task": "t", "attempt": 1,
-            "facts": {"agreement": {"path": "x", "sha256": sha}, "scope": "all"}})
-            )
-            .is_err(),
-            "relative agreement"
-        );
-        assert!(ok(json!({"to": "a", "kind": "decline", "task": "t"})).is_err());
-        assert!(
-            ok(json!({"to": "a", "kind": "decline", "task": "t", "facts": {"reason": "busy"}}))
-                .is_ok()
-        );
-        assert!(
-            ok(json!({"to": "a", "kind": "result", "task": "t", "facts": {"status": "done"}}))
-                .is_err()
-        );
-        assert!(
-            ok(
-                json!({"to": "a", "kind": "result", "task": "t", "facts": {"status": "partial",
-            "checks": [{"name": "tests", "outcome": "pass"}]}})
-            )
-            .is_ok()
-        );
-        assert!(
-            ok(json!({"to": "a", "kind": "verify", "task": "t",
-            "facts": {"result": "m2", "outcome": "accepted"}}))
-            .is_ok()
-        );
-        assert!(
-            ok(json!({"to": "a", "kind": "cancel-confirm", "task": "t",
-            "facts": {"quiescent": false, "evidence": "x"}}))
-            .is_err()
-        );
-        assert!(
-            ok(json!({"to": "a", "kind": "release", "task": "t", "facts": {"evidence": "x"}}))
-                .is_ok()
-        );
-        assert!(ok(json!({"to": "a", "kind": "note", "facts": {"anything": 1}})).is_ok());
-    }
-
-    #[test]
     fn digest_covers_artifact_bytes() {
         let a = |sha: &str| Artifact {
             path: "/x".into(),
@@ -1598,8 +1408,6 @@ mod tests {
             digest_of(&DigestView {
                 to: "a",
                 kind: Kind::Note,
-                task: &None,
-                attempt: &None,
                 reply_to: &[],
                 body: "hi",
                 artifacts: arts,
@@ -1625,8 +1433,6 @@ mod tests {
             key: format!("k{seq}"),
             to: "lead".into(),
             kind: Kind::Note,
-            task: None,
-            attempt: None,
             reply_to: vec![],
             body: String::new(),
             artifacts: vec![],

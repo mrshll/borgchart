@@ -134,15 +134,6 @@ pub enum BusCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Carry pending work from the run this one continues (read-only there).
-    Carry {
-        /// The earlier run: the one the current run is linked from.
-        #[arg(long)]
-        from: String,
-        /// Print the carry report as JSON.
-        #[arg(long)]
-        json: bool,
-    },
 }
 
 /// What a command produced: JSON for `--json`, text otherwise.
@@ -394,13 +385,8 @@ fn page_output(t: &Target, page: &Page, snap: &store::Snapshot, full: bool) -> O
 }
 
 fn render(r: &Record, acked: bool, full: bool) -> String {
-    let task = match (&r.task, r.attempt) {
-        (Some(t), Some(a)) => format!("  {t}#{a}"),
-        (Some(t), None) => format!("  {t}"),
-        _ => String::new(),
-    };
     let mut out = format!(
-        "{}  {}  {} -> {}  {}{task}{}\n",
+        "{}  {}  {} -> {}  {}{}\n",
         r.id,
         r.at,
         store::actor_label(&r.actor),
@@ -700,7 +686,6 @@ pub fn bus(instance: Option<&str>, command: BusCommand) -> ExitCode {
                         "age_days": report.age_days,
                         "errors": report.errors,
                         "warnings": report.warnings,
-                        "carried_into": report.carried_into,
                     })
                 );
             } else {
@@ -722,6 +707,5 @@ pub fn bus(instance: Option<&str>, command: BusCommand) -> ExitCode {
             }
             ExitCode::from(code.exit())
         }
-        BusCommand::Carry { from, json } => super::task_cli::carry(instance, &from, json),
     }
 }

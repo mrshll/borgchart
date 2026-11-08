@@ -373,7 +373,6 @@ fn a_member_acts_only_on_its_own_instance() {
     // Another instance: refused, for reads too.
     for args in [
         vec!["inbox", "--json", "--instance", b.as_str()],
-        vec!["task", "list", "--instance", b.as_str()],
         vec!["bus", "inspect", "--instance", b.as_str()],
     ] {
         let out = env.as_member(&lead, 0, &args);
@@ -446,7 +445,7 @@ fn outside_callers_name_the_instance_and_a_stopped_one_can_be_inspected() {
     env.ok(&["inbox", "--member", &lead, "--instance", &a]);
     let err = env.fails(&["inbox", "--member", &lead]);
     assert!(err.contains("--instance") && err.contains(&a), "{err}");
-    let err = env.fails(&["task", "list"]);
+    let err = env.fails(&["bus", "check"]);
     assert!(err.contains("--instance"), "{err}");
     // A role's name isn't a member.
     let err = env.fails(&["inbox", "--member", "lead", "--instance", &a]);
@@ -455,7 +454,6 @@ fn outside_callers_name_the_instance_and_a_stopped_one_can_be_inspected() {
     for args in [
         vec!["bus", "inspect", "--instance", a.as_str()],
         vec!["bus", "check", "--instance", a.as_str()],
-        vec!["task", "list", "--instance", a.as_str()],
         vec!["inbox", "--member", lead.as_str(), "--instance", a.as_str()],
     ] {
         env.ok(&args);

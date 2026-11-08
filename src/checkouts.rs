@@ -2,9 +2,7 @@
 //! member start makes against them.
 //!
 //! A folder is held by another instance's member while that member runs,
-//! while brg can't tell that it stopped (`unknown` liveness), or while an
-//! open task of that instance names it as its checkout. An instance whose
-//! messages can't be read holds every folder its members last started in.
+//! or while brg can't tell that it stopped (`unknown` liveness).
 //! Members of one instance may share a folder; the check is across
 //! instances only. Folders are compared with symlinks resolved: the same,
 //! inside, or around counts. The caller holds the registry lock from the
@@ -14,7 +12,6 @@ use std::path::{Path, PathBuf};
 
 use crate::address;
 use crate::bus::manifest::Liveness;
-use crate::lifecycle;
 use crate::paths::overlaps;
 use crate::registry;
 
@@ -65,33 +62,6 @@ pub fn held(_lock: &registry::Lock, except: &str) -> Result<Vec<Held>, String> {
                 folder: folder_of(&m),
                 why,
             });
-        }
-        match lifecycle::open_work(&inst.state) {
-            Ok(work) => {
-                for (task, assignee, checkout) in work.tasks {
-                    if let Some(c) = checkout {
-                        out.push(Held {
-                            instance: id.clone(),
-                            folder: PathBuf::from(c),
-                            why: format!("open task `{task}` of {assignee} names it"),
-                        });
-                    }
-                }
-            }
-            Err(_) => {
-                let mut folders: Vec<PathBuf> =
-                    inst.record.members.keys().map(|m| folder_of(m)).collect();
-                folders.push(inst.record.folder.clone());
-                folders.sort();
-                folders.dedup();
-                for folder in folders {
-                    out.push(Held {
-                        instance: id.clone(),
-                        folder,
-                        why: "its messages can't be read, so its checkouts stay reserved".into(),
-                    });
-                }
-            }
         }
     }
     Ok(out)

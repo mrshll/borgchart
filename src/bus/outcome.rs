@@ -21,7 +21,7 @@ pub enum Code {
     Conflict,
     /// The store is unreadable or has a gap: mutations are stopped.
     Corrupt,
-    /// A stale actor, incarnation or attempt: the mutation was fenced off.
+    /// A stale actor or incarnation: the mutation was fenced off.
     Fenced,
     /// A bounded wait ended with nothing new.
     Timeout,

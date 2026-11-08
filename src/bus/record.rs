@@ -34,8 +34,7 @@ pub enum Actor {
     Bus,
 }
 
-/// What a record says. Task kinds carry their details in `facts`; their
-/// transitions are checked when the task layer folds them.
+/// What a record says.
 ///
 /// Within schema 1 the envelope is closed (unknown fields are refused, and a
 /// record brg can't read stops mutations). `facts` is the only place new
@@ -45,40 +44,13 @@ pub enum Actor {
 pub enum Kind {
     /// A plain message.
     Note,
-    Assign,
-    Accept,
-    Decline,
-    Result,
-    Verify,
-    Release,
-    CancelRequest,
-    CancelConfirm,
-    Reopen,
-    Question,
-    Decision,
 }
 
 impl Kind {
     pub fn as_str(self) -> &'static str {
         match self {
             Kind::Note => "note",
-            Kind::Assign => "assign",
-            Kind::Accept => "accept",
-            Kind::Decline => "decline",
-            Kind::Result => "result",
-            Kind::Verify => "verify",
-            Kind::Release => "release",
-            Kind::CancelRequest => "cancel-request",
-            Kind::CancelConfirm => "cancel-confirm",
-            Kind::Reopen => "reopen",
-            Kind::Question => "question",
-            Kind::Decision => "decision",
         }
-    }
-
-    /// Kinds that belong to a task and so need `task` (and `attempt`).
-    pub fn is_task_kind(self) -> bool {
-        !matches!(self, Kind::Note | Kind::Question | Kind::Decision)
     }
 }
 
@@ -141,10 +113,6 @@ pub struct Draft {
     /// The recipient: a member name, or `external:<name>` (see [`Recipient`]).
     pub to: String,
     pub kind: Kind,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attempt: Option<u32>,
     /// Record IDs this one answers or follows.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reply_to: Vec<String>,
@@ -152,7 +120,7 @@ pub struct Draft {
     pub body: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<ArtifactRef>,
-    /// Kind-specific structured details (e.g. an assignment's agreement digest).
+    /// Structured details supplied by the publisher.
     #[serde(default, skip_serializing_if = "Map::is_empty")]
     pub facts: Map<String, Value>,
 }
@@ -172,10 +140,6 @@ pub struct Record {
     pub key: String,
     pub to: String,
     pub kind: Kind,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attempt: Option<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reply_to: Vec<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -197,11 +161,6 @@ pub fn parse_record_id(id: &str) -> Option<u64> {
         return None;
     }
     digits.parse().ok().filter(|n| *n > 0)
-}
-
-/// Task IDs: `[a-z0-9][a-z0-9._-]{0,63}`.
-pub fn is_valid_task_id(id: &str) -> bool {
-    super::is_valid_run_id(id)
 }
 
 /// Operation keys: 1–128 bytes of `[A-Za-z0-9._:/@#+=-]`.
@@ -230,27 +189,14 @@ fn facts_have_bad_control(v: &Value) -> bool {
 }
 
 impl Draft {
-    /// Checks that need nothing but the draft itself. Topology, references
-    /// and transitions are checked against the store at publication.
+    /// Checks that need nothing but the draft itself. Topology and references
+    /// are checked against the store at publication.
     pub fn check_shape(&self) -> Result<(), String> {
         if Recipient::parse(&self.to).is_none() {
             return Err(format!(
                 "`to`: `{}` is not a member name or `external:<name>`",
                 self.to
             ));
-        }
-        if self.kind.is_task_kind() && self.task.is_none() {
-            return Err(format!("a `{}` record needs `task`", self.kind.as_str()));
-        }
-        if let Some(task) = &self.task
-            && !is_valid_task_id(task)
-        {
-            return Err(format!(
-                "`task`: `{task}` must match [a-z0-9][a-z0-9._-]{{0,63}}"
-            ));
-        }
-        if self.attempt == Some(0) {
-            return Err("`attempt` starts at 1".into());
         }
         if self.reply_to.len() > MAX_REFS {
             return Err(format!("`reply_to`: at most {MAX_REFS} IDs"));
@@ -324,8 +270,6 @@ mod tests {
             "unknown fields are refused"
         );
         assert!(draft(json!({"to": "lead", "kind": "shout"})).is_err());
-        let d = draft(json!({"to": "lead", "kind": "assign"})).unwrap();
-        assert!(d.check_shape().unwrap_err().contains("needs `task`"));
         let d = draft(json!({"to": "lead", "kind": "note", "body": "a\u{1b}[201~"})).unwrap();
         assert!(d.check_shape().is_err());
         let d =
@@ -333,12 +277,6 @@ mod tests {
         assert!(d.check_shape().is_err());
         let d = draft(json!({"to": "lead", "kind": "note", "reply_to": ["x1"]})).unwrap();
         assert!(d.check_shape().is_err());
-        let d = draft(json!({
-            "to": "helper", "kind": "assign", "task": "t-1", "attempt": 1,
-            "facts": {"agreement": {"path": "/x/agreement.md", "sha256": "ab"}}
-        }))
-        .unwrap();
-        d.check_shape().unwrap();
         for facts in [
             json!({"nested": [{"text": "\u{1b}[2J"}]}),
             json!({"k\u{7}": 1}),
@@ -368,7 +306,7 @@ mod tests {
             Recipient::External("ops".into()).to_string(),
             "external:ops"
         );
-        let d = draft(json!({"to": "external:ops", "kind": "question", "body": "ok?"})).unwrap();
+        let d = draft(json!({"to": "external:ops", "kind": "note", "body": "ok?"})).unwrap();
         d.check_shape().unwrap();
     }
 

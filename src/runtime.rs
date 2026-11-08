@@ -1535,11 +1535,6 @@ fn full_start_members(
             .filter(|w| !w.dead && inst.record.members.contains_key(&w.name))
             .map(|w| w.name.clone()),
     );
-    // Messages that can't be read are refused by the start itself
-    // (`start_members`), so no member starts without its holders known.
-    if let Ok(work) = lifecycle::open_work(&inst.state) {
-        ids.extend(work.holders);
-    }
     if issued {
         lock.save_instance(&inst.state, &inst.record)?;
     }
@@ -1560,39 +1555,6 @@ fn unreadable_store(inst: &Instance, e: &str) -> String {
         "instance `{}`'s messages can't be read ({e}), so nothing was started; create a new instance instead (`brg create`), and send its open work again",
         inst.id
     )
-}
-
-/// Refuse a start whose files orphan open work: a task held by a member
-/// whose role the instance no longer has.
-fn refuse_orphans(inst: &Instance, v: &Validated) -> Result<(), String> {
-    // Messages that can't be read are refused by the start itself
-    // (`start_members`), before anything starts.
-    let Ok(work) = lifecycle::open_work(&inst.state) else {
-        return Ok(());
-    };
-    let orphaned: Vec<String> = work
-        .tasks
-        .iter()
-        .filter(|(_, assignee, _)| {
-            inst.record
-                .role_of(assignee)
-                .is_some_and(|r| !v.team.members.contains_key(r))
-        })
-        .map(|(task, assignee, _)| {
-            format!(
-                "task `{task}` held by {assignee}, whose role `{}` the team no longer has",
-                inst.record.role_of(assignee).unwrap_or_default()
-            )
-        })
-        .collect();
-    if orphaned.is_empty() {
-        return Ok(());
-    }
-    Err(format!(
-        "instance `{}`'s team files orphan open work; restore the role, or cancel the work first. Nothing was started:\n  {}",
-        inst.id,
-        orphaned.join("\n  ")
-    ))
 }
 
 /// `brg start <instance>[/<member>] [--team <path>]`.
@@ -1626,9 +1588,6 @@ pub fn start(
         ));
     }
     let v = validate_printing(&inst.record.team_dir)?;
-    if member.is_none() {
-        refuse_orphans(&inst, &v)?;
-    }
     let lock = registry::lock()?;
     inst.reload()?;
     match member {

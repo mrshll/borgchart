@@ -166,18 +166,6 @@ pub const ROLL_CONFIG: &str = "config";
 pub const ROLL_FORMAT: &str = "format";
 pub const ROLL_AGE: &str = "age";
 
-/// Carry unfinished work (open tasks, unanswered questions, unread
-/// messages) from `old` into the new run `new`, before `new` becomes
-/// current. Called with `old`'s `bus/lock` held and its `retired` marker
-/// written. It runs again when a later start finishes a rollover that was
-/// interrupted, so it must be idempotent. Task facts own this and wire it
-/// in a later change; until then a configuration or age rollover leaves
-/// unfinished work behind.
-pub fn carry_into(new: &RunPaths, old: &RunPaths) -> Result<(), String> {
-    let _ = (new, old);
-    Ok(())
-}
-
 fn aged(created_at: &str, max_age_days: u32) -> bool {
     parse_utc(created_at)
         .and_then(|t| SystemTime::now().duration_since(t).ok())
@@ -291,7 +279,7 @@ pub fn bind_run(
     };
     // Never start into retired storage. A full start finishes a rollover
     // that was interrupted after retiring the old run (switching `current`
-    // to the run the marker names, carrying again) when that run is clearly
+    // to the run the marker names) when that run is clearly
     // its successor; anything else refuses.
     let interrupted =
         "an earlier start of instance `{team}` was interrupted while moving to fresh messages";
@@ -369,13 +357,12 @@ pub fn bind_run(
     } = &plan
     {
         check_stopped(&store.run(prev), &team, &restart)?;
-        // Carrying open work into fresh messages isn't wired yet, so a
-        // rollover never leaves any behind.
+        // A rollover must never leave unacked messages behind.
         match open_work(state) {
             Ok(work) if work.items.is_empty() => {}
             Ok(work) => {
                 return Err(format!(
-                    "instance `{team}` would start with fresh messages (its files or message format changed, or its messages are old), and it holds open work that isn't carried over yet; settle it first, or restore the files. Nothing was started:\n  {}",
+                    "instance `{team}` would start with fresh messages (its files or message format changed, or its messages are old), and it holds open work (unacked messages); acknowledge it first, or restore the files. Nothing was started:\n  {}",
                     work.items.join("\n  ")
                 ));
             }
@@ -391,12 +378,9 @@ pub fn bind_run(
         format!("cannot use instance `{team}`'s message storage ({e}); nothing was started")
     };
     let team_error = |e: String| format!("cannot use instance `{team}`'s message storage ({e})");
-    if let Some((old, next, reason)) = &finish {
+    if let Some((old, next, _)) = &finish {
         let old = store.run(old);
         let _old_bus = lock_bus(&old).map_err(team_error)?;
-        if reason != ROLL_FORMAT {
-            carry_into(&store.run(next), &old).map_err(team_error)?;
-        }
         store.set_current(next).map_err(storage_error)?;
     }
     match plan {
@@ -431,16 +415,14 @@ pub fn bind_run(
                     fsx::write_new(&old.retired(), format!("{id}\n").as_bytes())
                         .map_err(storage_error)?;
                     if *reason == ROLL_FORMAT {
-                        // This brg can't read the old format, so it can't
-                        // carry from it; the old messages stay where they are.
+                        // This brg can't read the old format; the old
+                        // messages stay where they are.
                         let n = record_count(&old);
                         note = Some(format!(
-                            "instance `{team}`'s messages were in another format, so it starts with fresh ones; {n} message{} in the old format {} left on disk, and open work in it wasn't carried over",
+                            "instance `{team}`'s messages were in another format, so it starts with fresh ones; {n} message{} in the old format {} left unchanged on disk",
                             if n == 1 { "" } else { "s" },
                             if n == 1 { "was" } else { "were" }
                         ));
-                    } else {
-                        carry_into(&paths, &old).map_err(team_error)?;
                     }
                     store.set_current(&id).map_err(storage_error)?;
                 }
@@ -474,22 +456,17 @@ fn write_json_replace<T: serde::Serialize>(path: &Path, value: &T) -> Result<(),
 
 // --- open work ---
 
-/// What an instance's messages hold open: unresolved tasks, open questions
-/// and unread messages, as lines to show, and the members that hold an
-/// unresolved task.
+/// Unacked messages, as lines to show.
 #[derive(Debug, Default)]
 pub struct OpenWork {
     pub items: Vec<String>,
-    pub holders: std::collections::BTreeSet<String>,
-    /// Each unresolved task: its ID, assignee and checkout.
-    pub tasks: Vec<(String, String, Option<String>)>,
 }
 
 /// The open work in `state`'s messages (none without a bus). `Err` when
 /// the messages can't be read: their contents can't be inspected.
 pub fn open_work(state: &StateDir) -> Result<OpenWork, String> {
     use crate::bus::outcome::Code;
-    use crate::bus::{store, tasks};
+    use crate::bus::store;
     let bus = match store::open(state) {
         Ok(b) => b,
         Err(f) if f.code == Code::NotConfigured => return Ok(OpenWork::default()),
@@ -502,29 +479,7 @@ pub fn open_work(state: &StateDir) -> Result<OpenWork, String> {
             bus.instance
         ));
     }
-    let fold = tasks::fold(&bus.manifest, &snap);
     let mut work = OpenWork::default();
-    for t in fold.tasks.values().filter(|t| !t.is_resolved()) {
-        work.items.push(format!(
-            "task `{}` ({}) held by {}{}",
-            t.task,
-            t.state.as_str(),
-            t.assignee,
-            t.checkout
-                .as_ref()
-                .map(|c| format!(", checkout {c}"))
-                .unwrap_or_default()
-        ));
-        work.holders.insert(t.assignee.clone());
-        work.tasks
-            .push((t.task.clone(), t.assignee.clone(), t.checkout.clone()));
-    }
-    for q in &fold.questions {
-        work.items.push(format!(
-            "open question {} from {} to {}",
-            q.id, q.from, q.to
-        ));
-    }
     for r in snap.records.values().filter(|r| !snap.is_acked(r.seq)) {
         work.items
             .push(format!("unread {} ({}) to {}", r.id, r.kind.as_str(), r.to));

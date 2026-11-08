@@ -3,7 +3,7 @@
 //!
 //! A run is internal: one stretch of a instance's message storage with a fixed
 //! message format and frozen configuration. Users never see or name runs;
-//! brg starts a new one (carrying unfinished work) when the configuration
+//! brg starts a new one when the configuration
 //! or format changes.
 
 use std::collections::BTreeMap;

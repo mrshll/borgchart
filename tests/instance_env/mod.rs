@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::common;
 
@@ -230,27 +230,6 @@ impl Env {
             .write_all(record.to_string().as_bytes())
             .unwrap();
         child.wait_with_output().unwrap()
-    }
-
-    /// An open task assigned to `member` (a root, so `ops` is its authority).
-    pub fn assign(&self, inst: &str, member: &str) {
-        self.write("agreement.md", "Fix the parser.\n");
-        let sha = {
-            use sha2::{Digest, Sha256};
-            format!("{:x}", Sha256::digest(b"Fix the parser.\n"))
-        };
-        let out = self.publish(
-            inst,
-            &format!("assign-{member}"),
-            &json!({"to": member, "kind": "assign", "task": "t1", "attempt": 1,
-            "facts": {
-                "agreement": {"path": self.path("agreement.md"), "sha256": sha},
-                "scope": "the parser",
-                "provenance": "asked by the owner",
-                "checkout": self.path("work/a"),
-            }}),
-        );
-        assert!(out.status.success(), "assign failed:\n{}", both(&out));
     }
 
     pub fn registry(&self) -> Value {

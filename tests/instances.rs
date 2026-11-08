@@ -203,18 +203,27 @@ fn start_brings_back_what_should_run_and_leaves_running_members_alone() {
 }
 
 #[test]
-fn start_brings_back_members_holding_work() {
+fn full_start_leaves_a_stopped_member_with_unacked_messages_stopped() {
     let env = Env::new();
     let inst = env.create("oncall", "work/a");
     env.ok(&["create", &format!("{inst}/scout")]);
     let scout = env.member(&inst, "scout");
     env.wait_for("scout idle", || env.state_of(&inst, "scout") == "idle");
     env.ok(&["stop", &format!("{inst}/{scout}")]);
-    env.assign(&inst, &scout);
+    let out = env.publish(
+        &inst,
+        "scout-note",
+        &json!({"to": scout, "kind": "note", "body": "Read this when started."}),
+    );
+    assert!(out.status.success(), "{}", both(&out));
     env.ok(&["stop", &inst]);
     env.ok(&["start", &inst]);
-    env.wait_for("scout idle", || env.state_of(&inst, "scout") == "idle");
-    assert_eq!(env.starts(&scout).len(), 2, "scout holds a task");
+    env.wait_for("lead idle", || env.state_of(&inst, "lead") == "idle");
+    assert_eq!(env.state_of(&inst, "scout"), "stopped");
+    assert_eq!(env.starts(&scout).len(), 1);
+    let inbox = env.ok(&["inbox", "--member", &scout, "--instance", &inst, "--json"]);
+    let inbox: Value = serde_json::from_slice(&inbox.stdout).unwrap();
+    assert_eq!(inbox["records"][0]["id"], "m1");
     env.ok(&["stop", &inst]);
 }
 
@@ -254,7 +263,7 @@ fn create_of_an_existing_member_is_refused_and_start_resumes_it() {
 // --- 5. delete ---
 
 #[test]
-fn delete_needs_a_stop_and_force_for_open_work_and_keeps_the_folder() {
+fn delete_needs_a_stop_and_force_for_unacked_messages_and_keeps_the_folder() {
     let env = Env::new();
     fs::write(env.path("work/a/keep.txt"), "mine\n").unwrap();
     let inst = env.create("oncall", "work/a");
@@ -264,10 +273,18 @@ fn delete_needs_a_stop_and_force_for_open_work_and_keeps_the_folder() {
         err.contains("running") && err.contains(&format!("brg stop {inst}")),
         "{err}"
     );
-    env.assign(&inst, &lead);
+    let out = env.publish(
+        &inst,
+        "note-1",
+        &json!({"to": lead, "kind": "note", "body": "hi"}),
+    );
+    assert!(out.status.success(), "{}", both(&out));
     env.ok(&["stop", &inst]);
     let err = env.fails(&["delete", &inst]);
-    assert!(err.contains("open work") && err.contains("t1"), "{err}");
+    assert!(
+        err.contains("open work") && err.contains("unread m1"),
+        "{err}"
+    );
     assert!(env.path(&format!("state/{inst}")).is_dir());
     env.ok(&["delete", &inst, "--force"]);
     assert!(!env.path(&format!("state/{inst}")).exists());

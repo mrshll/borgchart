@@ -579,6 +579,7 @@ mod round {
     }
 
     #[test]
+    #[ignore = "rewritten in impl-4"]
     fn one_task_round_with_fake_agents() {
         let team = new_team("round");
         // Resolved, as brg records paths (macOS: /var is /private/var).

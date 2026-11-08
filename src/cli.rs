@@ -152,15 +152,6 @@ enum Command {
         #[command(flatten)]
         args: crate::bus::cli::InboxArgs,
     },
-    /// List and show tasks folded from the instance's messages.
-    #[command(after_long_help = crate::bus::help::task())]
-    Task {
-        /// The instance (outside a member; inside one, only its own).
-        #[arg(long, global = true)]
-        instance: Option<String>,
-        #[command(subcommand)]
-        command: crate::bus::task_cli::TaskCommand,
-    },
     /// Inspect and check the instance's message storage.
     Bus {
         /// The instance (outside a member; inside one, only its own).
@@ -476,9 +467,6 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
         Command::Msg { instance, command } => crate::bus::cli::msg(instance.as_deref(), command),
         Command::Inbox { instance, args } => {
             crate::bus::cli::inbox(instance.as_deref(), args, started)
-        }
-        Command::Task { instance, command } => {
-            crate::bus::task_cli::task(instance.as_deref(), command)
         }
         Command::Bus { instance, command } => crate::bus::cli::bus(instance.as_deref(), command),
         Command::Exec { state, window } => crate::exec::exec_main(&state, &window),

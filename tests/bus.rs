@@ -429,18 +429,6 @@ fn invalid_drafts_write_nothing() {
         ("unknown kind", json!({"to": "lead", "kind": "shout"})),
         ("bad recipient", json!({"to": "Lead", "kind": "note"})),
         (
-            "task kind without task",
-            json!({"to": "helper", "kind": "accept"}),
-        ),
-        (
-            "bad task id",
-            json!({"to": "helper", "kind": "note", "task": "T 1"}),
-        ),
-        (
-            "attempt 0",
-            json!({"to": "helper", "kind": "note", "task": "t", "attempt": 0}),
-        ),
-        (
             "too many refs",
             json!({"to": "lead", "kind": "note", "reply_to": (1..=33).map(|n| format!("m{n}")).collect::<Vec<_>>()}),
         ),
@@ -467,20 +455,6 @@ fn invalid_drafts_write_nothing() {
             json!({"to": "lead", "kind": "note", "facts": {"x": "y".repeat(16 * 1024)}}),
         ),
         ("not a member", note("nobody", "x")),
-        (
-            "assign without facts",
-            json!({"to": "helper", "kind": "assign", "task": "t", "attempt": 1}),
-        ),
-        (
-            "assign bad digest",
-            json!({"to": "helper", "kind": "assign", "task": "t", "attempt": 1,
-                "facts": {"agreement": {"path": "/a.md", "sha256": "xyz"}, "scope": "s"}}),
-        ),
-        (
-            "verify unknown result",
-            json!({"to": "helper", "kind": "verify", "task": "t",
-                "facts": {"result": "m5", "outcome": "accepted"}}),
-        ),
     ];
     for (name, draft) in &cases {
         let out = f.publish(&As::Operator, "k-invalid", draft);
@@ -529,23 +503,6 @@ fn invalid_drafts_write_nothing() {
     );
     assert_eq!(huge.code, 5);
     assert_eq!(f.records(), vec!["0000000001.json"]);
-
-    // A valid assign, and a verify that names a real result.
-    let agreement = f.dir.path().join("agreement.md");
-    fs::write(&agreement, "the parser").unwrap();
-    let sha = format!("{:x}", Sha256::digest(b"the parser"));
-    let assign = json!({"to": "helper", "kind": "assign", "task": "t-1", "attempt": 1,
-        "reply_to": ["m1"],
-        "facts": {"agreement": {"path": agreement, "sha256": sha}, "scope": "the parser"}});
-    assert_eq!(f.publish(&As::Member("lead"), "a-1", &assign).code, 0);
-    let accept = json!({"to": "lead", "kind": "accept", "task": "t-1"});
-    assert_eq!(f.publish(&As::Member("helper"), "c-1", &accept).code, 0);
-    let result = json!({"to": "lead", "kind": "result", "task": "t-1",
-        "facts": {"status": "partial"}});
-    assert_eq!(f.publish(&As::Member("helper"), "r-1", &result).code, 0);
-    let verify = json!({"to": "helper", "kind": "verify", "task": "t-1",
-        "facts": {"result": "m4", "outcome": "rejected"}});
-    assert_eq!(f.publish(&As::Member("lead"), "v-1", &verify).code, 0);
 }
 
 #[test]
@@ -1396,7 +1353,7 @@ fn writers_follow_the_team_to_new_storage() {
 fn an_ack_queued_behind_a_rollover_is_refused() {
     let f = Fixture::new();
     // Old m1 for external:ops; the new storage has an unrelated m1 for it too.
-    let q = json!({"to": "external:ops", "kind": "question", "body": "OLD MESSAGE"});
+    let q = json!({"to": "external:ops", "kind": "note", "body": "OLD MESSAGE"});
     assert_eq!(f.publish(&As::Member("lead"), "q-1", &q).code, 0);
     let lock = hold(&f.run_dir().join("bus/lock"));
     let mut child = spawn(
@@ -1435,84 +1392,64 @@ fn a_reply_queued_behind_a_rollover_is_refused() {
     let f = Fixture::new();
     assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
     let id = TEAM;
-    for (key, draft) in [
-        (
+    let draft = json!({"to": "lead", "kind": "note", "reply_to": ["m1"], "body": "re"});
+    let lock = hold(&f.run_dir().join("bus/lock"));
+    let child = spawn(
+        &f,
+        &As::Operator,
+        &[
+            "msg",
+            "publish",
+            "--key",
             "reply",
-            json!({"to": "lead", "kind": "note", "reply_to": ["m1"], "body": "re"}),
-        ),
-        (
-            "verify",
-            json!({"to": "helper", "kind": "verify", "task": "t",
-                "facts": {"result": "m1", "outcome": "accepted"}}),
-        ),
-    ] {
-        let lock = hold(&f.run_dir().join("bus/lock"));
-        let (who, args): (As, Vec<&str>) = if key == "reply" {
-            (
-                As::Operator,
-                vec![
-                    "msg",
-                    "publish",
-                    "--key",
-                    key,
-                    "--external",
-                    "ops",
-                    "--json",
-                ],
-            )
-        } else {
-            (
-                As::Member("lead"),
-                vec!["msg", "publish", "--key", key, "--json"],
-            )
-        };
-        let child = spawn(&f, &who, &args, &serde_json::to_vec(&draft).unwrap());
-        std::thread::sleep(Duration::from_millis(500));
-        // Roll over to storage that has its own m1, for lead.
-        let next = if key == "reply" { "r42" } else { "r43" };
-        f.write_manifest_for(next, id);
-        for m in ["lead", "helper", "helper2", "sub"] {
-            f.write_private(
-                &f.store_dir()
-                    .join(next)
-                    .join(format!("runtime/incarnations/{m}.json")),
-                &json!({"member": m, "incarnation": format!("{m}-1"),
-                    "started_at": "2026-11-05T19:00:00.000Z"}),
-            );
-        }
+            "--external",
+            "ops",
+            "--json",
+        ],
+        &serde_json::to_vec(&draft).unwrap(),
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    // Roll over to storage that has its own m1, for lead.
+    let next = "r42";
+    f.write_manifest_for(next, id);
+    for m in ["lead", "helper", "helper2", "sub"] {
         f.write_private(
-            &f.store_dir().join(next).join("bus/records/0000000001.json"),
-            &json!({
-                "schema": 1, "run": next, "id": "m1", "seq": 1,
-                "at": "2026-11-05T19:00:00.000Z",
-                "actor": {"type": "external", "name": "ops"},
-                "key": "new-1", "to": "lead", "kind": "result", "task": "t",
-                "facts": {"status": "complete"},
-            }),
+            &f.store_dir()
+                .join(next)
+                .join(format!("runtime/incarnations/{m}.json")),
+            &json!({"member": m, "incarnation": format!("{m}-1"),
+                "started_at": "2026-11-05T19:00:00.000Z"}),
         );
-        fs::write(f.run_dir().join("retired"), "").unwrap();
-        fs::write(f.store_dir().join("current"), format!("{next}\n")).unwrap();
-        drop(lock);
-        let out = finish_within(child, Duration::from_secs(15));
-        assert_eq!(out.code, 8, "{key}: {:?} {}", out.json, out.stderr);
-        assert!(
-            out.json["message"]
-                .as_str()
-                .unwrap()
-                .contains("list the inbox again"),
-            "{key}: {:?}",
-            out.json
-        );
-        let records = f.store_dir().join(next).join("bus/records");
-        assert_eq!(
-            fs::read_dir(&records).unwrap().count(),
-            1,
-            "{key}: nothing written"
-        );
-        // Back to the original storage for the next case.
-        fs::remove_file(f.run_dir().join("retired")).unwrap();
-        fs::write(f.store_dir().join("current"), format!("{RUN}\n")).unwrap();
     }
+    f.write_private(
+        &f.store_dir().join(next).join("bus/records/0000000001.json"),
+        &json!({
+            "schema": 1, "run": next, "id": "m1", "seq": 1,
+            "at": "2026-11-05T19:00:00.000Z",
+            "actor": {"type": "external", "name": "ops"},
+            "key": "new-1", "to": "lead", "kind": "note",
+            "facts": {"status": "complete"},
+        }),
+    );
+    fs::write(f.run_dir().join("retired"), "").unwrap();
+    fs::write(f.store_dir().join("current"), format!("{next}\n")).unwrap();
+    drop(lock);
+    let out = finish_within(child, Duration::from_secs(15));
+    assert_eq!(out.code, 8, "{:?} {}", out.json, out.stderr);
+    assert!(
+        out.json["message"]
+            .as_str()
+            .unwrap()
+            .contains("list the inbox again"),
+        "{:?}",
+        out.json
+    );
+    let records = f.store_dir().join(next).join("bus/records");
+    assert_eq!(
+        fs::read_dir(&records).unwrap().count(),
+        1,
+        "nothing written"
+    );
 }
 
 #[test]
@@ -1868,7 +1805,7 @@ fn read_only_commands_create_nothing() {
 #[test]
 fn external_recipient_flow() {
     let f = Fixture::new();
-    let q = json!({"to": "external:ops", "kind": "question", "body": "ship it?"});
+    let q = json!({"to": "external:ops", "kind": "note", "body": "ship it?"});
     let out = f.publish(&As::Member("lead"), "q-1", &q);
     assert_eq!(out.code, 0, "{:?}", out.json);
     let inbox = f.inbox(&As::Operator, &["--external", "ops"]);
@@ -1892,7 +1829,7 @@ fn external_recipient_flow() {
         Vec::<String>::new()
     );
     // The answer goes back to the member.
-    let d = json!({"to": "lead", "kind": "decision", "reply_to": ["m1"], "body": "yes"});
+    let d = json!({"to": "lead", "kind": "note", "reply_to": ["m1"], "body": "yes"});
     assert_eq!(f.publish(&As::Operator, "d-1", &d).code, 0);
     assert_eq!(ids(&f.inbox(&As::Member("lead"), &[])), ["m2"]);
 }
@@ -2175,4 +2112,128 @@ fn inbox_wait_help_names_the_outcomes_wait_returns() {
             "`{named}` missing from inbox wait --help"
         );
     }
+}
+
+/// The example in `msg publish --help`: the shell block exactly as printed
+/// (from the `<<'EOF'` line through its terminator, untrimmed), the JSON
+/// draft inside it, its key, and the output it says publishing prints.
+struct Example {
+    block: String,
+    draft: String,
+    key: String,
+    printed: String,
+}
+
+fn help_example() -> Example {
+    let out = Command::new(env!("CARGO_BIN_EXE_brg"))
+        .env_clear()
+        .args(["msg", "publish", "--help"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    let mut lines = text.lines().skip_while(|l| !l.contains("<<'EOF'"));
+    let command = lines
+        .next()
+        .expect("a heredoc example in msg publish --help");
+    let key = command
+        .split_whitespace()
+        .skip_while(|w| *w != "--key")
+        .nth(1)
+        .unwrap()
+        .to_string();
+    let mut block = format!("{command}\n");
+    let mut draft = String::new();
+    for l in lines.by_ref() {
+        block.push_str(l);
+        block.push('\n');
+        if l == "EOF" {
+            break;
+        }
+        draft.push_str(l);
+        draft.push('\n');
+    }
+    let printed = lines
+        .find_map(|l| l.strip_prefix("Prints: "))
+        .expect("`Prints: …` after the example")
+        .to_string();
+    Example {
+        block,
+        draft,
+        key,
+        printed,
+    }
+}
+
+fn help_text(args: &[&str]) -> String {
+    let out = Command::new(env!("CARGO_BIN_EXE_brg"))
+        .env_clear()
+        .args(args)
+        .arg("--help")
+        .output()
+        .unwrap();
+    String::from_utf8(out.stdout).unwrap()
+}
+
+#[test]
+fn the_publish_help_example_publishes_and_its_outcomes_are_documented() {
+    let f = Fixture::new();
+    let help = help_text(&["msg", "publish"]);
+    let ex = help_example();
+    assert_eq!(
+        f.publish(
+            &As::Member("lead"),
+            "n1",
+            &note("helper", "Please check the parser.")
+        )
+        .code,
+        0
+    );
+    assert_eq!(
+        f.publish(&As::Member("helper"), "n2", &note("lead", "Checking."))
+            .code,
+        0
+    );
+
+    // Run the block as a member's shell would, pasted as printed.
+    let out = Command::new("sh")
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", f.dir.path())
+        .env("BORGCHART_BIN", env!("CARGO_BIN_EXE_brg"))
+        .env("BORGCHART_STATE_HOME", f.root())
+        .env("BORGCHART_INSTANCE", TEAM)
+        .env("BORGCHART_MEMBER", "helper")
+        .env("BORGCHART_RUN", RUN)
+        .env("BORGCHART_INCARNATION", "helper-1")
+        .args(["-c", &ex.block])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stdout} {stderr}");
+    assert!(stderr.is_empty(), "the shell complained: {stderr}");
+    assert_eq!(stdout.trim(), ex.printed);
+    let record = f.brg(&As::Operator, &["msg", "read", "m3", "--json"], None);
+    assert_eq!(record.json["record"]["kind"], "note");
+
+    let publish = |body: &[u8]| {
+        f.brg(
+            &As::Member("helper"),
+            &["msg", "publish", "--key", ex.key.as_str(), "--json"],
+            Some(body),
+        )
+    };
+    // Retrying is safe; reusing the key for something else is not. Each
+    // outcome publish returned is named in the help with its exit code.
+    let retry = publish(ex.draft.as_bytes());
+    let other = publish(ex.draft.replace("Parser done", "Other").as_bytes());
+    for out in [&retry, &other] {
+        let named = format!("{} ({})", out.json["outcome"].as_str().unwrap(), out.code);
+        assert!(
+            help.contains(&named),
+            "`{named}` missing from msg publish --help"
+        );
+    }
+    assert_eq!(retry.json["outcome"], "duplicate");
+    assert_eq!(other.json["outcome"], "conflict");
 }

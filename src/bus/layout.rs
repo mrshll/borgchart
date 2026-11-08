@@ -147,7 +147,7 @@ impl RunPaths {
 
     /// Written (immutably) when brg rolls the instance's storage over to a new
     /// run. Rollover writes it while holding this run's `bus/lock`, before
-    /// carrying and switching `current`; every writer re-checks it after
+    /// switching `current`; every writer re-checks it after
     /// taking `bus/lock` and, if present, re-resolves `current` instead of
     /// writing here. So nothing published during a rollover is stranded.
     pub fn retired(&self) -> PathBuf {
