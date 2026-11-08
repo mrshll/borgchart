@@ -546,6 +546,108 @@ fn addresses_name_the_instance_in_full_outside_a_member() {
     env.ok(&["stop", &b]);
 }
 
+/// `brg status [<instance>] -w --interval 1`, its output collected as it
+/// comes: one screen per refresh.
+struct Watch {
+    child: std::process::Child,
+    out: std::sync::Arc<std::sync::Mutex<String>>,
+}
+
+impl Watch {
+    fn start(env: &Env, instance: Option<&str>) -> Watch {
+        let mut args = vec!["status"];
+        args.extend(instance);
+        args.extend(["-w", "--interval", "1"]);
+        let mut child = env
+            .cmd(&args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut stdout = child.stdout.take().unwrap();
+        let out = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let sink = out.clone();
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = stdout.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                sink.lock()
+                    .unwrap()
+                    .push_str(&String::from_utf8_lossy(&buf[..n]));
+            }
+        });
+        Watch { child, out }
+    }
+
+    /// Each complete screen so far (one ends where the next begins).
+    fn screens(&self) -> Vec<String> {
+        let out = self.out.lock().unwrap().clone();
+        let mut parts: Vec<String> = out.split("\x1b[2J").skip(1).map(String::from).collect();
+        parts.pop();
+        parts
+    }
+
+    fn running(&mut self) -> bool {
+        self.child.try_wait().unwrap().is_none()
+    }
+
+    fn dump(&self) -> String {
+        self.out.lock().unwrap().clone()
+    }
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[test]
+fn status_w_with_no_instance_follows_every_instance() {
+    let env = Env::new();
+    let mut watch = Watch::start(&env, None);
+    env.wait_for("a screen saying there are none", || {
+        watch
+            .screens()
+            .iter()
+            .any(|s| s.contains("there are no instances"))
+    });
+    let seen = watch.screens().len();
+    env.wait_for("another refresh", || watch.screens().len() > seen);
+    assert!(watch.running(), "{}", watch.dump());
+    let a = env.create("oncall", "work/a");
+    let b = env.create("oncall", "work/b");
+    env.wait_for("a refresh showing both instances", || {
+        watch
+            .screens()
+            .iter()
+            .any(|s| s.contains(&a) && s.contains(&b) && s.contains("lead"))
+    });
+    assert!(watch.running(), "{}", watch.dump());
+    drop(watch);
+    env.ok(&["stop", &a]);
+    env.ok(&["stop", &b]);
+}
+
+#[test]
+fn status_w_with_an_instance_shows_only_that_instance() {
+    let env = Env::new();
+    let a = env.create("oncall", "work/a");
+    let b = env.create("oncall", "work/b");
+    let watch = Watch::start(&env, Some(&a));
+    env.wait_for("two screens", || watch.screens().len() >= 2);
+    for screen in watch.screens() {
+        assert!(screen.contains(&a) && !screen.contains(&b), "{screen}");
+    }
+    drop(watch);
+    env.ok(&["stop", &a]);
+    env.ok(&["stop", &b]);
+}
+
 // --- 9. Removed names ---
 
 #[test]

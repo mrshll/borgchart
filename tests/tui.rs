@@ -224,3 +224,130 @@ fn status_i_attaches_detaches_and_quits() {
     );
     let _ = Path::new(brg);
 }
+
+#[test]
+fn bare_status_i_shows_every_instance_and_attaches_in_the_selected_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let write = |rel: &str, text: &str| {
+        let p = root.join(rel);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, text).unwrap();
+    };
+    write("team/team.yaml", "roles:\n  alpha: {prompt: alpha.md}\n");
+    write("team/alpha.md", "---\n---\nYou are alpha.\n");
+    fs::create_dir_all(root.join("bin")).unwrap();
+    fs::create_dir_all(root.join("home")).unwrap();
+    fs::create_dir_all(root.join("work/a")).unwrap();
+    fs::create_dir_all(root.join("work/b")).unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_fake-agent"), root.join("bin/claude")).unwrap();
+
+    let private = common::PrivateTmux::new();
+    let inner = private.socket("brg-tui-in");
+    let outer = private.socket("brg-tui-out");
+    let env_line = format!(
+        "export PATH={guard}:{bin}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin HOME={home} LANG=C.UTF-8 TERM=xterm-256color BORGCHART_STATE_HOME={state} BORGCHART_CONFIG={home}/config.yaml BORGCHART_TMUX_TMPDIR={tmpdir} BORGCHART_TMUX_SOCKET={inner}\ncd {team}\n",
+        guard = private.bin().display(),
+        bin = root.join("bin").display(),
+        home = root.join("home").display(),
+        state = root.join("state").display(),
+        tmpdir = private.dir().display(),
+        team = root.join("team").display(),
+    );
+    let brg = env!("CARGO_BIN_EXE_brg");
+    let script = root.join("run.sh");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\n{env_line}{brg} create {team} {work}/a >/dev/null || exit 9\n{brg} create {team} {work}/b >/dev/null || exit 9\nexec {brg} status -i\n",
+            team = root.join("team").display(),
+            work = root.join("work").display(),
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+    private
+        .tmux(&outer)
+        .args([
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-s",
+            "o",
+            "-x",
+            "160",
+            "-y",
+            "30",
+        ])
+        .arg(script.display().to_string())
+        .status()
+        .unwrap();
+    let screen = || tmux(&private, &outer, &["capture-pane", "-p", "-t", "=o:"]);
+    let attached = || tmux(&private, &inner, &["list-clients", "-F", "#{session_name}"]);
+    let dump = || format!("outer screen:\n{}", screen());
+
+    let instances = || -> Vec<String> {
+        fs::read(root.join("state/registry.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .and_then(|r| {
+                r["instances"]
+                    .as_object()
+                    .map(|m| m.keys().cloned().collect())
+            })
+            .unwrap_or_default()
+    };
+    wait("two instances", || instances().len() == 2, dump);
+    let ids = instances();
+    // Each instance's header line, then its tree with alpha idle.
+    wait(
+        "both instances on the screen",
+        || {
+            let s = screen();
+            ids.iter().all(|id| s.contains(&format!("{id}  team ")))
+                && s.lines()
+                    .filter(|l| l.contains("alpha") && l.contains("idle"))
+                    .count()
+                    == 2
+        },
+        dump,
+    );
+    // The instance whose header comes second.
+    let s = screen();
+    let at = |id: &String| s.find(&format!("{id}  team ")).unwrap();
+    let second = ids.iter().max_by_key(|id| at(id)).unwrap().clone();
+
+    // Rows: first header, its alpha, second header, its alpha.
+    tmux(
+        &private,
+        &outer,
+        &["send-keys", "-t", "=o:", "j", "j", "j", "Enter"],
+    );
+    wait(
+        "attached to the second instance's alpha",
+        || attached().trim() == format!("brg-{second}"),
+        dump,
+    );
+    tmux(&private, &outer, &["send-keys", "-t", "=o:", "C-b", "d"]);
+    wait(
+        "back in the status screen",
+        || attached().trim().is_empty() && screen().contains("back from alpha"),
+        dump,
+    );
+
+    tmux(&private, &outer, &["send-keys", "-t", "=o:", "q"]);
+    wait(
+        "the screen to close",
+        || {
+            !private
+                .tmux(&outer)
+                .args(["has-session", "-t", "=o"])
+                .status()
+                .unwrap()
+                .success()
+        },
+        dump,
+    );
+}
