@@ -27,6 +27,8 @@ One store lasts for the instance's whole life; message numbers continue across s
 | `records/<seq>.json` | Immutable messages, numbered from 1 without gaps; filenames use ten decimal digits |
 | `acks/<id>.json` | Recipient acknowledgements, such as `m1.json` |
 
+Empty `.agents`, `.aws`, `.codex` and `.git` directories (Codex's sandbox masks) are ignored; files, symlinks, non-empty directories with those names and other unexpected entries are refused.
+
 Start records are in brg's own files outside messages: `members/<member>/incarnation.json`, with history in `members/<member>/incarnations/<id>.json`. Routing uses the member/parent entries in `start.json`. A stopped or replaced start cannot act for the member. Publication and acknowledgement recheck this under the message lock.
 
 Directories must be real, owned by you and private (0700; files 0600). Immutable files use a flushed temporary sibling and a no-replace hard link; a crash may leave a `.tmp-*` file, which readers skip. Reads scan the store; there is no index or archiving.
