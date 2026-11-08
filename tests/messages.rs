@@ -202,6 +202,66 @@ fn a_new_message_returns_before_the_minimum_with_the_whole_inbox() {
 }
 
 #[test]
+fn ack_refresh_catches_up_the_locked_tail_before_validating_acks() {
+    let env = Env::new();
+    let instance = env.create("oncall", "work/a");
+    env.ok(&["create", &format!("{instance}/helper")]);
+    let lead = env.member(&instance, "lead");
+    let helper = env.member(&instance, "helper");
+    send(&env, &instance, &lead, "pending at the first scan");
+    let gate = env.path("ack-refresh-gate");
+    fs::create_dir(&gate).unwrap();
+    let child = waiter(&env, &instance, &lead)
+        .env("BORGCHART_TEST_WAIT_BEFORE_ACK_REFRESH", &gate)
+        .env("BORGCHART_WAIT_TIMEOUT_MS", "3000")
+        .spawn()
+        .unwrap();
+    env.wait_for("wait between incremental read and ack refresh", || {
+        gate.join("ready").exists()
+    });
+
+    // Model whole publications and acknowledgements under the actual writer
+    // lock, after the wait has read its incremental tail and before refresh.
+    let store = env.path(&format!("state/{instance}/messages"));
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(store.join("lock"))
+        .unwrap();
+    lock.lock().unwrap();
+    for (seq, to) in [(2, &helper), (3, &lead)] {
+        let record = json!({"schema": 2, "id": format!("m{seq}"), "seq": seq,
+            "at": "2026-11-08T00:00:00Z", "from": "external:ops", "to": to,
+            "body": "published during ack refresh"});
+        borgchart::bus::fsx::write_new(
+            &store.join(format!("records/{seq:010}.json")),
+            record.to_string().as_bytes(),
+        )
+        .unwrap();
+    }
+    for (id, recipient) in [("m1", &lead), ("m2", &helper)] {
+        let start = env.starts(recipient).last().unwrap().clone();
+        let ack = json!({"schema": 2, "id": id, "at": "2026-11-08T00:00:00Z",
+            "by": {"type": "member", "member": recipient,
+                "incarnation": start["env"]["BORGCHART_INCARNATION"]}});
+        borgchart::bus::fsx::write_new(
+            &store.join(format!("acks/{id}.json")),
+            ack.to_string().as_bytes(),
+        )
+        .unwrap();
+    }
+    drop(lock);
+    fs::write(gate.join("proceed"), b"").unwrap();
+    let out = finish(child);
+    assert!(out.status.success(), "{}", both(&out));
+    let inbox: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(inbox["records"].as_array().unwrap().len(), 1);
+    assert_eq!(inbox["records"][0]["id"], "m3");
+    env.ok(&["bus", "check", "--instance", &instance, "--json"]);
+    env.ok(&["stop", &instance]);
+}
+
+#[test]
 fn existing_messages_wait_for_the_minimum_and_match_inbox_output() {
     let env = Env::new();
     let instance = env.create("oncall", "work/a");
@@ -354,6 +414,18 @@ fn status_shows_unacked_counts_and_survives_store_damage() {
     assert!(text.contains("messages unavailable"), "{text}");
     assert!(env.row(&instance, "lead").get("unread").is_none());
     env.ok(&["stop", &instance]);
+
+    // No bus is the other boundary of the unread-count scenario.
+    let env = Env::new();
+    env.write("teams/oncall/team.yaml", &TEAM.replace("bus: {}\n", ""));
+    let instance = env.create("oncall", "work/a");
+    assert!(env.row(&instance, "lead").get("unread").is_none());
+    let text = stdout(&env.ok(&["status", &instance]));
+    assert!(
+        !text.contains("unread") && !text.contains("messages unavailable"),
+        "{text}"
+    );
+    env.ok(&["stop", &instance]);
 }
 
 #[test]
@@ -383,18 +455,4 @@ fn a_damaged_store_and_an_unreadable_next_record_wait_before_erroring() {
         assert!(start.elapsed() >= Duration::from_millis(700));
         env.ok(&["stop", &instance]);
     }
-}
-
-#[test]
-fn status_without_a_bus_has_no_unread_counts_or_bus_warning() {
-    let env = Env::new();
-    env.write("teams/oncall/team.yaml", &TEAM.replace("bus: {}\n", ""));
-    let instance = env.create("oncall", "work/a");
-    assert!(env.row(&instance, "lead").get("unread").is_none());
-    let text = stdout(&env.ok(&["status", &instance]));
-    assert!(
-        !text.contains("unread") && !text.contains("messages unavailable"),
-        "{text}"
-    );
-    env.ok(&["stop", &instance]);
 }

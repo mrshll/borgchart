@@ -311,11 +311,11 @@ fn member_cwd(folder: &Path, cwd: Option<&str>, member: &str) -> Result<PathBuf,
 /// Everything is checked before anything is written. Starting into a
 /// running instance (its session exists and its start record is there)
 /// reuses the base environment and plugin values it started with, and
-/// refuses a changed configuration. With a bus, a full start of a stopped
-/// instance rolls its message storage over when the configuration or format
-/// changed. The registry and lifecycle locks are held while files are
-/// written and windows started, and released before waiting for gates and
-/// folder trust.
+/// refuses a changed configuration. A bus keeps one store; changed files apply
+/// on a full start only once every member is positively stopped. A start of
+/// one member with changed files is refused. The registry and lifecycle locks
+/// are held while files are written and windows started, and released before
+/// waiting for gates and folder trust.
 fn start_members(
     lock: registry::Lock,
     inst: &Instance,

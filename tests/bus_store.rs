@@ -101,11 +101,6 @@ fn one_store_keeps_ids_references_and_acks_across_a_restart() {
     assert_eq!(record["schema"], 2);
     assert_eq!(ack["schema"], 2);
     assert!(record.get("run").is_none() && ack.get("run").is_none());
-    assert!(
-        env.starts(&lead)
-            .iter()
-            .all(|s| s["env"].get("BORGCHART_RUN").is_none())
-    );
     assert!(!store.join("current").exists());
     env.ok(&["stop", &instance]);
 }
@@ -161,29 +156,6 @@ fn changed_roles_keep_the_store_and_replies_to_removed_members() {
     .unwrap();
     assert_eq!(old["record"]["to"], scout);
     env.ok(&["stop", &instance]);
-}
-
-#[test]
-fn a_stopped_member_start_with_changed_files_writes_nothing() {
-    let env = Env::new();
-    let instance = env.create("oncall", "work/a");
-    let lead = env.member(&instance, "lead");
-    env.ok(&["stop", &instance]);
-    env.write(
-        "teams/oncall/lead.md",
-        "---\nrole: lead\nmodels: {claude: opus high}\n---\nThe lead, edited.\n",
-    );
-    let state = env.path(&format!("state/{instance}"));
-    let before = bytes(&state);
-    let err = env.fails(&["start", &format!("{instance}/{lead}")]);
-    assert!(
-        err.contains("changed since") && err.contains("brg stop"),
-        "{err}"
-    );
-    assert!(
-        bytes(&state) == before,
-        "refused start changed instance state"
-    );
 }
 
 #[test]

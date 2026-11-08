@@ -66,6 +66,7 @@ pub fn wait() -> String {
     "Waits for your own inbox, or external:NAME with --external NAME.
 --timeout is 60-86400 seconds, default 86400. --full includes message bodies;
 --json prints the same inbox object as `brg inbox --json`.
+The 60 s floor matches the loop guard on every nonzero exit, timeout included.
 
 The first readable scan marks the newest message. A new unacked message to
 you returns at once. Messages already present return after 60 seconds only if

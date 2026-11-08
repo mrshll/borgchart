@@ -98,7 +98,7 @@ A small top level for people. `brg --help` and `brg <command> --help` give the f
 | `brg inbox [--member ID \| --external NAME] [--full] [--json]` | List every unacked message, oldest first; --full includes bodies |
 | `brg msg read ID [--json]` | Read one message, including an acknowledged one |
 | `brg msg ack ID… [--external NAME] [--json]` | Acknowledge messages addressed to you |
-| `brg inbox wait [--external NAME] [--timeout SECONDS] [--full] [--json]` | Wait for your inbox: new messages at once, existing ones after 60 seconds if still unacked; timeout 60–86400, default 86400 |
+| `brg inbox wait [--external NAME] [--timeout SECONDS] [--full] [--json]` | Wait for your inbox: new messages at once, existing ones after 60 seconds if still unacked; timeout 60–86400, default 86400. The 60 s floor matches the loop guard on every nonzero exit, including timeout |
 | `brg bus check [--json]` | Report gaps and unreadable files without writing |
 
 **Addressing.** `devteam-k3f9/lead-q8m3`. Inside a member, a bare member ID means its own instance; everywhere else the instance is named in full ([concepts](concepts.md#names-and-ids)). Bus commands take `--instance ID` outside a member. An outside caller, for example a person's script or a coordinating agent, adds `--external NAME` (refused inside a member) and is answered at `external:NAME`.

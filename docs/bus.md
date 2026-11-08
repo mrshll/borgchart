@@ -110,7 +110,7 @@ Repeating an ack returns `already` for that ID.
 "$BORGCHART_BIN" inbox wait --timeout 600 --full --json
 ```
 
-- Timeout is 60–86400 seconds, default 86400. With no new message by the deadline it exits 9 (`timeout`).
+- Timeout is 60–86400 seconds, default 86400; the 60 s floor matches the loop guard on every nonzero exit, including timeout. With no new message by the deadline it exits 9 (`timeout`).
 - The highest sequence in the first readable scan is the start mark. A new unacked message to you above it returns at once.
 - If unacked messages were already there, it returns after 60 seconds, only if some are still unacked. If all were acked meanwhile, it keeps waiting for a new one or the timeout.
 - Errors, including missing identity, unreadable records and usage errors, return no sooner than 60 seconds after command start. Explicit help and signals are exempt.

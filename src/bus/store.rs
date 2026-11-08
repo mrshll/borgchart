@@ -721,7 +721,25 @@ fn next_record(paths: &StorePaths, seq: u64) -> Result<Option<Record>, Failure> 
     Ok(Some(record))
 }
 
-fn refresh_acks(bus: &Bus, snap: &mut Snapshot, deadline: Instant) -> Result<(), Failure> {
+fn refresh_acks(
+    bus: &Bus,
+    snap: &mut Snapshot,
+    next: &mut u64,
+    deadline: Instant,
+) -> Result<(), Failure> {
+    #[cfg(feature = "test-support")]
+    if let Some(gate) = std::env::var_os("BORGCHART_TEST_WAIT_BEFORE_ACK_REFRESH") {
+        let gate = std::path::PathBuf::from(gate);
+        fs::write(gate.join("ready"), b"")
+            .map_err(|e| Failure::io("cannot signal the test ack refresh", e))?;
+        while !gate.join("proceed").exists() {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(Failure::new(Code::Timeout, "test ack refresh timed out"));
+            }
+            std::thread::sleep(POLL.min(remaining));
+        }
+    }
     let _lock = match read_lock_until(&bus.paths, Some(deadline))? {
         ReadLock::TimedOut => {
             return Err(Failure::new(
@@ -732,6 +750,18 @@ fn refresh_acks(bus: &Bus, snap: &mut Snapshot, deadline: Instant) -> Result<(),
         ReadLock::NoStore => None,
         ReadLock::Held(lock) => Some(lock),
     };
+    // A publisher and recipient may have committed both a message and its
+    // ack since the last poll. Catch up under the same lock as the ack scan.
+    while let Some(record) = next_record(&bus.paths, *next)? {
+        snap.records.insert(*next, record);
+        *next += 1;
+        if Instant::now() >= deadline {
+            return Err(Failure::new(
+                Code::Timeout,
+                "nothing new before the timeout",
+            ));
+        }
+    }
     snap.acks.clear();
     let seqs = snap.records.keys().copied().collect();
     let mut problems = Vec::new();
@@ -777,7 +807,7 @@ pub fn wait(
             }
         }
         if arrived || (old_pending && Instant::now() >= minimum) {
-            refresh_acks(bus, &mut snap, deadline)?;
+            refresh_acks(bus, &mut snap, &mut next, deadline)?;
             actor_for(bus, caller)?;
             let inbox = list(bus, &snap, to);
             if (old_pending && Instant::now() >= minimum && !inbox.records.is_empty())

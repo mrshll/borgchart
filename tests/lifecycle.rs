@@ -785,7 +785,7 @@ fn a_changed_member_file_refuses_a_child_start() {
     assert_eq!(last_line(&out.stderr), refusal);
     assert_unchanged(&before, &env.snapshot());
 
-    // A stopped instance's member start never rolls over: it refuses too.
+    // Starting one member of a stopped instance with changed files is refused.
     env.ok(&["stop"]);
     let before = env.snapshot();
     let out = env.brg(&["start", "helper"]);
