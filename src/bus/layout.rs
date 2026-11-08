@@ -115,7 +115,7 @@ impl TeamStore {
     }
 
     /// Create `id`'s directory if needed and check that the root, the
-    /// team's directory and the run directory are private: see
+    /// instance's directory and the run directory are private: see
     /// [`super::fsx::ensure_private_tree`]. Every writer calls this before
     /// its first write into a run.
     pub fn ensure_run(&self, id: &str) -> std::io::Result<RunPaths> {
@@ -145,7 +145,7 @@ impl RunPaths {
         self.root.join("run.json")
     }
 
-    /// Written (immutably) when brg rolls the team's storage over to a new
+    /// Written (immutably) when brg rolls the instance's storage over to a new
     /// run. Rollover writes it while holding this run's `bus/lock`, before
     /// carrying and switching `current`; every writer re-checks it after
     /// taking `bus/lock` and, if present, re-resolves `current` instead of
@@ -159,7 +159,7 @@ impl RunPaths {
     pub fn runtime_dir(&self) -> PathBuf {
         self.root.join("runtime")
     }
-    /// Serializes `up`, `down` and member starts/stops for this run.
+    /// Serializes a start, `stop` and member starts/stops for this run.
     pub fn lifecycle_lock(&self) -> PathBuf {
         self.runtime_dir().join("lifecycle.lock")
     }
@@ -210,7 +210,7 @@ impl RunPaths {
     pub fn attention_dir(&self) -> PathBuf {
         self.root.join("attention")
     }
-    /// Held by the team's one running watcher.
+    /// Held by the instance's one running watcher.
     pub fn worker_lock(&self) -> PathBuf {
         self.attention_dir().join("worker.lock")
     }

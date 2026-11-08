@@ -45,7 +45,7 @@ pub enum Attention {
     None,
     /// The attention worker will look at it.
     Queued,
-    /// Attention can't be arranged (e.g. the deployment isn't running).
+    /// Attention can't be arranged (e.g. the instance isn't running).
     Unavailable(String),
 }
 

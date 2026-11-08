@@ -68,6 +68,15 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// List the secrets a team's plugins need, and whether each is set in
+    /// your environment. Prints no values and writes nothing.
+    Secret {
+        /// The team: its name in the search paths, or a path to its folder.
+        team: String,
+        /// Print {secrets: [{plugin, name, set}]} as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// List the teams in the search paths, each with its instances.
     Ls {
         /// Print the list as JSON.
@@ -308,6 +317,23 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
             let inst = or_fail!(address::instance(&instance));
             for m in or_fail!(runtime::delete(inst, force)) {
                 println!("{m}");
+            }
+            ExitCode::SUCCESS
+        }
+        Command::Secret { team, json } => {
+            let secrets = or_fail!(runtime::secrets(&team));
+            if json {
+                let rows: Vec<serde_json::Value> = secrets
+                    .iter()
+                    .map(|(p, n, set)| serde_json::json!({"plugin": p, "name": n, "set": set}))
+                    .collect();
+                println!("{}", serde_json::json!({ "secrets": rows }));
+            } else if secrets.is_empty() {
+                println!("the team's plugins need no secrets");
+            } else {
+                for (plugin, name, set) in &secrets {
+                    println!("{plugin}: {name}  {}", if *set { "set" } else { "not set" });
+                }
             }
             ExitCode::SUCCESS
         }

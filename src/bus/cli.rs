@@ -522,7 +522,7 @@ pub fn inbox(instance: Option<&str>, args: InboxArgs, started: Instant) -> ExitC
                         format!("nothing new for {} after {timeout}s", t.recipient),
                     )
                 };
-                // Each poll finds the team's current storage again and checks
+                // Each poll finds the instance's current storage again and checks
                 // the inbox, the caller and the format against it: a restart
                 // while waiting must not leave the wait on old storage.
                 loop {

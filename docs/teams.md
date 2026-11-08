@@ -1,6 +1,6 @@
 # Defining a brg team (proposal)
 
-**Status: proposal.** This page describes, in one place, how a team and its plugins are defined and used once the work in review lands. Today's shipped format is in [format.md](format.md). Items marked **Open** are not decided yet. For command syntax, `brg … --help` is the authority; the tables below are a short summary.
+**Status: proposal, partly superseded.** This page describes, in one place, how a team and its plugins are defined and used once the work in review lands. Teams, instances, roles, members and the four verbs (`create`, `start`, `stop`, `delete`) are decided in [concepts.md](concepts.md), which wins where this page differs. Today's shipped format is in [format.md](format.md). Items marked **Open** are not decided yet. For command syntax, `brg … --help` is the authority; the tables below are a short summary.
 
 ## The files
 
@@ -12,11 +12,10 @@ devteam/
 ├── orchestrator.md    # one file per member: role, models, standing instruction
 ├── implementer.md
 ├── reviewer.md
-├── includes/base.md   # shared text, pulled in with {{includes/base}}
-└── borgchart.yaml     # values for this one place: name, folders, local rules
+└── includes/base.md   # shared text, pulled in with {{includes/base}}
 ```
 
-The team directory is shareable: it says nothing about one machine or one project. `borgchart.yaml` holds what changes per place, and in practice lives outside the team directory.
+The team folder is shareable: it says nothing about one machine or one project. What belongs to you (auth, trust, where teams are found) is in brg's configuration, `~/.config/borgchart/config.yaml`; the folder an instance works in is given at `brg create devteam <folder>`.
 
 ### `team.yaml`
 
@@ -31,7 +30,7 @@ members:
     prompt: implementer.md
     vendor: codex
     parent: lead
-    start: false                       # the lead starts it when there's work: brg up --member implementer
+    start: false                       # the lead creates it when there's work: brg create <instance>/implementer
   reviewer:
     prompt: reviewer.md
     vendor: claude
@@ -61,28 +60,19 @@ You are the implementer on a development team. The lead assigns you one bounded 
 - **Body:** the standing instruction. It's sent once, when the member starts.
 - **Includes:** one level deep.
 
-### `borgchart.yaml`
+### Instances
 
-```yaml
-schema: 1
-name: devteam                          # the team's name on the command line
-auth: login
-auto_trust: false
-bus:                                   # turns messages on for this team
-  root: ~/.local/state/brg-teams       # where messages are kept; survives reboots
-members:
-  lead:
-    cwd: ~/work/project
-    rules: |                           # local rules: today's `task:`, renamed in #19
-      Checks: the repository's hooks. GitHub: act as the team's own account.
-  implementer: {cwd: ~/work/project-impl}   # one checkout per writer
-  reviewer:    {cwd: ~/work/project-review} # read-only; its tasks name no checkout
+```
+$ brg create devteam ~/work/project
+devteam-k3f9  team ~/.config/borgchart/teams/devteam · folder ~/work/project
+└─ lead-q8m3            claude opus high          started
+   ├─ implementer       on demand (none created)
+   └─ reviewer          on demand (none created)
 ```
 
-- **`name`:** defaults to the folder's name. It must be unique among your teams; a second folder with the same name is refused.
-- **`bus`:** turns messages on. Without it, the team works as today: you drive it with `prompt`.
-- **Per member:** `cwd`, `rules` (local rules appended to the instruction: the project's checks and conventions, paths, which GitHub identity to use), `posture` and extra vendor `args`. `rules` is today's `task:`; the rename is part of #19. It holds standing rules, not a one-shot task: the back-and-forth happens in chat with the lead.
-- **Secrets:** never written here. They come from your environment by name when you run `brg up`.
+- **`create`** makes a new instance in that folder, with a suffixed ID; run it twice and you have two. The team's `bus: {}` turns messages on.
+- **Per role** in `team.yaml`: `posture`, extra vendor `args` and an optional `cwd` inside the instance's folder. Standing rules go in the team's own files; context for one piece of work goes to the lead in a message.
+- **Secrets:** brg stores none. They come from your environment by name when you run `brg create` or `brg start`; `brg secret devteam` lists which are set.
 
 ## Commands
 
@@ -90,23 +80,15 @@ A small top level for people. `brg --help` and `brg <command> --help` give the f
 
 | Command | What it does |
 | --- | --- |
-| `brg validate` | Check everything without starting anything |
-| `brg up [team] [--member M]` | Start the team (or one member). Prints the team as a tree with each member's model and what happened. |
-| `brg down [team] [--member M]` | Stop it |
-| `brg status [team] [--check]` | The same tree, live: who is idle, working or blocked, plus open tasks, questions and alerts. `--check` exits non-zero when a person is needed. |
-| `brg ls` | Your teams, running or stopped |
-| `brg attach [team/]member`, `brg logs [team/]member` | Watch a member |
-| `brg prompt [team/]member TEXT` | Type into a member now (today's `brg send`) |
+| `brg validate <team>` | Check everything without starting anything |
+| `brg create <team> <folder>`, `brg create <instance>/<role>` | Make a new instance, or a role's member, and start it. Prints the tree with each member's model and what happened. |
+| `brg start <instance>[/<member>]`, `brg stop <instance>[/<member>]` | Bring it back, or stop it |
+| `brg delete <instance>` | Remove a stopped instance |
+| `brg status [instance] [--check]` | The same tree, live: who is idle, working or blocked, plus open tasks, questions and alerts. `--check` (proposed) exits non-zero when a person is needed. |
+| `brg ls` | Your teams, each with its instances |
+| `brg attach <instance>/<member>`, `brg logs <instance>/<member>` | Watch a member |
+| `brg prompt <instance>/<member> TEXT` | Type into a member now (today's `brg send`) |
 | `brg message …` | Messages, below |
-
-`brg up devteam` prints:
-
-```
-devteam
-└─ lead            claude opus high       started
-   ├─ implementer  codex gpt-6.1-sol high not started (start: false)
-   └─ reviewer     claude opus high       not started (start: false)
-```
 
 **Messages**, mostly used by members:
 
@@ -118,7 +100,7 @@ devteam
 | `brg message ack [team/]ID…` | Mark as handled |
 | `brg message wait [[team/]member] --timeout S` | Wait for the next one |
 
-**Addressing.** `devteam/lead`, or just `lead` when that's unambiguous: inside a member (its own team), in the team's folder, or when only one running team has a `lead`. Otherwise brg asks you to name the team. An outside caller, for example a person's script or a coordinating agent, adds `--external NAME` (refused inside a member) and is answered at `external:NAME`.
+**Addressing.** `devteam-k3f9/lead-q8m3`. Inside a member, a bare member ID means its own instance; everywhere else the instance is named in full ([concepts](concepts.md#names-and-ids)). An outside caller, for example a person's script or a coordinating agent, adds `--external NAME` (refused inside a member) and is answered at `external:NAME`.
 
 ## How members talk
 
@@ -137,21 +119,9 @@ devteam
 - **A hidden watcher per team is the safety net** (#20). It looks for members with unread messages and no working wait, and wakes them the vendor's way. Its last resort is to type one fixed reminder, and only into a provably empty input box. When it can't do that safely, it alerts a person through the team's alert action (#8), which is parked until the watcher lands with it.
 - **Version check.** Each of these is enabled per vendor and version only after it has been tested on that CLI.
 
-## Secrets (proposed, not in this work)
+## Secrets
 
-Today a plugin's secrets come from your environment when you run `brg up`, so they must be present at every start. The proposal is to register them with brg once, as Modal or Kubernetes do:
-
-```
-$ op read op://vault/chat/token | brg secret add devteam CHAT_TOKEN
-$ brg secret ls devteam
-CHAT_TOKEN     added 2026-11-06
-$ brg secret rm devteam CHAT_TOKEN
-```
-
-- **`add`** reads the value from stdin. Paste it, or pipe it from a password manager; where it comes from is your business. It never appears in a command line, a prompt or a log.
-- **`ls`** shows names and dates, never values.
-- **Scope:** a secret belongs to one team. A secret shared by every team in a session is an open question.
-- **Persistence:** registered secrets survive restarts and reboots. Plugins receive them through brg's existing private-file mechanism, as declared in `env`; agents never see them.
+Decided: brg stores no secrets. A plugin's secrets come from the environment `brg create` or `brg start` runs in (for example under your password manager's `run`), go only to that plugin's 0600 file, and are removed at `brg stop`. `brg secret <team>` lists the names the plugins need and whether each is set, without values. 0600 keeps other users out, not the members: a member that isn't `locked` could read the file while it exists.
 
 ## Roles with several copies (Open: design only, a later change)
 
@@ -166,7 +136,7 @@ members:
     max: 3                             # up to three copies at once
 ```
 
-- **Starting a copy.** Each `brg up --member implementer` starts one new copy: `implementer-1`, then `implementer-2`, and so on. Past `max` it's refused, and the refusal lists the running copies. Each copy gets the same member file, plus its own name and checkout (below).
+- **Starting a copy.** Each `brg create <instance>/implementer` starts one new copy, with its own suffixed ID. Past `max` it's refused, and the refusal lists the running copies. Each copy gets the same member file, plus its own name and checkout (below).
 - **The tree** shows running copies with their live state. A role with none running gets one dim line:
 
   ```
@@ -182,7 +152,7 @@ members:
   ```
 
   Ended copies leave the tree; `brg status --all` could list them.
-- **Addressing.** `devteam/implementer-2` reaches one copy. A bare `implementer` works only while exactly one copy is running; otherwise brg errors and lists the copies, the same rule as for team names. `brg down --member implementer` follows the same rule.
+- **Addressing.** `devteam/implementer-2` reaches one copy. A bare `implementer` works only while exactly one copy is running; otherwise brg errors and lists the copies, the same rule as for team names.
 - **Messages to the role.** A message sent to `implementer`, rather than to one copy, waits in a shared queue for the role. The first copy to take it gets it.
 
 Proposed changes to this direction, and why:
@@ -198,12 +168,12 @@ Open questions:
 
 - **Is `max` required?** Proposed: optional, default 1, with a sane upper bound (e.g. 8).
 - **Checkouts.** A checkout holds one writer, so each copy needs its own. Options:
-  - a `cwd` template in `borgchart.yaml`, like `cwd: ~/work/project-impl-{n}`, with folders you create (simplest, and brg doesn't manage git);
+  - a role `cwd` with `{member}`, like `cwd: copies/{member}`, inside the instance's folder, with folders you create (simplest, and brg doesn't manage git);
   - brg creates and later removes a git worktree per copy.
 
   Proposed: the template first.
 - **When every copy has ended,** unacknowledged role messages stay queued. `status` shows them (`implementer  on demand (none running) · 2 waiting`), and the parent is told. Should brg start a copy by itself instead?
-- **A copy that ends with an open task:** does the task go back to the parent for reassignment, or wait for `brg up --member implementer-2` to restart that same copy?
+- **A copy that ends with an open task:** does the task go back to the parent for reassignment, or wait for `brg start <instance>/<copy>` to restart that same copy?
 
 ## Teams as members (departments) (Open: design only, a later change)
 
@@ -221,7 +191,7 @@ members:
     max: 4
 ```
 
-- **Starting one.** `brg up --member ws` starts `ws-1`, a whole copy of the sub-team. Its top member is the member itself: the department's lead writes to `ws-1` and reaches `ws-1`'s lead. The sub-team's own on-demand roles sit under that lead and are started by it, as in any team.
+- **Starting one.** `brg create <instance>/ws` starts `ws-1`, a whole copy of the sub-team. Its top member is the member itself: the department's lead writes to `ws-1` and reaches `ws-1`'s lead. The sub-team's own on-demand roles sit under that lead and are started by it, as in any team.
 - **The rules already decided apply at every level:**
   - **The tree nests:**
 
@@ -238,22 +208,22 @@ members:
   - **Addressing extends:** `coding/ws-2/lead`, `coding/ws-2/implementer-1`. Bare names resolve relative to the sender, so inside `ws-2`, `implementer-1` means `ws-2`'s own copy.
   - **`parent` chains escalation upward:** a sub-team's lead escalates to the member it hangs under, and so on up to the person.
   - **Each copy freezes its own configuration** at its start and gets its own checkouts. The `cwd` template from the copies section keeps one writer per checkout, now per sub-team copy.
-- **Quota and model routing are not core.** They're a plugin the lead uses before seating a team or a copy, for example a `route` action that answers "go" or "wait", based on usage, before the lead runs `brg up --member ws`. brg itself never checks quotas.
+- **Quota and model routing are not core.** They're a plugin the lead uses before seating a team or a copy, for example a `route` action that answers "go" or "wait", based on usage, before the lead runs `brg create <instance>/ws`. brg itself never checks quotas.
 
 Proposed changes to this direction, and why:
 
 1. **`team:` must be inside the team folder, or `shared:<name>` as for plugins, never a path like `../medium`.** The team folder is meant to be shareable and say nothing about one machine. A path outside it breaks that.
 2. **One message store per department, not one per sub-team.** Copies are namespaced members (`ws-2/lead`) in the department's single store. A parent-to-child message is then an ordinary local record, with one sequence, one inspect and one check. Separate stores would need delivery between stores, and a rollover would have to coordinate them.
 3. **A sub-team copy can't write to outside callers.** Only the outermost team's top member answers `external:NAME`. Inside a department, a sub-team's top member writes to its parent. Otherwise every workstream could reach the person directly, around the department's lead.
-4. **Per-copy values come from the department's `borgchart.yaml`,** under that member, with `{n}` in paths, for example `ws: {members: {lead: {cwd: ~/work/project-ws{n}}}}`. A sub-team's own `borgchart.yaml` is ignored when it runs as a member. One place configures the whole department.
-5. **The routing plugin starts as go/wait only.** Letting it change a copy's vendor or model would make `up --member` take overrides that member files currently pin. Add overrides only if go/wait proves too little.
+4. **Per-copy folders come from the role's `cwd` with `{member}`,** inside the department's one working folder.
+5. **The routing plugin starts as go/wait only.** Letting it change a copy's vendor or model would make `create` take overrides that member files currently pin. Add overrides only if go/wait proves too little.
 
 Open questions:
 
 - **Depth.** Cycles (a team containing itself, directly or not) are refused at `validate`. Is there also a depth limit? Proposed: 3 levels, raise it if needed.
-- **Standalone use.** Can a sub-team's folder also run as an ordinary team? Proposed: yes, with its own `borgchart.yaml`, and that file is ignored when the team runs as a member.
+- **Standalone use.** Can a sub-team's folder also run as an ordinary team? Proposed: yes, as its own instance.
 - **Storage.** Shared with the department (proposed above) or one store per sub-team.
-- **Stopping.** `brg down --member ws-2` stops the whole copy. What about the open tasks of its members (the same question as for a copy that ends with an open task)?
+- **Stopping.** `brg stop <instance>/ws-2` stops the whole copy. What about the open tasks of its members (the same question as for a copy that ends with an open task)?
 - **Siblings.** Can `ws-1/lead` message `ws-2/lead` directly? Proposed: no, only through their common parent, as for any siblings.
 - **Display.** Should `status` fold a busy sub-team into one line by default, with `--all` expanding it?
 
@@ -263,31 +233,22 @@ Open questions:
 - **brg versions.** Nothing is pinned: every call uses the installed `brg`. If an upgraded brg can't read a team's messages, it says exactly what to do:
 
   ```
-  brg: team `devteam`'s messages use format 1; this brg uses format 2.
-  Restart the team to start fresh storage in the new format: brg down devteam && brg up devteam
-  (Open work in the old format isn't carried over; the old messages stay on disk.)
+  brg: instance `devteam-k3f9`'s messages use format 1; this brg uses format 2.
   ```
 
-  So after such an upgrade, unfinished tasks have to be sent again.
+  brg refuses to start such an instance, and points to `brg create` for a fresh one; its open work has to be sent again.
 
-- **Configuration changes** take effect at the next `brg down`/`brg up`. Starting one member into a running team with changed files says so, in team and member terms.
+- **Configuration changes** take effect at the next full `brg stop` and `brg start`. Starting one member into a running instance with changed files says so, in instance and role terms.
 
 ## Limits
 
 - **Trusted, same-user operation.** Members can reach each other's terminals; nothing isolates them.
-- **A reboot stops every team.** Messages stored under `/tmp` may not survive it, so keep `max_age_days` under your system's temporary-file cleanup age.
+- **A reboot stops every instance.** brg refuses a state folder under `/tmp`, so messages survive it.
 - **`locked` members can't use messages yet.**
 
 ## Open
 
 - **Roles with several copies** and **teams as members** (above).
-- **Deployment shape:** one deployment file that declares several teams, or named teams on the command line (`brg up dev-team`), decided after the first real run of `dev-team/` (#34). Today each team has its own file, and a lead that seats a second team (like the design panel) passes `--file`.
 - **Sessions:** whether separate groups of teams (`--session`) are needed at all. They are kept minimal for now.
-- **Storage key:** messages are keyed by the deployment's location, so moving the team's folder starts empty. Should `name` be the key instead?
-- **Secrets:**
-  - whether secrets can also be shared across a session;
-  - how they're stored at rest (an OS keystore, systemd credentials, the macOS Keychain, or private files);
-  - rotation;
-  - which plugin or member may read which secret;
-  - how a deployed team maps them to a cloud secret manager.
+- **Secrets:** how a hosted brg would map them to a cloud secret manager.
 - **When renames land:** `prompt`, `message …`, `rules:` and the folded commands arrive in one follow-up change (#19). Until then the commands keep today's names (`send`, `msg`, `inbox`, `task:`).

@@ -1,4 +1,4 @@
-//! Process trees, for `brg down`: the processes under the panes it stops,
+//! Process trees, for `brg stop`: the processes under the panes it stops,
 //! found before the panes are killed and ended by PID afterwards. A child
 //! that left its pane's process group or session (with `setsid`, or inside
 //! a sandbox's own PID namespace) outlives its pane otherwise.
@@ -90,7 +90,7 @@ pub fn owned(table: &[Proc], panes: &[u32], server: u32) -> Result<(), String> {
 
 /// The processes under the given pane PIDs now, as tmux server `server`
 /// (its PID and socket) reported them, leaving out brg itself and its
-/// ancestors: a member may run `brg down` from inside its own pane. `Err`
+/// ancestors: a member may run `brg stop` from inside its own pane. `Err`
 /// when they can't be told apart from unrelated processes.
 pub fn snapshot(panes: &[u32], server: u32, socket: &Path) -> Result<Vec<Proc>, String> {
     if panes.is_empty() {
@@ -367,7 +367,7 @@ mod tests {
         assert_eq!(ancestry(&table, 12), BTreeSet::from([12, 13]));
     }
 
-    // Catches: `brg down`, run by a member inside its own pane, signalling
+    // Catches: `brg stop`, run by a member inside its own pane, signalling
     // itself or the shell and agent it runs under.
     #[test]
     fn brg_and_its_ancestors_are_kept() {

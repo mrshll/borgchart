@@ -382,9 +382,27 @@ exec '{real}' "$@"
 "#
         );
         std::fs::create_dir_all(self.bin()).unwrap();
-        let guard = self.guard();
-        std::fs::write(&guard, script).unwrap();
-        std::fs::set_permissions(&guard, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(&self.guard(), &script);
+        // A child another test thread forked while the guard's file was open
+        // for writing holds that descriptor until it runs its own program,
+        // and starting the guard meanwhile fails with "Text file busy"
+        // (`ETXTBSY`). Children forked later never hold it, so once one
+        // start succeeds it can't happen again: start it now, harmlessly
+        // (`list-sessions` on a server that doesn't exist), until it runs.
+        for _ in 0..100 {
+            match command(self.guard())
+                .env("TMUX_TMPDIR", &self.path)
+                .args(["-f", "/dev/null", "-L", "brg-probe", "list-sessions"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+            {
+                Err(e) if e.raw_os_error() == Some(26) => {
+                    std::thread::sleep(Duration::from_millis(20))
+                }
+                _ => return,
+            }
+        }
     }
 }
 
@@ -432,6 +450,16 @@ impl Drop for PrivateTmux {
             panic!("the tmux guard refused:\n{refused}");
         }
     }
+}
+
+/// Write an executable script under a temporary name, then rename it into
+/// place, so it is never run half-written. (A child another thread forks
+/// while it is open can still hold it briefly: see `write_guard`.)
+pub fn write_executable(path: &Path, text: &str) {
+    let tmp = path.with_extension("brg-tmp");
+    std::fs::write(&tmp, text).unwrap();
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::rename(&tmp, path).unwrap();
 }
 
 /// Remove a file or symbolic link, or a directory with everything in it

@@ -12,43 +12,34 @@ Limits that hold throughout:
 
 ## Configuration
 
-The bus is enabled per deployment, in `borgchart.yaml`:
+The bus is enabled per team, in `team.yaml`:
 
 ```yaml
-schema: 1
+bus: {}                                    # the members share a message bus
+# or, with an alert:
 bus:
-  root: /tmp/brg-teams-1000     # absolute (or ~/); holds each team's message storage
   alert: {plugin: notify, action: alert}   # optional: how brg alerts a person
-  warn_age_days: 7              # optional (default 7): `bus check` warns from this age
-  max_age_days: 14              # optional (default 14): roll the storage over at this age
 ```
 
-`brg validate` checks that:
+Each instance keeps its messages in its own state folder (`<state home>/<instance>/messages/`), which brg makes writable for every `vendor`-posture member, so nothing about where messages live is configured. `brg validate` checks that `alert` names a plugin with a `path` and an action it declares, and that no member is `locked`: the bus doesn't support `locked` members yet.
 
-- `root` is absolute and has no whitespace, and is not inside the team directory or brg's state directory. A root inside a git checkout is a warning.
-- `0 < warn_age_days < max_age_days`.
-- `alert` names a plugin with a `path` and an action it declares.
-- no member is `locked`: the bus doesn't support `locked` members yet.
+**A running instance's configuration is frozen.** When an instance starts, brg records a snapshot of its inputs: the SHA-256 of `team.yaml`, each role file, each role's instruction with includes expanded, and the global settings that reach members (`auth`, `auto_trust`, and where `plugins_dir` puts each shared plugin). Starting a member into the running instance refuses if any of these changed. The change takes effect at the next full `brg stop` and `brg start`. The snapshot hashes file bytes, not brg's internal types, so a compatible brg upgrade sees the same snapshot.
 
-Pick a `root` that every member's vendor configuration can already write without asking. If the only such place is under `/tmp`, keep `max_age_days` below your system's temporary-file cleanup age (and remember a reboot may clear it): brg never relies on reads refreshing a file's age.
+**Storage rolls over by itself, but never over open work.** Internally an instance's messages live in a *run*: storage with one message format and one configuration snapshot. Users never see or name runs; there is nothing to configure.
 
-**A running team's configuration is frozen.** When a team starts, brg records a snapshot of its inputs: the SHA-256 of `borgchart.yaml`, `team.yaml`, each member file, and each member's instruction with includes expanded. Starting one member into the running team refuses if any of these changed. The change takes effect at the next `brg down`/`brg up`. The snapshot hashes file bytes, not brg's internal types, so a compatible brg upgrade sees the same snapshot.
-
-**Storage rolls over by itself.** Internally a team's messages live in a *run*: storage with one message format and one configuration snapshot. Users never see or name runs; there is nothing to configure.
-
-- **When:** a full `brg up` of a team that is positively stopped (every current member incarnation `gone` or ended), whose configuration changed or whose storage has reached `max_age_days`, starts a new run and carries over the unfinished work (open tasks, unanswered questions, unread messages). `up` of a running team with changed files refuses, like starting one member does.
-- **Format changes:** a brg that can't read the old format can't carry from it. So a format change starts fresh storage and carries nothing. The old messages stay on disk untouched, and `up` says what was left behind.
-- **No lost messages:** rollover takes the old run's `bus/lock`, writes its `retired` marker, carries, then switches `current`. Every writer re-checks `retired` after taking `bus/lock`, and if it's there, re-resolves `current` and writes to the new run instead.
-- **Numbering:** new runs take the next number after the highest that exists (`r1`, `r2`, …), so a lost `current` file can't reuse old storage. A missing `current` beside existing runs is a storage problem, reported in team terms.
-- **Where:** storage is found by the deployment's ID, which comes from its file's path. Moving the team's folder starts with empty storage, and the old storage stays where it was.
+- **When:** a full `brg start` of an instance that is positively stopped (every current member incarnation `gone` or ended), whose configuration changed or whose storage is 14 days old, starts a new run. Carrying open work across isn't wired yet, so such a start refuses while the instance holds open work (open tasks, unanswered questions, unread messages), and lists it. A start of a running instance with changed files refuses, like starting one member does.
+- **Format changes:** a brg that can't read the old format can't check it for open work, so it refuses to start the instance and points to `brg create` for a fresh one. The old messages stay on disk untouched.
+- **No lost messages:** rollover takes the old run's `bus/lock`, writes its `retired` marker, then switches `current`. Every writer re-checks `retired` after taking `bus/lock`, and if it's there, re-resolves `current` and writes to the new run instead.
+- **Numbering:** new runs take the next number after the highest that exists (`r1`, `r2`, …), so a lost `current` file can't reuse old storage. A missing `current` beside existing runs is a storage problem, reported in instance terms.
+- **Where:** storage belongs to the instance, whose ID never changes. Moving the team's folder doesn't move it: `brg start <instance> --team <path>` points the instance at the folder's new place.
 
 ## Layout
 
-Each deployment has a directory `<root>/<deployment-id>/`. Its `current` file names the run in use, and each run is a subdirectory (`r1/`, `r2/`, …; mode 0700, files 0600). Each area of a run has one owner:
+Each instance has a directory `<state home>/<instance>/messages/`. Its `current` file names the run in use, and each run is a subdirectory (`r1/`, `r2/`, …; mode 0700, files 0600). Each area of a run has one owner:
 
 | Path (in a run) | Owner | Contents |
 | --- | --- | --- |
-| `run.json` | lifecycle | The run manifest: ID, message format (`schema`), deployment, frozen topology, configuration snapshot, link to the run it continues. Immutable. |
+| `run.json` | lifecycle | The run manifest: ID, message format (`schema`), instance, frozen topology by role, configuration snapshot, link to the run it continues. Immutable. Members come from the instance's record (`instance.json`), each with its role's entry. |
 | `retired` | lifecycle | Present once the team's storage has rolled over to a newer run; writers then go to `current` instead. |
 | `runtime/lifecycle.lock` | lifecycle | Held while starting or stopping anything in the team. |
 | `runtime/incarnations/<member>.json` | lifecycle | The member's current incarnation; history in `runtime/incarnations/<member>/<id>.json`. |
@@ -62,7 +53,7 @@ Each deployment has a directory `<root>/<deployment-id>/`. Its `current` file na
 | `attention/inflight/<member>.json` | watcher | A wake attempt whose intent is recorded and outcome not yet known. |
 | `attention/alerts/<id>.json` | alerts | Open and resolved alerts. |
 
-Before its first write into a run, every writer creates the run directory if needed and checks that the root, the team's directory and the run directory are real directories (not symlinks), owned by you and not writable by group or others. This matters for a root under a shared directory such as `/tmp`.
+Before its first write into a run, every writer creates the run directory if needed and checks that the instance's state folder, its `messages/` and the run directory are real directories (not symlinks), owned by you and not writable by group or others.
 
 Immutable files are written with a unique temporary sibling, flushed, then hard-linked to their final name, which fails if the name exists (`src/bus/fsx.rs`). A crash leaves at most a stray `.tmp-*` file; readers skip those.
 
@@ -70,25 +61,27 @@ Immutable files are written with a unique temporary sibling, flushed, then hard-
 
 ## Caller context
 
+Every bus command acts on one instance: inside a member (or a plugin process), its own (`BORGCHART_INSTANCE`), and `--instance` may only repeat it; outside, the instance named with `--instance ID`, which is required for every command, reads included. Without it, brg refuses and lists the instances.
+
 | Caller | How it is recognized | May |
 | --- | --- | --- |
-| Member | `BORGCHART_MEMBER`, `BORGCHART_RUN` and `BORGCHART_INCARNATION`, set at member start | publish as itself, read and ack its own inbox |
+| Member | `BORGCHART_INSTANCE`, `BORGCHART_MEMBER`, `BORGCHART_RUN` and `BORGCHART_INCARNATION`, set at member start | publish as itself, read and ack its own inbox |
 | External | `--external NAME`, with no member variables set | publish to a member, read and ack records addressed to `external:NAME` |
 | Operator | neither | read and inspect only |
 
 - `--external` inside a member is refused, and so is a partial member context.
-- A member's `BORGCHART_RUN` (internal) must be the team's current run, and its `BORGCHART_INCARNATION` must be the member's current, not-ended incarnation; otherwise mutations are `fenced`. Storage whose `run.json` names a different deployment is refused.
-- Operation keys are scoped by slot: the member name, or `external.<name>`.
+- A member naming another instance with `--instance` is refused, so it can't act on another instance or pass itself off as an outside caller there.
+- A member's `BORGCHART_RUN` (internal) must be the instance's current run, and its `BORGCHART_INCARNATION` must be the member's current, not-ended incarnation; otherwise mutations are `fenced`. Storage whose `run.json` names a different instance is refused.
+- Recipients are members, by their full IDs (`lead-q8m3`). A role's name, the instance's ID or a member of another instance is refused, listing the instance's members.
+- Operation keys are scoped by slot: the member ID, or `external.<name>`.
 
-**Versions.** brg isn't pinned: every call uses the installed `brg`. A brg that can't read a team's message format refuses before reading or writing anything, and says how to fix it:
+**Versions.** brg isn't pinned: every call uses the installed `brg`. A brg that can't read an instance's message format refuses before reading or writing anything, and says so:
 
 ```
-brg: team `oncall`'s messages use format 1; this brg uses format 2.
-Restart the team to start fresh storage in the new format: brg down && brg up
-(Open work in the old format isn't carried over; the old messages stay on disk.)
+brg: instance `oncall-2a3b`'s messages use format 1; this brg uses format 2.
+brg can't read them or check them for open work, so the instance can't start again; create a new instance for fresh storage: brg create <team> <folder>
+(The old messages stay on disk; send their open work again.)
 ```
-
-The restart command is given in a form that works from where you are: the bare commands in the team's folder, or with `--file` from elsewhere.
 
 ## Records
 
@@ -96,7 +89,7 @@ A caller writes a **draft**; brg adds identity and stores a **record**.
 
 ```json
 {
-  "to": "helper",
+  "to": "helper-x7k2",
   "kind": "assign",
   "task": "t-1",
   "attempt": 1,
@@ -146,13 +139,13 @@ brg bus inspect [--last N] [--json]
 brg bus check [--json]
 ```
 
-Every command takes the deployment as other commands do (`-f`, `$BORGCHART_FILE`, `./borgchart.yaml`); a team directory on its own has no bus, and a team whose storage `brg up` hasn't created yet ("team `oncall` hasn't been started yet") is `not-configured`; neither creates anything. Storage that has runs but no `current` is damaged, not new: every command reports it (`corrupt`) rather than starting over. Writers (`msg publish`, `msg ack`) follow a rollover as described under `msg publish`. Every command, reads included, refuses (`refused`, 4) a team whose messages are in another format, with the restart command shown under [Versions](#caller-context). Output names teams and members only: errors about damaged storage (an unreadable member session record, an unlistable record area, a storage folder others could write) give the reason without storage paths. With `--json`, each prints one JSON object `{ok, code, outcome, …}`; errors are `{ok: false, code, outcome, message}`. Exit codes are the [outcome codes](#outcome-codes).
+Every command takes the instance as described under [Caller context](#caller-context); an instance whose team has no `bus:`, or that hasn't started with one, is `not-configured`, and none of these creates anything. Storage that has runs but no `current` is damaged, not new: every command reports it (`corrupt`) rather than starting over. Writers (`msg publish`, `msg ack`) follow a rollover as described under `msg publish`. Every command, reads included, refuses (`refused`, 4) a team whose messages are in another format, with the restart command shown under [Versions](#caller-context). Output names teams and members only: errors about damaged storage (an unreadable member session record, an unlistable record area, a storage folder others could write) give the reason without storage paths. With `--json`, each prints one JSON object `{ok, code, outcome, …}`; errors are `{ok: false, code, outcome, message}`. Exit codes are the [outcome codes](#outcome-codes).
 
 **`msg publish`** reads a draft (from `--record FILE`, or stdin for `-` or no `--record`) and publishes it as the caller: a member from its environment, or `--external NAME`. An operator (neither) is `refused`. In order, it:
 
 1. checks the key, the draft's shape, its kind's required facts and its recipient against the team's frozen topology (`invalid`), with an early check of the caller (below) to fail fast;
 2. measures each artifact: a regular file (a symlink to one is followed) up to 256 MiB, recording `bytes` and `sha256` (`invalid` if missing, not a regular file, or too big; a FIFO or device is refused without opening it);
-3. takes `bus/lock` exclusive (creating the store first if needed). If the storage was retired meanwhile (the team rolled over), it releases the lock, finds the team's current storage and locks that instead, so nothing lands in storage that has already been carried from. A draft with references (`reply_to`, a `verify`'s `facts.result`) is then refused (`fenced`: "team `oncall` was restarted, so `m1` may now be a different message; list the inbox again"), since IDs restart in the new storage;
+3. takes `bus/lock` exclusive (creating the store first if needed). If the storage was retired meanwhile (the instance rolled over), it releases the lock, finds the team's current storage and locks that instead, so nothing lands in storage that has already been carried from. A draft with references (`reply_to`, a `verify`'s `facts.result`) is then refused (`fenced`: "instance `oncall-2a3b` was restarted, so `m1` may now be a different message; list the inbox again"), since IDs restart in the new storage;
 4. holding it, checks the caller authoritatively (a member's membership, that it is from the team's current start, and its current, not-ended incarnation: `fenced`) and the recipient again. Incarnations change only under `bus/lock`, so this holds until the write;
 5. rescans the store (`corrupt` if anything is unreadable or missing);
 6. if the caller's slot already used the key: the same draft and artifact contents return the original record (`duplicate`, repairing a missing key index entry), anything else is a `conflict`;
@@ -160,9 +153,9 @@ Every command takes the deployment as other commands do (`-f`, `$BORGCHART_FILE`
 
 ```console
 $ brg msg publish --external ops --key demo-1 --record demo.json --json
-{"at":"2026-11-05T19:38:32.766Z","attention":"none","code":0,"id":"m1","key":"demo-1","kind":"note","ok":true,"outcome":"committed","seq":1,"to":"lead"}
+{"at":"2026-11-05T19:38:32.766Z","attention":"none","code":0,"id":"m1","key":"demo-1","kind":"note","ok":true,"outcome":"committed","seq":1,"to":"lead-q8m3"}
 $ brg msg publish --external ops --key demo-1 --record demo.json --json
-{"at":"2026-11-05T19:38:32.766Z","attention":"none","code":0,"id":"m1","key":"demo-1","kind":"note","ok":true,"outcome":"duplicate","seq":1,"to":"lead"}
+{"at":"2026-11-05T19:38:32.766Z","attention":"none","code":0,"id":"m1","key":"demo-1","kind":"note","ok":true,"outcome":"duplicate","seq":1,"to":"lead-q8m3"}
 ```
 
 `attention` says whether anyone will be reminded; it is `none` until the attention worker exists.
@@ -176,9 +169,9 @@ $ brg msg publish --external ops --key demo-1 --record demo.json --json
 - Records are headers (everything but `body` and `facts`, plus `body_bytes` and `acked`); `--full` includes the body and facts.
 
 ```json
-{"ok": true, "code": 0, "outcome": "ok", "recipient": "lead",
+{"ok": true, "code": 0, "outcome": "ok", "recipient": "lead-q8m3",
  "records": [{"id": "m1", "seq": 1, "at": "…", "actor": {"type": "external", "name": "ops"},
-              "key": "demo-1", "to": "lead", "kind": "note", "schema": 1,
+              "key": "demo-1", "to": "lead-q8m3", "kind": "note", "schema": 1,
               "body_bytes": 29, "acked": false}],
  "next": null, "unacked": 1, "total": 1, "store": "ok"}
 ```
@@ -201,18 +194,18 @@ The background wait prints only the unseen IDs, space-separated on one line, or 
 {"ok": true, "code": 0, "outcome": "ok", "acked": [{"id": "m1", "outcome": "acked"}, {"id": "m2", "outcome": "already"}]}
 ```
 
-**`bus inspect`** summarizes the team's messages: `team`, `deployment`, `created_at` (when the current storage was created), the frozen members, each recipient's `total` and `unacked`, the last `--last` (default 10) record headers as `recent`, and `store: {healthy, problems, strays}`.
+**`bus inspect`** summarizes the instance's messages: `instance`, `created_at` (when the current storage was created), the frozen members, each recipient's `total` and `unacked`, the last `--last` (default 10) record headers as `recent`, and `store: {healthy, problems, strays}`.
 
 **`bus check`** reports `errors` and `warnings` and the storage's `age_days`:
 
-- errors: an unreadable or misnamed record, key or ack; a record whose schema, storage or number doesn't match; a gap; an ack for a missing record or by someone other than its recipient; storage older than `max_age_days`;
-- warnings: stray `.tmp-*` files (left by a crash, safe to remove; shown relative to the storage); storage older than `warn_age_days`. Both age messages give the restart command that rolls the storage over, in a form that works from where you are. Also: storage linked from an earlier run that hasn't carried from it yet, or whose carry was partial; the runs this one was carried into (also as `carried_into`), and any records added since the carry.
+- errors: an unreadable or misnamed record, key or ack; a record whose schema, storage or number doesn't match; a gap; an ack for a missing record or by someone other than its recipient; storage older than 14 days;
+- warnings: stray `.tmp-*` files (left by a crash, safe to remove; shown relative to the storage); storage older than 7 days. Both age messages give the restart command that rolls the storage over, in a form that works from where you are. Also: storage linked from an earlier run that hasn't carried from it yet, or whose carry was partial; the runs this one was carried into (also as `carried_into`), and any records added since the carry.
 
 It exits `ok` with warnings only, `corrupt` when the store has errors, and `error` when only the storage's age does.
 
 ```console
 $ brg bus check
-warning: team `oncall`'s message storage is 8.0 days old (warn_age_days 7); it rolls over at the first restart after 14 days: brg down && brg up
+warning: instance `oncall-2a3b`'s message storage is 8.0 days old (warn_age_days 7); it rolls over at the first restart after 14 days: brg stop oncall-2a3b && brg start oncall-2a3b
 ok: 2 record(s), storage 8.0 days old
 ```
 
@@ -274,18 +267,18 @@ brg bus carry --from RUN [--json]
 ```console
 $ brg task show t-1
 task t-1: verified (attempt 1)
-  assignee: helper
-  authority: lead
+  assignee: helper-x7k2
+  authority: lead-q8m3
   agreement: /work/agreement.md (sha256 901932a5…)
   scope: the config parser
   checkout: /work/checkout
-  writer: helper-1 (unknown, current)
-  m1  assign  #1  lead
-  m2  accept  #1  helper
-  m4  result  #1  helper
-  m5  verify  #1  lead
-  next: lead (release or reopen)
-  open question m3 from helper
+  writer: helper-x7k2.20261105193812345.ab12 (unknown, current)
+  m1  assign  #1  lead-q8m3
+  m2  accept  #1  helper-x7k2
+  m4  result  #1  helper-x7k2
+  m5  verify  #1  lead-q8m3
+  next: lead-q8m3 (release or reopen)
+  open question m3 from helper-x7k2
 ```
 
 **`bus carry --from RUN`** continues work from the earlier run the team's current storage is linked from (its `run.json`'s `linked_from`, written when the storage rolls over). The lifecycle calls the same carry (`carry::carry_at_rollover`) while it rolls over, holding the old run's `bus/lock`; until that is wired in, a rollover leaves the work behind and this command carries it. It:
@@ -296,67 +289,54 @@ task t-1: verified (attempt 1)
 4. uses the key `carry:<RUN>:<id>`, so running it again returns `duplicate` for everything already carried;
 5. writes `bus/carried/<RUN>.json` in the new run.
 
-Carried work is a pointer, not a transfer: the new run has no tasks until the authority assigns them again. `bus check` of the new run warns until a carry has run, and while the last one was partial. (`bus check` only reads the current run, so the old run's `carried_into` warnings and its past-`max_age_days` exemption apply only if it were current again.) Carrying again picks up the newer records (the ones already carried are `duplicate`).
+Carried work is a pointer, not a transfer: the new run has no tasks until the authority assigns them again. `bus check` of the new run warns until a carry has run, and while the last one was partial. (`bus check` only reads the current run, so the old run's `carried_into` warnings and its past-age exemption apply only if it were current again.) Carrying again picks up the newer records (the ones already carried are `duplicate`).
 
 ```console
 $ brg bus carry --from demo-run-1
-m3 (open-question) -> lead: m1 committed
-m7 (unacked) -> helper: m2 committed
+m3 (open-question) -> lead-q8m3: m1 committed
+m7 (unacked) -> helper-x7k2: m2 committed
 carried 2 item(s) from `demo-run-1` into `demo-run-2`
 ```
 
 ## Lifecycle and runtime binding
 
-**Checks before changes.** `brg up` works out everything a start needs (plugin values, `auth: api_key` keys, which storage the team's messages go to, whether the team is already running) before it writes anything. A refused start leaves brg's state directory and the team's message storage as they were.
+**Checks before changes.** A start (`create`, `start`, `start --team`) works out everything it needs (plugin values, `auth: api_key` keys, each member's folder and the folders other instances hold, which storage the instance's messages go to, whether it is already running) before it writes anything. A refused start leaves brg's state and the instance's message storage as they were; a `create` refused at that point registers nothing.
 
-**Serialized.** `up`, `up --member`, `down` and `down --member` take a lock in brg's state directory (`<state>/lifecycle.lock`) and then, with a bus, `runtime/lifecycle.lock`. `up` holds them while it writes files and starts windows, and releases them before it waits for `locked` gates and Claude's folder trust, so members can already use the bus and another `up --member` isn't held up. Anything that wait changes (the keys that accept folder trust, the trust marker, stopping a `locked` member that fails its check) takes the locks again and first checks that the window still runs the very pane (ID and PID) this `up` launched; a member stopped or replaced meanwhile is left alone (`replaced while starting`), and for a `locked` member that counts as a failed start. A `locked` member whose pane can't be read, at start or when it must be stopped, is stopped by its window name while the locks are held, so it never works without its gate. Two `up --member helper` at once start it once; the other reports `already running`.
+**Serialized.** Every start and stop takes brg's registry lock (`<state home>/registry.lock`), then the instance's lifecycle lock (`<state home>/<instance>/lifecycle.lock`) and, with a bus, `runtime/lifecycle.lock`. A start holds them while it writes files and starts windows, so the checkout check and the reservation happen together, and releases them before it waits for `locked` gates and Claude's folder trust, so members can already use the bus and another start isn't held up. Anything that wait changes (the keys that accept folder trust, the trust marker, stopping a `locked` member that fails its check) takes the locks again and first checks that the window still runs the very pane (ID and PID) this start launched; a member stopped or replaced meanwhile is left alone (`replaced while starting`), and for a `locked` member that counts as a failed start. Two `create <instance>/helper` at once create it once; the other is told the role has its member.
 
-**What `up` and `status` print.** `up` prints the team as a tree (members under their `parent`, siblings by name), each member with its vendor, model and what happened: `started`, `already running`, `not started (start: false)`, `failed: …`, or a `locked` member's `stopped: …`. Plugin processes follow the tree. `up --member` leaves the other members' outcome blank.
-
-```
-$ brg up
-oncall
-└─ lead      claude opus high     started
-   └─ helper codex example-model  not started (start: false)
-```
-
-`status` prints the same tree with each member's live state and details, then the plugin processes. A member with no window is `not started` when it has never run since the team's storage began (with a bus: no incarnation in the current storage, so every member of a team that never started, or just rolled over, is `not started`; without one: no start recorded since the team last started afresh; state from an earlier brg recorded none, so its members read `stopped`), printed as `up` prints it: `not started (start: false)` for a `start: false` member. One that ran and ended (or whose start record can't be read) is `stopped`. While the team is running (at least one member has a live window), a `stopped` `start: true` member is an alert: printed `stopped (should be running)`, with `"expected_running": true` in `--json`, and shown like `exited` in `status -i`. After a whole-team `down`, ended members are plain `stopped`. `status --json` is the same rows as before, in tree order, with `parent`, `model`, `expected_running` when set and, with a bus, `liveness`.
+**What a start and `status` print.** A start prints the instance as a tree under a header line (the instance, its team folder and working folder): members under their parent's member, siblings by name, each with its vendor, model and what happened (`started`, `already running`, `failed: …`, or a `locked` member's `stopped: …`), and a role with no member yet as `on demand (none created)`. Plugin processes follow the tree.
 
 ```
-$ brg down --member helper
-helper: stopped
-$ brg status
-oncall
-└─ lead        claude opus high      idle
-   ├─ helper   codex example-model   stopped (should be running)
-   └─ reviewer claude sonnet medium  not started (start: false)
+$ brg create oncall ~/work/x
+oncall-2a3b  team ~/teams/oncall · folder ~/work/x
+└─ lead-q8m3 claude opus high          started
+   └─ helper on demand (none created)
 ```
 
-**Starting into a running team.** When the team's session exists and its `deployment.json` is there, `up` (with or without `--member`) joins it instead of starting afresh. It uses the base environment and plugin values recorded at the first `up`, never your current shell's: nothing from your `PATH`, `TMPDIR` or other variables reaches the new member, and you don't need the plugin secrets set again. The one exception is `auth: api_key`: the vendor's key (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`) is read from your environment at each start, for the members being started, and passed to them. It is not frozen and brg never stores it (it is in the member's launch file only until the window reads it); a start without it is refused before anything is written. It doesn't rewrite plugin value files or other members' files. With a bus it doesn't rewrite `deployment.json` either; without one, `deployment.json` records each member's first start since the team started afresh (its recorded environment and plugin values stay as they were). If any configuration input changed since the team started (see Configuration), it refuses, changing nothing, and names what changed in team and member terms:
+`status` prints the same tree with each member's live state and details, then the plugin processes. A member with no window is `not started` when it has never run in the instance's current storage, and `stopped` once it ran and ended (or its start record can't be read). While the instance runs (at least one member has a live window), a `stopped` `start: true` member is an alert: printed `stopped (should be running)`, with `"expected_running": true` in `--json`, and shown like `exited` in `status -i`. After a full `stop`, ended members are plain `stopped`.
+
+**Starting into a running instance.** When the instance's session exists and its start record is there, a start (of the instance or one member) joins it instead of starting afresh. It uses the base environment and plugin values recorded at the first start, never your current shell's: nothing from your `PATH`, `TMPDIR` or other variables reaches the new member, and you don't need the plugin secrets set again. The one exception is `auth: api_key`: the member's vendor key (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`) is read from your environment at each start and passed to it. It is not frozen and brg never stores it (it is in the member's launch file only until the window reads it); a start without it is refused before anything is written. If any configuration input changed since the instance started (see Configuration), it refuses, changing nothing, and names what changed in instance and role terms:
 
 ```
-brg: oncall/helper's instruction file changed since the team started; restart the team to apply it: brg down && brg up
+brg: oncall-2a3b/helper's role file changed since the instance started; stop it fully and start it again to apply it: brg stop oncall-2a3b && brg start oncall-2a3b
 ```
 
-The restart command is the bare form in the team's folder and names `--file` elsewhere. A full `up` of a running team with changed files refuses the same way.
+**brg isn't pinned.** Every window, plugin shim, gate hook and plugin process runs the `brg` that started it (`_exec`, `_run` and `_gate` use the running binary, as in v0): a member started later uses the `brg` that ran that command. Members and plugin programs get that brg's absolute path as `BORGCHART_BIN` (see `brg --help`). So start an instance from a stable install, not a build that `cargo clean` can remove. A plugin command may not be called `brg` or `borgchart`: a granted command's shim comes first on the member's `PATH`, so it would shadow the installed brg and the member's message commands would call the plugin.
 
-**brg isn't pinned.** Every window, plugin shim, gate hook and plugin process runs the `brg` that started it (`_exec`, `_run` and `_gate` use the running binary, as in v0): a member started later with `up --member` uses the `brg` that ran that command. Members and plugin programs get that brg's absolute path as `BORGCHART_BIN` (see `brg --help`). So start a team from a stable install, not a build that `cargo clean` can remove. A plugin command may not be called `brg` or `borgchart`: a granted command's shim comes first on the member's `PATH`, so it would shadow the installed brg and the member's message commands would call the plugin.
+**Message storage at a start.** With a bus, the instance's first start creates its storage (internally, run `r1`, named in `messages/current`) and writes `run.json`: the instance, message format, frozen topology by role and configuration snapshot. Later starts reuse it, except that a full start of a stopped instance rolls over to a new run (see Configuration) when the configuration changed or the storage is 14 days old, and only while it holds no open work:
 
-**Message storage at `up`.** With a bus, the team's first `up` creates its storage (internally, run `r1`, named in the team's `current` file) and writes `run.json`: the deployment ID, message format, frozen topology and configuration snapshot. Later starts reuse it, except that a full `up` of a stopped team rolls over to a new run (see Configuration) when the configuration or message format changed or the storage reached `max_age_days`:
-
-- The new run takes the next number after the highest that exists, and its `run.json` links to the old one (`linked_from: {run, root, reason}`, with reason `config`, `format` or `age`).
-- Rollover needs every member positively stopped: each current incarnation recorded in the old run (including members the new configuration no longer has) must be ended or `gone`. One that is `alive`, `unknown`, unreadable or malformed refuses (`brg can't tell that oncall/helper has stopped …`), changing nothing, whatever the reason for the rollover.
-- It takes the old run's `bus/lock`, writes the old run's `retired` marker, carries unfinished work (configuration and age rollovers only), then switches `current`. Carrying is a hook (`carry_into`) that task facts fill in; until it is wired in, a configuration or age rollover leaves unfinished work behind in the old run.
-- A format rollover carries nothing (this brg can't read the old format) and `up` says how many messages were left on disk.
-- `up --member` never rolls over: with changed files or another format it refuses with the restart command. A team that is running, or whose storage is missing its `current` file while runs exist, or whose current run is missing its `run.json`, is never rolled over or started either; those refuse as a storage problem before writing anything.
-- Nothing ever starts into retired storage. If a rollover was interrupted after retiring the old run but before switching `current`, the next full `up` finishes it (switches to the run the marker names, carrying again, so carrying must be idempotent) when that run clearly is its successor (exists, belongs to this team, links back), then decides as usual; otherwise it refuses. `up --member` refuses and asks for a full start.
-- Lifecycle storage errors are reported in team terms, without storage paths or run IDs.
+- The new run takes the next number after the highest that exists, and its `run.json` links to the old one (`linked_from: {run, root, reason}`, with reason `config` or `age`).
+- Rollover needs every member positively stopped: each current incarnation recorded in the old run (including members the new configuration no longer has) must be ended or `gone`. One that is `alive`, `unknown`, unreadable or malformed refuses (`brg can't tell that oncall-2a3b/helper-x7k2 has stopped …`), changing nothing.
+- It takes the old run's `bus/lock`, writes the old run's `retired` marker, then switches `current`.
+- A member start never rolls over: with changed files or another format it refuses with the restart command. An instance whose storage is missing its `current` file while runs exist, or whose current run is missing its `run.json`, is never rolled over or started either; those refuse as a storage problem before writing anything.
+- Nothing ever starts into retired storage. If a rollover was interrupted after retiring the old run but before switching `current`, the next full start finishes it when the run the marker names clearly is its successor (exists, belongs to this instance, links back), then decides as usual; otherwise it refuses. A member start refuses and asks for a full start.
+- Lifecycle storage errors are reported in instance terms, without storage paths or run IDs.
 
 The old run is never changed beyond its `retired` marker.
 
-**Incarnations.** Each member start is a new incarnation, with an ID `<member>.<UTC yyyymmddhhmmssmmm>.<4 hex>` that is unique in the run. Its current file is written before the window starts, then again with the pane's identity (`%N` pane ID, PID, window, session, and the tmux server's absolute socket path) and the vendor version measured at this start; the same record then goes into the history (`runtime/incarnations/<member>/<id>.json`). The member gets `BORGCHART_RUN` (internal) and `BORGCHART_INCARNATION`. `down` and `down --member` mark the incarnations they stop ended (`ended_at`, `ended_reason: "stopped"`); a window tmux fails to create is ended as `start-failed`. Every change to an incarnation file is made holding `bus/lock` (briefly, after the lifecycle locks), so a bus mutation that checks a member's incarnation under that lock sees either the old record or the new one.
+**Incarnations.** Each member start is a new incarnation, with an ID `<member>.<UTC yyyymmddhhmmssmmm>.<4 hex>` that is unique in the run. Its current file is written before the window starts, then again with the pane's identity (`%N` pane ID, PID, window, session, and the tmux server's absolute socket path) and the vendor version measured at this start; the same record then goes into the history (`runtime/incarnations/<member>/<id>.json`). The member gets `BORGCHART_RUN` (internal) and `BORGCHART_INCARNATION`. `stop` marks the incarnations it stops ended (`ended_at`, `ended_reason: "stopped"`); a window tmux fails to create is ended as `start-failed`. Every change to an incarnation file is made holding `bus/lock` (briefly, after the lifecycle locks), so a bus mutation that checks a member's incarnation under that lock sees either the old record or the new one.
 
-**Stopping.** `up` records the tmux socket name and the server's absolute socket path. `down` and `down --member` address that server directly, so a caller's `TMUX_TMPDIR` can't point them elsewhere, and refuse a caller whose `BORGCHART_TMUX_SOCKET` names another socket. They change nothing unless the server answers: an incarnation is marked ended, and secrets and launch files removed, only after brg stopped its pane or the server showed it absent. A `down` that stops the whole session (or finds it gone) records the confirmed stop in `deployment.json`, so a later `down` after the server has exited just says `not running`. If the server really is gone without a `down` (for example after a reboot), `brg up` and then `brg down` clear it.
+**Stopping.** A start records the tmux socket name and the server's absolute socket path. `stop` addresses that server directly, so a caller's `TMUX_TMPDIR` can't point it elsewhere, and refuses a caller whose `BORGCHART_TMUX_SOCKET` names another socket. It changes nothing unless the server answers: an incarnation is marked ended, and secrets and launch files removed, only after brg stopped its pane or the server showed it absent. A full `stop` that stops the whole session (or finds it gone) records the confirmed stop, so a later `stop` after the server has exited just says `not running`. A start that never got a window to tmux leaves the instance as stopped as before. If the server really is gone without a `stop` (for example after a reboot), `brg start` and then `brg stop` clear it.
 
 **Liveness.** brg asks the incarnation's recorded tmux server (by its absolute socket path) for every pane. The incarnation is `alive` when that list has its pane with the same ID and PID, not dead; `gone` when the server answers and the pane is absent, dead or another process, when the incarnation was ended by a confirmed stop; or, when the server can't be reached (not running, a removed or hidden socket, no permission, tmux missing), once the pane's own recorded process has exited: `ps` lists brg but not that process ID. `unknown` otherwise: no pane recorded, or a server that can't be reached while a process with that ID still exists (even a reused ID). An unreachable server by itself is never taken as proof that anything stopped, and, as when a listing shows a pane dead, processes the pane started are not checked; treat `unknown` as possibly alive.
 
@@ -404,13 +384,13 @@ The input mode and settings are measured from the files the vendor reads (Claude
 BORGCHART_LIVE=1 cargo test --locked --test live -- --ignored --nocapture --test-threads=1
 ```
 
-It starts the real CLIs with your own login and configuration, through real `brg up` on a private tmux server, and makes a few small real turns per vendor (two real submissions of the reminder each). It needs this checkout to be inside a folder Claude already trusts; Codex gets session-only trust. `BORGCHART_LIVE_VENDORS=claude` (or `codex`) and `BORGCHART_LIVE_SUBMIT=0` make a partial run, which qualifies nothing; `BORGCHART_LIVE_DRY=1` runs the same harness against owned fake CLIs instead. The matrix is written to `target/live/<run>/matrix.md`.
+It starts the real CLIs with your own login and configuration, through real `brg create` on a private tmux server, and makes a few small real turns per vendor (two real submissions of the reminder each). It needs this checkout to be inside a folder Claude already trusts; Codex gets session-only trust. `BORGCHART_LIVE_VENDORS=claude` (or `codex`) and `BORGCHART_LIVE_SUBMIT=0` make a partial run, which qualifies nothing; `BORGCHART_LIVE_DRY=1` runs the same harness against owned fake CLIs instead. The matrix is written to `target/live/<run>/matrix.md`.
 
 **What is not guaranteed.** A person typing into the member between the last check and Enter can have their text submitted along with the reminder; nothing here can close that gap. A typed newline exactly where the vendor would have wrapped, or extra spaces at a wrap point, can't be seen in a capture and would pass the Enter check. There is no warning before typing.
 
 ## Alerts (planned)
 
-When a person is needed, the worker runs the deployment's `bus.alert` plugin action with fixed arguments `<alert-id> <member> <reason> <pending-count>` and nothing from any record. Reasons: `blocked`, `draft`, `human-required`, `unqualified`, `overdue`, `unacked`, `worker-unavailable`, `test`. The action runs with the base environment, its own plugin's values as frozen at `up`, `BORGCHART_ACTOR=bus` and the deployment/run identity: no member identity, nothing from the caller's environment and no other plugin's values. It is bounded in time and output. Exit zero means the alert was handed off, not that anyone saw it; the alert stays open until resolved (`brg bus alert resolve <id>`). With no `bus.alert`, attention is `attention-unavailable` and shows in status only.
+When a person is needed, the worker runs the team's `bus.alert` plugin action with fixed arguments `<alert-id> <member> <reason> <pending-count>` and nothing from any record. Reasons: `blocked`, `draft`, `human-required`, `unqualified`, `overdue`, `unacked`, `worker-unavailable`, `test`. The action runs with the base environment, its own plugin's values as frozen at the start, `BORGCHART_ACTOR=bus` and the instance and run identity: no member identity, nothing from the caller's environment and no other plugin's values. It is bounded in time and output. Exit zero means the alert was handed off, not that anyone saw it; the alert stays open until resolved (`brg bus alert resolve <id>`). With no `bus.alert`, attention is `attention-unavailable` and shows in status only.
 
 ## Outcome codes
 
@@ -421,7 +401,7 @@ The bus commands share these exit codes; `--json` prints `{ok, code, outcome, me
 | 0 | `ok` (or a more specific success such as `committed`, `duplicate`) | Done |
 | 1 | `error` | I/O or unexpected error |
 | 2 | `usage` | Bad arguments |
-| 3 | `not-configured` | No `bus:` in the deployment, or the team hasn't been started yet |
+| 3 | `not-configured` | No `bus:` in the team, or the instance hasn't started with one |
 | 4 | `refused` | Not allowed from this context (e.g. `--external` inside a member), or a message format this brg can't read |
 | 5 | `invalid` | The record or request failed validation |
 | 6 | `conflict` | The operation key was already used for different content |

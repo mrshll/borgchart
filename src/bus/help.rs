@@ -55,7 +55,7 @@ const REASON: Fact = Fact {
 const EVIDENCE: Fact = Fact {
     name: "evidence",
     shape: "text",
-    sample: r#""stopped with brg down --member helper""#,
+    sample: r#""stopped with brg stop helper-x7k2""#,
 };
 const CHECKS: Fact = Fact {
     name: "checks",
@@ -247,12 +247,22 @@ fn n(code: Code) -> &'static str {
     code.as_str()
 }
 
-/// `brg --help`: how a member finds brg and its team.
+/// `brg --help`: teams and instances, and how a member finds brg and its
+/// instance.
 pub fn root() -> String {
-    "Inside a team:
+    "Teams and instances:
+  A team is a folder holding team.yaml; an instance is the team running in one
+  working folder: `brg create <team> <folder>` makes one (`dev-team-k3f9`), and
+  `start`, `stop` and `delete` act on it. Members are `<role>-<suffix>`
+  (`lead-q8m3`), addressed as `<instance>/<member>`; a bare name is a role, and
+  only `create` takes one. brg's configuration is ~/.config/borgchart/config.yaml
+  (or $BORGCHART_CONFIG).
+
+Inside a member:
   A member calls brg as \"$BORGCHART_BIN\" (the brg that started it, whatever
-  is on PATH). Its deployment is already set in BORGCHART_FILE, so it passes no
-  --file, and its identity comes from its environment. Read next:
+  is on PATH). Its instance is already set in BORGCHART_INSTANCE, so it names
+  other members by ID alone and passes no --instance, and its identity comes
+  from its environment. Read next:
     \"$BORGCHART_BIN\" msg publish --help   records: kinds, facts, keys, outcomes
     \"$BORGCHART_BIN\" inbox --help         your inbox and the --after cursor
     \"$BORGCHART_BIN\" inbox wait --help    waiting for new records
@@ -361,7 +371,7 @@ Outcomes (with --json: {{ok, code, outcome, ...}}; the exit status is the code):
         (
             n(Code::NotConfigured),
             Code::NotConfigured,
-            "no bus in the deployment, or the team hasn't started",
+            "no bus in the team, or the instance hasn't started with one",
         ),
         (
             n(Code::Refused),
@@ -464,7 +474,7 @@ Outcomes (with --json: {{ok, code, outcome, ...}}; the exit status is the code):
         (
             n(Code::Fenced),
             Code::Fenced,
-            "with --background: the session is over, stop. With --after: the team was restarted, so list the inbox again (`inbox`, no --after) and wait after what it shows. Or this member was replaced: stop",
+            "with --background: the session is over, stop. With --after: the instance was restarted, so list the inbox again (`inbox`, no --after) and wait after what it shows. Or this member was replaced: stop",
         ),
         (
             n(Code::Usage),
@@ -474,7 +484,7 @@ Outcomes (with --json: {{ok, code, outcome, ...}}; the exit status is the code):
         (
             n(Code::NotConfigured),
             Code::NotConfigured,
-            "no bus in the deployment, or the team hasn't started",
+            "no bus in the team, or the instance hasn't started with one",
         ),
         (
             n(Code::Refused),
@@ -484,12 +494,12 @@ Outcomes (with --json: {{ok, code, outcome, ...}}; the exit status is the code):
         (
             n(Code::Invalid),
             Code::Invalid,
-            "--member names no member of the team",
+            "--member names no member of the instance",
         ),
         (
             n(Code::Corrupt),
             Code::Corrupt,
-            "the team's storage is damaged (`brg bus check`)",
+            "the instance's storage is damaged (`brg bus check`)",
         ),
         (n(Code::Error), Code::Error, "an I/O or unexpected error"),
     ]));
@@ -498,7 +508,7 @@ Outcomes (with --json: {{ok, code, outcome, ...}}; the exit status is the code):
 
 /// `brg task --help`.
 pub fn task() -> String {
-    "Tasks are folded, in order, from the team's records; `msg publish` checks each
+    "Tasks are folded, in order, from the instance's records; `msg publish` checks each
 task record against that fold. The assignee is the member an assign names;
 the authority is its parent, or an outside caller when the assignee is the
 team's root.
@@ -528,7 +538,7 @@ to at most one.
 Writers: the assignee's incarnations (one per start) that accepted, sent a
 result or confirmed a cancel, plus its current one unless it declined. A
 release is refused (4) until every writer is `gone`, meaning brg saw it stop:
-stop the assignee with `brg down --member <assignee>`, check that `task show`
+stop the assignee with `brg stop <assignee>`, check that `task show`
 lists each writer as gone, then release.
 
 `task show` prints the task, its writers with liveness, its history and
@@ -540,7 +550,7 @@ and the kinds it may send; `next: nothing` once the task needs nobody.
 
 /// `brg task list --help`.
 pub fn task_list() -> String {
-    "List tasks and open questions, folded from the team's records.
+    "List tasks and open questions, folded from the instance's records.
 
 One line per task: `<task>  <assignee>#<attempt>  <state>  -> <who>: <kinds>`,
 who should publish next and which kinds, then each open question. `brg task

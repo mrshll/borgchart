@@ -208,7 +208,7 @@ Every `BORGCHART_*` variable that a member, plugin or test can see:
 | `BORGCHART_RUN`, `BORGCHART_INCARNATION` | members | `BORGCHART_START` | the member's start number; brg refuses an earlier start |
 | — | members | `BORGCHART_NOTES` | the instance's notes folder |
 | `BORGCHART_FILE` | members, plugins, the caller | removed | commands find the instance from `BORGCHART_INSTANCE` or `--instance` |
-| — | the caller, tests | `BORGCHART_CONFIG` | the global configuration file (default `~/.config/borgchart/config.yaml`) |
+| — | the caller, members, tests | `BORGCHART_CONFIG` | the global configuration file (default `~/.config/borgchart/config.yaml`); members get the caller's, so their own `brg create` finds the same teams |
 | `BORGCHART_BIN` | members, plugins | unchanged | the brg that started them |
 | `BORGCHART_PARENT` | plugin actions | unchanged | the calling member's parent (a member) |
 | `BORGCHART_DELIVER_TO` | plugin processes | unchanged | the member a process hands work to (its `delivers_to` role's only member) |

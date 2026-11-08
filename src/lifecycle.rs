@@ -1,5 +1,5 @@
 //! Safe lifecycle: the lifecycle locks, the checks a start makes before it
-//! changes anything, the team's message storage at `up` (which run is in
+//! changes anything, the instance's message storage at a start (which run is in
 //! use, and rolling it over), member incarnations and their liveness.
 //!
 //! Runs are internal: users never see or name them, and messages talk
@@ -24,7 +24,7 @@ use crate::bus::time::{parse_utc, utc_now};
 use crate::state::{self, Meta, StateDir};
 use crate::validate::Validated;
 
-/// `ended_reason` for an incarnation stopped by `brg down`.
+/// `ended_reason` for an incarnation stopped by `brg stop`.
 pub const ENDED_STOPPED: &str = "stopped";
 /// `ended_reason` for an incarnation whose window could not be started.
 pub const ENDED_START_FAILED: &str = "start-failed";
@@ -38,8 +38,8 @@ fn lock_file(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
-/// The deployment's lifecycle lock in brg's state directory, held by `up`
-/// and `down` while they change anything.
+/// The instance's lifecycle lock in its state folder, held by `start`
+/// and `stop` while they change anything.
 pub fn lock_state(state: &StateDir) -> Result<File, String> {
     let path = state.lifecycle_lock();
     lock_file(&path).map_err(|e| format!("cannot lock {}: {e}", path.display()))
@@ -60,8 +60,8 @@ fn lock_bus(paths: &RunPaths) -> Result<File, String> {
 // --- messages ---
 
 /// What changed between two configuration snapshots, in team and member
-/// terms: "oncall/helper's instruction file changed since the team started;
-/// restart the team to apply it: brg down && brg up". `restart` comes from
+/// terms: "oncall/helper's instruction file changed since the instance started;
+/// stop it fully and start it again: brg stop <instance> && brg start <instance>". `restart` comes from
 /// [`state::restart_hint`].
 pub fn changed_since_start(
     team: &str,
@@ -119,10 +119,10 @@ pub fn changed_since_start(
     )
 }
 
-// --- child starts into a running team ---
+// --- child starts into a running instance ---
 
-/// Refuse to start members into a running team whose configuration changed
-/// since it started (a full `up` of a running team too). Nothing has been
+/// Refuse to start members into a running instance whose configuration changed
+/// since it started (a full start of a running instance too). Nothing has been
 /// written when this fails.
 pub fn check_join(
     meta: &Meta,
@@ -150,7 +150,7 @@ pub fn check_join(
     Ok(())
 }
 
-// --- the team's message storage ---
+// --- the instance's message storage ---
 
 /// The run a start uses, with its lifecycle lock held.
 pub struct Binding {
@@ -161,7 +161,7 @@ pub struct Binding {
     pub note: Option<String>,
 }
 
-/// Why `up` started a new run (recorded in `linked_from.reason`).
+/// Why a start started a new run (recorded in `linked_from.reason`).
 pub const ROLL_CONFIG: &str = "config";
 pub const ROLL_FORMAT: &str = "format";
 pub const ROLL_AGE: &str = "age";
@@ -169,7 +169,7 @@ pub const ROLL_AGE: &str = "age";
 /// Carry unfinished work (open tasks, unanswered questions, unread
 /// messages) from `old` into the new run `new`, before `new` becomes
 /// current. Called with `old`'s `bus/lock` held and its `retired` marker
-/// written. It runs again when a later `up` finishes a rollover that was
+/// written. It runs again when a later start finishes a rollover that was
 /// interrupted, so it must be idempotent. Task facts own this and wire it
 /// in a later change; until then a configuration or age rollover leaves
 /// unfinished work behind.
@@ -240,7 +240,7 @@ pub fn check_stopped(paths: &RunPaths, team: &str, restart: &str) -> Result<(), 
 }
 
 /// Where an interrupted rollover of `old` was going: its `retired` marker
-/// names a run that exists, belongs to this deployment and links back to
+/// names a run that exists, belongs to this instance and links back to
 /// `old`. Returns that run and the rollover's reason.
 fn successor(store: &TeamStore, old: &str, instance: &str) -> Option<(String, String)> {
     let next = fs::read_to_string(store.run(old).retired()).ok()?;
@@ -262,13 +262,13 @@ enum Plan {
     },
 }
 
-/// Pick (and on a full `up` of a stopped team, roll over) the run this
+/// Pick (and on a full start of a stopped team, roll over) the run this
 /// start uses. Every check is made before anything is written.
 ///
-/// - `joining`: the team is running; use its run as it is.
-/// - `child`: `up --member` of a stopped team; it never rolls over, so it
+/// - `joining`: the instance is running; use its run as it is.
+/// - `child`: a member start of a stopped team; it never rolls over, so it
 ///   refuses when the configuration or message format changed.
-/// - otherwise a full `up` of a stopped team: a new run, linked to the
+/// - otherwise a full start of a stopped team: a new run, linked to the
 ///   previous one, when the configuration or message format changed or the
 ///   run reached `max_age_days`, but only once every member is positively
 ///   stopped. A format change carries nothing.
@@ -289,7 +289,7 @@ pub fn bind_run(
             "instance `{team}` was started before but its messages are missing; nothing was started"
         )
     };
-    // Never start into retired storage. A full `up` finishes a rollover
+    // Never start into retired storage. A full start finishes a rollover
     // that was interrupted after retiring the old run (switching `current`
     // to the run the marker names, carrying again) when that run is clearly
     // its successor; anything else refuses.
@@ -355,7 +355,7 @@ pub fn bind_run(
             // `current` names storage without its manifest: damaged.
             Ok(None) => return Err(missing()),
             Err(ManifestError::Format { found }) if joining || child => {
-                return Err(manifest::format_mismatch(&team, found, &restart));
+                return Err(manifest::format_mismatch(&team, found));
             }
             Err(ManifestError::Format { .. }) => Plan::New {
                 previous: Some((id, ROLL_FORMAT)),
@@ -627,7 +627,7 @@ impl Server {
         }
     }
 
-    /// The deployment's server, as recorded at `up`.
+    /// The instance's server, as recorded at its start.
     pub fn of(meta: &Meta) -> Self {
         match (&meta.socket_path, &meta.socket) {
             (Some(path), _) => Server::Path(path.clone()),
