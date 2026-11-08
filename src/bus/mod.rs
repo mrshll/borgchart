@@ -37,12 +37,16 @@ pub fn is_valid_run_id(id: &str) -> bool {
 /// Whether user-facing text mentions runs: the word `run`/`runs` or a run
 /// ID like `r12`. ("running" and "rerun" are fine.) For tests that check
 /// messages talk only about teams and members.
+///
+/// A run ID counts only as a whole word: in a hyphenated ID such as
+/// `helper-r777`, `r777` is an instance or member suffix, not a run.
 pub fn mentions_runs(text: &str) -> bool {
-    text.split(|c: char| !c.is_ascii_alphanumeric()).any(|w| {
-        w.eq_ignore_ascii_case("run")
-            || w.eq_ignore_ascii_case("runs")
-            || (w.len() > 1 && w.starts_with('r') && w[1..].bytes().all(|b| b.is_ascii_digit()))
-    })
+    let mut words = text.split(|c: char| !c.is_ascii_alphanumeric());
+    let mut ids = text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'));
+    words.any(|w| w.eq_ignore_ascii_case("run") || w.eq_ignore_ascii_case("runs"))
+        || ids.any(|w| {
+            w.len() > 1 && w.starts_with('r') && w[1..].bytes().all(|b| b.is_ascii_digit())
+        })
 }
 
 #[cfg(test)]
@@ -69,5 +73,13 @@ mod tests {
         assert!(!mentions_runs("helper: already running"));
         assert!(!mentions_runs("not running; rerun brg up"));
         assert!(!mentions_runs("brg down && brg up"));
+        // Instance and member IDs end in a random suffix, which can look
+        // like a run ID.
+        assert!(!mentions_runs(
+            "brg can't tell that oncall-ewx6/helper-r777 has stopped"
+        ));
+        assert!(!mentions_runs("r777-ab2c"));
+        assert!(mentions_runs("storage r12, r3"));
+        assert!(mentions_runs("a re-run"));
     }
 }
