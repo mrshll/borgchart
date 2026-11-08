@@ -11,8 +11,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::time::{Duration, Instant};
 
-use borgchart::bus::manifest::PaneIdentity;
 use borgchart::composer::{self, Geometry, Reading, VimMode};
+use borgchart::lifecycle::PaneIdentity;
 use borgchart::rules;
 use borgchart::state::StateDir;
 use borgchart::team::Vendor;

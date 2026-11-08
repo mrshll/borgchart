@@ -62,20 +62,3 @@ fn publish_help_names_every_kind_and_field() {
         );
     }
 }
-
-#[test]
-fn bus_help_speaks_of_teams_and_members() {
-    for args in [
-        &["msg", "publish"][..],
-        &["msg", "read"],
-        &["msg", "ack"],
-        &["inbox"],
-        &["inbox", "wait"],
-    ] {
-        let text = help(args);
-        assert!(
-            !borgchart::bus::mentions_runs(&text),
-            "{args:?} --help mentions runs:\n{text}"
-        );
-    }
-}

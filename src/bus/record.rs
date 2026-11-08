@@ -1,7 +1,7 @@
 //! The record envelope.
 //!
 //! A caller supplies a [`Draft`] (what to say, to whom); `brg msg publish`
-//! adds identity (schema, run, ID, sequence, time, actor, operation key) and
+//! adds identity (schema, ID, sequence, time, actor, operation key) and
 //! artifact metadata, and stores the result as an immutable [`Record`].
 //! Bodies and facts are data: nothing in a record is ever typed into a
 //! terminal or executed.
@@ -130,7 +130,6 @@ pub struct Draft {
 #[serde(deny_unknown_fields)]
 pub struct Record {
     pub schema: u32,
-    pub run: String,
     /// `m<seq>`.
     pub id: String,
     pub seq: u64,

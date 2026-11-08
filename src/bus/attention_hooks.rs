@@ -10,7 +10,7 @@ use std::fs;
 use serde::{Deserialize, Serialize};
 
 use super::fsx;
-use super::layout::RunPaths;
+use super::layout::StorePaths;
 use super::record::{Record, parse_record_id, record_id};
 
 /// The union of IDs returned by this incarnation's own inbox listings.
@@ -25,7 +25,7 @@ struct Observed {
 
 /// Read-only, best effort: damaged state leaves IDs unseen; wait timing
 /// never relies on this state being available.
-pub(super) fn shown_ids(paths: &RunPaths, member: &str, incarnation: &str) -> BTreeSet<u64> {
+pub(super) fn shown_ids(paths: &StorePaths, member: &str, incarnation: &str) -> BTreeSet<u64> {
     let read = || -> Option<BTreeSet<u64>> {
         let bytes = fs::read(paths.observation(member, incarnation)).ok()?;
         let observed: Observed = serde_json::from_slice(&bytes).ok()?;
@@ -61,15 +61,15 @@ impl Attention {
 }
 
 /// After a record is committed (not after a duplicate), outside `bus/lock`.
-pub fn after_publish(_paths: &RunPaths, _instance: &str, _record: &Record) -> Attention {
+pub fn after_publish(_paths: &StorePaths, _instance: &str, _record: &Record) -> Attention {
     Attention::None
 }
 
 /// After a member lists its own inbox (`inbox`, `inbox wait`): `ids` were
 /// returned to that incarnation. Never called for `--member`, `--external`
 /// or operator listings, nor for `msg read`.
-pub fn after_list(paths: &RunPaths, member: &str, incarnation: &str, ids: &[String]) {
-    // The caller checked the bus root through the run directory. Check the
+pub fn after_list(paths: &StorePaths, member: &str, incarnation: &str, ids: &[String]) {
+    // The caller checked the bus root in the instance. Check the
     // attention directories too, before reading or replacing anything there.
     // No lock: concurrent listings of one incarnation may lose one merge
     // and leave IDs unseen. Background waits still rate-limit old IDs.
@@ -93,4 +93,4 @@ pub fn after_list(paths: &RunPaths, member: &str, incarnation: &str, ids: &[Stri
 
 /// From `publish`, `inbox`, `read` and `ack`: start the attention worker if
 /// attention is pending and none is running.
-pub fn ensure_if_pending(_paths: &RunPaths, _instance: &str) {}
+pub fn ensure_if_pending(_paths: &StorePaths, _instance: &str) {}

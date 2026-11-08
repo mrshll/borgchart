@@ -11,13 +11,13 @@ use serde::Serialize;
 
 use crate::address::{self, Instance};
 use crate::bus::context;
-use crate::bus::layout::RunPaths;
-use crate::bus::manifest::{Incarnation, Liveness, PaneIdentity};
+use crate::bus::layout::StorePaths;
 use crate::bus::time::utc_now;
 use crate::config::Auth;
 use crate::exec::{ExecSpec, PluginEnv, identity_env};
 use crate::launch;
 use crate::lifecycle;
+use crate::lifecycle::{Incarnation, Liveness, PaneIdentity};
 use crate::paths::overlaps;
 use crate::proctree;
 use crate::registry;
@@ -431,28 +431,35 @@ fn start_members(
     let may_still_run = previous
         .as_ref()
         .is_some_and(|m| m.stopped_at.is_none() && m.windows_started != Some(false));
-    let existing = previous.filter(|_| probe.has_session(&session));
+    let existing = previous.clone().filter(|_| probe.has_session(&session));
     let joining = existing.is_some();
     match &existing {
         Some(meta) => lifecycle::check_join(meta, &snapshot, state, &team, &restart)?,
         None if !missing.is_empty() => return Err(missing_error()),
         None => {}
     }
-    // Every start, of the instance or one member, needs messages it can
-    // read: records brg can't read hide open work. The storage checks below
-    // say more about some damage (a lost `current`, another format), so
-    // their refusal comes first; any start they let through still refuses.
-    let readable = match &bus {
-        Some(_) => lifecycle::open_work(state).map(|_| ()),
-        None => Ok(()),
-    };
-    let binding = match &bus {
-        Some(_) => Some(lifecycle::bind_run(v, state, joining, only)?),
-        None => None,
-    };
-    readable.map_err(|e| unreadable_store(inst, &e))?;
+    if !joining && let Some(meta) = &previous {
+        let changed = meta.config.as_ref().is_none_or(|old| old != &snapshot);
+        if changed {
+            if only {
+                return Err(match &meta.config {
+                    Some(old) => lifecycle::changed_since_start(&team, &restart, old, &snapshot),
+                    None => format!(
+                        "instance `{team}` has no configuration snapshot; start the whole instance: {restart}"
+                    ),
+                });
+            }
+            lifecycle::check_stopped(state, meta, &restart)?;
+        }
+    }
+    let storage = bus.as_ref().map(|_| StorePaths::new(state));
+    if let Some(paths) = &storage {
+        if paths.validate(&state.id)? {
+            lifecycle::open_work(state).map_err(|e| unreadable_store(inst, &e))?;
+        }
+        paths.initialize(state)?;
+    }
     let mut notes: Vec<String> = pre_notes;
-    notes.extend(binding.as_ref().and_then(|b| b.note.clone()));
     let user_config = v.config.tmux_user_config.as_ref().and_then(|u| u.resolve());
     // The server reads its config once, when it starts, and every instance
     // on it shares it.
@@ -488,6 +495,10 @@ fn start_members(
         Some(MemberMeta {
             role: role.to_string(),
             vendor: member.vendor.as_str().into(),
+            model: member.model.as_ref().map(|model| match &model.effort {
+                Some(effort) => format!("{} {effort}", model.name),
+                None => model.name.clone(),
+            }),
             posture: match v.posture(role) {
                 Posture::Vendor => "vendor".into(),
                 Posture::Locked => "locked".into(),
@@ -511,10 +522,6 @@ fn start_members(
                 brg: brg.clone(),
                 socket: Some(state::tmux_socket()),
                 config: Some(snapshot.clone()),
-                run: binding.as_ref().map(|b| state::RunBinding {
-                    run: b.run.clone(),
-                    dir: b.paths.root.clone(),
-                }),
                 base_env: base.clone(),
                 windows_started: Some(may_still_run),
                 ..Meta::default()
@@ -570,13 +577,13 @@ fn start_members(
     // The folders these members start in, held from now on: recorded
     // under the registry lock, before any window starts.
     {
-        let mut updated = registry::read_instance(state)?;
+        let mut updated = record.clone();
         for (id, cwd) in &cwds {
             if let Some(m) = updated.members.get_mut(id) {
                 m.cwd = Some(cwd.clone());
             }
         }
-        if &updated != record {
+        if updated != registry::read_instance(state)? {
             lock.save_instance(state, &updated)?;
         }
     }
@@ -701,11 +708,11 @@ fn start_members(
         }
         // With a bus, each start is a new incarnation, recorded before its
         // window exists and again once its pane is known.
-        let incarnation = match &binding {
-            Some(b) => {
+        let incarnation = match &storage {
+            Some(_) => {
                 let inc = Incarnation {
                     member: id.clone(),
-                    incarnation: lifecycle::new_incarnation_id(&b.paths, id),
+                    incarnation: lifecycle::new_incarnation_id(state, id),
                     started_at: utc_now(),
                     vendor_version: if joining {
                         vendor_version(member.vendor, &base)
@@ -716,10 +723,9 @@ fn start_members(
                     ended_at: None,
                     ended_reason: None,
                 };
-                lifecycle::begin_incarnation(&b.paths, &inc)?;
-                env.insert(context::ENV_RUN.into(), b.run.clone());
+                lifecycle::begin_incarnation(state, &inc)?;
                 env.insert(context::ENV_INCARNATION.into(), inc.incarnation.clone());
-                Some((b, inc))
+                Some(inc)
             }
             None => None,
         };
@@ -736,9 +742,9 @@ fn start_members(
                 cwd,
             },
         );
-        if let (Some((b, _)), Err(_)) = (&incarnation, &result) {
+        if let (Some(_), Err(_)) = (&incarnation, &result) {
             // tmux didn't create the window, so nothing runs it.
-            let _ = lifecycle::end_incarnation(&b.paths, id, lifecycle::ENDED_START_FAILED);
+            let _ = lifecycle::end_incarnation(state, id, lifecycle::ENDED_START_FAILED);
         }
         if result.is_err() {
             unrecord_windows(state, &mut meta, fresh && !any_window, may_still_run);
@@ -747,7 +753,7 @@ fn start_members(
         any_window = true;
         // Without a bus, the instance's state is where `status` learns that a
         // member ran.
-        if binding.is_none()
+        if storage.is_none()
             && let Some(m) = meta.members.get_mut(id)
             && m.started != Some(true)
         {
@@ -764,8 +770,8 @@ fn start_members(
             // replacement, so it couldn't be stopped safely if its gate never
             // reported in. Stop it now, while the locks are held.
             let _ = tmux.kill_window(&session, id);
-            if let Some((b, _)) = &incarnation {
-                let _ = lifecycle::end_incarnation(&b.paths, id, lifecycle::ENDED_START_FAILED);
+            if incarnation.is_some() {
+                let _ = lifecycle::end_incarnation(state, id, lifecycle::ENDED_START_FAILED);
             }
             set(
                 &mut outcomes,
@@ -776,9 +782,9 @@ fn start_members(
             failed = true;
             continue;
         }
-        if let Some((b, mut inc)) = incarnation {
+        if let Some(mut inc) = incarnation {
             inc.pane = pane.clone();
-            lifecycle::complete_incarnation(&b.paths, &inc)?;
+            lifecycle::complete_incarnation(state, &inc)?;
         }
         started.push(Started {
             id: id.clone(),
@@ -876,15 +882,10 @@ fn start_members(
     // take them again for anything they change (a key press, a trust marker,
     // stopping a `locked` member), and only while the window still runs the
     // pane this start launched.
-    let run_paths = binding.as_ref().map(|b| b.paths.clone());
-    drop(binding);
     drop(state_lock);
     drop(lock);
     let relock = |s: &Started| -> Result<(Launched, Vec<std::fs::File>), String> {
-        let mut locks = vec![lifecycle::lock_state(state)?];
-        if let Some(paths) = &run_paths {
-            locks.push(lifecycle::lock_run(paths)?);
-        }
+        let locks = vec![lifecycle::lock_state(state)?];
         Ok((launched(&tmux, &session, s), locks))
     };
 
@@ -1507,20 +1508,18 @@ fn repoint(inst: &mut Instance, team: &Path) -> Result<(), String> {
 
 /// Which members a full start brings up: the `start: true` roles' members
 /// (issuing one for a role that has none), the members running at the last
-/// stop, and members holding open work. Called with the registry lock held;
-/// saves the record when it issued a member.
+/// stop. Called with the registry lock held; new IDs are saved only after
+/// all start checks pass.
 fn full_start_members(
-    lock: &registry::Lock,
+    _lock: &registry::Lock,
     inst: &mut Instance,
     v: &Validated,
 ) -> Result<Vec<String>, String> {
     let mut ids = std::collections::BTreeSet::new();
-    let mut issued = false;
     for role in v.team.members.values().filter(|m| m.start) {
         let members = inst.record.members_of(&role.id);
         if members.is_empty() {
             ids.insert(inst.record.issue_member(&role.id)?);
-            issued = true;
         }
         ids.extend(members);
     }
@@ -1535,9 +1534,6 @@ fn full_start_members(
             .filter(|w| !w.dead && inst.record.members.contains_key(&w.name))
             .map(|w| w.name.clone()),
     );
-    if issued {
-        lock.save_instance(&inst.state, &inst.record)?;
-    }
     // Only members whose role is still in the instance.
     Ok(ids
         .into_iter()
@@ -1606,10 +1602,6 @@ pub fn liveness_of(inst: &Instance) -> BTreeMap<String, Liveness> {
     let session = state.session();
     let meta = state::read_meta(state);
     let rows = meta.as_ref().map(|m| lifecycle::Server::of(m).panes());
-    let run = meta
-        .as_ref()
-        .and_then(|m| m.run.as_ref())
-        .map(|r| RunPaths::from_root(&r.dir));
     let mut out = BTreeMap::new();
     for id in inst.record.members.keys() {
         let by_window = match (&meta, &rows) {
@@ -1630,13 +1622,10 @@ pub fn liveness_of(inst: &Instance) -> BTreeMap<String, Liveness> {
             }
             _ => Liveness::Unknown,
         };
-        let by_record = match &run {
-            Some(paths) => match crate::bus::manifest::load_incarnation(paths, id) {
-                Ok(None) => Liveness::Gone,
-                Ok(Some(inc)) => lifecycle::liveness(paths, id, &inc.incarnation),
-                Err(_) => Liveness::Unknown,
-            },
-            None => Liveness::Gone,
+        let by_record = match lifecycle::load_incarnation(state, id) {
+            Ok(None) => Liveness::Gone,
+            Ok(Some(inc)) => lifecycle::liveness(state, id, &inc.incarnation),
+            Err(_) => Liveness::Unknown,
         };
         let l = match (by_window, by_record) {
             (Liveness::Alive, _) | (_, Liveness::Alive) => Liveness::Alive,
@@ -1937,15 +1926,6 @@ pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> 
         ));
     }
     let server = lifecycle::Server::of(&meta);
-    let run = meta
-        .run
-        .as_ref()
-        .map(|r| RunPaths::from_root(&r.dir))
-        .filter(|p| p.runtime_dir().is_dir());
-    let _run_lock = match &run {
-        Some(paths) => Some(lifecycle::lock_run(paths)?),
-        None => None,
-    };
     let rows = match server.panes() {
         Ok(rows) => rows,
         // A stop was already confirmed, or nothing ever started, and
@@ -2045,9 +2025,9 @@ pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> 
             "{e}; processes the stopped members left running in the background, if any, weren't checked"
         )),
     }
-    if let Some(paths) = &run {
+    {
         for id in &members {
-            let Some(inc) = crate::bus::manifest::load_incarnation(paths, id).map_err(|_| {
+            let Some(inc) = lifecycle::load_incarnation(state, id).map_err(|_| {
                 format!("{team}/{id}'s start record can't be read; nothing more was changed")
             })?
             else {
@@ -2065,7 +2045,7 @@ pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> 
                 Some(p) => lifecycle::pane_liveness(p) == Liveness::Gone,
             };
             if stopped {
-                lifecycle::end_incarnation(paths, id, lifecycle::ENDED_STOPPED)?;
+                lifecycle::end_incarnation(state, id, lifecycle::ENDED_STOPPED)?;
             } else {
                 messages.push(format!(
                     "{id}: may still be running on another tmux server; it was left as is"
@@ -2145,7 +2125,7 @@ pub struct StatusRow {
     pub start: bool,
 }
 
-/// A member's state when it has never run in the instance's current storage.
+/// A member's state when it has never started in the instance.
 pub const NOT_STARTED: &str = "not started";
 /// A member's state when it ran and has ended.
 pub const STOPPED: &str = "stopped";
@@ -2197,7 +2177,6 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
     let tmux = tmux_for(state);
     let windows = tmux.windows(&session);
     let meta = state::read_meta(state).unwrap_or_default();
-    let run = meta.run.as_ref().map(|r| RunPaths::from_root(&r.dir));
     let nodes = member_nodes(inst, &v, |_| String::new());
     // The instance runs while any member has a live window; one stopped on
     // purpose expects no one to be running.
@@ -2240,18 +2219,11 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
         };
         let member = &v.team.members[role];
         let posture = v.posture(role);
-        // Whether it ever ran here: with a bus, an incarnation in the instance's
-        // current storage (one that can't be read counts); without one, a
-        // start recorded since the instance last started afresh (or no record).
-        let incarnation = match &run {
-            Some(paths) => crate::bus::manifest::load_incarnation(paths, id),
-            None => Ok(None),
-        };
-        let ran = match (&run, &incarnation) {
-            (Some(_), Ok(inc)) => inc.is_some(),
-            (Some(_), Err(_)) => true,
-            // State from an earlier brg didn't record starts: assume it ran.
-            (None, _) => meta
+        // A current start record survives full stops and configuration changes.
+        let incarnation = lifecycle::load_incarnation(state, id);
+        let ran = match &incarnation {
+            Ok(Some(_)) | Err(_) => true,
+            Ok(None) => meta
                 .members
                 .get(id)
                 .is_some_and(|m| m.started != Some(false)),
@@ -2273,8 +2245,7 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
                 .as_ref()
                 .ok()
                 .and_then(|i| i.as_ref())
-                .zip(run.as_ref())
-                .map(|(inc, paths)| lifecycle::liveness(paths, id, &inc.incarnation)),
+                .map(|inc| lifecycle::liveness(state, id, &inc.incarnation)),
             posture: Some(match posture {
                 Posture::Vendor => "vendor".into(),
                 Posture::Locked => "locked".into(),

@@ -166,7 +166,7 @@ Outcomes (with --json: {{ok, code, outcome, ...}}; the exit status is the code):
         (
             n(Code::Fenced),
             Code::Fenced,
-            "stale: a replaced member or references from before a restart (list the inbox again)",
+            "stale: a stopped or replaced member",
         ),
         (n(Code::Error), Code::Error, "an I/O or unexpected error"),
     ]));
@@ -220,7 +220,7 @@ since command start; a later arrival can return sooner. Errors, including
 usage errors and missing identity, also wait for that minimum. This applies
 to normal outcomes: explicit --help/-h and signals (SIGTERM, SIGKILL) can end
 the command immediately. Damaged or missing observations cannot bypass the
-minimum for old records. A restart or replaced session is always fenced:
+minimum for old records. A replaced session is always fenced:
 stop re-arming. List your inbox and follow next with `inbox --after <next>`
 until it is null, work, then re-arm one background wait after each turn.
 Earlier unacknowledged records are fine; the wait needs no cursor bookkeeping.
@@ -244,7 +244,7 @@ Outcomes (with --json: {{ok, code, outcome, ...}}; the exit status is the code):
         (
             n(Code::Fenced),
             Code::Fenced,
-            "with --background: the session is over, stop. With --after: the instance was restarted, so list the inbox again (`inbox`, no --after) and wait after what it shows. Or this member was replaced: stop",
+            "this member was stopped or replaced: stop",
         ),
         (
             n(Code::Usage),

@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::address;
-use crate::bus::manifest::Liveness;
+use crate::lifecycle::Liveness;
 use crate::paths::overlaps;
 use crate::registry;
 

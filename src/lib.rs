@@ -8,6 +8,7 @@ pub mod checkouts;
 pub mod cli;
 pub mod composer;
 pub mod config;
+pub mod config_snapshot;
 pub mod diag;
 pub mod exec;
 pub mod frontmatter;

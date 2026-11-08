@@ -124,7 +124,7 @@ pub fn sync_dir(dir: &Path) -> io::Result<()> {
 /// or others. Existing components are checked before anything is created
 /// beneath them; missing ones are created with mode 0700 (see
 /// [`create_private_dirs`]) and then checked. Writers call this before
-/// writing into a run, so a root under a shared directory such as `/tmp`
+/// writing into a store, so a root under a shared directory such as `/tmp`
 /// can't have been planted or redirected by someone else.
 pub fn ensure_private_tree(base: &Path, dir: &Path) -> io::Result<()> {
     let rel = dir.strip_prefix(base).map_err(|_| {
@@ -228,31 +228,31 @@ mod tests {
     fn private_tree_refuses_symlinks_and_open_modes() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
-        let base = dir.path().join("runs");
-        let run = base.join("r1");
-        ensure_private_tree(&base, &run).unwrap();
-        let mode = fs::metadata(&run).unwrap().permissions().mode() & 0o777;
+        let base = dir.path().join("instance");
+        let store = base.join("messages");
+        ensure_private_tree(&base, &store).unwrap();
+        let mode = fs::metadata(&store).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700);
-        ensure_private_tree(&base, &run).unwrap();
+        ensure_private_tree(&base, &store).unwrap();
 
-        fs::set_permissions(&run, fs::Permissions::from_mode(0o777)).unwrap();
-        assert!(ensure_private_tree(&base, &run).is_err());
-        fs::set_permissions(&run, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&store, fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(ensure_private_tree(&base, &store).is_err());
+        fs::set_permissions(&store, fs::Permissions::from_mode(0o700)).unwrap();
 
         let elsewhere = dir.path().join("elsewhere");
         fs::create_dir(&elsewhere).unwrap();
         let linked = dir.path().join("linked");
         std::os::unix::fs::symlink(&elsewhere, &linked).unwrap();
-        let err = ensure_private_tree(&linked, &linked.join("r1")).unwrap_err();
+        let err = ensure_private_tree(&linked, &linked.join("messages")).unwrap_err();
         assert!(err.to_string().contains("symlink"), "{err}");
         assert!(
-            !elsewhere.join("r1").exists(),
+            !elsewhere.join("messages").exists(),
             "nothing is created under a refused symlink"
         );
         let hop = base.join("hop");
         std::os::unix::fs::symlink(&elsewhere, &hop).unwrap();
-        assert!(ensure_private_tree(&base, &hop.join("r2")).is_err());
-        assert!(!elsewhere.join("r2").exists());
+        assert!(ensure_private_tree(&base, &hop.join("records")).is_err());
+        assert!(!elsewhere.join("records").exists());
         assert!(ensure_private_tree(&base, &elsewhere).is_err());
         assert!(ensure_private_tree(&base, &base.join("../x")).is_err());
     }

@@ -11,7 +11,6 @@ use super::outcome::{Code, Failure};
 
 /// Set in every member's environment at start.
 pub const ENV_MEMBER: &str = "BORGCHART_MEMBER";
-pub const ENV_RUN: &str = "BORGCHART_RUN";
 /// A unique ID for one start of one member.
 pub const ENV_INCARNATION: &str = "BORGCHART_INCARNATION";
 /// Set to `bus` for runtime-invoked plugin actions (alerts).
@@ -22,7 +21,6 @@ pub const ACTOR_BUS: &str = "bus";
 pub enum Caller {
     Member {
         member: String,
-        run: String,
         incarnation: String,
     },
     External {
@@ -58,12 +56,12 @@ pub fn instance_from(
     // reads as well as writes: it would otherwise act as an operator. An
     // instance alone (a plugin process) is not a member context.
     let set = |k: &str| get(k).is_some_and(|v| !v.is_empty());
-    let parts = [ENV_MEMBER, ENV_RUN, ENV_INCARNATION];
+    let parts = [ENV_MEMBER, ENV_INCARNATION];
     if parts.iter().any(|k| set(k)) && !(parts.iter().all(|k| set(k)) && set(ENV_INSTANCE)) {
         return Err(Failure::new(
             Code::Refused,
             format!(
-                "incomplete member context: {ENV_INSTANCE}, {ENV_MEMBER}, {ENV_RUN} and {ENV_INCARNATION} must all be set (was this member started by a brg with bus support?)"
+                "incomplete member context: {ENV_INSTANCE}, {ENV_MEMBER} and {ENV_INCARNATION} must all be set (was this member started by a brg with bus support?)"
             ),
         ));
     }
@@ -95,7 +93,6 @@ pub fn caller_from(
 ) -> Result<Caller, Failure> {
     let member = get(ENV_MEMBER).filter(|v| !v.is_empty());
     let incarnation = get(ENV_INCARNATION).filter(|v| !v.is_empty());
-    let run = get(ENV_RUN).filter(|v| !v.is_empty());
     let instance = get(ENV_INSTANCE).filter(|v| !v.is_empty());
     if member.is_some() || incarnation.is_some() {
         if external.is_some() {
@@ -104,16 +101,15 @@ pub fn caller_from(
                 "`--external` can't be used from inside a member; members publish as themselves",
             ));
         }
-        return match (member, run, incarnation, instance) {
-            (Some(member), Some(run), Some(incarnation), Some(_)) => Ok(Caller::Member {
+        return match (member, incarnation, instance) {
+            (Some(member), Some(incarnation), Some(_)) => Ok(Caller::Member {
                 member,
-                run,
                 incarnation,
             }),
             _ => Err(Failure::new(
                 Code::Refused,
                 format!(
-                    "incomplete member context: {ENV_INSTANCE}, {ENV_MEMBER}, {ENV_RUN} and {ENV_INCARNATION} must all be set (was this member started by a brg with bus support?)"
+                    "incomplete member context: {ENV_INSTANCE}, {ENV_MEMBER} and {ENV_INCARNATION} must all be set (was this member started by a brg with bus support?)"
                 ),
             )),
         };
@@ -148,14 +144,12 @@ mod tests {
         let e = env(&[
             (ENV_INSTANCE, "oncall-2a3b"),
             (ENV_MEMBER, "lead"),
-            (ENV_RUN, "r1"),
             (ENV_INCARNATION, "lead-1"),
         ]);
         assert_eq!(
             caller_from(None, &e).unwrap(),
             Caller::Member {
                 member: "lead".into(),
-                run: "r1".into(),
                 incarnation: "lead-1".into()
             }
         );
@@ -186,11 +180,7 @@ mod tests {
 
     #[test]
     fn partial_context_is_refused() {
-        let e = env(&[
-            (ENV_MEMBER, "lead"),
-            (ENV_RUN, "r1"),
-            (ENV_INCARNATION, "lead-1"),
-        ]);
+        let e = env(&[(ENV_MEMBER, "lead"), (ENV_INCARNATION, "lead-1")]);
         assert_eq!(caller_from(None, &e).unwrap_err().code, Code::Refused);
         let e = env(&[(ENV_MEMBER, "lead")]);
         assert_eq!(caller_from(None, &e).unwrap_err().code, Code::Refused);

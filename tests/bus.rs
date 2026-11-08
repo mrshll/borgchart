@@ -1,6 +1,5 @@
 //! Record store tests: `brg msg`, `brg inbox` and `brg bus` against a team's
-//! message storage built from fixtures (a hand-written `current`, `run.json`
-//! and incarnations).
+//! message storage built from store identity, start metadata and incarnations.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -12,9 +11,6 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-/// The team's internal current run. Users never see it: every command's
-/// output is checked for it (see [`output`]).
-const RUN: &str = "r41";
 /// The instance, as messages name it.
 const TEAM: &str = "oncall-2a3b";
 
@@ -33,8 +29,8 @@ struct Out {
 enum As {
     Operator,
     Member(&'static str),
-    /// A member with explicit (internal) run and incarnation values.
-    MemberWith(&'static str, &'static str, &'static str),
+    /// A member with an explicit incarnation.
+    MemberWith(&'static str, &'static str),
 }
 
 impl Fixture {
@@ -45,8 +41,7 @@ impl Fixture {
             dir: tempfile::tempdir().unwrap(),
         };
         f.register();
-        f.write_manifest(TEAM);
-        fs::write(f.store_dir().join("current"), format!("{RUN}\n")).unwrap();
+        f.write_store(TEAM);
         for m in ["lead", "helper", "helper2", "sub"] {
             f.write_incarnation(m, &format!("{m}-1"), false);
         }
@@ -90,62 +85,33 @@ impl Fixture {
             }),
         );
     }
-    fn run_dir(&self) -> PathBuf {
-        self.store_dir().join(RUN)
-    }
-
-    fn write_manifest(&self, deployment: &str) {
-        self.write_manifest_for(RUN, deployment);
-    }
-
-    /// `run.json` for the internal run `run`.
-    fn write_manifest_for(&self, run: &str, deployment: &str) {
+    fn write_store(&self, instance: &str) {
+        self.write_private(
+            &self.store_dir().join("store.json"),
+            &json!({"format": 2, "instance": instance}),
+        );
         let parents = [
             ("lead", None),
             ("helper", Some("lead")),
             ("helper2", Some("lead")),
             ("sub", Some("helper")),
         ];
-        let members: BTreeMap<&str, Value> = parents
-            .iter()
-            .map(|(m, p)| (*m, json!({"vendor": "claude", "parent": p})))
-            .collect();
-        let manifest = json!({
-            "schema": 1,
-            "run": run,
-            "created_at": borgchart::bus::time::utc_now(),
-            "instance": deployment,
-            "source": self.dir.path().join("oncall"),
-            "config": {"version": 1, "digest": "00", "inputs": {}},
-            "roles": members,
-        });
-        self.write_private(&self.store_dir().join(run).join("run.json"), &manifest);
+        let members: BTreeMap<&str, Value> = parents.iter().map(|(m, p)| (*m,
+            json!({"role": m, "vendor": "claude", "posture": "vendor", "parent": p, "vendor_version": null})
+        )).collect();
+        self.write_private(&self.root().join(TEAM).join("start.json"), &json!({
+            "team_dir": self.dir.path().join("oncall"), "folder": self.dir.path().join("work"),
+            "brg": env!("CARGO_BIN_EXE_brg"), "config": {"version": 1, "digest": "00", "inputs": {}},
+            "base_env": {}, "members": members, "plugins": {},
+        }));
     }
 
-    /// A new current storage `run` for the same team (same members), with a
-    /// record `m1` (`(to, body)`) if one is given,
-    /// switched to while holding the old storage's `bus/lock`, the way
-    /// rollover does it.
-    fn roll_over(&self, run: &str, record: Option<(&str, &str)>) {
-        self.write_manifest_for(run, TEAM);
-        if let Some((to, body)) = record {
-            self.write_private(
-                &self
-                    .store_dir()
-                    .join(run)
-                    .join("bus/records/0000000001.json"),
-                &json!({
-                    "schema": 1, "run": run, "id": "m1", "seq": 1,
-                    "at": "2026-11-05T19:00:00.000Z",
-                    "actor": {"type": "member", "member": "lead", "incarnation": "lead-1"},
-                    "key": "new-1", "to": to, "kind": "note", "body": body,
-                }),
-            );
-        }
-        let lock = hold(&self.run_dir().join("bus/lock"));
-        fs::write(self.run_dir().join("retired"), "").unwrap();
-        fs::write(self.store_dir().join("current"), format!("{run}\n")).unwrap();
-        drop(lock);
+    fn incarnation_file(&self, member: &str) -> PathBuf {
+        self.root()
+            .join(TEAM)
+            .join("members")
+            .join(member)
+            .join("incarnation.json")
     }
 
     /// How brg says to start one member.
@@ -177,12 +143,7 @@ impl Fixture {
             v["ended_at"] = json!("2026-11-05T20:00:00.000Z");
             v["ended_reason"] = json!("down");
         }
-        self.write_private(
-            &self
-                .run_dir()
-                .join(format!("runtime/incarnations/{member}.json")),
-            &v,
-        );
+        self.write_private(&self.incarnation_file(member), &v);
     }
 
     fn command(&self, who: &As, args: &[&str]) -> Command {
@@ -194,14 +155,13 @@ impl Fixture {
             .env("BORGCHART_CONFIG", self.dir.path().join("config.yaml"))
             .args(args)
             .args(["--instance", TEAM]);
-        let (m, run, inc) = match who {
+        let (m, inc) = match who {
             As::Operator => return cmd,
-            As::Member(m) => (m.to_string(), RUN.to_string(), format!("{m}-1")),
-            As::MemberWith(m, r, i) => (m.to_string(), r.to_string(), i.to_string()),
+            As::Member(m) => (m.to_string(), format!("{m}-1")),
+            As::MemberWith(m, i) => (m.to_string(), i.to_string()),
         };
         cmd.env("BORGCHART_INSTANCE", TEAM)
             .env("BORGCHART_MEMBER", m)
-            .env("BORGCHART_RUN", run)
             .env("BORGCHART_INCARNATION", inc);
         cmd
     }
@@ -231,7 +191,7 @@ impl Fixture {
     }
 
     fn records(&self) -> Vec<String> {
-        let mut names: Vec<String> = fs::read_dir(self.run_dir().join("bus/records"))
+        let mut names: Vec<String> = fs::read_dir(self.store_dir().join("records"))
             .map(|d| {
                 d.flatten()
                     .map(|e| e.file_name().to_string_lossy().to_string())
@@ -290,14 +250,7 @@ fn output(out: std::process::Output) -> Out {
 /// Users see teams and members only: no run IDs, no "run" wording and no
 /// paths inside the team's storage (`<root>/<deployment-id>/…`).
 fn assert_team_words(text: &str) {
-    assert!(
-        !borgchart::bus::mentions_runs(text),
-        "run wording in output: {text}"
-    );
-    assert!(
-        !text.contains(&format!("/{TEAM}/messages")),
-        "storage path in output: {text}"
-    );
+    assert!(!text.contains("/messages/"), "{text}");
 }
 
 /// Write a draft to brg's stdin. brg may refuse and exit before reading it
@@ -352,7 +305,7 @@ fn publish_retry_and_conflict() {
     let r = &rec.json["record"];
     assert_eq!(r["actor"], json!({"type": "external", "name": "ops"}));
     assert!(r.get("run").is_none(), "{r}");
-    assert_eq!(r["schema"], 1);
+    assert_eq!(r["schema"], 2);
     assert_eq!(r["key"], "demo-1");
     assert_eq!(r["body"], "hello");
     assert_eq!(r["acked"], false);
@@ -368,7 +321,7 @@ fn records_on_disk_are_private() {
     use std::os::unix::fs::PermissionsExt;
     let f = Fixture::new();
     assert_eq!(f.publish(&As::Operator, "k", &note("lead", "x")).code, 0);
-    let rec = f.run_dir().join("bus/records/0000000001.json");
+    let rec = f.store_dir().join("records/0000000001.json");
     assert_eq!(
         fs::metadata(&rec).unwrap().permissions().mode() & 0o777,
         0o600
@@ -551,9 +504,9 @@ fn crash_leftovers_are_tolerated_and_repaired() {
     let f = Fixture::new();
     assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "one")).code, 0);
     // A crash before linking leaves a stray temporary file.
-    fs::write(f.run_dir().join("bus/records/.tmp-999-0-1"), "partial").unwrap();
+    fs::write(f.store_dir().join("records/.tmp-999-0-1"), "partial").unwrap();
     // A crash after the record but before the key index: the record stands.
-    let keys = f.run_dir().join("bus/keys/external.ops");
+    let keys = f.store_dir().join("keys/external.ops");
     for e in fs::read_dir(&keys).unwrap().flatten() {
         fs::remove_file(e.path()).unwrap();
     }
@@ -577,13 +530,13 @@ fn corrupt_store_stops_mutations_but_not_reads() {
         for k in ["k1", "k2", "k3"] {
             assert_eq!(f.publish(&As::Operator, k, &note("lead", k)).code, 0);
         }
-        let records = f.run_dir().join("bus/records");
+        let records = f.store_dir().join("records");
         match damage {
             "garbage" => fs::write(records.join("0000000002.json"), "{oops").unwrap(),
             "gap" => fs::remove_file(records.join("0000000002.json")).unwrap(),
             _ => {
-                fs::create_dir_all(f.run_dir().join("bus/acks")).unwrap();
-                fs::write(f.run_dir().join("bus/acks/m1.json"), "[]").unwrap()
+                fs::create_dir_all(f.store_dir().join("acks")).unwrap();
+                fs::write(f.store_dir().join("acks/m1.json"), "[]").unwrap()
             }
         }
         let out = f.publish(&As::Operator, "k4", &note("lead", "x"));
@@ -696,7 +649,7 @@ fn acks_are_idempotent_and_recipient_only() {
         None,
     );
     assert_eq!(mixed.code, 4);
-    assert!(!f.run_dir().join("bus/acks/m3.json").exists());
+    assert!(!f.store_dir().join("acks/m3.json").exists());
     let read = f.brg(&As::Operator, &["msg", "read", "m1", "--json"], None);
     assert_eq!(read.json["record"]["acked"], true);
 }
@@ -768,7 +721,7 @@ mod background_wait {
     }
 
     fn observation(f: &Fixture) -> PathBuf {
-        f.run_dir().join("attention/observed/lead/lead-1.json")
+        f.store_dir().join("attention/observed/lead/lead-1.json")
     }
 
     fn bytes(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
@@ -808,14 +761,14 @@ mod background_wait {
                 .code,
             0
         );
-        let before = bytes(&f.run_dir());
+        let before = bytes(&f.store_dir());
         let out = finish_within(child, Duration::from_secs(3));
         assert_eq!(out.code, 0, "{:?} {}", out.json, out.stderr);
         assert_eq!(
             out.json,
             json!({"ok": true, "code": 0, "outcome": "ok", "ids": ["m2"], "count": 1})
         );
-        assert_eq!(bytes(&f.run_dir()), before);
+        assert_eq!(bytes(&f.store_dir()), before);
         assert_eq!(fs::read(observation(&f)).unwrap(), seen);
         assert_eq!(ids(&f.inbox(&As::Member("lead"), &[])), ["m1", "m2"]);
         let observed: Value = serde_json::from_slice(&fs::read(observation(&f)).unwrap()).unwrap();
@@ -914,7 +867,7 @@ mod background_wait {
                 observation(&f).is_dir(),
                 "observation writes must keep failing"
             );
-            let before = bytes(&f.run_dir());
+            let before = bytes(&f.store_dir());
             let start = Instant::now();
             let out = finish_within(
                 command(&f, &As::Member("lead"), &[]).spawn().unwrap(),
@@ -923,7 +876,7 @@ mod background_wait {
             assert_eq!(out.code, 0, "{:?} {}", out.json, out.stderr);
             assert_eq!(out.json["ids"], json!(["m1"]));
             assert!(start.elapsed() >= Duration::from_millis(400));
-            assert_eq!(bytes(&f.run_dir()), before);
+            assert_eq!(bytes(&f.store_dir()), before);
         }
     }
 
@@ -1001,7 +954,7 @@ mod background_wait {
             (As::Operator, vec!["--external", "ops"], 2),
             (As::Member("lead"), vec!["--timeout", "bad"], 2),
             (As::Member("lead"), vec!["--unknown"], 2),
-            (As::MemberWith("lead", RUN, "old"), vec![], 8),
+            (As::MemberWith("lead", "old"), vec![], 8),
         ] {
             let start = Instant::now();
             let out = finish_within(
@@ -1018,7 +971,7 @@ mod background_wait {
             f.publish(&As::Operator, "bad", &note("lead", "body")).code,
             0
         );
-        fs::write(f.run_dir().join("bus/records/0000000001.json"), "broken").unwrap();
+        fs::write(f.store_dir().join("records/0000000001.json"), "broken").unwrap();
         let start = Instant::now();
         let out = finish_within(
             command(&f, &As::Member("lead"), &[]).spawn().unwrap(),
@@ -1047,29 +1000,23 @@ mod background_wait {
             0
         );
         f.inbox(&As::Member("lead"), &[]);
-        let before = bytes(&f.run_dir());
+        let before = bytes(&f.store_dir());
         let mut child = command(&f, &As::Member("lead"), &[]).spawn().unwrap();
         std::thread::sleep(Duration::from_millis(650));
         assert!(child.try_wait().unwrap().is_none());
         child.kill().unwrap(); // SIGKILL on Unix.
         child.wait().unwrap();
-        assert_eq!(bytes(&f.run_dir()), before);
+        assert_eq!(bytes(&f.store_dir()), before);
     }
 
     #[test]
-    fn background_wait_fences_restarts_and_replacements() {
-        for rollover in [true, false] {
-            let f = Fixture::new();
-            let child = command(&f, &As::Member("lead"), &[]).spawn().unwrap();
-            std::thread::sleep(Duration::from_millis(300));
-            if rollover {
-                f.roll_over("r42", Some(("lead", "new storage")));
-            } else {
-                f.write_incarnation("lead", "lead-2", false);
-            }
-            let out = finish_within(child, Duration::from_secs(3));
-            assert_eq!(out.code, 8, "{:?} {}", out.json, out.stderr);
-        }
+    fn background_wait_fences_replacements() {
+        let f = Fixture::new();
+        let child = command(&f, &As::Member("lead"), &[]).spawn().unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        f.write_incarnation("lead", "lead-2", false);
+        let out = finish_within(child, Duration::from_secs(3));
+        assert_eq!(out.code, 8, "{:?} {}", out.json, out.stderr);
     }
 
     #[test]
@@ -1100,7 +1047,7 @@ mod background_wait {
         );
         for dir in ["attention", "attention/observed", "attention/observed/lead"] {
             assert_eq!(
-                fs::metadata(f.run_dir().join(dir))
+                fs::metadata(f.store_dir().join(dir))
                     .unwrap()
                     .permissions()
                     .mode()
@@ -1160,9 +1107,8 @@ fn caller_context_is_checked() {
     assert_eq!(f.brg(&As::Operator, &["inbox", "--json"], None).code, 2);
 
     let fenced = [
-        As::MemberWith("helper", "r40", "helper-1"),
-        As::MemberWith("helper", RUN, "helper-0"),
-        As::MemberWith("stranger", RUN, "stranger-1"),
+        As::MemberWith("helper", "helper-0"),
+        As::MemberWith("stranger", "stranger-1"),
     ];
     for who in &fenced {
         let out = f.publish(who, "k-f", &note("lead", "x"));
@@ -1177,7 +1123,7 @@ fn caller_context_is_checked() {
             .code,
         8
     );
-    fs::remove_file(f.run_dir().join("runtime/incarnations/sub.json")).unwrap();
+    fs::remove_file(f.incarnation_file("sub")).unwrap();
     assert_eq!(
         f.publish(&As::Member("sub"), "k-s", &note("helper", "x"))
             .code,
@@ -1186,7 +1132,7 @@ fn caller_context_is_checked() {
     assert!(f.records().is_empty());
     // Reading someone's inbox by name needs no live identity.
     let out = f.brg(
-        &As::MemberWith("helper", "r40", "x"),
+        &As::MemberWith("helper", "x"),
         &["inbox", "--member", "lead", "--json"],
         None,
     );
@@ -1194,30 +1140,11 @@ fn caller_context_is_checked() {
 }
 
 #[test]
-fn a_member_from_before_a_restart_is_fenced_in_team_terms() {
+fn a_replaced_or_stopped_member_is_fenced_in_team_terms() {
     let f = Fixture::new();
-    // The team was restarted: `current` moved on, `helper` still has the old one.
-    let stale = As::MemberWith("helper", "r40", "helper-1");
-    let out = f.publish(&stale, "k", &note("lead", "x"));
-    assert_eq!(out.code, 8, "{:?}", out.json);
-    let msg = out.json["message"].as_str().unwrap();
-    assert_eq!(
-        msg,
-        format!(
-            "oncall-2a3b/helper is from before the instance was restarted; restart it: {}",
-            f.start_member("helper")
-        )
-    );
-    let text = f.brg(&stale, &["inbox"], None);
-    assert_eq!(text.code, 8);
-    assert!(
-        text.stderr.contains("oncall-2a3b/helper is from before"),
-        "{}",
-        text.stderr
-    );
     // A member whose session was replaced, and one that was stopped.
     let out = f.publish(
-        &As::MemberWith("helper", RUN, "helper-0"),
+        &As::MemberWith("helper", "helper-0"),
         "k",
         &note("lead", "x"),
     );
@@ -1243,15 +1170,15 @@ fn a_member_from_before_a_restart_is_fenced_in_team_terms() {
 }
 
 #[test]
-fn another_message_format_is_refused_with_the_restart_command() {
+fn another_store_format_refuses_all_commands() {
     let f = Fixture::new();
     assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
-    let manifest_path = f.run_dir().join("run.json");
-    let mut m: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-    m["schema"] = json!(999);
-    fs::write(&manifest_path, serde_json::to_vec(&m).unwrap()).unwrap();
+    let identity_path = f.store_dir().join("store.json");
+    let mut m: Value = serde_json::from_slice(&fs::read(&identity_path).unwrap()).unwrap();
+    m["format"] = json!(999);
+    fs::write(&identity_path, serde_json::to_vec(&m).unwrap()).unwrap();
     let before = f.tree();
-    let expected = "instance `oncall-2a3b`'s messages use format 999; this brg uses format 1.\nbrg can't read them or check them for open work, so the instance can't start again; create a new instance for fresh storage: brg create <team> <folder>\n(The old messages stay on disk; send their open work again.)".to_string();
+
     let commands: Vec<(As, Vec<&str>)> = vec![
         (
             As::Operator,
@@ -1270,247 +1197,18 @@ fn another_message_format_is_refused_with_the_restart_command() {
         let mut json_args = args.clone();
         json_args.push("--json");
         let out = f.brg(who, &json_args, Some(&draft));
-        assert_eq!(out.code, 4, "{args:?}: {:?}", out.json);
-        assert_eq!(out.json["outcome"], "refused", "{args:?}");
-        assert_eq!(out.json["message"], expected, "{args:?}");
+        assert_eq!(out.code, 7, "{args:?}: {:?}", out.json);
+        assert_eq!(out.json["outcome"], "corrupt", "{args:?}");
+        assert!(out.json["message"].as_str().unwrap().contains("damaged"));
         let text = f.brg(who, args, Some(&draft));
-        assert_eq!(text.code, 4, "{args:?}");
-        assert_eq!(text.stderr, format!("brg: {expected}\n"), "{args:?}");
+        assert_eq!(text.code, 7, "{args:?}");
+        assert!(text.stderr.contains("damaged"));
     }
     assert_eq!(f.tree(), before, "nothing written");
 }
 
 #[test]
-fn another_format_points_to_a_new_instance() {
-    let f = Fixture::new();
-    let manifest_path = f.run_dir().join("run.json");
-    let mut m: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-    m["schema"] = json!(999);
-    fs::write(&manifest_path, serde_json::to_vec(&m).unwrap()).unwrap();
-    let out = output(
-        f.command(&As::Operator, &["bus", "check"])
-            .output()
-            .unwrap(),
-    );
-    assert_eq!(out.code, 4);
-    assert!(
-        out.stderr
-            .contains("create a new instance for fresh storage: brg create <team> <folder>\n"),
-        "{}",
-        out.stderr
-    );
-}
-
-#[test]
-fn writers_follow_the_team_to_new_storage() {
-    let f = Fixture::new();
-    assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
-    // A rollover happens while a publish waits for the old storage's lock.
-    let lock = hold(&f.run_dir().join("bus/lock"));
-    let draft = serde_json::to_vec(&note("lead", "b")).unwrap();
-    let args = [
-        "msg",
-        "publish",
-        "--key",
-        "k2",
-        "--external",
-        "ops",
-        "--json",
-    ];
-    let child = spawn(&f, &As::Operator, &args, &draft);
-    std::thread::sleep(Duration::from_millis(500));
-    f.write_manifest_for("r42", TEAM);
-    fs::write(f.run_dir().join("retired"), "").unwrap();
-    fs::write(f.store_dir().join("current"), "r42\n").unwrap();
-    drop(lock);
-    let out = finish_within(child, Duration::from_secs(15));
-    assert_eq!(out.code, 0, "{:?} {}", out.json, out.stderr);
-    assert_eq!(out.json["id"], "m1", "numbered in the new storage");
-    assert_eq!(f.records(), ["0000000001.json"], "nothing more in the old");
-    assert!(
-        f.store_dir()
-            .join("r42/bus/records/0000000001.json")
-            .exists()
-    );
-    // An ack begun after the switch reads IDs in the new storage.
-    let ack = f.brg(
-        &As::Operator,
-        &["msg", "ack", "m1", "--external", "ops", "--json"],
-        None,
-    );
-    assert_eq!(
-        ack.code, 4,
-        "m1 is the new storage's, addressed to lead: {:?}",
-        ack.json
-    );
-    // A retired current with nothing newer is damage, not a loop.
-    fs::write(f.store_dir().join("r42/retired"), "").unwrap();
-    let out = f.publish(&As::Operator, "k3", &note("lead", "c"));
-    assert_eq!(out.code, 7, "{:?}", out.json);
-}
-
-#[test]
-fn an_ack_queued_behind_a_rollover_is_refused() {
-    let f = Fixture::new();
-    // Old m1 for external:ops; the new storage has an unrelated m1 for it too.
-    let q = json!({"to": "external:ops", "kind": "note", "body": "OLD MESSAGE"});
-    assert_eq!(f.publish(&As::Member("lead"), "q-1", &q).code, 0);
-    let lock = hold(&f.run_dir().join("bus/lock"));
-    let mut child = spawn(
-        &f,
-        &As::Operator,
-        &["msg", "ack", "m1", "--external", "ops", "--json"],
-        b"",
-    );
-    std::thread::sleep(Duration::from_millis(500));
-    assert!(child.try_wait().is_ok_and(|s| s.is_none()), "the ack waits");
-    f.write_manifest_for("r42", TEAM);
-    f.write_private(
-        &f.store_dir().join("r42/bus/records/0000000001.json"),
-        &json!({
-            "schema": 1, "run": "r42", "id": "m1", "seq": 1,
-            "at": "2026-11-05T19:00:00.000Z",
-            "actor": {"type": "member", "member": "lead", "incarnation": "lead-1"},
-            "key": "new-1", "to": "external:ops", "kind": "note", "body": "UNRELATED NEW MESSAGE",
-        }),
-    );
-    fs::write(f.run_dir().join("retired"), "").unwrap();
-    fs::write(f.store_dir().join("current"), "r42\n").unwrap();
-    drop(lock);
-    let out = finish_within(child, Duration::from_secs(15));
-    assert_eq!(out.code, 8, "{:?} {}", out.json, out.stderr);
-    assert_eq!(
-        out.json["message"],
-        "instance `oncall-2a3b` was restarted, so `m1` may now be a different message; list the inbox again"
-    );
-    assert!(!f.store_dir().join("r42/bus/acks/m1.json").exists());
-    assert!(!f.run_dir().join("bus/acks/m1.json").exists());
-}
-
-#[test]
-fn a_reply_queued_behind_a_rollover_is_refused() {
-    let f = Fixture::new();
-    assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
-    let id = TEAM;
-    let draft = json!({"to": "lead", "kind": "note", "reply_to": ["m1"], "body": "re"});
-    let lock = hold(&f.run_dir().join("bus/lock"));
-    let child = spawn(
-        &f,
-        &As::Operator,
-        &[
-            "msg",
-            "publish",
-            "--key",
-            "reply",
-            "--external",
-            "ops",
-            "--json",
-        ],
-        &serde_json::to_vec(&draft).unwrap(),
-    );
-    std::thread::sleep(Duration::from_millis(500));
-    // Roll over to storage that has its own m1, for lead.
-    let next = "r42";
-    f.write_manifest_for(next, id);
-    for m in ["lead", "helper", "helper2", "sub"] {
-        f.write_private(
-            &f.store_dir()
-                .join(next)
-                .join(format!("runtime/incarnations/{m}.json")),
-            &json!({"member": m, "incarnation": format!("{m}-1"),
-                "started_at": "2026-11-05T19:00:00.000Z"}),
-        );
-    }
-    f.write_private(
-        &f.store_dir().join(next).join("bus/records/0000000001.json"),
-        &json!({
-            "schema": 1, "run": next, "id": "m1", "seq": 1,
-            "at": "2026-11-05T19:00:00.000Z",
-            "actor": {"type": "external", "name": "ops"},
-            "key": "new-1", "to": "lead", "kind": "note",
-            "facts": {"status": "complete"},
-        }),
-    );
-    fs::write(f.run_dir().join("retired"), "").unwrap();
-    fs::write(f.store_dir().join("current"), format!("{next}\n")).unwrap();
-    drop(lock);
-    let out = finish_within(child, Duration::from_secs(15));
-    assert_eq!(out.code, 8, "{:?} {}", out.json, out.stderr);
-    assert!(
-        out.json["message"]
-            .as_str()
-            .unwrap()
-            .contains("list the inbox again"),
-        "{:?}",
-        out.json
-    );
-    let records = f.store_dir().join(next).join("bus/records");
-    assert_eq!(
-        fs::read_dir(&records).unwrap().count(),
-        1,
-        "nothing written"
-    );
-}
-
-#[test]
-fn inbox_wait_follows_the_team_to_new_storage() {
-    let f = Fixture::new();
-    let start = Instant::now();
-    let child = spawn(
-        &f,
-        &As::Operator,
-        &[
-            "inbox",
-            "wait",
-            "--member",
-            "lead",
-            "--timeout",
-            "10",
-            "--json",
-        ],
-        b"",
-    );
-    std::thread::sleep(Duration::from_millis(500));
-    f.roll_over("r42", Some(("lead", "new")));
-    let out = finish_within(child, Duration::from_secs(15));
-    assert_eq!(out.code, 0, "{:?} {}", out.json, out.stderr);
-    assert_eq!(ids(&out.json), ["m1"]);
-    assert!(start.elapsed() < Duration::from_secs(5));
-}
-
-#[test]
-fn inbox_wait_after_a_cursor_refuses_new_storage() {
-    let f = Fixture::new();
-    assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
-    let child = spawn(
-        &f,
-        &As::Operator,
-        &[
-            "inbox",
-            "wait",
-            "--member",
-            "lead",
-            "--after",
-            "m1",
-            "--timeout",
-            "10",
-            "--json",
-        ],
-        b"",
-    );
-    std::thread::sleep(Duration::from_millis(500));
-    f.roll_over("r42", Some(("lead", "new")));
-    let out = finish_within(child, Duration::from_secs(15));
-    assert_eq!(out.code, 8, "{:?} {}", out.json, out.stderr);
-    assert_eq!(
-        out.json["message"],
-        "instance `oncall-2a3b` was restarted while waiting, so `--after m1` no longer applies; list the inbox again"
-    );
-}
-
-#[test]
 fn inbox_wait_rechecks_the_member_and_format() {
-    // A member from before the restart.
     let f = Fixture::new();
     let child = spawn(
         &f,
@@ -1519,18 +1217,9 @@ fn inbox_wait_rechecks_the_member_and_format() {
         b"",
     );
     std::thread::sleep(Duration::from_millis(500));
-    f.roll_over("r42", Some(("lead", "new")));
+    f.write_incarnation("lead", "lead-2", false);
     let out = finish_within(child, Duration::from_secs(15));
     assert_eq!(out.code, 8, "{:?} {}", out.json, out.stderr);
-    assert!(
-        out.json["message"]
-            .as_str()
-            .unwrap()
-            .starts_with("oncall-2a3b/lead is from before the instance was restarted"),
-        "{:?}",
-        out.json
-    );
-    // New storage in a format this brg can't read.
     let g = Fixture::new();
     let child = spawn(
         &g,
@@ -1547,40 +1236,21 @@ fn inbox_wait_rechecks_the_member_and_format() {
         b"",
     );
     std::thread::sleep(Duration::from_millis(500));
-    g.write_manifest_for("r42", TEAM);
-    let path = g.store_dir().join("r42/run.json");
-    let mut m: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    m["schema"] = json!(999);
-    fs::write(&path, serde_json::to_vec(&m).unwrap()).unwrap();
+    g.write_private(
+        &g.store_dir().join("store.json"),
+        &json!({"format": 999, "instance": TEAM}),
+    );
     let before = g.tree();
-    let lock = hold(&g.run_dir().join("bus/lock"));
-    fs::write(g.run_dir().join("retired"), "").unwrap();
-    fs::write(g.store_dir().join("current"), "r42\n").unwrap();
-    drop(lock);
     let out = finish_within(child, Duration::from_secs(15));
-    assert_eq!(out.code, 4, "{:?} {}", out.json, out.stderr);
-    assert!(
-        out.json["message"].as_str().unwrap().contains("format 999"),
-        "{:?}",
-        out.json
-    );
-    // Read-only throughout: only the rollover itself changed anything.
-    let after = g.tree();
-    let changed: Vec<_> = after.symmetric_difference(&before).collect();
-    assert!(
-        changed.iter().all(|p| p.contains("/current ")
-            || p.contains("/retired ")
-            || p.contains("/bus ")
-            || p.contains("/bus/lock ")),
-        "{changed:?}"
-    );
+    assert_eq!(out.code, 7, "{:?} {}", out.json, out.stderr);
+    assert_eq!(g.tree(), before, "wait creates nothing");
 }
 
 #[test]
 fn inbox_wait_is_bounded_while_a_writer_holds_the_lock() {
     let f = Fixture::new();
     assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
-    let lock = hold(&f.run_dir().join("bus/lock"));
+    let lock = hold(&f.store_dir().join("lock"));
     let start = Instant::now();
     let mut child = spawn(
         &f,
@@ -1614,7 +1284,7 @@ fn inbox_wait_is_bounded_while_a_writer_holds_the_lock() {
 fn damaged_storage_errors_name_the_team_not_paths() {
     // A malformed member session record.
     let f = Fixture::new();
-    fs::write(f.run_dir().join("runtime/incarnations/lead.json"), "{").unwrap();
+    fs::write(f.incarnation_file("lead"), "{").unwrap();
     for args in [vec!["inbox", "--json"], vec!["inbox"]] {
         let out = f.brg(&As::Member("lead"), &args, None);
         assert_eq!(out.code, 1, "{args:?}: {:?} {}", out.json, out.stderr);
@@ -1631,24 +1301,18 @@ fn damaged_storage_errors_name_the_team_not_paths() {
     // A record area that isn't a directory.
     let g = Fixture::new();
     assert_eq!(g.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
-    let records = g.run_dir().join("bus/records");
+    let records = g.store_dir().join("records");
     fs::remove_dir_all(&records).unwrap();
     fs::write(&records, "").unwrap();
     let out = g.brg(&As::Operator, &["bus", "check", "--json"], None);
     assert_eq!(out.code, 7, "{:?}", out.json);
     assert!(
-        out.json["errors"]
-            .to_string()
-            .contains("cannot list bus/records: Not a directory"),
+        out.json["message"].as_str().unwrap().contains("damaged"),
         "{:?}",
         out.json
     );
     let out = g.brg(&As::Operator, &["bus", "check"], None);
-    assert!(
-        out.stderr.contains("cannot list bus/records"),
-        "{}",
-        out.stderr
-    );
+    assert!(out.stderr.contains("damaged"), "{}", out.stderr);
     // Storage someone else could write to.
     let h = Fixture::new();
     use std::os::unix::fs::PermissionsExt;
@@ -1657,7 +1321,7 @@ fn damaged_storage_errors_name_the_team_not_paths() {
     assert_eq!(out.code, 1, "{:?}", out.json);
     assert_eq!(
         out.json["message"],
-        "instance `oncall-2a3b`'s message storage can't be used: its folder is writable by group or others"
+        "instance `oncall-2a3b`'s message storage can't be used: its messages folder is writable by group or others"
     );
     let text = h.brg(
         &As::Operator,
@@ -1666,17 +1330,18 @@ fn damaged_storage_errors_name_the_team_not_paths() {
     );
     assert_eq!(text.code, 1);
     assert!(
-        text.stderr.contains("its folder is writable by group"),
+        text.stderr
+            .contains("its messages folder is writable by group"),
         "{}",
         text.stderr
     );
 }
 
 #[test]
-fn storage_without_current_is_damaged_not_new() {
+fn storage_without_identity_is_damaged_not_new() {
     let f = Fixture::new();
     assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
-    fs::remove_file(f.store_dir().join("current")).unwrap();
+    fs::remove_file(f.store_dir().join("store.json")).unwrap();
     let before = f.tree();
     for args in [
         vec!["bus", "check", "--json"],
@@ -1699,7 +1364,7 @@ fn storage_without_current_is_damaged_not_new() {
 fn a_record_in_another_format_is_still_corrupt() {
     let f = Fixture::new();
     assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
-    let path = f.run_dir().join("bus/records/0000000001.json");
+    let path = f.store_dir().join("records/0000000001.json");
     let mut r: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     r["schema"] = json!(999);
     fs::write(&path, serde_json::to_vec(&r).unwrap()).unwrap();
@@ -1711,9 +1376,9 @@ fn a_record_in_another_format_is_still_corrupt() {
 #[test]
 fn a_team_not_started_yet_is_not_configured() {
     let f = Fixture::new();
-    // The team's directory exists, but `up` never got as far as a first run.
-    fs::remove_dir_all(f.run_dir()).unwrap();
-    fs::remove_file(f.store_dir().join("current")).unwrap();
+    // The team's directory exists, but `up` never initialised its store.
+    fs::remove_dir_all(f.store_dir()).unwrap();
+    fs::create_dir(f.store_dir()).unwrap();
     let before = f.tree();
     let draft = serde_json::to_vec(&note("lead", "b")).unwrap();
     let commands: Vec<(As, Vec<&str>)> = vec![
@@ -1755,18 +1420,19 @@ fn a_team_not_started_yet_is_not_configured() {
 #[test]
 fn deployment_and_storage_must_match() {
     let f = Fixture::new();
-    f.write_manifest("someone-else-0000");
+    f.write_store("someone-else-0000");
     let out = f.publish(&As::Operator, "k", &note("lead", "x"));
-    assert_eq!(out.code, 4, "{:?}", out.json);
+    assert_eq!(out.code, 7, "{:?}", out.json);
     assert_eq!(
         f.brg(&As::Operator, &["bus", "inspect", "--json"], None)
             .code,
-        4
+        7
     );
 
     let g = Fixture::new();
-    fs::remove_file(g.run_dir().join("run.json")).unwrap();
-    // `current` names storage without its manifest: damaged, never new.
+    assert_eq!(g.publish(&As::Operator, "seed", &note("lead", "a")).code, 0);
+    fs::remove_file(g.store_dir().join("store.json")).unwrap();
+    // Records without store identity are damaged, never new.
     let out = g.brg(&As::Operator, &["bus", "check", "--json"], None);
     assert_eq!(out.code, 7, "{:?}", out.json);
     assert_eq!(out.json["outcome"], "corrupt");
@@ -1870,29 +1536,6 @@ fn inspect_summarizes_the_team() {
     );
 }
 
-#[test]
-fn check_warns_and_fails_on_storage_age() {
-    let f = Fixture::new();
-    let manifest_path = f.run_dir().join("run.json");
-    let mut m: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-    let days_ago = |d: u64| {
-        borgchart::bus::time::format_utc(
-            std::time::SystemTime::now() - Duration::from_secs(d * 86_400 + 60),
-        )
-    };
-    m["created_at"] = json!(days_ago(8));
-    fs::write(&manifest_path, serde_json::to_vec(&m).unwrap()).unwrap();
-    let out = f.brg(&As::Operator, &["bus", "check", "--json"], None);
-    assert_eq!(out.code, 0, "{:?}", out.json);
-    assert!(out.json["warnings"].to_string().contains("days old"));
-    assert_eq!(out.json["age_days"], 8.0);
-    m["created_at"] = json!(days_ago(15));
-    fs::write(&manifest_path, serde_json::to_vec(&m).unwrap()).unwrap();
-    let out = f.brg(&As::Operator, &["bus", "check", "--json"], None);
-    assert_eq!(out.code, 1, "{:?}", out.json);
-    assert!(out.json["errors"].to_string().contains("max_age_days"));
-}
-
 /// Hold `path` (created if missing) with an exclusive flock.
 fn hold(path: &Path) -> fs::File {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -1939,8 +1582,8 @@ fn authority_is_checked_again_under_the_locks() {
     assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
     let draft = serde_json::to_vec(&note("lead", "b")).unwrap();
 
-    // An incarnation ended while an ack waits for bus/lock.
-    let bus = hold(&f.run_dir().join("bus/lock"));
+    // An incarnation ended while an ack waits for lock.
+    let bus = hold(&f.store_dir().join("lock"));
     let child = spawn(
         &f,
         &As::Member("lead"),
@@ -1952,10 +1595,10 @@ fn authority_is_checked_again_under_the_locks() {
     drop(bus);
     let out = finish_within(child, Duration::from_secs(15));
     assert_eq!(out.code, 8, "{:?} {}", out.json, out.stderr);
-    assert!(!f.run_dir().join("bus/acks/m1.json").exists());
+    assert!(!f.store_dir().join("acks/m1.json").exists());
 
-    // A member replaced while its publish waits for bus/lock.
-    let bus = hold(&f.run_dir().join("bus/lock"));
+    // A member replaced while its publish waits for lock.
+    let bus = hold(&f.store_dir().join("lock"));
     let args = ["msg", "publish", "--key", "h1", "--json"];
     let child = spawn(&f, &As::Member("helper"), &args, &draft);
     std::thread::sleep(Duration::from_millis(500));
@@ -1970,13 +1613,10 @@ fn authority_is_checked_again_under_the_locks() {
 fn reads_wait_for_a_writer() {
     let f = Fixture::new();
     assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
-    let bus = hold(&f.run_dir().join("bus/lock"));
+    let bus = hold(&f.store_dir().join("lock"));
     let mut child = spawn(&f, &As::Operator, &["bus", "check", "--json"], b"");
     std::thread::sleep(Duration::from_millis(500));
-    assert!(
-        child.try_wait().unwrap().is_none(),
-        "check waits for bus/lock"
-    );
+    assert!(child.try_wait().unwrap().is_none(), "check waits for lock");
     drop(bus);
     let out = finish_within(child, Duration::from_secs(15));
     assert_eq!(out.code, 0, "{:?}", out.json);
@@ -1988,7 +1628,7 @@ fn a_huge_record_number_is_a_bounded_gap() {
     for k in ["k1", "k2"] {
         assert_eq!(f.publish(&As::Operator, k, &note("lead", k)).code, 0);
     }
-    fs::write(f.run_dir().join("bus/records/9999999999.json"), "{}").unwrap();
+    fs::write(f.store_dir().join("records/9999999999.json"), "{}").unwrap();
     let start = Instant::now();
     let check = f.brg(&As::Operator, &["bus", "check", "--json"], None);
     assert_eq!(check.code, 7, "{:?} {}", check.json, check.stderr);
@@ -2048,7 +1688,7 @@ fn an_ack_with_another_schema_is_corrupt() {
         f.brg(&As::Member("lead"), &["msg", "ack", "m1"], None).code,
         0
     );
-    let path = f.run_dir().join("bus/acks/m1.json");
+    let path = f.store_dir().join("acks/m1.json");
     let mut ack: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     ack["schema"] = json!(999);
     fs::write(&path, serde_json::to_vec(&ack).unwrap()).unwrap();
@@ -2082,12 +1722,10 @@ fn inbox_wait_help_names_the_outcomes_wait_returns() {
     let ok = wait(&["--timeout", "1"]);
     let child = spawn(
         &f,
-        &As::Operator,
+        &As::Member("lead"),
         &[
             "inbox",
             "wait",
-            "--member",
-            "lead",
             "--after",
             "m1",
             "--timeout",
@@ -2097,7 +1735,7 @@ fn inbox_wait_help_names_the_outcomes_wait_returns() {
         b"",
     );
     std::thread::sleep(Duration::from_millis(500));
-    f.roll_over("r42", Some(("lead", "new")));
+    f.write_incarnation("lead", "lead-2", false);
     let fenced = finish_within(child, Duration::from_secs(15));
     for (expect, out) in [
         ("usage", &usage),
@@ -2203,7 +1841,6 @@ fn the_publish_help_example_publishes_and_its_outcomes_are_documented() {
         .env("BORGCHART_STATE_HOME", f.root())
         .env("BORGCHART_INSTANCE", TEAM)
         .env("BORGCHART_MEMBER", "helper")
-        .env("BORGCHART_RUN", RUN)
         .env("BORGCHART_INCARNATION", "helper-1")
         .args(["-c", &ex.block])
         .output()

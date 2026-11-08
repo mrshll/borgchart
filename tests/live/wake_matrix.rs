@@ -12,8 +12,8 @@ use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use borgchart::bus::manifest::PaneIdentity;
 use borgchart::composer::{self, Reading};
+use borgchart::lifecycle::PaneIdentity;
 use borgchart::rules;
 use borgchart::state::StateDir;
 use borgchart::team::Vendor;

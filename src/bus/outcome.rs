@@ -11,7 +11,7 @@ pub enum Code {
     /// An I/O or other unexpected error.
     Error,
     Usage,
-    /// No `bus:` in the team, or the run has no manifest yet.
+    /// No `bus:` in the team, or its store has not been initialised.
     NotConfigured,
     /// The caller's context doesn't allow this (e.g. `--external` inside a member).
     Refused,

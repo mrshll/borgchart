@@ -45,8 +45,8 @@ fn stopped_members_with_unreadable_messages_hold_no_folder() {
     let a = env.create("oncall", "work/a");
     env.ok(&["stop", &a]);
     fs::write(
-        env.path(&format!("state/{a}/messages/current")),
-        "not a run\n",
+        env.path(&format!("state/{a}/messages/store.json")),
+        "not json\n",
     )
     .unwrap();
     let b = env.create("oncall", "work/a");
@@ -221,29 +221,6 @@ fn a_removed_working_folder_refuses_start() {
 // --- 13. Storage safety ---
 
 #[test]
-fn a_rollover_with_open_work_is_refused() {
-    let env = Env::new();
-    let a = env.create("oncall", "work/a");
-    let lead = env.member(&a, "lead");
-    let out = env.publish(
-        &a,
-        "note-1",
-        &json!({"to": lead, "kind": "note", "body": "hi"}),
-    );
-    assert!(out.status.success(), "{}", both(&out));
-    env.ok(&["stop", &a]);
-    env.write(
-        "teams/oncall/lead.md",
-        "---\nrole: lead\nmodels: {claude: opus high}\n---\nYou are the lead, changed.\n",
-    );
-    let err = env.fails(&["start", &a]);
-    assert!(
-        err.contains("open work") && err.contains("unread m1"),
-        "{err}"
-    );
-}
-
-#[test]
 fn unread_messages_are_open_work_for_delete() {
     let env = Env::new();
     let a = env.create("oncall", "work/a");
@@ -272,13 +249,16 @@ fn an_unreadable_store_still_stops_and_delete_needs_force() {
     let env = Env::new();
     let a = env.create("oncall", "work/a");
     fs::write(
-        env.path(&format!("state/{a}/messages/current")),
-        "not a run\n",
+        env.path(&format!("state/{a}/messages/store.json")),
+        "not json\n",
     )
     .unwrap();
     env.ok(&["stop", &a]);
     let err = env.fails(&["start", &a]);
-    assert!(err.contains("can't be read"), "{err}");
+    assert!(
+        err.contains("damaged") && err.contains("store.json"),
+        "{err}"
+    );
     let err = env.fails(&["delete", &a]);
     assert!(err.contains("can't be inspected"), "{err}");
     env.ok(&["delete", &a, "--force"]);
@@ -359,7 +339,7 @@ fn a_start_that_never_reached_tmux_leaves_nothing_held() {
 // --- Review fixes: damaged storage, partial contexts, config paths ---
 
 #[test]
-fn a_current_run_without_its_manifest_needs_force_for_delete() {
+fn a_store_without_its_identity_needs_force_for_delete() {
     let env = Env::new();
     let a = env.create("oncall", "work/a");
     let lead = env.member(&a, "lead");
@@ -370,7 +350,7 @@ fn a_current_run_without_its_manifest_needs_force_for_delete() {
     );
     assert!(out.status.success(), "{}", both(&out));
     env.ok(&["stop", &a]);
-    fs::remove_file(env.path(&format!("state/{a}/messages/r1/run.json"))).unwrap();
+    fs::remove_file(env.path(&format!("state/{a}/messages/store.json"))).unwrap();
     let b = env.create("oncall", "work/a");
     env.ok(&["stop", &b]);
     let err = env.fails(&["delete", &a]);
@@ -391,9 +371,7 @@ fn a_start_refuses_unreadable_records_full_or_member() {
     assert!(out.status.success(), "{}", both(&out));
     env.ok(&["stop", &a]);
     fs::write(
-        env.path(&format!(
-            "state/{a}/messages/r1/bus/records/0000000001.json"
-        )),
+        env.path(&format!("state/{a}/messages/records/0000000001.json")),
         "bad json",
     )
     .unwrap();
@@ -415,7 +393,6 @@ fn a_partial_member_context_is_refused_for_reads_too() {
     let lead = env.member(&a, "lead");
     for (var, value) in [
         ("BORGCHART_MEMBER", lead.as_str()),
-        ("BORGCHART_RUN", "r1"),
         ("BORGCHART_INCARNATION", "x.1.abcd"),
     ] {
         for args in [

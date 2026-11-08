@@ -284,7 +284,7 @@ fn denied_word(text: &str) -> Option<String> {
         .chain(lower.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-')));
     words
         .filter(|w| !w.is_empty())
-        .find(|w| DENIED.contains(&borgchart::bus::manifest::sha256_hex(w.as_bytes()).as_str()))
+        .find(|w| DENIED.contains(&borgchart::config_snapshot::sha256_hex(w.as_bytes()).as_str()))
         .map(str::to_string)
 }
 
@@ -626,7 +626,7 @@ mod round {
         team.ok(&["stop", &team.at("implementer")]);
         let agreement = notes.join("t1-agreement.md");
         fs::write(&agreement, "Task t1: a fictional change.\n").unwrap();
-        let sha = borgchart::bus::manifest::sha256_hex(&fs::read(&agreement).unwrap());
+        let sha = borgchart::config_snapshot::sha256_hex(&fs::read(&agreement).unwrap());
         let checkout = repo.display().to_string();
         let assign = team.publish(
             "lead",
@@ -945,7 +945,7 @@ mod round {
     /// wait still allows a re-list when storage restarts under a cursor;
     /// a stopped member's session cannot recover that way.
     #[test]
-    fn fenced_waits_stop_the_loop_except_after_a_restart() {
+    fn fenced_waits_stop_the_loop_for_replaced_or_stopped_members() {
         let rule = fs::read_to_string(dev_team().join("orchestrator.md")).unwrap();
         let wake = rule
             .split("## Waking yourself")
@@ -1022,53 +1022,5 @@ mod round {
                 .unwrap()
                 .contains("list the inbox again")
         );
-
-        // A restart with changed files under a waiting cursor is the one case
-        // that says "list the inbox again", and there listing again works.
-        // (Open work isn't carried to fresh messages yet, so the note is
-        // read first.)
-        let owner = |args: &[&str]| {
-            let mut all = vec!["inbox"];
-            all.extend_from_slice(args);
-            all.extend_from_slice(&["--external", "owner", "--json", "--instance", &inst]);
-            all.iter().map(|s| s.to_string()).collect::<Vec<_>>()
-        };
-        team.ok(&["start", &inst]);
-        team.wait_idle("lead");
-        let ack = lead_cmd_at(&team, 1)
-            .args(["msg", "ack", "m1", "--json"])
-            .output()
-            .unwrap();
-        assert!(
-            ack.status.success(),
-            "{}",
-            String::from_utf8_lossy(&ack.stdout)
-        );
-        let args = owner(&["wait", "--after", "m1", "--timeout", "30"]);
-        let waiter = {
-            let args: Vec<&str> = args.iter().map(String::as_str).collect();
-            let mut cmd = team.cmd(&args);
-            std::thread::spawn(move || cmd.output().unwrap())
-        };
-        std::thread::sleep(Duration::from_millis(500));
-        team.ok(&["stop", &inst]);
-        let file = team.path("teams/dev-team/team.yaml");
-        let mut text = fs::read_to_string(&file).unwrap();
-        text.push_str("# changed\n");
-        fs::write(&file, text).unwrap();
-        team.ok(&["start", &inst]);
-        let (restarted, code) = json(&waiter.join().unwrap());
-        assert_eq!(code, Some(8), "{restarted}");
-        assert!(
-            restarted["message"]
-                .as_str()
-                .unwrap()
-                .ends_with("list the inbox again"),
-            "{restarted}"
-        );
-        let relist = owner(&[]);
-        let relist: Vec<&str> = relist.iter().map(String::as_str).collect();
-        team.ok(&relist);
-        team.ok(&["stop", &inst]);
     }
 }

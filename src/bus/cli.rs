@@ -128,7 +128,7 @@ pub enum BusCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Check the instance's message storage and its age. Never writes.
+    /// Check the instance's message storage. Never writes.
     Check {
         /// Print the report as JSON.
         #[arg(long)]
@@ -302,10 +302,10 @@ struct Target {
 
 fn target(bus: &Bus, who: &Who) -> Result<Target, Failure> {
     if let Some(m) = &who.member {
-        if !bus.manifest.members.contains_key(m) {
+        if !bus.meta.members.contains_key(m) {
             return Err(Failure::new(
                 Code::Invalid,
-                store::not_a_member(&bus.manifest, m),
+                store::not_a_member(&bus.meta, m),
             ));
         }
         return Ok(Target {
@@ -501,40 +501,16 @@ pub fn inbox(instance: Option<&str>, args: InboxArgs, started: Instant) -> ExitC
                 let deadline = Instant::now() + duration;
                 let minimum = started + store::background_wait_minimum();
                 let mut start_mark = None;
-                let first = open_bus(instance)?.run;
                 let timed_out = |t: &Target| {
                     Failure::new(
                         Code::Timeout,
                         format!("nothing new for {} after {timeout}s", t.recipient),
                     )
                 };
-                // Each poll finds the instance's current storage again and checks
-                // the inbox, the caller and the format against it: a restart
-                // while waiting must not leave the wait on old storage.
+                // Reopen and check the caller's current incarnation on every poll.
                 loop {
                     let mut next_check = deadline;
                     let bus = open_bus(instance)?;
-                    if background && bus.run != first {
-                        return Err(Failure::new(
-                            Code::Fenced,
-                            format!(
-                                "instance `{}` was restarted while waiting; this session is over",
-                                bus.instance
-                            ),
-                        ));
-                    }
-                    if bus.run != first
-                        && let Some(a) = after
-                    {
-                        return Err(Failure::new(
-                            Code::Fenced,
-                            format!(
-                                "instance `{}` was restarted while waiting, so `--after {}` no longer applies; list the inbox again",
-                                bus.instance,
-                                super::record::record_id(a)
-                            ),
-                        ));
-                    }
                     let t = target(&bus, &who)?;
                     if background && t.own.is_none() {
                         return Err(Failure::new(
@@ -544,7 +520,6 @@ pub fn inbox(instance: Option<&str>, args: InboxArgs, started: Instant) -> ExitC
                     }
                     match store::wait_snapshot(&bus, deadline)? {
                         store::WaitSnapshot::TimedOut => return Err(timed_out(&t)),
-                        store::WaitSnapshot::Retired => {}
                         store::WaitSnapshot::Ready(snap) => {
                             if background {
                                 snap.require_healthy()?;
@@ -620,12 +595,9 @@ pub fn bus(instance: Option<&str>, command: BusCommand) -> ExitCode {
                 let bus = open_bus(instance)?;
                 let snap = store::snapshot(&bus)?;
                 let v = store::inspect(&bus, &snap, last);
-                let mut text = format!(
-                    "instance {}, storage created {}\n",
-                    bus.instance, bus.manifest.created_at
-                );
+                let mut text = format!("instance {}\n", bus.instance);
                 text.push_str("members:\n");
-                for (id, m) in &bus.manifest.members {
+                for (id, m) in &bus.meta.members {
                     text.push_str(&format!(
                         "  {id} ({}){}\n",
                         m.vendor,
@@ -683,7 +655,6 @@ pub fn bus(instance: Option<&str>, command: BusCommand) -> ExitCode {
                         "code": code.exit(),
                         "outcome": code.as_str(),
                         "records": report.records,
-                        "age_days": report.age_days,
                         "errors": report.errors,
                         "warnings": report.warnings,
                     })
@@ -695,15 +666,7 @@ pub fn bus(instance: Option<&str>, command: BusCommand) -> ExitCode {
                 for w in &report.warnings {
                     eprintln!("warning: {w}");
                 }
-                println!(
-                    "{}: {} record(s){}",
-                    code.as_str(),
-                    report.records,
-                    report
-                        .age_days
-                        .map(|a| format!(", storage {a} days old"))
-                        .unwrap_or_default()
-                );
+                println!("{}: {} record(s)", code.as_str(), report.records);
             }
             ExitCode::from(code.exit())
         }
