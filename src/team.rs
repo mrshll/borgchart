@@ -568,7 +568,7 @@ pub fn load(dir: &Path, report: &mut Report) -> Option<Team> {
     Some(Team {
         dir: dir.to_path_buf(),
         name: team_name(dir),
-        file_sha256: crate::bus::manifest::sha256_hex(text.as_bytes()),
+        file_sha256: crate::config_snapshot::sha256_hex(text.as_bytes()),
         default_vendor,
         bus: raw.bus.map(|b| BusConfig {
             alert: b.alert.map(|a| AlertConfig {
@@ -1004,7 +1004,7 @@ fn read_member_file(
             models: front.models,
         },
         body,
-        crate::bus::manifest::sha256_hex(text.as_bytes()),
+        crate::config_snapshot::sha256_hex(text.as_bytes()),
     ))
 }
 

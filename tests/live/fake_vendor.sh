@@ -145,9 +145,9 @@ if [ "$member" = waiter ]; then
       forever ;;
     foreground)
       draw working
-      "$BORGCHART_BIN" inbox wait --background --timeout 600 >"$out" 2>&1 ;;
+      "$BORGCHART_BIN" inbox wait --timeout 600 >"$out" 2>&1 ;;
     early-turn|same-poll)
-      BORGCHART_INCARNATION=not-this-one "$BORGCHART_BIN" inbox wait --background >"$out" 2>&1 &
+      BORGCHART_INCARNATION=not-this-one "$BORGCHART_BIN" inbox wait >"$out" 2>&1 &
       decoy=$!
       say "● ARMED"
       draw idle
@@ -164,7 +164,7 @@ if [ "$member" = waiter ]; then
       [ "$scenario" = early-turn ] && reply "$(nonce_word)"
       forever ;;
     *)
-      "$BORGCHART_BIN" inbox wait --background --timeout 600 >"$out" 2>&1 &
+      "$BORGCHART_BIN" inbox wait --timeout 600 >"$out" 2>&1 &
       say "● ARMED"
       draw idle
       wait $! ;;

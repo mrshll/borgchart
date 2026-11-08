@@ -1,6 +1,6 @@
 //! A development team (`dev-team/`) and its design panel
 //! (`dev-design-team/`): the README's deployment validates, the member
-//! files expand and stay generic, one task round works with `fake-agent`
+//! files expand and stay generic, one message round works with `fake-agent`
 //! members, and the lead can seat the design panel.
 
 mod common;
@@ -284,7 +284,7 @@ fn denied_word(text: &str) -> Option<String> {
         .chain(lower.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-')));
     words
         .filter(|w| !w.is_empty())
-        .find(|w| DENIED.contains(&borgchart::bus::manifest::sha256_hex(w.as_bytes()).as_str()))
+        .find(|w| DENIED.contains(&borgchart::config_snapshot::sha256_hex(w.as_bytes()).as_str()))
         .map(str::to_string)
 }
 
@@ -325,10 +325,8 @@ fn the_team_files_stay_generic() {
     }
 }
 
-/// The lead alone under `fake-agent`, then one task for the (Codex)
-/// implementer: assign → (start) → accept → questions → result → verify →
-/// stop → release, with the lead's background self-wake returning for each
-/// reply.
+/// The role files' commands perform a brief/report exchange with fake agents,
+/// then the lead stops the helper and checks its unread count.
 #[cfg(feature = "test-support")]
 mod round {
     use super::*;
@@ -482,62 +480,20 @@ mod round {
             )
         }
 
-        /// A background `inbox wait`, the way a Claude member self-wakes.
-        fn background_wait(&self, role: &str, name: &str, after: Option<&str>, timeout: u32) {
+        /// Execute a role-file command as a tool call; Claude's wait is a
+        /// background job, while other commands finish in the tool call.
+        fn documented(&self, role: &str, name: &str, script: &str, background: bool) {
             let out = self.path(&format!("s/{name}.out"));
-            let after = after.map(|a| format!("--after {a} ")).unwrap_or_default();
-            self.run_in(
-                role,
-                name,
-                &format!(
-                    "( \"$BORGCHART_BIN\" inbox wait {after}--timeout {timeout} --json > {o} 2>&1; echo \"exit $?\" >> {o} ) </dev/null >/dev/null 2>&1 &\n",
-                    o = out.display()
-                ),
+            let script = format!(
+                "( {script}\n) > {o} 2>&1; echo \"exit $?\" >> {o}\n",
+                o = out.display()
             );
-        }
-
-        /// Publish a draft from inside `role`'s member.
-        fn publish(&self, role: &str, key: &str, draft: serde_json::Value) -> serde_json::Value {
-            let json = self.publish_as(role, key, key, draft);
-            assert_eq!(json["outcome"], "committed", "{key}: {json}");
-            json
-        }
-
-        /// Publish from inside `role`'s member, its output kept under `name`
-        /// (so a retry of the same key gets its own output file).
-        fn publish_as(
-            &self,
-            role: &str,
-            name: &str,
-            key: &str,
-            draft: serde_json::Value,
-        ) -> serde_json::Value {
-            let out = self.path(&format!("s/{name}.out"));
-            self.run_in(
-                role,
-                name,
-                &format!(
-                    "\"$BORGCHART_BIN\" msg publish --key {key} --json > {o} 2>&1 <<'DRAFT'\n{draft}\nDRAFT\necho \"exit $?\" >> {o}\n",
-                    o = out.display()
-                ),
-            );
-            let (json, code) = self.output(name);
-            assert_eq!(code, 0, "{key}: {json}");
-            json
-        }
-
-        fn ack(&self, role: &str, id: &str) {
-            let name = format!("ack-{role}-{id}");
-            let out = self.path(&format!("s/{name}.out"));
-            self.run_in(
-                role,
-                &name,
-                &format!(
-                    "\"$BORGCHART_BIN\" msg ack {id} --json > {o} 2>&1; echo \"exit $?\" >> {o}\n",
-                    o = out.display()
-                ),
-            );
-            assert_eq!(self.output(&name).1, 0);
+            let script = if background {
+                format!("( {script} ) </dev/null >/dev/null 2>&1 &\n")
+            } else {
+                script
+            };
+            self.run_in(role, name, &script);
         }
 
         /// Create the dev team's instance in the repo checkout.
@@ -578,8 +534,24 @@ mod round {
         }
     }
 
+    /// Extract executable examples, not copies of their argv in the test.
+    fn documented(text: &str, prefix: &str) -> String {
+        for block in text.split("```sh\n").skip(1) {
+            let script = block.split("```").next().unwrap().trim();
+            if script.starts_with(prefix) {
+                return script.to_string();
+            }
+        }
+        text.split('`')
+            .skip(1)
+            .step_by(2)
+            .find(|command| command.starts_with(prefix))
+            .unwrap_or_else(|| panic!("no documented command starting {prefix}"))
+            .to_string()
+    }
+
     #[test]
-    fn one_task_round_with_fake_agents() {
+    fn one_round_with_fake_agents() {
         let team = new_team("round");
         // Resolved, as brg records paths (macOS: /var is /private/var).
         let repo = team.path("work/repo").canonicalize().unwrap();
@@ -618,153 +590,129 @@ mod round {
         let notes = PathBuf::from(start["env"]["BORGCHART_NOTES"].as_str().unwrap());
         assert!(notes.is_dir(), "{notes:?}");
 
-        // The implementer exists, stopped, and its assignment waits for it.
+        // A new role must exist before it can receive messages. Bootstrap
+        // it once, stop it, then send its first brief before the work start.
         team.ok(&["create", &format!("{}/implementer", team.inst())]);
         team.wait_idle("implementer");
         let implementer = team.m("implementer");
         team.ok(&["stop", &team.at("implementer")]);
-        let agreement = notes.join("t1-agreement.md");
-        fs::write(&agreement, "Task t1: a fictional change.\n").unwrap();
-        let sha = borgchart::bus::manifest::sha256_hex(&fs::read(&agreement).unwrap());
-        let checkout = repo.display().to_string();
-        let assign = team.publish(
-            "lead",
-            "t1.assign.1.1",
-            serde_json::json!({"to": implementer, "kind": "assign", "task": "t1", "attempt": 1,
-                "body": "Make a fictional change.",
-                "facts": {"agreement": {"path": agreement, "sha256": sha}, "scope": "tests", "checkout": checkout}}),
-        );
-        assert_eq!(assign["id"], "m1");
+        let brief = notes.join("change-brief.md");
+        let report = notes.join("change-report.md");
+        let brief_tmp = notes.join("change-brief.md.tmp");
+        fs::write(&brief_tmp, format!("Task: a fictional change.\nScope: tests only.\nNon-goals: product changes.\nChecks: fake round.\nBranch: example/change.\nCheckout: {}\nReport: {}\nDeadline: 2026-11-09T00:00:00Z\n", repo.display(), report.display())).unwrap();
+        fs::rename(brief_tmp, &brief).unwrap();
+        let assign = documented(&lead_body, "\"$BORGCHART_BIN\" msg publish")
+            .replace("<member>", &implementer)
+            .replace("<brief path>", &brief.display().to_string());
+        team.documented("lead", "brief", &assign, false);
+        let (sent, code) = team.output("brief");
+        assert_eq!(code, 0, "{sent}");
+        assert_eq!(sent["id"], "m1");
 
-        // The lead has listed nothing yet, so it waits without `--after`.
-        team.background_wait("lead", "wait-1", None, 30);
-        team.ok(&["start", &team.at("implementer")]);
+        // The lead arms its documented wait before the helper replies.
+        let wait = documented(&lead_body, "\"$BORGCHART_BIN\" inbox wait --json");
+        team.documented(
+            "lead",
+            "reply-wait",
+            &format!("BORGCHART_WAIT_MIN_MS=200 BORGCHART_WAIT_TIMEOUT_MS=5000 {wait}"),
+            true,
+        );
+        let start_command = documented(&lead_body, "\"$BORGCHART_BIN\" start <instance>/<member>")
+            .replace("<instance>", &team.inst())
+            .replace("<member>", &implementer);
+        team.documented("lead", "start-impl", &start_command, false);
         team.wait_idle("implementer");
         let log = team.log("implementer");
-        // Its latest start: the one after the assignment.
         let start: serde_json::Value = log
             .lines()
             .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
             .rfind(|e| e["event"] == "start")
             .unwrap();
-        assert_eq!(start["cwd"], checkout);
-        // The implementer is Codex, on the model its file names.
+        assert_eq!(start["cwd"], repo.display().to_string());
         let argv = start["argv"].to_string();
         assert!(
             argv.starts_with("[\"codex") && argv.contains("gpt-6.1-sol"),
             "{argv}"
         );
 
-        // Its first action: read its inbox, then accept.
-        let inbox = team.path("s/impl-inbox.out");
-        team.run_in(
-            "implementer",
-            "impl-inbox",
-            &format!(
-                "\"$BORGCHART_BIN\" inbox --json > {o} 2>&1; echo \"exit $?\" >> {o}\n",
-                o = inbox.display()
-            ),
-        );
-        assert_eq!(ids(&team.output("impl-inbox").0), ["m1"]);
-        team.publish(
-            "implementer",
-            "t1.accept.1.1",
-            serde_json::json!({"to": lead, "kind": "accept", "task": "t1", "attempt": 1, "reply_to": ["m1"]}),
-        );
-        let (woke, code) = team.output("wait-1");
-        assert_eq!((code, ids(&woke)), (0, vec!["m2".to_string()]));
-        team.ack("lead", "m2");
-
-        // With nothing new after the highest ID it has listed, the wait times out.
-        team.background_wait("lead", "wait-2", Some("m2"), 1);
-        let (timeout, code) = team.output("wait-2");
-        assert_eq!(
-            (code, &timeout["outcome"]),
-            (9, &serde_json::json!("timeout"))
-        );
-
-        // Two questions in one attempt: each its own key (`.<n>` counts that
-        // kind within the attempt); an identical retry is a duplicate.
-        let question = |n: u32| {
-            serde_json::json!({"to": lead, "kind": "question", "task": "t1", "attempt": 1,
-                "body": format!("Fictional question {n}?")})
-        };
-        let q1 = team.publish("implementer", "t1.question.1.1", question(1));
-        let q2 = team.publish("implementer", "t1.question.1.2", question(2));
-        assert_eq!((&q1["id"], &q2["id"]), (&"m3".into(), &"m4".into()));
-        let retry = team.publish_as(
-            "implementer",
-            "t1.question.1.2-retry",
-            "t1.question.1.2",
-            question(2),
-        );
-        assert_eq!(
-            (&retry["outcome"], &retry["id"]),
-            (&"duplicate".into(), &"m4".into())
-        );
-        team.ack("lead", "m3");
-        team.ack("lead", "m4");
-
-        // A Codex helper waits for its answer in the foreground, inside its
-        // own turn: it never leaves a wait running in the background.
-        let answer = team.path("s/impl-answer.out");
-        team.run_in(
-            "implementer",
-            "impl-answer",
-            &format!(
-                "\"$BORGCHART_BIN\" inbox wait --after m1 --timeout 30 --json > {o} 2>&1; echo \"exit $?\" >> {o}\n",
-                o = answer.display()
-            ),
-        );
-        team.publish(
-            "lead",
-            "t1.decision.1.1",
-            serde_json::json!({"to": implementer, "kind": "decision", "task": "t1", "attempt": 1,
-                "reply_to": ["m4"], "body": "Fictional answer."}),
-        );
-        let (answered, code) = team.output("impl-answer");
-        assert_eq!((code, ids(&answered)), (0, vec!["m5".to_string()]));
-        team.ack("implementer", "m5");
-
-        team.background_wait("lead", "wait-3", Some("m5"), 30);
-        let report = notes.join("t1-report.md");
-        fs::write(&report, "status: complete\naction-needed: none\n").unwrap();
-        team.publish(
-            "implementer",
-            "t1.result.1.1",
-            serde_json::json!({"to": lead, "kind": "result", "task": "t1", "attempt": 1, "reply_to": ["m1"],
-                "body": "action-needed: none",
-                "artifacts": [{"path": report, "label": "report"}],
-                "facts": {"status": "complete", "checks": [{"name": "cargo test", "outcome": "pass"}]}}),
-        );
-        let (woke, code) = team.output("wait-3");
-        assert_eq!((code, ids(&woke)), (0, vec!["m6".to_string()]));
-        team.ack("lead", "m6");
-        team.ack("implementer", "m1");
-
-        team.publish(
-            "lead",
-            "t1.verify.1.1",
-            serde_json::json!({"to": implementer, "kind": "verify", "task": "t1", "attempt": 1,
-                "reply_to": ["m6"], "facts": {"result": "m6", "outcome": "accepted"}}),
-        );
-        team.ok(&["stop", &team.at("implementer")]);
-        let inst = team.inst();
-        let show = team.ok(&["task", "show", "t1", "--instance", &inst]);
-        assert!(show.contains("(gone, current)"), "{show}");
-        team.publish(
-            "lead",
-            "t1.release.1.1",
-            serde_json::json!({"to": implementer, "kind": "release", "task": "t1", "attempt": 1,
-                "facts": {"evidence": "verified m6; implementer stopped", "checkout": checkout}}),
-        );
-        let list = team.ok(&["task", "list", "--instance", &inst]);
+        // Its first tool action is the exact full inbox command in base.md.
+        let inbox = documented(&base, "\"$BORGCHART_BIN\" inbox --full");
+        team.documented("implementer", "impl-inbox", &inbox, false);
+        let (inbox, code) = team.output("impl-inbox");
+        assert_eq!(code, 0, "{inbox}");
+        assert_eq!(ids(&inbox), ["m1"]);
         assert!(
-            list.contains(&format!("t1  {implementer}#1  released")),
-            "{list}"
+            inbox["records"][0]["body"]
+                .as_str()
+                .unwrap()
+                .contains(&brief.display().to_string())
         );
+        let ack = documented(&base, "\"$BORGCHART_BIN\" msg ack");
+        team.documented(
+            "implementer",
+            "take-brief",
+            &ack.replace("<id>", "m1"),
+            false,
+        );
+        assert_eq!(team.output("take-brief").1, 0);
 
-        team.ok(&["stop", &inst]);
+        // Report by sibling rename, then a reply naming it and action-needed.
+        team.run_in(
+            "implementer",
+            "write-report",
+            &format!(
+                "printf 'status: complete\\naction-needed: none\\n' > {p}.tmp\nmv {p}.tmp {p}\n",
+                p = report.display()
+            ),
+        );
+        team.wait_for("the report", || report.exists());
+        let reply = documented(&base, "\"$BORGCHART_BIN\" msg publish")
+            .replace("<parent>", &lead)
+            .replace("<brief ID>", "m1")
+            .replace("<report path>", &report.display().to_string())
+            .replace("<action-needed line>", "action-needed: none");
+        team.documented("implementer", "report-reply", &reply, false);
+        let (sent, code) = team.output("report-reply");
+        assert_eq!(code, 0, "{sent}");
+        assert_eq!(sent["id"], "m2");
+        let (woke, code) = team.output("reply-wait");
+        assert_eq!((code, ids(&woke)), (0, vec!["m2".to_string()]));
+        assert_eq!(woke["records"][0]["reply_to"], serde_json::json!(["m1"]));
+        assert!(
+            woke["records"][0]["body"]
+                .as_str()
+                .unwrap()
+                .contains(&report.display().to_string())
+        );
+        assert!(
+            woke["records"][0]["body"]
+                .as_str()
+                .unwrap()
+                .contains("action-needed: none")
+        );
+        assert_eq!(
+            fs::read_to_string(report).unwrap(),
+            "status: complete\naction-needed: none\n"
+        );
+        team.documented("lead", "take-report", &ack.replace("<id>", "m2"), false);
+        assert_eq!(team.output("take-report").1, 0);
+        let stop = documented(&lead_body, "\"$BORGCHART_BIN\" stop <instance>/<member>")
+            .replace("<instance>", &team.inst())
+            .replace("<member>", &implementer);
+        team.documented("lead", "stop-impl", &stop, false);
+        let status = documented(&lead_body, "\"$BORGCHART_BIN\" status --json");
+        team.documented("lead", "stopped-status", &status, false);
+        let (rows, code) = team.output("stopped-status");
+        assert_eq!(code, 0, "{rows}");
+        let helper = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["member"] == implementer)
+            .unwrap();
+        assert_eq!(helper["state"], "stopped", "{rows}");
+        assert_eq!(helper["unread"], 0, "{rows}");
+        team.ok(&["stop", &team.inst()]);
     }
 
     /// The lead seats the design panel as a separate instance, from inside
@@ -940,11 +888,9 @@ mod round {
         )
     }
 
-    /// Self-waking uses a background wait with no cursor. The foreground
-    /// wait still allows a re-list when storage restarts under a cursor;
-    /// a stopped member's session cannot recover that way.
+    /// A stopped or replaced member stops re-arming the one wait.
     #[test]
-    fn fenced_waits_stop_the_loop_except_after_a_restart() {
+    fn fenced_waits_stop_the_loop_for_replaced_or_stopped_members() {
         let rule = fs::read_to_string(dev_team().join("orchestrator.md")).unwrap();
         let wake = rule
             .split("## Waking yourself")
@@ -953,7 +899,7 @@ mod round {
             .split("## Talking to the owner")
             .next()
             .unwrap();
-        assert!(wake.contains("inbox wait --background --json"), "{wake}");
+        assert!(wake.contains("inbox wait --json --full"), "{wake}");
         assert!(wake.contains("start no more waits"), "{wake}");
 
         let team = new_team("fenced");
@@ -963,7 +909,7 @@ mod round {
         let note = team.path("note.json");
         fs::write(
             &note,
-            format!(r#"{{"to": "{lead}", "kind": "note", "body": "Fictional note."}}"#),
+            format!(r#"{{"to": "{lead}", "body": "Fictional note."}}"#),
         )
         .unwrap();
         let note = note.display().to_string();
@@ -972,8 +918,6 @@ mod round {
             "publish",
             "--external",
             "owner",
-            "--key",
-            "n1",
             "--record",
             &note,
             "--instance",
@@ -987,15 +931,9 @@ mod round {
         // The lead is stopped while a wait of its session runs.
         let waiting = {
             let mut cmd = lead_cmd(&team);
-            cmd.args([
-                "inbox",
-                "wait",
-                "--after",
-                "m1",
-                "--timeout",
-                "30",
-                "--json",
-            ]);
+            cmd.env("BORGCHART_WAIT_MIN_MS", "1000")
+                .env("BORGCHART_WAIT_TIMEOUT_MS", "3000");
+            cmd.args(["inbox", "wait", "--timeout", "60", "--json"]);
             std::thread::spawn(move || cmd.output().unwrap())
         };
         std::thread::sleep(Duration::from_millis(500));
@@ -1021,53 +959,5 @@ mod round {
                 .unwrap()
                 .contains("list the inbox again")
         );
-
-        // A restart with changed files under a waiting cursor is the one case
-        // that says "list the inbox again", and there listing again works.
-        // (Open work isn't carried to fresh messages yet, so the note is
-        // read first.)
-        let owner = |args: &[&str]| {
-            let mut all = vec!["inbox"];
-            all.extend_from_slice(args);
-            all.extend_from_slice(&["--external", "owner", "--json", "--instance", &inst]);
-            all.iter().map(|s| s.to_string()).collect::<Vec<_>>()
-        };
-        team.ok(&["start", &inst]);
-        team.wait_idle("lead");
-        let ack = lead_cmd_at(&team, 1)
-            .args(["msg", "ack", "m1", "--json"])
-            .output()
-            .unwrap();
-        assert!(
-            ack.status.success(),
-            "{}",
-            String::from_utf8_lossy(&ack.stdout)
-        );
-        let args = owner(&["wait", "--after", "m1", "--timeout", "30"]);
-        let waiter = {
-            let args: Vec<&str> = args.iter().map(String::as_str).collect();
-            let mut cmd = team.cmd(&args);
-            std::thread::spawn(move || cmd.output().unwrap())
-        };
-        std::thread::sleep(Duration::from_millis(500));
-        team.ok(&["stop", &inst]);
-        let file = team.path("teams/dev-team/team.yaml");
-        let mut text = fs::read_to_string(&file).unwrap();
-        text.push_str("# changed\n");
-        fs::write(&file, text).unwrap();
-        team.ok(&["start", &inst]);
-        let (restarted, code) = json(&waiter.join().unwrap());
-        assert_eq!(code, Some(8), "{restarted}");
-        assert!(
-            restarted["message"]
-                .as_str()
-                .unwrap()
-                .ends_with("list the inbox again"),
-            "{restarted}"
-        );
-        let relist = owner(&[]);
-        let relist: Vec<&str> = relist.iter().map(String::as_str).collect();
-        team.ok(&relist);
-        team.ok(&["stop", &inst]);
     }
 }

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::bus::manifest::ConfigSnapshot;
+use crate::config_snapshot::ConfigSnapshot;
 
 /// Overrides for tests and unusual setups.
 pub const ENV_STATE_HOME: &str = "BORGCHART_STATE_HOME";
@@ -116,6 +116,16 @@ impl StateDir {
     pub fn member_dir(&self, member: &str) -> PathBuf {
         self.root.join("members").join(member)
     }
+    /// The current start of a member (replaced atomically).
+    pub fn current_incarnation(&self, member: &str) -> PathBuf {
+        self.member_dir(member).join("incarnation.json")
+    }
+    /// Immutable history of a member's starts.
+    pub fn incarnation_history(&self, member: &str, incarnation: &str) -> PathBuf {
+        self.member_dir(member)
+            .join("incarnations")
+            .join(format!("{incarnation}.json"))
+    }
     pub fn member_bin(&self, member: &str) -> PathBuf {
         self.member_dir(member).join("bin")
     }
@@ -162,9 +172,6 @@ pub struct Meta {
     /// it later must see the same.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<ConfigSnapshot>,
-    /// The run (internal) holding the instance's messages, if it has a bus.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run: Option<RunBinding>,
     /// The tmux socket name the instance was started on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub socket: Option<String>,
@@ -187,13 +194,6 @@ pub struct Meta {
     pub base_env: BTreeMap<String, String>,
     pub members: BTreeMap<String, MemberMeta>,
     pub plugins: BTreeMap<String, PluginMeta>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RunBinding {
-    pub run: String,
-    /// The run directory, `<bus.root>/<run>`.
-    pub dir: PathBuf,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

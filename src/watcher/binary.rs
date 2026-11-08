@@ -76,7 +76,7 @@ fn read_steady(path: &Path, between: &mut dyn FnMut()) -> std::io::Result<Option
     Ok(Some(BinaryId {
         path: path.to_path_buf(),
         stat: before,
-        sha256: crate::bus::manifest::hex(&hasher.finalize()),
+        sha256: crate::config_snapshot::hex(&hasher.finalize()),
     }))
 }
 

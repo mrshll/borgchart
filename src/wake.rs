@@ -26,8 +26,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
-use crate::bus::manifest::PaneIdentity;
 use crate::composer::{self, Geometry, Reading};
+use crate::lifecycle::PaneIdentity;
 use crate::rules::{self, State};
 use crate::state::{self, StateDir};
 use crate::team::Vendor;

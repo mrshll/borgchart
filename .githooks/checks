@@ -51,7 +51,6 @@ nowhere="BORGCHART_CONFIG=/nonexistent/caller-team/config.yaml
   BORGCHART_MEMBER=caller-member-2222
   BORGCHART_ROLE=caller-member
   BORGCHART_NOTES=/nonexistent/caller-team/notes
-  BORGCHART_RUN=r999
   BORGCHART_INCARNATION=caller-member.0.0
   BORGCHART_BIN=/nonexistent/caller-team/brg
   BORGCHART_TMUX_SOCKET=brg-caller-team

@@ -1,6 +1,6 @@
 //! Lifecycle: validation before mutation, child starts into a running team,
 //! the team tree `up` and `status` print, the team's message storage at
-//! `up` (reuse and rollover), incarnations, liveness and `down`. Real tmux
+//! `start`, incarnations, liveness and `down`. Real tmux
 //! on a private per-test socket, with `fake-agent` standing in for `claude`
 //! and `codex`.
 //!
@@ -16,7 +16,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-use borgchart::bus::mentions_runs;
 use serde_json::Value;
 
 const SECRET: &str = "pager-token-not-real-7c2e";
@@ -174,8 +173,8 @@ impl Env {
 
     /// A member's incarnation record, by role.
     fn incarnation_file(&self, role: &str) -> PathBuf {
-        self.run_dir()
-            .join(format!("runtime/incarnations/{}.json", self.m(role)))
+        self.state_dir()
+            .join(format!("members/{}/incarnation.json", self.m(role)))
     }
 
     /// The tests act on the team's one instance, and name members by role
@@ -325,18 +324,7 @@ impl Env {
         self.state_dir().join("messages")
     }
 
-    /// The run (internal) the team's storage uses now.
-    fn current(&self) -> String {
-        fs::read_to_string(self.store().join("current"))
-            .unwrap()
-            .trim()
-            .to_string()
-    }
-
-    fn run_dir(&self) -> PathBuf {
-        self.store().join(self.current())
-    }
-
+    /// The instance's state folder.
     fn state_dir(&self) -> PathBuf {
         self.path(&format!("state/{}", self.instance().expect("an instance")))
     }
@@ -496,9 +484,6 @@ fn up_prints_the_team_as_a_tree() {
          └─ lead           claude opus high\n   \
          └─ helper      codex example-model  started\n"
     );
-    for out in [&out, &again, &child] {
-        assert!(!mentions_runs(&both(out)), "{}", both(out));
-    }
 }
 
 #[test]
@@ -576,7 +561,6 @@ fn members_that_ran_and_ended_are_stopped() {
         let lead = env.row("lead");
         assert_eq!(lead["state"], "stopped");
         assert_eq!(lead["expected_running"], true);
-        assert!(!mentions_runs(&both(&out)), "{}", both(&out));
 
         // A team stopped on purpose: ended members are plain `stopped`.
         env.ok(&["stop"]);
@@ -731,7 +715,7 @@ fn members_run_the_brg_that_started_them() {
         let lead = &env.starts("lead")[0]["env"];
         // Members find the brg that started them as `$BORGCHART_BIN`.
         assert_eq!(lead["BORGCHART_BIN"], built, "{lead}");
-        assert_eq!(lead.get("BORGCHART_RUN").is_some(), bus);
+        assert!(lead.get("BORGCHART_RUN").is_none());
         assert_eq!(lead.get("BORGCHART_INCARNATION").is_some(), bus);
         let state = env.state_dir();
         for name in ["brg", "borgchart"] {
@@ -751,9 +735,6 @@ fn members_run_the_brg_that_started_them() {
         let started = env.tmux(&["list-panes", "-a", "-F", "#{pane_start_command}"]);
         assert!(started.contains(&format!("{built} _exec")), "{started}");
         assert_eq!(read_json(&state.join("start.json"))["brg"], built);
-        if bus {
-            assert!(!env.run_dir().join("runtime/bin").exists());
-        }
 
         // Another build starts a member into the running team with itself.
         let other = env.other_brg("brg-rebuilt");
@@ -804,14 +785,13 @@ fn a_changed_member_file_refuses_a_child_start() {
     assert_eq!(last_line(&out.stderr), refusal);
     assert_unchanged(&before, &env.snapshot());
 
-    // A stopped instance's member start never rolls over: it refuses too.
+    // Starting one member of a stopped instance with changed files is refused.
     env.ok(&["stop"]);
     let before = env.snapshot();
     let out = env.brg(&["start", "helper"]);
     assert_eq!(out.status.code(), Some(1), "{}", both(&out));
     assert_eq!(last_line(&out.stderr), refusal);
     assert_unchanged(&before, &env.snapshot());
-    assert!(!mentions_runs(&both(&out)));
 }
 
 #[test]
@@ -851,121 +831,7 @@ fn concurrent_member_creates_create_once() {
 }
 
 #[test]
-fn storage_is_reused_until_the_configuration_changes() {
-    let env = Env::new(true);
-    env.up();
-    assert_eq!(env.current(), "r1");
-    let manifest = env.run_dir().join("run.json");
-    let first = fs::read(&manifest).unwrap();
-    let m = read_json(&manifest);
-    assert_eq!(m["run"], "r1");
-    assert_eq!(m["schema"], 1);
-    assert_eq!(m["roles"]["helper"]["parent"], "lead");
-    assert_eq!(m["instance"], env.inst());
-    assert!(m.get("linked_from").is_none());
-    assert_eq!(env.starts("lead")[0]["env"]["BORGCHART_RUN"], "r1");
-
-    // Unchanged: the same storage.
-    env.ok(&["stop"]);
-    env.up();
-    assert_eq!(env.current(), "r1");
-    assert_eq!(fs::read(&manifest).unwrap(), first);
-    env.ok(&["stop"]);
-
-    // Changed: new storage, linked to the old, which is left as it was.
-    let r1_files: BTreeMap<PathBuf, Vec<u8>> = walk(&env.run_dir())
-        .into_iter()
-        .map(|p| (p.clone(), fs::read(&p).unwrap()))
-        .collect();
-    env.write(
-        "oncall/lead.md",
-        &LEAD.replace("You are the lead.", "You are the lead, edited."),
-    );
-    let out = env.up();
-    assert_eq!(outcomes(&stdout(&out), &env.m("lead")), ["started"]);
-    assert!(!mentions_runs(&both(&out)), "{}", both(&out));
-    assert_eq!(env.current(), "r2");
-    let m2 = read_json(&env.run_dir().join("run.json"));
-    assert_eq!(m2["linked_from"]["run"], "r1");
-    assert_eq!(m2["linked_from"]["reason"], "config");
-    assert_eq!(m2["linked_from"]["root"], env.store().display().to_string());
-    assert_eq!(env.starts("lead")[2]["env"]["BORGCHART_RUN"], "r2");
-    let r1 = env.store().join("r1");
-    assert_eq!(fs::read_to_string(r1.join("retired")).unwrap(), "r2\n");
-    for (p, bytes) in &r1_files {
-        assert_eq!(&fs::read(p).unwrap(), bytes, "{}", p.display());
-    }
-    env.ok(&["stop"]);
-}
-
-#[test]
-fn a_format_change_refuses_until_a_new_instance() {
-    let env = Env::new(true);
-    env.up();
-    env.ok(&["stop"]);
-    let run = env.run_dir();
-    // As if a future brg had written this storage.
-    let mut m = read_json(&run.join("run.json"));
-    m["schema"] = 99.into();
-    fs::write(run.join("run.json"), serde_json::to_vec(&m).unwrap()).unwrap();
-    for n in 1..=2 {
-        let p = run.join(format!("bus/records/{n:010}.json"));
-        fs::create_dir_all(p.parent().unwrap()).unwrap();
-        fs::write(p, "{}").unwrap();
-    }
-
-    // A member start refuses, in instance terms.
-    let inst = env.inst();
-    let out = env.brg(&["start", "lead"]);
-    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
-    assert!(
-        both(&out).contains(&format!(
-            "instance `{inst}`'s messages use format 99; this brg uses format 1"
-        )),
-        "{}",
-        both(&out)
-    );
-    assert!(!mentions_runs(&both(&out)), "{}", both(&out));
-    assert_eq!(env.current(), "r1");
-
-    // A full start would move to fresh messages, but brg can't read the old
-    // ones to check for open work: it refuses and points to a new instance.
-    let before = env.snapshot();
-    let out = env.brg(&["start"]);
-    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
-    assert!(
-        both(&out).contains("can't be read") && both(&out).contains("brg create"),
-        "{}",
-        both(&out)
-    );
-    assert!(!mentions_runs(&both(&out)), "{}", both(&out));
-    assert_unchanged(&before, &env.snapshot());
-    assert_eq!(env.current(), "r1");
-}
-
-#[test]
-fn old_storage_rolls_over_at_its_age_limit() {
-    let env = Env::new(true);
-    env.up();
-    env.ok(&["stop"]);
-    let manifest = env.run_dir().join("run.json");
-    let mut m = read_json(&manifest);
-    m["created_at"] = "2000-01-01T00:00:00.000Z".into();
-    fs::write(&manifest, serde_json::to_vec(&m).unwrap()).unwrap();
-    // A child start never rolls over, whatever the age.
-    env.up_helper();
-    env.ok(&["stop"]);
-    assert_eq!(env.current(), "r1");
-    env.up();
-    assert_eq!(env.current(), "r2");
-    assert_eq!(
-        read_json(&env.run_dir().join("run.json"))["linked_from"]["reason"],
-        "age"
-    );
-}
-
-#[test]
-fn rollover_needs_every_member_positively_stopped() {
+fn changed_files_need_every_member_positively_stopped() {
     let env = Env::new(true);
     env.up();
     env.up_helper();
@@ -989,23 +855,23 @@ fn rollover_needs_every_member_positively_stopped() {
         "{}",
         both(&out)
     );
-    assert!(!mentions_runs(&both(&out)), "{}", both(&out));
+
     assert_unchanged(&before, &env.snapshot());
     assert_eq!(env.tmux(&["list-sessions"]), "");
 }
 
 #[test]
-fn a_lost_current_file_is_not_a_first_start() {
+fn a_lost_store_identity_is_not_a_first_start() {
     let env = Env::new(true);
     env.up();
     env.ok(&["stop"]);
-    fs::remove_file(env.store().join("current")).unwrap();
+    fs::remove_file(env.store().join("store.json")).unwrap();
     let before = env.snapshot();
     let out = env.brg(&["start"]);
     assert_eq!(out.status.code(), Some(1), "{}", both(&out));
     assert!(
         both(&out).contains(&format!(
-            "instance `{}` was started before but its messages are missing",
+            "instance `{}`'s message storage is damaged",
             env.inst()
         )),
         "{}",
@@ -1018,7 +884,7 @@ fn a_lost_current_file_is_not_a_first_start() {
 fn incarnations_are_recorded() {
     let env = Env::new(true);
     env.up();
-    let run = env.run_dir();
+    let state = env.state_dir();
     let inc = read_json(&env.incarnation_file("lead"));
     let id = inc["incarnation"].as_str().unwrap().to_string();
     let parts: Vec<&str> = id.split('.').collect();
@@ -1055,7 +921,7 @@ fn incarnations_are_recorded() {
     );
     assert!(inc.get("ended_at").is_none());
     assert_eq!(
-        read_json(&run.join(format!("runtime/incarnations/{}/{id}.json", env.m("lead")))),
+        read_json(&state.join(format!("members/{}/incarnations/{id}.json", env.m("lead")))),
         inc
     );
 
@@ -1082,7 +948,8 @@ fn incarnations_are_recorded() {
     let again = read_json(&env.incarnation_file("lead"));
     assert_ne!(again["incarnation"], id.as_str());
     assert!(
-        run.join(format!("runtime/incarnations/{}/{id}.json", env.m("lead")))
+        state
+            .join(format!("members/{}/incarnations/{id}.json", env.m("lead")))
             .exists()
     );
 }
@@ -1192,7 +1059,7 @@ fn down_refuses_a_different_tmux_socket() {
             .unwrap();
         assert_eq!(out.status.code(), Some(1), "{args:?}: {}", both(&out));
         assert!(both(&out).contains("tmux socket"), "{}", both(&out));
-        assert!(!mentions_runs(&both(&out)), "{}", both(&out));
+
         assert_unchanged(&before, &env.snapshot());
         assert!(lead_pane_alive(&env));
     }
@@ -1217,7 +1084,7 @@ fn refuses_when_unreachable(bus: bool) {
             .unwrap();
         assert_eq!(out.status.code(), Some(1), "{args:?}: {}", both(&out));
         assert!(both(&out).contains("nothing was changed"), "{}", both(&out));
-        assert!(!mentions_runs(&both(&out)), "{}", both(&out));
+
         assert_unchanged(&before, &env.snapshot());
         assert!(lead_window_alive(&env), "bus: {bus}");
     }
@@ -1637,8 +1504,8 @@ fn unknown_helper(env: &Env) -> String {
 }
 
 /// Run a refused full `up` and check it changed nothing and named
-/// `oncall/<member>` without run wording.
-fn assert_rollover_refused(env: &Env, member: &str) {
+/// `oncall/<member>` and changes nothing.
+fn assert_changed_files_refused(env: &Env, member: &str) {
     let before = env.snapshot();
     let out = env.brg(&["start"]);
     assert_eq!(out.status.code(), Some(1), "{}", both(&out));
@@ -1651,13 +1518,13 @@ fn assert_rollover_refused(env: &Env, member: &str) {
         "{}",
         both(&out)
     );
-    assert!(!mentions_runs(&both(&out)), "{}", both(&out));
+
     assert_unchanged(&before, &env.snapshot());
     assert_eq!(env.tmux(&["list-sessions"]), "");
 }
 
 #[test]
-fn rollover_checks_members_the_new_configuration_dropped() {
+fn changed_files_check_members_the_new_configuration_dropped() {
     let env = Env::new(true);
     env.up();
     env.up_helper();
@@ -1668,20 +1535,20 @@ fn rollover_checks_members_the_new_configuration_dropped() {
         "oncall/team.yaml",
         &format!("bus: {{}}\n{}", TEAM.split("  helper:\n").next().unwrap()),
     );
-    assert_rollover_refused(&env, "helper");
+    assert_changed_files_refused(&env, "helper");
 }
 
 #[test]
-fn a_format_rollover_refuses_unreadable_incarnations() {
+fn changed_files_refuse_unreadable_incarnations() {
     for bad in ["malformed", "unreadable"] {
         let env = Env::new(true);
         env.up();
         env.up_helper();
         env.ok(&["stop"]);
-        let run = env.run_dir();
-        let mut m = read_json(&run.join("run.json"));
-        m["schema"] = 99.into();
-        fs::write(run.join("run.json"), serde_json::to_vec(&m).unwrap()).unwrap();
+        env.write(
+            "oncall/lead.md",
+            &LEAD.replace("You are the lead.", "You are the lead, edited."),
+        );
         let inc = env.incarnation_file("helper");
         if bad == "malformed" {
             fs::write(&inc, "not json").unwrap();
@@ -1690,108 +1557,24 @@ fn a_format_rollover_refuses_unreadable_incarnations() {
             fs::remove_file(&inc).unwrap();
             fs::create_dir_all(&inc).unwrap();
         }
-        assert_rollover_refused(&env, "helper");
+        assert_changed_files_refused(&env, "helper");
     }
 }
 
 #[test]
-fn an_interrupted_rollover_is_finished_before_starting() {
+fn a_lost_store_identity_is_damaged_storage() {
     let env = Env::new(true);
     env.up();
     env.up_helper();
     env.ok(&["stop"]);
-    env.write(
-        "oncall/lead.md",
-        &LEAD.replace("You are the lead.", "You are the lead, edited."),
-    );
-    env.up();
-    env.ok(&["stop"]);
-    assert_eq!(env.current(), "r2");
-    // As if the rollover had stopped after retiring r1, before switching,
-    // and the person then reverted the change.
-    fs::write(env.store().join("current"), "r1\n").unwrap();
-    env.write("oncall/lead.md", LEAD);
-
-    // A child start doesn't finish it; it says how.
-    let before = env.snapshot();
-    let out = env.brg(&["start", "helper"]);
-    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
-    assert!(
-        both(&out).contains(&format!(
-            "an earlier start of instance `{}` was interrupted while moving to fresh messages",
-            env.inst()
-        )),
-        "{}",
-        both(&out)
-    );
-    assert!(!mentions_runs(&both(&out)), "{}", both(&out));
-    assert_unchanged(&before, &env.snapshot());
-
-    // A full `up` finishes the move, then rolls over for the reverted file.
-    let r1: BTreeMap<PathBuf, Vec<u8>> = walk(&env.store().join("r1"))
-        .into_iter()
-        .map(|p| (p.clone(), fs::read(&p).unwrap()))
-        .collect();
-    let out = env.up();
-    assert!(!mentions_runs(&both(&out)), "{}", both(&out));
-    assert_eq!(env.current(), "r3");
-    assert_eq!(
-        read_json(&env.run_dir().join("run.json"))["linked_from"]["run"],
-        "r2"
-    );
-    assert_eq!(
-        fs::read_to_string(env.store().join("r2/retired")).unwrap(),
-        "r3\n"
-    );
-    assert_eq!(env.starts("lead")[2]["env"]["BORGCHART_RUN"], "r3");
-    for (p, bytes) in &r1 {
-        assert_eq!(&fs::read(p).unwrap(), bytes, "{}", p.display());
-    }
-}
-
-#[test]
-fn retired_storage_with_no_successor_is_refused() {
-    let env = Env::new(true);
-    env.up();
-    env.up_helper();
-    env.ok(&["stop"]);
-    fs::write(env.run_dir().join("retired"), "r2\n").unwrap();
+    fs::remove_file(env.store().join("store.json")).unwrap();
     for args in [&["start"][..], &["start", "helper"][..]] {
         let before = env.snapshot();
         let out = env.brg(args);
         assert_eq!(out.status.code(), Some(1), "{args:?}: {}", both(&out));
         assert!(
             both(&out).contains(&format!(
-                "an earlier start of instance `{}` was interrupted while moving to fresh messages",
-                env.inst()
-            )),
-            "{}",
-            both(&out)
-        );
-        assert!(!mentions_runs(&both(&out)), "{}", both(&out));
-        assert_unchanged(&before, &env.snapshot());
-        assert_eq!(env.tmux(&["list-sessions"]), "");
-    }
-}
-
-#[test]
-fn a_lost_manifest_is_damaged_storage() {
-    let env = Env::new(true);
-    env.up();
-    env.up_helper();
-    env.ok(&["stop"]);
-    fs::remove_file(env.run_dir().join("run.json")).unwrap();
-    env.write(
-        "oncall/lead.md",
-        &LEAD.replace("You are the lead.", "You are the lead, edited."),
-    );
-    for args in [&["start"][..], &["start", "helper"][..]] {
-        let before = env.snapshot();
-        let out = env.brg(args);
-        assert_eq!(out.status.code(), Some(1), "{args:?}: {}", both(&out));
-        assert!(
-            both(&out).contains(&format!(
-                "instance `{}` was started before but its messages are missing",
+                "instance `{}`'s message storage is damaged",
                 env.inst()
             )),
             "{}",
@@ -1807,7 +1590,7 @@ fn storage_errors_name_the_team_not_its_files() {
     let env = Env::new(true);
     env.up();
     env.ok(&["stop"]);
-    let lock = env.run_dir().join("runtime/lifecycle.lock");
+    let lock = env.store().join("store.json");
     fs::remove_file(&lock).unwrap();
     fs::create_dir(&lock).unwrap();
     let out = env.brg(&["start"]);
@@ -1817,7 +1600,7 @@ fn storage_errors_name_the_team_not_its_files() {
         text.contains(&format!("instance `{}`", env.inst())),
         "{text}"
     );
-    assert!(!mentions_runs(&text), "{text}");
+
     assert!(
         !text.contains(&env.store().display().to_string()) && !text.contains("lifecycle.lock"),
         "{text}"
@@ -1887,19 +1670,19 @@ fn up_refuses_a_relative_tmux_directory() {
 mod liveness {
     use std::process::Command;
 
-    use borgchart::bus::layout::RunPaths;
-    use borgchart::bus::manifest;
-    use borgchart::bus::manifest::{Incarnation, Liveness, PaneIdentity};
     use borgchart::bus::time::utc_now;
+    use borgchart::lifecycle;
     use borgchart::lifecycle::{
         ENDED_STOPPED, begin_incarnation, check_stopped, complete_incarnation, end_incarnation,
         liveness,
     };
+    use borgchart::lifecycle::{Incarnation, Liveness, PaneIdentity};
+    use borgchart::state::StateDir;
 
     #[test]
     fn liveness_without_a_pane_or_after_ending() {
         let dir = tempfile::tempdir().unwrap();
-        let paths = RunPaths::from_root(dir.path());
+        let paths = StateDir::from_root(dir.path());
         let mut inc = Incarnation {
             member: "lead".into(),
             incarnation: "lead.1.abcd".into(),
@@ -1925,14 +1708,16 @@ mod liveness {
         assert!(end_incarnation(&paths, "lead", ENDED_STOPPED).unwrap());
         assert!(!end_incarnation(&paths, "lead", ENDED_STOPPED).unwrap());
         assert_eq!(liveness(&paths, "lead", "lead.1.abcd"), Liveness::Gone);
-        let stored = manifest::load_incarnation(&paths, "lead").unwrap().unwrap();
+        let stored = lifecycle::load_incarnation(&paths, "lead")
+            .unwrap()
+            .unwrap();
         assert_eq!(stored.ended_reason.as_deref(), Some(ENDED_STOPPED));
     }
 
     #[test]
     fn an_unreachable_server_shows_a_pane_gone_only_once_its_process_exited() {
         let dir = tempfile::tempdir().unwrap();
-        let paths = RunPaths::from_root(dir.path());
+        let paths = StateDir::from_root(dir.path());
         // A pane process that ignores the hang-up outlives its tmux server.
         let mut survivor = Command::new("sh")
             .args(["-c", "trap '' HUP; exec sleep 30"])
@@ -1956,12 +1741,18 @@ mod liveness {
         begin_incarnation(&paths, &inc).unwrap();
         complete_incarnation(&paths, &inc).unwrap();
         assert_eq!(liveness(&paths, "lead", "lead.1.abcd"), Liveness::Unknown);
-        assert!(check_stopped(&paths, "t", "brg up").is_err());
+        let meta = borgchart::state::Meta {
+            members: [("lead".into(), borgchart::state::MemberMeta::default())]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        assert!(check_stopped(&paths, &meta, "brg start").is_err());
 
         survivor.kill().unwrap();
         survivor.wait().unwrap();
         assert_eq!(liveness(&paths, "lead", "lead.1.abcd"), Liveness::Gone);
-        // So a rollover can go ahead.
-        check_stopped(&paths, "t", "brg up").unwrap();
+        // So changed files can now be applied.
+        check_stopped(&paths, &meta, "brg start").unwrap();
     }
 }

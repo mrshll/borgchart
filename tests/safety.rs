@@ -28,21 +28,29 @@ impl Env {
 // --- 6. Checkouts ---
 
 #[test]
-fn a_folder_held_by_another_instance_is_refused() {
+fn only_running_members_hold_their_folder() {
     let env = Env::new();
     let a = env.create("oncall", "work/a");
-    // While A runs.
     let err = env.fails(&["create", "oncall", &env.folder("work/a")]);
-    assert!(err.contains(&a) && err.contains("work/a"), "{err}");
-    // While A is stopped with an open task naming the checkout.
-    let lead = env.member(&a, "lead");
-    env.assign(&a, &lead);
+    assert!(err.contains(&a) && err.contains("running there"), "{err}");
     env.ok(&["stop", &a]);
-    let err = env.fails(&["create", "oncall", &env.folder("work/a")]);
-    assert!(err.contains(&a) && err.contains("t1"), "{err}");
-    // Once it's settled, by deleting A, the folder is free.
-    env.ok(&["delete", &a, "--force"]);
     let b = env.create("oncall", "work/a");
+    assert!(env.registry()["instances"].get(&a).is_some());
+    env.ok(&["stop", &b]);
+}
+
+#[test]
+fn stopped_members_with_unreadable_messages_hold_no_folder() {
+    let env = Env::new();
+    let a = env.create("oncall", "work/a");
+    env.ok(&["stop", &a]);
+    fs::write(
+        env.path(&format!("state/{a}/messages/store.json")),
+        "not json\n",
+    )
+    .unwrap();
+    let b = env.create("oncall", "work/a");
+    assert!(env.registry()["instances"].get(&a).is_some());
     env.ok(&["stop", &b]);
 }
 
@@ -175,11 +183,7 @@ fn a_moved_team_folder_is_re_pointed_after_a_full_stop() {
     let env = Env::new();
     let a = env.create("oncall", "work/a");
     let lead = env.member(&a, "lead");
-    let out = env.publish(
-        &a,
-        "note-1",
-        &json!({"to": lead, "kind": "note", "body": "keep me"}),
-    );
+    let out = env.publish(&a, &json!({"to": lead, "body": "keep me"}));
     assert!(out.status.success(), "{}", both(&out));
     fs::create_dir_all(env.path("elsewhere")).unwrap();
     fs::rename(env.path("teams/oncall"), env.path("elsewhere/oncall")).unwrap();
@@ -213,51 +217,23 @@ fn a_removed_working_folder_refuses_start() {
 // --- 13. Storage safety ---
 
 #[test]
-fn a_start_that_orphans_open_work_is_refused() {
-    let env = Env::new();
-    let a = env.create("oncall", "work/a");
-    env.ok(&["create", &format!("{a}/scout")]);
-    let scout = env.member(&a, "scout");
-    env.assign(&a, &scout);
-    env.ok(&["stop", &a]);
-    env.write(
-        "teams/oncall/team.yaml",
-        &TEAM.replace("  scout:\n    prompt: scout.md\n    start: false\n", ""),
-    );
-    let err = env.fails(&["start", &a]);
-    assert!(err.contains("t1") && err.contains(&scout), "{err}");
-}
-
-#[test]
-fn a_rollover_with_open_work_is_refused() {
-    let env = Env::new();
-    let a = env.create("oncall", "work/a");
-    let lead = env.member(&a, "lead");
-    env.assign(&a, &lead);
-    env.ok(&["stop", &a]);
-    env.write(
-        "teams/oncall/lead.md",
-        "---\nrole: lead\nmodels: {claude: opus high}\n---\nYou are the lead, changed.\n",
-    );
-    let err = env.fails(&["start", &a]);
-    assert!(err.contains("open work") && err.contains("t1"), "{err}");
-}
-
-#[test]
 fn unread_messages_are_open_work_for_delete() {
     let env = Env::new();
     let a = env.create("oncall", "work/a");
     let lead = env.member(&a, "lead");
-    let out = env.publish(
-        &a,
-        "note-1",
-        &json!({"to": lead, "kind": "note", "body": "hi"}),
-    );
+    let out = env.publish(&a, &json!({"to": lead, "body": "hi"}));
     assert!(out.status.success(), "{}", both(&out));
     env.ok(&["stop", &a]);
     let err = env.fails(&["delete", &a]);
-    assert!(err.contains("unread"), "{err}");
+    assert!(
+        err.contains("unread m1") && err.contains(&lead) && err.contains("--force"),
+        "{err}"
+    );
+    assert!(env.path(&format!("state/{a}")).is_dir());
+    assert!(env.registry()["instances"].get(&a).is_some());
     env.ok(&["delete", &a, "--force"]);
+    assert!(!env.path(&format!("state/{a}")).exists());
+    assert!(env.registry()["instances"].get(&a).is_none());
 }
 
 #[test]
@@ -265,13 +241,16 @@ fn an_unreadable_store_still_stops_and_delete_needs_force() {
     let env = Env::new();
     let a = env.create("oncall", "work/a");
     fs::write(
-        env.path(&format!("state/{a}/messages/current")),
-        "not a run\n",
+        env.path(&format!("state/{a}/messages/store.json")),
+        "not json\n",
     )
     .unwrap();
     env.ok(&["stop", &a]);
     let err = env.fails(&["start", &a]);
-    assert!(err.contains("can't be read"), "{err}");
+    assert!(
+        err.contains("damaged") && err.contains("store.json"),
+        "{err}"
+    );
     let err = env.fails(&["delete", &a]);
     assert!(err.contains("can't be inspected"), "{err}");
     env.ok(&["delete", &a, "--force"]);
@@ -352,15 +331,16 @@ fn a_start_that_never_reached_tmux_leaves_nothing_held() {
 // --- Review fixes: damaged storage, partial contexts, config paths ---
 
 #[test]
-fn a_current_run_without_its_manifest_keeps_checkouts_and_needs_force() {
+fn a_store_without_its_identity_needs_force_for_delete() {
     let env = Env::new();
     let a = env.create("oncall", "work/a");
     let lead = env.member(&a, "lead");
-    env.assign(&a, &lead);
+    let out = env.publish(&a, &json!({"to": lead, "body": "hi"}));
+    assert!(out.status.success(), "{}", both(&out));
     env.ok(&["stop", &a]);
-    fs::remove_file(env.path(&format!("state/{a}/messages/r1/run.json"))).unwrap();
-    let err = env.fails(&["create", "oncall", &env.folder("work/a")]);
-    assert!(err.contains(&a), "{err}");
+    fs::remove_file(env.path(&format!("state/{a}/messages/store.json"))).unwrap();
+    let b = env.create("oncall", "work/a");
+    env.ok(&["stop", &b]);
     let err = env.fails(&["delete", &a]);
     assert!(err.contains("can't be inspected"), "{err}");
     env.ok(&["delete", &a, "--force"]);
@@ -371,12 +351,11 @@ fn a_start_refuses_unreadable_records_full_or_member() {
     let env = Env::new();
     let a = env.create("oncall", "work/a");
     let lead = env.member(&a, "lead");
-    env.assign(&a, &lead);
+    let out = env.publish(&a, &json!({"to": lead, "body": "hi"}));
+    assert!(out.status.success(), "{}", both(&out));
     env.ok(&["stop", &a]);
     fs::write(
-        env.path(&format!(
-            "state/{a}/messages/r1/bus/records/0000000001.json"
-        )),
+        env.path(&format!("state/{a}/messages/records/0000000001.json")),
         "bad json",
     )
     .unwrap();
@@ -398,13 +377,11 @@ fn a_partial_member_context_is_refused_for_reads_too() {
     let lead = env.member(&a, "lead");
     for (var, value) in [
         ("BORGCHART_MEMBER", lead.as_str()),
-        ("BORGCHART_RUN", "r1"),
         ("BORGCHART_INCARNATION", "x.1.abcd"),
     ] {
         for args in [
-            vec!["bus", "inspect", "--instance", b.as_str()],
+            vec!["bus", "check", "--instance", b.as_str()],
             vec!["msg", "read", "m1", "--instance", b.as_str()],
-            vec!["task", "list", "--instance", b.as_str()],
             vec!["inbox", "--member", lead.as_str(), "--instance", a.as_str()],
         ] {
             let out = env.cmd(&args).env(var, value).output().unwrap();
@@ -418,7 +395,7 @@ fn a_partial_member_context_is_refused_for_reads_too() {
     }
     // A plugin process has only its instance: that still works.
     let out = env
-        .cmd(&["bus", "inspect"])
+        .cmd(&["bus", "check"])
         .env("BORGCHART_INSTANCE", &a)
         .output()
         .unwrap();
