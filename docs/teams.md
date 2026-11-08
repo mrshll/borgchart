@@ -89,7 +89,7 @@ A small top level for people. `brg --help` and `brg <command> --help` give the f
 | `brg send <instance>/<member> TEXT` | Type into a member now |
 | `brg msg …`, `brg inbox …`, `brg bus check` | Durable messages and store health, below |
 
-**Messages**, mostly used by roles:
+**Messages**, mostly used by members:
 
 | Command | What it does |
 | --- | --- |
@@ -114,7 +114,7 @@ The attention worker and watcher are not wired now; the lead nudges with `brg se
 
 ## Secrets
 
-Decided: brg stores no secrets. A plugin's secrets come from the environment `brg create` or `brg start` runs in (for example under your password manager's `run`), go only to that plugin's 0600 file, and are removed at `brg stop`. `brg secret <team>` lists the names the plugins need and whether each is set, without values. 0600 keeps other users out, not the roles: a member that isn't `locked` could read the file while it exists.
+Decided: brg stores no secrets. A plugin's secrets come from the environment `brg create` or `brg start` runs in (for example under your password manager's `run`), go only to that plugin's 0600 file, and are removed at `brg stop`. `brg secret <team>` lists the names the plugins need and whether each is set, without values. 0600 keeps other users out, not the members: a member that isn't `locked` could read the file while it exists.
 
 ## Roles with several copies (Open: design only, a later change)
 

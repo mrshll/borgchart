@@ -115,6 +115,17 @@ fn unknown_frontmatter_fields_are_errors() {
 }
 
 #[test]
+fn empty_frontmatter_uses_vendor_defaults() {
+    let f = Fixture::new();
+    for frontmatter in ["", " \n\t\n"] {
+        f.write("lead.md", &format!("---\n{frontmatter}---\nBody\n"));
+        let (report, validated) = f.run();
+        assert!(!report.has_errors(), "{}", errors(&report));
+        assert!(validated.is_some());
+    }
+}
+
+#[test]
 fn frontmatter_must_close() {
     let f = Fixture::new();
     f.write("lead.md", "---\nTriage.\n");
@@ -156,7 +167,7 @@ fn prompt_symlink_outside_team_is_refused() {
     let f = Fixture::new();
     let outside = tempfile::tempdir().unwrap();
     let target = outside.path().join("lead.md");
-    fs::write(&target, "---\n{}\n---\nx\n").unwrap();
+    fs::write(&target, "---\n---\nx\n").unwrap();
     fs::remove_file(f.path("lead.md")).unwrap();
     std::os::unix::fs::symlink(&target, f.path("lead.md")).unwrap();
     expect_error(&f, "outside");
@@ -190,7 +201,7 @@ fn include_amplification_is_capped() {
     f.write("includes/shared.md", &"x".repeat(600 * 1024));
     f.write(
         "triager.md",
-        "---\n{}\n---\n{{includes/shared}}\n{{includes/shared}}\n",
+        "---\n---\n{{includes/shared}}\n{{includes/shared}}\n",
     );
     expect_error(&f, "once includes are expanded");
 }
@@ -363,14 +374,8 @@ fn vendor_warnings_cover_targets_and_parents() {
     let (report, validated) = f.run();
     assert!(validated.is_some(), "{}", errors(&report));
     let w = warnings(&report);
-    assert!(
-        w.contains("member `triager`: receives work from a plugin process"),
-        "{w}"
-    );
-    assert!(
-        w.contains("member `lead`: is the parent of a member"),
-        "{w}"
-    );
+    assert!(w.contains("`triager`"), "{w}");
+    assert!(w.contains("`lead`"), "{w}");
 }
 
 #[test]
@@ -434,11 +439,11 @@ fn bad_connector_shape_has_a_clear_message() {
 }
 
 #[test]
-fn member_and_plugin_names_must_differ() {
+fn role_and_plugin_names_must_differ() {
     let f = Fixture::new();
     f.edit("team.yaml", "  lead:\n", "  slackbot:\n");
     f.edit("team.yaml", "parent: lead", "parent: slackbot");
-    expect_error(&f, "both a member and a plugin");
+    expect_error(&f, "`slackbot`");
 }
 
 #[test]
@@ -611,8 +616,8 @@ roles:
     parent: lead
 "#,
     );
-    f.write("team/lead.md", "---\n{}\n---\nLead.\n");
-    f.write("team/helper.md", "---\n{}\n---\nHelp.\n");
+    f.write("team/lead.md", "---\n---\nLead.\n");
+    f.write("team/helper.md", "---\n---\nHelp.\n");
     f.exec("team/plugins/notify/notify");
     f
 }

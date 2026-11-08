@@ -38,7 +38,7 @@ fn status_i_attaches_detaches_and_quits() {
         "team/team.yaml",
         "bus: {}\nplugins:\n  watcher: {path: plugins/watcher, process: [./run.sh]}\nroles:\n  alpha: {prompt: alpha.md}\n  beta: {prompt: beta.md, vendor: codex, parent: alpha}\n",
     );
-    write("team/alpha.md", "---\n{}\n---\nYou are alpha.\n");
+    write("team/alpha.md", "---\n---\nYou are alpha.\n");
     write(
         "team/beta.md",
         "---\nmodels: {codex: example-model low}\n---\nYou are beta.\n",

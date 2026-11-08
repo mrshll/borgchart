@@ -18,7 +18,7 @@ pub fn split(text: &str) -> Result<Split, String> {
     let text = text.replace("\r\n", "\n");
     let rest = text
         .strip_prefix("---\n")
-        .ok_or_else(|| "member file must start with a `---` frontmatter line".to_string())?;
+        .ok_or_else(|| "role file must start with a `---` frontmatter line".to_string())?;
     let mut offset = 0;
     for line in rest.split_inclusive('\n') {
         if line.trim_end_matches('\n') == "---" {

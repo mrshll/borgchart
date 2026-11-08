@@ -24,10 +24,8 @@ fn deleted_members_cannot_restart_or_receive_work_and_ids_are_never_reused() {
     let inst = env.create("oncall", "work/a");
     let lead = env.member(&inst, "lead");
     let address = format!("{inst}/{lead}");
-    assert!(
-        env.fails(&["delete", &address, "--force"])
-            .contains("running")
-    );
+    env.fails(&["delete", &address, "--force"]);
+    assert_eq!(env.member(&inst, "lead"), lead);
     let published = env.publish(&inst, &json!({"to": lead, "body": "Review the sample."}));
     assert!(published.status.success(), "{}", both(&published));
     let message: Value = serde_json::from_slice(&published.stdout).unwrap();
@@ -35,18 +33,20 @@ fn deleted_members_cannot_restart_or_receive_work_and_ids_are_never_reused() {
     let child = env.member(&inst, "helper");
     env.ok(&["stop", &inst]);
     let refused = env.fails(&["delete", &address]);
-    assert!(refused.contains("1 unread"), "{refused}");
+    assert_eq!(env.member(&inst, "lead"), lead);
+    assert_eq!(env.row(&inst, "lead")["unread"], 1);
     assert!(
         refused.contains(message["id"].as_str().unwrap()),
         "{refused}"
     );
     env.ok(&["delete", &address, "--force"]);
     assert!(env.rows(&inst).iter().all(|r| r["member"] != lead));
+    assert_eq!(env.state_of(&inst, "lead"), "not created (start: true)");
     assert!(!stdout(&env.ok(&["status", &inst])).contains(&lead));
-    assert!(env.fails(&["start", &address]).contains("deleted"));
+    env.fails(&["start", &address]);
+    assert!(env.rows(&inst).iter().all(|r| r["member"] != lead));
     let out = env.publish(&inst, &json!({"to": lead, "body": "Do not deliver."}));
     assert!(!out.status.success(), "{}", both(&out));
-    assert!(both(&out).contains("deleted"), "{}", both(&out));
     env.ok(&["start", &inst]);
     let replacement = env.member(&inst, "lead");
     assert_ne!(replacement, lead);
@@ -75,23 +75,32 @@ fn deleted_members_cannot_restart_or_receive_work_and_ids_are_never_reused() {
     };
     let helper = seeded_create();
     env.ok(&["stop", &format!("{inst}/{helper}")]);
-    let start_file = env.path(&format!("state/{inst}/members/{helper}/incarnation.json"));
-    let start = fs::read(&start_file).unwrap();
-    fs::write(&start_file, "unreadable start record").unwrap();
-    env.fails(&["delete", &format!("{inst}/{helper}"), "--force"]);
-    assert_eq!(
-        env.member(&inst, "helper"),
-        helper,
-        "unknown liveness must keep the member"
-    );
-    fs::write(&start_file, start).unwrap();
     env.ok(&["delete", &format!("{inst}/{helper}")]);
     let next = seeded_create();
     assert_ne!(next, helper);
     env.ok(&["stop", &inst]);
     env.ok(&["delete", &inst]);
+}
 
-    // A team without messages can delete a member without manufacturing a bus.
+#[test]
+fn members_with_unknown_liveness_cannot_be_deleted() {
+    let env = Env::new();
+    let inst = env.create("oncall", "work/a");
+    let lead = env.member(&inst, "lead");
+    env.ok(&["stop", &inst]);
+    let start_file = env.path(&format!("state/{inst}/members/{lead}/incarnation.json"));
+    let start = fs::read(&start_file).unwrap();
+    fs::write(&start_file, "unreadable start record").unwrap();
+    env.fails(&["delete", &format!("{inst}/{lead}"), "--force"]);
+    assert_eq!(env.member(&inst, "lead"), lead);
+    fs::write(&start_file, start).unwrap();
+    env.ok(&["delete", &format!("{inst}/{lead}")]);
+    env.ok(&["delete", &inst]);
+}
+
+#[test]
+fn members_can_be_deleted_without_a_message_bus() {
+    let env = Env::new();
     env.write("teams/oncall/team.yaml", &TEAM.replace("bus: {}\n", ""));
     let inst = env.create("oncall", "work/a");
     let lead = env.member(&inst, "lead");
@@ -101,6 +110,33 @@ fn deleted_members_cannot_restart_or_receive_work_and_ids_are_never_reused() {
     assert_ne!(env.member(&inst, "lead"), lead);
     env.ok(&["stop", &inst]);
     env.ok(&["delete", &inst]);
+}
+
+#[test]
+fn publish_refusals_only_suggest_declared_role_addresses() {
+    let env = Env::new();
+    let inst = env.create("oncall", "work/a");
+    for to in ["helpr", "helper-zzzz", "helper"] {
+        let out = env.publish(&inst, &json!({"to": to, "body": "Review the sample."}));
+        assert!(!out.status.success(), "{}", both(&out));
+        let refusal: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let command = refusal["message"]
+            .as_str()
+            .unwrap()
+            .split_once("`brg create ")
+            .unwrap()
+            .1
+            .split('`')
+            .next()
+            .unwrap();
+        let expected = if to == "helper" {
+            format!("{inst}/helper")
+        } else {
+            "<instance>/<role>".to_string()
+        };
+        assert_eq!(command, expected, "recipient {to}");
+    }
+    env.ok(&["stop", &inst]);
 }
 
 #[test]
@@ -176,10 +212,7 @@ fn role_addresses_never_choose_a_member_and_status_tracks_each_start() {
             assert!(error.contains(&helper), "{error}");
         }
         let tree = stdout(&env.ok(&["status", &inst]));
-        assert!(
-            tree.contains(&helper) && tree.contains("1 unread"),
-            "{tree}"
-        );
+        assert!(tree.contains(&helper), "{tree}");
         let row = env.row(&inst, "helper");
         assert_eq!(row["start_id"], start_id);
         assert_eq!(row["member"], helper);

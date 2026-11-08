@@ -141,7 +141,7 @@ dev-team-k3f9                       team ~/.config/borgchart/teams/dev-team/ · 
 - **Header line:** the instance, then its team folder and working folder.
 - **Tree lines:**
   - one line per member;
-  - a role with no kept member gets `not created (start: false)` today; copies will add `on demand (none created)` for `max > 1`. A created member that isn't running shows on its own line as `stopped`;
+  - a role with no kept member gets `not created (start: false)` or `not created (start: true)`, following its `start` setting; copies will add `on demand (none created)` for `max > 1`. A created member that isn't running shows on its own line as `stopped`;
   - positive unread message counts appear beside members, also in `-i`; a zero adds nothing to the tree;
   - department members nest.
 - **`--json` member rows:** `instance`, `team`, `member`, `role`, `parent` (a member ID), `start_id` (the current incarnation, when recorded), and the existing fields. A stop retains `start_id`; restarting changes it. With a readable bus, `unread` gives each kept member's unacked count, including zero. Without a bus it is absent; if the store cannot be read, counts are absent and status adds a short note. Deleted members have no rows. Plugin-process rows keep `kind: plugin` and their name.
@@ -181,7 +181,7 @@ dev-team-k3f9                       team ~/.config/borgchart/teams/dev-team/ · 
 | | `--file`/`-f`, `$BORGCHART_FILE`, `./borgchart.yaml` | removed |
 | | secrets from the environment `brg up` runs in | unchanged: the environment `create` or `start` runs in; `brg secret <team>` checks which are set |
 | Output | `status --json` `name`, `kind` | `member`, `role`, `instance`, `team`, plus `unread` with a readable bus; `kind` stays |
-| | `not started` | `not created (start: false)`, for a role; `stopped`, for a member |
+| | `not started` | `not created (start: false)` or `not created (start: true)`, for a role; `stopped`, for a member |
 | Records | message identity | `from` is a member ID or `external:NAME`; fields are `schema`, `id`, `seq`, `at`, `from`, `to`, optional `reply_to`, and `body`. Start IDs stay in brg's own files and acknowledgement identity. |
 | On disk | message and start records | `…/borgchart/<instance>/messages/` holds `store.json`, `lock`, `records/` and `acks/`; the current start is `members/<member>/incarnation.json`, with history in `members/<member>/incarnations/<id>.json`. |
 | | brg state `…/borgchart/<name>-<hash>/` | `…/borgchart/<instance>/`, with `messages/` and `notes/`, plus the registry of instances |

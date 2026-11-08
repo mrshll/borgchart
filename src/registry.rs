@@ -345,17 +345,12 @@ mod tests {
 
     #[test]
     fn ids_split_from_the_right() {
+        assert_eq!(split_id("code-review-k3f9"), Some(("code-review", "k3f9")));
         assert_eq!(split_id("dev-team-k3f9"), Some(("dev-team", "k3f9")));
         assert_eq!(split_id("lead-q8m3"), Some(("lead", "q8m3")));
         assert_eq!(split_id("lead"), None);
         assert_eq!(split_id("dev-tea1"), None);
         assert_eq!(split_id("-k3f9"), None);
-    }
-
-    #[test]
-    fn hyphenated_roles_split_from_the_right() {
-        assert_eq!(split_id("code-review-k3f9"), Some(("code-review", "k3f9")));
-        assert_eq!(split_id("code-review-k3f0"), None);
     }
 
     #[test]

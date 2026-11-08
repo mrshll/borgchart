@@ -179,7 +179,7 @@ enum ConnectorsRaw {
     Tools(BTreeMap<String, Vec<String>>),
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FrontmatterRaw {
     #[serde(default)]
@@ -987,11 +987,15 @@ fn read_role_file(
         );
         return None;
     }
-    let front: FrontmatterRaw = match yaml::parse(&split.frontmatter) {
-        Ok(f) => f,
-        Err(e) => {
-            report.error(Some(shown), e);
-            return None;
+    let front: FrontmatterRaw = if split.frontmatter.trim().is_empty() {
+        FrontmatterRaw::default()
+    } else {
+        match yaml::parse(&split.frontmatter) {
+            Ok(f) => f,
+            Err(e) => {
+                report.error(Some(shown), e);
+                return None;
+            }
         }
     };
     let body = resolve_includes(dir, includes_dir, shown, &split.body, report)?;

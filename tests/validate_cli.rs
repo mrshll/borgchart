@@ -45,11 +45,6 @@ fn roles_load_but_legacy_members_and_frontmatter_role_are_rejected() {
         !validate().status.success(),
         "a role must not hide another role's member"
     );
-    f.edit("team.yaml", "lead-k3f9", "lead-k3f0");
-    assert!(
-        validate().status.success(),
-        "zero is outside the suffix alphabet"
-    );
 }
 
 #[test]

@@ -89,6 +89,7 @@ You read each new message in the channel and decide whether it needs the lead.
 ```
 
 - **Frontmatter** sits between a first line `---` and the next line that is exactly `---`.
+  - Empty or whitespace-only frontmatter uses the vendor's default model.
   - A byte-order mark and CRLF line endings are accepted.
   - A later `---` is ordinary body text.
 - The role's name comes from `roles:` in `team.yaml`; frontmatter holds only `models`.

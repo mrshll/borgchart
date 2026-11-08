@@ -113,10 +113,17 @@ impl Bus {
             ));
         }
         check_route(&self.meta, actor, to).map_err(|e| {
-            e.replace(
-                "brg create <instance>/<role>",
-                &format!("brg create {}/{to}", self.instance),
-            )
+            let mut report = crate::diag::Report::default();
+            if crate::team::load(&self.record.team_dir, &mut report)
+                .is_some_and(|team| team.roles.contains_key(to))
+            {
+                e.replace(
+                    "brg create <instance>/<role>",
+                    &format!("brg create {}/{to}", self.instance),
+                )
+            } else {
+                e
+            }
         })
     }
 

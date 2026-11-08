@@ -83,13 +83,13 @@ fn cross_check(v: &Validated, report: &mut Report) {
     let config_file = config_file.as_deref();
 
     if v.team.roles.is_empty() {
-        report.warning(team_file, "the team has no members");
+        report.warning(team_file, "the team has no roles");
     }
     for name in v.team.plugins.keys() {
         if v.team.roles.contains_key(name) {
             report.error(
                 team_file,
-                format!("`{name}` is both a member and a plugin; give them different names"),
+                format!("`{name}` is both a role and a plugin; give them different names"),
             );
         }
     }
@@ -130,7 +130,7 @@ fn cross_check(v: &Validated, report: &mut Report) {
 
     for (id, member) in &v.team.roles {
         let posture = v.posture(id);
-        let at = |msg: &str| format!("member `{id}`: {msg}");
+        let at = |msg: &str| format!("role `{id}`: {msg}");
 
         if member.untrusted_input && posture != Posture::Locked && !member.accept_risk {
             report.error(

@@ -69,7 +69,7 @@ roles:
             "team/beta.md",
             "---\nmodels: {codex: example-model low}\n---\nYou are beta.\n",
         );
-        env.write("team/gamma.md", "---\n{}\n---\nYou are gamma.\n");
+        env.write("team/gamma.md", "---\n---\nYou are gamma.\n");
         env.script(
             "team/plugins/pager/pager",
             "#!/bin/sh\necho \"pager $* member=$BORGCHART_MEMBER parent=${BORGCHART_PARENT:-} token_len=${#PAGER_TOKEN}\" >> \"$BORGCHART_STATE_DIR/calls.log\"\necho ok\n",

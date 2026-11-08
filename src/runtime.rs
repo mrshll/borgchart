@@ -1137,7 +1137,9 @@ pub fn header(inst: &Instance) -> String {
 }
 
 /// What `status` and a start show for a role with no member yet.
-pub const NOT_CREATED: &str = "not created (start: false)";
+fn not_created(start: bool) -> String {
+    format!("not created (start: {start})")
+}
 
 /// One node per member of the instance (each under its parent role's
 /// member), and one per role with no member yet. `outcome` gives a member's
@@ -1163,7 +1165,7 @@ fn member_nodes(
             nodes.push(tree::Node {
                 id: role_name.clone(),
                 parent: parent_of(role),
-                cols: vec![NOT_CREATED.into()],
+                cols: vec![not_created(role.start)],
             });
         }
         for id in ids {
@@ -1704,9 +1706,10 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
         Ok(work) if work.items.is_empty() || force => {}
         Ok(work) => {
             return Err(format!(
-                "member `{}` holds {} unread messages; settle them, or delete it anyway with --force:\n  {}",
+                "member `{}` holds {} unread message{}; settle them, or delete it anyway with --force:\n  {}",
                 inst.at(&id),
                 work.items.len(),
+                if work.items.len() == 1 { "" } else { "s" },
                 work.items.join("\n  ")
             ));
         }
@@ -2349,7 +2352,7 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
                     Posture::Vendor => "vendor".into(),
                     Posture::Locked => "locked".into(),
                 }),
-                state: NOT_CREATED.into(),
+                state: not_created(member.start),
                 rule: None,
                 detail: None,
                 vendor_version: None,
@@ -2564,11 +2567,11 @@ fn pending(dir: &Path) -> Option<String> {
 /// state and details, then the plugin processes.
 /// The columns `status` and `status -i` show after a row's name: a
 /// member's vendor and model, state and details; a role with no member
-/// yet, `not created (start: false)`; a plugin's state and detail.
+/// yet, `not created (start: <setting>)`; a plugin's state and detail.
 pub fn status_cells(r: &StatusRow) -> Vec<String> {
     match r.kind {
         "member" => {}
-        "role" => return vec![NOT_CREATED.into()],
+        "role" => return vec![r.state.clone()],
         _ => return vec![r.state.clone(), r.detail.clone().unwrap_or_default()],
     }
     let mut detail = Vec::new();
