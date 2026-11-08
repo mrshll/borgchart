@@ -145,7 +145,14 @@ fn target(inst: &Instance, name: &str) -> Target {
 /// `name` must be one of the instance's members. A role's name is refused,
 /// listing the role's members.
 pub fn member(inst: &Instance, name: &str) -> Result<String, String> {
-    if inst.record.members.contains_key(name) {
+    if let Some(issued) = inst.record.members.get(name) {
+        if issued.deleted {
+            return Err(format!(
+                "member `{}` was deleted; create a new member with `brg create {}`",
+                inst.at(name),
+                inst.at(&issued.role)
+            ));
+        }
         return Ok(name.to_string());
     }
     let of_role = inst.record.members_of(name);
@@ -159,7 +166,16 @@ pub fn member(inst: &Instance, name: &str) -> Result<String, String> {
                 .join(", ")
         ));
     }
-    let all: Vec<&String> = inst.record.members.keys().collect();
+    let mut report = crate::diag::Report::default();
+    if crate::team::load(&inst.record.team_dir, &mut report)
+        .is_some_and(|team| team.roles.contains_key(name))
+    {
+        return Err(format!(
+            "role `{name}` has no member; create one with `brg create {}`",
+            inst.at(name)
+        ));
+    }
+    let all: Vec<&String> = inst.record.kept_members().map(|(id, _)| id).collect();
     Err(format!(
         "no member `{name}` in instance `{}`; {}",
         inst.id,
@@ -179,7 +195,11 @@ pub fn member(inst: &Instance, name: &str) -> Result<String, String> {
 
 /// The members of the instance, for messages: `a, b` or `none`.
 pub fn members_list(inst: &Instance) -> String {
-    let all: Vec<&str> = inst.record.members.keys().map(|m| m.as_str()).collect();
+    let all: Vec<&str> = inst
+        .record
+        .kept_members()
+        .map(|(id, _)| id.as_str())
+        .collect();
     if all.is_empty() {
         "none".into()
     } else {

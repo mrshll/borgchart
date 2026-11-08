@@ -79,7 +79,7 @@ fn list(vendor: Vendor, cwd: &Path) -> Result<BTreeSet<String>, String> {
 
 pub fn probe(v: &Validated, report: &mut Report) {
     let team_file = v.team.dir.join(crate::team::TEAM_FILE);
-    for (id, member) in &v.team.members {
+    for (id, member) in &v.team.roles {
         if member.connectors.is_empty() {
             continue;
         }

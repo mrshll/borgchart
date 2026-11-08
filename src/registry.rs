@@ -148,16 +148,23 @@ pub struct InstanceRecord {
 #[serde(deny_unknown_fields)]
 pub struct IssuedMember {
     pub role: String,
+    /// Deleted members reserve their suffix but have no live state.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub deleted: bool,
     /// The working folder its latest start resolved (symlinks resolved).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<PathBuf>,
 }
 
 impl InstanceRecord {
+    /// Members still kept in this instance, running or stopped.
+    pub fn kept_members(&self) -> impl Iterator<Item = (&String, &IssuedMember)> {
+        self.members.iter().filter(|(_, m)| !m.deleted)
+    }
+
     /// The members of `role`, by ID.
     pub fn members_of(&self, role: &str) -> Vec<String> {
-        self.members
-            .iter()
+        self.kept_members()
             .filter(|(_, m)| m.role == role)
             .map(|(id, _)| id.clone())
             .collect()
@@ -165,22 +172,32 @@ impl InstanceRecord {
 
     /// The role a member fills.
     pub fn role_of(&self, member: &str) -> Option<&str> {
-        self.members.get(member).map(|m| m.role.as_str())
+        self.members
+            .get(member)
+            .filter(|m| !m.deleted)
+            .map(|m| m.role.as_str())
     }
 
     /// Issue a new member of `role`: `<role>-<suffix>`, never one this
     /// instance issued before.
-    pub fn issue_member(&mut self, role: &str) -> Result<String, String> {
+    pub fn issue_member(
+        &mut self,
+        role: &str,
+        is_role: impl Fn(&str) -> bool,
+    ) -> Result<String, String> {
         let suffix = new_suffix(|s| {
-            self.members
-                .keys()
-                .any(|id| split_id(id).is_some_and(|(_, t)| t == s))
+            is_role(&format!("{role}-{s}"))
+                || self
+                    .members
+                    .keys()
+                    .any(|id| split_id(id).is_some_and(|(_, t)| t == s))
         })?;
         let id = format!("{role}-{suffix}");
         self.members.insert(
             id.clone(),
             IssuedMember {
                 role: role.to_string(),
+                deleted: false,
                 cwd: None,
             },
         );
@@ -336,6 +353,36 @@ mod tests {
     }
 
     #[test]
+    fn hyphenated_roles_split_from_the_right() {
+        assert_eq!(split_id("code-review-k3f9"), Some(("code-review", "k3f9")));
+        assert_eq!(split_id("code-review-k3f0"), None);
+    }
+
+    #[test]
+    fn member_suffix_skips_role_names() {
+        let mut record = InstanceRecord {
+            schema: SCHEMA,
+            id: "sample-2222".into(),
+            team: "sample".into(),
+            team_dir: "/team".into(),
+            folder: "/work".into(),
+            created_at: "2026-11-08T00:00:00Z".into(),
+            members: BTreeMap::new(),
+            running_at_stop: None,
+        };
+        // The first candidate is a declared role. It must be skipped even
+        // though no issued member has that suffix yet.
+        let role = std::cell::OnceCell::new();
+        let member = record
+            .issue_member("code-review", |candidate| {
+                role.get_or_init(|| candidate.to_string()) == candidate
+            })
+            .unwrap();
+        assert_ne!(&member, role.get().unwrap());
+        assert_eq!(split_id(&member).unwrap().0, "code-review");
+    }
+
+    #[test]
     fn collisions_are_retried() {
         let first = new_suffix(|_| false).unwrap();
         let next = new_suffix(|s| s == first).unwrap();
@@ -354,7 +401,7 @@ mod tests {
             members: BTreeMap::new(),
             running_at_stop: None,
         };
-        let a = r.issue_member("my-role").unwrap();
+        let a = r.issue_member("my-role", |_| false).unwrap();
         let (role, suffix) = split_id(&a).unwrap();
         assert_eq!(role, "my-role");
         assert!(is_suffix(suffix));

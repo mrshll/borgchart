@@ -21,7 +21,7 @@ impl Validated {
     /// The posture a role runs with.
     pub fn posture(&self, role: &str) -> Posture {
         self.team
-            .members
+            .roles
             .get(role)
             .map(|m| m.posture)
             .unwrap_or(Posture::Vendor)
@@ -82,18 +82,18 @@ fn cross_check(v: &Validated, report: &mut Report) {
     let config_file = v.config.file.clone();
     let config_file = config_file.as_deref();
 
-    if v.team.members.is_empty() {
+    if v.team.roles.is_empty() {
         report.warning(team_file, "the team has no members");
     }
     for name in v.team.plugins.keys() {
-        if v.team.members.contains_key(name) {
+        if v.team.roles.contains_key(name) {
             report.error(
                 team_file,
                 format!("`{name}` is both a member and a plugin; give them different names"),
             );
         }
     }
-    for (id, member) in &v.team.members {
+    for (id, member) in &v.team.roles {
         if member.vendor == Vendor::Codex
             && v.posture(id) == Posture::Locked
             && v.config.auto_trust == Some(true)
@@ -128,7 +128,7 @@ fn cross_check(v: &Validated, report: &mut Report) {
         .filter_map(|p| p.delivers_to.as_deref())
         .collect();
 
-    for (id, member) in &v.team.members {
+    for (id, member) in &v.team.roles {
         let posture = v.posture(id);
         let at = |msg: &str| format!("member `{id}`: {msg}");
 
@@ -190,7 +190,7 @@ fn cross_check(v: &Validated, report: &mut Report) {
             }
             let parent_of_target = v
                 .team
-                .members
+                .roles
                 .values()
                 .any(|m| targets.contains(m.id.as_str()) && m.parent.as_deref() == Some(id));
             if parent_of_target {
@@ -220,7 +220,7 @@ fn cross_check(v: &Validated, report: &mut Report) {
     for plugin in v.team.plugins.values() {
         let granted = v
             .team
-            .members
+            .roles
             .values()
             .any(|m| m.grants.contains_key(&plugin.name));
         if !granted || plugin.location.is_none() {
@@ -244,7 +244,7 @@ fn cross_check(v: &Validated, report: &mut Report) {
     for plugin in v.team.plugins.values() {
         let used = plugin.process.is_some()
             || v.team
-                .members
+                .roles
                 .values()
                 .any(|m| m.grants.contains_key(&plugin.name));
         if !used {
@@ -265,7 +265,7 @@ fn cross_check(v: &Validated, report: &mut Report) {
 }
 
 fn check_bus(v: &Validated, bus: &team::BusConfig, team_file: Option<&Path>, report: &mut Report) {
-    for id in v.team.members.keys() {
+    for id in v.team.roles.keys() {
         if v.posture(id) == Posture::Locked {
             report.error(
                 team_file,

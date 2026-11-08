@@ -12,6 +12,11 @@ pub fn is_valid_id(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
 }
 
+/// A role must not also read as a member of another declared role.
+pub fn conflicts_with_member_id(name: &str, is_role: impl Fn(&str) -> bool) -> bool {
+    crate::registry::split_id(name).is_some_and(|(base, _)| is_role(base))
+}
+
 /// Member and instance IDs: like [`is_valid_id`], up to 40 characters, so
 /// a 32-character role or team name with its `-<suffix>` fits.
 pub fn is_valid_member_id(name: &str) -> bool {
@@ -45,6 +50,22 @@ pub fn is_plain_word(word: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn member_shaped_role_names_are_rejected() {
+        let is_role = |name: &str| ["code-review", "lead"].contains(&name);
+        assert!(conflicts_with_member_id("code-review-k3f9", is_role));
+        assert!(conflicts_with_member_id("lead-2222", is_role));
+        for name in [
+            "code-review",
+            "other-k3f9",
+            "lead-k3f0",
+            "lead-k3f",
+            "lead-k3f99",
+        ] {
+            assert!(!conflicts_with_member_id(name, is_role), "{name}");
+        }
+    }
 
     #[test]
     fn ids() {

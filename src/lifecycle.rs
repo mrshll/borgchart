@@ -117,7 +117,7 @@ pub fn lock_state(state: &StateDir) -> Result<File, String> {
 }
 
 /// The publication lock, taken after the instance's lifecycle lock.
-fn lock_bus(state: &StateDir) -> Result<File, String> {
+pub(crate) fn lock_bus(state: &StateDir) -> Result<File, String> {
     lock_file(&StorePaths::new(state).bus_lock())
         .map_err(|e| format!("cannot lock the team's messages: {e}"))
 }
@@ -247,11 +247,26 @@ pub fn open_work(state: &StateDir) -> Result<OpenWork, String> {
             bus.instance
         ));
     }
+    Ok(unacked_work(&bus, &snap, None))
+}
+
+/// Open messages for kept recipients, optionally restricted to one member.
+/// The snapshot's caller holds the publication lock while deleting a member.
+pub(crate) fn unacked_work(
+    bus: &crate::bus::store::Bus,
+    snap: &crate::bus::store::Snapshot,
+    only: Option<&str>,
+) -> OpenWork {
     let mut work = OpenWork::default();
     for r in snap.records.values().filter(|r| !snap.is_acked(r.seq)) {
+        if only.is_some_and(|member| r.to != member)
+            || bus.record.members.get(&r.to).is_some_and(|m| m.deleted)
+        {
+            continue;
+        }
         work.items.push(format!("unread {} to {}", r.id, r.to));
     }
-    Ok(work)
+    work
 }
 
 // --- incarnations ---

@@ -11,7 +11,7 @@
 default: claude
 bus: {}
 
-members:
+roles:
   lead:
     prompt: orchestrator.md
     vendor: claude      # a Codex lead needs a wake mechanism brg doesn't have yet

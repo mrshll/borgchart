@@ -1,5 +1,4 @@
 ---
-role: reviewer
 models:
   claude: opus high
   codex: gpt-6-astra high

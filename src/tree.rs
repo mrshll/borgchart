@@ -11,7 +11,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::team::Member;
+use crate::team::Role;
 
 /// One member's line: its ID, parent and the columns after its name.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,7 +23,7 @@ pub struct Node {
 
 /// `"<vendor> <model>"`, as declared (`default` when the member names no
 /// model).
-pub fn vendor_model(member: &Member) -> String {
+pub fn vendor_model(member: &Role) -> String {
     let model = match &member.model {
         Some(m) => match &m.effort {
             Some(e) => format!("{} {e}", m.name),

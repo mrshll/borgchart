@@ -59,12 +59,12 @@ enum Command {
         /// `<instance>`, or `<instance>/<member>`.
         target: String,
     },
-    /// Remove a stopped instance: its messages, notes, state and registration.
+    /// Remove a stopped instance, or a stopped member (its ID stays issued).
     Delete {
-        /// The instance.
-        instance: String,
-        /// Delete even though it holds open work (or its messages can't be
-        /// read). Never deletes a running instance.
+        /// `<instance>`, or `<instance>/<member>`. A bare role is refused.
+        target: String,
+        /// Delete even with unread messages (or unreadable message storage).
+        /// Running members and unknown liveness are always refused.
         #[arg(long)]
         force: bool,
     },
@@ -300,9 +300,14 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Command::Delete { instance, force } => {
-            let inst = or_fail!(address::instance(&instance));
-            for m in or_fail!(runtime::delete(inst, force)) {
+        Command::Delete { target, force } => {
+            let result = match or_fail!(address::resolve(&target)) {
+                (inst, Target::Instance) => runtime::delete(inst, force),
+                (inst, Target::Member(m) | Target::Role(m)) => {
+                    runtime::delete_member(inst, &m, force)
+                }
+            };
+            for m in or_fail!(result) {
                 println!("{m}");
             }
             ExitCode::SUCCESS
@@ -513,8 +518,8 @@ fn run_validate(team: &str, json: bool, probe: bool) -> ExitCode {
         if let Some(v) = &validated {
             let warnings = report.warnings().count();
             println!(
-                "ok: {} member(s), {} plugin(s){}",
-                v.team.members.len(),
+                "ok: {} role(s), {} plugin(s){}",
+                v.team.roles.len(),
                 v.team.plugins.len(),
                 if warnings > 0 {
                     format!(", {warnings} warning(s)")

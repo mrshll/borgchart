@@ -257,7 +257,7 @@ fn api_keys(
     }
     let mut missing = Vec::new();
     for id in ids {
-        let Some(role) = record.role_of(id).and_then(|r| v.team.members.get(r)) else {
+        let Some(role) = record.role_of(id).and_then(|r| v.team.roles.get(r)) else {
             continue;
         };
         let key = key_name(role.vendor);
@@ -349,10 +349,10 @@ fn start_members(
     let restart = state::restart_hint(&inst.id);
     let snapshot = v.config_snapshot();
     let bus = v.team.bus.clone();
-    let role_of = |id: &str| -> Result<&crate::team::Member, String> {
+    let role_of = |id: &str| -> Result<&crate::team::Role, String> {
         record
             .role_of(id)
-            .and_then(|r| v.team.members.get(r))
+            .and_then(|r| v.team.roles.get(r))
             .ok_or_else(|| format!("`{id}`'s role is not in the team any more"))
     };
     let mut cwds: BTreeMap<String, PathBuf> = BTreeMap::new();
@@ -482,16 +482,18 @@ fn start_members(
         ));
     }
 
-    let member_meta = |id: &str, base: &BTreeMap<String, String>| -> Option<MemberMeta> {
-        let role = record.role_of(id)?;
-        let member = v.team.members.get(role)?;
-        let parent = member.parent.as_ref().map(|p| {
+    let parent_member = |member: &crate::team::Role| {
+        member.parent.as_ref().map(|p| {
             record
                 .members_of(p)
                 .into_iter()
                 .next()
                 .unwrap_or_else(|| p.clone())
-        });
+        })
+    };
+    let member_meta = |id: &str, base: &BTreeMap<String, String>| -> Option<MemberMeta> {
+        let role = record.role_of(id)?;
+        let member = v.team.roles.get(role)?;
         Some(MemberMeta {
             role: role.to_string(),
             vendor: member.vendor.as_str().into(),
@@ -499,7 +501,7 @@ fn start_members(
                 Posture::Vendor => "vendor".into(),
                 Posture::Locked => "locked".into(),
             },
-            parent,
+            parent: parent_member(member),
             vendor_version: vendor_version(member.vendor, base),
             started: Some(false),
         })
@@ -545,12 +547,21 @@ fn start_members(
     // Every member of the instance is known to the start record, including
     // ones created since the instance started.
     let mut added = fresh;
-    for id in record.members.keys() {
+    for (id, _) in record.kept_members() {
         if !meta.members.contains_key(id)
             && let Some(m) = member_meta(id, &meta.base_env)
         {
             meta.members.insert(id.clone(), m);
             added = true;
+        }
+        if let Some(entry) = meta.members.get_mut(id)
+            && let Some(role) = record.role_of(id).and_then(|r| v.team.roles.get(r))
+        {
+            let parent = parent_member(role);
+            if entry.parent != parent {
+                entry.parent = parent;
+                added = true;
+            }
         }
         state::open_lock(&state.lock_file(id))
             .map_err(|e| format!("cannot create send lock: {e}"))?;
@@ -1126,7 +1137,7 @@ pub fn header(inst: &Instance) -> String {
 }
 
 /// What `status` and a start show for a role with no member yet.
-pub const ON_DEMAND: &str = "on demand (none created)";
+pub const NOT_CREATED: &str = "not created (start: false)";
 
 /// One node per member of the instance (each under its parent role's
 /// member), and one per role with no member yet. `outcome` gives a member's
@@ -1136,7 +1147,7 @@ fn member_nodes(
     v: &Validated,
     outcome: impl Fn(&str) -> String,
 ) -> Vec<tree::Node> {
-    let parent_of = |role: &crate::team::Member| {
+    let parent_of = |role: &crate::team::Role| {
         role.parent.as_ref().map(|p| {
             inst.record
                 .members_of(p)
@@ -1146,13 +1157,13 @@ fn member_nodes(
         })
     };
     let mut nodes = Vec::new();
-    for (role_name, role) in &v.team.members {
+    for (role_name, role) in &v.team.roles {
         let ids = inst.record.members_of(role_name);
         if ids.is_empty() {
             nodes.push(tree::Node {
                 id: role_name.clone(),
                 parent: parent_of(role),
-                cols: vec![ON_DEMAND.into()],
+                cols: vec![NOT_CREATED.into()],
             });
         }
         for id in ids {
@@ -1209,11 +1220,7 @@ fn shared_folders(state: &StateDir) -> Result<Vec<PathBuf>, String> {
 
 /// What `auto_trust: true` will load in a `vendor` member's folder: its
 /// project settings, which brg's trust lets the vendor read.
-fn project_settings_note(
-    v: &Validated,
-    member: &crate::team::Member,
-    cwd: &Path,
-) -> Option<String> {
+fn project_settings_note(v: &Validated, member: &crate::team::Role, cwd: &Path) -> Option<String> {
     if v.config.auto_trust != Some(true) || v.posture(&member.id) != Posture::Vendor {
         return None;
     }
@@ -1303,7 +1310,7 @@ fn validate_printing(dir: &Path) -> Result<Validated, String> {
 /// Checks a start would fail on, made before anything is registered: the
 /// secrets the plugins need (unless the instance runs, and so has its
 /// values already) and, with `auth: api_key`, the starting roles' keys.
-fn precheck(v: &Validated, roles: &[&crate::team::Member], secrets: bool) -> Result<(), String> {
+fn precheck(v: &Validated, roles: &[&crate::team::Role], secrets: bool) -> Result<(), String> {
     let (_, missing) = plugin_values(v);
     if secrets && !missing.is_empty() {
         return Err(format!(
@@ -1356,7 +1363,7 @@ pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
             )
         })?;
     state::check_state_home()?;
-    let starting: Vec<&crate::team::Member> = v.team.members.values().filter(|m| m.start).collect();
+    let starting: Vec<&crate::team::Role> = v.team.roles.values().filter(|m| m.start).collect();
     check_tmux_tmpdir()?;
     precheck(&v, &starting, true)?;
     check_state_overlap(&folder, &state::state_home())
@@ -1370,7 +1377,7 @@ pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
     let (state, mut record) =
         registry::create(&lock, &v.team.name, &v.team.dir, &folder, &utc_now())?;
     for role in &starting {
-        record.issue_member(&role.id)?;
+        record.issue_member(&role.id, |id| v.team.roles.contains_key(id))?;
     }
     lock.save_instance(&state, &record)?;
     let ids: Vec<String> = record.members.keys().cloned().collect();
@@ -1430,16 +1437,11 @@ fn rollback_pause() {}
 /// `brg create <instance>/<role>`: a new member of the role, started.
 pub fn create_member(mut inst: Instance, role: &str) -> Result<UpOutcome, String> {
     let v = validated(&inst)?;
-    let Some(member) = v.team.members.get(role) else {
+    let Some(member) = v.team.roles.get(role) else {
         return Err(format!(
             "instance `{}`'s team has no role `{role}`; its roles: {}",
             inst.id,
-            v.team
-                .members
-                .keys()
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", ")
+            v.team.roles.keys().cloned().collect::<Vec<_>>().join(", ")
         ));
     };
     precheck(&v, &[member], !is_running(&inst))?;
@@ -1451,7 +1453,9 @@ pub fn create_member(mut inst: Instance, role: &str) -> Result<UpOutcome, String
             inst.at(existing)
         ));
     }
-    let id = inst.record.issue_member(role)?;
+    let id = inst
+        .record
+        .issue_member(role, |id| v.team.roles.contains_key(id))?;
     lock.save_instance(&inst.state, &inst.record)?;
     start_members(lock, &inst, &v, vec![id], false)
 }
@@ -1512,10 +1516,13 @@ fn full_start_members(
     v: &Validated,
 ) -> Result<Vec<String>, String> {
     let mut ids = std::collections::BTreeSet::new();
-    for role in v.team.members.values().filter(|m| m.start) {
+    for role in v.team.roles.values().filter(|m| m.start) {
         let members = inst.record.members_of(&role.id);
         if members.is_empty() {
-            ids.insert(inst.record.issue_member(&role.id)?);
+            ids.insert(
+                inst.record
+                    .issue_member(&role.id, |id| v.team.roles.contains_key(id))?,
+            );
         }
         ids.extend(members);
     }
@@ -1536,7 +1543,7 @@ fn full_start_members(
         .filter(|id| {
             inst.record
                 .role_of(id)
-                .is_some_and(|r| v.team.members.contains_key(r))
+                .is_some_and(|r| v.team.roles.contains_key(r))
         })
         .collect())
 }
@@ -1582,6 +1589,9 @@ pub fn start(
     let v = validate_printing(&inst.record.team_dir)?;
     let lock = registry::lock()?;
     inst.reload()?;
+    if let Some(id) = &member {
+        address::member(&inst, id)?;
+    }
     match member {
         Some(id) => start_members(lock, &inst, &v, vec![id], false),
         None => {
@@ -1599,7 +1609,7 @@ pub fn liveness_of(inst: &Instance) -> BTreeMap<String, Liveness> {
     let meta = state::read_meta(state);
     let rows = meta.as_ref().map(|m| lifecycle::Server::of(m).panes());
     let mut out = BTreeMap::new();
-    for id in inst.record.members.keys() {
+    for (id, _) in inst.record.kept_members() {
         let by_window = match (&meta, &rows) {
             // Never started a window here.
             (None, _) => Liveness::Gone,
@@ -1631,6 +1641,116 @@ pub fn liveness_of(inst: &Instance) -> BTreeMap<String, Liveness> {
         out.insert(id.clone(), l);
     }
     out
+}
+
+/// `brg delete <instance>/<member>`: discard a stopped member's live state.
+/// Its issued ID and immutable messages stay as history. Registry, lifecycle
+/// and publication locks cover the unread check and removal from routing.
+pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<String>, String> {
+    let lock = registry::lock()?;
+    let _state_lock = lifecycle::lock_state(&inst.state)?;
+    inst.reload()?;
+    let id = address::member(&inst, name)?;
+    if tmux_for(&inst.state)
+        .window(&inst.state.session(), &id)
+        .is_some_and(|w| !w.dead)
+    {
+        return Err(format!(
+            "member `{}` is running; stop it first: brg stop {}",
+            inst.at(&id),
+            inst.at(&id)
+        ));
+    }
+    match liveness_of(&inst).get(&id) {
+        Some(Liveness::Gone) => {}
+        Some(Liveness::Alive) => {
+            return Err(format!(
+                "member `{}` is running; stop it first: brg stop {}",
+                inst.at(&id),
+                inst.at(&id)
+            ));
+        }
+        _ => {
+            return Err(format!(
+                "brg can't tell that member `{}` stopped, so it can't be deleted, even with --force; stop it again once its tmux server can be reached: brg stop {}",
+                inst.at(&id),
+                inst.at(&id)
+            ));
+        }
+    }
+    // No bus means no publication lock to create; a stray lock would make
+    // an otherwise empty messages folder look damaged on its next start.
+    let no_bus = crate::bus::store::open(&inst.state)
+        .is_err_and(|f| f.code == crate::bus::outcome::Code::NotConfigured);
+    let _bus_lock = if no_bus {
+        None
+    } else {
+        Some(lifecycle::lock_bus(&inst.state)?)
+    };
+    let work = (|| {
+        use crate::bus::{outcome::Code, store};
+        let bus = match store::open(&inst.state) {
+            Ok(bus) => bus,
+            Err(f) if f.code == Code::NotConfigured => return Ok(lifecycle::OpenWork::default()),
+            Err(f) => return Err(f.message),
+        };
+        let snap = store::scan(&bus.paths);
+        if !snap.healthy() {
+            return Err("messages are incomplete".into());
+        }
+        Ok(lifecycle::unacked_work(&bus, &snap, Some(&id)))
+    })();
+    match work {
+        Ok(work) if work.items.is_empty() || force => {}
+        Ok(work) => {
+            return Err(format!(
+                "member `{}` holds {} unread messages; settle them, or delete it anyway with --force:\n  {}",
+                inst.at(&id),
+                work.items.len(),
+                work.items.join("\n  ")
+            ));
+        }
+        Err(_) if force => {}
+        Err(e) => {
+            return Err(format!(
+                "member `{}`'s messages can't be read ({e}), so its contents can't be inspected; delete it anyway with --force",
+                inst.at(&id)
+            ));
+        }
+    }
+    let issued = inst.record.members.get_mut(&id).expect("resolved member");
+    issued.deleted = true;
+    issued.cwd = None;
+    if let Some(running) = &mut inst.record.running_at_stop {
+        running.remove(&id);
+    }
+    // Save the tombstone first: even a partial cleanup cannot restore routing.
+    lock.save_instance(&inst.state, &inst.record)?;
+    if let Some(mut meta) = state::read_meta(&inst.state) {
+        meta.members.remove(&id);
+        write_private(
+            &inst.state.meta_file(),
+            &serde_json::to_vec_pretty(&meta).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| format!("cannot write state: {e}"))?;
+    }
+    for dir in [inst.state.member_dir(&id), inst.state.member_tmp(&id)] {
+        match std::fs::remove_dir_all(dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(format!(
+                    "member `{id}` was deleted, but its state could not be removed: {e}"
+                ));
+            }
+        }
+    }
+    let _ = std::fs::remove_file(inst.state.exec_file(&id));
+    let _ = std::fs::remove_file(inst.state.lock_file(&id));
+    Ok(vec![format!(
+        "deleted {}; its ID stays issued",
+        inst.at(&id)
+    )])
 }
 
 /// `brg delete <instance> [--force]`: remove a stopped instance's state
@@ -2088,6 +2208,9 @@ pub struct StatusRow {
     pub team: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub member: Option<String>,
+    /// The current start's incarnation ID, retained after a stop.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
     pub vendor: Option<String>,
@@ -2207,13 +2330,14 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
         let id = &nodes[i].id;
         let Some(role) = inst.record.role_of(id) else {
             // A role with no member yet.
-            let member = &v.team.members[id];
+            let member = &v.team.roles[id];
             rows.push(StatusRow {
                 name: id.clone(),
                 kind: "role",
                 instance: inst.id.clone(),
                 team: inst.record.team.clone(),
                 member: None,
+                start_id: None,
                 role: Some(id.clone()),
                 vendor: Some(member.vendor.as_str().into()),
                 model: member.model.as_ref().map(|m| match &m.effort {
@@ -2225,7 +2349,7 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
                     Posture::Vendor => "vendor".into(),
                     Posture::Locked => "locked".into(),
                 }),
-                state: ON_DEMAND.into(),
+                state: NOT_CREATED.into(),
                 rule: None,
                 detail: None,
                 vendor_version: None,
@@ -2237,7 +2361,7 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
             });
             continue;
         };
-        let member = &v.team.members[role];
+        let member = &v.team.roles[role];
         let posture = v.posture(role);
         // A current start record survives full stops and configuration changes.
         let incarnation = lifecycle::load_incarnation(state, id);
@@ -2254,6 +2378,11 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
             instance: inst.id.clone(),
             team: inst.record.team.clone(),
             member: Some(id.clone()),
+            start_id: incarnation
+                .as_ref()
+                .ok()
+                .and_then(|i| i.as_ref())
+                .map(|i| i.incarnation.clone()),
             role: Some(role.to_string()),
             vendor: Some(member.vendor.as_str().into()),
             model: member.model.as_ref().map(|m| match &m.effort {
@@ -2342,6 +2471,7 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
             instance: inst.id.clone(),
             team: inst.record.team.clone(),
             member: None,
+            start_id: None,
             role: None,
             vendor: None,
             model: None,
@@ -2434,11 +2564,11 @@ fn pending(dir: &Path) -> Option<String> {
 /// state and details, then the plugin processes.
 /// The columns `status` and `status -i` show after a row's name: a
 /// member's vendor and model, state and details; a role with no member
-/// yet, `on demand (none created)`; a plugin's state and detail.
+/// yet, `not created (start: false)`; a plugin's state and detail.
 pub fn status_cells(r: &StatusRow) -> Vec<String> {
     match r.kind {
         "member" => {}
-        "role" => return vec![ON_DEMAND.into()],
+        "role" => return vec![NOT_CREATED.into()],
         _ => return vec![r.state.clone(), r.detail.clone().unwrap_or_default()],
     }
     let mut detail = Vec::new();

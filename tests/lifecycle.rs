@@ -34,7 +34,7 @@ plugins:
     env: [PAGER_TOKEN, {PAGER_ROOM: R0000EXAMPLE}]
     actions:
       read: pager read <id>
-members:
+roles:
   lead:
     prompt: lead.md
     plugins: {pager: [read]}
@@ -45,9 +45,8 @@ members:
     start: false
 "#;
 
-const LEAD: &str = "---\nrole: lead\nmodels:\n  claude: opus high\n---\nYou are the lead.\n";
-const HELPER: &str =
-    "---\nrole: helper\nmodels:\n  codex: example-model\n---\nYou are the helper.\n";
+const LEAD: &str = "---\nmodels:\n  claude: opus high\n---\nYou are the lead.\n";
+const HELPER: &str = "---\nmodels:\n  codex: example-model\n---\nYou are the helper.\n";
 
 impl Env {
     /// A two-member team in a folder called `oncall`, its instance working
@@ -469,8 +468,8 @@ fn up_prints_the_team_as_a_tree() {
     assert_eq!(
         env.shown(&stdout(&out)),
         "oncall\n\
-         └─ lead      claude opus high          started\n   \
-         └─ helper on demand (none created)\n"
+         └─ lead      claude opus high            started\n   \
+         └─ helper not created (start: false)\n"
     );
     let again = env.ok(&["start"]);
     assert_eq!(
@@ -494,8 +493,8 @@ fn status_prints_the_same_tree_with_live_states() {
     assert_eq!(
         env.shown(&stdout(&out)),
         "oncall\n\
-         └─ lead      claude opus high          idle\n   \
-         └─ helper on demand (none created)\n"
+         └─ lead      claude opus high            idle\n   \
+         └─ helper not created (start: false)\n"
     );
     let rows = env.rows();
     let names: Vec<&str> = rows.iter().map(|r| r["name"].as_str().unwrap()).collect();
@@ -510,7 +509,7 @@ fn status_prints_the_same_tree_with_live_states() {
     assert_eq!(rows[0]["model"], "opus high");
     assert_eq!(rows[0]["liveness"], "alive");
     assert!(rows[1].get("liveness").is_none(), "{}", rows[1]);
-    assert_eq!(rows[1]["state"], "on demand (none created)");
+    assert_eq!(rows[1]["state"], "not created (start: false)");
     assert!(rows[1].get("expected_running").is_none(), "{}", rows[1]);
 }
 
@@ -1124,7 +1123,10 @@ fn down_on_a_team_that_never_started_says_not_running() {
         );
         // A role with no member yet isn't a member.
         let err = both(&env.brg(&["stop", "lead"]));
-        assert!(err.contains("no member `lead`"), "bus: {bus}: {err}");
+        assert!(
+            err.contains(&format!("brg create {}/lead", env.inst())),
+            "bus: {bus}: {err}"
+        );
     }
 }
 

@@ -4,7 +4,7 @@
 # worktree, and deletes it after; see ../dev-team/README.md. No bus:
 # designers exchange files with the lead (the brief, questions, answers,
 # proposals) in the instance's notes folder.
-members:
+roles:
   designer-claude:
     prompt: designer.md
     vendor: claude

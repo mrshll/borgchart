@@ -45,8 +45,7 @@ fn valid_team_loads() {
     let (report, validated) = f.run();
     assert!(!report.has_errors(), "{}", errors(&report));
     let v = validated.unwrap();
-    let triager = &v.team.members["triager"];
-    assert_eq!(triager.role, "triager");
+    let triager = &v.team.roles["triager"];
     assert_eq!(triager.vendor, Vendor::Claude);
     assert_eq!(triager.model.as_ref().unwrap().name, "haiku");
     assert_eq!(triager.posture, Posture::Locked);
@@ -56,7 +55,7 @@ fn valid_team_loads() {
         triager.grants["slackbot"],
         Grant::Actions(vec!["read".into(), "escalate".into()])
     );
-    let lead = &v.team.members["lead"];
+    let lead = &v.team.roles["lead"];
     assert_eq!(lead.model.as_ref().unwrap().effort.as_deref(), Some("high"));
     assert_eq!(
         v.team.plugins["slackbot"].actions["escalate"].prefix,
@@ -111,14 +110,14 @@ fn unknown_fields_are_errors() {
 #[test]
 fn unknown_frontmatter_fields_are_errors() {
     let f = Fixture::new();
-    f.edit("lead.md", "role: lead\n", "role: lead\nmood: calm\n");
+    f.edit("lead.md", "models:", "mood: calm\nmodels:");
     expect_error(&f, "mood");
 }
 
 #[test]
 fn frontmatter_must_close() {
     let f = Fixture::new();
-    f.write("lead.md", "---\nrole: lead\nTriage.\n");
+    f.write("lead.md", "---\nTriage.\n");
     expect_error(&f, "not closed");
 }
 
@@ -127,11 +126,11 @@ fn frontmatter_bom_and_crlf_are_accepted() {
     let f = Fixture::new();
     f.write(
         "lead.md",
-        "\u{feff}---\r\nrole: lead\r\nmodels: {claude: opus}\r\n---\r\nTriage.\r\n---\r\nStill body.\r\n",
+        "\u{feff}---\r\nmodels: {claude: opus}\r\n---\r\nTriage.\r\n---\r\nStill body.\r\n",
     );
     let (report, validated) = f.run();
     assert!(!report.has_errors(), "{}", errors(&report));
-    let lead = &validated.unwrap().team.members["lead"];
+    let lead = &validated.unwrap().team.roles["lead"];
     assert!(lead.instruction.contains("Still body."));
 }
 
@@ -157,7 +156,7 @@ fn prompt_symlink_outside_team_is_refused() {
     let f = Fixture::new();
     let outside = tempfile::tempdir().unwrap();
     let target = outside.path().join("lead.md");
-    fs::write(&target, "---\nrole: lead\n---\nx\n").unwrap();
+    fs::write(&target, "---\n{}\n---\nx\n").unwrap();
     fs::remove_file(f.path("lead.md")).unwrap();
     std::os::unix::fs::symlink(&target, f.path("lead.md")).unwrap();
     expect_error(&f, "outside");
@@ -191,7 +190,7 @@ fn include_amplification_is_capped() {
     f.write("includes/shared.md", &"x".repeat(600 * 1024));
     f.write(
         "triager.md",
-        "---\nrole: triager\n---\n{{includes/shared}}\n{{includes/shared}}\n",
+        "---\n{}\n---\n{{includes/shared}}\n{{includes/shared}}\n",
     );
     expect_error(&f, "once includes are expanded");
 }
@@ -211,7 +210,7 @@ fn parent_cycles_are_errors() {
 fn unknown_parent_is_an_error() {
     let f = Fixture::new();
     f.edit("team.yaml", "parent: lead", "parent: boss");
-    expect_error(&f, "parent `boss` is not a member");
+    expect_error(&f, "parent `boss` is not a role");
 }
 
 #[test]
@@ -301,10 +300,10 @@ fn missing_secret_names_warn() {
 }
 
 #[test]
-fn delivers_to_must_be_a_member() {
+fn delivers_to_must_be_a_role() {
     let f = Fixture::new();
     f.edit("team.yaml", "delivers_to: triager", "delivers_to: nobody");
-    expect_error(&f, "`delivers_to: nobody` is not a member");
+    expect_error(&f, "`delivers_to: nobody` is not a role");
 }
 
 #[test]
@@ -604,7 +603,7 @@ plugins:
     path: plugins/notify
     actions:
       alert: notify alert <id> <member> <reason> <pending>
-members:
+roles:
   lead:
     prompt: lead.md
   helper:
@@ -612,8 +611,8 @@ members:
     parent: lead
 "#,
     );
-    f.write("team/lead.md", "---\nrole: lead\n---\nLead.\n");
-    f.write("team/helper.md", "---\nrole: helper\n---\nHelp.\n");
+    f.write("team/lead.md", "---\n{}\n---\nLead.\n");
+    f.write("team/helper.md", "---\n{}\n---\nHelp.\n");
     f.exec("team/plugins/notify/notify");
     f
 }
@@ -767,8 +766,8 @@ fn a_role_cwd_must_stay_inside_the_folder() {
         let (report, validated) = f.run();
         assert_eq!(validated.is_some(), ok, "{cwd}: {}", errors(&report));
         if let Some(v) = validated {
-            assert_eq!(v.team.members["lead"].args, ["--x"]);
-            assert_eq!(v.team.members["lead"].cwd.as_deref(), Some(cwd));
+            assert_eq!(v.team.roles["lead"].args, ["--x"]);
+            assert_eq!(v.team.roles["lead"].cwd.as_deref(), Some(cwd));
         }
     }
 }

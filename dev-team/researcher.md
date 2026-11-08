@@ -1,5 +1,4 @@
 ---
-role: researcher
 models:
   claude: sonnet medium
   codex: gpt-6.1-terra medium

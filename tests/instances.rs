@@ -18,6 +18,179 @@ use std::time::Duration;
 use instance_env::*;
 use serde_json::{Value, json};
 
+#[test]
+fn deleted_members_cannot_restart_or_receive_work_and_ids_are_never_reused() {
+    let env = Env::new();
+    let inst = env.create("oncall", "work/a");
+    let lead = env.member(&inst, "lead");
+    let address = format!("{inst}/{lead}");
+    assert!(
+        env.fails(&["delete", &address, "--force"])
+            .contains("running")
+    );
+    let published = env.publish(&inst, &json!({"to": lead, "body": "Review the sample."}));
+    assert!(published.status.success(), "{}", both(&published));
+    let message: Value = serde_json::from_slice(&published.stdout).unwrap();
+    env.ok(&["create", &format!("{inst}/helper")]);
+    let child = env.member(&inst, "helper");
+    env.ok(&["stop", &inst]);
+    let refused = env.fails(&["delete", &address]);
+    assert!(refused.contains("1 unread"), "{refused}");
+    assert!(
+        refused.contains(message["id"].as_str().unwrap()),
+        "{refused}"
+    );
+    env.ok(&["delete", &address, "--force"]);
+    assert!(env.rows(&inst).iter().all(|r| r["member"] != lead));
+    assert!(!stdout(&env.ok(&["status", &inst])).contains(&lead));
+    assert!(env.fails(&["start", &address]).contains("deleted"));
+    let out = env.publish(&inst, &json!({"to": lead, "body": "Do not deliver."}));
+    assert!(!out.status.success(), "{}", both(&out));
+    assert!(both(&out).contains("deleted"), "{}", both(&out));
+    env.ok(&["start", &inst]);
+    let replacement = env.member(&inst, "lead");
+    assert_ne!(replacement, lead);
+    assert_eq!(env.row(&inst, "lead")["unread"], 0);
+    assert_eq!(env.row(&inst, "helper")["parent"], replacement);
+    env.wait_for("replacement idle", || env.state_of(&inst, "lead") == "idle");
+    env.ok(&[
+        "send",
+        &format!("{inst}/{replacement}"),
+        "hello",
+        "--from",
+        &child,
+    ]);
+    env.ok(&["stop", &format!("{inst}/{child}")]);
+    env.ok(&["delete", &format!("{inst}/{child}")]);
+
+    // Replaying the same suffix sequence must skip every deleted ID.
+    let seeded_create = || {
+        let out = env
+            .cmd(&["create", &format!("{inst}/helper")])
+            .env("BORGCHART_SUFFIX_SEED", "7")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", both(&out));
+        env.member(&inst, "helper")
+    };
+    let helper = seeded_create();
+    env.ok(&["stop", &format!("{inst}/{helper}")]);
+    let start_file = env.path(&format!("state/{inst}/members/{helper}/incarnation.json"));
+    let start = fs::read(&start_file).unwrap();
+    fs::write(&start_file, "unreadable start record").unwrap();
+    env.fails(&["delete", &format!("{inst}/{helper}"), "--force"]);
+    assert_eq!(
+        env.member(&inst, "helper"),
+        helper,
+        "unknown liveness must keep the member"
+    );
+    fs::write(&start_file, start).unwrap();
+    env.ok(&["delete", &format!("{inst}/{helper}")]);
+    let next = seeded_create();
+    assert_ne!(next, helper);
+    env.ok(&["stop", &inst]);
+    env.ok(&["delete", &inst]);
+
+    // A team without messages can delete a member without manufacturing a bus.
+    env.write("teams/oncall/team.yaml", &TEAM.replace("bus: {}\n", ""));
+    let inst = env.create("oncall", "work/a");
+    let lead = env.member(&inst, "lead");
+    env.ok(&["stop", &inst]);
+    env.ok(&["delete", &format!("{inst}/{lead}")]);
+    env.ok(&["start", &inst]);
+    assert_ne!(env.member(&inst, "lead"), lead);
+    env.ok(&["stop", &inst]);
+    env.ok(&["delete", &inst]);
+}
+
+#[test]
+fn role_addresses_never_choose_a_member_and_status_tracks_each_start() {
+    let env = Env::new();
+    env.write(
+        "teams/oncall/team.yaml",
+        &TEAM.replace("prompt: lead.md", "prompt: lead.md\n    start: false"),
+    );
+    let out = env.ok(&[
+        "create",
+        "oncall",
+        &env.path("work/a").display().to_string(),
+    ]);
+    let empty = stdout(&out).split_whitespace().next().unwrap().to_string();
+    assert!(env.rows(&empty).iter().all(|r| r["kind"] == "role"));
+    let tree = stdout(&env.ok(&["status", &empty]));
+    for role in ["lead", "helper", "scout"] {
+        assert!(
+            tree.lines()
+                .any(|line| line.contains(role) && line.contains("not created")),
+            "{tree}"
+        );
+    }
+    env.ok(&["delete", &empty]);
+    env.write("teams/oncall/team.yaml", TEAM);
+    let inst = env.create("oncall", "work/a");
+    let lead = env.member(&inst, "lead");
+    for command in ["start", "stop", "attach", "logs", "delete", "send"] {
+        let address = format!("{inst}/helper");
+        let args = if command == "send" {
+            vec![command, address.as_str(), "hello"]
+        } else {
+            vec![command, address.as_str()]
+        };
+        let error = env.fails(&args);
+        assert!(
+            error.contains(&format!("brg create {inst}/helper")),
+            "{command}: {error}"
+        );
+    }
+    let tree = stdout(&env.ok(&["status", &inst]));
+    assert!(tree.contains("not created (start: false)"), "{tree}");
+    env.ok(&["create", &format!("{inst}/helper")]);
+    let helper = env.member(&inst, "helper");
+    let address = format!("{inst}/{helper}");
+    env.wait_for("helper idle", || env.state_of(&inst, "helper") == "idle");
+    let row = env.row(&inst, "helper");
+    assert_eq!(row["parent"], lead);
+    assert_eq!(
+        row["start_id"],
+        env.starts(&helper)[0]["env"]["BORGCHART_INCARNATION"]
+    );
+    let start_id = row["start_id"].as_str().expect("a start ID").to_string();
+    let out = env.publish(&inst, &json!({"to": "helper", "body": "Do not choose."}));
+    assert!(!out.status.success());
+    assert!(both(&out).contains(&helper), "{}", both(&out));
+    let out = env.publish(&inst, &json!({"to": helper, "body": "Review the sample."}));
+    assert!(out.status.success(), "{}", both(&out));
+    env.ok(&["send", &address, "hello"]);
+    for stopped in [false, true] {
+        if stopped {
+            env.ok(&["stop", &address]);
+        }
+        for command in ["stop", "send"] {
+            let role = format!("{inst}/helper");
+            let args = if command == "send" {
+                vec![command, role.as_str(), "hello"]
+            } else {
+                vec![command, role.as_str()]
+            };
+            let error = env.fails(&args);
+            assert!(error.contains(&helper), "{error}");
+        }
+        let tree = stdout(&env.ok(&["status", &inst]));
+        assert!(
+            tree.contains(&helper) && tree.contains("1 unread"),
+            "{tree}"
+        );
+        let row = env.row(&inst, "helper");
+        assert_eq!(row["start_id"], start_id);
+        assert_eq!(row["member"], helper);
+        assert_eq!(row["unread"], 1);
+    }
+    env.ok(&["start", &address]);
+    assert_eq!(env.member(&inst, "helper"), helper);
+    assert_ne!(env.row(&inst, "helper")["start_id"], start_id);
+    env.ok(&["stop", &inst]);
+}
+
 // --- 1. IDs ---
 
 #[test]
@@ -324,12 +497,12 @@ fn addresses_name_the_instance_in_full_outside_a_member() {
         assert!(both(&out).contains(&lead), "{}", both(&out));
     }
     // A role with no member shows as on demand.
-    assert_eq!(env.state_of(&inst, "helper"), "on demand (none created)");
+    assert_eq!(env.state_of(&inst, "helper"), "not created (start: false)");
     let text = stdout(&env.ok(&["status", &inst]));
     assert!(text.lines().next().unwrap().starts_with(&inst), "{text}");
     assert!(
         text.lines()
-            .any(|l| l.contains("helper") && l.contains("on demand (none created)")),
+            .any(|l| l.contains("helper") && l.contains("not created (start: false)")),
         "{text}"
     );
     // Bare `status` shows every instance.
@@ -503,8 +676,8 @@ fn plain_plugin_values_come_from_the_team() {
     env.write(
         "teams/oncall/team.yaml",
         &TEAM.replace(
-            "members:\n  lead:\n    prompt: lead.md\n",
-            "plugins:\n  pager:\n    path: plugins/pager\n    env:\n      PAGER_ROOM: R0000EXAMPLE\n      PAGER_TOKEN:\n    actions:\n      read: pager read <id>\nmembers:\n  lead:\n    prompt: lead.md\n    plugins: {pager: [read]}\n",
+            "roles:\n  lead:\n    prompt: lead.md\n",
+            "plugins:\n  pager:\n    path: plugins/pager\n    env:\n      PAGER_ROOM: R0000EXAMPLE\n      PAGER_TOKEN:\n    actions:\n      read: pager read <id>\nroles:\n  lead:\n    prompt: lead.md\n    plugins: {pager: [read]}\n",
         ),
     );
     fs::create_dir_all(env.path("teams/oncall/plugins/pager")).unwrap();

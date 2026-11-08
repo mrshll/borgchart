@@ -43,11 +43,13 @@ pub struct Bus {
     pub instance: String,
     pub paths: StorePaths,
     pub meta: state::Meta,
+    pub record: crate::registry::InstanceRecord,
 }
 
 /// Open read-only; never initialise an unrecognised store.
 pub fn open(state: &StateDir) -> Result<Bus, Failure> {
-    crate::registry::read_instance(state).map_err(|e| Failure::new(Code::NotFound, e))?;
+    let record =
+        crate::registry::read_instance(state).map_err(|e| Failure::new(Code::NotFound, e))?;
     let paths = StorePaths::new(state);
     if !paths
         .validate(&state.id)
@@ -61,17 +63,20 @@ pub fn open(state: &StateDir) -> Result<Bus, Failure> {
             ),
         ));
     }
-    let meta = state::read_meta(state).ok_or_else(|| {
+    let mut meta = state::read_meta(state).ok_or_else(|| {
         Failure::new(
             Code::Corrupt,
             format!("instance `{}`'s start record cannot be read", state.id),
         )
     })?;
+    meta.members
+        .retain(|id, _| !record.members.get(id).is_some_and(|m| m.deleted));
     Ok(Bus {
         state: state.clone(),
         instance: state.id.clone(),
         paths,
         meta,
+        record,
     })
 }
 
@@ -100,6 +105,21 @@ fn hide_paths(text: &str, store_root: &Path, team_dir: Option<&Path>) -> String 
 }
 
 impl Bus {
+    /// Refuse deleted recipients and name the concrete create command for roles.
+    fn check_route(&self, actor: &Actor, to: &str) -> Result<(), String> {
+        if self.record.members.get(to).is_some_and(|m| m.deleted) {
+            return Err(format!(
+                "member `{to}` was deleted; it cannot receive messages"
+            ));
+        }
+        check_route(&self.meta, actor, to).map_err(|e| {
+            e.replace(
+                "brg create <instance>/<role>",
+                &format!("brg create {}/{to}", self.instance),
+            )
+        })
+    }
+
     /// `text` without this instance's internal storage paths.
     fn hide_paths(&self, text: &str) -> String {
         hide_paths(text, &self.paths.root, Some(&self.state.root))
@@ -572,10 +592,12 @@ pub(crate) fn not_a_member(meta: &state::Meta, m: &str) -> String {
 pub fn publish(bus: &Bus, caller: &Caller, draft_bytes: &[u8]) -> Result<Record, Failure> {
     let draft = parse_draft(draft_bytes)?;
     let actor = actor_for(bus, caller)?;
-    check_route(&bus.meta, &actor, &draft.to).map_err(|e| Failure::new(Code::Invalid, e))?;
+    bus.check_route(&actor, &draft.to)
+        .map_err(|e| Failure::new(Code::Invalid, e))?;
     let (bus, _lock) = lock_for_mutation(bus)?;
     recheck_authority(&bus, caller)?;
-    check_route(&bus.meta, &actor, &draft.to).map_err(|e| Failure::new(Code::Invalid, e))?;
+    bus.check_route(&actor, &draft.to)
+        .map_err(|e| Failure::new(Code::Invalid, e))?;
     let snap = scan(&bus.paths);
     snap.require_healthy()?;
     if let Some(missing) = draft.reply_to.iter().find(|id| snap.get(id).is_none()) {
@@ -633,6 +655,9 @@ pub fn progress(bus: &Bus, snap: &Snapshot) -> BTreeMap<String, Progress> {
         .map(|id| (id.clone(), Progress::default()))
         .collect();
     for r in snap.records.values() {
+        if bus.record.members.get(&r.to).is_some_and(|m| m.deleted) {
+            continue;
+        }
         let p = out.entry(r.to.clone()).or_default();
         p.total += 1;
         p.newest = r.seq;
