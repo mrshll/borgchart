@@ -1137,8 +1137,12 @@ pub fn header(inst: &Instance) -> String {
 }
 
 /// What `status` and a start show for a role with no member yet.
-fn not_created(start: bool) -> String {
-    format!("not created (start: {start})")
+fn not_created(role: &crate::team::Role) -> String {
+    if role.max > 1 {
+        "on demand (none created)".into()
+    } else {
+        format!("not created (start: {})", role.start)
+    }
 }
 
 /// One node per member of the instance (each under its parent role's
@@ -1165,7 +1169,7 @@ fn member_nodes(
             nodes.push(tree::Node {
                 id: role_name.clone(),
                 parent: parent_of(role),
-                cols: vec![not_created(role.start)],
+                cols: vec![not_created(role)],
             });
         }
         for id in ids {
@@ -1449,17 +1453,127 @@ pub fn create_member(mut inst: Instance, role: &str) -> Result<UpOutcome, String
     precheck(&v, &[member], !is_running(&inst))?;
     let lock = registry::lock()?;
     inst.reload()?;
-    if let Some(existing) = inst.record.members_of(role).first() {
+    check_parent_authority(&inst, role, Some(&v), true)?;
+    let existing = inst.record.members_of(role);
+    if existing.len() >= member.max {
+        if member.max == 1 && existing.len() == 1 {
+            return Err(format!(
+                "role `{role}` already has its member `{}` (max: 1), running or stopped; start it with `brg start {}`",
+                existing[0],
+                inst.at(&existing[0])
+            ));
+        }
         return Err(format!(
-            "role `{role}` already has its member `{existing}` (one per role for now), running or stopped; start it with `brg start {}`",
-            inst.at(existing)
+            "role `{role}` already has {} kept members (max: {}), running or stopped: {}; delete a stopped member before creating another",
+            existing.len(),
+            member.max,
+            existing.join(", ")
         ));
     }
     let id = inst
         .record
         .issue_member(role, |id| v.team.roles.contains_key(id))?;
+    check_copy_folder(&inst, member, &id)?;
     lock.save_instance(&inst.state, &inst.record)?;
     start_members(lock, &inst, &v, vec![id], false)
+}
+
+/// Same-role copies keep separate folders until deleted, even while
+/// stopped. Resolve current paths as well as checking recorded folders so
+/// a moved symlink cannot give a copy another member's checkout.
+fn check_copy_folder(inst: &Instance, role: &crate::team::Role, id: &str) -> Result<(), String> {
+    let others: Vec<String> = inst
+        .record
+        .members_of(&role.id)
+        .into_iter()
+        .filter(|m| m != id)
+        .collect();
+    if others.is_empty() {
+        return Ok(());
+    }
+    let cwd = member_cwd(&inst.record.folder, role.cwd.as_deref(), id)?;
+    for other in others {
+        let issued = &inst.record.members[&other];
+        let other_cwd = member_cwd(&inst.record.folder, role.cwd.as_deref(), &other)?;
+        if overlaps(&cwd, &other_cwd) || issued.cwd.as_ref().is_some_and(|old| overlaps(&cwd, old))
+        {
+            return Err(format!(
+                "`{id}`'s folder {} overlaps kept member `{other}`'s folder {}; give copies of `{}` separate folders before creating another",
+                cwd.display(),
+                other_cwd.display(),
+                role.id
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Parent authority for member lifecycle operations. The registry lock
+/// holds both the target's membership and the parent's latest start still.
+/// Teams without a bus retain their existing caller rules.
+fn check_parent_authority(
+    inst: &Instance,
+    role: &str,
+    validated_team: Option<&Validated>,
+    creating: bool,
+) -> Result<(), String> {
+    let has_member_context = [context::ENV_MEMBER, context::ENV_INCARNATION]
+        .iter()
+        .any(|key| std::env::var(key).is_ok_and(|value| !value.is_empty()));
+    if !has_member_context && !creating {
+        return Ok(());
+    }
+    let loaded;
+    let v = match validated_team {
+        Some(v) => v,
+        None => {
+            loaded = validated(inst)?;
+            &loaded
+        }
+    };
+    if v.team.bus.is_none() {
+        return Ok(());
+    }
+    let caller = context::caller(None).map_err(|e| e.message)?;
+    let definition = v.team.roles.get(role).ok_or_else(|| {
+        format!(
+            "role `{role}` is no longer in the team; ask a person to stop or delete its members"
+        )
+    })?;
+    let parent_role = definition.parent.as_deref();
+    let parent = parent_role.and_then(|p| inst.record.members_of(p).into_iter().next());
+    if creating
+        && parent.is_none()
+        && let Some(parent_role) = parent_role
+    {
+        return Err(format!(
+            "role `{role}`'s parent role `{}` has no member; create it first: brg create {}",
+            parent_role,
+            inst.at(parent_role)
+        ));
+    }
+    let context::Caller::Member {
+        member,
+        incarnation,
+    } = caller
+    else {
+        return Ok(());
+    };
+    context::instance(Some(&inst.id)).map_err(|e| e.message)?;
+    if parent.as_deref() != Some(member.as_str()) {
+        return Err(format!(
+            "only a person or role `{role}`'s parent member may manage its members; this caller is `{member}`"
+        ));
+    }
+    let current = lifecycle::load_incarnation(&inst.state, &member)?;
+    if !current.is_some_and(|inc| {
+        inc.member == member && inc.incarnation == incarnation && inc.ended_at.is_none()
+    }) {
+        return Err(format!(
+            "`{member}`'s start was replaced or stopped; only its latest running start may manage role `{role}`"
+        ));
+    }
+    Ok(())
 }
 
 /// Whether any member or plugin process of the instance has a live window
@@ -1593,6 +1707,7 @@ pub fn start(
     inst.reload()?;
     if let Some(id) = &member {
         address::member(&inst, id)?;
+        check_parent_authority(&inst, inst.record.role_of(id).unwrap(), Some(&v), false)?;
     }
     match member {
         Some(id) => start_members(lock, &inst, &v, vec![id], false),
@@ -1653,6 +1768,7 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
     let _state_lock = lifecycle::lock_state(&inst.state)?;
     inst.reload()?;
     let id = address::member(&inst, name)?;
+    check_parent_authority(&inst, inst.record.role_of(&id).unwrap(), None, false)?;
     if tmux_for(&inst.state)
         .window(&inst.state.session(), &id)
         .is_some_and(|w| !w.dead)
@@ -2024,13 +2140,17 @@ fn start_window(
 /// it gone. A full stop of a running instance records which members were
 /// running, for the next `start`; stopping a stopped one changes nothing.
 pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> {
+    let lock = registry::lock()?;
+    let mut current = inst.clone();
+    current.reload()?;
+    let inst = &current;
     let state = &inst.state;
     let session = state.session();
     let team = inst.id.clone();
     if let Some(id) = only {
         address::member(inst, id)?;
+        check_parent_authority(inst, inst.record.role_of(id).unwrap(), None, false)?;
     }
-    let lock = registry::lock()?;
     let _state_lock = lifecycle::lock_state(state)?;
     let Some(mut meta) = state::read_meta(state) else {
         // Nothing was ever recorded here, so brg started nothing to stop.
@@ -2352,7 +2472,7 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
                     Posture::Vendor => "vendor".into(),
                     Posture::Locked => "locked".into(),
                 }),
-                state: not_created(member.start),
+                state: not_created(member),
                 rule: None,
                 detail: None,
                 vendor_version: None,

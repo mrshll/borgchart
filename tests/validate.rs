@@ -64,6 +64,59 @@ fn valid_team_loads() {
 }
 
 #[test]
+fn copy_limits_refuse_zero_and_require_a_whole_member_folder() {
+    for (max, cwd, accepted) in [
+        (-1, Some("copies/{member}"), false),
+        (0, Some("copies/{member}"), false),
+        (1, None, true),
+        (1, Some("shared"), true),
+        (2, None, false),
+        (2, Some("copies/{member}"), true),
+        (2, Some("copies/{member}/src"), true),
+        (2, Some("shared"), false),
+        (2, Some("copies/prefix-{member}"), false),
+        (2, Some("copies/{member}-suffix"), false),
+        (2, Some("copies/{member}/../shared"), false),
+    ] {
+        let f = Fixture::new();
+        // Use a new leaf so neither parent nor plugin delivery is ambiguous.
+        let path = f.path("team.yaml");
+        let text = fs::read_to_string(&path).unwrap();
+        let cwd_line = cwd.map(|c| format!("    cwd: '{c}'\n")).unwrap_or_default();
+        fs::write(
+            path,
+            format!("{text}\n  helper:\n    prompt: lead.md\n    max: {max}\n{cwd_line}"),
+        )
+        .unwrap();
+        let (report, validated) = f.run();
+        assert_eq!(
+            validated.is_some(),
+            accepted,
+            "max={max}, cwd={cwd:?}: {}",
+            errors(&report)
+        );
+    }
+}
+
+#[test]
+fn parents_and_plugin_delivery_cannot_choose_between_copies() {
+    for target in ["lead", "triager"] {
+        let f = Fixture::new();
+        f.edit(
+            "team.yaml",
+            &format!("    prompt: {target}.md\n"),
+            &format!("    prompt: {target}.md\n    max: 2\n    cwd: copies/{{member}}\n"),
+        );
+        let (report, validated) = f.run();
+        assert!(
+            validated.is_none(),
+            "ambiguous target {target} accepted: {}",
+            errors(&report)
+        );
+    }
+}
+
+#[test]
 fn duplicate_keys_are_errors() {
     let f = Fixture::new();
     f.edit(

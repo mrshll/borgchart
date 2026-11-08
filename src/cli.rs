@@ -38,7 +38,9 @@ enum Command {
     },
     /// Make something new: an instance of a team working in a folder
     /// (`create <team> <folder>`), or a member of a role
-    /// (`create <instance>/<role>`). Either is started.
+    /// (`create <instance>/<role>`, up to its max of kept members). Either
+    /// is started. For a role target with a bus, a member caller must be
+    /// the role's parent, using its latest running start.
     Create {
         /// `<team>` (a name, or a path starting with `/`, `./`, `../` or
         /// `~/`), or `<instance>/<role>`.
@@ -47,6 +49,9 @@ enum Command {
         folder: Option<String>,
     },
     /// Bring an instance to what should be running, or start one member.
+    /// Reuse kept members; never fill a role to max. For a member target
+    /// with a bus, a member caller must be its parent, using the parent's
+    /// latest running start.
     Start {
         /// `<instance>`, or `<instance>/<member>`.
         target: String,
@@ -55,11 +60,15 @@ enum Command {
         team: Option<PathBuf>,
     },
     /// Stop an instance, or one member. Stopping a stopped one changes nothing.
+    /// For a member target with a bus, a member caller must be its parent,
+    /// using the parent's latest running start.
     Stop {
         /// `<instance>`, or `<instance>/<member>`.
         target: String,
     },
     /// Remove a stopped instance, or a stopped member (its ID stays issued).
+    /// For a member target with a bus, a member caller must be its parent,
+    /// using the parent's latest running start.
     Delete {
         /// `<instance>`, or `<instance>/<member>`. A bare role is refused.
         target: String,

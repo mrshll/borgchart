@@ -156,6 +156,7 @@ struct RoleRaw {
     vendor: Option<Vendor>,
     parent: Option<String>,
     start: Option<bool>,
+    max: Option<usize>,
     posture: Option<String>,
     #[serde(default)]
     untrusted_input: bool,
@@ -340,6 +341,8 @@ pub struct Role {
     pub model: Option<Model>,
     pub parent: Option<String>,
     pub start: bool,
+    /// Kept members, running or stopped, allowed for this role.
+    pub max: usize,
     pub posture: Posture,
     pub untrusted_input: bool,
     pub accept_risk: bool,
@@ -705,6 +708,12 @@ fn load_plugin(
             Some(team_file),
             at(format!("`delivers_to: {target}` is not a role")),
         ),
+        (Some(target), Some(_)) if roles[target].max.unwrap_or(1) > 1 => report.error(
+            Some(team_file),
+            at(format!(
+                "`delivers_to: {target}` needs a role with `max: 1`"
+            )),
+        ),
         _ => {}
     }
 
@@ -863,6 +872,22 @@ fn load_role(
         }
     }
 
+    let max = m.max.unwrap_or(1);
+    if max == 0 {
+        report.error(Some(team_file), at("`max` must be at least 1".into()));
+    }
+    if max > 1
+        && !m.cwd.as_ref().is_some_and(|cwd| {
+            Path::new(cwd)
+                .components()
+                .any(|c| c.as_os_str() == "{member}")
+        })
+    {
+        report.error(
+            Some(team_file),
+            at("`max > 1` needs `cwd` with `{member}` as a whole folder name, for example `copies/{member}`".into()),
+        );
+    }
     if let Some(cwd) = &m.cwd
         && let Err(e) = check_cwd(cwd)
     {
@@ -916,6 +941,7 @@ fn load_role(
         model,
         parent: m.parent.clone(),
         start: m.start.unwrap_or(true),
+        max,
         posture,
         untrusted_input: m.untrusted_input,
         accept_risk: m.accept_risk,
@@ -1106,6 +1132,11 @@ fn check_parents(team_file: &Path, roles: &BTreeMap<String, RoleRaw>, report: &m
             report.error(
                 Some(team_file),
                 format!("role `{id}`: parent `{parent}` is not a role"),
+            );
+        } else if roles[parent].max.unwrap_or(1) > 1 {
+            report.error(
+                Some(team_file),
+                format!("role `{id}`: parent `{parent}` needs `max: 1`"),
             );
         }
     }

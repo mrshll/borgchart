@@ -6,7 +6,7 @@ borgchart runs teams of coding agents from plain files: describe each role's mod
 
 Early, and expected to change. `brg validate`, `create`, `start`, `stop`, `delete`, `ls`, `status` (with `-w` and `-i`), `secret`, `attach`, `logs` and `send` work, on a private tmux server. [docs/concepts.md](docs/concepts.md) describes teams, instances, roles and members. [`examples/slack-devops`](examples/slack-devops) is an on-call pair for a Slack channel. See [docs/format.md](docs/format.md) for the team format and [docs/cli.md](docs/cli.md) for the commands. The [message bus](docs/bus.md) provides durable plain messages, acknowledgements, an inbox and one wait; unread counts appear in `status`.
 
-Team files declare `roles:`; each role keeps one member, running or stopped. Member commands and messages use the full member ID. `brg delete <instance>/<member>` removes a stopped member, requiring `--force` for unread messages, and reserves its ID permanently within the instance. `members:` and frontmatter `role:` are rejected.
+Team files declare `roles:`; each role keeps up to `max` members (default 1), running or stopped. Copies use separate folders through `cwd: copies/{member}`. Member commands and messages use the full member ID. `brg delete <instance>/<member>` removes a stopped member, requiring `--force` for unread messages, and reserves its ID permanently within the instance. `members:` and frontmatter `role:` are rejected.
 
 ## Install
 

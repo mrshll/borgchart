@@ -49,6 +49,7 @@ roles:
     vendor: claude              # optional; default from `default`
     parent: lead                # optional; another role
     start: true                 # optional; false = its member is made with `brg create <instance>/triager`
+    max: 1                      # optional; limit on kept members, running or stopped (default 1)
     posture: locked             # optional: vendor (default) | locked
     cwd: ops                    # optional: where its member starts, inside the instance's folder
     args: []                    # optional: extra vendor launch arguments
@@ -63,15 +64,17 @@ roles:
 
 **Names.** Role, plugin and action names match `[a-z][a-z0-9_-]{0,31}`. A role's member is `<role>-<suffix>` (`triager-x7k2`). A role cannot be named `<another role>-<suffix>`, where the suffix is four characters from `23456789abcdefghjkmnpqrstuvwxyz`: that would also name a member. Environment names match `[A-Z_][A-Z0-9_]*`. The team's name is its folder's name, lowercased, with anything outside `[a-z0-9_-]` turned into `-`.
 
-The role's identity is its key under `roles:`. The old `members:` field and frontmatter `role:` are unknown fields, with no aliases. Each role has at most one kept member, running or stopped. `brg delete <instance>/<member>` removes a stopped member; its ID stays issued and is never reused. A later `create <instance>/<role>` gets a fresh ID. `start <instance>` also creates a fresh member for a `start: true` role whose member was deleted.
+The role's identity is its key under `roles:`. The old `members:` field and frontmatter `role:` are unknown fields, with no aliases. Each role keeps up to `max` members, running or stopped; `max` defaults to 1 and must be at least 1. `brg delete <instance>/<member>` removes a stopped member; its ID stays issued and is never reused. A later `create <instance>/<role>` gets a fresh ID. `create <team>` makes one member per `start: true` role, even with `max > 1`. `start <instance>` reuses kept members and only creates a member for a `start: true` role with none left; it never fills to `max`. Lowering `max` after a full stop keeps all existing members, and further creation is refused until enough are deleted.
 
 **Messages.** With `bus:`, members publish plain `{to, body, reply_to?}` drafts, read and ack their inbox, and use one `inbox wait`. `brg status` (tree, `-i` and `--json`) shows unread message counts; no bus means no counts. The optional alert action and watcher are not wired now; the lead nudges with `brg send`. See [the bus](bus.md) for routing, storage, wait rules and commands.
 
-**Parents.** A `parent` must be another role, and parent links can't form a cycle. A member's parent is the member of its parent role. Messages a plugin routes "to the parent" go along this edge.
+**Parents.** A `parent` must be another role with `max: 1`, and parent links can't form a cycle. A plugin's `delivers_to:` also requires a `max: 1` role. A member's parent is the member of its parent role. Messages a plugin routes "to the parent" go along this edge. With a bus, only a person or the declared parent's latest running start may create, start, stop or delete a member. Other members, replaced starts and callers from another instance are refused. Creating a child requires its parent role to have a member. Teams without a bus retain their existing caller rules; whole-instance operations retain theirs too.
 
 **`env`.** A list of names (`[A, B]`, each a secret), list items with a value (`[A, {B: value}]`), or a map (`{A: , B: value}`); a name without a value is a secret. Secrets come from the environment `brg create` or `brg start` runs in: brg stores none. `brg secret <team>` lists them and whether each is set.
 
 **`cwd`.** Relative to the instance's working folder and inside it (no `..`, no absolute path, and it may not leave the folder through a symlink); it may use `{member}`, the member's ID. It must exist when the member starts. A role without one starts in the working folder (a `locked` Codex member: in its temp folder).
+
+For `max > 1`, `cwd` must contain `{member}` as a whole folder name, such as `copies/{member}`. `create` refuses a copy whose folder equals, contains or sits inside a kept copy's folder of the same role, including symlinked aliases and stopped copies; delete a member to free its folder. The check and reservation share a lock with member creation, so concurrent creates cannot claim overlapping folders. Different roles in one instance may still share a folder. brg does not create checkouts.
 
 **`args`.** Extra vendor launch arguments. Treat them as trusted, like the rest of the team: they can widen an agent's permissions. A `-c check_for_update_on_startup=…` (Codex) overrides brg's default of turning the update check off, so an unattended member doesn't stop at Codex's "Update available" prompt; a `-c sandbox_workspace_write.writable_roots=…` (Codex) or `--add-dir` (Claude) replaces the folders brg makes writable, and a `-c projects…` replaces brg's Codex trust.
 

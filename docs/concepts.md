@@ -1,6 +1,6 @@
 # Concepts
 
-**Status: partly built.** Teams, instances, `roles:`, suffixed member IDs, the four lifecycle verbs, member deletion and member status work today, with one kept member per role. Copies (`max`), their creation permissions, departments and the remaining command renames are planned. The old file fields go away outright, with no aliases.
+**Status: partly built.** Teams, instances, `roles:`, suffixed member IDs, copies up to `max`, member deletion and member status work today. Bus members may manage only their declared children, using their latest start ID. Departments and the remaining command renames are planned. The old file fields go away outright, with no aliases.
 
 ## Definitions and what runs from them
 
@@ -73,6 +73,8 @@ There's no `up`. There are four verbs. `create` always makes something new; `sta
 
 **Restarting** is `stop` then `start`. That's also how changed files are applied.
 
+**Copies.** `max` defaults to 1 and counts running and stopped members. A `start: true` role gets one member at instance creation; `start` reuses kept members and never fills to `max`. Lowering `max` after a full stop keeps all members and refuses further creation until enough are deleted. With a bus, member lifecycle commands require a person or the declared parent's latest running start. A replaced start, a sibling, the member itself or another instance's member is refused. Creating a child requires a kept parent member. No-bus teams and whole-instance commands keep their existing caller rules.
+
 **A team, a path or a role.** A path starts with `/`, `./`, `../` or `~/`. Any other argument to `create` is a team's name when it has no `/`, and `<instance>/<role>` when it has one. So `brg create ./dev-team ~/work/x` runs the folder `./dev-team`, and `brg create teams/dev-team` is refused ("no instance `teams`; for a folder, write `./teams/dev-team`").
 
 **Also:**
@@ -119,7 +121,7 @@ Two folders with the same name can both run. Their instances are told apart by t
 - **Its working folder** is fixed at `create`. If it's gone, `start` refuses; create a new instance.
 - **Message store:** one per instance for its whole life, in its state folder, so message numbers never restart.
 - **Frozen configuration:** the team's files, with includes expanded, and the global settings that reach members (`auth`, `auto_trust`, and where `plugins_dir` puts each shared plugin) are frozen from a start to the next full stop. `start` applies changes only after a full `stop`, once every member is positively stopped.
-- **Checkouts:** every operation that starts a member (`create`, `start`, `start --team`) checks its resolved working folder. It refuses if that folder is the same as, inside, or around a folder that another instance's member holds while running or while brg cannot tell it stopped. Members of one instance may share a folder. The check and the reservation happen together, under one lock, so two starts can't race.
+- **Checkouts:** every operation that starts a member (`create`, `start`, `start --team`) checks its resolved working folder. It refuses if that folder is the same as, inside, or around a folder that another instance's member holds while running or while brg cannot tell it stopped. Different roles of one instance may share a folder. A role with `max > 1` needs `{member}` as a whole folder name in `cwd`, with no `..`. Kept copies of one role have separate folders, including through symlinks and while stopped. Folders must already exist. The check and the reservation happen together, under one lock, so two starts can't race.
 - **A new message format:** brg refuses to start an instance whose messages it can't read, and points to `brg create` for a fresh instance (its open work has to be sent again). `stop` and liveness never parse messages, so they still work on the old instance. A stopped instance holds no checkout; `delete` of unreadable messages needs `--force` ("its contents can't be inspected"). No storage generations are needed.
 - **Durability:** brg refuses a state folder under `/tmp` or any other path cleaned by age. Reads scan the store; there is no index or archiving.
 - **The upgrade:** today's storage isn't converted. It stays on disk, unread. Stop every team before upgrading: brg refuses to start anything while a tmux session under an old name is alive.
@@ -141,7 +143,7 @@ dev-team-k3f9                       team ~/.config/borgchart/teams/dev-team/ · 
 - **Header line:** the instance, then its team folder and working folder.
 - **Tree lines:**
   - one line per member;
-  - a role with no kept member gets `not created (start: false)` or `not created (start: true)`, following its `start` setting; copies will add `on demand (none created)` for `max > 1`. A created member that isn't running shows on its own line as `stopped`;
+  - a role with no kept member gets `not created (start: false)` or `not created (start: true)`, following its `start` setting, or a dim `on demand (none created)` for `max > 1`. A created member that isn't running shows on its own line as `stopped`;
   - positive unread message counts appear beside members, also in `-i`; a zero adds nothing to the tree;
   - department members nest.
 - **`--json` member rows:** `instance`, `team`, `member`, `role`, `parent` (a member ID), `start_id` (the current incarnation, when recorded), and the existing fields. A stop retains `start_id`; restarting changes it. With a readable bus, `unread` gives each kept member's unacked count, including zero. Without a bus it is absent; if the store cannot be read, counts are absent and status adds a short note. Deleted members have no rows. Plugin-process rows keep `kind: plugin` and their name.

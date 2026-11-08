@@ -10,6 +10,7 @@
 //! ```
 
 use std::collections::BTreeSet;
+use std::io::IsTerminal;
 
 use crate::team::Role;
 
@@ -101,17 +102,29 @@ fn columns(rows: &[Vec<String>]) -> Vec<String> {
 
 /// The instance's tree, then one `plugin <name>` line per plugin process.
 pub fn render(team: &str, nodes: &[Node], plugins: &[(String, Vec<String>)]) -> String {
-    let rows: Vec<Vec<String>> = order(nodes)
-        .into_iter()
+    let ordered = order(nodes);
+    let rows: Vec<Vec<String>> = ordered
+        .iter()
         .map(|(i, prefix)| {
-            let mut row = vec![format!("{prefix}{}", nodes[i].id)];
-            row.extend(nodes[i].cols.iter().cloned());
+            let mut row = vec![format!("{prefix}{}", nodes[*i].id)];
+            row.extend(nodes[*i].cols.iter().cloned());
             row
         })
         .collect();
     let mut out = format!("{team}\n");
-    for line in columns(&rows) {
+    for (line, (i, _)) in columns(&rows).into_iter().zip(ordered) {
+        let dim = std::io::stdout().is_terminal()
+            && nodes[i]
+                .cols
+                .first()
+                .is_some_and(|c| c == "on demand (none created)");
+        if dim {
+            out.push_str("\x1b[2m");
+        }
         out.push_str(&line);
+        if dim {
+            out.push_str("\x1b[0m");
+        }
         out.push('\n');
     }
     let plugin_rows: Vec<Vec<String>> = plugins

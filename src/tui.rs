@@ -42,7 +42,9 @@ fn state_style(row: &StatusRow) -> Style {
         // A `start: true` member that ended.
         runtime::STOPPED if row.expected_running => alert,
         "working" => Style::default().add_modifier(Modifier::BOLD),
-        runtime::STOPPED | runtime::NOT_STARTED => Style::default().add_modifier(Modifier::DIM),
+        runtime::STOPPED | runtime::NOT_STARTED | "on demand (none created)" => {
+            Style::default().add_modifier(Modifier::DIM)
+        }
         _ => Style::default(),
     }
 }
@@ -84,7 +86,7 @@ fn draw(
             let mut cols = runtime::status_cells(r);
             match r.kind {
                 "member" => {}
-                // A role with no member yet: `not created (start: false)` as its state.
+                // A role with no kept member shows its creation state.
                 "role" => {
                     cols.insert(0, String::new());
                     cols.push(String::new());
@@ -114,12 +116,17 @@ fn draw(
         .into_iter()
         .zip(rows)
         .map(|([name, vendor, state, detail], r)| {
-            Row::new(vec![
+            let row = Row::new(vec![
                 Cell::from(name),
                 Cell::from(vendor),
                 Cell::from(state).style(state_style(r)),
                 Cell::from(detail),
-            ])
+            ]);
+            if r.kind == "role" && r.state == "on demand (none created)" {
+                row.style(Style::default().add_modifier(Modifier::DIM))
+            } else {
+                row
+            }
         })
         .collect();
     let table = Table::new(body, widths)
