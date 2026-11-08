@@ -36,7 +36,7 @@ fn status_i_attaches_detaches_and_quits() {
     };
     write(
         "team/team.yaml",
-        "plugins:\n  watcher: {path: plugins/watcher, process: [./run.sh]}\nmembers:\n  alpha: {prompt: alpha.md}\n  beta: {prompt: beta.md, vendor: codex, parent: alpha}\n",
+        "bus: {}\nplugins:\n  watcher: {path: plugins/watcher, process: [./run.sh]}\nmembers:\n  alpha: {prompt: alpha.md}\n  beta: {prompt: beta.md, vendor: codex, parent: alpha}\n",
     );
     write("team/alpha.md", "---\nrole: helper\n---\nYou are alpha.\n");
     write(
@@ -125,6 +125,58 @@ fn status_i_attaches_detaches_and_quits() {
                     && l.contains("/beta-")
             }) && s.contains("plugin watcher")
         },
+        dump,
+    );
+
+    let registry: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("state/registry.json")).unwrap()).unwrap();
+    let instance = registry["instances"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .next()
+        .unwrap();
+    let record: serde_json::Value = serde_json::from_slice(
+        &fs::read(root.join(format!("state/{instance}/instance.json"))).unwrap(),
+    )
+    .unwrap();
+    let alpha = record["members"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(_, member)| member["role"] == "alpha")
+        .unwrap()
+        .0;
+    let draft = root.join("message.json");
+    fs::write(
+        &draft,
+        serde_json::json!({"to": alpha, "body": "pending"}).to_string(),
+    )
+    .unwrap();
+    for _ in 0..2 {
+        let out = common::command(brg)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("BORGCHART_STATE_HOME", root.join("state"))
+            .env("BORGCHART_CONFIG", root.join("home/config.yaml"))
+            .args([
+                "msg",
+                "publish",
+                "--instance",
+                instance,
+                "--external",
+                "test",
+                "--record",
+            ])
+            .arg(&draft)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+    }
+    tmux(&private, &outer, &["send-keys", "-t", "=o:", "r"]);
+    wait(
+        "unread messages in status -i",
+        || screen().contains("2 unread"),
         dump,
     );
 

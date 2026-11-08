@@ -183,11 +183,7 @@ fn a_moved_team_folder_is_re_pointed_after_a_full_stop() {
     let env = Env::new();
     let a = env.create("oncall", "work/a");
     let lead = env.member(&a, "lead");
-    let out = env.publish(
-        &a,
-        "note-1",
-        &json!({"to": lead, "kind": "note", "body": "keep me"}),
-    );
+    let out = env.publish(&a, &json!({"to": lead, "body": "keep me"}));
     assert!(out.status.success(), "{}", both(&out));
     fs::create_dir_all(env.path("elsewhere")).unwrap();
     fs::rename(env.path("teams/oncall"), env.path("elsewhere/oncall")).unwrap();
@@ -225,11 +221,7 @@ fn unread_messages_are_open_work_for_delete() {
     let env = Env::new();
     let a = env.create("oncall", "work/a");
     let lead = env.member(&a, "lead");
-    let out = env.publish(
-        &a,
-        "note-1",
-        &json!({"to": lead, "kind": "note", "body": "hi"}),
-    );
+    let out = env.publish(&a, &json!({"to": lead, "body": "hi"}));
     assert!(out.status.success(), "{}", both(&out));
     env.ok(&["stop", &a]);
     let err = env.fails(&["delete", &a]);
@@ -343,11 +335,7 @@ fn a_store_without_its_identity_needs_force_for_delete() {
     let env = Env::new();
     let a = env.create("oncall", "work/a");
     let lead = env.member(&a, "lead");
-    let out = env.publish(
-        &a,
-        "note-1",
-        &json!({"to": lead, "kind": "note", "body": "hi"}),
-    );
+    let out = env.publish(&a, &json!({"to": lead, "body": "hi"}));
     assert!(out.status.success(), "{}", both(&out));
     env.ok(&["stop", &a]);
     fs::remove_file(env.path(&format!("state/{a}/messages/store.json"))).unwrap();
@@ -363,11 +351,7 @@ fn a_start_refuses_unreadable_records_full_or_member() {
     let env = Env::new();
     let a = env.create("oncall", "work/a");
     let lead = env.member(&a, "lead");
-    let out = env.publish(
-        &a,
-        "note-1",
-        &json!({"to": lead, "kind": "note", "body": "hi"}),
-    );
+    let out = env.publish(&a, &json!({"to": lead, "body": "hi"}));
     assert!(out.status.success(), "{}", both(&out));
     env.ok(&["stop", &a]);
     fs::write(
@@ -396,7 +380,7 @@ fn a_partial_member_context_is_refused_for_reads_too() {
         ("BORGCHART_INCARNATION", "x.1.abcd"),
     ] {
         for args in [
-            vec!["bus", "inspect", "--instance", b.as_str()],
+            vec!["bus", "check", "--instance", b.as_str()],
             vec!["msg", "read", "m1", "--instance", b.as_str()],
             vec!["inbox", "--member", lead.as_str(), "--instance", a.as_str()],
         ] {
@@ -411,7 +395,7 @@ fn a_partial_member_context_is_refused_for_reads_too() {
     }
     // A plugin process has only its instance: that still works.
     let out = env
-        .cmd(&["bus", "inspect"])
+        .cmd(&["bus", "check"])
         .env("BORGCHART_INSTANCE", &a)
         .output()
         .unwrap();

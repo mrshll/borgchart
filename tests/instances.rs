@@ -212,8 +212,7 @@ fn full_start_leaves_a_stopped_member_with_unacked_messages_stopped() {
     env.ok(&["stop", &format!("{inst}/{scout}")]);
     let out = env.publish(
         &inst,
-        "scout-note",
-        &json!({"to": scout, "kind": "note", "body": "Read this when started."}),
+        &json!({"to": scout, "body": "Read this when started."}),
     );
     assert!(out.status.success(), "{}", both(&out));
     env.ok(&["stop", &inst]);
@@ -273,11 +272,7 @@ fn delete_needs_a_stop_and_force_for_unacked_messages_and_keeps_the_folder() {
         err.contains("running") && err.contains(&format!("brg stop {inst}")),
         "{err}"
     );
-    let out = env.publish(
-        &inst,
-        "note-1",
-        &json!({"to": lead, "kind": "note", "body": "hi"}),
-    );
+    let out = env.publish(&inst, &json!({"to": lead, "body": "hi"}));
     assert!(out.status.success(), "{}", both(&out));
     env.ok(&["stop", &inst]);
     let err = env.fails(&["delete", &inst]);
@@ -321,14 +316,10 @@ fn addresses_name_the_instance_in_full_outside_a_member() {
     let err = env.fails(&["inbox", "--external", "ops"]);
     assert!(err.contains("--instance") && err.contains(&inst), "{err}");
     env.ok(&["inbox", "--external", "ops", "--instance", &inst]);
-    env.ok(&["bus", "inspect", "--instance", &inst]);
+    env.ok(&["bus", "check", "--instance", &inst]);
     // An instance isn't a recipient; nor is a role.
     for to in [inst.as_str(), "lead"] {
-        let out = env.publish(
-            &inst,
-            &format!("to-{to}"),
-            &json!({"to": to, "kind": "note", "body": "hi"}),
-        );
+        let out = env.publish(&inst, &json!({"to": to, "body": "hi"}));
         assert!(!out.status.success(), "{}", both(&out));
         assert!(both(&out).contains(&lead), "{}", both(&out));
     }

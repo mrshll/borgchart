@@ -964,7 +964,7 @@ mod round {
         let note = team.path("note.json");
         fs::write(
             &note,
-            format!(r#"{{"to": "{lead}", "kind": "note", "body": "Fictional note."}}"#),
+            format!(r#"{{"to": "{lead}", "body": "Fictional note."}}"#),
         )
         .unwrap();
         let note = note.display().to_string();
@@ -973,8 +973,6 @@ mod round {
             "publish",
             "--external",
             "owner",
-            "--key",
-            "n1",
             "--record",
             &note,
             "--instance",
@@ -988,15 +986,9 @@ mod round {
         // The lead is stopped while a wait of its session runs.
         let waiting = {
             let mut cmd = lead_cmd(&team);
-            cmd.args([
-                "inbox",
-                "wait",
-                "--after",
-                "m1",
-                "--timeout",
-                "30",
-                "--json",
-            ]);
+            cmd.env("BORGCHART_WAIT_MIN_MS", "1000")
+                .env("BORGCHART_WAIT_TIMEOUT_MS", "3000");
+            cmd.args(["inbox", "wait", "--timeout", "60", "--json"]);
             std::thread::spawn(move || cmd.output().unwrap())
         };
         std::thread::sleep(Duration::from_millis(500));

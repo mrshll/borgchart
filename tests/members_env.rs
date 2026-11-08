@@ -373,7 +373,7 @@ fn a_member_acts_only_on_its_own_instance() {
     // Another instance: refused, for reads too.
     for args in [
         vec!["inbox", "--json", "--instance", b.as_str()],
-        vec!["bus", "inspect", "--instance", b.as_str()],
+        vec!["bus", "check", "--instance", b.as_str()],
     ] {
         let out = env.as_member(&lead, 0, &args);
         assert!(!out.status.success(), "{args:?}: {}", both(&out));
@@ -387,16 +387,7 @@ fn a_member_acts_only_on_its_own_instance() {
     let out = env.as_member(
         &lead,
         0,
-        &[
-            "msg",
-            "publish",
-            "--key",
-            "k",
-            "--external",
-            "ops",
-            "--instance",
-            &b,
-        ],
+        &["msg", "publish", "--external", "ops", "--instance", &b],
     );
     assert!(!out.status.success(), "{}", both(&out));
     env.ok(&["stop", &a]);
@@ -439,7 +430,7 @@ fn outside_callers_name_the_instance_and_a_stopped_one_can_be_inspected() {
     let env = Env::new();
     let a = env.create("oncall", "work/a");
     let lead = env.member(&a, "lead");
-    let out = env.publish(&a, "n1", &json!({"to": lead, "kind": "note", "body": "hi"}));
+    let out = env.publish(&a, &json!({"to": lead, "body": "hi"}));
     assert!(out.status.success(), "{}", both(&out));
     // An operator reads a member's inbox; without `--instance`, refused.
     env.ok(&["inbox", "--member", &lead, "--instance", &a]);
@@ -452,7 +443,7 @@ fn outside_callers_name_the_instance_and_a_stopped_one_can_be_inspected() {
     assert!(err.contains(&lead), "{err}");
     env.ok(&["stop", &a]);
     for args in [
-        vec!["bus", "inspect", "--instance", a.as_str()],
+        vec!["bus", "check", "--instance", a.as_str()],
         vec!["bus", "check", "--instance", a.as_str()],
         vec!["inbox", "--member", lead.as_str(), "--instance", a.as_str()],
     ] {

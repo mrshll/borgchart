@@ -204,13 +204,11 @@ impl Env {
     }
 
     /// Publish `record` into `inst` as the outside caller `ops`.
-    pub fn publish(&self, inst: &str, key: &str, record: &Value) -> Output {
+    pub fn publish(&self, inst: &str, record: &Value) -> Output {
         let mut child = self
             .cmd(&[
                 "msg",
                 "publish",
-                "--key",
-                key,
                 "--external",
                 "ops",
                 "--instance",

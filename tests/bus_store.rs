@@ -31,8 +31,8 @@ fn bytes(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     out
 }
 
-fn publish(env: &Env, instance: &str, key: &str, draft: Value) -> Value {
-    let out = env.publish(instance, key, &draft);
+fn publish(env: &Env, instance: &str, draft: Value) -> Value {
+    let out = env.publish(instance, &draft);
     assert!(out.status.success(), "{}", both(&out));
     serde_json::from_slice::<Value>(&out.stdout).unwrap()
 }
@@ -59,21 +59,11 @@ fn one_store_keeps_ids_references_and_acks_across_a_restart() {
     let instance = env.create("oncall", "work/a");
     let lead = env.member(&instance, "lead");
     assert_eq!(
-        publish(
-            &env,
-            &instance,
-            "n1",
-            json!({"to": lead, "kind": "note", "body": "original"})
-        )["id"],
+        publish(&env, &instance, json!({"to": lead, "body": "original"}))["id"],
         "m1"
     );
     assert_eq!(
-        publish(
-            &env,
-            &instance,
-            "n2",
-            json!({"to": lead, "kind": "note", "body": "second"})
-        )["id"],
+        publish(&env, &instance, json!({"to": lead, "body": "second"}))["id"],
         "m2"
     );
     env.ok(&["stop", &instance]);
@@ -83,8 +73,7 @@ fn one_store_keeps_ids_references_and_acks_across_a_restart() {
         publish(
             &env,
             &instance,
-            "n3",
-            json!({"to": lead, "kind": "note", "reply_to": ["m1"], "body": "reply"})
+            json!({"to": lead, "reply_to": ["m1"], "body": "reply"})
         )["id"],
         "m3"
     );
@@ -117,12 +106,6 @@ fn one_store_keeps_ids_references_and_acks_across_a_restart() {
             .iter()
             .all(|s| s["env"].get("BORGCHART_RUN").is_none())
     );
-    let inspection: Value = serde_json::from_slice(
-        &env.ok(&["bus", "inspect", "--instance", &instance, "--json"])
-            .stdout,
-    )
-    .unwrap();
-    assert_eq!(inspection["members"][&lead]["model"], "opus high");
     assert!(!store.join("current").exists());
     env.ok(&["stop", &instance]);
 }
@@ -136,12 +119,7 @@ fn changed_roles_keep_the_store_and_replies_to_removed_members() {
     let lead = env.member(&instance, "lead");
     let helper = env.member(&instance, "helper");
     let scout = env.member(&instance, "scout");
-    publish(
-        &env,
-        &instance,
-        "n1",
-        json!({"to": scout, "kind": "note", "body": "keep this"}),
-    );
+    publish(&env, &instance, json!({"to": scout, "body": "keep this"}));
     env.ok(&["stop", &instance]);
     env.write(
         "teams/oncall/team.yaml",
@@ -160,27 +138,18 @@ fn changed_roles_keep_the_store_and_replies_to_removed_members() {
     let record = publish(
         &env,
         &instance,
-        "n2",
-        json!({"to": lead, "kind": "note", "reply_to": ["m1"], "body": "reply after role removal"}),
+        json!({"to": lead, "reply_to": ["m1"], "body": "reply after role removal"}),
     );
     assert_eq!(record["id"], "m2");
     env.write(
         "root-note.json",
-        &json!({"to": "external:ops", "kind": "note", "body": "new root"}).to_string(),
+        &json!({"to": "external:ops", "body": "new root"}).to_string(),
     );
     let out = member_command(
         &env,
         &instance,
         &helper,
-        &[
-            "msg",
-            "publish",
-            "--key",
-            "new-root",
-            "--record",
-            "root-note.json",
-            "--json",
-        ],
+        &["msg", "publish", "--record", "root-note.json", "--json"],
     );
     assert!(out.status.success(), "{}", both(&out));
     let record: Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -284,11 +253,7 @@ fn damaged_store(case: &str) {
     assert!(err.contains("damaged"), "{err}");
     let check = env.brg(&["bus", "check", "--instance", &instance, "--json"]);
     assert!(!check.status.success(), "{}", both(&check));
-    let out = env.publish(
-        &instance,
-        "damage",
-        &json!({"to": lead, "kind": "note", "body": "refuse me"}),
-    );
+    let out = env.publish(&instance, &json!({"to": lead, "body": "refuse me"}));
     assert!(!out.status.success(), "{}", both(&out));
     assert!(bytes(&store) == before, "damaged store changed");
 }

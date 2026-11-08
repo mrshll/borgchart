@@ -201,9 +201,6 @@ pub struct MemberMeta {
     #[serde(default)]
     pub role: String,
     pub vendor: String,
-    /// The model selected at this start, for message-store inspection.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
     pub posture: String,
     pub parent: Option<String>,
     pub vendor_version: Option<String>,

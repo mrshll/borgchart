@@ -1,79 +1,13 @@
-//! The record envelope.
-//!
-//! A caller supplies a [`Draft`] (what to say, to whom); `brg msg publish`
-//! adds identity (schema, ID, sequence, time, actor, operation key) and
-//! artifact metadata, and stores the result as an immutable [`Record`].
-//! Bodies and facts are data: nothing in a record is ever typed into a
-//! terminal or executed.
-
-use std::path::PathBuf;
+//! Plain message drafts and stored records. Content is data, never executed.
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
 
 use crate::names::is_valid_id;
 
 /// Largest record file brg will write or read.
 pub const MAX_RECORD_BYTES: usize = 128 * 1024;
 pub const MAX_BODY_BYTES: usize = 64 * 1024;
-pub const MAX_FACTS_BYTES: usize = 16 * 1024;
-pub const MAX_ARTIFACTS: usize = 32;
 pub const MAX_REFS: usize = 32;
-pub const MAX_KEY_BYTES: usize = 128;
-pub const MAX_LABEL_BYTES: usize = 200;
-
-/// Who published a record.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum Actor {
-    /// A member, from its launch context.
-    Member { member: String, incarnation: String },
-    /// An outside caller that named itself with `--external`.
-    External { name: String },
-    /// brg itself (the attention worker).
-    Bus,
-}
-
-/// What a record says.
-///
-/// Within schema 1 the envelope is closed (unknown fields are refused, and a
-/// record brg can't read stops mutations). `facts` is the only place new
-/// details may be added; readers ignore fact keys they don't know.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Kind {
-    /// A plain message.
-    Note,
-}
-
-impl Kind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Kind::Note => "note",
-        }
-    }
-}
-
-/// An artifact as the caller names it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ArtifactRef {
-    /// An absolute path to a regular file.
-    pub path: PathBuf,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-}
-
-/// An artifact as stored: brg measures it at publication.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Artifact {
-    pub path: PathBuf,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-    pub bytes: u64,
-    pub sha256: String,
-}
 
 /// Who a record is addressed to.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -106,47 +40,29 @@ impl std::fmt::Display for Recipient {
     }
 }
 
-/// What a caller hands to `brg msg publish --record FILE|-`.
+/// A message supplied to `brg msg publish`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Draft {
-    /// The recipient: a member name, or `external:<name>` (see [`Recipient`]).
     pub to: String,
-    pub kind: Kind,
-    /// Record IDs this one answers or follows.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub reply_to: Vec<String>,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub body: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub artifacts: Vec<ArtifactRef>,
-    /// Structured details supplied by the publisher.
-    #[serde(default, skip_serializing_if = "Map::is_empty")]
-    pub facts: Map<String, Value>,
+    pub reply_to: Vec<String>,
 }
 
-/// A stored record. Immutable once written.
+/// A stored message, immutable once published.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Record {
     pub schema: u32,
-    /// `m<seq>`.
     pub id: String,
     pub seq: u64,
-    /// UTC, RFC 3339.
     pub at: String,
-    pub actor: Actor,
-    pub key: String,
+    pub from: String,
     pub to: String,
-    pub kind: Kind,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reply_to: Vec<String>,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub body: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub artifacts: Vec<Artifact>,
-    #[serde(default, skip_serializing_if = "Map::is_empty")]
-    pub facts: Map<String, Value>,
 }
 
 pub fn record_id(seq: u64) -> String {
@@ -162,29 +78,9 @@ pub fn parse_record_id(id: &str) -> Option<u64> {
     digits.parse().ok().filter(|n| *n > 0)
 }
 
-/// Operation keys: 1–128 bytes of `[A-Za-z0-9._:/@#+=-]`.
-pub fn is_valid_key(key: &str) -> bool {
-    !key.is_empty()
-        && key.len() <= MAX_KEY_BYTES
-        && key
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "._:/@#+=-".contains(c))
-}
-
 fn has_bad_control(text: &str) -> bool {
     text.chars()
         .any(|c| (c.is_control() && c != '\n' && c != '\t') || c == '\u{7f}')
-}
-
-fn facts_have_bad_control(v: &Value) -> bool {
-    match v {
-        Value::String(s) => has_bad_control(s),
-        Value::Array(items) => items.iter().any(facts_have_bad_control),
-        Value::Object(map) => map
-            .iter()
-            .any(|(k, v)| has_bad_control(k) || facts_have_bad_control(v)),
-        _ => false,
-    }
 }
 
 impl Draft {
@@ -209,30 +105,6 @@ impl Draft {
         if has_bad_control(&self.body) {
             return Err("`body` contains a control character".into());
         }
-        if self.artifacts.len() > MAX_ARTIFACTS {
-            return Err(format!("`artifacts`: at most {MAX_ARTIFACTS}"));
-        }
-        for a in &self.artifacts {
-            let shown = a.path.display().to_string();
-            if !a.path.is_absolute() {
-                return Err(format!("artifact `{shown}` must be an absolute path"));
-            }
-            if has_bad_control(&shown) || shown.contains('\n') || shown.contains('\t') {
-                return Err("an artifact path contains a control character".into());
-            }
-            if let Some(label) = &a.label
-                && (label.len() > MAX_LABEL_BYTES || has_bad_control(label))
-            {
-                return Err(format!("artifact `{shown}`: bad label"));
-            }
-        }
-        if facts_have_bad_control(&Value::Object(self.facts.clone())) {
-            return Err("`facts` contains a control character".into());
-        }
-        let facts = serde_json::to_vec(&self.facts).map_err(|e| e.to_string())?;
-        if facts.len() > MAX_FACTS_BYTES {
-            return Err(format!("`facts` is over {MAX_FACTS_BYTES} bytes"));
-        }
         Ok(())
     }
 }
@@ -240,7 +112,7 @@ impl Draft {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     fn draft(v: Value) -> Result<Draft, String> {
         serde_json::from_value::<Draft>(v).map_err(|e| e.to_string())
@@ -250,42 +122,25 @@ mod tests {
     fn ids() {
         assert_eq!(record_id(42), "m42");
         assert_eq!(parse_record_id("m42"), Some(42));
-        assert_eq!(parse_record_id("m0"), None);
-        assert_eq!(parse_record_id("m042"), None);
-        assert_eq!(parse_record_id("42"), None);
-        assert!(is_valid_key("approved-task-1"));
-        assert!(is_valid_key("gh:example/repo#12@2026-11-05"));
-        assert!(!is_valid_key("has space"));
-        assert!(!is_valid_key(""));
-        assert!(!is_valid_key(&"k".repeat(129)));
+        for bad in ["m0", "m042", "42"] {
+            assert_eq!(parse_record_id(bad), None);
+        }
     }
 
     #[test]
     fn drafts() {
-        let d = draft(json!({"to": "lead", "kind": "note", "body": "hello\nthere"})).unwrap();
-        d.check_shape().unwrap();
-        assert!(
-            draft(json!({"to": "lead", "kind": "note", "extra": 1})).is_err(),
-            "unknown fields are refused"
-        );
-        assert!(draft(json!({"to": "lead", "kind": "shout"})).is_err());
-        let d = draft(json!({"to": "lead", "kind": "note", "body": "a\u{1b}[201~"})).unwrap();
-        assert!(d.check_shape().is_err());
-        let d =
-            draft(json!({"to": "lead", "kind": "note", "artifacts": [{"path": "rel/x"}]})).unwrap();
-        assert!(d.check_shape().is_err());
-        let d = draft(json!({"to": "lead", "kind": "note", "reply_to": ["x1"]})).unwrap();
-        assert!(d.check_shape().is_err());
-        for facts in [
-            json!({"nested": [{"text": "\u{1b}[2J"}]}),
-            json!({"k\u{7}": 1}),
-            json!({"a": {"b": ["ok", "\r"]}}),
+        draft(json!({"to": "lead", "body": "hello\nthere"}))
+            .unwrap()
+            .check_shape()
+            .unwrap();
+        assert!(draft(json!({"to": "lead", "body": "hello", "extra": 1})).is_err());
+        assert!(draft(json!({"to": "lead"})).is_err());
+        for v in [
+            json!({"to": "lead", "body": "a\u{1b}[201~"}),
+            json!({"to": "lead", "body": "hi", "reply_to": ["x1"]}),
         ] {
-            let d = draft(json!({"to": "lead", "kind": "note", "facts": facts})).unwrap();
-            assert!(d.check_shape().is_err(), "{facts}");
+            assert!(draft(v).unwrap().check_shape().is_err());
         }
-        let d = draft(json!({"to": "lead", "kind": "note", "facts": {"t": "a\nb\tc"}})).unwrap();
-        d.check_shape().unwrap();
     }
 
     #[test]
@@ -295,34 +150,15 @@ mod tests {
             Some(Recipient::Member("lead".into()))
         );
         assert_eq!(
-            Recipient::parse("external:supervisor"),
-            Some(Recipient::External("supervisor".into()))
+            Recipient::parse("external:ops"),
+            Some(Recipient::External("ops".into()))
         );
-        assert_eq!(Recipient::parse("external:"), None);
-        assert_eq!(Recipient::parse("external:Bad"), None);
-        assert_eq!(Recipient::parse("Lead"), None);
+        for bad in ["external:", "external:Bad", "Lead"] {
+            assert_eq!(Recipient::parse(bad), None);
+        }
         assert_eq!(
             Recipient::External("ops".into()).to_string(),
             "external:ops"
-        );
-        let d = draft(json!({"to": "external:ops", "kind": "note", "body": "ok?"})).unwrap();
-        d.check_shape().unwrap();
-    }
-
-    #[test]
-    fn actor_shape() {
-        let a = Actor::Member {
-            member: "lead".into(),
-            incarnation: "lead-1".into(),
-        };
-        let v = serde_json::to_value(&a).unwrap();
-        assert_eq!(
-            v,
-            json!({"type": "member", "member": "lead", "incarnation": "lead-1"})
-        );
-        assert_eq!(
-            serde_json::to_value(Actor::Bus).unwrap(),
-            json!({"type": "bus"})
         );
     }
 }

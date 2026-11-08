@@ -4,7 +4,7 @@
 
 use std::process::Command;
 
-use borgchart::bus::record::{Draft, Kind};
+use borgchart::bus::record::Draft;
 
 fn help(args: &[&str]) -> String {
     let out = Command::new(env!("CARGO_BIN_EXE_brg"))
@@ -33,28 +33,16 @@ fn serde_names(err: String) -> Vec<String> {
 }
 
 #[test]
-fn publish_help_names_every_kind_and_field() {
+fn publish_help_names_every_draft_field() {
     let text = help(&["msg", "publish"]);
-    let kinds = serde_names(
-        serde_json::from_str::<Kind>("\"no-such-kind\"")
-            .unwrap_err()
-            .to_string(),
-    );
-    assert_eq!(kinds, ["note"]);
     let lines: Vec<&str> = text.lines().collect();
-    let starts = |l: &str, name: &str| l.trim_start().starts_with(&format!("{name} "));
-    for name in &kinds {
-        lines
-            .iter()
-            .position(|l| starts(l, name))
-            .unwrap_or_else(|| panic!("kind `{name}` missing from msg publish --help"));
-    }
+    let starts = |line: &str, name: &str| line.trim_start().starts_with(&format!("{name} "));
     let fields = serde_names(
         serde_json::from_str::<Draft>(r#"{"no_such_field": 1}"#)
             .unwrap_err()
             .to_string(),
     );
-    assert!(fields.contains(&"facts".to_string()), "{fields:?}");
+    assert_eq!(fields, ["to", "body", "reply_to"]);
     for field in &fields {
         assert!(
             lines.iter().any(|l| starts(l, field)),

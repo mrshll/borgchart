@@ -25,13 +25,13 @@ pub const WAITER: &str = "waiter";
 /// Commands the background-wait member may run, as session-only
 /// `--allowedTools` entries in its role's `args`: the wait and the
 /// read of its own inbox. Nothing is saved to settings.
-pub const WAITER_TOOLS: &str = "Bash(brg inbox wait --background:*),Bash(brg inbox --full:*)";
+pub const WAITER_TOOLS: &str = "Bash(brg inbox wait:*),Bash(brg inbox --full:*)";
 
 const READY: &str = "This is an automated test. Reply with the single word READY. Use no tools.";
 
 const WAITER_PROMPT: &str = "This is an automated test of background commands. Follow these steps exactly, and use no other tools.
 
-1. Run this with your Bash tool, with run_in_background set to true: `brg inbox wait --background --timeout 900`
+1. Run this with your Bash tool, with run_in_background set to true: `brg inbox wait --timeout 900`
 2. End your turn right away with the one word ARMED. Don't wait for, poll or check on the background command.
 3. When that background command has finished, run `brg inbox --full` with your Bash tool. One record's body is `nonce <word>`.
 4. Reply with one line: REPLY, a space, and that word written backwards, letter by letter. Then stop.";
@@ -689,16 +689,18 @@ fn armed_wait(pane: u32) -> Option<u32> {
                 .first()
                 .and_then(|a| Path::new(a).file_name())
                 .is_some_and(|n| n == "brg")
-                && p.argv
-                    .windows(3)
-                    .any(|w| w == ["inbox", "wait", "--background"])
+                && p.argv.windows(2).any(|w| w == ["inbox", "wait"])
         })
         .map(|p| p.pid)
 }
 
 fn still_runs(pid: u32) -> bool {
-    std::fs::read(format!("/proc/{pid}/cmdline"))
-        .is_ok_and(|c| String::from_utf8_lossy(&c).contains("--background"))
+    std::fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|c| {
+        c.split(|&byte| byte == 0)
+            .collect::<Vec<_>>()
+            .windows(2)
+            .any(|words| words == [b"inbox".as_slice(), b"wait".as_slice()])
+    })
 }
 
 pub fn background_wait(w: &World) -> Outcome {
@@ -778,11 +780,9 @@ pub fn background_wait(w: &World) -> Outcome {
     // 3. Only now: a fresh nonce, sent only as a bus message.
     let nonce = world::nonce();
     let reply = format!("REPLY {}", world::reversed(&nonce));
-    let draft =
-        serde_json::json!({"to": t.member(), "kind": "note", "body": format!("nonce {nonce}")});
+    let draft = serde_json::json!({"to": t.member(), "body": format!("nonce {nonce}")});
     let mut cmd = t.brg_command();
-    cmd.args(["msg", "publish", "--external", "live", "--key"])
-        .arg(format!("live-{nonce}"))
+    cmd.args(["msg", "publish", "--external", "live"])
         .args(["--record", "-", "--json", "--instance"])
         .arg(t.instance());
     let published =
@@ -793,14 +793,6 @@ pub fn background_wait(w: &World) -> Outcome {
     if published["ok"] != true {
         return Outcome::Fail(format!("publish failed: {published}"));
     }
-    // brg's own wake must not be what starts the turn.
-    if published["attention"] != "none" {
-        return Outcome::Blocked(format!(
-            "brg arranged attention `{}` for the message; the case needs brg's wake off for this member",
-            published["attention"]
-        ));
-    }
-
     // 4. A new assistant turn naming the nonce, started after the wait
     // exited. Each poll checks the wait before and after one look of the
     // pane, so a look is known to be from while it ran (alive after) or
@@ -888,7 +880,7 @@ pub fn background_wait(w: &World) -> Outcome {
                         ));
                     };
                     return Outcome::Pass(format!(
-                        "armed while idle; nonce sent only on the bus (attention none); idle while the wait ran; \
+                        "armed while idle; nonce sent only on the bus; idle while the wait ran; \
                          wait gone at poll {exit_poll}, new turn seen {} ms later, reply {} ms later ({})",
                         ms(turn_at - exit_at),
                         ms(now - exit_at),

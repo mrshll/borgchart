@@ -5,7 +5,6 @@
 //! caller context, record envelope, outcome codes and the no-replace write
 //! primitive). See `docs/bus.md` for the contract each piece builds on.
 
-pub mod attention_hooks;
 pub mod cli;
 pub mod context;
 pub mod fsx;

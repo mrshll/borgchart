@@ -9,7 +9,6 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 /// The instance, as messages name it.
 const TEAM: &str = "oncall-2a3b";
@@ -156,13 +155,19 @@ impl Fixture {
             .args(args)
             .args(["--instance", TEAM]);
         let (m, inc) = match who {
-            As::Operator => return cmd,
+            As::Operator => {
+                cmd.env("BORGCHART_WAIT_MIN_MS", "20")
+                    .env("BORGCHART_WAIT_TIMEOUT_MS", "1000");
+                return cmd;
+            }
             As::Member(m) => (m.to_string(), format!("{m}-1")),
             As::MemberWith(m, i) => (m.to_string(), i.to_string()),
         };
         cmd.env("BORGCHART_INSTANCE", TEAM)
             .env("BORGCHART_MEMBER", m)
             .env("BORGCHART_INCARNATION", inc);
+        cmd.env("BORGCHART_WAIT_MIN_MS", "20")
+            .env("BORGCHART_WAIT_TIMEOUT_MS", "1000");
         cmd
     }
 
@@ -181,8 +186,8 @@ impl Fixture {
         output(child.wait_with_output().unwrap())
     }
 
-    fn publish(&self, who: &As, key: &str, draft: &Value) -> Out {
-        let mut args = vec!["msg", "publish", "--key", key, "--json"];
+    fn publish(&self, who: &As, draft: &Value) -> Out {
+        let mut args = vec!["msg", "publish", "--json"];
         if let As::Operator = who {
             // Outside callers name themselves.
             args.extend(["--external", "ops"]);
@@ -265,7 +270,7 @@ fn feed(input: &mut impl Write, bytes: &[u8]) {
 }
 
 fn note(to: &str, body: &str) -> Value {
-    json!({"to": to, "kind": "note", "body": body})
+    json!({"to": to, "body": body})
 }
 
 fn ids(v: &Value) -> Vec<String> {
@@ -278,49 +283,10 @@ fn ids(v: &Value) -> Vec<String> {
 }
 
 #[test]
-fn publish_retry_and_conflict() {
-    let f = Fixture::new();
-    let out = f.publish(&As::Operator, "demo-1", &note("lead", "hello"));
-    assert_eq!(out.code, 0, "{:?} {}", out.json, out.stderr);
-    assert_eq!(out.json["outcome"], "committed");
-    assert_eq!(out.json["id"], "m1");
-    assert_eq!(out.json["attention"], "none");
-
-    let again = f.publish(&As::Operator, "demo-1", &note("lead", "hello"));
-    assert_eq!(again.code, 0);
-    assert_eq!(again.json["outcome"], "duplicate");
-    assert_eq!(again.json["id"], "m1");
-
-    let changed = f.publish(&As::Operator, "demo-1", &note("lead", "hello!"));
-    assert_eq!(changed.code, 6, "{:?}", changed.json);
-    assert_eq!(changed.json["outcome"], "conflict");
-
-    // Keys are per slot: the same key from another caller is a new record.
-    let other = f.publish(&As::Member("helper"), "demo-1", &note("lead", "hello"));
-    assert_eq!(other.json["id"], "m2", "{:?}", other.json);
-    assert_eq!(f.records().len(), 2);
-
-    let rec = f.brg(&As::Operator, &["msg", "read", "m1", "--json"], None);
-    assert_eq!(rec.code, 0);
-    let r = &rec.json["record"];
-    assert_eq!(r["actor"], json!({"type": "external", "name": "ops"}));
-    assert!(r.get("run").is_none(), "{r}");
-    assert_eq!(r["schema"], 2);
-    assert_eq!(r["key"], "demo-1");
-    assert_eq!(r["body"], "hello");
-    assert_eq!(r["acked"], false);
-    assert_eq!(
-        f.brg(&As::Operator, &["msg", "read", "m9", "--json"], None)
-            .code,
-        10
-    );
-}
-
-#[test]
 fn records_on_disk_are_private() {
     use std::os::unix::fs::PermissionsExt;
     let f = Fixture::new();
-    assert_eq!(f.publish(&As::Operator, "k", &note("lead", "x")).code, 0);
+    assert_eq!(f.publish(&As::Operator, &note("lead", "x")).code, 0);
     let rec = f.store_dir().join("records/0000000001.json");
     assert_eq!(
         fs::metadata(&rec).unwrap().permissions().mode() & 0o777,
@@ -337,80 +303,24 @@ fn records_on_disk_are_private() {
 }
 
 #[test]
-fn changed_artifact_bytes_conflict() {
-    let f = Fixture::new();
-    let art = f.dir.path().join("report.md");
-    fs::write(&art, "first").unwrap();
-    let draft = json!({"to": "lead", "kind": "note",
-        "artifacts": [{"path": art, "label": "report"}]});
-    let out = f.publish(&As::Member("helper"), "r-1", &draft);
-    assert_eq!(out.code, 0, "{:?}", out.json);
-    let rec = f.brg(&As::Operator, &["msg", "read", "m1", "--json"], None);
-    let a = &rec.json["record"]["artifacts"][0];
-    assert_eq!(a["bytes"], 5);
-    assert_eq!(a["sha256"], format!("{:x}", Sha256::digest(b"first")));
-    assert_eq!(a["label"], "report");
-
-    assert_eq!(
-        f.publish(&As::Member("helper"), "r-1", &draft).json["outcome"],
-        "duplicate"
-    );
-    fs::write(&art, "second").unwrap();
-    assert_eq!(f.publish(&As::Member("helper"), "r-1", &draft).code, 6);
-
-    let missing = json!({"to": "lead", "kind": "note",
-        "artifacts": [{"path": f.dir.path().join("nope")}]});
-    assert_eq!(f.publish(&As::Member("helper"), "r-2", &missing).code, 5);
-    let dir_artifact = json!({"to": "lead", "kind": "note",
-        "artifacts": [{"path": f.dir.path()}]});
-    assert_eq!(
-        f.publish(&As::Member("helper"), "r-3", &dir_artifact).code,
-        5
-    );
-    assert_eq!(f.records().len(), 1);
-}
-
-#[test]
 fn invalid_drafts_write_nothing() {
     let f = Fixture::new();
-    assert_eq!(f.publish(&As::Operator, "seed", &note("lead", "x")).code, 0);
+    assert_eq!(f.publish(&As::Operator, &note("lead", "x")).code, 0);
     let cases: Vec<(&str, Value)> = vec![
-        (
-            "unknown field",
-            json!({"to": "lead", "kind": "note", "extra": 1}),
-        ),
-        ("unknown kind", json!({"to": "lead", "kind": "shout"})),
-        ("bad recipient", json!({"to": "Lead", "kind": "note"})),
+        ("unknown field", json!({"to": "lead", "extra": 1})),
+        ("bad recipient", json!({"to": "Lead", "body": "bad"})),
         (
             "too many refs",
-            json!({"to": "lead", "kind": "note", "reply_to": (1..=33).map(|n| format!("m{n}")).collect::<Vec<_>>()}),
+            json!({"to": "lead", "reply_to": (1..=33).map(|n| format!("m{n}")).collect::<Vec<_>>()}),
         ),
-        (
-            "bad ref",
-            json!({"to": "lead", "kind": "note", "reply_to": ["x1"]}),
-        ),
-        (
-            "unknown ref",
-            json!({"to": "lead", "kind": "note", "reply_to": ["m7"]}),
-        ),
+        ("bad ref", json!({"to": "lead", "reply_to": ["x1"]})),
+        ("unknown ref", json!({"to": "lead", "reply_to": ["m7"]})),
         ("body too big", note("lead", &"x".repeat(64 * 1024 + 1))),
         ("control char", note("lead", "bell\u{7}")),
-        (
-            "relative artifact",
-            json!({"to": "lead", "kind": "note", "artifacts": [{"path": "rel/x"}]}),
-        ),
-        (
-            "too many artifacts",
-            json!({"to": "lead", "kind": "note", "artifacts": (0..33).map(|_| json!({"path": "/x"})).collect::<Vec<_>>()}),
-        ),
-        (
-            "facts too big",
-            json!({"to": "lead", "kind": "note", "facts": {"x": "y".repeat(16 * 1024)}}),
-        ),
         ("not a member", note("nobody", "x")),
     ];
     for (name, draft) in &cases {
-        let out = f.publish(&As::Operator, "k-invalid", draft);
+        let out = f.publish(&As::Operator, draft);
         assert_eq!(out.code, 5, "{name}: {:?} {}", out.json, out.stderr);
         assert_eq!(out.json["outcome"], "invalid", "{name}");
     }
@@ -420,38 +330,20 @@ fn invalid_drafts_write_nothing() {
         ("sub", "lead"),
         ("helper", "external:ops"),
     ] {
-        let out = f.publish(&As::Member(from), "k-route", &note(to, "x"));
+        let out = f.publish(&As::Member(from), &note(to, "x"));
         assert_eq!(out.code, 5, "{from} -> {to}: {:?}", out.json);
     }
-    let out = f.publish(&As::Operator, "k-ext", &note("external:other", "x"));
+    let out = f.publish(&As::Operator, &note("external:other", "x"));
     assert_eq!(out.code, 5, "external -> external");
-    let bad_key = f.publish(&As::Operator, "has space", &note("lead", "x"));
-    assert_eq!(bad_key.code, 5);
     let garbage = f.brg(
         &As::Operator,
-        &[
-            "msg",
-            "publish",
-            "--key",
-            "g",
-            "--external",
-            "ops",
-            "--json",
-        ],
+        &["msg", "publish", "--external", "ops", "--json"],
         Some(b"{not json"),
     );
     assert_eq!(garbage.code, 5);
     let huge = f.brg(
         &As::Operator,
-        &[
-            "msg",
-            "publish",
-            "--key",
-            "g",
-            "--external",
-            "ops",
-            "--json",
-        ],
+        &["msg", "publish", "--external", "ops", "--json"],
         Some(&vec![b' '; 200 * 1024]),
     );
     assert_eq!(huge.code, 5);
@@ -473,11 +365,7 @@ fn concurrent_publishers_get_contiguous_numbers() {
                     } else {
                         As::Operator
                     };
-                    let out = f.publish(
-                        &who,
-                        &format!("w{w}-{i}"),
-                        &note("lead", &format!("{w}/{i}")),
-                    );
+                    let out = f.publish(&who, &note("lead", &format!("{w}/{i}")));
                     assert_eq!(out.code, 0, "{:?} {}", out.json, out.stderr);
                 }
             });
@@ -487,12 +375,12 @@ fn concurrent_publishers_get_contiguous_numbers() {
         .map(|n| format!("{n:010}.json"))
         .collect();
     assert_eq!(f.records(), expected);
-    let all = f.inbox(&As::Operator, &["--member", "lead", "--limit", "100"]);
+    let all = f.inbox(&As::Operator, &["--member", "lead", "--full"]);
     let bodies: BTreeSet<String> = all["records"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|r| r["key"].as_str().unwrap().to_string())
+        .map(|r| r["body"].as_str().unwrap().to_string())
         .collect();
     assert_eq!(bodies.len(), writers * per, "no lost or duplicate records");
     let check = f.brg(&As::Operator, &["bus", "check", "--json"], None);
@@ -500,21 +388,12 @@ fn concurrent_publishers_get_contiguous_numbers() {
 }
 
 #[test]
-fn crash_leftovers_are_tolerated_and_repaired() {
+fn crash_leftovers_are_tolerated() {
     let f = Fixture::new();
-    assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "one")).code, 0);
+    assert_eq!(f.publish(&As::Operator, &note("lead", "one")).code, 0);
     // A crash before linking leaves a stray temporary file.
     fs::write(f.store_dir().join("records/.tmp-999-0-1"), "partial").unwrap();
-    // A crash after the record but before the key index: the record stands.
-    let keys = f.store_dir().join("keys/external.ops");
-    for e in fs::read_dir(&keys).unwrap().flatten() {
-        fs::remove_file(e.path()).unwrap();
-    }
-    let retry = f.publish(&As::Operator, "k1", &note("lead", "one"));
-    assert_eq!(retry.json["outcome"], "duplicate", "{:?}", retry.json);
-    assert_eq!(retry.json["id"], "m1");
-    assert_eq!(fs::read_dir(&keys).unwrap().count(), 1, "index repaired");
-    let next = f.publish(&As::Operator, "k2", &note("lead", "two"));
+    let next = f.publish(&As::Operator, &note("lead", "two"));
     assert_eq!(next.json["id"], "m2");
 
     let check = f.brg(&As::Operator, &["bus", "check", "--json"], None);
@@ -528,7 +407,7 @@ fn corrupt_store_stops_mutations_but_not_reads() {
     for damage in ["garbage", "gap", "bad-ack"] {
         let f = Fixture::new();
         for k in ["k1", "k2", "k3"] {
-            assert_eq!(f.publish(&As::Operator, k, &note("lead", k)).code, 0);
+            assert_eq!(f.publish(&As::Operator, &note("lead", k)).code, 0);
         }
         let records = f.store_dir().join("records");
         match damage {
@@ -539,7 +418,7 @@ fn corrupt_store_stops_mutations_but_not_reads() {
                 fs::write(f.store_dir().join("acks/m1.json"), "[]").unwrap()
             }
         }
-        let out = f.publish(&As::Operator, "k4", &note("lead", "x"));
+        let out = f.publish(&As::Operator, &note("lead", "x"));
         assert_eq!(out.code, 7, "{damage}: {:?}", out.json);
         assert_eq!(out.json["outcome"], "corrupt");
         let ack = f.brg(&As::Member("lead"), &["msg", "ack", "m3", "--json"], None);
@@ -548,9 +427,6 @@ fn corrupt_store_stops_mutations_but_not_reads() {
         let inbox = f.inbox(&As::Operator, &["--member", "lead"]);
         assert_eq!(inbox["store"], "incomplete", "{damage}");
         assert!(ids(&inbox).contains(&"m3".to_string()));
-        let inspect = f.brg(&As::Operator, &["bus", "inspect", "--json"], None);
-        assert_eq!(inspect.code, 0);
-        assert_eq!(inspect.json["store"]["healthy"], false);
         let check = f.brg(&As::Operator, &["bus", "check", "--json"], None);
         assert_eq!(check.code, 7, "{damage}: {:?}", check.json);
         assert!(!check.json["errors"].as_array().unwrap().is_empty());
@@ -558,55 +434,11 @@ fn corrupt_store_stops_mutations_but_not_reads() {
 }
 
 #[test]
-fn pagination_survives_concurrent_arrivals() {
-    let f = Fixture::new();
-    for i in 1..=5 {
-        f.publish(&As::Operator, &format!("p{i}"), &note("lead", "x"));
-    }
-    let mut seen = Vec::new();
-    let mut after: Option<String> = None;
-    let mut extra = 6;
-    loop {
-        let mut args = vec!["--member", "lead", "--limit", "2"];
-        if let Some(a) = &after {
-            args.extend(["--after", a.as_str()]);
-        }
-        let page = f.inbox(&As::Operator, &args);
-        seen.extend(ids(&page));
-        // New records arrive between pages.
-        if extra <= 7 {
-            f.publish(&As::Operator, &format!("p{extra}"), &note("lead", "x"));
-            extra += 1;
-        }
-        match page["next"].as_str() {
-            Some(n) => after = Some(n.to_string()),
-            None => break,
-        }
-    }
-    let expected: Vec<String> = (1..=7).map(|n| format!("m{n}")).collect();
-    assert_eq!(seen, expected);
-    assert_eq!(
-        f.brg(
-            &As::Operator,
-            &["inbox", "--member", "lead", "--limit", "101"],
-            None
-        )
-        .code,
-        2
-    );
-    let default_page = f.inbox(&As::Operator, &["--member", "lead"]);
-    assert_eq!(default_page["unacked"], 7);
-    assert!(default_page["records"][0].get("body").is_none());
-    let full = f.inbox(&As::Operator, &["--member", "lead", "--full"]);
-    assert_eq!(full["records"][0]["body"], "x");
-}
-
-#[test]
 fn acks_are_idempotent_and_recipient_only() {
     let f = Fixture::new();
-    f.publish(&As::Operator, "k1", &note("lead", "a"));
-    f.publish(&As::Operator, "k2", &note("lead", "b"));
-    f.publish(&As::Operator, "k3", &note("helper", "c"));
+    f.publish(&As::Operator, &note("lead", "a"));
+    f.publish(&As::Operator, &note("lead", "b"));
+    f.publish(&As::Operator, &note("helper", "c"));
 
     let own = f.inbox(&As::Member("lead"), &[]);
     assert_eq!(ids(&own), ["m1", "m2"]);
@@ -627,7 +459,6 @@ fn acks_are_idempotent_and_recipient_only() {
         ids(&f.inbox(&As::Member("lead"), &[])),
         Vec::<String>::new()
     );
-    assert_eq!(ids(&f.inbox(&As::Member("lead"), &["--all"])), ["m1", "m2"]);
 
     // Not the recipient: refused, nothing written.
     let wrong = f.brg(&As::Member("lead"), &["msg", "ack", "m3", "--json"], None);
@@ -655,434 +486,12 @@ fn acks_are_idempotent_and_recipient_only() {
 }
 
 #[test]
-fn inbox_wait_returns_early_or_times_out() {
-    let f = Fixture::new();
-    let start = Instant::now();
-    let out = f.brg(
-        &As::Member("lead"),
-        &["inbox", "wait", "--timeout", "1", "--json"],
-        None,
-    );
-    assert_eq!(out.code, 9, "{:?} {}", out.json, out.stderr);
-    assert_eq!(out.json["outcome"], "timeout");
-    assert!(start.elapsed() >= Duration::from_millis(900));
-
-    let start = Instant::now();
-    let waiter = f
-        .command(
-            &As::Member("lead"),
-            &["inbox", "wait", "--timeout", "20", "--json"],
-        )
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    std::thread::sleep(Duration::from_millis(400));
-    assert_eq!(
-        f.publish(&As::Operator, "w1", &note("lead", "wake")).code,
-        0
-    );
-    let out = waiter.wait_with_output().unwrap();
-    assert_eq!(out.status.code(), Some(0));
-    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(ids(&v), ["m1"]);
-    assert!(start.elapsed() < Duration::from_secs(5));
-
-    // After the cursor, nothing new: times out again.
-    let out = f.brg(
-        &As::Member("lead"),
-        &["inbox", "wait", "--after", "m1", "--timeout", "1", "--json"],
-        None,
-    );
-    assert_eq!(out.code, 9);
-    for bad in ["0", "601"] {
-        let out = f.brg(
-            &As::Member("lead"),
-            &["inbox", "wait", "--timeout", bad],
-            None,
-        );
-        assert_eq!(out.code, 2, "--timeout {bad}");
-    }
-    let out = f.brg(&As::Member("lead"), &["inbox", "wait"], None);
-    assert_eq!(out.code, 2, "--timeout is required");
-}
-
-#[cfg(feature = "test-support")]
-mod background_wait {
-    use super::*;
-
-    fn command(f: &Fixture, who: &As, extra: &[&str]) -> Command {
-        let mut args = vec!["inbox", "wait", "--background", "--json"];
-        args.extend(extra);
-        let mut cmd = f.command(who, &args);
-        cmd.env("BORGCHART_WAIT_MIN_MS", "400")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        cmd
-    }
-
-    fn observation(f: &Fixture) -> PathBuf {
-        f.store_dir().join("attention/observed/lead/lead-1.json")
-    }
-
-    fn bytes(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
-        let mut files = BTreeMap::new();
-        if let Ok(entries) = fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    files.insert(path.clone(), Vec::new());
-                    files.extend(bytes(&path));
-                } else {
-                    files.insert(path.clone(), fs::read(path).unwrap());
-                }
-            }
-        }
-        files
-    }
-
-    #[test]
-    fn background_wait_ignores_shown_records_and_never_marks_arrivals() {
-        let f = Fixture::new();
-        assert_eq!(
-            f.publish(&As::Operator, "old", &note("lead", "old body"))
-                .code,
-            0
-        );
-        assert_eq!(ids(&f.inbox(&As::Member("lead"), &[])), ["m1"]);
-        let seen = fs::read(observation(&f)).unwrap();
-        let mut child = command(&f, &As::Member("lead"), &[]).spawn().unwrap();
-        std::thread::sleep(Duration::from_millis(650));
-        assert!(
-            child.try_wait().unwrap().is_none(),
-            "an unacked, shown record woke the wait"
-        );
-        assert_eq!(
-            f.publish(&As::Operator, "new", &note("lead", "new body"))
-                .code,
-            0
-        );
-        let before = bytes(&f.store_dir());
-        let out = finish_within(child, Duration::from_secs(3));
-        assert_eq!(out.code, 0, "{:?} {}", out.json, out.stderr);
-        assert_eq!(
-            out.json,
-            json!({"ok": true, "code": 0, "outcome": "ok", "ids": ["m2"], "count": 1})
-        );
-        assert_eq!(bytes(&f.store_dir()), before);
-        assert_eq!(fs::read(observation(&f)).unwrap(), seen);
-        assert_eq!(ids(&f.inbox(&As::Member("lead"), &[])), ["m1", "m2"]);
-        let observed: Value = serde_json::from_slice(&fs::read(observation(&f)).unwrap()).unwrap();
-        assert_eq!(observed["ids"], json!(["m1", "m2"]));
-    }
-
-    #[test]
-    fn background_wait_returns_old_ids_at_minimum_in_text_or_json() {
-        let f = Fixture::new();
-        for key in ["one", "two"] {
-            assert_eq!(
-                f.publish(&As::Operator, key, &note("lead", "private body"))
-                    .code,
-                0
-            );
-        }
-        let start = Instant::now();
-        let mut cmd = command(&f, &As::Member("lead"), &["--timeout", "86400"]);
-        let out = finish_within(cmd.spawn().unwrap(), Duration::from_secs(3));
-        assert_eq!(out.code, 0, "{:?} {}", out.json, out.stderr);
-        assert_eq!(out.json["ids"], json!(["m1", "m2"]));
-        assert!(start.elapsed() >= Duration::from_millis(400));
-        let start = Instant::now();
-        let child = f
-            .command(&As::Member("lead"), &["inbox", "wait", "--background"])
-            .env("BORGCHART_WAIT_MIN_MS", "400")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let out = finish_within(child, Duration::from_secs(3));
-        assert_eq!(out.code, 0);
-        assert_eq!(out.json, "m1 m2\n");
-        assert!(start.elapsed() >= Duration::from_millis(400));
-        assert!(!observation(&f).exists());
-    }
-
-    #[test]
-    fn background_wait_leading_file_error_backs_off() {
-        let f = Fixture::new();
-        let mut cmd = f.command(
-            &As::Member("lead"),
-            &["--file", "removed", "inbox", "wait", "--background"],
-        );
-        cmd.env("BORGCHART_WAIT_MIN_MS", "400")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let start = Instant::now();
-        let out = finish_within(cmd.spawn().unwrap(), Duration::from_secs(3));
-        assert_eq!(out.code, 2);
-        assert!(start.elapsed() >= Duration::from_millis(400));
-    }
-
-    #[test]
-    fn background_wait_boolean_value_error_backs_off() {
-        let f = Fixture::new();
-        let mut cmd = f.command(&As::Member("lead"), &["inbox", "wait", "--background=true"]);
-        cmd.env("BORGCHART_WAIT_MIN_MS", "400")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let start = Instant::now();
-        let out = finish_within(cmd.spawn().unwrap(), Duration::from_secs(3));
-        assert_eq!(out.code, 2);
-        assert!(start.elapsed() >= Duration::from_millis(400));
-    }
-
-    #[test]
-    fn background_wait_explicit_help_is_immediate() {
-        let f = Fixture::new();
-        for flag in ["--help", "-h"] {
-            for background in ["--background", "--background=true"] {
-                let mut cmd = f.command(&As::Member("lead"), &["inbox", "wait", background, flag]);
-                cmd.env("BORGCHART_WAIT_MIN_MS", "10000")
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped());
-                let start = Instant::now();
-                let out = finish_within(cmd.spawn().unwrap(), Duration::from_secs(3));
-                assert!(matches!(out.code, 0 | 2));
-                assert!(start.elapsed() < Duration::from_secs(3));
-            }
-        }
-    }
-
-    #[test]
-    fn background_wait_persistent_observation_failure_is_rate_limited() {
-        let f = Fixture::new();
-        assert_eq!(
-            f.publish(&As::Operator, "old", &note("lead", "old body"))
-                .code,
-            0
-        );
-        borgchart::bus::fsx::create_private_dirs(&observation(&f)).unwrap();
-        for _ in 0..3 {
-            assert_eq!(ids(&f.inbox(&As::Member("lead"), &[])), ["m1"]);
-            assert!(
-                observation(&f).is_dir(),
-                "observation writes must keep failing"
-            );
-            let before = bytes(&f.store_dir());
-            let start = Instant::now();
-            let out = finish_within(
-                command(&f, &As::Member("lead"), &[]).spawn().unwrap(),
-                Duration::from_secs(3),
-            );
-            assert_eq!(out.code, 0, "{:?} {}", out.json, out.stderr);
-            assert_eq!(out.json["ids"], json!(["m1"]));
-            assert!(start.elapsed() >= Duration::from_millis(400));
-            assert_eq!(bytes(&f.store_dir()), before);
-        }
-    }
-
-    #[test]
-    fn background_wait_new_arrival_bypasses_minimum_and_includes_old_ids() {
-        let f = Fixture::new();
-        assert_eq!(
-            f.publish(&As::Operator, "old", &note("lead", "old body"))
-                .code,
-            0
-        );
-        let mut cmd = command(&f, &As::Member("lead"), &[]);
-        cmd.env("BORGCHART_WAIT_MIN_MS", "10000");
-        let start = Instant::now();
-        let mut child = cmd.spawn().unwrap();
-        std::thread::sleep(Duration::from_millis(300));
-        assert!(child.try_wait().unwrap().is_none());
-        assert_eq!(
-            f.publish(&As::Operator, "new", &note("lead", "new body"))
-                .code,
-            0
-        );
-        let out = finish_within(child, Duration::from_secs(3));
-        assert_eq!(out.code, 0, "{:?} {}", out.json, out.stderr);
-        assert_eq!(out.json["ids"], json!(["m1", "m2"]));
-        assert!(start.elapsed() < Duration::from_secs(3));
-        assert!(!observation(&f).exists());
-    }
-
-    #[test]
-    fn background_wait_requires_draining_every_inbox_page() {
-        let f = Fixture::new();
-        for n in 1..=21 {
-            assert_eq!(
-                f.publish(&As::Operator, &format!("note-{n}"), &note("lead", "body"))
-                    .code,
-                0
-            );
-        }
-        let first = f.inbox(&As::Member("lead"), &[]);
-        assert_eq!(first["records"].as_array().unwrap().len(), 20);
-        assert_eq!(first["next"], "m20");
-        let start = Instant::now();
-        let out = finish_within(
-            command(&f, &As::Member("lead"), &[]).spawn().unwrap(),
-            Duration::from_secs(3),
-        );
-        assert_eq!(out.code, 0, "{:?} {}", out.json, out.stderr);
-        assert_eq!(out.json["ids"], json!(["m21"]));
-        assert!(start.elapsed() >= Duration::from_millis(400));
-        let last = f.inbox(&As::Member("lead"), &["--after", "m20"]);
-        assert_eq!(ids(&last), ["m21"]);
-        assert!(last["next"].is_null());
-        let mut cmd = command(&f, &As::Member("lead"), &["--timeout", "60"]);
-        cmd.env("BORGCHART_WAIT_TIMEOUT_MS", "500");
-        let out = finish_within(cmd.spawn().unwrap(), Duration::from_secs(3));
-        assert_eq!(
-            out.code, 9,
-            "all 21 records are shown but still unacknowledged: {:?} {}",
-            out.json, out.stderr
-        );
-    }
-
-    #[test]
-    fn background_wait_errors_back_off_including_parser_errors() {
-        let f = Fixture::new();
-        for (who, flags, code) in [
-            (As::Operator, vec![], 2),
-            (As::Member("lead"), vec!["--timeout", "30"], 2),
-            (As::Member("lead"), vec!["--timeout", "86401"], 2),
-            (As::Member("lead"), vec!["--after", "m1"], 2),
-            (As::Member("lead"), vec!["--limit", "20"], 2),
-            (As::Member("lead"), vec!["--full"], 2),
-            (As::Member("lead"), vec!["--member", "helper"], 2),
-            (As::Operator, vec!["--external", "ops"], 2),
-            (As::Member("lead"), vec!["--timeout", "bad"], 2),
-            (As::Member("lead"), vec!["--unknown"], 2),
-            (As::MemberWith("lead", "old"), vec![], 8),
-        ] {
-            let start = Instant::now();
-            let out = finish_within(
-                command(&f, &who, &flags).spawn().unwrap(),
-                Duration::from_secs(3),
-            );
-            assert_eq!(out.code, code, "{flags:?}: {:?} {}", out.json, out.stderr);
-            assert!(
-                start.elapsed() >= Duration::from_millis(400),
-                "{flags:?}: no backoff"
-            );
-        }
-        assert_eq!(
-            f.publish(&As::Operator, "bad", &note("lead", "body")).code,
-            0
-        );
-        fs::write(f.store_dir().join("records/0000000001.json"), "broken").unwrap();
-        let start = Instant::now();
-        let out = finish_within(
-            command(&f, &As::Member("lead"), &[]).spawn().unwrap(),
-            Duration::from_secs(3),
-        );
-        assert_eq!(out.code, 7);
-        assert!(start.elapsed() >= Duration::from_millis(400));
-    }
-
-    #[test]
-    fn background_wait_timeout_obeys_the_minimum() {
-        let f = Fixture::new();
-        let start = Instant::now();
-        let mut cmd = command(&f, &As::Member("lead"), &["--timeout", "60"]);
-        cmd.env("BORGCHART_WAIT_TIMEOUT_MS", "1");
-        let out = finish_within(cmd.spawn().unwrap(), Duration::from_secs(3));
-        assert_eq!(out.code, 9, "{:?} {}", out.json, out.stderr);
-        assert!(start.elapsed() >= Duration::from_millis(400));
-    }
-
-    #[test]
-    fn background_wait_killed_mid_flight_changes_no_files() {
-        let f = Fixture::new();
-        assert_eq!(
-            f.publish(&As::Operator, "seen", &note("lead", "body")).code,
-            0
-        );
-        f.inbox(&As::Member("lead"), &[]);
-        let before = bytes(&f.store_dir());
-        let mut child = command(&f, &As::Member("lead"), &[]).spawn().unwrap();
-        std::thread::sleep(Duration::from_millis(650));
-        assert!(child.try_wait().unwrap().is_none());
-        child.kill().unwrap(); // SIGKILL on Unix.
-        child.wait().unwrap();
-        assert_eq!(bytes(&f.store_dir()), before);
-    }
-
-    #[test]
-    fn background_wait_fences_replacements() {
-        let f = Fixture::new();
-        let child = command(&f, &As::Member("lead"), &[]).spawn().unwrap();
-        std::thread::sleep(Duration::from_millis(300));
-        f.write_incarnation("lead", "lead-2", false);
-        let out = finish_within(child, Duration::from_secs(3));
-        assert_eq!(out.code, 8, "{:?} {}", out.json, out.stderr);
-    }
-
-    #[test]
-    fn observations_union_own_pages_and_tolerate_damage() {
-        use std::os::unix::fs::PermissionsExt;
-        let f = Fixture::new();
-        for n in 1..=12 {
-            assert_eq!(
-                f.publish(&As::Operator, &format!("note-{n}"), &note("lead", "body"))
-                    .code,
-                0
-            );
-        }
-        f.inbox(&As::Operator, &["--member", "lead"]);
-        f.inbox(&As::Member("lead"), &["--member", "lead"]);
-        f.brg(&As::Member("lead"), &["msg", "read", "m1", "--json"], None);
-        assert!(!observation(&f).exists());
-        f.inbox(&As::Member("lead"), &["--after", "m9"]);
-        f.inbox(&As::Member("lead"), &["--limit", "2"]);
-        let seen: Value = serde_json::from_slice(&fs::read(observation(&f)).unwrap()).unwrap();
-        assert_eq!(
-            seen,
-            json!({"schema": 1, "member": "lead", "incarnation": "lead-1", "ids": ["m1", "m2", "m10", "m11", "m12"]})
-        );
-        assert_eq!(
-            fs::metadata(observation(&f)).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        for dir in ["attention", "attention/observed", "attention/observed/lead"] {
-            assert_eq!(
-                fs::metadata(f.store_dir().join(dir))
-                    .unwrap()
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o700
-            );
-        }
-        fs::write(observation(&f), "broken").unwrap();
-        let out = finish_within(
-            command(&f, &As::Member("lead"), &[]).spawn().unwrap(),
-            Duration::from_secs(3),
-        );
-        assert_eq!(out.code, 0, "bad observation is treated as empty");
-        assert_eq!(out.json["count"], 12);
-        f.inbox(&As::Member("lead"), &["--limit", "1"]);
-        let seen: Value = serde_json::from_slice(&fs::read(observation(&f)).unwrap()).unwrap();
-        assert_eq!(seen["ids"], json!(["m1"]));
-    }
-}
-
-#[test]
 fn caller_context_is_checked() {
     let f = Fixture::new();
     // `--external` from inside a member.
     let out = f.brg(
         &As::Member("lead"),
-        &[
-            "msg",
-            "publish",
-            "--key",
-            "k",
-            "--external",
-            "ops",
-            "--json",
-        ],
+        &["msg", "publish", "--external", "ops", "--json"],
         Some(&serde_json::to_vec(&note("helper", "x")).unwrap()),
     );
     assert_eq!(out.code, 4, "{:?}", out.json);
@@ -1095,7 +504,7 @@ fn caller_context_is_checked() {
     // An operator can't publish.
     let out = f.brg(
         &As::Operator,
-        &["msg", "publish", "--key", "k", "--json"],
+        &["msg", "publish", "--json"],
         Some(&serde_json::to_vec(&note("lead", "x")).unwrap()),
     );
     assert_eq!(out.code, 4);
@@ -1111,7 +520,7 @@ fn caller_context_is_checked() {
         As::MemberWith("stranger", "stranger-1"),
     ];
     for who in &fenced {
-        let out = f.publish(who, "k-f", &note("lead", "x"));
+        let out = f.publish(who, &note("lead", "x"));
         assert_eq!(out.code, 8, "{:?}", out.json);
         assert_eq!(out.json["outcome"], "fenced");
         assert_eq!(f.brg(who, &["inbox", "--json"], None).code, 8);
@@ -1119,16 +528,11 @@ fn caller_context_is_checked() {
     }
     f.write_incarnation("helper2", "helper2-1", true);
     assert_eq!(
-        f.publish(&As::Member("helper2"), "k-e", &note("lead", "x"))
-            .code,
+        f.publish(&As::Member("helper2"), &note("lead", "x")).code,
         8
     );
     fs::remove_file(f.incarnation_file("sub")).unwrap();
-    assert_eq!(
-        f.publish(&As::Member("sub"), "k-s", &note("helper", "x"))
-            .code,
-        8
-    );
+    assert_eq!(f.publish(&As::Member("sub"), &note("helper", "x")).code, 8);
     assert!(f.records().is_empty());
     // Reading someone's inbox by name needs no live identity.
     let out = f.brg(
@@ -1143,11 +547,7 @@ fn caller_context_is_checked() {
 fn a_replaced_or_stopped_member_is_fenced_in_team_terms() {
     let f = Fixture::new();
     // A member whose session was replaced, and one that was stopped.
-    let out = f.publish(
-        &As::MemberWith("helper", "helper-0"),
-        "k",
-        &note("lead", "x"),
-    );
+    let out = f.publish(&As::MemberWith("helper", "helper-0"), &note("lead", "x"));
     assert!(
         out.json["message"]
             .as_str()
@@ -1157,7 +557,7 @@ fn a_replaced_or_stopped_member_is_fenced_in_team_terms() {
         out.json
     );
     f.write_incarnation("helper2", "helper2-1", true);
-    let out = f.publish(&As::Member("helper2"), "k", &note("lead", "x"));
+    let out = f.publish(&As::Member("helper2"), &note("lead", "x"));
     assert_eq!(out.code, 8);
     assert!(
         out.json["message"]
@@ -1172,7 +572,7 @@ fn a_replaced_or_stopped_member_is_fenced_in_team_terms() {
 #[test]
 fn another_store_format_refuses_all_commands() {
     let f = Fixture::new();
-    assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
+    assert_eq!(f.publish(&As::Operator, &note("lead", "a")).code, 0);
     let identity_path = f.store_dir().join("store.json");
     let mut m: Value = serde_json::from_slice(&fs::read(&identity_path).unwrap()).unwrap();
     m["format"] = json!(999);
@@ -1180,16 +580,13 @@ fn another_store_format_refuses_all_commands() {
     let before = f.tree();
 
     let commands: Vec<(As, Vec<&str>)> = vec![
-        (
-            As::Operator,
-            vec!["msg", "publish", "--key", "k2", "--external", "ops"],
-        ),
+        (As::Operator, vec!["msg", "publish", "--external", "ops"]),
         (As::Member("lead"), vec!["msg", "ack", "m1"]),
         (As::Member("lead"), vec!["inbox"]),
         (As::Operator, vec!["inbox", "--member", "lead"]),
-        (As::Member("lead"), vec!["inbox", "wait", "--timeout", "1"]),
+        (As::Member("lead"), vec!["inbox", "wait", "--timeout", "60"]),
         (As::Operator, vec!["msg", "read", "m1"]),
-        (As::Operator, vec!["bus", "inspect"]),
+        (As::Operator, vec!["bus", "check"]),
         (As::Operator, vec!["bus", "check"]),
     ];
     let draft = serde_json::to_vec(&note("lead", "b")).unwrap();
@@ -1208,64 +605,30 @@ fn another_store_format_refuses_all_commands() {
 }
 
 #[test]
-fn inbox_wait_rechecks_the_member_and_format() {
+fn inbox_wait_rechecks_the_member() {
     let f = Fixture::new();
     let child = spawn(
         &f,
         &As::Member("lead"),
-        &["inbox", "wait", "--timeout", "10", "--json"],
+        &["inbox", "wait", "--timeout", "60", "--json"],
         b"",
     );
-    std::thread::sleep(Duration::from_millis(500));
+    std::thread::sleep(Duration::from_millis(200));
     f.write_incarnation("lead", "lead-2", false);
     let out = finish_within(child, Duration::from_secs(15));
     assert_eq!(out.code, 8, "{:?} {}", out.json, out.stderr);
-    let g = Fixture::new();
-    let child = spawn(
-        &g,
-        &As::Operator,
-        &[
-            "inbox",
-            "wait",
-            "--member",
-            "lead",
-            "--timeout",
-            "10",
-            "--json",
-        ],
-        b"",
-    );
-    std::thread::sleep(Duration::from_millis(500));
-    g.write_private(
-        &g.store_dir().join("store.json"),
-        &json!({"format": 999, "instance": TEAM}),
-    );
-    let before = g.tree();
-    let out = finish_within(child, Duration::from_secs(15));
-    assert_eq!(out.code, 7, "{:?} {}", out.json, out.stderr);
-    assert_eq!(g.tree(), before, "wait creates nothing");
 }
 
 #[test]
 fn inbox_wait_is_bounded_while_a_writer_holds_the_lock() {
     let f = Fixture::new();
-    assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
+    assert_eq!(f.publish(&As::Operator, &note("lead", "a")).code, 0);
     let lock = hold(&f.store_dir().join("lock"));
     let start = Instant::now();
     let mut child = spawn(
         &f,
-        &As::Operator,
-        &[
-            "inbox",
-            "wait",
-            "--member",
-            "lead",
-            "--after",
-            "m1",
-            "--timeout",
-            "1",
-            "--json",
-        ],
+        &As::Member("lead"),
+        &["inbox", "wait", "--timeout", "60", "--json"],
         b"",
     );
     while child.try_wait().unwrap().is_none() {
@@ -1300,7 +663,7 @@ fn damaged_storage_errors_name_the_team_not_paths() {
     }
     // A record area that isn't a directory.
     let g = Fixture::new();
-    assert_eq!(g.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
+    assert_eq!(g.publish(&As::Operator, &note("lead", "a")).code, 0);
     let records = g.store_dir().join("records");
     fs::remove_dir_all(&records).unwrap();
     fs::write(&records, "").unwrap();
@@ -1317,7 +680,7 @@ fn damaged_storage_errors_name_the_team_not_paths() {
     let h = Fixture::new();
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(h.store_dir(), fs::Permissions::from_mode(0o777)).unwrap();
-    let out = h.publish(&As::Operator, "k1", &note("lead", "a"));
+    let out = h.publish(&As::Operator, &note("lead", "a"));
     assert_eq!(out.code, 1, "{:?}", out.json);
     assert_eq!(
         out.json["message"],
@@ -1325,7 +688,7 @@ fn damaged_storage_errors_name_the_team_not_paths() {
     );
     let text = h.brg(
         &As::Operator,
-        &["msg", "publish", "--key", "k1", "--external", "ops"],
+        &["msg", "publish", "--external", "ops"],
         Some(&serde_json::to_vec(&note("lead", "a")).unwrap()),
     );
     assert_eq!(text.code, 1);
@@ -1340,7 +703,7 @@ fn damaged_storage_errors_name_the_team_not_paths() {
 #[test]
 fn storage_without_identity_is_damaged_not_new() {
     let f = Fixture::new();
-    assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
+    assert_eq!(f.publish(&As::Operator, &note("lead", "a")).code, 0);
     fs::remove_file(f.store_dir().join("store.json")).unwrap();
     let before = f.tree();
     for args in [
@@ -1355,7 +718,7 @@ fn storage_without_identity_is_damaged_not_new() {
             "{msg}"
         );
     }
-    let out = f.publish(&As::Operator, "k2", &note("lead", "b"));
+    let out = f.publish(&As::Operator, &note("lead", "b"));
     assert_eq!(out.code, 7, "{:?}", out.json);
     assert_eq!(f.tree(), before, "nothing created");
 }
@@ -1363,12 +726,12 @@ fn storage_without_identity_is_damaged_not_new() {
 #[test]
 fn a_record_in_another_format_is_still_corrupt() {
     let f = Fixture::new();
-    assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
+    assert_eq!(f.publish(&As::Operator, &note("lead", "a")).code, 0);
     let path = f.store_dir().join("records/0000000001.json");
     let mut r: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     r["schema"] = json!(999);
     fs::write(&path, serde_json::to_vec(&r).unwrap()).unwrap();
-    assert_eq!(f.publish(&As::Operator, "k2", &note("lead", "b")).code, 7);
+    assert_eq!(f.publish(&As::Operator, &note("lead", "b")).code, 7);
     let check = f.brg(&As::Operator, &["bus", "check", "--json"], None);
     assert_eq!(check.code, 7, "{:?}", check.json);
 }
@@ -1384,20 +747,12 @@ fn a_team_not_started_yet_is_not_configured() {
     let commands: Vec<(As, Vec<&str>)> = vec![
         (
             As::Operator,
-            vec![
-                "msg",
-                "publish",
-                "--key",
-                "k",
-                "--external",
-                "ops",
-                "--json",
-            ],
+            vec!["msg", "publish", "--external", "ops", "--json"],
         ),
         (As::Member("lead"), vec!["msg", "ack", "m1", "--json"]),
         (As::Operator, vec!["inbox", "--member", "lead", "--json"]),
         (As::Operator, vec!["msg", "read", "m1", "--json"]),
-        (As::Operator, vec!["bus", "inspect", "--json"]),
+        (As::Operator, vec!["bus", "check", "--json"]),
         (As::Operator, vec!["bus", "check", "--json"]),
     ];
     for (who, args) in &commands {
@@ -1421,16 +776,15 @@ fn a_team_not_started_yet_is_not_configured() {
 fn deployment_and_storage_must_match() {
     let f = Fixture::new();
     f.write_store("someone-else-0000");
-    let out = f.publish(&As::Operator, "k", &note("lead", "x"));
+    let out = f.publish(&As::Operator, &note("lead", "x"));
     assert_eq!(out.code, 7, "{:?}", out.json);
     assert_eq!(
-        f.brg(&As::Operator, &["bus", "inspect", "--json"], None)
-            .code,
+        f.brg(&As::Operator, &["bus", "check", "--json"], None).code,
         7
     );
 
     let g = Fixture::new();
-    assert_eq!(g.publish(&As::Operator, "seed", &note("lead", "a")).code, 0);
+    assert_eq!(g.publish(&As::Operator, &note("lead", "a")).code, 0);
     fs::remove_file(g.store_dir().join("store.json")).unwrap();
     // Records without store identity are damaged, never new.
     let out = g.brg(&As::Operator, &["bus", "check", "--json"], None);
@@ -1444,21 +798,21 @@ fn read_only_commands_create_nothing() {
     // A fresh team (no bus/ yet), then one with records.
     for populated in [false, true] {
         if populated {
-            f.publish(&As::Operator, "k1", &note("lead", "x"));
+            f.publish(&As::Operator, &note("lead", "x"));
             f.brg(&As::Member("lead"), &["msg", "ack", "m1"], None);
         }
         let before = f.tree();
         let reads: Vec<(As, Vec<&str>)> = vec![
             (As::Operator, vec!["inbox", "--member", "lead", "--json"]),
             (As::Member("lead"), vec!["inbox", "--json"]),
-            (As::Operator, vec!["inbox", "--external", "ops", "--all"]),
+            (As::Operator, vec!["inbox", "--external", "ops"]),
             (As::Operator, vec!["msg", "read", "m1"]),
-            (As::Operator, vec!["bus", "inspect", "--json"]),
-            (As::Operator, vec!["bus", "inspect"]),
+            (As::Operator, vec!["bus", "check", "--json"]),
+            (As::Operator, vec!["bus", "check"]),
             (As::Operator, vec!["bus", "check"]),
             (
                 As::Member("lead"),
-                vec!["inbox", "wait", "--timeout", "1", "--json"],
+                vec!["inbox", "wait", "--timeout", "60", "--json"],
             ),
         ];
         for (who, args) in &reads {
@@ -1471,8 +825,8 @@ fn read_only_commands_create_nothing() {
 #[test]
 fn external_recipient_flow() {
     let f = Fixture::new();
-    let q = json!({"to": "external:ops", "kind": "note", "body": "ship it?"});
-    let out = f.publish(&As::Member("lead"), "q-1", &q);
+    let q = json!({"to": "external:ops", "body": "ship it?"});
+    let out = f.publish(&As::Member("lead"), &q);
     assert_eq!(out.code, 0, "{:?}", out.json);
     let inbox = f.inbox(&As::Operator, &["--external", "ops"]);
     assert_eq!(inbox["recipient"], "external:ops");
@@ -1495,45 +849,9 @@ fn external_recipient_flow() {
         Vec::<String>::new()
     );
     // The answer goes back to the member.
-    let d = json!({"to": "lead", "kind": "note", "reply_to": ["m1"], "body": "yes"});
-    assert_eq!(f.publish(&As::Operator, "d-1", &d).code, 0);
+    let d = json!({"to": "lead", "reply_to": ["m1"], "body": "yes"});
+    assert_eq!(f.publish(&As::Operator, &d).code, 0);
     assert_eq!(ids(&f.inbox(&As::Member("lead"), &[])), ["m2"]);
-}
-
-#[test]
-fn inspect_summarizes_the_team() {
-    let f = Fixture::new();
-    f.publish(&As::Operator, "k1", &note("lead", "a"));
-    f.publish(&As::Member("lead"), "k2", &note("helper", "b"));
-    f.brg(&As::Member("helper"), &["msg", "ack", "m2"], None);
-    let out = f.brg(
-        &As::Operator,
-        &["bus", "inspect", "--last", "1", "--json"],
-        None,
-    );
-    assert_eq!(out.code, 0);
-    let v = &out.json;
-    assert_eq!(v["instance"], TEAM);
-    assert!(v.get("run").is_none(), "{v}");
-    assert_eq!(v["members"]["sub"]["parent"], "helper");
-    assert_eq!(v["records"], 2);
-    assert_eq!(v["recent"].as_array().unwrap().len(), 1);
-    assert_eq!(v["recent"][0]["id"], "m2");
-    let lead = v["recipients"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|r| r["to"] == "lead")
-        .unwrap();
-    assert_eq!(lead["unacked"], 1);
-    assert_eq!(v["store"]["healthy"], true);
-    let text = f.brg(&As::Operator, &["bus", "inspect"], None);
-    assert!(
-        text.json
-            .as_str()
-            .unwrap()
-            .contains("helper: 0 unacknowledged of 1")
-    );
 }
 
 /// Hold `path` (created if missing) with an exclusive flock.
@@ -1579,7 +897,7 @@ fn finish_within(mut child: std::process::Child, limit: Duration) -> Out {
 #[test]
 fn authority_is_checked_again_under_the_locks() {
     let f = Fixture::new();
-    assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
+    assert_eq!(f.publish(&As::Operator, &note("lead", "a")).code, 0);
     let draft = serde_json::to_vec(&note("lead", "b")).unwrap();
 
     // An incarnation ended while an ack waits for lock.
@@ -1590,7 +908,7 @@ fn authority_is_checked_again_under_the_locks() {
         &["msg", "ack", "m1", "--json"],
         b"",
     );
-    std::thread::sleep(Duration::from_millis(500));
+    std::thread::sleep(Duration::from_millis(200));
     f.write_incarnation("lead", "lead-1", true);
     drop(bus);
     let out = finish_within(child, Duration::from_secs(15));
@@ -1599,7 +917,7 @@ fn authority_is_checked_again_under_the_locks() {
 
     // A member replaced while its publish waits for lock.
     let bus = hold(&f.store_dir().join("lock"));
-    let args = ["msg", "publish", "--key", "h1", "--json"];
+    let args = ["msg", "publish", "--json"];
     let child = spawn(&f, &As::Member("helper"), &args, &draft);
     std::thread::sleep(Duration::from_millis(500));
     f.write_incarnation("helper", "helper-2", false);
@@ -1612,7 +930,7 @@ fn authority_is_checked_again_under_the_locks() {
 #[test]
 fn reads_wait_for_a_writer() {
     let f = Fixture::new();
-    assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
+    assert_eq!(f.publish(&As::Operator, &note("lead", "a")).code, 0);
     let bus = hold(&f.store_dir().join("lock"));
     let mut child = spawn(&f, &As::Operator, &["bus", "check", "--json"], b"");
     std::thread::sleep(Duration::from_millis(500));
@@ -1626,7 +944,7 @@ fn reads_wait_for_a_writer() {
 fn a_huge_record_number_is_a_bounded_gap() {
     let f = Fixture::new();
     for k in ["k1", "k2"] {
-        assert_eq!(f.publish(&As::Operator, k, &note("lead", k)).code, 0);
+        assert_eq!(f.publish(&As::Operator, &note("lead", k)).code, 0);
     }
     fs::write(f.store_dir().join("records/9999999999.json"), "{}").unwrap();
     let start = Instant::now();
@@ -1639,51 +957,13 @@ fn a_huge_record_number_is_a_bounded_gap() {
         f.inbox(&As::Operator, &["--member", "lead"])["store"],
         "incomplete"
     );
-    assert_eq!(f.publish(&As::Operator, "k3", &note("lead", "x")).code, 7);
-}
-
-#[test]
-fn a_fifo_artifact_is_invalid_not_a_hang() {
-    let f = Fixture::new();
-    let fifo = f.dir.path().join("pipe");
-    assert!(
-        Command::new("mkfifo")
-            .arg(&fifo)
-            .status()
-            .unwrap()
-            .success()
-    );
-    let draft = json!({"to": "lead", "kind": "note", "artifacts": [{"path": fifo}]});
-    let child = spawn(
-        &f,
-        &As::Operator,
-        &[
-            "msg",
-            "publish",
-            "--key",
-            "fifo",
-            "--external",
-            "ops",
-            "--json",
-        ],
-        &serde_json::to_vec(&draft).unwrap(),
-    );
-    let out = finish_within(child, Duration::from_secs(10));
-    assert_eq!(out.code, 5, "{:?} {}", out.json, out.stderr);
-    assert!(f.records().is_empty());
-    // A symlink to a regular file is still measured as that file.
-    let real = f.dir.path().join("real.md");
-    fs::write(&real, "ok").unwrap();
-    let link = f.dir.path().join("link.md");
-    std::os::unix::fs::symlink(&real, &link).unwrap();
-    let draft = json!({"to": "lead", "kind": "note", "artifacts": [{"path": link}]});
-    assert_eq!(f.publish(&As::Operator, "link", &draft).code, 0);
+    assert_eq!(f.publish(&As::Operator, &note("lead", "x")).code, 7);
 }
 
 #[test]
 fn an_ack_with_another_schema_is_corrupt() {
     let f = Fixture::new();
-    assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
+    assert_eq!(f.publish(&As::Operator, &note("lead", "a")).code, 0);
     assert_eq!(
         f.brg(&As::Member("lead"), &["msg", "ack", "m1"], None).code,
         0
@@ -1695,7 +975,7 @@ fn an_ack_with_another_schema_is_corrupt() {
     let check = f.brg(&As::Operator, &["bus", "check", "--json"], None);
     assert_eq!(check.code, 7, "{:?}", check.json);
     assert!(check.json["errors"].to_string().contains("schema"));
-    assert_eq!(f.publish(&As::Operator, "k2", &note("lead", "b")).code, 7);
+    assert_eq!(f.publish(&As::Operator, &note("lead", "b")).code, 7);
     // Not counted as consumption.
     let inbox = f.inbox(&As::Operator, &["--member", "lead"]);
     assert_eq!(ids(&inbox), ["m1"]);
@@ -1717,24 +997,17 @@ fn inbox_wait_help_names_the_outcomes_wait_returns() {
         f.brg(&As::Member("lead"), &args, None)
     };
     let usage = wait(&["--timeout", "0"]);
-    let timeout = wait(&["--timeout", "1"]);
-    assert_eq!(f.publish(&As::Operator, "k1", &note("lead", "a")).code, 0);
-    let ok = wait(&["--timeout", "1"]);
+    let timeout = wait(&["--timeout", "60"]);
+    assert_eq!(f.publish(&As::Operator, &note("lead", "a")).code, 0);
+    let ok = wait(&["--timeout", "60"]);
+    f.brg(&As::Member("lead"), &["msg", "ack", "m1", "--json"], None);
     let child = spawn(
         &f,
         &As::Member("lead"),
-        &[
-            "inbox",
-            "wait",
-            "--after",
-            "m1",
-            "--timeout",
-            "10",
-            "--json",
-        ],
+        &["inbox", "wait", "--timeout", "60", "--json"],
         b"",
     );
-    std::thread::sleep(Duration::from_millis(500));
+    std::thread::sleep(Duration::from_millis(200));
     f.write_incarnation("lead", "lead-2", false);
     let fenced = finish_within(child, Duration::from_secs(15));
     for (expect, out) in [
@@ -1752,87 +1025,26 @@ fn inbox_wait_help_names_the_outcomes_wait_returns() {
     }
 }
 
-/// The example in `msg publish --help`: the shell block exactly as printed
-/// (from the `<<'EOF'` line through its terminator, untrimmed), the JSON
-/// draft inside it, its key, and the output it says publishing prints.
-struct Example {
-    block: String,
-    draft: String,
-    key: String,
-    printed: String,
-}
-
-fn help_example() -> Example {
-    let out = Command::new(env!("CARGO_BIN_EXE_brg"))
-        .env_clear()
-        .args(["msg", "publish", "--help"])
-        .output()
-        .unwrap();
-    let text = String::from_utf8(out.stdout).unwrap();
-    let mut lines = text.lines().skip_while(|l| !l.contains("<<'EOF'"));
-    let command = lines
-        .next()
-        .expect("a heredoc example in msg publish --help");
-    let key = command
-        .split_whitespace()
-        .skip_while(|w| *w != "--key")
-        .nth(1)
-        .unwrap()
-        .to_string();
-    let mut block = format!("{command}\n");
-    let mut draft = String::new();
-    for l in lines.by_ref() {
-        block.push_str(l);
-        block.push('\n');
-        if l == "EOF" {
-            break;
-        }
-        draft.push_str(l);
-        draft.push('\n');
-    }
-    let printed = lines
-        .find_map(|l| l.strip_prefix("Prints: "))
-        .expect("`Prints: …` after the example")
-        .to_string();
-    Example {
-        block,
-        draft,
-        key,
-        printed,
-    }
-}
-
-fn help_text(args: &[&str]) -> String {
-    let out = Command::new(env!("CARGO_BIN_EXE_brg"))
-        .env_clear()
-        .args(args)
-        .arg("--help")
-        .output()
-        .unwrap();
-    String::from_utf8(out.stdout).unwrap()
-}
-
 #[test]
 fn the_publish_help_example_publishes_and_its_outcomes_are_documented() {
     let f = Fixture::new();
-    let help = help_text(&["msg", "publish"]);
-    let ex = help_example();
-    assert_eq!(
-        f.publish(
-            &As::Member("lead"),
-            "n1",
-            &note("helper", "Please check the parser.")
-        )
-        .code,
-        0
-    );
-    assert_eq!(
-        f.publish(&As::Member("helper"), "n2", &note("lead", "Checking."))
-            .code,
-        0
-    );
-
-    // Run the block as a member's shell would, pasted as printed.
+    let out = f
+        .command(&As::Operator, &["msg", "publish", "--help"])
+        .output()
+        .unwrap();
+    let help = String::from_utf8(out.stdout).unwrap();
+    let mut lines = help.lines().skip_while(|line| !line.contains("<<'EOF'"));
+    let mut block = format!("{}\n", lines.next().unwrap());
+    for line in lines.by_ref() {
+        block.push_str(line);
+        block.push('\n');
+        if line == "EOF" {
+            break;
+        }
+    }
+    let expected = lines
+        .find_map(|line| line.strip_prefix("Prints: "))
+        .unwrap();
     let out = Command::new("sh")
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
@@ -1842,35 +1054,10 @@ fn the_publish_help_example_publishes_and_its_outcomes_are_documented() {
         .env("BORGCHART_INSTANCE", TEAM)
         .env("BORGCHART_MEMBER", "helper")
         .env("BORGCHART_INCARNATION", "helper-1")
-        .args(["-c", &ex.block])
+        .args(["-c", &block])
         .output()
         .unwrap();
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "{stdout} {stderr}");
-    assert!(stderr.is_empty(), "the shell complained: {stderr}");
-    assert_eq!(stdout.trim(), ex.printed);
-    let record = f.brg(&As::Operator, &["msg", "read", "m3", "--json"], None);
-    assert_eq!(record.json["record"]["kind"], "note");
-
-    let publish = |body: &[u8]| {
-        f.brg(
-            &As::Member("helper"),
-            &["msg", "publish", "--key", ex.key.as_str(), "--json"],
-            Some(body),
-        )
-    };
-    // Retrying is safe; reusing the key for something else is not. Each
-    // outcome publish returned is named in the help with its exit code.
-    let retry = publish(ex.draft.as_bytes());
-    let other = publish(ex.draft.replace("Parser done", "Other").as_bytes());
-    for out in [&retry, &other] {
-        let named = format!("{} ({})", out.json["outcome"].as_str().unwrap(), out.code);
-        assert!(
-            help.contains(&named),
-            "`{named}` missing from msg publish --help"
-        );
-    }
-    assert_eq!(retry.json["outcome"], "duplicate");
-    assert_eq!(other.json["outcome"], "conflict");
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), expected);
+    assert!(help.contains("committed (0)"));
 }

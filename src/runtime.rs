@@ -495,10 +495,6 @@ fn start_members(
         Some(MemberMeta {
             role: role.to_string(),
             vendor: member.vendor.as_str().into(),
-            model: member.model.as_ref().map(|model| match &model.effort {
-                Some(effort) => format!("{} {effort}", model.name),
-                None => model.name.clone(),
-            }),
             posture: match v.posture(role) {
                 Posture::Vendor => "vendor".into(),
                 Posture::Locked => "locked".into(),
@@ -2116,6 +2112,9 @@ pub struct StatusRow {
     /// running (`alive`, `gone` or `unknown`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub liveness: Option<Liveness>,
+    /// Unacked messages; absent when the instance has no readable bus.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unread: Option<usize>,
     /// A `start: true` member that ran and is `stopped` while the rest of
     /// the instance runs: it should be running.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -2177,6 +2176,26 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
     let tmux = tmux_for(state);
     let windows = tmux.windows(&session);
     let meta = state::read_meta(state).unwrap_or_default();
+    let (counts, bus_note) = if v.team.bus.is_none() {
+        (None, None)
+    } else {
+        match crate::bus::store::open(state).and_then(|bus| {
+            let snap = crate::bus::store::snapshot(&bus)?;
+            if !snap.healthy() {
+                return Err(crate::bus::outcome::Failure::new(
+                    crate::bus::outcome::Code::Corrupt,
+                    "incomplete messages",
+                ));
+            }
+            Ok(crate::bus::store::progress(&bus, &snap))
+        }) {
+            Ok(counts) => (Some(counts), None),
+            Err(_) => (
+                None,
+                Some("messages unavailable; brg bus check".to_string()),
+            ),
+        }
+    };
     let nodes = member_nodes(inst, &v, |_| String::new());
     // The instance runs while any member has a live window; one stopped on
     // purpose expects no one to be running.
@@ -2212,6 +2231,7 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
                 vendor_version: None,
                 trust_accepted: None,
                 liveness: None,
+                unread: None,
                 expected_running: false,
                 start: member.start,
             });
@@ -2251,6 +2271,9 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
                 Posture::Locked => "locked".into(),
             }),
             state: if ran { STOPPED } else { NOT_STARTED }.into(),
+            unread: counts
+                .as_ref()
+                .map(|all| all.get(id).copied().unwrap_or_default().unread),
             expected_running: false,
             start: member.start,
             rule: None,
@@ -2330,6 +2353,7 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
             detail: None,
             vendor_version: None,
             trust_accepted: None,
+            unread: None,
             expected_running: false,
             start: false,
         };
@@ -2358,6 +2382,14 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
             }
         }
         rows.push(row);
+    }
+    if let Some(note) = bus_note
+        && let Some(row) = rows.iter_mut().find(|r| r.kind == "member")
+    {
+        row.detail = Some(match row.detail.take() {
+            Some(detail) => format!("{detail}; {note}"),
+            None => note,
+        });
     }
     Ok(rows)
 }
@@ -2414,6 +2446,9 @@ pub fn status_cells(r: &StatusRow) -> Vec<String> {
         detail.push("locked".to_string());
     }
     detail.extend(r.detail.clone());
+    if let Some(unread) = r.unread.filter(|&n| n > 0) {
+        detail.push(format!("{unread} unread"));
+    }
     vec![
         format!(
             "{} {}",

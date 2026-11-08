@@ -6,6 +6,7 @@
 
 pub use crate::address::ENV_INSTANCE;
 use crate::names::is_valid_id;
+use serde::{Deserialize, Serialize};
 
 use super::outcome::{Code, Failure};
 
@@ -13,9 +14,6 @@ use super::outcome::{Code, Failure};
 pub const ENV_MEMBER: &str = "BORGCHART_MEMBER";
 /// A unique ID for one start of one member.
 pub const ENV_INCARNATION: &str = "BORGCHART_INCARNATION";
-/// Set to `bus` for runtime-invoked plugin actions (alerts).
-pub const ENV_ACTOR: &str = "BORGCHART_ACTOR";
-pub const ACTOR_BUS: &str = "bus";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Caller {
@@ -26,19 +24,18 @@ pub enum Caller {
     External {
         name: String,
     },
-    /// No member context and no `--external`: may read and inspect, not publish.
+    /// No member context and no `--external`: may read, not publish.
     Operator,
 }
 
-impl Caller {
-    /// The slot operation keys are scoped by: the member name, or `external.<name>`.
-    pub fn slot(&self) -> Option<String> {
-        match self {
-            Caller::Member { member, .. } => Some(member.clone()),
-            Caller::External { name } => Some(format!("external.{name}")),
-            Caller::Operator => None,
-        }
-    }
+/// The fenced identity that acknowledges a message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Actor {
+    /// A member, from its launch context.
+    Member { member: String, incarnation: String },
+    /// An outside caller that named itself with `--external`.
+    External { name: String },
 }
 
 /// The instance a bus command acts on: inside a member (or a plugin
@@ -195,11 +192,10 @@ mod tests {
     fn external_and_operator() {
         let e = env(&[]);
         assert_eq!(
-            caller_from(Some("supervisor"), &e)
-                .unwrap()
-                .slot()
-                .as_deref(),
-            Some("external.supervisor")
+            caller_from(Some("supervisor"), &e).unwrap(),
+            Caller::External {
+                name: "supervisor".into()
+            }
         );
         assert_eq!(caller_from(None, &e).unwrap(), Caller::Operator);
         assert_eq!(

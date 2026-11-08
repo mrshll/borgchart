@@ -17,8 +17,6 @@ pub enum Code {
     Refused,
     /// The record or request failed validation.
     Invalid,
-    /// The operation key was used before with different content.
-    Conflict,
     /// The store is unreadable or has a gap: mutations are stopped.
     Corrupt,
     /// A stale actor or incarnation: the mutation was fenced off.
@@ -37,7 +35,6 @@ impl Code {
             Code::NotConfigured => 3,
             Code::Refused => 4,
             Code::Invalid => 5,
-            Code::Conflict => 6,
             Code::Corrupt => 7,
             Code::Fenced => 8,
             Code::Timeout => 9,
@@ -53,7 +50,6 @@ impl Code {
             Code::NotConfigured => "not-configured",
             Code::Refused => "refused",
             Code::Invalid => "invalid",
-            Code::Conflict => "conflict",
             Code::Corrupt => "corrupt",
             Code::Fenced => "fenced",
             Code::Timeout => "timeout",
@@ -120,7 +116,6 @@ mod tests {
             Code::NotConfigured,
             Code::Refused,
             Code::Invalid,
-            Code::Conflict,
             Code::Corrupt,
             Code::Fenced,
             Code::Timeout,
@@ -130,9 +125,9 @@ mod tests {
         exits.sort();
         exits.dedup();
         assert_eq!(exits.len(), all.len());
-        let f = Failure::new(Code::Conflict, "x").to_json();
-        assert_eq!(f["code"], 6);
-        assert_eq!(f["outcome"], "conflict");
+        let f = Failure::new(Code::Invalid, "x").to_json();
+        assert_eq!(f["code"], 5);
+        assert_eq!(f["outcome"], "invalid");
         let ok = ok_json("committed", json!({"id": "m1"}));
         assert_eq!(ok["id"], "m1");
         assert_eq!(ok["ok"], true);

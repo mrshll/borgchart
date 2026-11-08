@@ -249,8 +249,7 @@ pub fn open_work(state: &StateDir) -> Result<OpenWork, String> {
     }
     let mut work = OpenWork::default();
     for r in snap.records.values().filter(|r| !snap.is_acked(r.seq)) {
-        work.items
-            .push(format!("unread {} ({}) to {}", r.id, r.kind.as_str(), r.to));
+        work.items.push(format!("unread {} to {}", r.id, r.to));
     }
     Ok(work)
 }
