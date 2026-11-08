@@ -1,7 +1,7 @@
 //! The tmux runtime: `create`, `start`, `stop`, `delete`, `status`, `ls`,
 //! `attach`, `logs` and `send`, on instances and their members.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -1679,6 +1679,38 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
                 inst.at(&id)
             ));
         }
+    }
+    let mut children = BTreeSet::new();
+    if let Ok(v) = validated(&inst) {
+        for node in member_nodes(&inst, &v, |_| String::new()) {
+            if node.parent.as_deref() == Some(&id)
+                && inst
+                    .record
+                    .members
+                    .get(&node.id)
+                    .is_some_and(|m| !m.deleted)
+            {
+                children.insert(node.id);
+            }
+        }
+    }
+    if let Some(meta) = state::read_meta(&inst.state) {
+        for (child, _) in inst.record.kept_members() {
+            if meta.members.get(child).and_then(|m| m.parent.as_deref()) == Some(&id) {
+                children.insert(child.clone());
+            }
+        }
+    }
+    if !children.is_empty() {
+        return Err(format!(
+            "member `{}` has kept children; delete them first:\n  {}",
+            inst.at(&id),
+            children
+                .iter()
+                .map(|child| inst.at(child))
+                .collect::<Vec<_>>()
+                .join("\n  ")
+        ));
     }
     // No bus means no publication lock to create; a stray lock would make
     // an otherwise empty messages folder look damaged on its next start.

@@ -19,6 +19,34 @@ use instance_env::*;
 use serde_json::{Value, json};
 
 #[test]
+fn stopped_parents_cannot_be_deleted_before_their_kept_children() {
+    let env = Env::new();
+    let inst = env.create("oncall", "work/a");
+    let parent = env.member(&inst, "lead");
+    env.ok(&["create", &format!("{inst}/helper")]);
+    let child = env.member(&inst, "helper");
+    let parent_address = format!("{inst}/{parent}");
+    let child_address = format!("{inst}/{child}");
+    env.ok(&["stop", &inst]);
+
+    for force in [false, true] {
+        let mut args = vec!["delete", &parent_address];
+        if force {
+            args.push("--force");
+        }
+        let refusal = env.fails(&args);
+        assert!(refusal.contains(&child_address), "{refusal}");
+        assert_eq!(env.member(&inst, "lead"), parent);
+        assert_eq!(env.member(&inst, "helper"), child);
+    }
+
+    env.ok(&["delete", &child_address]);
+    env.ok(&["delete", &parent_address]);
+    assert!(env.rows(&inst).iter().all(|r| r["kind"] != "member"));
+    env.ok(&["delete", &inst]);
+}
+
+#[test]
 fn deleted_members_cannot_restart_or_receive_work_and_ids_are_never_reused() {
     let env = Env::new();
     let inst = env.create("oncall", "work/a");
@@ -29,8 +57,6 @@ fn deleted_members_cannot_restart_or_receive_work_and_ids_are_never_reused() {
     let published = env.publish(&inst, &json!({"to": lead, "body": "Review the sample."}));
     assert!(published.status.success(), "{}", both(&published));
     let message: Value = serde_json::from_slice(&published.stdout).unwrap();
-    env.ok(&["create", &format!("{inst}/helper")]);
-    let child = env.member(&inst, "helper");
     env.ok(&["stop", &inst]);
     let refused = env.fails(&["delete", &address]);
     assert_eq!(env.member(&inst, "lead"), lead);
@@ -51,6 +77,8 @@ fn deleted_members_cannot_restart_or_receive_work_and_ids_are_never_reused() {
     let replacement = env.member(&inst, "lead");
     assert_ne!(replacement, lead);
     assert_eq!(env.row(&inst, "lead")["unread"], 0);
+    env.ok(&["create", &format!("{inst}/helper")]);
+    let child = env.member(&inst, "helper");
     assert_eq!(env.row(&inst, "helper")["parent"], replacement);
     env.wait_for("replacement idle", || env.state_of(&inst, "lead") == "idle");
     env.ok(&[

@@ -64,7 +64,8 @@ enum Command {
         /// `<instance>`, or `<instance>/<member>`. A bare role is refused.
         target: String,
         /// Delete even with unread messages (or unreadable message storage).
-        /// Running members and unknown liveness are always refused.
+        /// Running members, unknown liveness and members with kept children
+        /// are always refused.
         #[arg(long)]
         force: bool,
     },
