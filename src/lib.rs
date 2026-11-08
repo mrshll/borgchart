@@ -28,4 +28,5 @@ pub mod tree;
 pub mod tui;
 pub mod validate;
 pub mod wake;
+pub mod watcher;
 pub mod yaml;
