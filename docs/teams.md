@@ -127,7 +127,7 @@ roles:
     parent: lead
     start: false
     max: 3                             # up to three kept copies, running or stopped
-    cwd: copies/{member}               # optional; brg creates the empty leaf; copies/ must exist
+    cwd: copies/{member_id}            # optional; brg creates the empty leaf; copies/ must exist
 ```
 
 - **Starting a copy.** Each `brg create <instance>/implementer` starts one new copy, with its own suffixed ID. Past `max` it's refused, listing all kept copies, stopped ones included. For `max: 1`, the refusal points to `start`. Each copy gets the same role file and its own name; its folder follows `cwd`.
@@ -151,7 +151,7 @@ roles:
 
 - **Capacity and restarts.** `max` is optional, defaults to 1 and must be at least 1. `start: true` with `max > 1` makes one member at instance creation. `start` reuses kept members and never fills to `max`; a `start: true` role with none left gets one new member. Lowering `max` after a full stop keeps every member and refuses creation until enough are deleted. Deleted suffixes are never reused.
 - **Parents.** `parent:` and a plugin's `delivers_to:` require a `max: 1` role. With a bus, only a person or the declared parent's latest running start may create, start, stop or delete a child member. Members cannot manage themselves or siblings, and replaced starts and members of another instance are refused. Creating a child requires a kept parent member. No-bus teams and whole-instance commands retain their existing caller rules.
-- **Folders.** `{member}` in `cwd` is optional. Without it, copies share the role's folder. For `max > 1`, if used, it must be the last folder name, with no `..`. When `cwd` ends in `{member}`, brg makes only the missing empty leaf when issuing a new member (`create`, or `start` replacing a deleted member), for any `max`; every ancestor must already exist, and an existing leaf is used as is. The parent puts a worktree in it before briefing the copy. Starting an existing member never creates its folder, and `delete` leaves them alone. Copies of a `{member}` role may not use equal, nested or symlinked aliases of each other's folders, even while stopped. Creation and every start check folders under the registry lock. Different roles may share a folder; the team's instructions still enforce one writer per checkout.
+- **Folders.** `{member_id}` in `cwd` is optional. Without it, copies share the role's folder. For `max > 1`, if used, it must be the last folder name, with no `..`. When `cwd` ends in `{member_id}`, brg makes only the missing empty leaf when issuing a new member (`create`, or `start` replacing a deleted member), for any `max`; every ancestor must already exist, and an existing leaf is used as is. The parent puts a worktree in it before briefing the copy. Starting an existing member never creates its folder, and `delete` leaves them alone. Copies of a `{member_id}` role may not use equal, nested or symlinked aliases of each other's folders, even while stopped. Creation and every start check folders under the registry lock. Different roles may share a folder; the team's instructions still enforce one writer per checkout.
 - **Taking work and attention** remain team rules. The lead chooses a member, gives it one brief, tracks its reply and checks its deadline. An ended copy remains addressable with unread counts until deleted; the lead can restart it with `brg start <instance>/<member>`.
 
 ## Teams as members (departments) (Open: design only, a later change)
@@ -194,7 +194,7 @@ Proposed changes to this direction, and why:
 1. **`team:` must be inside the team folder, or `shared:<name>` as for plugins, never a path like `../medium`.** The team folder is meant to be shareable and say nothing about one machine. A path outside it breaks that.
 2. **One message store per department, not one per sub-team.** Copies are namespaced members (`ws-2/lead`) in the department's single store. A parent-to-child message is then an ordinary local record, with one sequence, one unread-count reader and one check. Separate stores would need delivery between stores.
 3. **A sub-team copy can't write to outside callers.** Only the outermost team's top member answers `external:NAME`. Inside a department, a sub-team's top member writes to its parent. Otherwise every workstream could reach the person directly, around the department's lead.
-4. **Per-copy folders come from the role's `cwd` with `{member}`,** inside the department's one working folder.
+4. **Per-copy folders come from the role's `cwd` with `{member_id}`,** inside the department's one working folder.
 5. **The routing plugin starts as go/wait only.** Letting it change a copy's vendor or model would make `create` take overrides that member files currently pin. Add overrides only if go/wait proves too little.
 
 Open questions:

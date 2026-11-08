@@ -279,7 +279,7 @@ fn api_keys(
 }
 
 /// Where a member starts: its role's `cwd` inside the instance's folder
-/// (with `{member}` expanded), else the folder. The folder must exist, and a
+/// (with `{member_id}` expanded), else the folder. The folder must exist, and a
 /// role's `cwd` must stay inside it once symlinks are resolved.
 fn member_cwd(folder: &Path, cwd: Option<&str>, member: &str) -> Result<PathBuf, String> {
     let folder = folder.canonicalize().map_err(|_| {
@@ -291,7 +291,7 @@ fn member_cwd(folder: &Path, cwd: Option<&str>, member: &str) -> Result<PathBuf,
     let Some(cwd) = cwd else {
         return Ok(folder);
     };
-    let rel = cwd.replace("{member}", member);
+    let rel = cwd.replace("{member_id}", member);
     let dir = folder.join(&rel);
     let real = dir
         .canonicalize()
@@ -1495,7 +1495,7 @@ pub fn create_member(mut inst: Instance, role: &str) -> Result<UpOutcome, String
     start_members(lock, &inst, &v, vec![id], false)
 }
 
-/// Create only a new member's missing `{member}` leaf, after checking its
+/// Create only a new member's missing `{member_id}` leaf, after checking its
 /// unresolved path. Ancestors must exist; an existing leaf is kept as is.
 /// The caller holds the registry lock across the checks and creation.
 fn create_copy_folder(inst: &Instance, role: &crate::team::Role, id: &str) -> Result<(), String> {
@@ -1503,12 +1503,12 @@ fn create_copy_folder(inst: &Instance, role: &crate::team::Role, id: &str) -> Re
     let Some(cwd) = role.cwd.as_deref().filter(|c| {
         Path::new(c)
             .file_name()
-            .is_some_and(|name| name == "{member}")
+            .is_some_and(|name| name == "{member_id}")
     }) else {
         return Ok(());
     };
     let folder = member_cwd(&inst.record.folder, None, id)?;
-    let rel = cwd.replace("{member}", id);
+    let rel = cwd.replace("{member_id}", id);
     let dir = folder.join(&rel);
     if !resolve_existing_prefix(&dir).starts_with(&folder) {
         return Err(format!(
@@ -1526,11 +1526,11 @@ fn create_copy_folder(inst: &Instance, role: &crate::team::Role, id: &str) -> Re
     }
 }
 
-/// Same-role copies with `{member}` keep separate folders until deleted,
+/// Same-role copies with `{member_id}` keep separate folders until deleted,
 /// even while stopped. Resolve existing prefixes and check recorded folders
 /// so a missing folder or a moved symlink cannot hide an overlap.
 fn check_copy_folder(inst: &Instance, role: &crate::team::Role, id: &str) -> Result<(), String> {
-    let Some(cwd) = role.cwd.as_deref().filter(|c| c.contains("{member}")) else {
+    let Some(cwd) = role.cwd.as_deref().filter(|c| c.contains("{member_id}")) else {
         return Ok(());
     };
     let others: Vec<String> = inst
@@ -1542,14 +1542,14 @@ fn check_copy_folder(inst: &Instance, role: &crate::team::Role, id: &str) -> Res
     if others.is_empty() {
         return Ok(());
     }
-    let cwd = inst.record.folder.join(cwd.replace("{member}", id));
+    let cwd = inst.record.folder.join(cwd.replace("{member_id}", id));
     for other in others {
         let issued = &inst.record.members[&other];
         let other_cwd = inst.record.folder.join(
             role.cwd
                 .as_deref()
                 .unwrap_or("")
-                .replace("{member}", &other),
+                .replace("{member_id}", &other),
         );
         if overlaps(&cwd, &other_cwd) || issued.cwd.as_ref().is_some_and(|old| overlaps(&cwd, old))
         {
@@ -3101,7 +3101,7 @@ mod tests {
         let real = folder.canonicalize().unwrap();
         assert_eq!(member_cwd(&folder, None, "lead-2a3b").unwrap(), real);
         assert_eq!(
-            member_cwd(&folder, Some("copies/{member}"), "lead-2a3b").unwrap(),
+            member_cwd(&folder, Some("copies/{member_id}"), "lead-2a3b").unwrap(),
             real.join("copies/lead-2a3b")
         );
         assert!(

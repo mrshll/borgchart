@@ -356,7 +356,7 @@ pub struct Role {
     /// Extra arguments for the vendor CLI.
     pub args: Vec<String>,
     /// Where its members start, relative to the instance's folder; may hold
-    /// `{member}`.
+    /// `{member_id}`.
     pub cwd: Option<String>,
 }
 
@@ -878,14 +878,16 @@ fn load_role(
     }
     if max > 1
         && m.cwd.as_ref().is_some_and(|cwd| {
-            cwd.contains("{member}")
-                && (Path::new(cwd).file_name().is_none_or(|c| c != "{member}")
-                    || cwd.matches("{member}").count() != 1)
+            cwd.contains("{member_id}")
+                && (Path::new(cwd)
+                    .file_name()
+                    .is_none_or(|c| c != "{member_id}")
+                    || cwd.matches("{member_id}").count() != 1)
         })
     {
         report.error(
             Some(team_file),
-            at("with `max > 1`, `{member}` must be cwd's last folder name, for example `copies/{member}`".into()),
+            at("with `max > 1`, `{member_id}` must be cwd's last folder name, for example `copies/{member_id}`".into()),
         );
     }
     if let Some(cwd) = &m.cwd
@@ -955,12 +957,15 @@ fn load_role(
     })
 }
 
-/// A role's `cwd`: relative, inside the instance's folder, with `{member}`
+/// A role's `cwd`: relative, inside the instance's folder, with `{member_id}`
 /// as its only placeholder.
 fn check_cwd(cwd: &str) -> Result<(), String> {
     let path = Path::new(cwd);
     if cwd.is_empty() {
         return Err("`cwd` is empty".into());
+    }
+    if cwd.contains("{member}") {
+        return Err("`{member}` is now `{member_id}` in `cwd`".into());
     }
     if path.is_absolute() || cwd.starts_with('~') {
         return Err(format!(
@@ -975,9 +980,9 @@ fn check_cwd(cwd: &str) -> Result<(), String> {
             "`cwd: {cwd}` must stay inside the instance's folder (no `..`)"
         ));
     }
-    if cwd.replace("{member}", "").contains(['{', '}']) {
+    if cwd.replace("{member_id}", "").contains(['{', '}']) {
         return Err(format!(
-            "`cwd: {cwd}`: the only placeholder is `{{member}}`"
+            "`cwd: {cwd}`: the only placeholder is `{{member_id}}`"
         ));
     }
     Ok(())

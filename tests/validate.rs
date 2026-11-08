@@ -66,19 +66,19 @@ fn valid_team_loads() {
 #[test]
 fn copy_limits_refuse_zero_and_require_member_as_the_last_folder() {
     for (max, cwd, accepted) in [
-        (-1, Some("copies/{member}"), false),
-        (0, Some("copies/{member}"), false),
+        (-1, Some("copies/{member_id}"), false),
+        (0, Some("copies/{member_id}"), false),
         (1, None, true),
         (1, Some("shared"), true),
-        (1, Some("copies/{member}/src"), true),
+        (1, Some("copies/{member_id}/src"), true),
         (2, None, true),
-        (2, Some("copies/{member}"), true),
-        (2, Some("copies/{member}/src"), false),
-        (2, Some("copies/{member}/{member}"), false),
+        (2, Some("copies/{member_id}"), true),
+        (2, Some("copies/{member_id}/src"), false),
+        (2, Some("copies/{member_id}/{member_id}"), false),
         (2, Some("shared"), true),
-        (2, Some("copies/prefix-{member}"), false),
-        (2, Some("copies/{member}-suffix"), false),
-        (2, Some("copies/{member}/../shared"), false),
+        (2, Some("copies/prefix-{member_id}"), false),
+        (2, Some("copies/{member_id}-suffix"), false),
+        (2, Some("copies/{member_id}/../shared"), false),
     ] {
         let f = Fixture::new();
         // Use a new leaf so neither parent nor plugin delivery is ambiguous.
@@ -107,7 +107,7 @@ fn parents_and_plugin_delivery_cannot_choose_between_copies() {
         f.edit(
             "team.yaml",
             &format!("    prompt: {target}.md\n"),
-            &format!("    prompt: {target}.md\n    max: 2\n    cwd: copies/{{member}}\n"),
+            &format!("    prompt: {target}.md\n    max: 2\n    cwd: copies/{{member_id}}\n"),
         );
         let (report, validated) = f.run();
         assert!(
@@ -810,8 +810,9 @@ fn snapshot_describes_what_was_validated() {
 #[test]
 fn a_role_cwd_must_stay_inside_the_folder() {
     for (cwd, ok) in [
+        ("copies/{member}", false),
         ("sub", true),
-        ("copies/{member}", true),
+        ("copies/{member_id}", true),
         ("../x", false),
         ("/abs", false),
         ("~/x", false),

@@ -71,7 +71,7 @@ fn copies_env(max: usize) -> Env {
     let env = Env::new();
     env.role_extra(
         "helper",
-        &format!("    max: {max}\n    cwd: copies/{{member}}\n"),
+        &format!("    max: {max}\n    cwd: copies/{{member_id}}\n"),
     );
     fs::create_dir(env.path("work/a/copies")).unwrap();
     env
