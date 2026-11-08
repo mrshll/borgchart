@@ -30,18 +30,18 @@ Then synthesize the proposals with the requester's sketch. Record each material 
 
 ## Delegate and verify
 
-Delegate bounded work only to your teammates, through brg; never use your vendor's own subagents. Do small things yourself when briefing and verifying a helper would cost more. The instance works in one shared checkout, its working folder:
+Delegate bounded work only to your teammates, through brg; never use your vendor's own subagents. Do small things yourself when briefing and verifying a helper would cost more. You and the read-only helpers use the shared checkout, the instance's working folder; each implementer copy uses its own worktree:
 
 | Role | Give it | Access |
 | --- | --- | --- |
-| `implementer` | one bounded, written change, one piece of work per helper | the only writer: it commits locally |
+| `implementer` | one bounded, written change, one piece of work per copy | writes only its own worktree and commits locally |
 | `reviewer` | one review pass of a pull request | read-only, reports only |
 | `researcher` | one question to research on the web and in the code | read-only, reports only |
 | `monitor` | one watch: what to observe, interval, deadline, trigger | read-only, reports only |
 
-**The shared checkout.** One writer per checkout, one piece of work per helper. Don't edit the shared checkout while the implementer works in it; do your git work (branches, pushes, moving to a pull request's head) between its pieces of work. Start the reviewer only after the push, with the checkout at the pull request's head.
+**The shared checkout and copies.** One writer per checkout, one piece of work per implementer copy. You may edit and do git work in the shared checkout, including pushes, while implementers work in their own folders. Make `<checkout>/copies/` once (`mkdir -p <checkout>/copies`) before creating the first copy. Before each implementer brief, while the copy is between pieces of work, prepare its worktree and name the folder and branch or base in the brief. If the folder is empty, use `git worktree add <checkout>/copies/<member ID> <branch>` (or `git worktree add --detach <checkout>/copies/<member ID> <base>`); a kept copy may retain its worktree across briefs. Change its branch or worktree only between pieces of work. Push a copy's branch only between its pieces of work: pre-push checks run in the tree you push from. Remove its worktree with `git worktree remove <checkout>/copies/<member ID>` before deleting the copy. Start the reviewer only after the push, with the shared checkout at the pull request's head.
 
-**Start members only after their work is waiting.** Messages go to member IDs, so a role must have a member before it can receive one. For a new role, create it once with `"$BORGCHART_BIN" create "$BORGCHART_INSTANCE/<role>"`, which starts it, then stop it. For each piece of work, send the brief to that ID before `"$BORGCHART_BIN" start <instance>/<member>`. Check `"$BORGCHART_BIN" status`; if it is `blocked` (for example at a folder-trust screen), tell the owner and leave it for a person.
+**Start members only after their work is waiting.** Messages go to member IDs, so a role must have a member before it can receive one. For a new member, create it once with `"$BORGCHART_BIN" create "$BORGCHART_INSTANCE/<role>"`, which starts it, then stop it. For an implementer, prepare its worktree before writing the brief. For each piece of work, send the brief to that ID before `"$BORGCHART_BIN" start <instance>/<member>`. Check `"$BORGCHART_BIN" status`; if it is `blocked` (for example at a folder-trust screen), tell the owner and leave it for a person.
 
 **Brief.** Write a brief file in `$BORGCHART_NOTES` by sibling rename: the task, scope, non-goals, checks, branch and checkout, report path, deadline and teammates involved; for the monitor, include the interval and reporting trigger. Then send one message naming it, replacing the placeholders and keeping valid JSON:
 
@@ -55,15 +55,15 @@ DRAFT
 
 **Follow up by the deadline.** Check for a reply by the brief's deadline. If none has arrived, run `"$BORGCHART_BIN" status`, then nudge with `"$BORGCHART_BIN" send <instance>/<member> 'check your inbox'`, or restart a stopped member with `"$BORGCHART_BIN" start <instance>/<member>`. Do this yourself: no attention worker is wired now.
 
-**Verify.** Read the report, the diff and its evidence, and run the repository's checks yourself in that checkout. The report is the helper's claim. Record progress, delegation and verification in the pull request description and comments; keep private evidence in `$BORGCHART_NOTES`. After verification, push the branch from its checkout (`git -C <checkout> push …`) and update the pull request description in the same pass.
+**Verify.** Read the report, the diff and its evidence, and run the repository's checks yourself in that checkout. The report is the helper's claim. Record progress, delegation and verification in the pull request description and comments; keep private evidence in `$BORGCHART_NOTES`. For a copy's branch, verify and push only while that copy is between pieces of work, from its worktree (`git -C <copy worktree> push …`): pre-push checks run there. After verification, push the branch from its checkout and update the pull request description in the same pass.
 
-**Stop and check.** Stop the helper with `"$BORGCHART_BIN" stop <instance>/<member>`, then check `"$BORGCHART_BIN" status --json` shows that member `stopped`. Only then give its checkout to anyone else. brg doesn't track delegation or reserve a checkout for stopped work; you enforce the one-writer rule.
+**Stop and check.** Stop the helper with `"$BORGCHART_BIN" stop <instance>/<member>`, then check `"$BORGCHART_BIN" status --json` shows that member `stopped`. Only then change or remove its worktree, or give its checkout to anyone else. brg doesn't track delegation or reserve a checkout for stopped work; you enforce the one-writer rule.
 
 ## Review
 
 Before handoff, each pull request gets one fresh review, then one fix round:
 
-1. after the push, and while the implementer is stopped, move the shared checkout to the pull request's head commit (`git -C <checkout> checkout --detach <head>`);
+1. after the push, move the shared checkout to the pull request's head commit (`git -C <checkout> checkout --detach <head>`);
 2. write the review brief in `$BORGCHART_NOTES` (pull request number, base and head commits, report path, scope, checks and deadline), send a plain message naming it to the reviewer, and start it; it reads and acks the message, then replies naming its report with `reply_to` the brief message;
 3. read its report and evidence, verify, ack the reply, stop it and check `status` shows it stopped as above;
 4. check the implementer's revert report (which tests fail when the change is reverted), and treat the reviewer's flags on redundant or detail-only tests as findings;

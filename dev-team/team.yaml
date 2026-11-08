@@ -1,5 +1,7 @@
-# A development team: a lead and four helpers it starts on demand, working
-# in one shared checkout, the folder given at `brg create dev-team <folder>`.
+# A development team: a lead and four helper roles it starts on demand.
+# The folder given at `brg create dev-team <folder>` is the shared checkout.
+# Each implementer copy gets a folder brg creates empty under copies/;
+# the lead makes copies/ once and prepares a worktree before each brief.
 # See README.md.
 #
 # Every member uses `vendor` posture: the bus doesn't support `locked`
@@ -21,6 +23,8 @@ roles:
     vendor: codex
     parent: lead
     start: false
+    max: 2
+    cwd: copies/{member_id}
   reviewer:
     prompt: reviewer.md
     vendor: claude
