@@ -351,3 +351,108 @@ fn bare_status_i_shows_every_instance_and_attaches_in_the_selected_one() {
         dump,
     );
 }
+
+#[test]
+fn bare_status_i_with_no_instances_says_so_until_one_is_created() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let write = |rel: &str, text: &str| {
+        let p = root.join(rel);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, text).unwrap();
+    };
+    write("team/team.yaml", "roles:\n  alpha: {prompt: alpha.md}\n");
+    write("team/alpha.md", "---\n---\nYou are alpha.\n");
+    fs::create_dir_all(root.join("bin")).unwrap();
+    fs::create_dir_all(root.join("home")).unwrap();
+    fs::create_dir_all(root.join("work")).unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_fake-agent"), root.join("bin/claude")).unwrap();
+
+    let private = common::PrivateTmux::new();
+    let inner = private.socket("brg-tui-in");
+    let outer = private.socket("brg-tui-out");
+    let env_line = format!(
+        "export PATH={guard}:{bin}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin HOME={home} LANG=C.UTF-8 TERM=xterm-256color BORGCHART_STATE_HOME={state} BORGCHART_CONFIG={home}/config.yaml BORGCHART_TMUX_TMPDIR={tmpdir} BORGCHART_TMUX_SOCKET={inner}\ncd {team}\n",
+        guard = private.bin().display(),
+        bin = root.join("bin").display(),
+        home = root.join("home").display(),
+        state = root.join("state").display(),
+        tmpdir = private.dir().display(),
+        team = root.join("team").display(),
+    );
+    let brg = env!("CARGO_BIN_EXE_brg");
+    let script = |name: &str, body: &str| {
+        let path = root.join(name);
+        fs::write(&path, format!("#!/bin/sh\n{env_line}{body}\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    };
+    let screen_script = script("run.sh", &format!("exec {brg} status -i"));
+    let create = script(
+        "create.sh",
+        &format!(
+            "exec {brg} create {team} {work}",
+            team = root.join("team").display(),
+            work = root.join("work").display(),
+        ),
+    );
+
+    private
+        .tmux(&outer)
+        .args([
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-s",
+            "o",
+            "-x",
+            "160",
+            "-y",
+            "30",
+        ])
+        .arg(screen_script.display().to_string())
+        .status()
+        .unwrap();
+    let screen = || tmux(&private, &outer, &["capture-pane", "-p", "-t", "=o:"]);
+    let dump = || format!("outer screen:\n{}", screen());
+
+    wait(
+        "the screen saying there are no instances",
+        || screen().contains("there are no instances"),
+        dump,
+    );
+    // Still there, and still running, after a refresh.
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(screen().contains("there are no instances"), "{}", dump());
+
+    let out = common::command(&create).output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let id = String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_string();
+    wait(
+        "the new instance's header at a later refresh",
+        || {
+            let s = screen();
+            s.contains(&format!("{id}  team ")) && !s.contains("there are no instances")
+        },
+        dump,
+    );
+
+    tmux(&private, &outer, &["send-keys", "-t", "=o:", "q"]);
+    wait(
+        "the screen to close",
+        || {
+            !private
+                .tmux(&outer)
+                .args(["has-session", "-t", "=o"])
+                .status()
+                .unwrap()
+                .success()
+        },
+        dump,
+    );
+}

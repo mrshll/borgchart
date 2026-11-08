@@ -122,6 +122,7 @@ fn draw(
     headers: bool,
     table_state: &mut TableState,
     message: &str,
+    note: Option<&str>,
 ) {
     let [top, bottom] =
         Layout::vertical([Constraint::Min(3), Constraint::Length(2)]).areas(frame.area());
@@ -211,6 +212,10 @@ fn draw(
     frame.render_stateful_widget(table, top, table_state);
     // Each visible header line across the whole row, as `brg status` prints it.
     let inner = top.inner(Margin::new(1, 1));
+    // Every instance, and there are none: say so, as `brg status` does.
+    if let Some(note) = note {
+        frame.render_widget(Paragraph::new(format!("  {note}")), inner);
+    }
     let offset = table_state.offset();
     for (i, &(s, r)) in lines.iter().enumerate().skip(offset) {
         let y = inner.y + (i - offset) as u16;
@@ -260,9 +265,18 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
         if table_state.selected().is_some_and(|s| s >= lines.len()) {
             table_state.select(Some(lines.len().saturating_sub(1)));
         }
-        if let Err(e) =
-            terminal.draw(|f| draw(f, &title, &sections, headers, &mut table_state, &message))
-        {
+        let note = (headers && sections.is_empty()).then(address::known);
+        if let Err(e) = terminal.draw(|f| {
+            draw(
+                f,
+                &title,
+                &sections,
+                headers,
+                &mut table_state,
+                &message,
+                note.as_deref(),
+            )
+        }) {
             break Err(e.to_string());
         }
         let timeout = REFRESH.saturating_sub(last.elapsed());
