@@ -224,6 +224,35 @@ fn creating_a_copy_ignores_a_missing_kept_folder() {
 }
 
 #[test]
+fn refused_replacement_starts_do_not_leave_unkept_copy_folders() {
+    let env = copies_env(2);
+    let path = env.path("teams/oncall/team.yaml");
+    fs::write(
+        &path,
+        fs::read_to_string(&path).unwrap().replace(
+            "    parent: lead\n    start: false",
+            "    parent: lead\n    start: true",
+        ),
+    )
+    .unwrap();
+    let inst = env.create("oncall", "work/a");
+    let first = env.member(&inst, "helper");
+    env.ok(&["stop", &inst]);
+    env.ok(&["delete", &format!("{inst}/{first}")]);
+    fs::remove_dir(env.path(&format!("work/a/copies/{first}"))).unwrap();
+    env.role_extra("lead", "    cwd: missing\n");
+
+    env.fails(&["start", &inst]);
+    assert!(env.copies(&inst).is_empty());
+    assert!(
+        fs::read_dir(env.path("work/a/copies"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+}
+
+#[test]
 fn restarting_copies_refuses_changed_folder_aliases() {
     for full in [false, true] {
         let env = copies_env(2);
@@ -231,7 +260,7 @@ fn restarting_copies_refuses_changed_folder_aliases() {
         let text = fs::read_to_string(&path)
             .unwrap()
             .replace("    start: false", "    start: true");
-        fs::write(path, text).unwrap();
+        fs::write(&path, text).unwrap();
         let out = env
             .cmd(&[
                 "create",
@@ -246,6 +275,15 @@ fn restarting_copies_refuses_changed_folder_aliases() {
         let first = env.copies(&inst)[0].clone();
         let second = env.copy(&inst);
         env.ok(&["stop", &inst]);
+        if full {
+            fs::write(
+                &path,
+                fs::read_to_string(&path)
+                    .unwrap()
+                    .replace("max: 2", "max: 1"),
+            )
+            .unwrap();
+        }
         let folder = env.path(&format!("work/a/copies/{first}"));
         let alias = env.path(&format!("work/a/copies/{second}"));
         fs::remove_dir(&alias).unwrap();

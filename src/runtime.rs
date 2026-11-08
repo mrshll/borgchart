@@ -360,9 +360,7 @@ fn start_members(
     // Checks that need nothing written.
     for id in &member_ids {
         let member = role_of(id)?;
-        if member.max > 1 {
-            check_copy_folder(inst, member, id)?;
-        }
+        check_copy_folder(inst, member, id)?;
         let granted = launch::granted(&v.team, member);
         if let Some((plugin, command)) = launch::shim_commands(&granted)
             .into_iter()
@@ -1403,14 +1401,20 @@ pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
         state,
         record,
     };
+    let mut created_folders = Vec::new();
     let result = (|| {
         for id in &ids {
             let role = &v.team.roles[inst.record.role_of(id).expect("issued role")];
-            create_copy_folder(&inst, role, id)?;
+            if let Some(folder) = create_copy_folder(&inst, role, id)? {
+                created_folders.push(folder);
+            }
         }
         start_members(lock, &inst, &v, ids, true)
     })();
     if result.is_err() {
+        for folder in created_folders {
+            let _ = std::fs::remove_dir(folder);
+        }
         unregister_if_never_started(&inst);
     }
     result
@@ -1490,7 +1494,7 @@ pub fn create_member(mut inst: Instance, role: &str) -> Result<UpOutcome, String
     let id = inst
         .record
         .issue_member(role, |id| v.team.roles.contains_key(id))?;
-    create_copy_folder(&inst, member, &id)?;
+    let _ = create_copy_folder(&inst, member, &id)?;
     lock.save_instance(&inst.state, &inst.record)?;
     start_members(lock, &inst, &v, vec![id], false)
 }
@@ -1498,14 +1502,19 @@ pub fn create_member(mut inst: Instance, role: &str) -> Result<UpOutcome, String
 /// Create only a new member's missing `{member_id}` leaf, after checking its
 /// unresolved path. Ancestors must exist; an existing leaf is kept as is.
 /// The caller holds the registry lock across the checks and creation.
-fn create_copy_folder(inst: &Instance, role: &crate::team::Role, id: &str) -> Result<(), String> {
+/// Returns the new leaf so an unkept member's failed start can remove it.
+fn create_copy_folder(
+    inst: &Instance,
+    role: &crate::team::Role,
+    id: &str,
+) -> Result<Option<PathBuf>, String> {
     check_copy_folder(inst, role, id)?;
     let Some(cwd) = role.cwd.as_deref().filter(|c| {
         Path::new(c)
             .file_name()
             .is_some_and(|name| name == "{member_id}")
     }) else {
-        return Ok(());
+        return Ok(None);
     };
     let folder = member_cwd(&inst.record.folder, None, id)?;
     let rel = cwd.replace("{member_id}", id);
@@ -1517,12 +1526,17 @@ fn create_copy_folder(inst: &Instance, role: &crate::team::Role, id: &str) -> Re
         ));
     }
     match std::fs::create_dir(&dir) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && dir.is_dir() => Ok(()),
-        Err(e) => Err(format!(
+        Ok(()) => Ok(Some(dir)),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && dir.is_dir() => Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(format!(
+            "`{id}`'s cwd {} exists but isn't a folder; remove it or change `cwd`",
+            dir.display()
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(format!(
             "cannot create `{id}`'s cwd {}: {e}; its parent folder must already exist",
             dir.display()
         )),
+        Err(e) => Err(format!("cannot create `{id}`'s cwd {}: {e}", dir.display())),
     }
 }
 
@@ -1700,6 +1714,7 @@ fn full_start_members(
     _lock: &registry::Lock,
     inst: &mut Instance,
     v: &Validated,
+    created_folders: &mut Vec<PathBuf>,
 ) -> Result<Vec<String>, String> {
     let mut ids = std::collections::BTreeSet::new();
     for role in v.team.roles.values().filter(|m| m.start) {
@@ -1708,7 +1723,9 @@ fn full_start_members(
             let id = inst
                 .record
                 .issue_member(&role.id, |id| v.team.roles.contains_key(id))?;
-            create_copy_folder(inst, role, &id)?;
+            if let Some(folder) = create_copy_folder(inst, role, &id)? {
+                created_folders.push(folder);
+            }
             ids.insert(id);
         }
         ids.extend(members);
@@ -1783,8 +1800,17 @@ pub fn start(
     match member {
         Some(id) => start_members(lock, &inst, &v, vec![id], false),
         None => {
-            let ids = full_start_members(&lock, &mut inst, &v)?;
-            start_members(lock, &inst, &v, ids, true)
+            let mut created_folders = Vec::new();
+            let result = (|| {
+                let ids = full_start_members(&lock, &mut inst, &v, &mut created_folders)?;
+                start_members(lock, &inst, &v, ids, true)
+            })();
+            if result.is_err() {
+                for folder in created_folders {
+                    let _ = std::fs::remove_dir(folder);
+                }
+            }
+            result
         }
     }
 }

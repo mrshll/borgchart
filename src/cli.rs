@@ -43,8 +43,8 @@ enum Command {
     /// For a role target with a bus, a member caller must be
     /// the role's parent, using its latest running start.
     /// When `cwd` ends in `{member_id}`, brg makes the empty leaf when issuing
-    /// a new member (create, or start replacing a deleted member), for any
-    /// max. Its parent folder must already exist.
+    /// a new member (create, or a full `start` that gives a `start: true` role
+    /// a new member), for any max. Its parent folder must already exist.
     Create {
         /// `<team>` (a name, or a path starting with `/`, `./`, `../` or
         /// `~/`), or `<instance>/<role>`.

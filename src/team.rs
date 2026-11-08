@@ -876,18 +876,19 @@ fn load_role(
     if max == 0 {
         report.error(Some(team_file), at("`max` must be at least 1".into()));
     }
-    if max > 1
-        && m.cwd.as_ref().is_some_and(|cwd| {
-            cwd.contains("{member_id}")
-                && (Path::new(cwd)
-                    .file_name()
-                    .is_none_or(|c| c != "{member_id}")
-                    || cwd.matches("{member_id}").count() != 1)
-        })
-    {
+    if m.cwd.as_ref().is_some_and(|cwd| {
+        cwd.contains("{member_id}")
+            && (Path::new(cwd)
+                .file_name()
+                .is_none_or(|c| c != "{member_id}")
+                || cwd.matches("{member_id}").count() != 1)
+    }) {
         report.error(
             Some(team_file),
-            at("with `max > 1`, `{member_id}` must be cwd's last folder name, for example `copies/{member_id}`".into()),
+            at(
+                "`{member_id}` must be cwd's last folder name, for example `copies/{member_id}`"
+                    .into(),
+            ),
         );
     }
     if let Some(cwd) = &m.cwd

@@ -70,7 +70,7 @@ fn copy_limits_refuse_zero_and_require_member_as_the_last_folder() {
         (0, Some("copies/{member_id}"), false),
         (1, None, true),
         (1, Some("shared"), true),
-        (1, Some("copies/{member_id}/src"), true),
+        (1, Some("copies/{member_id}/src"), false),
         (2, None, true),
         (2, Some("copies/{member_id}"), true),
         (2, Some("copies/{member_id}/src"), false),
