@@ -42,7 +42,7 @@ members:
 - **`parent`** makes the org chart, and messages follow it: a member writes to its parent or its children. The top member can also write to an outside caller (`external:NAME`).
 - **Plugins** are plain programs, declared under `plugins:` (a folder in the team, or `shared:<name>`, with the variables they receive and the actions members may be granted). brg runs only what `team.yaml` lists. A member can use only the actions it's granted; each granted action appears in its instruction with an absolute path. Secrets reach the plugin through a private file, never the agent's environment.
   - A plugin may also declare a long-running `process` (a watcher of some outside source) with `delivers_to: <member>`.
-  - An action that brg runs itself, like a bus `alert` action, gets fixed arguments and never any message text. The alert action (#8) is parked until the watcher (#20); see "Getting a member's attention".
+  - An action that brg runs itself, like a bus `alert` action, gets fixed arguments and never any message text. The alert setting is validated, but neither the watcher nor alert dispatch is wired now; see "Getting a member's attention".
 
 ### Member files
 
@@ -76,7 +76,7 @@ devteam-k3f9  team ~/.config/borgchart/teams/devteam · folder ~/work/project
 
 ## Commands
 
-A small top level for people. `brg --help` and `brg <command> --help` give the full syntax; inside a member, the help also covers the message kinds and facts, waiting and the task lifecycle.
+A small top level for people. `brg --help` and `brg <command> --help` give the full syntax; inside a member, the help also covers plain message drafts, acknowledgement and the one inbox wait.
 
 | Command | What it does |
 | --- | --- |
@@ -84,40 +84,34 @@ A small top level for people. `brg --help` and `brg <command> --help` give the f
 | `brg create <team> <folder>`, `brg create <instance>/<role>` | Make a new instance, or a role's member, and start it. Prints the tree with each member's model and what happened. |
 | `brg start <instance>[/<member>]`, `brg stop <instance>[/<member>]` | Bring it back, or stop it |
 | `brg delete <instance>` | Remove a stopped instance |
-| `brg status [instance] [--check]` | The same tree, live: who is idle, working or blocked, plus open tasks, questions and alerts. `--check` (proposed) exits non-zero when a person is needed. |
+| `brg status [instance] [--json \| -w \| -i]` | The live tree: who is idle, working or blocked, with positive unread message counts. JSON includes `unread`, including zero with a readable bus. No bus means no counts; an unreadable store omits counts and adds a check note. |
 | `brg ls` | Your teams, each with its instances |
 | `brg attach <instance>/<member>`, `brg logs <instance>/<member>` | Watch a member |
-| `brg prompt <instance>/<member> TEXT` | Type into a member now (today's `brg send`) |
-| `brg message …` | Messages, below |
+| `brg send <instance>/<member> TEXT` | Type into a member now |
+| `brg msg …`, `brg inbox …`, `brg bus check` | Durable messages and store health, below |
 
 **Messages**, mostly used by members:
 
 | Command | What it does |
 | --- | --- |
-| `brg message send [team/]member TEXT` | Send a durable message (or a task record with `--record FILE`) |
-| `brg message inbox [[team/]member]` | List messages not yet marked handled |
-| `brg message read [team/]ID` | Read one (or a task's history with `--task T`) |
-| `brg message ack [team/]ID…` | Mark as handled |
-| `brg message wait [[team/]member] --timeout S` | Wait for the next one |
+| `brg msg publish [--record FILE\|-] [--external NAME] [--json]` | Publish a new message from `{to, body, reply_to?}`, on stdin by default |
+| `brg inbox [--member ID \| --external NAME] [--full] [--json]` | List every unacked message, oldest first; --full includes bodies |
+| `brg msg read ID [--json]` | Read one message, including an acknowledged one |
+| `brg msg ack ID… [--external NAME] [--json]` | Acknowledge messages addressed to you |
+| `brg inbox wait [--external NAME] [--timeout SECONDS] [--full] [--json]` | Wait for your inbox: new messages at once, existing ones after 60 seconds if still unacked; timeout 60–86400, default 86400 |
+| `brg bus check [--json]` | Report gaps and unreadable files without writing |
 
-**Addressing.** `devteam-k3f9/lead-q8m3`. Inside a member, a bare member ID means its own instance; everywhere else the instance is named in full ([concepts](concepts.md#names-and-ids)). An outside caller, for example a person's script or a coordinating agent, adds `--external NAME` (refused inside a member) and is answered at `external:NAME`.
+**Addressing.** `devteam-k3f9/lead-q8m3`. Inside a member, a bare member ID means its own instance; everywhere else the instance is named in full ([concepts](concepts.md#names-and-ids)). Bus commands take `--instance ID` outside a member. An outside caller, for example a person's script or a coordinating agent, adds `--external NAME` (refused inside a member) and is answered at `external:NAME`.
 
 ## How members talk
 
-- **`prompt`** types text into a member's input box right away, under checks: not mid-turn, not at a dialog. It's for people steering a member.
-- **`message send`** writes a durable message. It's never typed into a terminal, survives restarts and is acknowledged explicitly.
-- **Tasks** are messages too: assign, accept or decline, result, verify, release, question and decision. brg checks who may send each one and keeps the task's state.
-  - Only a member's parent assigns and verifies.
-  - Each member has one open task at a time.
-  - A checkout is never released while the member writing it might still be running.
+- **`send`** types text into a member's input box right away, under checks: not mid-turn, not at a dialog. It's for people steering a member.
+- **`msg publish`** writes a durable message. It is never typed into a terminal, survives restarts and is acknowledged explicitly. A member publishes to its parent or children; only the root also publishes to outside callers.
+- **Work is prose.** The lead writes a brief file, sends a message naming it and starts the helper. The helper reads `inbox --full`, acks once it takes responsibility, writes its report atomically and replies naming it with `reply_to` the brief message. The lead verifies the report, diff and checks itself, stops the helper, then checks status shows it stopped before reusing the checkout. One writer per checkout and one piece of work per helper are team rules. Progress and delegation live in pull request descriptions and comments.
 
-**Getting a member's attention.** A member with messages waiting has to notice them. Nothing is typed into its terminal in the normal case:
+**Getting a member's attention.** Ack everything you have taken on, then arm one `inbox wait`: Claude with its Bash tool in background mode, Codex in the foreground with `--timeout 600`. New unacked messages return at once; messages already there wait 60 seconds and return only if still unacked. Errors wait at least 60 seconds too, except explicit help and signals. On exit 9 wait again; on exit 8 (`fenced`) stop waiting and tell the owner. A message left unacked wakes a member about once a minute.
 
-- **Work is waiting before a member starts.** The lead publishes the assignment first, then starts the member, whose first action is to read its inbox. So an on-demand member never needs waking for its first task.
-- **Claude members wake themselves.** At the start of each turn they run `brg message wait` in the background, and Claude Code starts a new turn when it returns. That's why `dev-team/`'s lead runs on Claude.
-- **Codex members are woken by `codex queue`** once the watcher (#20) lands. It hands the waiting session a one-line pointer to its inbox and starts a turn, with nothing typed. Until then a Codex member waits only in the foreground, for the answer to its own question, and a Codex lead isn't supported.
-- **A hidden watcher per team is the safety net** (#20). It looks for members with unread messages and no working wait, and wakes them the vendor's way. Its last resort is to type one fixed reminder, and only into a provably empty input box. When it can't do that safely, it alerts a person through the team's alert action (#8), which is parked until the watcher lands with it.
-- **Version check.** Each of these is enabled per vendor and version only after it has been tested on that CLI.
+The attention worker and watcher are not wired now; the lead nudges with `brg send`. By each brief's deadline it checks for a reply, then status, and sends `brg send <instance>/<member> 'check your inbox'` or restarts a stopped member with `brg start`. The guarded, vendor-qualified typed wake exists in the library, uncalled; see [the bus](bus.md#attention).
 
 ## Secrets
 
@@ -151,18 +145,18 @@ members:
      └─ implementer  on demand (none running)
   ```
 
-  Ended copies leave the tree; `brg status --all` could list them.
+  Ended copies stay in the tree as stopped members until deleted.
 - **Addressing.** `devteam/implementer-2` reaches one copy. A bare `implementer` works only while exactly one copy is running; otherwise brg errors and lists the copies, the same rule as for team names.
-- **Messages to the role.** A message sent to `implementer`, rather than to one copy, waits in a shared queue for the role. The first copy to take it gets it.
+- **Messages go to a member.** The lead chooses a full member ID; there is no role queue.
 
 Proposed changes to this direction, and why:
 
 1. **`max` alone turns copies on; no `start: on-demand`.** `start: false` already means "on demand", and `max` defaults to 1, today's single member. This adds one key instead of a third `start` value.
-2. **Copies hang under the role's declared `parent`, and only that parent (or a person) may start one.** Messages and task rights follow `parent`. If "whoever started it" became the parent, the org chart would change at runtime. With this rule the two readings agree.
-3. **Copy numbers aren't reused while the team's storage lives.** A new `implementer-2` would otherwise inherit an ended copy's inbox and task.
-4. **"Take" means `accept`, not `ack`, for tasks.** The first copy to accept an assignment sent to the role becomes its assignee; later accepts are told it's taken. Each copy still holds at most one open task. Plain notes to the role go to the first copy that acks them. If ack meant take, a copy that crashed between acking and working would lose the task.
-5. **Wake one copy, not all.** A role message wakes the idle copy with the lowest number. If nobody takes it within a few minutes, the next copy is woken. Waking every copy would spend a turn on each for one message.
-6. **An ended copy stays in the tree while it still holds an open task or a checkout,** shown as `stopped (open task T3)`. It leaves the tree once that's released. Otherwise unfinished work disappears from view.
+2. **Copies hang under the role's declared `parent`, and only that parent (or a person) may start one.** Message routing follows `parent`. If "whoever started it" became the parent, the org chart would change at runtime. With this rule the two readings agree.
+3. **Copy numbers aren't reused while the team's storage lives.** A new `implementer-2` would otherwise inherit an ended copy's inbox.
+4. **Taking work is a team rule.** Messages go to a chosen member, not a role queue. The lead gives each helper one piece of work and tracks it in the pull request; the helper acks once it takes responsibility.
+5. **Attention is the lead's responsibility.** It checks for a reply by the brief's deadline and nudges or restarts that member as above.
+6. **An ended copy stays addressable and can be restarted.** It is shown as stopped, with any unread message count. A stopped instance holds no checkout; the lead verifies and stops its writer before passing a checkout on.
 
 Open questions:
 
@@ -172,8 +166,8 @@ Open questions:
   - brg creates and later removes a git worktree per copy.
 
   Proposed: the template first.
-- **When every copy has ended,** unacknowledged role messages stay queued. `status` shows them (`implementer  on demand (none running) · 2 waiting`), and the parent is told. Should brg start a copy by itself instead?
-- **A copy that ends with an open task:** does the task go back to the parent for reassignment, or wait for `brg start <instance>/<copy>` to restart that same copy?
+- **When every copy has ended,** messages remain addressed to those stopped members. Status shows their unread counts; the lead follows up and starts a member when needed, rather than brg starting it automatically.
+- **Unfinished work:** the lead decides whether to restart the same member with `brg start <instance>/<member>` or give a new brief to another member, after checking the previous writer stopped.
 
 ## Teams as members (departments) (Open: design only, a later change)
 
@@ -213,7 +207,7 @@ members:
 Proposed changes to this direction, and why:
 
 1. **`team:` must be inside the team folder, or `shared:<name>` as for plugins, never a path like `../medium`.** The team folder is meant to be shareable and say nothing about one machine. A path outside it breaks that.
-2. **One message store per department, not one per sub-team.** Copies are namespaced members (`ws-2/lead`) in the department's single store. A parent-to-child message is then an ordinary local record, with one sequence, one inspect and one check. Separate stores would need delivery between stores, and a rollover would have to coordinate them.
+2. **One message store per department, not one per sub-team.** Copies are namespaced members (`ws-2/lead`) in the department's single store. A parent-to-child message is then an ordinary local record, with one sequence, one unread-count reader and one check. Separate stores would need delivery between stores.
 3. **A sub-team copy can't write to outside callers.** Only the outermost team's top member answers `external:NAME`. Inside a department, a sub-team's top member writes to its parent. Otherwise every workstream could reach the person directly, around the department's lead.
 4. **Per-copy folders come from the role's `cwd` with `{member}`,** inside the department's one working folder.
 5. **The routing plugin starts as go/wait only.** Letting it change a copy's vendor or model would make `create` take overrides that member files currently pin. Add overrides only if go/wait proves too little.
@@ -223,17 +217,17 @@ Open questions:
 - **Depth.** Cycles (a team containing itself, directly or not) are refused at `validate`. Is there also a depth limit? Proposed: 3 levels, raise it if needed.
 - **Standalone use.** Can a sub-team's folder also run as an ordinary team? Proposed: yes, as its own instance.
 - **Storage.** Shared with the department (proposed above) or one store per sub-team.
-- **Stopping.** `brg stop <instance>/ws-2` stops the whole copy. What about the open tasks of its members (the same question as for a copy that ends with an open task)?
+- **Stopping.** `brg stop <instance>/ws-2` stops the whole copy. The lead remains responsible for unfinished work and must verify each writer stopped before reusing a checkout.
 - **Siblings.** Can `ws-1/lead` message `ws-2/lead` directly? Proposed: no, only through their common parent, as for any siblings.
 - **Display.** Should `status` fold a busy sub-team into one line by default, with `--all` expanding it?
 
 ## What you never see
 
-- **Storage.** No runs, run IDs, generations or storage paths in commands, output or errors. brg rolls a team's message storage over by itself when its configuration changes or the storage reaches its age limit, and carries open work across.
-- **brg versions.** Nothing is pinned: every call uses the installed `brg`. If an upgraded brg can't read a team's messages, it says exactly what to do:
+- **Storage.** One message store per instance for its whole life, with continuous numbering across stops, starts and team-file changes. Reads scan it; there is no index or archiving.
+- **brg versions.** Members call `"$BORGCHART_BIN"`, the brg that started them. If an upgraded brg can't read a team's messages, it says exactly what to do:
 
   ```
-  brg: instance `devteam-k3f9`'s messages use format 1; this brg uses format 2.
+  brg: instance `devteam-k3f9`'s message storage is damaged: store.json names another format; repair it by hand, or create a new instance (`brg create`)
   ```
 
   brg refuses to start such an instance, and points to `brg create` for a fresh one; its open work has to be sent again.
@@ -251,4 +245,4 @@ Open questions:
 - **Roles with several copies** and **teams as members** (above).
 - **Sessions:** whether separate groups of teams (`--session`) are needed at all. They are kept minimal for now.
 - **Secrets:** how a hosted brg would map them to a cloud secret manager.
-- **When renames land:** `prompt`, `message …`, `rules:` and the folded commands arrive in one follow-up change (#19). Until then the commands keep today's names (`send`, `msg`, `inbox`, `task:`).
+- **When renames land:** `prompt`, `message …`, `rules:` and the folded commands arrive in one follow-up change (#19). Until then the commands keep today's names (`send`, `msg`, `inbox`, `bus check`).

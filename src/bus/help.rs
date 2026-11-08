@@ -68,8 +68,9 @@ pub fn wait() -> String {
 --json prints the same inbox object as `brg inbox --json`.
 
 The first readable scan marks the newest message. A new unacked message to
-you returns at once. Messages already present return after 60 seconds, unless
-a new one arrives sooner. Ack everything you have taken on before waiting.
+you returns at once. Messages already present return after 60 seconds only if
+still unacked; if all were acked meanwhile, waiting continues. A new message
+can return sooner. Ack everything you have taken on before waiting.
 Each later poll reads only the next message and checks your current session.
 Errors, including usage errors, wait at least 60 seconds too; explicit help
 and signals may end immediately.

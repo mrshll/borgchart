@@ -28,7 +28,7 @@ Every borgchart file is YAML 1.2 parsed strictly:
 ```yaml
 default: claude                 # vendor for roles that don't name one: claude | codex
 includes: includes              # optional; directory for {{includes/…}} (default: includes)
-bus: {}                         # optional: the members share a message bus; `bus: {alert: {plugin: notify, action: alert}}` adds an alert
+bus: {}                         # optional: the members share a message bus; `bus: {alert: {plugin: notify, action: alert}}` configures an alert action (not wired now)
 
 plugins:
   slackbot:
@@ -62,6 +62,8 @@ members:                        # the roles
 ```
 
 **Names.** Role, plugin and action names match `[a-z][a-z0-9_-]{0,31}`. A role's member is `<role>-<suffix>` (`triager-x7k2`). Environment names match `[A-Z_][A-Z0-9_]*`. The team's name is its folder's name, lowercased, with anything outside `[a-z0-9_-]` turned into `-`.
+
+**Messages.** With `bus:`, members publish plain `{to, body, reply_to?}` drafts, read and ack their inbox, and use one `inbox wait`. `brg status` (tree, `-i` and `--json`) shows unread message counts; no bus means no counts. The optional alert action and watcher are not wired now; the lead nudges with `brg send`. See [the bus](bus.md) for routing, storage, wait rules and commands.
 
 **Parents.** A `parent` must be another role, and parent links can't form a cycle. A member's parent is the member of its parent role. Messages a plugin routes "to the parent" go along this edge.
 

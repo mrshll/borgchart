@@ -8,11 +8,11 @@ Each definition noun has an active noun, created from it by `brg create`.
 
 | Definition | Active | Created by | Examples |
 | --- | --- | --- | --- |
-| **Team**: a folder you can share, holding `team.yaml`, its role files, includes and plugins | **Instance**: the team running in one working folder, with its members, messages, notes and tasks | `brg create dev-team ~/work/x` | `dev-team-k3f9`, `dev-team-p7xm` |
+| **Team**: a folder you can share, holding `team.yaml`, its role files, includes and plugins | **Instance**: the team running in one working folder, with its members, messages and notes | `brg create dev-team ~/work/x` | `dev-team-k3f9`, `dev-team-p7xm` |
 | **Role**: a named part in a team (a role file, a vendor, a parent, whether it starts with the instance, how many copies may run) | **Member**: one running agent filling the role | `brg create dev-team-k3f9/implementer` | `implementer-x7k2`, `lead-q8m3` |
 
 - **No deployment file.** What used to be in one is now in the team, in brg's global configuration, in the folder given at `create`, or worked out by brg for each instance (below).
-- **Start:** one start of a member. Starts are numbered per member, and only a member's latest start may act as it.
+- **Start:** one start of a member. It keeps today's unique start ID (incarnation); only a member's latest start may act as it.
 - **Unchanged:**
   - **Plugins:** a *plugin* is a program the team declares, and a *plugin process* is one that runs alongside the members.
   - **Outside callers:** anyone outside the team, written `external:NAME`.
@@ -67,9 +67,9 @@ There's no `up`. There are four verbs. `create` always makes something new; `sta
 | Command | On an instance | On a member |
 | --- | --- | --- |
 | `brg create` | `create <team> <folder>` makes a new instance working in that folder (required), starts it, and prints its ID and tree. `<team>` is a team's name or a path to its folder. Run it twice and you have two instances. | `create <instance>/<role>` makes a new member of that role and starts it. `create` takes only a team or a role, never a member. It's refused past `max`; for a `max: 1` role whose member already exists, it points to `start`. |
-| `brg start` | Brings the instance to what should be running. That's the `start: true` roles, the members that were running when it was last stopped, and every member holding an open task or checkout. Members already running are left alone. Changed files are applied only when the instance was fully stopped. It takes no folder. | Starts that member with a new start. If it's already running, it says so and changes nothing. |
+| `brg start` | Brings the instance to what should be running. That's the `start: true` roles and the members that were running when it was last stopped. Members already running are left alone. Changed files are applied only when the instance was fully stopped. It takes no folder. | Starts that member with a new start. If it's already running, it says so and changes nothing. |
 | `brg stop` | Stops every member. On a stopped instance, it says so and changes nothing. | Stops that member; the same on a stopped one. |
-| `brg delete` | Removes a stopped instance: its messages, notes, state and registration. It's refused while anything runs. If the instance holds open work, it lists that work and needs `--force`. | Removes a stopped member that holds no open work, freeing its place under `max`. Its number isn't reused. |
+| `brg delete` | Removes a stopped instance: its messages, notes, state and registration. It's refused while anything runs. Unacked messages, or messages it cannot read, are listed and need `--force`. | Removes a stopped member with no unacked messages, freeing its place under `max`. Its number isn't reused. |
 
 **Restarting** is `stop` then `start`. That's also how changed files are applied.
 
@@ -78,7 +78,7 @@ There's no `up`. There are four verbs. `create` always makes something new; `sta
 **Also:**
 - `attach`, `logs` and `prompt` take a member address.
 - `brg ls` lists the teams in the search paths, each with its instances, running or stopped.
-- `brg status` shows the tree.
+- `brg status` shows the tree and each member's unread (unacked) count, including in `-i` and `--json`.
 - `brg validate <team>` checks the team folder and the global configuration.
 
 ## Names and IDs
@@ -88,7 +88,7 @@ There's no `up`. There are four verbs. `create` always makes something new; `sta
 | Team | Its folder's name. There's no `name:` field. | `~/.config/borgchart/teams/dev-team/` is `dev-team` |
 | Instance | `<team>-<suffix>`. The suffix is four characters from `23456789abcdefghjkmnpqrstuvwxyz` (no `0 1 i l o`), random, checked against every instance brg has registered, and never reused. | `dev-team-k3f9` |
 | Member | `<role>-<suffix>`, with the same kind of suffix as instances, never reused within the instance | `lead-q8m3`, `implementer-x7k2` |
-| Start | A number per member, from 1 | 3 |
+| Start | A unique ID for one start of a member (an incarnation), as today | `implementer-x7k2.20261108000000000.ab12` |
 | Member address | `[instance/]member` | `dev-team-k3f9/implementer-x7k2` |
 | Role address | `[instance/]<role>`, the bare role name. Only `create` takes it. Members always carry a suffix, so a bare name is never a member's ID. There's no role queue: messages go to members. | `dev-team-k3f9/implementer` |
 | Message | `[instance/]m<seq>` | `dev-team-k3f9/m42` |
@@ -100,7 +100,7 @@ There's no `up`. There are four verbs. `create` always makes something new; `sta
 
 Two folders with the same name can both run. Their instances are told apart by their suffixes, and `brg ls` shows each one's folder.
 
-**Leaving the instance out.** Inside a member, an address without an instance means that member's own instance, so a lead writes `implementer-x7k2`. Everywhere else the full instance ID is needed (`dev-team-k3f9/implementer-x7k2`, `brg start dev-team-k3f9`). There are no other shortcuts for now: brg never infers an instance from a team's name or from which instances are running. Message, inbox and task commands take the instance as `--instance`; inside a member it's always the member's own.
+**Leaving the instance out.** Inside a member, an address without an instance means that member's own instance, so a lead writes `implementer-x7k2`. Everywhere else the full instance ID is needed (`dev-team-k3f9/implementer-x7k2`, `brg start dev-team-k3f9`). There are no other shortcuts for now: brg never infers an instance from a team's name or from which instances are running. Message, inbox and bus commands take the instance as `--instance`; inside a member it's always the member's own.
 
 **Members are always named in full.** Commands that act on a member (`attach`, `prompt`, `stop`), and messages, take its full ID (`lead-q8m3`). A role name there is refused, listing the role's members. There are no shortcuts for now.
 
@@ -113,27 +113,18 @@ Two folders with the same name can both run. Their instances are told apart by t
 ## Lifetimes
 
 **An instance lives from `create` until `delete`.**
-- **Stopping and starting:** `stop` and `start` keep its ID, messages, notes and open tasks, and its members keep their IDs.
+- **Stopping and starting:** `stop` and `start` keep its ID, messages and notes, and its members keep their IDs.
 - **Members are kept:** a member exists from `create` until `delete`, running or stopped. `max` counts those members. A stopped member stays addressable and can be started again.
-- **Its team folder:** the instance records the folder's path, not its name, so a same-named team elsewhere never takes its place. If the folder moves, `start` refuses, and `start <instance> --team <new path>` points it there. That's a change of files like any other: it applies only from a full stop, and the orphaned-work check applies.
+- **Its team folder:** the instance records the folder's path, not its name, so a same-named team elsewhere never takes its place. If the folder moves, `start` refuses, and `start <instance> --team <new path>` points it there. That's a change of files like any other: it applies only from a full stop, once every member is positively stopped.
 - **Its working folder** is fixed at `create`. If it's gone, `start` refuses; create a new instance.
 - **Message store:** one per instance for its whole life, in its state folder, so message numbers never restart.
 - **Frozen configuration:** the team's files, with includes expanded, and the global settings that reach members (`auth`, `auto_trust`, and where `plugins_dir` puts each shared plugin) are frozen from a start to the next full stop. `start` applies changes only after a full `stop`, once every member is positively stopped.
-- **Orphaned work:** `start` refuses while the new configuration orphans open work (a removed role that holds a task or checkout, say), and says what to cancel or restore.
-- **Checkouts:** every operation that starts a member (`create`, `start`, `start --team`) checks its resolved working folder. It refuses if that folder is the same as, inside, or around a folder that another instance's member holds, running or stopped with an open checkout. Members of one instance may share a folder. The check and the reservation happen together, under one lock, so two starts can't race.
-- **A new message format:** brg refuses to start an instance whose messages it can't read, and points to `brg create` for a fresh instance (its open work has to be sent again). `stop` and liveness never parse messages, so they still work on the old instance. Its checkouts stay reserved, and `delete` of it needs `--force` ("its contents can't be inspected"). No storage generations are needed.
-- **No age-based rollover:** brg refuses a state folder under `/tmp` or any other path cleaned by age. An index keeps reads cheap as the store grows.
+- **Checkouts:** every operation that starts a member (`create`, `start`, `start --team`) checks its resolved working folder. It refuses if that folder is the same as, inside, or around a folder that another instance's member holds while running or while brg cannot tell it stopped. Members of one instance may share a folder. The check and the reservation happen together, under one lock, so two starts can't race.
+- **A new message format:** brg refuses to start an instance whose messages it can't read, and points to `brg create` for a fresh instance (its open work has to be sent again). `stop` and liveness never parse messages, so they still work on the old instance. A stopped instance holds no checkout; `delete` of unreadable messages needs `--force` ("its contents can't be inspected"). No storage generations are needed.
+- **Durability:** brg refuses a state folder under `/tmp` or any other path cleaned by age. Reads scan the store; there is no index or archiving.
 - **The upgrade:** today's storage isn't converted. It stays on disk, unread. Stop every team before upgrading: brg refuses to start anything while a tmux session under an old name is alive.
 
-**Starts** do the jobs of today's incarnations:
-- fencing a replaced process ("this start of `implementer-x7k2` has been replaced");
-- the recorded tmux pane that decides whether the start is still running;
-- the task writers that must be gone before a checkout is freed;
-- what the background wait has already shown.
-
-A start is identified by its instance, member and number. Instance IDs are never reused, so a process left over from a deleted instance can't pass as a member of a new one. Within an instance, start numbers never repeat. If brg's record of them is lost while the instance's messages remain, `start` refuses rather than start counting again.
-
-Today's *run* (a hidden storage generation) and *incarnation* are gone from code, storage and records.
+**Starts** keep today's IDs (incarnations), for fencing a replaced process, identifying its recorded tmux pane, liveness and stop. `BORGCHART_INCARNATION` is the current member start's ID, not a per-member number. Start records live in brg's own files outside messages. If their state is missing or unreadable, brg refuses to guess whether a member is stopped. Instance IDs are never reused, so a process left over from a deleted instance cannot act as a member of a new one.
 
 ## `brg status`
 
@@ -151,8 +142,9 @@ dev-team-k3f9                       team ~/.config/borgchart/teams/dev-team/ · 
 - **Tree lines:**
   - one line per member;
   - a `start: false` role with no members yet gets one dim line, `on demand (none created)`, whatever its `max`. A created member that isn't running shows on its own line as `stopped`;
+  - positive unread message counts appear beside members, also in `-i`; a zero adds nothing to the tree;
   - department members nest.
-- **`--json` member rows:** `instance`, `team`, `member`, `role`, `parent` (a member ID), `start`, and the existing fields. Plugin-process rows keep `kind: plugin` and their name.
+- **`--json` member rows:** `instance`, `team`, `member`, `role`, `parent` (a member ID), and the existing fields; there is no numbered-start field. With a readable bus, `unread` gives each member's unacked count, including zero. Without a bus it is absent; if the store cannot be read, counts are absent and status adds a short note. Plugin-process rows keep `kind: plugin` and their name.
 
 ## Every use of "team" today
 
@@ -188,13 +180,12 @@ dev-team-k3f9                       team ~/.config/borgchart/teams/dev-team/ · 
 | | `--forget` (sessions design) | `delete` |
 | | `--file`/`-f`, `$BORGCHART_FILE`, `./borgchart.yaml` | removed |
 | | secrets from the environment `brg up` runs in | unchanged: the environment `create` or `start` runs in; `brg secret <team>` checks which are set |
-| | `brg bus carry --from RUN` | removed |
-| Output | `status --json` `name`, `kind` | `member`, `role`, `instance`, `team`, `start`; `kind` stays |
+| Output | `status --json` `name`, `kind` | `member`, `role`, `instance`, `team`, plus `unread` with a readable bus; `kind` stays |
 | | `not started` | `on demand (none created)`, for a role; `stopped`, for a member |
-| Records | `actor: {type: member, member, incarnation}`, `writer_incarnation`, the internal `run` field | `actor: {type: member, member, start}`, `writer_start`, no `run`: one message-format change, with the single store |
-| On disk | `<bus.root>/<name>-<hash>/current`, `r1/…`, `runtime/incarnations/…` | `…/borgchart/<instance>/messages/…`, `members/<member>/starts/<n>.json` |
+| Records | message identity | `from` is a member ID or `external:NAME`; fields are `schema`, `id`, `seq`, `at`, `from`, `to`, optional `reply_to`, and `body`. Start IDs stay in brg's own files and acknowledgement identity. |
+| On disk | message and start records | `…/borgchart/<instance>/messages/` holds `store.json`, `lock`, `records/` and `acks/`; the current start is `members/<member>/incarnation.json`, with history in `members/<member>/incarnations/<id>.json`. |
 | | brg state `…/borgchart/<name>-<hash>/` | `…/borgchart/<instance>/`, with `messages/` and `notes/`, plus the registry of instances |
-| Docs | "member" for both the part and the agent, "run", "incarnation", "deployment", "team" for the running thing, `up` | "role", "member", "start", "instance", the four verbs. Covers `format.md` (its `borgchart.yaml` section becomes `config.yaml`'s, and its older-shape steps), `teams.md`, `sessions.md`, `bus.md`, `cli.md`, the `--help` text, the example, and the `dev-team/` role files. |
+| Docs | "member" for both the part and the agent, "deployment", "team" for the running thing, `up` | "role", "member", "start", "instance", the four verbs. Covers `format.md` (its `borgchart.yaml` section becomes `config.yaml`'s, and its older-shape steps), `teams.md`, `sessions.md`, `bus.md`, `cli.md`, the `--help` text, the example, and the `dev-team/` role files. |
 
 ## Environment variables
 
@@ -205,7 +196,7 @@ Every `BORGCHART_*` variable that a member, plugin or test can see:
 | `BORGCHART_DEPLOYMENT` | members, plugins, alert actions | `BORGCHART_INSTANCE` | the instance (`dev-team-k3f9`). Today's value is a storage key. |
 | — | members, plugin actions | `BORGCHART_ROLE` | the role (`implementer`) |
 | `BORGCHART_MEMBER` | members, plugin actions | unchanged | the member (`implementer-x7k2`) |
-| `BORGCHART_RUN`, `BORGCHART_INCARNATION` | members | `BORGCHART_START` | the member's start number; brg refuses an earlier start |
+| `BORGCHART_INCARNATION` | members | unchanged | today's unique start ID; brg refuses a stopped or replaced start |
 | — | members | `BORGCHART_NOTES` | the instance's notes folder |
 | `BORGCHART_FILE` | members, plugins, the caller | removed | commands find the instance from `BORGCHART_INSTANCE` or `--instance` |
 | — | the caller, members, tests | `BORGCHART_CONFIG` | the global configuration file (default `~/.config/borgchart/config.yaml`); members get the caller's, so their own `brg create` finds the same teams |
@@ -213,12 +204,11 @@ Every `BORGCHART_*` variable that a member, plugin or test can see:
 | `BORGCHART_PARENT` | plugin actions | unchanged | the calling member's parent (a member) |
 | `BORGCHART_DELIVER_TO` | plugin processes | unchanged | the member a process hands work to (its `delivers_to` role's only member) |
 | `BORGCHART_STATE_DIR` | plugins | unchanged | the plugin's private folder |
-| `BORGCHART_ACTOR` | alert actions | unchanged | `bus`: an alert action can't act as a member |
 | `BORGCHART_TMUX_SOCKET` | members, plugins, tests | unchanged (decided) | which tmux server runs the instance |
 | `BORGCHART_TMUX_TMPDIR` (#47) | members, plugins, tests | unchanged (decided) | where that server keeps its socket; keeps test servers private |
 | `BORGCHART_STATE_HOME` | the caller, tests | unchanged | brg's state folder, holding every instance's state folder |
 | `BORGCHART_GATE_WAIT_MS` | the caller, tests | unchanged; a tuning knob | how long a start waits for a `locked` member's gate |
-| `BORGCHART_WAIT_MIN_MS`, `BORGCHART_WAIT_TIMEOUT_MS` | tests (test builds only) | unchanged | shorten the background wait's minimum and timeout |
+| `BORGCHART_WAIT_MIN_MS`, `BORGCHART_WAIT_TIMEOUT_MS` | tests (test builds only) | unchanged | shorten the inbox wait's minimum and timeout |
 | `BORGCHART_QUALIFY`, `…_VENDORS`, `…_SUBMIT` | the manual vendor qualification test | unchanged | turn that test on and pick its vendors |
 
 ## Effects on #24 and #25

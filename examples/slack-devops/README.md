@@ -14,7 +14,7 @@ Slack channel ──▶ watch.py ──(message ts)──▶ triager ──slack
   - The lead has `read`, `thread` and `reply`.
   - Neither can run anything else, read files, or see the bot token: the token lives with brg's shims, not in the agents' environment.
 - **`escalate` sends IDs and fixed values only.** Its `severity` is one of `low`, `medium`, `high`, and its `reason` one of `outage`, `deploy`, `security`, `question`, `other`. Message text never travels from one agent to another.
-- **Failed deliveries** (say the lead is waiting at a prompt) are kept in the plugin's `undelivered.jsonl` and retried by the watcher until they go through. `brg status` shows how many are pending.
+- **Failed deliveries** (say the lead is waiting at a prompt) are kept in the plugin's `undelivered.jsonl` and retried by the watcher until they go through. `brg status` shows how many are pending in this plugin queue. That is separate from the message bus's per-member unread counts (tree, `-i`, `--json`); this `locked` team has no bus and shows no such counts.
 
 What the lead can't do: look at systems. It is a smart auto-responder that acknowledges, explains likely causes and asks good questions. Giving it more read-only tools is future work.
 
