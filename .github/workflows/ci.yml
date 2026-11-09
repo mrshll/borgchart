@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+# Hosted runners retain their existing execution limits; local checks use cargo-slot.
+env:
+  CHECKS_WRAP: env
+
 jobs:
   rust:
     strategy:

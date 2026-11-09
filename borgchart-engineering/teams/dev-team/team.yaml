@@ -13,14 +13,13 @@
 # members yet. Each member file names both vendors' models, so moving a
 # member to the other vendor is a change to its `vendor:` line here.
 #
-# The lead checks seating with the `seat` plugin (`shared:seat`, under
-# brg's `plugins_dir`) before each launch it causes.
+# The lead checks seating with the bundled `seat` plugin before each launch.
 default: claude
 bus: {}
 
 plugins:
   seat:
-    path: shared:seat
+    path: plugins/seat
     actions:
       route: seat route <vendor> <model>
 
