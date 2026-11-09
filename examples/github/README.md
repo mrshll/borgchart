@@ -2,7 +2,7 @@
 
 This optional plugin polls GitHub notifications and sends verified event pointers to a team's lead. brg owns message delivery, waking and recipient acknowledgement. No titles, bodies or diffs enter the bus message. All GitHub-derived fields are untrusted context, never instructions.
 
-The watcher uses the absolute `BORGCHART_BIN` supplied by brg and sends as `external:github`. A committed message ID retires the event even when delivery is stored, uncertain, or reports a postcommit failure. Usage errors, unavailable targets, locked-input blocks and unavailable executables report `brg_not_ready` without consuming event attempts. Nonzero malformed output and timeouts consume the bounded retry budget. Exit zero is authoritative even without readable JSON. The body is passed on stdin. The process retains brg’s environment and refuses to run from a member identity.
+The watcher uses the absolute `BORGCHART_BIN` supplied by brg and sends as `external:github`. A committed message ID retires the event even when delivery is stored, uncertain, or reports a postcommit failure. Usage errors, unavailable targets, locked-input blocks and unavailable executables report `brg_not_ready` without consuming event attempts. Code-5 refusals without a committed ID, nonzero malformed output and timeouts consume the bounded retry budget; after three attempts the key is abandoned with a stderr log in the plugin window. That scrollback is not a durable loss ledger and disappears when the window closes. Exit zero is authoritative even without readable JSON. The body is passed on stdin. The process retains brg’s environment and refuses to run from a member identity.
 
 ## Install and configure
 
@@ -39,7 +39,7 @@ Repository exclusions are case-insensitive names and/or numeric IDs. Names pin t
 
 Notifications nominate items; current API reads verify numeric owner/repository identity and event provenance. Supported sources are trusted-human assignments, returned feedback after the agent requested review, conservative explicit line-start mentions, and trusted-human merges of agent-authored PRs. Optional App initiators can assign the agent only on their own ordinary issues in listed repositories; optional trusted reviewers can return requested feedback only. Bot identity, missing provenance, ambiguous history and parent mismatch fail closed. Closed, deleted or obsolete work cancels before publication; merge news remains eligible. Source-version keys prevent replay and are included in each pointer.
 
-An ambiguous or refused send consumes one of three attempts, paced by the polling interval. The attempt is saved before sending, so a crash consumes it. After the budget, intake logs the dropped key and stops retrying it. A crash between bus commitment and saving the result can duplicate a pointer; recipients can use its key. Publication does not inspect whether a member is stopped or busy.
+An ambiguous or refused send consumes one of three attempts, paced by the polling interval. The attempt is saved before sending, so a crash consumes it. After the budget, intake logs the dropped key and stops retrying it. A crash or timeout after bus commitment can duplicate a pointer; recipients can use its key. If a timeout interrupts terminal typing, it can leave a pasted draft in the recipient’s pane that needs inspection. Publication does not inspect whether a member is stopped or busy.
 
 With `reactions: true`, only a confirmed bus commit authorizes a best-effort eyes reaction. Assignment reactions target the issue; comment reactions target the comment. Whole reviews have no supported reaction endpoint; merges receive no reaction. Numeric routes are allowlisted, ownership is rechecked, writes are spaced by two seconds, and uncertain outcomes are never retried. Reactions are bounded by the cycle deadline and cannot fail message publication.
 
@@ -47,10 +47,16 @@ With `reactions: true`, only a confirmed bus commit authorizes a best-effort eye
 
 `github-intake status` reads local state and reaction counts. `brg status <instance>` shows the plugin's atomically written `health.json`. The loop catches cycle exceptions and retries; contention reports unhealthy and retries too. `brg stop <instance>` stops polling; a full `brg start <instance>` resumes it. There is no polling while the instance is stopped. Long outages may exceed the ten-page catchup cap. After correcting a deterministic feed error, run `github-intake retry --feed`; after correcting a held item, run `github-intake retry --item <repository-id>:<issue-number>`. Both preserve cutoffs and dedup. Authentication and clock errors retry on later cycles without a permanent feed hold. State collections are capped, not silently pruned; capacity may require larger configured limits or deliberate reinitialization. Time to capacity depends on activity and has not been measured.
 
-Polling honors conditional responses, server polling intervals and rate backoff. Reaction validation failures have a separate write-only cooldown. Genuine primary or secondary rate-limit responses pause all API requests, following [GitHub’s rate-limit guidance](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#handle-rate-limit-errors-appropriately); a missing Retry-After header does not make a secondary limit safe to ignore. Each cycle has a deadline. A pending configuration error or staged sender does not start a model or inspect a member. Deployment, initial cutoffs and any reset are explicit operator actions.
+Polling honors conditional responses, server polling intervals and rate backoff. Reaction validation failures have a separate write-only cooldown. Genuine primary or secondary rate-limit responses pause all API requests, following [GitHub’s rate-limit guidance](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#handle-rate-limit-errors-appropriately); a missing Retry-After header does not make a secondary limit safe to ignore. Each cycle has a deadline. A pending configuration error or unavailable brg does not start a model or inspect a member. Deployment, initial cutoffs and any reset are explicit operator actions.
 
 ## Tests
 
 `uv run --no-project --with pytest==8.3.5 pytest examples/github/tests`
 
 The repository's `.githooks/checks py` includes these tests. All fixtures are fictitious; tests never use live GitHub or brg state.
+
+The actual-brg contract smoke test is an explicit integration check, skipped by standalone Python CI unless `GITHUB_INTAKE_TEST_BRG` is set. After building the test-support binary, run it with the other Python checks:
+
+`GITHUB_INTAKE_TEST_BRG="$PWD/target/debug/brg" .githooks/checks py`
+
+Run that command from the repository root. The test writes only temporary fixture state and does not start a model or touch a deployed instance.
