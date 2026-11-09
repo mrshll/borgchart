@@ -168,6 +168,9 @@ fn drive(
                 }
                 Ok(n) => written += n,
                 Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
+                    if interactive {
+                        return Err(e.into());
+                    }
                     stdin.take();
                 }
                 Err(e)
@@ -194,6 +197,9 @@ fn drive(
                 }
                 Action::Send(_) => return Err(Error::Io(io::ErrorKind::InvalidData)),
                 Action::Complete => {
+                    if written != pending.len() {
+                        return Err(Error::Io(io::ErrorKind::InvalidData));
+                    }
                     if Instant::now() >= limits.deadline {
                         return Err(Error::Deadline);
                     }

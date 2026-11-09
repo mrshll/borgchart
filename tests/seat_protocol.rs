@@ -6,8 +6,13 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::time::{Duration, Instant};
 
+// Do not fork another fixture while a test has its script open for writing:
+// the fork can briefly inherit that descriptor before CLOEXEC takes effect.
+static PROCESS_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn protocol_exchange_is_interactive_and_bounded() {
+    let _guard = PROCESS_TEST.lock().unwrap();
     let temp = tempfile::tempdir().unwrap();
     let executable = temp.path().join("fake-usage");
     let run = |script: &str, duration| {
@@ -55,6 +60,7 @@ fn protocol_exchange_is_interactive_and_bounded() {
 
 #[test]
 fn completed_dialogue_kills_descendants_that_hold_pipes() {
+    let _guard = PROCESS_TEST.lock().unwrap();
     let temp = tempfile::tempdir().unwrap();
     let executable = temp.path().join("fake-usage");
     let marker = temp.path().join("late-marker");
@@ -85,5 +91,32 @@ fn completed_dialogue_kills_descendants_that_hold_pipes() {
     assert!(
         !marker.exists(),
         "completed protocol left its descendant running"
+    );
+}
+#[test]
+fn a_closed_request_pipe_cannot_authorize_an_unsolicited_reply() {
+    let _guard = PROCESS_TEST.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let executable = temp.path().join("fake-usage");
+    fs::write(
+        &executable,
+        r#"#!/bin/sh
+        IFS= read -r init
+        exec 0<&-
+        printf '%s\n' '{"id":1,"result":{}}'
+        sleep 0.1
+        printf '%s\n' '{"id":2,"result":{"ok":true}}'
+    "#,
+    )
+    .unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(
+        protocol::read(
+            Provider::Codex,
+            &executable,
+            Instant::now() + Duration::from_secs(2)
+        )
+        .unwrap_err(),
+        Error::Io(std::io::ErrorKind::BrokenPipe)
     );
 }
