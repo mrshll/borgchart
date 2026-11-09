@@ -198,14 +198,14 @@ pub struct Meta {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MemberMeta {
+    pub interactive: bool,
     pub role: String,
     pub vendor: String,
     pub posture: String,
     pub parent: Option<String>,
     pub vendor_version: Option<String>,
     /// Whether a start has started the member's window since the instance last
-    /// started afresh (`status` tells `not started` from `stopped` by it
-    /// when the instance has no bus).
+    /// started afresh. Incarnation records supply the current start identity.
     pub started: bool,
 }
 

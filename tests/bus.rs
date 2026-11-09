@@ -87,7 +87,7 @@ impl Fixture {
     fn write_store(&self, instance: &str) {
         self.write_private(
             &self.store_dir().join("store.json"),
-            &json!({"format": 2, "instance": instance}),
+            &json!({"format": 3, "instance": instance}),
         );
         let parents = [
             ("lead", None),
@@ -96,7 +96,7 @@ impl Fixture {
             ("sub", Some("helper")),
         ];
         let members: BTreeMap<&str, Value> = parents.iter().map(|(m, p)| (*m,
-            json!({"role": m, "vendor": "claude", "posture": "vendor", "parent": p, "vendor_version": null, "started": true})
+            json!({"role": m, "vendor": "claude", "posture": "vendor", "interactive": false, "parent": p, "vendor_version": null, "started": true})
         )).collect();
         self.write_private(&self.root().join(TEAM).join("start.json"), &json!({
             "team_dir": self.dir.path().join("oncall"), "folder": self.dir.path().join("work"),
@@ -153,8 +153,10 @@ impl Fixture {
             .env("PATH", "/usr/bin:/bin")
             .env("BORGCHART_STATE_HOME", self.root())
             .env("BORGCHART_CONFIG", self.dir.path().join("config.yaml"))
-            .args(args)
-            .args(["--instance", TEAM]);
+            .args(args);
+        if args.first() != Some(&"send") {
+            cmd.args(["--instance", TEAM]);
+        }
         let (m, inc) = match who {
             As::Operator => {
                 cmd.env("BORGCHART_WAIT_MIN_MS", "20")
@@ -188,12 +190,21 @@ impl Fixture {
     }
 
     fn publish(&self, who: &As, draft: &Value) -> Out {
-        let mut args = vec!["msg", "publish", "--json"];
+        let target = format!("{TEAM}/{}", draft["to"].as_str().unwrap());
+        let mut args = vec!["send", &target, "-", "--json"];
         if let As::Operator = who {
-            // Outside callers name themselves.
             args.extend(["--external", "ops"]);
         }
-        self.brg(who, &args, Some(&serde_json::to_vec(draft).unwrap()))
+        if let Some(refs) = draft["reply_to"].as_array() {
+            for reference in refs {
+                args.extend(["--reply-to", reference.as_str().unwrap()]);
+            }
+        }
+        self.brg(
+            who,
+            &args,
+            Some(draft["body"].as_str().unwrap_or("x").as_bytes()),
+        )
     }
 
     fn records(&self) -> Vec<String> {
@@ -308,7 +319,6 @@ fn invalid_drafts_write_nothing() {
     let f = Fixture::new();
     assert_eq!(f.publish(&As::Operator, &note("lead", "x")).code, 0);
     let cases: Vec<(&str, Value)> = vec![
-        ("unknown field", json!({"to": "lead", "extra": 1})),
         ("bad recipient", json!({"to": "Lead", "body": "bad"})),
         (
             "too many refs",
@@ -322,8 +332,20 @@ fn invalid_drafts_write_nothing() {
     ];
     for (name, draft) in &cases {
         let out = f.publish(&As::Operator, draft);
-        assert_eq!(out.code, 5, "{name}: {:?} {}", out.json, out.stderr);
-        assert_eq!(out.json["outcome"], "invalid", "{name}");
+        assert_eq!(
+            out.code,
+            if *name == "bad recipient" {
+                2
+            } else if *name == "not a member" {
+                3
+            } else {
+                5
+            },
+            "{name}: {:?} {}",
+            out.json,
+            out.stderr
+        );
+        assert!(!out.json["ok"].as_bool().unwrap(), "{name}");
     }
     // Topology: members publish only along parent edges.
     for (from, to) in [
@@ -338,16 +360,30 @@ fn invalid_drafts_write_nothing() {
     assert_eq!(out.code, 5, "external -> external");
     let garbage = f.brg(
         &As::Operator,
-        &["msg", "publish", "--external", "ops", "--json"],
-        Some(b"{not json"),
+        &[
+            "send",
+            "oncall-2a3b/lead",
+            "-",
+            "--external",
+            "ops",
+            "--json",
+        ],
+        Some(b"/invalid command"),
     );
     assert_eq!(garbage.code, 5);
     let huge = f.brg(
         &As::Operator,
-        &["msg", "publish", "--external", "ops", "--json"],
+        &[
+            "send",
+            "oncall-2a3b/lead",
+            "-",
+            "--external",
+            "ops",
+            "--json",
+        ],
         Some(&vec![b' '; 200 * 1024]),
     );
-    assert_eq!(huge.code, 5);
+    assert_eq!(huge.code, 2);
     assert_eq!(f.records(), vec!["0000000001.json"]);
 }
 
@@ -420,8 +456,8 @@ fn corrupt_store_stops_mutations_but_not_reads() {
             }
         }
         let out = f.publish(&As::Operator, &note("lead", "x"));
-        assert_eq!(out.code, 7, "{damage}: {:?}", out.json);
-        assert_eq!(out.json["outcome"], "corrupt");
+        assert_eq!(out.code, 5, "{damage}: {:?}", out.json);
+        assert_eq!(out.json["outcome"], "refused");
         let ack = f.brg(&As::Member("lead"), &["msg", "ack", "m3", "--json"], None);
         assert_eq!(ack.code, 7, "{damage}");
 
@@ -492,10 +528,17 @@ fn caller_context_is_checked() {
     // `--external` from inside a member.
     let out = f.brg(
         &As::Member("lead"),
-        &["msg", "publish", "--external", "ops", "--json"],
-        Some(&serde_json::to_vec(&note("helper", "x")).unwrap()),
+        &[
+            "send",
+            "oncall-2a3b/lead",
+            "-",
+            "--external",
+            "ops",
+            "--json",
+        ],
+        Some(b"x"),
     );
-    assert_eq!(out.code, 4, "{:?}", out.json);
+    assert_eq!(out.code, 5, "{:?}", out.json);
     let out = f.brg(
         &As::Member("lead"),
         &["inbox", "--external", "ops", "--json"],
@@ -505,10 +548,10 @@ fn caller_context_is_checked() {
     // An operator can't publish.
     let out = f.brg(
         &As::Operator,
-        &["msg", "publish", "--json"],
-        Some(&serde_json::to_vec(&note("lead", "x")).unwrap()),
+        &["send", "oncall-2a3b/lead", "-", "--json"],
+        Some(b"x"),
     );
-    assert_eq!(out.code, 4);
+    assert_eq!(out.code, 2);
     // A partial member context.
     let mut cmd = f.command(&As::Operator, &["msg", "ack", "m1", "--json"]);
     let out = cmd.env("BORGCHART_MEMBER", "lead").output().unwrap();
@@ -522,18 +565,18 @@ fn caller_context_is_checked() {
     ];
     for who in &fenced {
         let out = f.publish(who, &note("lead", "x"));
-        assert_eq!(out.code, 8, "{:?}", out.json);
-        assert_eq!(out.json["outcome"], "fenced");
+        assert_eq!(out.code, 5, "{:?}", out.json);
+        assert_eq!(out.json["outcome"], "refused");
         assert_eq!(f.brg(who, &["inbox", "--json"], None).code, 8);
         assert_eq!(f.brg(who, &["msg", "ack", "m1", "--json"], None).code, 8);
     }
     f.write_incarnation("helper2", "helper2-1", true);
     assert_eq!(
         f.publish(&As::Member("helper2"), &note("lead", "x")).code,
-        8
+        5
     );
     fs::remove_file(f.incarnation_file("sub")).unwrap();
-    assert_eq!(f.publish(&As::Member("sub"), &note("helper", "x")).code, 8);
+    assert_eq!(f.publish(&As::Member("sub"), &note("helper", "x")).code, 5);
     assert!(f.records().is_empty());
     // Reading someone's inbox by name needs no live identity.
     let out = f.brg(
@@ -559,7 +602,7 @@ fn a_replaced_or_stopped_member_is_fenced_in_team_terms() {
     );
     f.write_incarnation("helper2", "helper2-1", true);
     let out = f.publish(&As::Member("helper2"), &note("lead", "x"));
-    assert_eq!(out.code, 8);
+    assert_eq!(out.code, 5);
     assert!(
         out.json["message"]
             .as_str()
@@ -581,7 +624,10 @@ fn another_store_format_refuses_all_commands() {
     let before = f.tree();
 
     let commands: Vec<(As, Vec<&str>)> = vec![
-        (As::Operator, vec!["msg", "publish", "--external", "ops"]),
+        (
+            As::Operator,
+            vec!["send", "oncall-2a3b/lead", "-", "--external", "ops"],
+        ),
         (As::Member("lead"), vec!["msg", "ack", "m1"]),
         (As::Member("lead"), vec!["inbox"]),
         (As::Operator, vec!["inbox", "--member", "lead"]),
@@ -595,11 +641,24 @@ fn another_store_format_refuses_all_commands() {
         let mut json_args = args.clone();
         json_args.push("--json");
         let out = f.brg(who, &json_args, Some(&draft));
-        assert_eq!(out.code, 7, "{args:?}: {:?}", out.json);
-        assert_eq!(out.json["outcome"], "corrupt", "{args:?}");
+        assert_eq!(
+            out.code,
+            if args[0] == "send" { 5 } else { 7 },
+            "{args:?}: {:?}",
+            out.json
+        );
+        assert_eq!(
+            out.json["outcome"],
+            if args[0] == "send" {
+                "refused"
+            } else {
+                "corrupt"
+            },
+            "{args:?}"
+        );
         assert!(out.json["message"].as_str().unwrap().contains("damaged"));
         let text = f.brg(who, args, Some(&draft));
-        assert_eq!(text.code, 7, "{args:?}");
+        assert_eq!(text.code, if args[0] == "send" { 5 } else { 7 }, "{args:?}");
         assert!(text.stderr.contains("damaged"));
     }
     assert_eq!(f.tree(), before, "nothing written");
@@ -682,17 +741,17 @@ fn damaged_storage_errors_name_the_team_not_paths() {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(h.store_dir(), fs::Permissions::from_mode(0o777)).unwrap();
     let out = h.publish(&As::Operator, &note("lead", "a"));
-    assert_eq!(out.code, 1, "{:?}", out.json);
+    assert_eq!(out.code, 5, "{:?}", out.json);
     assert_eq!(
         out.json["message"],
         "instance `oncall-2a3b`'s message storage can't be used: its messages folder is writable by group or others"
     );
     let text = h.brg(
         &As::Operator,
-        &["msg", "publish", "--external", "ops"],
+        &["send", "oncall-2a3b/lead", "-", "--external", "ops"],
         Some(&serde_json::to_vec(&note("lead", "a")).unwrap()),
     );
-    assert_eq!(text.code, 1);
+    assert_eq!(text.code, 5);
     assert!(
         text.stderr
             .contains("its messages folder is writable by group"),
@@ -720,7 +779,7 @@ fn storage_without_identity_is_damaged_not_new() {
         );
     }
     let out = f.publish(&As::Operator, &note("lead", "b"));
-    assert_eq!(out.code, 7, "{:?}", out.json);
+    assert_eq!(out.code, 5, "{:?}", out.json);
     assert_eq!(f.tree(), before, "nothing created");
 }
 
@@ -732,7 +791,7 @@ fn a_record_in_another_format_is_still_corrupt() {
     let mut r: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     r["schema"] = json!(999);
     fs::write(&path, serde_json::to_vec(&r).unwrap()).unwrap();
-    assert_eq!(f.publish(&As::Operator, &note("lead", "b")).code, 7);
+    assert_eq!(f.publish(&As::Operator, &note("lead", "b")).code, 5);
     let check = f.brg(&As::Operator, &["bus", "check", "--json"], None);
     assert_eq!(check.code, 7, "{:?}", check.json);
 }
@@ -748,7 +807,14 @@ fn a_team_not_started_yet_is_not_configured() {
     let commands: Vec<(As, Vec<&str>)> = vec![
         (
             As::Operator,
-            vec!["msg", "publish", "--external", "ops", "--json"],
+            vec![
+                "send",
+                "oncall-2a3b/lead",
+                "-",
+                "--external",
+                "ops",
+                "--json",
+            ],
         ),
         (As::Member("lead"), vec!["msg", "ack", "m1", "--json"]),
         (As::Operator, vec!["inbox", "--member", "lead", "--json"]),
@@ -759,10 +825,17 @@ fn a_team_not_started_yet_is_not_configured() {
     for (who, args) in &commands {
         let out = f.brg(who, args, Some(&draft));
         assert_eq!(out.code, 3, "{args:?}: {:?}", out.json);
-        assert_eq!(out.json["outcome"], "not-configured");
+        assert_eq!(
+            out.json["outcome"],
+            if args[0] == "send" {
+                "not-alive"
+            } else {
+                "not-configured"
+            }
+        );
         assert_eq!(
             out.json["message"],
-            "instance `oncall-2a3b` has no messages: its team has no `bus:`, or it hasn't started with one"
+            "instance `oncall-2a3b` has no messages: it has not started"
         );
     }
     assert_eq!(f.tree(), before, "nothing created");
@@ -778,7 +851,7 @@ fn deployment_and_storage_must_match() {
     let f = Fixture::new();
     f.write_store("someone-else-0000");
     let out = f.publish(&As::Operator, &note("lead", "x"));
-    assert_eq!(out.code, 7, "{:?}", out.json);
+    assert_eq!(out.code, 5, "{:?}", out.json);
     assert_eq!(
         f.brg(&As::Operator, &["bus", "check", "--json"], None).code,
         7
@@ -918,13 +991,13 @@ fn authority_is_checked_again_under_the_locks() {
 
     // A member replaced while its publish waits for lock.
     let bus = hold(&f.store_dir().join("lock"));
-    let args = ["msg", "publish", "--json"];
+    let args = ["send", "oncall-2a3b/lead", "-", "--json"];
     let child = spawn(&f, &As::Member("helper"), &args, &draft);
     std::thread::sleep(Duration::from_millis(500));
     f.write_incarnation("helper", "helper-2", false);
     drop(bus);
     let out = finish_within(child, Duration::from_secs(15));
-    assert_eq!(out.code, 8, "{:?} {}", out.json, out.stderr);
+    assert_eq!(out.code, 5, "{:?} {}", out.json, out.stderr);
     assert_eq!(f.records().len(), 1);
 }
 
@@ -958,7 +1031,7 @@ fn a_huge_record_number_is_a_bounded_gap() {
         f.inbox(&As::Operator, &["--member", "lead"])["store"],
         "incomplete"
     );
-    assert_eq!(f.publish(&As::Operator, &note("lead", "x")).code, 7);
+    assert_eq!(f.publish(&As::Operator, &note("lead", "x")).code, 5);
 }
 
 #[test]
@@ -976,7 +1049,7 @@ fn an_ack_with_another_schema_is_corrupt() {
     let check = f.brg(&As::Operator, &["bus", "check", "--json"], None);
     assert_eq!(check.code, 7, "{:?}", check.json);
     assert!(check.json["errors"].to_string().contains("schema"));
-    assert_eq!(f.publish(&As::Operator, &note("lead", "b")).code, 7);
+    assert_eq!(f.publish(&As::Operator, &note("lead", "b")).code, 5);
     // Not counted as consumption.
     let inbox = f.inbox(&As::Operator, &["--member", "lead"]);
     assert_eq!(ids(&inbox), ["m1"]);
@@ -1027,38 +1100,70 @@ fn inbox_wait_help_names_the_outcomes_wait_returns() {
 }
 
 #[test]
-fn the_publish_help_example_publishes_and_its_outcomes_are_documented() {
-    let f = Fixture::new();
-    let out = f
-        .command(&As::Operator, &["msg", "publish", "--help"])
+fn send_help_names_the_unified_inputs_and_publish_is_removed() {
+    let out = Command::new(env!("CARGO_BIN_EXE_brg"))
+        .args(["send", "--help"])
         .output()
         .unwrap();
+    assert!(out.status.success());
     let help = String::from_utf8(out.stdout).unwrap();
-    let mut lines = help.lines().skip_while(|line| !line.contains("<<'EOF'"));
-    let mut block = format!("{}\n", lines.next().unwrap());
-    for line in lines.by_ref() {
-        block.push_str(line);
-        block.push('\n');
-        if line == "EOF" {
-            break;
-        }
+    for flag in ["--external", "--reply-to", "--from", "--force", "--json"] {
+        assert!(help.contains(flag), "{help}");
     }
-    let expected = lines
-        .find_map(|line| line.strip_prefix("Prints: "))
-        .unwrap();
-    let out = Command::new("sh")
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .env("HOME", f.dir.path())
-        .env("BORGCHART_BIN", env!("CARGO_BIN_EXE_brg"))
-        .env("BORGCHART_STATE_HOME", f.root())
-        .env("BORGCHART_INSTANCE", TEAM)
-        .env("BORGCHART_MEMBER", "helper")
-        .env("BORGCHART_INCARNATION", "helper-1")
-        .args(["-c", &block])
+    let out = Command::new(env!("CARGO_BIN_EXE_brg"))
+        .args(["msg", "publish", "--help"])
         .output()
         .unwrap();
-    assert!(out.status.success(), "{out:?}");
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), expected);
-    assert!(help.contains("committed (0)"));
+    assert!(!out.status.success());
+}
+
+#[test]
+fn a_thousand_record_history_keeps_pending_counts_and_next_id() {
+    let f = Fixture::new();
+    assert_eq!(f.publish(&As::Operator, &note("lead", "history")).code, 0);
+    let mut record: Value =
+        serde_json::from_slice(&fs::read(f.store_dir().join("records/0000000001.json")).unwrap())
+            .unwrap();
+    for seq in 2..=1000 {
+        record["seq"] = json!(seq);
+        record["id"] = json!(format!("m{seq}"));
+        f.write_private(
+            &f.store_dir().join(format!("records/{seq:010}.json")),
+            &record,
+        );
+    }
+    let started = Instant::now();
+    let inbox = f.inbox(&As::Operator, &["--member", "lead"]);
+    assert_eq!(inbox["unacked"], 1000);
+    assert_eq!(inbox["records"].as_array().unwrap().len(), 1000);
+    let sent = f.publish(&As::Operator, &note("lead", "next"));
+    assert_eq!(sent.code, 0, "{:?}", sent.json);
+    assert_eq!(sent.json["id"], "m1001");
+    eprintln!("1000-record inbox plus next send: {:?}", started.elapsed());
+}
+
+#[test]
+fn send_target_syntax_errors_are_usage_and_missing_start_is_not_alive() {
+    let f = Fixture::new();
+    for target in [
+        "external:Bad",
+        "lead",
+        "Bad/lead",
+        "oncall-2a3b/external:Bad",
+    ] {
+        let out = f.brg(
+            &As::Operator,
+            &["send", target, "x", "--external", "ops", "--json"],
+            None,
+        );
+        assert_eq!(out.code, 2, "{target}: {:?}", out.json);
+        assert_eq!(out.json["outcome"], "usage");
+    }
+    let path = f.root().join(TEAM).join("start.json");
+    let mut meta: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    meta["members"].as_object_mut().unwrap().remove("lead");
+    fs::write(&path, meta.to_string()).unwrap();
+    let out = f.publish(&As::Operator, &note("lead", "x"));
+    assert_eq!(out.code, 3, "{:?}", out.json);
+    assert!(f.records().is_empty());
 }

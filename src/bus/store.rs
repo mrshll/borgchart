@@ -58,7 +58,7 @@ pub fn open(state: &StateDir) -> Result<Bus, Failure> {
         return Err(Failure::new(
             Code::NotConfigured,
             format!(
-                "instance `{}` has no messages: its team has no `bus:`, or it hasn't started with one",
+                "instance `{}` has no messages: it has not started",
                 state.id
             ),
         ));
@@ -515,6 +515,9 @@ fn scan_acks(
                 None if !seqs.contains(&seq) => {
                     problems.push(format!("acks/{name}: no such record"))
                 }
+                Some(r) if !r.ack_required => problems.push(format!(
+                    "acks/{name}: record does not require acknowledgement"
+                )),
                 Some(r) if !is_recipient(&a.by, r) => problems.push(format!(
                     "acks/{name}: by {}, but the record is addressed to {}",
                     actor_label(&a.by),
@@ -603,7 +606,24 @@ pub fn publish(bus: &Bus, caller: &Caller, draft_bytes: &[u8]) -> Result<Record,
     let actor = actor_for(bus, caller)?;
     bus.check_route(&actor, &draft.to)
         .map_err(|e| Failure::new(Code::Invalid, e))?;
+    let expected = bus
+        .meta
+        .members
+        .get(&draft.to)
+        .map(|m| (m.posture.clone(), m.interactive));
     let (bus, _lock) = lock_for_mutation(bus)?;
+    if bus
+        .meta
+        .members
+        .get(&draft.to)
+        .map(|m| (m.posture.clone(), m.interactive))
+        != expected
+    {
+        return Err(Failure::new(
+            Code::Refused,
+            "recipient posture changed before commit; retry",
+        ));
+    }
     recheck_authority(&bus, caller)?;
     bus.check_route(&actor, &draft.to)
         .map_err(|e| Failure::new(Code::Invalid, e))?;
@@ -617,6 +637,11 @@ pub fn publish(bus: &Bus, caller: &Caller, draft_bytes: &[u8]) -> Result<Record,
     }
     let seq = snap.records.len() as u64 + 1;
     let rec = Record {
+        ack_required: !bus
+            .meta
+            .members
+            .get(&draft.to)
+            .is_some_and(|m| m.posture == "locked"),
         schema: super::SCHEMA,
         id: record_id(seq),
         seq,
@@ -670,7 +695,7 @@ pub fn progress(bus: &Bus, snap: &Snapshot) -> BTreeMap<String, Progress> {
         let p = out.entry(r.to.clone()).or_default();
         p.total += 1;
         p.newest = r.seq;
-        if !snap.is_acked(r.seq) {
+        if r.ack_required && !snap.is_acked(r.seq) {
             p.unread += 1;
             p.lowest_unacked.get_or_insert(r.seq);
         }
@@ -693,7 +718,7 @@ pub fn list(bus: &Bus, snap: &Snapshot, to: &Recipient) -> Inbox {
         records: snap
             .records
             .values()
-            .filter(|r| r.to == to && !snap.is_acked(r.seq))
+            .filter(|r| r.to == to && r.ack_required && !snap.is_acked(r.seq))
             .cloned()
             .collect(),
         unacked: p.unread,
@@ -712,7 +737,7 @@ pub fn header(r: &Record, acked: bool) -> Value {
     if let Some(map) = v.as_object_mut() {
         map.remove("body");
         map.insert("body_bytes".into(), json!(r.body.len()));
-        map.insert("acked".into(), json!(acked));
+        map.insert("acked".into(), json!(r.ack_required && acked));
     }
     v
 }
@@ -720,7 +745,7 @@ pub fn header(r: &Record, acked: bool) -> Value {
 pub fn full(r: &Record, acked: bool) -> Value {
     let mut v = shown(r);
     if let Some(map) = v.as_object_mut() {
-        map.insert("acked".into(), json!(acked));
+        map.insert("acked".into(), json!(r.ack_required && acked));
     }
     v
 }
@@ -828,12 +853,12 @@ pub fn wait(
     let mut old_pending = snap
         .records
         .values()
-        .any(|r| r.to == recipient && !snap.is_acked(r.seq));
+        .any(|r| r.to == recipient && r.ack_required && !snap.is_acked(r.seq));
     loop {
         actor_for(bus, caller)?;
         let mut arrived = false;
         while let Some(record) = next_record(&bus.paths, next)? {
-            arrived |= record.to == recipient;
+            arrived |= record.to == recipient && record.ack_required;
             snap.records.insert(next, record);
             next += 1;
             if Instant::now() >= deadline {
@@ -875,6 +900,7 @@ pub enum AckOutcome {
     Acked,
     /// It was already acknowledged: nothing changed.
     Already,
+    NotRequired,
 }
 
 impl AckOutcome {
@@ -882,6 +908,7 @@ impl AckOutcome {
         match self {
             AckOutcome::Acked => "acked",
             AckOutcome::Already => "already",
+            AckOutcome::NotRequired => "not-required",
         }
     }
 }
@@ -927,6 +954,10 @@ pub fn ack(
     let mut out = Vec::new();
     let mut seen = BTreeSet::new();
     for (id, seq) in ids.iter().zip(&seqs) {
+        if !snap.records[seq].ack_required {
+            out.push((id.clone(), AckOutcome::NotRequired));
+            continue;
+        }
         if snap.is_acked(*seq) || !seen.insert(*seq) {
             out.push((id.clone(), AckOutcome::Already));
             continue;
@@ -1028,6 +1059,7 @@ mod tests {
         let paths = StorePaths::from_root(dir.path());
         assert!(scan(&paths).healthy());
         let rec = |seq: u64| Record {
+            ack_required: true,
             schema: super::super::SCHEMA,
             id: record_id(seq),
             seq,

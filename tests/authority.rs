@@ -100,7 +100,7 @@ fn members_cannot_create_independent_bus_instances() {
 }
 
 #[test]
-fn members_can_create_independent_teams_without_a_bus() {
+fn members_cannot_create_independent_teams_without_bus_settings() {
     let env = department();
     let dept = env.create("oncall", "work/a");
     env.team("teams/panel");
@@ -109,13 +109,13 @@ fn members_can_create_independent_teams_without_a_bus() {
         "roles: {lead: {prompt: lead.md}}\n",
     );
     let folder = env.path("work/b").display().to_string();
-    let out = member_ok(&env, &dept, "lead", &["create", "panel", &folder]);
-    let panel = stdout(&out).split_whitespace().next().unwrap().to_string();
-    env.wait_for("independent panel idle", || {
-        env.state_of(&panel, "lead") == "idle"
-    });
-    member_ok(&env, &dept, "lead", &["stop", &panel]);
-    member_ok(&env, &dept, "lead", &["delete", &panel]);
+    let before = env.registry();
+    let out = member_cmd(&env, &dept, "lead", 0, &["create", "panel", &folder])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "{}", both(&out));
+    assert!(both(&out).contains("ask a person"));
+    assert_eq!(env.registry(), before);
     env.ok(&["stop", &dept]);
 }
 

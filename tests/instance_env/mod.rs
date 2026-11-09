@@ -205,16 +205,14 @@ impl Env {
 
     /// Publish `record` into `inst` as the outside caller `ops`.
     pub fn publish(&self, inst: &str, record: &Value) -> Output {
-        let mut child = self
-            .cmd(&[
-                "msg",
-                "publish",
-                "--external",
-                "ops",
-                "--instance",
-                inst,
-                "--json",
-            ])
+        let target = format!("{inst}/{}", record["to"].as_str().unwrap());
+        let mut command = self.cmd(&["send", &target, "-", "--external", "ops", "--json"]);
+        if let Some(refs) = record["reply_to"].as_array() {
+            for reference in refs {
+                command.args(["--reply-to", reference.as_str().unwrap()]);
+            }
+        }
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -227,7 +225,7 @@ impl Env {
             .stdin
             .take()
             .unwrap()
-            .write_all(record.to_string().as_bytes())
+            .write_all(record["body"].as_str().unwrap_or("").as_bytes())
         {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}

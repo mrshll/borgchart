@@ -269,7 +269,7 @@ pub struct OpenWork {
     pub items: Vec<String>,
 }
 
-/// The open work in `state`'s messages (none without a bus). `Err` when
+/// The open work in `state`'s messages (none before its first start). `Err` when
 /// the messages can't be read: their contents can't be inspected.
 pub fn open_work(state: &StateDir) -> Result<OpenWork, String> {
     use crate::bus::outcome::Code;
@@ -297,7 +297,11 @@ pub(crate) fn unacked_work(
     only: Option<&str>,
 ) -> OpenWork {
     let mut work = OpenWork::default();
-    for r in snap.records.values().filter(|r| !snap.is_acked(r.seq)) {
+    for r in snap
+        .records
+        .values()
+        .filter(|r| r.ack_required && !snap.is_acked(r.seq))
+    {
         if only.is_some_and(|member| r.to != member)
             || bus.record.members.get(&r.to).is_some_and(|m| m.deleted)
         {
@@ -342,12 +346,7 @@ pub fn new_incarnation_id(state: &StateDir, member: &str) -> String {
 /// sees either the old record or the new one. Lock order: lifecycle →
 /// bus.
 fn with_bus_lock<T>(state: &StateDir, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
-    // No-bus starts still have lifecycle records. Do not create a lone
-    // messages/lock: that would make an unconfigured bus look damaged.
-    let _lock = match StorePaths::new(state).validate(&state.id) {
-        Ok(false) => None,
-        _ => Some(lock_bus(state)?),
-    };
+    let _lock = lock_bus(state)?;
     f()
 }
 

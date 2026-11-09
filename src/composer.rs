@@ -248,6 +248,66 @@ impl View {
         }
     }
 
+    /// Verify a submitted message, including hard newlines and soft wrapping.
+    /// The caller separately checks pane identity, dialogs and turn state.
+    pub fn holds_submission(&self, text: &str) -> bool {
+        if self.placeholder || self.lines.is_empty() || self.vim == Some(VimMode::Normal) {
+            return false;
+        }
+        let (Some(width), Some(cursor)) = (self.text_width, self.cursor) else {
+            return false;
+        };
+        let last = self.lines.len() - 1;
+        if cursor != (last, self.lines[last].chars().count()) {
+            return false;
+        }
+        let mut rest = text;
+        for (i, line) in self.lines.iter().enumerate() {
+            let Some(tail) = rest.strip_prefix(line) else {
+                return false;
+            };
+            rest = tail;
+            if i == last {
+                return rest.is_empty();
+            }
+            if let Some(tail) = rest.strip_prefix('\n') {
+                rest = tail;
+                continue;
+            }
+            let next = &self.lines[i + 1];
+            let word = next.split(' ').next().unwrap_or("");
+            if !line.ends_with(' ')
+                && !next.starts_with(' ')
+                && !word.is_empty()
+                && line.chars().count() + 1 + word.chars().count() > width
+                && let Some(tail) = rest.strip_prefix(' ')
+            {
+                rest = tail;
+                continue;
+            }
+            // A word longer than the pane wraps without an inserted space.
+            if line.chars().count() != width {
+                return false;
+            }
+        }
+        false
+    }
+
+    /// Conservative ASCII-width estimate, not a vendor paste limit.
+    /// Wide/combining characters can fail the exact post-paste check.
+    /// Larger messages remain in the inbox without leaving a collapsed draft.
+    pub fn can_verify_submission(&self, text: &str, rows: usize) -> bool {
+        let Some(width) = self.text_width.filter(|width| *width > 0) else {
+            return false;
+        };
+        text.len() <= 1024
+            && text
+                .split('\n')
+                .map(|line| line.chars().count().max(1).div_ceil(width))
+                .sum::<usize>()
+                <= (rows / 2).min(10)
+    }
+
     /// The box holds exactly `text`. A line break is accepted only where the
     /// vendor must have wrapped (the next word could not have fitted), and
     /// the cursor must sit right after the text, so trailing spaces show.
@@ -545,6 +605,14 @@ mod tests {
             text_width: Some(width),
             vendor: Vendor::Claude,
         }
+    }
+
+    #[test]
+    fn wide_character_cursor_is_not_mistaken_for_exact_ascii_width() {
+        let mut v = view_of(&["界"], 40);
+        v.cursor = Some((0, 2));
+        assert!(v.can_verify_submission("界", 40));
+        assert!(!v.holds_submission("界"));
     }
 
     #[test]

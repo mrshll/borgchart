@@ -712,7 +712,7 @@ fn members_run_the_brg_that_started_them() {
         // Members find the brg that started them as `$BORGCHART_BIN`.
         assert_eq!(lead["BORGCHART_BIN"], built, "{lead}");
         assert!(lead.get("BORGCHART_RUN").is_none());
-        assert_eq!(lead.get("BORGCHART_INCARNATION").is_some(), bus);
+        assert!(lead.get("BORGCHART_INCARNATION").is_some());
         let state = env.state_dir();
         for name in ["brg", "borgchart"] {
             assert!(
@@ -1256,18 +1256,6 @@ fn old_boot_members_do_not_prove_a_current_plugin_window_stopped() {
 }
 
 #[test]
-fn recording_no_bus_starts_does_not_create_message_storage() {
-    let env = Env::new(false);
-    env.up();
-    assert!(!env.state_dir().join("messages/lock").exists());
-    let out = env.brg(&["bus", "check", "--instance", &env.inst(), "--json"]);
-    assert_eq!(out.status.code(), Some(3), "{}", both(&out));
-    assert!(both(&out).contains("not-configured"));
-    env.ok(&["stop"]);
-    assert!(!env.state_dir().join("messages/lock").exists());
-}
-
-#[test]
 fn a_damaged_bus_does_not_prevent_ending_start_records() {
     let env = Env::new(true);
     env.up();
@@ -1442,7 +1430,13 @@ fn detach_children(env: &Env, member: &str, strays: &mut Strays) -> [u32; 2] {
         ),
     );
     let script = env.path(&format!("detached/{member}.sh"));
-    env.ok(&["send", member, &format!("tool sh {}", script.display())]);
+    env.ok(&[
+        "send",
+        member,
+        &format!("tool sh {}", script.display()),
+        "--external",
+        "ops",
+    ]);
     env.wait_for("both children", |_| {
         dir.join("a").exists() && dir.join("b").exists()
     });

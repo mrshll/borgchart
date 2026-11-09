@@ -9,13 +9,11 @@
 # borgchart-engineering, where its lead's parent is the root lead. See
 # README.md.
 #
-# Every member uses `vendor` posture: the bus doesn't support `locked`
-# members yet. Each member file names both vendors' models, so moving a
+# Every member here uses `vendor` posture. Each member file names both vendors' models, so moving a
 # member to the other vendor is a change to its `vendor:` line here.
 #
 # The lead checks seating with the bundled `seat` plugin before each launch.
 default: claude
-bus: {}
 
 plugins:
   seat:
@@ -26,7 +24,8 @@ plugins:
 roles:
   lead:
     prompt: orchestrator.md
-    vendor: claude      # a Codex lead needs a wake mechanism brg doesn't have yet
+    interactive: true
+    vendor: claude      # inbox-only lead; Claude uses a background inbox wait
     start: true
     cwd: repo
     plugins: {seat: [route]}
