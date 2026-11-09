@@ -10,6 +10,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+#[cfg(feature = "test-support")]
+mod common;
+
 /// The instance, as messages name it.
 const TEAM: &str = "oncall-2a3b";
 
@@ -619,6 +622,169 @@ fn inbox_wait_rechecks_the_member() {
     assert_eq!(out.code, 8, "{:?} {}", out.json, out.stderr);
 }
 
+#[cfg(feature = "test-support")]
+#[test]
+fn background_wait_ends_when_its_fake_agent_exits() {
+    for locked in ["none", "initial scan", "ack refresh"] {
+        let f = Fixture::new();
+        let tmux = common::PrivateTmux::new();
+        let socket = tmux.socket("wait-lifetime");
+        let env = f.command(&As::Member("lead"), &[]);
+        let mut start = tmux.tmux(&socket);
+        start.envs(env.get_envs().filter_map(|(k, v)| v.map(|v| (k, v))));
+        let gate = f.dir.path().join("refresh");
+        if locked == "ack refresh" {
+            fs::create_dir(&gate).unwrap();
+            start.env("BORGCHART_TEST_WAIT_BEFORE_ACK_REFRESH", &gate);
+        }
+        start
+            .env_remove("BORGCHART_WAIT_MIN_MS")
+            .env("PATH", tmux.path_with("/usr/bin:/bin"))
+            .env("BORGCHART_BIN", env!("CARGO_BIN_EXE_brg"))
+            .env("BORGCHART_WAIT_TIMEOUT_MS", "60000")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                "agent",
+                env!("CARGO_BIN_EXE_fake-agent"),
+            ]);
+        assert!(start.output().unwrap().status.success());
+        assert!(
+            tmux.tmux(&socket)
+                .args(["set-window-option", "-t", "agent:0", "remain-on-exit", "on"])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        let pane = tmux
+            .tmux(&socket)
+            .args([
+                "display-message",
+                "-p",
+                "#{socket_path} #{pane_id} #{pane_pid}",
+            ])
+            .output()
+            .unwrap();
+        assert!(pane.status.success());
+        let pane = String::from_utf8(pane.stdout).unwrap();
+        let parts: Vec<_> = pane.split_whitespace().collect();
+        let path = f.incarnation_file("lead");
+        let mut inc: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        inc["pane"] = json!({"socket": parts[0], "session": "agent", "window": "0",
+            "pane_id": parts[1], "pane_pid": parts[2].parse::<u32>().unwrap()});
+        f.write_private(&path, &inc);
+        let mut lock = (locked == "initial scan").then(|| hold(&f.store_dir().join("lock")));
+        let send = |text: &str| {
+            assert!(
+                tmux.tmux(&socket)
+                    .args(["send-keys", "-l", text])
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+            assert!(
+                tmux.tmux(&socket)
+                    .args(["send-keys", "Enter"])
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+        };
+        // The fake's tool starts an orphanable wait, just as an agent does.
+        // Ignore terminal hangup so the test proves brg's own lifetime check.
+        send(
+            "tool (trap '' HUP; \"$BORGCHART_BIN\" inbox wait --timeout 60 --json >\"$HOME/wait.json\" 2>\"$HOME/wait.err\" & p=$!; echo $p >\"$HOME/wait.pid.tmp\" && mv \"$HOME/wait.pid.tmp\" \"$HOME/wait.pid\"; wait $p; code=$?; echo $code >\"$HOME/wait.code.tmp\" && mv \"$HOME/wait.code.tmp\" \"$HOME/wait.code\") </dev/null >/dev/null 2>&1 &",
+        );
+        let until = Instant::now() + Duration::from_secs(5);
+        let pid = f.dir.path().join("wait.pid");
+        while !pid.exists() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(pid.exists(), "fake agent did not start its wait");
+        struct Cleanup(Option<PathBuf>);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                if let Some(path) = &self.0
+                    && let Ok(pid) = fs::read_to_string(path)
+                {
+                    let _ = common::command("kill").args(["-KILL", pid.trim()]).output();
+                }
+            }
+        }
+        let mut cleanup = Cleanup(Some(pid));
+        let code = f.dir.path().join("wait.code");
+        std::thread::sleep(Duration::from_millis(1200));
+        assert!(!code.exists(), "a running member's wait must continue");
+        if locked == "ack refresh" {
+            assert_eq!(f.publish(&As::Operator, &note("lead", "new")).code, 0);
+            let until = Instant::now() + Duration::from_secs(5);
+            while !gate.join("ready").exists() && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert!(
+                gate.join("ready").exists(),
+                "wait did not reach ack refresh"
+            );
+            lock = Some(hold(&f.store_dir().join("lock")));
+            fs::write(gate.join("proceed"), "").unwrap();
+        }
+        send("crash 3");
+        let until = Instant::now() + Duration::from_secs(5);
+        while !code.exists() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(code.exists(), "orphaned wait did not end (locked={locked})");
+        assert_eq!(fs::read_to_string(code).unwrap().trim(), "8");
+        let result: Value =
+            serde_json::from_slice(&fs::read(f.dir.path().join("wait.json")).unwrap()).unwrap();
+        assert_eq!(result["outcome"], "fenced");
+        assert!(
+            result["message"].as_str().unwrap().contains("ended"),
+            "{result}"
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fs::read(path).unwrap()).unwrap(),
+            inc,
+            "wait must not write lifecycle state"
+        );
+        cleanup.0 = None; // The recorded wait has already exited.
+        drop(lock);
+    }
+}
+
+#[test]
+fn inbox_wait_keeps_unknown_members_and_external_callers_waiting() {
+    let f = Fixture::new();
+    // No pane identity means Unknown, not Gone.
+    for (who, args) in [
+        (
+            As::Member("lead"),
+            vec!["inbox", "wait", "--timeout", "60", "--json"],
+        ),
+        (
+            As::Operator,
+            vec![
+                "inbox",
+                "wait",
+                "--external",
+                "ops",
+                "--timeout",
+                "60",
+                "--json",
+            ],
+        ),
+    ] {
+        let start = Instant::now();
+        let out = f.brg(&who, &args, None);
+        assert_eq!(out.code, 9, "{}", out.json);
+        assert!(start.elapsed() >= Duration::from_millis(900));
+    }
+}
+
 #[test]
 fn inbox_wait_is_bounded_while_a_writer_holds_the_lock() {
     let f = Fixture::new();
@@ -1060,4 +1226,36 @@ fn the_publish_help_example_publishes_and_its_outcomes_are_documented() {
     assert!(out.status.success(), "{out:?}");
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), expected);
     assert!(help.contains("committed (0)"));
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn inbox_wait_does_not_infer_exit_from_a_sandbox_process_view() {
+    let f = Fixture::new();
+    let bin = f.dir.path().join("sandbox-bin");
+    fs::create_dir(&bin).unwrap();
+    common::write_executable(&bin.join("tmux"), "#!/bin/sh\nexit 1\n");
+    common::write_executable(
+        &bin.join("ps"),
+        "#!/bin/sh\nprintf '%s\\n' \"${4%,*}\"\n: >\"$HOME/ps-called\"\n",
+    );
+    let path = f.incarnation_file("lead");
+    let mut inc: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    inc["pane"] = json!({"socket": "/nonexistent/test-sandbox-socket", "session": "agent", "window": "0", "pane_id": "%0", "pane_pid": std::process::id()});
+    f.write_private(&path, &inc);
+    let out = f
+        .command(
+            &As::Member("lead"),
+            &["inbox", "wait", "--timeout", "60", "--json"],
+        )
+        .env("PATH", bin)
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(9),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(!f.dir.path().join("ps-called").exists());
 }

@@ -265,7 +265,9 @@ pub fn main() -> ExitCode {
         }
     };
     let code = run(cli, started);
-    if code != ExitCode::SUCCESS {
+    // A fenced wait belongs to an ended start and must not linger or retry.
+    if code != ExitCode::SUCCESS && code != ExitCode::from(crate::bus::outcome::Code::Fenced.exit())
+    {
         back_off();
     }
     code

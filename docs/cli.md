@@ -29,7 +29,7 @@
 | `brg send <instance>/<member> <text…> [--force] [--from MEMBER] [--json]` | Paste text into a member and press Enter, as one submission. `--from` (for plugins relaying a member's message) requires the target to be that member's parent |
 | `brg msg publish [--record FILE\|-] [--external NAME] [--json]` | Publish a new message from `{to, body, reply_to?}` on stdin by default; each publish creates a distinct message. See [the bus](bus.md#commands) |
 | `brg inbox [--member ID \| --external NAME] [--full] [--json]` | List every unacked message to you (or another member's inbox, read-only), oldest first; --full includes bodies. Reading never acknowledges |
-| `brg inbox wait [--external NAME] [--timeout SECONDS] [--full] [--json]` | One wait for your inbox: new unacked messages return at once, existing messages after 60 seconds only if still unacked. Errors also wait at least 60 seconds; help/signals are exempt. Timeout 60–86400 seconds, default 86400, exits 9. A stopped/replaced member exits 8 (`fenced`); stop waiting |
+| `brg inbox wait [--external NAME] [--timeout SECONDS] [--full] [--json]` | One wait for your inbox: new unacked messages return at once, existing messages after 60 seconds only if still unacked. Errors also wait at least 60 seconds; fenced/help/signals are exempt. Timeout 60–86400 seconds, default 86400, exits 9. A stopped/exited/replaced member exits 8 (`fenced`); stop waiting |
 | `brg msg read ID [--json]` | Show one message in full, including an acknowledged one |
 | `brg msg ack ID… [--external NAME] [--json]` | Acknowledge messages addressed to you; acking twice is a no-op |
 | `brg bus check [--json]` | Check the store for gaps, unreadable files and stray temporaries; never writes |

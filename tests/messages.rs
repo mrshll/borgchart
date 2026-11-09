@@ -348,14 +348,12 @@ fn an_empty_wait_times_out_and_a_replaced_wait_is_fenced() {
     let lead = env.member(&instance, "lead");
     let out = finish(waiter(&env, &instance, &lead).spawn().unwrap());
     assert_eq!(out.status.code(), Some(9), "{}", both(&out));
-    let start = Instant::now();
     let child = waiter(&env, &instance, &lead).spawn().unwrap();
     std::thread::sleep(Duration::from_millis(300));
     env.ok(&["stop", &format!("{instance}/{lead}")]);
     env.ok(&["start", &format!("{instance}/{lead}")]);
     let out = finish(child);
     assert_eq!(out.status.code(), Some(8), "{}", both(&out));
-    assert!(start.elapsed() >= Duration::from_millis(700));
     env.ok(&["stop", &instance]);
 }
 
