@@ -1,0 +1,13 @@
+# Seating plugin
+
+Both the root team and dev teams use this same plugin before each launch. The design panel has no launch authority; its parent lead checks seating for its members. `seat route <claude|codex> <model>` prints `go: <reason>` (exit 0), or `wait: <reason>` (exit 3). Bad adapter arguments exit 2. Any error means wait, never substitute a vendor or model.
+
+The plugin requires `uv` and a real quota reader implementing the `usage-route <vendor> <model>` JSON contract. It uses `usage-route` on `PATH` by default. One optional setting, `$XDG_CONFIG_HOME/borgchart/seat-reader` (default `~/.config/borgchart/seat-reader`), names an executable on `PATH` or its absolute path. The file contains only that name or path, without quotes, flags or shell syntax. An invalid configured reader does not fall back. brg forwards `PATH`, `HOME` and `XDG_CONFIG_HOME` into plugin actions; the reader uses its own account/cache configuration. Neither this plugin nor its configuration stores credentials. No machine-specific paths belong in the team definition.
+
+The reader is still external: today `usage-route` uses `subscription-usage`'s account-aware readers. Moving those readers into this repository is a later step. The adapter asks for exactly the selected vendor and model; it never requests `auto`, uses a fallback or launches the reader's returned argv. Codex aliases are matched by model class (`astra`, `sol`, `terra`, `luna`, including `gpt-<release>-<class>`); effort remains brg's choice.
+
+A successful response must authorize that route, include one matching available evaluation, and report a fresh, timezone-aware `ok` observation for the vendor. Unknown, stale, future, blocked, malformed, missing or failed readings, and a 60-second timeout, all return `wait`. Known reader model-validation failures and invalid-policy reports are distinguished from quota denial. Blocked or waiting decisions retain a valid future retry time when provided. Raw reader stderr is never relayed.
+
+The reader owns quota policy: advisory at 90%, stop at 100%, blocked or unknown. The adapter preserves advisory messages (scope, utilization, observation and reset times), checks that constraints do not contradict availability, and adds no lower cutoff. A known 99% reading can authorize a launch. Normal tool approvals still apply when the reader needs network or private-cache access.
+
+Run the adapter tests from the repository root with `uv run --no-project --with pytest==8.3.5 pytest tools/tests/test_seat.py`. The fake sources exist only in tests. Before cutover, check both vendors and every declared model from an actual lead's plugin environment; unit tests do not establish access to live usage sources.

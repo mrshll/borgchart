@@ -41,7 +41,7 @@ plugins:
     path: plugins/pager
     process: [./watch.sh]
     delivers_to: alpha
-    env: [PAGER_TOKEN, {PAGER_ROOM: R0000EXAMPLE}]
+    env: {PAGER_TOKEN: , PAGER_ROOM: R0000EXAMPLE}
     actions:
       read: pager read <id>
       ping: pager ping <id>

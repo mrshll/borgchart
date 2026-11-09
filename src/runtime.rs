@@ -91,7 +91,11 @@ fn brg_path() -> PathBuf {
 /// socket brg's settings name.
 fn tmux_for(state: &StateDir) -> Tmux {
     let tmux = Tmux::new(&state.tmux_conf(), base_env());
-    match state::read_meta(state).and_then(|m| m.socket_path) {
+    match state::read_meta(state)
+        .ok()
+        .flatten()
+        .and_then(|m| m.socket_path)
+    {
         Some(path) => tmux.with_socket(&path.display().to_string()),
         None => tmux,
     }
@@ -406,7 +410,6 @@ fn start_members(
             pre_notes.push(format!("note: {}: {note}", inst.at(id)));
         }
     }
-    refuse_legacy_sessions(&tmux_for(state))?;
     let wanted: Vec<(String, PathBuf)> = cwds.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     crate::checkouts::reserve(&lock, &inst.id, &wanted)?;
     let (values, missing) = plugin_values(v);
@@ -427,12 +430,12 @@ fn start_members(
     state::ensure_dir(&state.root)
         .map_err(|e| format!("cannot create {}: {e}", state.root.display()))?;
     let state_lock = lifecycle::lock_state(state)?;
-    let previous = state::read_meta(state);
+    let previous = state::read_meta(state)?;
     // Unless the last start here was confirmed stopped, or never started a
     // window, a server this caller can't see may still run it.
     let may_still_run = previous
         .as_ref()
-        .is_some_and(|m| m.stopped_at.is_none() && m.windows_started != Some(false));
+        .is_some_and(|m| m.stopped_at.is_none() && m.windows_started);
     let existing = previous.clone().filter(|_| probe.has_session(&session));
     let joining = existing.is_some();
     match &existing {
@@ -440,19 +443,19 @@ fn start_members(
         None if !missing.is_empty() => return Err(missing_error()),
         None => {}
     }
-    if !joining && let Some(meta) = &previous {
-        let changed = meta.config.as_ref().is_none_or(|old| old != &snapshot);
-        if changed {
-            if only {
-                return Err(match &meta.config {
-                    Some(old) => lifecycle::changed_since_start(&team, &restart, old, &snapshot),
-                    None => format!(
-                        "instance `{team}` has no configuration snapshot; start the whole instance: {restart}"
-                    ),
-                });
-            }
-            lifecycle::check_stopped(state, meta, &restart)?;
+    if !joining
+        && let Some(meta) = &previous
+        && meta.config != snapshot
+    {
+        if only {
+            return Err(lifecycle::changed_since_start(
+                &team,
+                &restart,
+                &meta.config,
+                &snapshot,
+            ));
         }
+        lifecycle::check_stopped(state, meta, &restart)?;
     }
     let storage = bus.as_ref().map(|_| StorePaths::new(state));
     if let Some(paths) = &storage {
@@ -509,7 +512,7 @@ fn start_members(
             },
             parent: parent_member(member),
             vendor_version: vendor_version(member.vendor, base),
-            started: Some(false),
+            started: false,
         })
     };
     let fresh = existing.is_none();
@@ -524,10 +527,10 @@ fn start_members(
                 team_dir: v.team.dir.clone(),
                 folder: record.folder.clone(),
                 brg: brg.clone(),
-                socket: Some(state::tmux_socket()),
-                config: Some(snapshot.clone()),
+                socket: state::tmux_socket(),
+                config: snapshot.clone(),
                 base_env: base.clone(),
-                windows_started: Some(may_still_run),
+                windows_started: may_still_run,
                 ..Meta::default()
             };
             // Plugins: their values (secrets included) go to private files for the shims.
@@ -773,9 +776,9 @@ fn start_members(
         // member ran.
         if storage.is_none()
             && let Some(m) = meta.members.get_mut(id)
-            && m.started != Some(true)
+            && !m.started
         {
-            m.started = Some(true);
+            m.started = true;
             write_private(
                 &state.meta_file(),
                 &serde_json::to_vec_pretty(&meta).map_err(|e| e.to_string())?,
@@ -1297,31 +1300,6 @@ fn check_state_overlap(folder: &Path, instance_state: &Path) -> Result<(), Strin
     Ok(())
 }
 
-/// Refuse every member start while a tmux session from before instances
-/// (any `brg-*` session that isn't a registered instance's) is alive on
-/// brg's server: brg can't tell which folders it uses.
-fn refuse_legacy_sessions(tmux: &Tmux) -> Result<(), String> {
-    let Ok(out) = tmux.ok(&["list-sessions", "-F", "#{session_name}"]) else {
-        return Ok(());
-    };
-    let registry = registry::load()?;
-    let old: Vec<&str> = out
-        .lines()
-        .map(str::trim)
-        .filter(|s| {
-            s.strip_prefix("brg-")
-                .is_some_and(|id| !registry.instances.contains_key(id))
-        })
-        .collect();
-    if old.is_empty() {
-        return Ok(());
-    }
-    Err(format!(
-        "tmux sessions from before instances are still running on brg's server ({}); brg can't tell which folders they use, so it starts nothing until they stop. Stop them with the brg that started them",
-        old.join(", ")
-    ))
-}
-
 /// Validate a team folder, printing what validation found; `Err` on errors.
 fn validate_printing(dir: &Path, recursive: bool) -> Result<Validated, String> {
     let (report, validated) = if recursive {
@@ -1399,10 +1377,6 @@ pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
     precheck(&v, &starting, true)?;
     check_state_overlap(&folder, &state::state_home())
         .map_err(|e| format!("the working {e}; nothing was created"))?;
-    refuse_legacy_sessions(&Tmux::new(
-        &state::state_home().join("tmux.conf"),
-        base_env(),
-    ))?;
     let lock = registry::lock()?;
     crate::checkouts::check_folder(&lock, &folder)?;
     let (state, mut record) =
@@ -1447,7 +1421,9 @@ fn unregister_if_never_started(inst: &Instance) {
     if !registry.instances.contains_key(&inst.id) {
         return;
     }
-    let started = state::read_meta(&inst.state).is_some_and(|m| m.windows_started != Some(false));
+    // A record that can't be read may describe windows that started.
+    let started =
+        state::read_meta(&inst.state).map_or(true, |m| m.is_some_and(|m| m.windows_started));
     let live = liveness_of(inst).values().any(|l| *l != Liveness::Gone);
     if started || live || is_running(inst) {
         return;
@@ -1657,7 +1633,10 @@ pub(crate) fn check_parent_authority(
     if !has_member_context() && !creating {
         return Ok(());
     }
-    let recorded = target.and_then(|id| state::read_meta(&inst.state)?.members.get(id).cloned());
+    let recorded = match target {
+        Some(id) => state::read_meta(&inst.state)?.and_then(|m| m.members.get(id).cloned()),
+        None => None,
+    };
     let parent = if let Some(recorded) = recorded {
         // The store records whether the instance started with a bus. A
         // damaged bus must not make a caller a person or prevent stopping.
@@ -1729,7 +1708,7 @@ fn check_instance_authority(inst: &Instance, v: Option<&Validated>) -> Result<()
     if !has_member_context() {
         return Ok(());
     }
-    if state::read_meta(&inst.state).is_some() {
+    if state::read_meta(&inst.state)?.is_some() {
         if crate::bus::store::open(&inst.state)
             .is_err_and(|f| f.code == crate::bus::outcome::Code::NotConfigured)
         {
@@ -1800,7 +1779,7 @@ fn check_subtree_authority(mut parent: Option<String>, target: &str) -> Result<(
         if ancestor.record.role_of(member).is_none() {
             break;
         }
-        let meta = state::read_meta(&ancestor.state).ok_or_else(|| format!(
+        let meta = state::read_meta(&ancestor.state)?.ok_or_else(|| format!(
             "instance `{instance}`'s start record cannot be read; ask a person to manage `{target}`"
         ))?;
         let recorded = meta.members.get(member).ok_or_else(|| {
@@ -1812,6 +1791,18 @@ fn check_subtree_authority(mut parent: Option<String>, target: &str) -> Result<(
             .map(|p| parent_address(&ancestor, p));
     }
     Err(refusal)
+}
+
+/// Refuse when the instance's start.json exists but can't be read: brg
+/// can't tell which tmux server runs it, so it can't tell that it stopped.
+fn unreadable_start_record(inst: &Instance, consequence: &str) -> Result<(), String> {
+    match state::read_meta(&inst.state) {
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!(
+            "instance `{}`'s start record can't be read ({e}), so brg can't tell that it stopped; {consequence}",
+            inst.id
+        )),
+    }
 }
 
 /// Whether any member or plugin process of the instance has a live window
@@ -1847,6 +1838,8 @@ fn repoint(inst: &mut Instance, team: &Path) -> Result<(), String> {
     inst.reload()?;
     crate::nesting::check_not_stopping(inst)?;
     check_instance_authority(inst, None)?;
+    // `is_running` would guess the server from the caller's settings.
+    unreadable_start_record(inst, "its team folder can't be changed")?;
     if is_running(inst) {
         return Err(format!(
             "instance `{}` is running; a new team folder applies only from a full stop: brg stop {}",
@@ -2022,12 +2015,16 @@ fn start_instance(
 pub fn liveness_of(inst: &Instance) -> BTreeMap<String, Liveness> {
     let state = &inst.state;
     let session = state.session();
-    let meta = state::read_meta(state);
+    let read = state::read_meta(state);
+    let unreadable = read.is_err();
+    let meta = read.ok().flatten();
     let rows = meta.as_ref().map(|m| lifecycle::Server::of(m).panes());
     let mut out = BTreeMap::new();
     for (id, _) in inst.record.kept_members() {
         let incarnation = lifecycle::load_incarnation(state, id);
         let by_window = match (&meta, &rows) {
+            // The start record can't be read: which server runs it is unknown.
+            (None, _) if unreadable => Liveness::Unknown,
             // Never started a window here.
             (None, _) => Liveness::Gone,
             (Some(_), Some(Ok(rows))) => {
@@ -2040,9 +2037,7 @@ pub fn liveness_of(inst: &Instance) -> BTreeMap<String, Liveness> {
                     Liveness::Gone
                 }
             }
-            (Some(m), _) if m.stopped_at.is_some() || m.windows_started == Some(false) => {
-                Liveness::Gone
-            }
+            (Some(m), _) if m.stopped_at.is_some() || !m.windows_started => Liveness::Gone,
             (Some(_), Some(Err(_))) if inst.record.stopping => match &incarnation {
                 Ok(Some(inc)) => inc
                     .pane
@@ -2136,7 +2131,7 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
             }
         }
     }
-    let meta = state::read_meta(&inst.state);
+    let meta = state::read_meta(&inst.state)?;
     if !team_loaded
         && meta.as_ref().is_none_or(|meta| {
             inst.record
@@ -2226,7 +2221,7 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
     }
     // Save the tombstone first: even a partial cleanup cannot restore routing.
     lock.save_instance(&inst.state, &inst.record)?;
-    if let Some(mut meta) = state::read_meta(&inst.state) {
+    if let Some(mut meta) = state::read_meta(&inst.state)? {
         meta.members.remove(&id);
         write_private(
             &inst.state.meta_file(),
@@ -2276,6 +2271,7 @@ pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
     if inst.record.stopping {
         crate::nesting::check_not_stopping(&inst)?;
     }
+    unreadable_start_record(&inst, "it can't be deleted, even with --force")?;
     let live = liveness_of(&inst);
     let alive: Vec<&String> = live
         .iter()
@@ -2500,7 +2496,7 @@ fn unrecord_windows(state: &StateDir, meta: &mut Meta, nothing_started: bool, be
     if !nothing_started {
         return;
     }
-    meta.windows_started = Some(before);
+    meta.windows_started = before;
     if let Ok(body) = serde_json::to_vec_pretty(meta) {
         let _ = write_private(&state.meta_file(), &body);
     }
@@ -2517,8 +2513,8 @@ fn start_window(
 ) -> Result<(), String> {
     // Recorded first: once tmux runs, `stop` must not take an unreachable
     // server for one that never started.
-    if meta.windows_started != Some(true) {
-        meta.windows_started = Some(true);
+    if !meta.windows_started {
+        meta.windows_started = true;
         write_private(
             &state.meta_file(),
             &serde_json::to_vec_pretty(meta).map_err(|e| e.to_string())?,
@@ -2717,7 +2713,7 @@ pub fn stop_recursive(inst: &Instance, member: &str) -> Result<Vec<String>, Stri
         None,
         Some(member),
     )?;
-    let meta = state::read_meta(&inst.state)
+    let meta = state::read_meta(&inst.state)?
         .ok_or_else(|| format!("instance `{}`'s start record cannot be read", inst.id))?;
     let copies = inst
         .record
@@ -2808,7 +2804,7 @@ pub fn stop_recursive(inst: &Instance, member: &str) -> Result<Vec<String>, Stri
 
 /// Check every target before persisting any stop marks or stopping panes.
 fn check_stop_socket(inst: &Instance) -> Result<(), String> {
-    if let Some(name) = state::read_meta(&inst.state).and_then(|meta| meta.socket)
+    if let Some(name) = state::read_meta(&inst.state)?.map(|meta| meta.socket)
         && name != state::tmux_socket()
     {
         return Err(format!(
@@ -2906,7 +2902,7 @@ fn stop_one(
         check_parent_authority(inst, inst.record.role_of(id).unwrap(), None, Some(id))?;
     }
     let _state_lock = lifecycle::lock_state(state)?;
-    let Some(mut meta) = state::read_meta(state) else {
+    let Some(mut meta) = state::read_meta(state)? else {
         // Nothing was ever recorded here, so brg started nothing to stop.
         return Ok(vec!["not running".into()]);
     };
@@ -2918,7 +2914,7 @@ fn stop_one(
         Ok(rows) => rows,
         // A stop was already confirmed, or nothing ever started, and
         // nothing has started since.
-        Err(_) if meta.stopped_at.is_some() || meta.windows_started == Some(false) => Vec::new(),
+        Err(_) if meta.stopped_at.is_some() || !meta.windows_started => Vec::new(),
         Err(e) => {
             if only.is_some() || !server.absent() {
                 return Err(format!("{e}; fix this error, then retry: brg stop {team}"));
@@ -3182,7 +3178,7 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
     let session = state.session();
     let tmux = tmux_for(state);
     let windows = tmux.windows(&session);
-    let meta = state::read_meta(state).unwrap_or_default();
+    let meta = state::read_meta(state).ok().flatten().unwrap_or_default();
     let (counts, bus_note) = if v.team.bus.is_none() {
         (None, None)
     } else {
@@ -3252,10 +3248,7 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
         let incarnation = lifecycle::load_incarnation(state, id);
         let ran = match &incarnation {
             Ok(Some(_)) | Err(_) => true,
-            Ok(None) => meta
-                .members
-                .get(id)
-                .is_some_and(|m| m.started != Some(false)),
+            Ok(None) => meta.members.get(id).is_some_and(|m| m.started),
         };
         let mut row = StatusRow {
             name: id.clone(),
@@ -3749,6 +3742,7 @@ pub fn send(
     let from = from.as_deref();
     let state = &inst.state;
     let meta = state::read_meta(state)
+        .map_err(SendError::Refused)?
         .ok_or_else(|| SendError::NotAlive(format!("instance `{}` isn't running", inst.id)))?;
     let member_meta = meta
         .members
@@ -3891,7 +3885,7 @@ fn attach_command(inst: &Instance, name: &str) -> Result<Command, String> {
     let tmux = tmux_for(&inst.state);
     let window = window_name(inst, &tmux, &session, name)?;
     let mut cmd = Command::new("tmux");
-    match state::read_meta(&inst.state).and_then(|m| m.socket_path) {
+    match state::read_meta(&inst.state)?.and_then(|m| m.socket_path) {
         Some(path) => cmd.arg("-S").arg(path),
         None => cmd.arg("-L").arg(state::tmux_socket()),
     };

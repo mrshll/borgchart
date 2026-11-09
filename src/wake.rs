@@ -534,7 +534,11 @@ pub fn attempt(
         return WakeResult::AlertOnly(why);
     }
     let tmux = &server(tmux, expect);
-    if let Some(meta) = state::read_meta(state)
+    let meta = match state::read_meta(state) {
+        Ok(meta) => meta,
+        Err(e) => return WakeResult::Deferred(Defer::Uncertain(e)),
+    };
+    if let Some(meta) = meta
         && meta
             .members
             .get(member)
