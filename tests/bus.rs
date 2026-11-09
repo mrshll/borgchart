@@ -1170,6 +1170,15 @@ fn send_target_syntax_errors_are_usage_and_missing_start_is_not_alive() {
 
 #[test]
 fn github_tick_commits_pointer_once_through_real_send() {
+    github_intake_flow(false);
+}
+
+#[test]
+fn github_capacity_hold_still_delivers_revalidated_pending() {
+    github_intake_flow(true);
+}
+
+fn github_intake_flow(capacity_held: bool) {
     use std::os::unix::fs::PermissionsExt;
     let f = Fixture::new();
     let gh = f.dir.path().join("fake-gh");
@@ -1216,9 +1225,45 @@ printf '\r\n%s\n' "$body"
         "{}",
         String::from_utf8_lossy(&init.stderr)
     );
+    if capacity_held {
+        use borgchart::github::{model, qualify};
+        let cfg = model::Config::parse(
+            serde_json::from_slice(&fs::read(&config).unwrap()).unwrap(),
+            config.clone(),
+            f.root(),
+        )
+        .unwrap();
+        let mut state = model::load(&cfg).unwrap();
+        state.row["repos"]["104"] = json!({"full_name":"example-owner/example-repo","baseline":"2026-01-01T00:00:00Z","status":"admitted","listed":true});
+        let facts = qualify::Facts {
+            repo,
+            issue,
+            events: events.as_array().unwrap().clone(),
+            ..Default::default()
+        };
+        let config_value = cfg.value();
+        let snapshot = qualify::verify_item(
+            &config_value,
+            &config_value["owner_policy"],
+            104,
+            "example-owner/example-repo",
+            7,
+            &facts,
+        )
+        .unwrap();
+        qualify::merge_snapshot(
+            &mut state.row,
+            &snapshot,
+            "2026-01-03T00:00:00Z",
+            &qualify::members(&config_value),
+        )
+        .unwrap();
+        state.feed.holds.insert("state_capacity".into());
+        model::save(&cfg, &state).unwrap();
+    }
     let tick = run(&["tick"]);
     assert!(
-        tick.status.success(),
+        tick.status.success() || capacity_held,
         "{} {}",
         String::from_utf8_lossy(&tick.stdout),
         String::from_utf8_lossy(&tick.stderr)
@@ -1239,7 +1284,7 @@ printf '\r\n%s\n' "$body"
     fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
     let tick = run(&["tick"]);
     assert!(
-        tick.status.success(),
+        tick.status.success() || capacity_held,
         "{}",
         String::from_utf8_lossy(&tick.stderr)
     );

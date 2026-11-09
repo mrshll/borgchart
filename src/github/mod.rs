@@ -26,7 +26,7 @@ pub struct Cli {
 pub enum Action {
     /// Explicitly initialize once-only state, refusing any existing state.
     Init {
-        /// Earliest UTC source time to admit (RFC3339).
+        /// Earliest source time in UTC, e.g. 2026-01-01T00:00:00Z.
         #[arg(long)]
         since: String,
     },
@@ -43,10 +43,21 @@ pub enum Action {
     /// Run bounded ticks as a brg-managed plugin process.
     Watch,
 }
-fn summary(s: &State, dropped: usize) -> Value {
+pub fn summary(s: &State, dropped: usize) -> Value {
     let held = !s.feed.holds.is_empty() || s.row["hold"].as_object().is_some_and(|m| !m.is_empty());
     let ok = !held && s.fault.as_deref().is_none_or(|s| s == "rate_limit");
-    json!({"at":utc(),"ok":ok,"detail":s.fault.as_deref().unwrap_or(if held{"held"}else{"poll complete"}),"retrying":s.attempts.len(),"dropped":dropped,"pending":s.row["pending"].as_object().map_or(0,|m|m.len()),"held_items":s.row["dirty"].as_object().map_or(0,|m|m.values().filter(|v|v["held"]==true).count()),"due_ms":s.feed.due_ms.max(s.backoff_ms).max(s.reactions.read_retry_ms)})
+    let reason = s
+        .fault
+        .as_deref()
+        .or_else(|| s.feed.holds.iter().next().map(String::as_str))
+        .or_else(|| {
+            s.row["hold"]
+                .as_object()?
+                .values()
+                .find_map(|v| v["reason"].as_str())
+        })
+        .unwrap_or("poll complete");
+    json!({"holds":s.row["hold"],"feed_holds":s.feed.holds,"at":utc(),"ok":ok,"detail":reason,"retrying":s.attempts.len(),"dropped":dropped,"pending":s.row["pending"].as_object().map_or(0,|m|m.len()),"held_items":s.row["dirty"].as_object().map_or(0,|m|m.values().filter(|v|v["held"]==true).count()),"due_ms":s.feed.due_ms.max(s.backoff_ms).max(s.reactions.read_retry_ms)})
 }
 pub fn tick(cfg: &Config, target: &send::Target) -> model::Result<Value> {
     let _lock = match model::lock(cfg) {
@@ -77,11 +88,9 @@ pub fn tick(cfg: &Config, target: &send::Target) -> model::Result<Value> {
     let work = (|| -> api::Result<()> {
         engine::verify_account(&mut api)?;
         engine::collect(&mut api, &mut s)?;
-        if !s.feed.holds.contains("state_capacity") {
-            let result = send::produce(&mut api, &mut s, target)?;
-            committed = result.0;
-            dropped = result.1;
-        }
+        let result = send::produce(&mut api, &mut s, target)?;
+        committed = result.0;
+        dropped = result.1;
         Ok(())
     })();
     if let Err(e) = work {

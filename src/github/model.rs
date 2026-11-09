@@ -537,7 +537,15 @@ pub fn save(cfg: &Config, s: &State) -> Result<()> {
         + s.attempts.len()
         + s.reactions.targets.len();
     let raw = serde_json::to_vec(s).map_err(|_| "state_encode")?;
-    if count > cfg.settings.max_records || raw.len() > cfg.settings.max_state_bytes {
+    let held = s.feed.holds.contains("state_capacity");
+    // Reserve space for a durable hold and one delivery attempt. A held state
+    // may use that headroom to retire already-pending events.
+    if count > cfg.settings.max_records
+        || raw.len() > cfg.settings.max_state_bytes
+        || (!held
+            && (raw.len() > cfg.settings.max_state_bytes.saturating_sub(4096)
+                || count >= cfg.settings.max_records))
+    {
         return Err("state_capacity".into());
     }
     private(&cfg.dir, true)?;

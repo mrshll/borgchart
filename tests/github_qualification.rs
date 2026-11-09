@@ -1,12 +1,4 @@
-#[allow(dead_code)]
-#[path = "../src/github/mentions.rs"]
-mod mentions;
-#[allow(dead_code)]
-#[path = "../src/github/qualify.rs"]
-mod qualify;
-mod bus {
-    pub use borgchart::bus::time;
-}
+use borgchart::github::{mentions, qualify};
 use qualify::*;
 use serde_json::{Value, json};
 const T0: &str = "2026-01-01T00:00:00+00:00";

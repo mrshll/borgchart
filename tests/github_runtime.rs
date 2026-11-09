@@ -291,3 +291,88 @@ fn reactions_require_verified_proof_and_enrolled_provenance() {
     s.row["pins"]["example-owner/example-repo"] = json!(104);
     assert!(reactions::target(&c, &s.row, &p).is_none());
 }
+#[test]
+fn capacity_hold_has_headroom_and_pending_can_still_retire() {
+    let d = tempfile::tempdir().unwrap();
+    let mut c = config(d.path(), "#!/bin/sh\nexit 1\n");
+    c.settings.max_state_bytes = 8192;
+    let mut s = model::load(&c).unwrap();
+    s.row["pending"]["one"] = pending();
+    model::save(&c, &s).unwrap();
+    s.row["hints"]["large"] = json!("x".repeat(5000));
+    assert_eq!(
+        engine::persist(&c, &mut s).unwrap_err().kind,
+        "state_capacity"
+    );
+    assert!(
+        model::load(&c)
+            .unwrap()
+            .feed
+            .holds
+            .contains("state_capacity")
+    );
+    assert!(s.row["hints"].get("large").is_none());
+    let target = send::Target {
+        instance: "example".into(),
+        member: "lead".into(),
+    };
+    let (committed, _) = send::deliver(
+        &c,
+        &mut s,
+        &target,
+        vec!["one".into()],
+        Instant::now() + Duration::from_secs(20),
+        |_, _, _| send::Outcome::Committed,
+    )
+    .unwrap();
+    assert_eq!(committed.len(), 1);
+    assert!(
+        model::load(&c).unwrap().row["pending"]
+            .as_object()
+            .unwrap()
+            .is_empty()
+    );
+}
+#[test]
+fn status_preserves_operator_hold_keys_and_reasons() {
+    let d = tempfile::tempdir().unwrap();
+    let c = config(d.path(), "#!/bin/sh\nexit 1\n");
+    let mut s = model::load(&c).unwrap();
+    engine::hold_item(
+        &mut s.row,
+        &json!({"repo_id":104,"number":7,"full_name":"example-owner/example-repo"}),
+        "identity",
+    );
+    let out = borgchart::github::summary(&s, 0);
+    assert_eq!(out["detail"], "identity");
+    assert_eq!(out["holds"]["item:104:7"]["reason"], "identity");
+    assert_eq!(out["ok"], false);
+    s.feed.holds.insert("feed_page_cap".into());
+    let out = borgchart::github::summary(&s, 0);
+    assert_eq!(out["feed_holds"], json!(["feed_page_cap"]));
+}
+#[test]
+fn conditional_response_requires_an_actually_empty_body() {
+    let d = tempfile::tempdir().unwrap();
+    let c = config(d.path(), &response(304, "", &Value::Null, 1));
+    let mut a = Api::new(&c, Instant::now() + Duration::from_secs(5));
+    assert!(a.request("/notifications", Some("old")).is_err());
+}
+#[test]
+fn foreign_issue_is_rejected_before_fetching_histories() {
+    let d = tempfile::tempdir().unwrap();
+    let repo = json!({"id":104,"full_name":"example-owner/example-repo","owner":{"id":103,"login":"example-owner","type":"User"}});
+    let c = config(d.path(), &response(200, "", &repo, 0));
+    let mut s = model::load(&c).unwrap();
+    let mut a = Api::new(&c, Instant::now() + Duration::from_secs(5));
+    assert_eq!(
+        engine::targeted(
+            &mut a,
+            &mut s.row,
+            &json!({"repo_id":104,"number":7,"full_name":"example-owner/example-repo"})
+        )
+        .unwrap_err()
+        .kind,
+        "identity"
+    );
+}

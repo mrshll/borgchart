@@ -36,6 +36,7 @@ pub fn stop(kind: &str) -> bool {
 }
 pub type Headers = BTreeMap<String, String>;
 pub struct Response {
+    pub empty: bool,
     pub status: u16,
     pub headers: Headers,
     pub body: Value,
@@ -80,12 +81,14 @@ pub fn parse(raw: &[u8]) -> Result<Response> {
             return Err("transport".into());
         }
     }
-    let body = if body.trim().is_empty() {
+    let empty = body.trim().is_empty();
+    let body = if empty {
         Value::Null
     } else {
         serde_json::from_str(body).map_err(|_| Fault::from("json"))?
     };
     Ok(Response {
+        empty,
         status,
         headers,
         body,
@@ -311,11 +314,7 @@ impl<'a> Api<'a> {
         if r.headers.contains_key("x-github-sso") {
             return Err("sso".into());
         }
-        if r.status == 304
-            && validator.is_some()
-            && matches!(accepted, Some(0 | 1))
-            && r.body.is_null()
-        {
+        if r.status == 304 && validator.is_some() && matches!(accepted, Some(0 | 1)) && r.empty {
             return Ok(r);
         }
         if r.status != 200 || accepted != Some(0) {

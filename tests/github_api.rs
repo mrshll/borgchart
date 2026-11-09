@@ -1,18 +1,5 @@
-#[path = "../src/github/api.rs"]
-#[allow(dead_code)]
-mod api;
-#[path = "../src/github/model.rs"]
-#[allow(dead_code)]
-mod model;
-mod bus {
-    pub use borgchart::bus::*;
-}
-mod state {
-    pub use borgchart::state::*;
-}
-mod bounded_process {
-    pub use borgchart::bounded_process::*;
-}
+use borgchart::github::api;
+use borgchart::github::model;
 #[test]
 fn pagination_rejects_foreign_routes_and_changed_queries() {
     let aliases = std::collections::BTreeMap::new();

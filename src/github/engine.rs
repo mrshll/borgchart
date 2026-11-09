@@ -193,6 +193,25 @@ pub fn targeted(api: &mut Api<'_>, row: &mut Value, pointer: &Value) -> Result<(
     api.aliases
         .insert(base.clone(), format!("/repositories/{repo_id}"));
     let issue = api.get(&format!("{base}/issues/{num}"))?;
+    // Refuse a moved or foreign issue before spending quota on its histories.
+    let root = format!("https://api.github.com{base}");
+    if issue["number"] != num
+        || !issue["repository_url"]
+            .as_str()
+            .unwrap_or("")
+            .eq_ignore_ascii_case(&root)
+        || !issue["url"]
+            .as_str()
+            .unwrap_or("")
+            .eq_ignore_ascii_case(&format!("{root}/issues/{num}"))
+        || (!issue["pull_request"].is_null()
+            && !issue["pull_request"]["url"]
+                .as_str()
+                .unwrap_or("")
+                .eq_ignore_ascii_case(&format!("{root}/pulls/{num}")))
+    {
+        return Err("identity".into());
+    }
     let pr = !issue["pull_request"].is_null();
     let events = api.pages(&format!("{base}/issues/{num}/events"))?;
     let comments = if pr || cfg.settings.issue_mentions_after.is_some() {
@@ -340,6 +359,14 @@ pub fn verified_pending(api: &mut Api<'_>, s: &mut State) -> Result<Vec<String>>
     groups.sort_by_key(|(_, v)| v.0);
     let mut keys = Vec::new();
     for (item, (_, p)) in groups {
+        if !s.row["pending"]
+            .as_object()
+            .ok_or("state_corrupt")?
+            .values()
+            .any(|v| item_key(v) == item)
+        {
+            continue;
+        }
         if keys.len() >= 100 {
             break;
         }

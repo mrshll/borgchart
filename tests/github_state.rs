@@ -1,12 +1,4 @@
-#[path = "../src/github/model.rs"]
-#[allow(dead_code)]
-mod model;
-mod bus {
-    pub use borgchart::bus::*;
-}
-mod state {
-    pub use borgchart::state::*;
-}
+use borgchart::github::model;
 use model::*;
 use serde_json::json;
 

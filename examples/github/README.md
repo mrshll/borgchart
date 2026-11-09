@@ -41,3 +41,7 @@ brg github --config /absolute/local/github.json retry --item 104:7
 The first retry clears feed holds; the second releases one held item. Fix the underlying cause first. Authentication, transport and rate-limit failures retry automatically. Health includes retry and per-tick drop counts; ordinary pacing and delivery retries remain healthy, while unavailable routes and deterministic holds are unhealthy. No old Python state import or compatibility format is supported. Nothing here deploys a watcher automatically.
 
 Eyes reactions are best-effort: a busy tick may use its deadline delivering the backlog and skip reactions. A skipped reaction never delays or replays bus delivery.
+
+A stop-class read fault (including authentication, transport, clock or SSO) defers delivery until the next tick can revalidate it. This keeps a tick from sending after its verification context fails. After replacing the brg executable, restart the watcher through the normal lifecycle: a deleted old executable may leave the sender unavailable until restart.
+
+State reserves 4 KiB for capacity-hold metadata and delivery progress. A capacity hold stops new collection while allowing pending deliveries to retire. Raise limits deliberately if necessary, then clear the feed hold with `retry`; seen history is never silently pruned. `status` reports hold keys and reasons so an operator can identify a held item directly.
