@@ -25,6 +25,31 @@ pub fn descendants(inst: &Instance) -> Result<Vec<Instance>, String> {
     Ok(copies)
 }
 
+/// The outermost unfinished cascade enclosing this instance, if any.
+pub fn stopping_ancestor(inst: &Instance) -> Result<Option<String>, String> {
+    let mut id = String::new();
+    for segment in inst.id.split('/') {
+        if !id.is_empty() {
+            id.push('/');
+        }
+        id.push_str(segment);
+        if address::instance(&id)?.record.stopping {
+            return Ok(Some(id));
+        }
+    }
+    Ok(None)
+}
+
+/// Called under the registry lock before a create or start changes anything.
+pub fn check_not_stopping(inst: &Instance) -> Result<(), String> {
+    if let Some(id) = stopping_ancestor(inst)? {
+        return Err(format!(
+            "instance `{id}` is stopping; finish its cascade first: brg stop {id}"
+        ));
+    }
+    Ok(())
+}
+
 /// Make a copy's folders and registration, without starting any member.
 pub fn create(
     mut inst: Instance,
@@ -34,6 +59,7 @@ pub fn create(
 ) -> Result<UpOutcome, String> {
     let lock = registry::lock()?;
     inst.reload()?;
+    check_not_stopping(&inst)?;
     crate::runtime::check_parent_authority(&inst, role_name, Some(v), None)?;
     if let Some(meta) = state::read_meta(&inst.state)
         && meta.stopped_at.is_none()

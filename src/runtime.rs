@@ -1488,6 +1488,7 @@ pub fn create_member(mut inst: Instance, role: &str) -> Result<UpOutcome, String
     create_authority_pause();
     let lock = registry::lock()?;
     inst.reload()?;
+    crate::nesting::check_not_stopping(&inst)?;
     check_parent_authority(&inst, role, Some(&v), None)?;
     let existing = inst.record.members_of(role);
     if existing.len() >= member.max {
@@ -1837,6 +1838,7 @@ fn repoint(inst: &mut Instance, team: &Path) -> Result<(), String> {
     }
     let lock = registry::lock()?;
     inst.reload()?;
+    crate::nesting::check_not_stopping(inst)?;
     check_instance_authority(inst, None)?;
     if is_running(inst) {
         return Err(format!(
@@ -1909,9 +1911,18 @@ fn unreadable_store(inst: &Instance, e: &str) -> String {
 
 /// `brg start <instance>[/<member>] [--team <path>]`.
 pub fn start(
+    inst: Instance,
+    member: Option<&str>,
+    team: Option<&Path>,
+) -> Result<UpOutcome, String> {
+    start_instance(inst, member, team, true)
+}
+
+fn start_instance(
     mut inst: Instance,
     member: Option<&str>,
     team: Option<&Path>,
+    restore_copies: bool,
 ) -> Result<UpOutcome, String> {
     if let Some(dir) = team {
         if member.is_some() {
@@ -1940,6 +1951,7 @@ pub fn start(
     let v = validate_printing(&inst.record.team_dir)?;
     let lock = registry::lock()?;
     inst.reload()?;
+    crate::nesting::check_not_stopping(&inst)?;
     if let Some(id) = &member {
         address::member(&inst, id)?;
         check_parent_authority(&inst, inst.record.role_of(id).unwrap(), Some(&v), Some(id))?;
@@ -1960,7 +1972,38 @@ pub fn start(
             if result.is_err() {
                 remove_unkept_copy_folders(&inst, created_folders);
             }
-            result
+            let mut outcome = result?;
+            if !restore_copies {
+                return Ok(outcome);
+            }
+            let registered = registry::load()?;
+            let mut copies: Vec<_> = inst
+                .record
+                .copies_running_at_stop
+                .iter()
+                .flatten()
+                .collect();
+            copies.sort_by_key(|id| id.split('/').count());
+            for id in copies {
+                let full_id = inst.at(id);
+                if !registered.instances.contains_key(&full_id) {
+                    continue;
+                }
+                match address::instance(&full_id)
+                    .and_then(|copy| start_instance(copy, None, None, false))
+                {
+                    Ok(copy) => {
+                        outcome.tree.push_str(&copy.tree);
+                        outcome.notes.extend(copy.notes);
+                        outcome.failed |= copy.failed;
+                    }
+                    Err(error) => {
+                        outcome.notes.push(format!("{full_id}: {error}"));
+                        outcome.failed = true;
+                    }
+                }
+            }
+            Ok(outcome)
         }
     }
 }
@@ -2016,6 +2059,18 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
     inst.reload()?;
     let id = address::member(&inst, name)?;
     check_parent_authority(&inst, inst.record.role_of(&id).unwrap(), None, Some(&id))?;
+    let copies: Vec<_> = crate::nesting::descendants(&inst)?
+        .into_iter()
+        .filter(|copy| copy.record.parent.as_deref() == Some(&inst.at(&id)))
+        .map(|copy| copy.id)
+        .collect();
+    if !copies.is_empty() {
+        return Err(format!(
+            "member `{}` has kept copies; delete them first:\n  {}",
+            inst.at(&id),
+            copies.join("\n  ")
+        ));
+    }
     if tmux_for(&inst.state)
         .window(&inst.state.session(), &id)
         .is_some_and(|w| !w.dead)
@@ -2195,6 +2250,9 @@ pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
                 .collect::<Vec<_>>()
                 .join("\n  ")
         ));
+    }
+    if inst.record.stopping {
+        crate::nesting::check_not_stopping(&inst)?;
     }
     let live = liveness_of(&inst);
     let alive: Vec<&String> = live
@@ -2471,27 +2529,132 @@ pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> 
     let mut current = inst.clone();
     current.reload()?;
     let inst = &current;
-    let mut messages = Vec::new();
-    if only.is_none() {
-        check_instance_authority(inst, None)?;
-        for copy in crate::nesting::descendants(inst)? {
-            messages.extend(
-                stop_one(&lock, &copy, None)?
-                    .into_iter()
-                    .map(|message| format!("{}: {message}", copy.id)),
-            );
+    if only.is_some() {
+        return stop_one(&lock, inst, only);
+    }
+    check_instance_authority(inst, None)?;
+    let mut copies = crate::nesting::descendants(inst)?;
+    if !inst.id.contains('/')
+        && !inst.record.stopping
+        && copies.is_empty()
+        && !validated(inst).is_ok_and(|v| !v.team.team_roles.is_empty())
+    {
+        return stop_one(&lock, inst, None);
+    }
+    for target in std::iter::once(inst).chain(copies.iter()) {
+        if let Some(name) = state::read_meta(&target.state).and_then(|meta| meta.socket)
+            && name != state::tmux_socket()
+        {
+            return Err(format!(
+                "instance `{}` is on tmux socket `{name}`, not `{}`; stop it with BORGCHART_TMUX_SOCKET={name} brg stop {}. Nothing was changed",
+                target.id,
+                state::tmux_socket(),
+                target.id
+            ));
         }
     }
-    let own = stop_one(&lock, inst, only)?;
-    if messages.is_empty() {
-        return Ok(own);
+    // Mark the enclosing instance first. Even an interruption while writing
+    // descendant records fences the entire subtree through its ancestor.
+    for target in std::iter::once(inst).chain(copies.iter().rev()) {
+        mark_stopping(&lock, target)?;
     }
-    messages.extend(
-        own.into_iter()
-            .map(|message| format!("{}: {message}", inst.id)),
-    );
-    Ok(messages)
+    drop(lock);
+    stop_pause();
+    copies.push(inst.clone());
+    let mut messages = Vec::new();
+    let mut errors = Vec::new();
+    let nested = copies.len() > 1;
+    for mut copy in copies {
+        let lock = registry::lock()?;
+        copy.reload()?;
+        // Another stop may have finished this instance while the lock was
+        // released. Never stop a new start after its cascade has finished.
+        if !copy.record.stopping {
+            continue;
+        }
+        let result = stop_one(&lock, &copy, None);
+        let confirmed = result.is_ok();
+        match result {
+            Ok(own) if nested => messages.extend(
+                own.into_iter()
+                    .map(|message| format!("{}: {message}", copy.id)),
+            ),
+            Ok(own) => messages.extend(own),
+            Err(error) => errors.push(format!("{}: {error}", copy.id)),
+        }
+        let stopped = liveness_of(&copy)
+            .values()
+            .all(|live| *live == Liveness::Gone);
+        let descendants_stopped = crate::nesting::descendants(&copy)?
+            .iter()
+            .all(|child| !child.record.stopping);
+        if confirmed && stopped && descendants_stopped && !is_running(&copy) {
+            copy.reload()?;
+            copy.record.stopping = false;
+            lock.save_instance(&copy.state, &copy.record)?;
+        } else {
+            errors.push(format!(
+                "instance `{}` is still stopping; finish its cascade: brg stop {}",
+                copy.id, inst.id
+            ));
+        }
+    }
+    if errors.is_empty() {
+        Ok(messages)
+    } else {
+        messages.extend(errors);
+        Err(messages.join("\n"))
+    }
 }
+
+/// Persist the restore snapshots before killing any pane. A resumed stop
+/// keeps the original snapshots, even if its panes have disappeared since.
+fn mark_stopping(lock: &registry::Lock, inst: &Instance) -> Result<(), String> {
+    if inst.record.stopping {
+        return Ok(());
+    }
+    let mut record = inst.record.clone();
+    let running: std::collections::BTreeSet<_> = liveness_of(inst)
+        .into_iter()
+        .filter(|(_, live)| *live != Liveness::Gone)
+        .map(|(id, _)| id)
+        .collect();
+    if !running.is_empty() {
+        record.running_at_stop = Some(running);
+    }
+    let mut running_copies = std::collections::BTreeSet::new();
+    for copy in crate::nesting::descendants(inst)? {
+        if is_running(&copy)
+            || liveness_of(&copy)
+                .values()
+                .any(|live| *live != Liveness::Gone)
+        {
+            running_copies.insert(copy.id[inst.id.len() + 1..].to_string());
+        }
+    }
+    if is_running(inst) || !running_copies.is_empty() || record.copies_running_at_stop.is_none() {
+        record.copies_running_at_stop = Some(running_copies);
+    }
+    record.stopping = true;
+    lock.save_instance(&inst.state, &record)
+}
+
+/// Pause with the marks persisted and the registry unlocked, so a CLI test
+/// can exercise a live child's create/start or kill an interrupted stop.
+#[cfg(feature = "test-support")]
+fn stop_pause() {
+    let Some(path) = std::env::var_os("BORGCHART_TEST_STOP_PAUSE").map(PathBuf::from) else {
+        return;
+    };
+    let _ = std::fs::write(path.with_extension("waiting"), "");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !path.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[cfg(not(feature = "test-support"))]
+fn stop_pause() {}
 
 fn stop_one(
     lock: &registry::Lock,
@@ -2528,8 +2691,13 @@ fn stop_one(
         // nothing has started since.
         Err(_) if meta.stopped_at.is_some() || meta.windows_started == Some(false) => Vec::new(),
         Err(e) => {
+            if !inst.record.stopping {
+                return Err(format!(
+                    "{e}; nothing was changed. If instance `{team}` is really gone (for example after a reboot), `brg start {team}` and then `brg stop {team}` clear it"
+                ));
+            }
             return Err(format!(
-                "{e}; nothing was changed. If instance `{team}` is really gone (for example after a reboot), `brg start {team}` and then `brg stop {team}` clear it"
+                "{e}; instance `{team}` is still stopping. Once its recorded tmux server can be reached, finish the cascade: brg stop {team}"
             ));
         }
     };
@@ -2662,7 +2830,7 @@ fn stop_one(
     let mut record = registry::read_instance(state)?;
     let before = record.running_at_stop.clone();
     match only {
-        None if !running.is_empty() => record.running_at_stop = Some(running),
+        None if !record.stopping && !running.is_empty() => record.running_at_stop = Some(running),
         None => {}
         Some(id) => {
             if let Some(set) = record.running_at_stop.as_mut() {
@@ -3061,6 +3229,7 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
                 .filter(|r| {
                     r.kind == "member"
                         && r.instance == copy.id
+                        && (r.state != "stopping" || r.liveness == Some(Liveness::Alive))
                         && !matches!(r.state.as_str(), STOPPED | NOT_STARTED | "exited")
                 })
                 .count();
@@ -3076,7 +3245,14 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
                 model: None,
                 parent: copy.record.parent.clone(),
                 posture: None,
-                state: if running > 0 { "running" } else { STOPPED }.into(),
+                state: if copy.record.stopping {
+                    "stopping"
+                } else if running > 0 {
+                    "running"
+                } else {
+                    STOPPED
+                }
+                .into(),
                 rule: None,
                 detail: None,
                 vendor_version: None,
@@ -3093,6 +3269,15 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
                 }
             }
             rows.extend(children);
+        }
+    }
+    if inst.record.stopping {
+        for row in rows
+            .iter_mut()
+            .filter(|row| row.instance == inst.id && row.kind != "role")
+        {
+            row.state = "stopping".into();
+            row.expected_running = false;
         }
     }
     let nodes = status_nodes(&rows);
@@ -3159,7 +3344,11 @@ pub fn status_cells(r: &StatusRow) -> Vec<String> {
         "copy" => {
             return vec![
                 r.team.clone(),
-                format!("{} running", r.running.unwrap_or(0)),
+                if r.state == "stopping" {
+                    r.state.clone()
+                } else {
+                    format!("{} running", r.running.unwrap_or(0))
+                },
                 String::new(),
             ];
         }

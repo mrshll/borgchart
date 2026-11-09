@@ -148,6 +148,12 @@ pub struct InstanceRecord {
     /// The members running when the instance was last fully stopped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub running_at_stop: Option<BTreeSet<String>>,
+    /// A cascade is unfinished; starts and creates in this subtree are refused.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stopping: bool,
+    /// Descendant copies running at the last full stop, by relative instance path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copies_running_at_stop: Option<BTreeSet<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -330,6 +336,8 @@ pub fn create(
         copies: BTreeMap::new(),
         parent: None,
         running_at_stop: None,
+        stopping: false,
+        copies_running_at_stop: None,
     };
     register(lock, registry, record)
 }
@@ -356,6 +364,8 @@ pub fn create_copy(
             copies: BTreeMap::new(),
             parent,
             running_at_stop: None,
+            stopping: false,
+            copies_running_at_stop: None,
         },
     )
 }
@@ -429,6 +439,8 @@ mod tests {
             copies: BTreeMap::new(),
             parent: None,
             running_at_stop: None,
+            stopping: false,
+            copies_running_at_stop: None,
         };
         // The first candidate is a declared role. It must be skipped even
         // though no issued member has that suffix yet.
@@ -462,6 +474,8 @@ mod tests {
             copies: BTreeMap::new(),
             parent: None,
             running_at_stop: None,
+            stopping: false,
+            copies_running_at_stop: None,
         };
         let a = r.issue_member("my-role", |_| false).unwrap();
         let (role, suffix) = split_id(&a).unwrap();

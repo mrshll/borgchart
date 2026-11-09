@@ -54,7 +54,9 @@ enum Command {
         folder: Option<String>,
     },
     /// Bring an instance to what should be running, or start one member.
-    /// Reuse kept members; never fill a role to max. With a bus, a member
+    /// Restore copies that ran at the last full stop, recursively. Finish
+    /// an interrupted cascade with `stop` first. Reuse kept members; never
+    /// fill a role to max. With a bus, a member
     /// caller may manage only its subtree, using its latest running start.
     Start {
         /// `<instance>`, or `<instance>/<member>`.
@@ -64,7 +66,9 @@ enum Command {
         team: Option<PathBuf>,
     },
     /// Stop an instance and all its copies deepest first, or one member.
-    /// Stopping a stopped one changes nothing.
+    /// For departments and copies, persist `stopping` before the cascade, refusing create/start inside
+    /// it until every instance is certainly stopped. Run stop again to
+    /// finish an interrupted cascade. A second stop keeps who ran.
     /// With a bus, a member caller may manage only its subtree, using its
     /// latest running start. A copy's roots cannot stop their own copy.
     Stop {
@@ -78,7 +82,7 @@ enum Command {
         /// `<instance>`, or `<instance>/<member>`. A bare role is refused.
         target: String,
         /// Delete even with unread messages (or unreadable message storage).
-        /// Running members, unknown liveness and members with kept children
+        /// Running members, unknown liveness and members with kept children or copies
         /// are always refused.
         #[arg(long)]
         force: bool,
