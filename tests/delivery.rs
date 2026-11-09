@@ -316,3 +316,196 @@ fn a_sender_restart_before_import_does_not_lose_its_committed_message() {
         json!({"instance": tree.child, "id": sent["id"]})
     );
 }
+
+#[test]
+fn sender_delete_waits_for_import_but_not_the_receivers_ack() {
+    for member_only in [true, false] {
+        let tree = Tree::new();
+        // A receiver's unrelated m1 must not count as a delivery receipt.
+        value(tree.env.publish(
+            &tree.parent,
+            &json!({"to": tree.parent_member, "body": "Unrelated local task"}),
+        ));
+        tree.publish(true, "Report awaiting delivery", &[]);
+        let sender = if member_only {
+            format!("{}/{}", tree.child, tree.child_member)
+        } else {
+            tree.child.clone()
+        };
+        tree.env.ok(&["stop", &sender]);
+        tree.env.fails(&["delete", &sender]);
+        assert_eq!(tree.inbox(false)["records"].as_array().unwrap().len(), 2);
+        let receiver = tree.env.path(&format!("state/{}/messages", tree.parent));
+        fs::set_permissions(&receiver, fs::Permissions::from_mode(0o500)).unwrap();
+        let deleted = tree.env.brg(&["delete", &sender]);
+        fs::set_permissions(&receiver, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(deleted.status.success(), "{}", both(&deleted));
+        assert_eq!(
+            tree.inbox(false)["records"].as_array().unwrap().len(),
+            2,
+            "delivery must release the sender without acking the receiver's inbox"
+        );
+    }
+}
+
+#[test]
+fn sender_delete_lists_messages_to_a_deleted_copy() {
+    for member_only in [true, false] {
+        let tree = Tree::new();
+        tree.publish(false, "Task never imported", &[]);
+        tree.env.ok(&["stop", &tree.child]);
+        tree.env.ok(&["delete", &tree.child]);
+        let sender = if member_only {
+            format!("{}/{}", tree.parent, tree.parent_member)
+        } else {
+            tree.parent.clone()
+        };
+        tree.env.ok(&["stop", &sender]);
+        let pending = tree.env.fails(&["delete", &sender]);
+        assert!(pending.contains("to a deleted copy"), "{pending}");
+        tree.env.ok(&["delete", &sender, "--force"]);
+    }
+}
+
+#[test]
+fn sender_delete_does_not_hide_unreadable_receipts() {
+    for member_only in [true, false] {
+        let tree = Tree::new();
+        tree.publish(true, "Delivered but not inspectable", &[]);
+        tree.inbox(false);
+        let sender = if member_only {
+            format!("{}/{}", tree.child, tree.child_member)
+        } else {
+            tree.child.clone()
+        };
+        tree.env.ok(&["stop", &sender]);
+        let receiver = tree.env.path(&format!("state/{}/messages", tree.parent));
+        fs::set_permissions(&receiver, fs::Permissions::from_mode(0o000)).unwrap();
+        let refused = tree.env.brg(&["delete", &sender]);
+        let forced = tree.env.brg(&["delete", &sender, "--force"]);
+        fs::set_permissions(&receiver, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(!refused.status.success(), "{}", both(&refused));
+        assert!(forced.status.success(), "{}", both(&forced));
+    }
+}
+
+#[test]
+fn receiver_member_delete_requires_ack_for_imported_messages() {
+    let tree = Tree::new();
+    tree.publish(false, "Imported unread task", &[]);
+    let inbox = tree.inbox(true);
+    let id = inbox["records"][0]["id"].as_str().unwrap();
+    let receiver = format!("{}/{}", tree.child, tree.child_member);
+    tree.env.ok(&["stop", &receiver]);
+    tree.env.fails(&["delete", &receiver]);
+    tree.env.ok(&["start", &receiver]);
+    value(
+        tree.member_cmd(true, &["msg", "ack", id, "--json"])
+            .output()
+            .unwrap(),
+    );
+    tree.env.ok(&["stop", &receiver]);
+    tree.env.ok(&["delete", &receiver]);
+}
+
+fn publish_to(tree: &Tree, child: bool, to: &str) -> Output {
+    tree.env.write(
+        "route-draft.json",
+        &json!({"to": to, "body": "Routing check"}).to_string(),
+    );
+    tree.member_cmd(
+        child,
+        &[
+            "msg",
+            "publish",
+            "--record",
+            tree.env.path("route-draft.json").to_str().unwrap(),
+            "--json",
+        ],
+    )
+    .output()
+    .unwrap()
+}
+
+#[test]
+fn sibling_and_unlinked_member_routes_are_refused() {
+    let tree = Tree::new();
+    tree.env.ok(&["stop", &tree.parent]);
+    tree.env.write(
+        "teams/oncall/team.yaml",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: lead}\n  dev: {team: teams/dev, parent: lead, start: false, max: 2, cwd: 'dev/{member_id}'}\n",
+    );
+    tree.env.ok(&["start", &tree.parent]);
+    tree.env.ok(&["create", &format!("{}/dev", tree.parent)]);
+    let sibling = tree.env.registry()["instances"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .find(|id| id.starts_with(&format!("{}/", tree.parent)) && **id != tree.child)
+        .unwrap()
+        .clone();
+    tree.env.ok(&["start", &sibling]);
+    fs::create_dir(tree.env.path("work/b/lead")).unwrap();
+    let unlinked = tree.env.create("oncall", "work/b");
+    for receiver in [&sibling, &unlinked] {
+        let member = tree.env.member(receiver, "lead");
+        let out = publish_to(&tree, true, &format!("{receiver}/{member}"));
+        assert_eq!(out.status.code(), Some(5), "{}", both(&out));
+        let inbox = value(tree.env.ok(&[
+            "inbox",
+            "--instance",
+            receiver,
+            "--member",
+            &member,
+            "--json",
+        ]));
+        assert!(inbox["records"].as_array().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn only_the_tree_root_can_publish_to_an_external_caller() {
+    let tree = Tree::new();
+    let refused = publish_to(&tree, true, "external:ops");
+    assert_eq!(refused.status.code(), Some(5), "{}", both(&refused));
+    value(publish_to(&tree, false, "external:ops"));
+    let outside = value(tree.env.ok(&[
+        "inbox",
+        "--instance",
+        &tree.parent,
+        "--external",
+        "ops",
+        "--full",
+        "--json",
+    ]));
+    assert_eq!(outside["records"].as_array().unwrap().len(), 1);
+    assert_eq!(outside["records"][0]["body"], "Routing check");
+}
+
+#[test]
+fn mutual_imports_release_peer_locks_before_appending() {
+    let tree = Tree::new();
+    tree.publish(false, "Parent task", &[]);
+    tree.publish(true, "Child report", &[]);
+    let gate = tree.env.path("mutual-import-gate");
+    fs::create_dir(&gate).unwrap();
+    let spawn = |child| {
+        tree.member_cmd(child, &["inbox", "--full", "--json"])
+            .env("BORGCHART_TEST_IMPORT_GATE", &gate)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    };
+    let parent = spawn(false);
+    let child = spawn(true);
+    tree.env.wait_for("both stores have read their peer", || {
+        fs::read_dir(&gate).unwrap().count() == 2
+    });
+    fs::write(gate.join("proceed"), "").unwrap();
+    for (process, body) in [(parent, "Child report"), (child, "Parent task")] {
+        let inbox = value(finish(process));
+        assert_eq!(inbox["records"].as_array().unwrap().len(), 1);
+        assert_eq!(inbox["records"][0]["body"], body);
+    }
+}

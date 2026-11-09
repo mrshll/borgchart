@@ -12,6 +12,7 @@ pub mod fsx;
 pub mod help;
 pub mod layout;
 pub mod outcome;
+pub(crate) mod receipts;
 pub mod record;
 pub mod store;
 pub mod time;

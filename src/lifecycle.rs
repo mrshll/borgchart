@@ -259,8 +259,13 @@ pub(crate) fn unacked_work(
 ) -> OpenWork {
     let mut work = OpenWork::default();
     for r in snap.records.values().filter(|r| !snap.is_acked(r.seq)) {
-        if only.is_some_and(|member| r.to != member)
-            || bus.record.members.get(&r.to).is_some_and(|m| m.deleted)
+        let recipient =
+            r.to.strip_prefix(&format!("{}/", bus.instance))
+                .unwrap_or(&r.to);
+        // Originals sent across an edge use delivery receipts, not local acks.
+        if recipient.contains('/')
+            || only.is_some_and(|member| recipient != member)
+            || bus.record.members.get(recipient).is_some_and(|m| m.deleted)
         {
             continue;
         }

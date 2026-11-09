@@ -2177,6 +2177,8 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
             }
         ));
     }
+    // Peer reads must finish before the local publication lock is taken.
+    let pending_delivery = crate::bus::receipts::pending(&inst.state, Some(&id));
     // No bus means no publication lock to create; a stray lock would make
     // an otherwise empty messages folder look damaged on its next start.
     let no_bus = crate::bus::store::open(&inst.state)
@@ -2197,13 +2199,15 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
         if !snap.healthy() {
             return Err("messages are incomplete".into());
         }
-        Ok(lifecycle::unacked_work(&bus, &snap, Some(&id)))
+        let mut work = lifecycle::unacked_work(&bus, &snap, Some(&id));
+        work.items.extend(pending_delivery?);
+        Ok(work)
     })();
     match work {
         Ok(work) if work.items.is_empty() || force => {}
         Ok(work) => {
             return Err(format!(
-                "member `{}` holds {} unread message{}; settle them, or delete it anyway with --force:\n  {}",
+                "member `{}` holds {} open message{}; settle them, or delete it anyway with --force:\n  {}",
                 inst.at(&id),
                 work.items.len(),
                 if work.items.len() == 1 { "" } else { "s" },
@@ -2318,7 +2322,12 @@ pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
             inst.id
         ));
     }
-    match lifecycle::open_work(&inst.state) {
+    let work = lifecycle::open_work(&inst.state).and_then(|mut work| {
+        work.items
+            .extend(crate::bus::receipts::pending(&inst.state, None)?);
+        Ok(work)
+    });
+    match work {
         Ok(work) if work.items.is_empty() || force => {}
         Ok(work) => {
             return Err(format!(
