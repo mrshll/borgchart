@@ -194,6 +194,122 @@ fn missing_subteam_yaml_does_not_block_department_commands() {
     missing_subteam_during_department_commands(false);
 }
 
+fn missing_running_subteam_during_status_and_stop(remove_folder: bool) {
+    let env = Env::new();
+    env.write("teams/oncall/team.yaml", "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: lead}\n  helper: {prompt: helper.md, parent: lead, cwd: lead}\n  dev: {team: teams/dev, parent: lead, start: false, max: 3, cwd: 'dev/{member_id}'}\n  ops: {team: teams/ops, parent: lead, start: false, max: 3, cwd: 'ops/{member_id}'}\n");
+    for role in ["dev", "ops"] {
+        env.team(&format!("teams/oncall/teams/{role}"));
+        env.write(
+            &format!("teams/oncall/teams/{role}/team.yaml"),
+            "bus: {}\nroles: {lead: {prompt: lead.md, cwd: repo}}\n",
+        );
+    }
+    fs::create_dir(env.path("work/a/lead")).unwrap();
+    let dept = env.create("oncall", "work/a");
+    let mut copies = Vec::new();
+    for role in ["dev", "ops"] {
+        let out = env.ok(&["create", &format!("{dept}/{role}")]);
+        let id = stdout(&out).split_whitespace().next().unwrap().to_string();
+        let folder = PathBuf::from(env.registry()["instances"][&id]["folder"].as_str().unwrap());
+        fs::create_dir(folder.join("repo")).unwrap();
+        env.ok(&["start", &id]);
+        env.wait_for("copy lead idle", || env.state_of(&id, "lead") == "idle");
+        copies.push(id);
+    }
+    let affected = &copies[0];
+    let healthy = &copies[1];
+    env.wait_for("department helper idle", || {
+        env.state_of(&dept, "helper") == "idle"
+    });
+    let members = [
+        (dept.as_str(), env.member(&dept, "lead")),
+        (dept.as_str(), env.member(&dept, "helper")),
+        (healthy.as_str(), env.member(healthy, "lead")),
+    ];
+    let affected_lead = env.member(affected, "lead");
+    let subteam = env.path("teams/oncall/teams/dev");
+    let missing = if remove_folder {
+        subteam.clone()
+    } else {
+        subteam.join("team.yaml")
+    };
+    let saved = env.path("saved-dev");
+    fs::rename(&missing, &saved).unwrap();
+
+    let mut detail = String::new();
+    for args in [vec!["status", &dept, "--json"], vec!["status", "--json"]] {
+        let out = env.ok(&args);
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+        for (instance, member) in &members {
+            assert!(
+                rows.iter().any(|row| {
+                    row["kind"] == "member"
+                        && row["instance"] == *instance
+                        && row["member"] == *member
+                        && row["liveness"] == "alive"
+                }),
+                "{args:?} hid a running member {instance}/{member}: {rows:?}"
+            );
+        }
+        assert!(
+            rows.iter().any(|row| {
+                row["kind"] == "copy" && row["instance"] == *healthy && row["state"] == "running"
+            }),
+            "{args:?} hid the healthy copy: {rows:?}"
+        );
+        let row = rows
+            .iter()
+            .find(|row| row["kind"] == "copy" && row["instance"] == *affected)
+            .unwrap();
+        assert_eq!(row["state"], "unreadable", "{args:?}: {rows:?}");
+        detail = row["detail"].as_str().unwrap().to_string();
+        assert!(detail.contains(affected), "{detail}");
+        assert!(detail.contains(&subteam.display().to_string()), "{detail}");
+    }
+    for args in [vec!["status", &dept], vec!["status"]] {
+        let text = stdout(&env.ok(&args));
+        for (_, member) in &members {
+            assert!(text.contains(member), "{args:?}: {text}");
+        }
+        for copy in [affected, healthy] {
+            assert!(text.contains(copy.rsplit('/').next().unwrap()), "{text}");
+        }
+        assert!(text.contains("unreadable"), "{text}");
+        assert!(text.contains(&detail), "{text}");
+    }
+    env.fails(&["create", &format!("{dept}/dev")]);
+    let stopped = stdout(&env.ok(&["stop", &dept]));
+    for instance in [&dept, affected, healthy] {
+        assert!(stopped.contains(instance), "{stopped}");
+    }
+    for (instance, member) in &members {
+        assert!(
+            env.rows(&dept).iter().any(|row| {
+                row["kind"] == "member"
+                    && row["instance"] == *instance
+                    && row["member"] == *member
+                    && row["liveness"] == "gone"
+            }),
+            "stop left {instance}/{member} running"
+        );
+    }
+    // Restoring the source makes the affected copy readable again and lets
+    // status confirm that its running member was stopped too.
+    fs::rename(saved, missing).unwrap();
+    assert_eq!(env.row(affected, "lead")["member"], affected_lead);
+    assert_eq!(env.row(affected, "lead")["liveness"], "gone");
+}
+
+#[test]
+fn missing_running_subteam_folder_keeps_status_and_stop_usable() {
+    missing_running_subteam_during_status_and_stop(true);
+}
+
+#[test]
+fn missing_running_subteam_yaml_keeps_status_and_stop_usable() {
+    missing_running_subteam_during_status_and_stop(false);
+}
+
 #[test]
 fn changed_subteam_reaches_only_the_copy_that_fully_restarts() {
     let (env, dept) = department();
