@@ -957,7 +957,8 @@ fn start_members(
                 failed = true;
                 break;
             }
-            let screen = tmux.capture(&session, id);
+            // The pane this start launched, which the keys below go to.
+            let screen = tmux.capture_pane(&pane);
             let reading = rules::load(s.vendor)
                 .map(|r| r.read(&w.title, &screen))
                 .ok();
@@ -1025,7 +1026,7 @@ fn start_members(
                 let t = pane.as_str();
                 tmux.ok(&["send-keys", "-t", t, "Down"])?;
                 std::thread::sleep(Duration::from_millis(250));
-                let after = tmux.capture(&session, id);
+                let after = tmux.capture_pane(t);
                 if tmux.pane_in_mode(t) != Some(false)
                     || !(has_line(&after, TRUST_YES_SELECTED)
                         && trust_dialog_path(&after).as_deref() == s.trust_dir.as_deref())
@@ -2005,7 +2006,7 @@ pub fn liveness_of(inst: &Instance) -> BTreeMap<String, Liveness> {
             (Some(_), Some(Ok(rows))) => {
                 if rows
                     .iter()
-                    .any(|r| r.session == session && &r.window == id && !r.dead)
+                    .any(|r| r.session == session && &r.window == id && r.own && !r.dead)
                 {
                     Liveness::Alive
                 } else {
@@ -2767,13 +2768,24 @@ fn stop_one(
         Some(id) => {
             match target {
                 Some(w) => {
-                    if rows.iter().filter(in_session).count() == 1 {
+                    let mut windows: Vec<&str> = rows
+                        .iter()
+                        .filter(in_session)
+                        .map(|r| r.window_id.as_str())
+                        .collect();
+                    windows.dedup();
+                    if windows.len() == 1 {
                         server.act(&["kill-session", "-t", &format!("={session}")])?;
                         whole = true;
                     } else {
                         server.act(&["kill-window", "-t", &w.pane_id])?;
                     }
-                    killed.push(w.pane_id.clone());
+                    // Every pane in the window: the member's, and any beside it.
+                    killed.extend(
+                        rows.iter()
+                            .filter(|r| r.window_id == w.window_id)
+                            .map(|r| r.pane_id.clone()),
+                    );
                     messages.push(format!("{id}: stopped"));
                 }
                 None => messages.push(format!("{id}: not running")),

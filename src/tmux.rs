@@ -55,6 +55,22 @@ pub fn config_text(user: Option<&Path>) -> String {
     )
 }
 
+/// The pane option brg sets on the pane it starts a member (or plugin
+/// process) in, so that pane is found whatever else opens in its window.
+pub const OWN_PANE: &str = "@brg-own-pane";
+
+/// Which of a window's panes, given whether each carries [`OWN_PANE`], is the
+/// one brg started: the marked one, or with none marked, a window's only
+/// pane (a window an older brg opened, or one read before its mark is set).
+/// With several and none marked, none: brg doesn't guess.
+pub fn own_pane(marked: &[bool]) -> Option<usize> {
+    match marked.iter().position(|&m| m) {
+        Some(i) => Some(i),
+        None if marked.len() == 1 => Some(0),
+        None => None,
+    }
+}
+
 pub struct Tmux {
     socket: String,
     config: PathBuf,
@@ -66,6 +82,10 @@ pub struct Tmux {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowInfo {
     pub name: String,
+    /// The pane brg started in it ([`own_pane`]), if it can be told; the
+    /// fields below are that pane's. Without one, nothing is typed into the
+    /// window and its screen reads as empty.
+    pub pane: Option<String>,
     pub dead: bool,
     pub dead_status: Option<i32>,
     pub pid: Option<u32>,
@@ -194,27 +214,58 @@ impl Tmux {
     }
 
     pub fn windows(&self, session: &str) -> Vec<WindowInfo> {
-        let format = "#{window_name}\t#{pane_dead}\t#{pane_dead_status}\t#{pane_pid}\t#{pane_in_mode}\t#{pane_title}";
-        let Ok(out) = self.ok(&["list-windows", "-t", &format!("={session}"), "-F", format]) else {
+        // Every pane: a window's active pane may be another one beside brg's.
+        let format = format!(
+            "#{{window_id}}\t#{{window_name}}\t#{{pane_id}}\t#{{{OWN_PANE}}}\t#{{pane_dead}}\t#{{pane_dead_status}}\t#{{pane_pid}}\t#{{pane_in_mode}}\t#{{pane_title}}"
+        );
+        let Ok(out) = self.ok(&[
+            "list-panes",
+            "-s",
+            "-t",
+            &format!("={session}"),
+            "-F",
+            &format,
+        ]) else {
             return Vec::new();
         };
-        out.lines()
-            .filter_map(|line| {
-                let mut parts = line.splitn(6, '\t');
-                let name = parts.next()?.to_string();
-                let dead = parts.next()? == "1";
-                let dead_status = parts.next().and_then(|s| s.parse().ok());
-                let pid = parts.next().and_then(|s| s.parse().ok());
-                let in_mode = in_mode(parts.next()?);
-                let title = parts.next().unwrap_or("").to_string();
-                Some(WindowInfo {
-                    name,
-                    dead,
-                    dead_status,
-                    pid,
-                    in_mode,
-                    title,
-                })
+        // Each window's panes, in tmux's order.
+        let mut by_window: Vec<(String, Vec<Vec<&str>>)> = Vec::new();
+        for line in out.lines() {
+            let fields: Vec<&str> = line.splitn(9, '\t').collect();
+            if fields.len() < 8 {
+                continue;
+            }
+            match by_window.iter_mut().find(|(id, _)| id == fields[0]) {
+                Some((_, panes)) => panes.push(fields),
+                None => by_window.push((fields[0].to_string(), vec![fields])),
+            }
+        }
+        by_window
+            .into_iter()
+            .map(|(_, panes)| {
+                let marked: Vec<bool> = panes.iter().map(|p| !p[3].is_empty()).collect();
+                let name = panes[0][1].to_string();
+                match own_pane(&marked).map(|i| &panes[i]) {
+                    Some(p) => WindowInfo {
+                        name,
+                        pane: Some(p[2].to_string()),
+                        dead: p[4] == "1",
+                        dead_status: p[5].parse().ok(),
+                        pid: p[6].parse().ok(),
+                        in_mode: in_mode(p[7]),
+                        title: p.get(8).unwrap_or(&"").to_string(),
+                    },
+                    // Running for all brg can tell, but not to be typed into.
+                    None => WindowInfo {
+                        name,
+                        pane: None,
+                        dead: false,
+                        dead_status: None,
+                        pid: None,
+                        in_mode: true,
+                        title: String::new(),
+                    },
+                }
             })
             .collect()
     }
@@ -238,22 +289,30 @@ impl Tmux {
         self.windows(session).into_iter().find(|w| w.name == name)
     }
 
-    /// Start `command` in a new window, creating the session if needed.
+    /// Start `command` in a new window, creating the session if needed, and
+    /// mark its pane as brg's ([`OWN_PANE`]), by the ID tmux gives it: a
+    /// hook may already have opened another pane in the window.
     pub fn start_window(&self, session: &str, name: &str, command: &str) -> Result<(), String> {
-        if self.has_session(session) {
+        let out = if self.has_session(session) {
             self.ok(&[
                 "new-window",
                 "-d",
+                "-P",
+                "-F",
+                "#{pane_id}",
                 "-t",
                 &format!("={session}:"),
                 "-n",
                 name,
                 command,
-            ])?;
+            ])?
         } else {
             self.ok(&[
                 "new-session",
                 "-d",
+                "-P",
+                "-F",
+                "#{pane_id}",
                 "-s",
                 session,
                 "-n",
@@ -263,7 +322,11 @@ impl Tmux {
                 "-y",
                 "50",
                 command,
-            ])?;
+            ])?
+        };
+        let pane = out.trim();
+        if pane.starts_with('%') {
+            self.ok(&["set-option", "-p", "-t", pane, OWN_PANE, "1"])?;
         }
         Ok(())
     }
@@ -278,29 +341,50 @@ impl Tmux {
             .map(|_| ())
     }
 
-    /// The visible screen (never the scrolled copy-mode view).
+    /// The visible screen of the window's own pane (never the scrolled
+    /// copy-mode view); empty when it can't be told.
     pub fn capture(&self, session: &str, name: &str) -> String {
-        self.ok(&["capture-pane", "-p", "-t", &target(session, name)])
+        self.window(session, name)
+            .and_then(|w| w.pane)
+            .map(|pane| self.capture_pane(&pane))
             .unwrap_or_default()
     }
 
-    /// Recent output, joined across wrapped lines.
+    /// The visible screen of the pane with this ID.
+    pub fn capture_pane(&self, pane_id: &str) -> String {
+        self.ok(&["capture-pane", "-p", "-t", pane_id])
+            .unwrap_or_default()
+    }
+
+    /// Recent output of the window's own pane, joined across wrapped lines.
     pub fn history(&self, session: &str, name: &str, lines: usize) -> String {
+        let Some(pane) = self.window(session, name).and_then(|w| w.pane) else {
+            return String::new();
+        };
         let start = format!("-{lines}");
-        self.ok(&[
-            "capture-pane",
-            "-p",
-            "-J",
-            "-S",
-            &start,
-            "-t",
-            &target(session, name),
-        ])
-        .unwrap_or_default()
+        self.ok(&["capture-pane", "-p", "-J", "-S", &start, "-t", &pane])
+            .unwrap_or_default()
     }
 }
 
 /// An exact-match target for a window.
 pub fn target(session: &str, window: &str) -> String {
     format!("={session}:={window}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pane beside brg's (a sidebar, or one a person split off) is never
+    /// taken for it, whatever its place in the window; and in a window with
+    /// several panes and no mark, brg picks none rather than guess.
+    #[test]
+    fn own_pane_is_the_marked_one_or_a_lone_pane() {
+        assert_eq!(own_pane(&[false, true]), Some(1));
+        assert_eq!(own_pane(&[true, false]), Some(0));
+        assert_eq!(own_pane(&[false]), Some(0));
+        assert_eq!(own_pane(&[false, false]), None);
+        assert_eq!(own_pane(&[]), None);
+    }
 }

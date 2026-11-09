@@ -1059,3 +1059,54 @@ fn an_ack_file_for_a_locked_record_is_corrupt_not_consumption() {
     );
     assert!(!snap.is_acked(1));
 }
+
+// Catches: the reminder typed into the window's active pane, which a pane
+// beside the member (a sidebar, or one a person opened) would be.
+#[test]
+fn the_reminder_goes_to_the_members_pane_not_a_focused_one_beside_it() {
+    for v in VENDORS {
+        let e = Env::new(v);
+        let pane = e.pane();
+        let beside = e
+            .tmux
+            .ok(&[
+                "split-window",
+                "-hb",
+                "-l",
+                "30",
+                "-P",
+                "-F",
+                "#{pane_id}",
+                "-t",
+                &pane.pane_id,
+                "cat",
+            ])
+            .unwrap();
+        let beside = beside.trim();
+        assert_eq!(
+            e.tmux
+                .ok(&["display", "-p", "-t", "=s:=m", "#{pane_id}"])
+                .unwrap()
+                .trim(),
+            beside
+        );
+        // The member, now narrower, redraws; until then the wake types
+        // nothing and defers.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let r = loop {
+            let r = wake::attempt(&e.tmux, &e.state, "m", &pane, v, &qualified(v), &mut || {
+                Ok(())
+            });
+            if !matches!(r, WakeResult::Deferred(Defer::Uncertain(_))) || Instant::now() > deadline
+            {
+                break r;
+            }
+            assert!(e.events("paste").is_empty(), "{v:?}");
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        assert_eq!(r, WakeResult::Submitted, "{v:?}");
+        assert_eq!(e.submissions(), vec![REMINDER.to_string()]);
+        let text = e.tmux.ok(&["capture-pane", "-p", "-t", beside]).unwrap();
+        assert!(text.trim().is_empty(), "{v:?}: typed beside: {text}");
+    }
+}

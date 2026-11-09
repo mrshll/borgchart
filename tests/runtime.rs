@@ -1703,3 +1703,111 @@ fn long_ordinary_body_is_stored_without_composer_submission() {
     assert_eq!(record["ack_required"], true);
     assert!(submissions(&env, "beta").is_empty());
 }
+
+/// A team whose member windows each open with a second pane beside the
+/// member, first in the window and focused, running `cat` (a hook in the
+/// team's tmux config), and whose `alpha` shows Claude's trust dialog.
+fn beside_env() -> Env {
+    let env = trust_env("");
+    let hooks = env.path("beside.conf");
+    fs::write(
+        &hooks,
+        "set-hook -g session-created 'split-window -hb cat'\nset-hook -g after-new-window 'split-window -hb cat'\n",
+    )
+    .unwrap();
+    env.config(&format!("tmux: {{user_config: {}}}\n", hooks.display()));
+    env
+}
+
+/// The panes beside the members: `(pane ID, window name)`.
+fn beside_panes(env: &Env) -> Vec<(String, String)> {
+    env.tmux(&[
+        "list-panes",
+        "-a",
+        "-F",
+        "#{pane_id} #{window_name} #{pane_start_command}",
+    ])
+    .lines()
+    .filter(|l| l.ends_with(" cat"))
+    .filter_map(|l| {
+        let mut f = l.split(' ');
+        Some((f.next()?.to_string(), f.next()?.to_string()))
+    })
+    .collect()
+}
+
+#[test]
+fn a_focused_pane_beside_a_member_is_never_read_typed_into_or_stopped_for_it() {
+    // Catches: brg reading a member's screen, title or exit, answering its
+    // folder trust, typing into it or stopping it through its window's
+    // active or first pane, which a pane beside it (a sidebar, or one a
+    // person opened) would be.
+    let env = beside_env();
+    let out = env.brg(&["start"]);
+    assert!(
+        stdout(&out).contains("accepted folder trust for"),
+        "{}{}",
+        stdout(&out),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(trust_events(&env), ["trust-accepted"]);
+    env.wait_for("alpha and beta idle", |e| {
+        e.state_of("alpha") == "idle" && e.state_of("beta") == "idle"
+    });
+    let alpha = env.m("alpha");
+    let beta = env.m("beta");
+    let beside = beside_panes(&env);
+    let by = |window: &str| {
+        beside
+            .iter()
+            .find(|(_, w)| w == window)
+            .map(|(p, _)| p.clone())
+            .unwrap_or_else(|| panic!("no pane beside {window}: {beside:?}"))
+    };
+    for pane in [by(&alpha), by(&beta)] {
+        assert_eq!(
+            env.tmux(&["display", "-p", "-t", &pane, "#{pane_active}"]),
+            "1\n"
+        );
+    }
+
+    let out = env.brg(&["send", "--external", "runtime-test", "beta", "hello"]);
+    assert!(out.status.success(), "{out:?}");
+    env.wait_for("beta's submission", |e| {
+        submissions(e, "beta").iter().any(|t| t.contains("hello"))
+    });
+    for (pane, window) in &beside {
+        let text = env.tmux(&["capture-pane", "-p", "-t", pane]);
+        assert!(text.trim().is_empty(), "typed beside {window}: {text}");
+    }
+
+    let by_alpha = by(&alpha);
+    // The pane beside alpha exits: alpha still runs, idle.
+    env.tmux(&["send-keys", "-t", &by_alpha, "C-d"]);
+    env.wait_for("the pane beside alpha dead", |e| {
+        e.tmux(&["display", "-p", "-t", &by_alpha, "#{pane_dead}"]) == "1\n"
+    });
+    assert_eq!(env.state_of("alpha"), "idle");
+
+    // beta's program exits while the pane beside it runs: beta has exited,
+    // is no longer running, and can be stopped.
+    assert!(
+        env.brg(&["send", "--external", "runtime-test", "beta", "crash 3"])
+            .status
+            .success()
+    );
+    env.wait_for("beta exited", |e| e.state_of("beta") == "exited");
+    let inst = env.instance().unwrap();
+    let out = env.brg(&["delete", "--force", &format!("{inst}/{beta}")]);
+    assert!(out.status.success(), "{out:?}");
+
+    // `stop` stops alpha itself, not just the pane beside it.
+    let out = env.brg(&["stop", "alpha"]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(
+        !stdout(&out).contains("may still be running"),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(env.state_of("alpha"), "stopped");
+}
