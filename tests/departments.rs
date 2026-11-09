@@ -9,6 +9,7 @@ use std::fs;
 use instance_env::*;
 
 fn create_copy(env: &Env, parent: &str, role: &str) -> (String, std::path::PathBuf) {
+    let before = env.registry();
     let output = env.ok(&["create", &format!("{parent}/{role}")]);
     let listed: serde_json::Value =
         serde_json::from_slice(&env.ok(&["ls", "--json"]).stdout).unwrap();
@@ -18,9 +19,9 @@ fn create_copy(env: &Env, parent: &str, role: &str) -> (String, std::path::PathB
         .iter()
         .flat_map(|team| team["instances"].as_array().unwrap())
         .find(|instance| {
-            instance["instance"]
-                .as_str()
-                .is_some_and(|id| id.starts_with(&format!("{parent}/{role}-")))
+            instance["instance"].as_str().is_some_and(|id| {
+                id.starts_with(&format!("{parent}/{role}-")) && before["instances"][id].is_null()
+            })
         })
         .expect("create must register the copy");
     let id = copy["instance"].as_str().unwrap().to_string();
@@ -30,6 +31,98 @@ fn create_copy(env: &Env, parent: &str, role: &str) -> (String, std::path::PathB
     assert!(folder.is_dir());
     assert!(env.rows(&id).iter().all(|row| row["member"].is_null()));
     (id, folder)
+}
+
+fn department() -> Env {
+    let env = Env::new();
+    env.write(
+        "teams/oncall/team.yaml",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: lead}\n  dev: {team: teams/dev, parent: lead, start: false, max: 2, cwd: 'dev/{member_id}'}\n",
+    );
+    env.team("teams/oncall/teams/dev");
+    let team = env.path("teams/oncall/teams/dev/team.yaml");
+    fs::write(
+        &team,
+        fs::read_to_string(&team)
+            .unwrap()
+            .replace("prompt: lead.md", "prompt: lead.md\n    cwd: repo"),
+    )
+    .unwrap();
+    fs::create_dir(env.path("work/a/lead")).unwrap();
+    env
+}
+
+#[test]
+fn team_copies_keep_separate_stores_and_slots_until_deleted() {
+    let env = department();
+    let dept = env.create("oncall", "work/a");
+    let (first, first_folder) = create_copy(&env, &dept, "dev");
+    let (second, second_folder) = create_copy(&env, &dept, "dev");
+    assert_ne!(first_folder, second_folder);
+    let launched: Vec<_> = fs::read_dir(env.path("home/fake-agent"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "jsonl"))
+        .collect();
+    assert_eq!(
+        launched.len(),
+        1,
+        "only the department lead may have started"
+    );
+    for copy in [&first, &second] {
+        assert!(env.path(&format!("state/{copy}/messages")).is_dir());
+        assert!(env.path(&format!("state/{copy}/notes")).is_dir());
+        assert!(env.rows(copy).iter().all(|r| r["member"].is_null()));
+    }
+    let refused = env.fails(&["create", &format!("{dept}/dev")]);
+    assert!(
+        refused.contains(&first) && refused.contains(&second),
+        "{refused}"
+    );
+    fs::create_dir(first_folder.join("repo")).unwrap();
+    fs::create_dir(second_folder.join("repo")).unwrap();
+    for copy in [&first, &second] {
+        env.ok(&["start", copy]);
+        env.wait_for("copy lead idle", || env.state_of(copy, "lead") == "idle");
+        env.ok(&["bus", "check", "--instance", copy]);
+    }
+    let first_lead = env.member(&first, "lead");
+    let second_lead = env.member(&second, "lead");
+    let sent = env.publish(
+        &first,
+        &serde_json::json!({"to": first_lead, "body": "Fictional copy task"}),
+    );
+    assert!(sent.status.success(), "{}", both(&sent));
+    assert_eq!(env.row(&first, "lead")["unread"], 1);
+    assert_eq!(env.row(&second, "lead")["unread"], 0);
+    for (copy, lead, folder) in [
+        (&first, &first_lead, &first_folder),
+        (&second, &second_lead, &second_folder),
+    ] {
+        let starts: Vec<_> = env
+            .starts(lead)
+            .into_iter()
+            .filter(|start| start["env"]["BORGCHART_INSTANCE"] == *copy)
+            .collect();
+        assert_eq!(starts.len(), 1);
+        assert_eq!(starts[0]["cwd"], folder.join("repo").display().to_string());
+        assert_eq!(starts[0]["env"]["BORGCHART_INSTANCE"], *copy);
+        assert_eq!(
+            starts[0]["env"]["BORGCHART_NOTES"],
+            env.path(&format!("state/{copy}/notes"))
+                .display()
+                .to_string()
+        );
+    }
+    env.ok(&["stop", &first]);
+    let refused = env.fails(&["create", &format!("{dept}/dev")]);
+    assert!(refused.contains(&first) && refused.contains(&second));
+    assert_eq!(env.state_of(&second, "lead"), "idle");
+    env.ok(&["delete", &first, "--force"]);
+    let (replacement, _) = create_copy(&env, &dept, "dev");
+    assert_ne!(replacement, first);
+    assert_eq!(env.state_of(&second, "lead"), "idle");
+    env.ok(&["stop", &dept]);
 }
 
 #[test]
