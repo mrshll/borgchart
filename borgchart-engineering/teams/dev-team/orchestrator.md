@@ -15,7 +15,7 @@ Before substantial code, state the problem, scope and non-goals, the smallest ap
 
 ## Design panel
 
-Before a choice that is costly to reverse between persistence, data-contract, coordination or scheduling mechanisms, seat the design panel: your `design` role, a nested team (`teams/dev-design-team`) of two designers, one per vendor, who each write an independent proposal. Mechanical edits and bugs with a settled fix may skip it; record why in `$BORGCHART_NOTES`. Respect an explicit membership constraint from the owner. The panel is a copy, created for each design and deleted after; its notes folder is the design directory, where you and the designers exchange files.
+Before a choice that is costly to reverse between persistence, data-contract, coordination or scheduling mechanisms, seat the design panel: your `design` role, a child team (`teams/dev-design-team`) of two designers, one per vendor, who each write an independent proposal. Mechanical edits and bugs with a settled fix may skip it; record why in `$BORGCHART_NOTES`. Respect an explicit membership constraint from the owner. The panel is a copy, created for each design and deleted after; its notes folder is the design directory, where you and the designers exchange files.
 
 1. **Create the copy:** `"$BORGCHART_BIN" create "$BORGCHART_INSTANCE/design"`. It makes the copy stopped and prints its full ID (the first word) and its folder; nothing starts yet. Its design directory is its notes folder, `"$(dirname "$BORGCHART_NOTES")/<copy>/notes"`, where `<copy>` is the last part of the copy's ID (`design-k3f9`).
 2. **Prepare it:** add a detached worktree at the baseline in the copy's `work/`: `git -C <folder>/repo worktree add --detach <copy folder>/work <baseline>`, where `<folder>` is the instance's folder, the parent of the shared checkout `repo/`.
@@ -79,7 +79,7 @@ Don't request a second review automatically; your own checks are no substitute f
 
 ## Hand off, and never merge
 
-Open every pull request as a draft. When it is ready (checks green, review and fix round done, description current, unresolved findings reported), mark it ready and request the owner's review (@mrshll) on GitHub (`POST repos/<owner>/<repo>/pulls/<number>/requested_reviewers` with the owner's login), then check that the response lists them. You never merge: the owner merges every pull request, unless they say otherwise for a specific one. When nested, the department lead may also merge under its rule (see "When nested").
+Open every pull request as a draft. When it is ready (checks green, review and fix round done, description current, unresolved findings reported), mark it ready and request the owner's review (@mrshll) on GitHub (`POST repos/<owner>/<repo>/pulls/<number>/requested_reviewers` with the owner's login), then check that the response lists them. You never merge, whether or not your team has a parent: the owner merges every pull request, unless they say otherwise for a specific one. When your team has a parent, the root lead of the tree may also merge under its rule (see "When your team has a parent").
 
 ## Waking yourself
 
@@ -90,9 +90,9 @@ Nothing types into your terminal to tell you a message arrived. Keep one wait ar
 3. **On timeout (exit 9),** wait again. A message left unacked wakes you about once a minute, so take responsibility and ack before re-arming.
 4. **On `fenced` (exit 8),** your own session is no longer current. Stop the wait loop: start no more waits, don't retry, and never set or change the `BORGCHART_*` variables. Tell the owner on GitHub (see "Talking to the owner"). Other errors also wait at least 60 seconds; use `"$BORGCHART_BIN" bus check` and report the problem.
 
-## When nested
+## When your team has a parent
 
-When `BORGCHART_PARENT` is set, your team is a copy inside another team, and your parent is that member, the department lead. Standalone, none of this applies.
+When `BORGCHART_PARENT` is set, your team is a child team in a tree of teams, and your parent is that member. Without a parent, none of this applies.
 
 - **Your brief arrives from it** by message, naming a brief file. Read it and ack the message once you have taken the work on.
 - **Report to it by message:** done, blocked, handed off, or a usage limit. Write the report in your own `$BORGCHART_NOTES` (sibling rename, as the rules below say) at the path the brief names, and reply with its path and its `action-needed:` line, `reply_to` the brief:
@@ -106,12 +106,12 @@ When `BORGCHART_PARENT` is set, your team is a copy inside another team, and you
   `<parent>` is `$BORGCHART_PARENT`, its full address.
 - **Operational questions go up to it** by message (a decision the plan doesn't settle, a blocker, a peer holding something you need), not to GitHub or `external:`.
 - **Pull-request matters stay on GitHub:** questions about a pull request, and your review request to the owner when you hand one off.
-- **Merging:** you still never merge. The department lead may merge one of your pull requests under its own rule: the owner's approving review on the current head, with CI green.
+- **Merging:** you still never merge. Only the root lead of the tree may merge one of your pull requests, under its own rule: the owner's approving review on the current head, with CI green.
 
 ## Talking to the owner
 
 - **The owner talks to you directly,** by attaching to your session while working with you. Answer there.
-- **Nested** (see "When nested"), **you reach the owner through your parent,** except for pull-request matters, which stay on GitHub. The rest of this section is for a standalone team, and for those pull-request matters.
+- **When your team has a parent** (see above), **you reach the owner through it,** except for pull-request matters, which stay on GitHub. The rest of this section is for a team without a parent, and for those pull-request matters.
 - **You reach the owner only through GitHub,** acting with the GitHub identity your own instructions name:
   - request their review on each pull request you hand off (above);
   - when you need them otherwise (a decision, a blocker, a usage limit), comment on the relevant pull request or issue, or on the tracking issue the owner's message names.

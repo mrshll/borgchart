@@ -1,6 +1,6 @@
 # Concepts
 
-**Status: partly built.** Teams, instances, `roles:`, suffixed member IDs, copies up to `max`, member deletion and member status work today. Bus members may manage only their declared children, using their latest start ID. Departments (team roles whose members are nested copies, #25) are being built: nesting in #83, delivery between stores after it. The remaining command renames are planned.
+**Status: partly built.** Teams, instances, `roles:`, suffixed member IDs, copies up to `max`, member deletion and member status work today. Bus members may manage only their declared children, using their latest start ID. Teams as members (team roles whose members are child teams, #25) are being built: nesting in #83, delivery between stores after it. The remaining command renames are planned.
 
 ## Definitions and what runs from them
 
@@ -109,7 +109,7 @@ Two folders with the same name can both run. Their instances are told apart by t
 
 **Recipients.** A message goes to one member, or from a team's root member to `external:NAME`. An instance isn't a recipient: a message naming only an instance (`dev-design-k3f9`) is refused, listing its members. For now a member's messages stay inside its own instance. A team that works as part of another, such as a design panel inside the dev team, is a team role of it (#25): a copy with its own instance and store, whose messages to and from its parent cross stores along that edge once delivery is built. Messages between chosen members of independent instances, such as two teams' leads, are planned after that (#62): a person links a role in one instance with a role in another. The message format leaves room for them, so they need no second format change.
 
-**Departments (#25).** A role can be a team, named by a path inside the declaring team's folder (`team: teams/dev-team`). Its members are copies (`dev-a7k2`): nested instances, each with its own members, message store, notes, state and frozen configuration, and a working folder inside the department's. Addresses nest (`borgchart-engineering-h4k2/dev-a7k2/lead-c4nd`), and a copy's instance ID is its full path. Copies are created stopped, prepared by their parent and then started. A member may act on its whole subtree, and `stop` cascades deepest first. [teams.md](teams.md#teams-as-members-departments) has the rules, and [`borgchart-engineering/`](../borgchart-engineering/) is the real department.
+**Teams as members (#25).** A role can be a team, named by a path inside the declaring team's folder (`team: teams/dev-team`). Its members are copies (`dev-a7k2`): nested instances, each with its own members, message store, notes, state and frozen configuration, and a working folder inside its parent's. Teams form a tree: the member with no parent is the root. Addresses nest (`borgchart-engineering-h4k2/dev-a7k2/lead-c4nd`), and a copy's instance ID is its full path. Copies are created stopped, prepared by their parent and then started. A member may act on its whole subtree, and `stop` cascades deepest first. [teams.md](teams.md#teams-as-members) has the rules, and [`borgchart-engineering/`](../borgchart-engineering/) is the real tree.
 
 ## Lifetimes
 

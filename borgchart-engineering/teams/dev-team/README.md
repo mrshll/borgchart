@@ -1,6 +1,6 @@
 # A development team
 
-This folder defines a brg team for developing a software project: a lead and four helper roles it starts on demand. `teams/dev-design-team/` is its design panel, the nested team of its `design` role, which the lead creates before costly-to-reverse design choices. The team runs on its own, as below, or as the `dev` role of the department that holds it (`borgchart-engineering/`), where its lead's parent is the department lead. Both folders are generic: everything about one machine (the checkout, brg's configuration, your vendor logins) stays on it, and what one piece of work needs (the tracking issue, a handover note) goes to the lead in a message.
+This folder defines a brg team for developing a software project: a lead and four helper roles it starts on demand. `teams/dev-design-team/` is its design panel, the child team of its `design` role, which the lead creates before costly-to-reverse design choices. The team runs on its own, as below, or as a child team: the `dev` role of the team that holds it (`borgchart-engineering/`), where its lead's parent is that team's root lead. Both folders are generic: everything about one machine (the checkout, brg's configuration, your vendor logins) stays on it, and what one piece of work needs (the tracking issue, a handover note) goes to the lead in a message.
 
 | Member | Default vendor and model | Starts | Does |
 | --- | --- | --- | --- |

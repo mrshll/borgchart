@@ -76,7 +76,7 @@ The role's identity is its key under `roles:`. The old `members:` field and fron
 
 `{member_id}` is optional: without it, copies share the role's folder. If used, it must be the last folder name, such as `copies/{member_id}`. When `cwd` ends in `{member_id}`, brg makes only the missing empty leaf when issuing a new member (`create`, or a full `start` that gives a `start: true` role a new member), for any `max`; every folder above it must already exist, and an existing leaf is used as is. The parent can put a worktree there before briefing the copy. Starting an existing member never creates its folder, and `delete` leaves them alone. For a `{member_id}` role, creation and every start refuse a copy whose folder equals, contains or sits inside a kept copy's folder of the same role, including symlinked aliases and stopped copies; delete a member to free its folder. The checks and creation share the registry lock, so concurrent creates cannot claim overlapping folders. Different roles in one instance may still share a folder.
 
-**Team roles.** A role with `team:` instead of `prompt:` is a team role: its members are copies, nested instances of that team (see [teams as members](teams.md#teams-as-members-departments)). It takes only these fields:
+**Team roles.** A role with `team:` instead of `prompt:` is a team role: its members are copies, nested instances of that team (see [teams as members](teams.md#teams-as-members)). It takes only these fields:
 
 ```yaml
   dev: {team: teams/dev-team, parent: lead, start: false, max: 4, cwd: "dev/{member_id}"}
