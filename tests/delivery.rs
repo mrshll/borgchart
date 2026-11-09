@@ -90,8 +90,18 @@ impl Tree {
         } else {
             format!("{}/{}", self.child, self.child_member)
         };
-        let mut process = self
-            .member_cmd(child, &["msg", "publish", "--json"])
+        let sent = value(self.send(child, &to, body, reply_to));
+        assert_eq!(sent["delivery"], "stored", "{sent}");
+        sent
+    }
+
+    /// `brg send TO - --json` as the parent's or the child's root, body on stdin.
+    fn send(&self, child: bool, to: &str, body: &str, reply_to: &[&str]) -> Output {
+        let mut cmd = self.member_cmd(child, &["send", to, "-", "--json"]);
+        for reference in reply_to {
+            cmd.args(["--reply-to", reference]);
+        }
+        let mut process = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -101,13 +111,9 @@ impl Tree {
             .stdin
             .take()
             .unwrap()
-            .write_all(
-                json!({"to": to, "body": body, "reply_to": reply_to})
-                    .to_string()
-                    .as_bytes(),
-            )
+            .write_all(body.as_bytes())
             .unwrap();
-        value(process.wait_with_output().unwrap())
+        process.wait_with_output().unwrap()
     }
 
     fn inbox(&self, child: bool) -> Value {
@@ -741,56 +747,42 @@ fn status_distinguishes_a_busy_local_store_from_damage() {
 }
 
 #[test]
-fn cross_edge_publish_reserves_space_for_the_import_envelope() {
+fn cross_edge_sends_are_stored_never_typed_and_refuse_locked_recipients_and_relays() {
     let tree = Tree::new();
-    let probe = tree.publish(true, "", &[]);
-    let record = value(
-        tree.member_cmd(
-            true,
-            &["msg", "read", probe["id"].as_str().unwrap(), "--json"],
-        )
-        .output()
-        .unwrap(),
-    )["record"]
-        .clone();
-    let mut record = record;
-    record.as_object_mut().unwrap().remove("acked");
-    let room = 128 * 1024 - serde_json::to_vec_pretty(&record).unwrap().len();
-    let body = "\"".repeat((room - 30) / 2);
-    let draft = tree.env.path("oversize-draft.json");
-    fs::write(
-        &draft,
-        json!({"to": format!("{}/{}", tree.parent, tree.parent_member), "body": body}).to_string(),
-    )
-    .unwrap();
-    let out = tree
+    let parent = format!("{}/{}", tree.parent, tree.parent_member);
+    let relay = tree
         .member_cmd(
             true,
             &[
-                "msg",
-                "publish",
-                "--record",
-                draft.to_str().unwrap(),
+                "send",
+                &parent,
+                "Relayed",
+                "--from",
+                &tree.child_member,
                 "--json",
             ],
         )
         .output()
         .unwrap();
-    assert_eq!(
-        out.status.code(),
-        Some(5),
-        "publication must refuse before import gets stuck: {}",
-        both(&out)
+    assert_eq!(relay.status.code(), Some(5), "{}", both(&relay));
+    // Locked posture needs a gated vendor setup; only the frozen posture matters here.
+    let meta = tree.env.path(&format!("state/{}/start.json", tree.child));
+    let mut start: Value = serde_json::from_slice(&fs::read(&meta).unwrap()).unwrap();
+    start["members"][&tree.child_member]["posture"] = json!("locked");
+    fs::write(&meta, serde_json::to_vec_pretty(&start).unwrap()).unwrap();
+    let locked = tree.send(
+        false,
+        &format!("{}/{}", tree.child, tree.child_member),
+        "To a locked root",
+        &[],
     );
-    let accepted = tree.publish(true, &"\"".repeat((room - 2048) / 2), &[]);
-    let inbox = tree.inbox(false);
-    assert!(
-        inbox["records"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|r| r["origin"]["id"] == accepted["id"])
+    assert_eq!(locked.status.code(), Some(5), "{}", both(&locked));
+    assert!(both(&locked).contains("locked"), "{}", both(&locked));
+    let check = value(
+        tree.env
+            .ok(&["bus", "check", "--instance", &tree.parent, "--json"]),
     );
+    assert_eq!(check["records"], 0, "{check}");
 }
 
 #[test]
@@ -1008,22 +1000,7 @@ fn receiver_member_delete_requires_force_when_its_edge_is_unreadable() {
 }
 
 fn publish_to(tree: &Tree, child: bool, to: &str) -> Output {
-    tree.env.write(
-        "route-draft.json",
-        &json!({"to": to, "body": "Routing check"}).to_string(),
-    );
-    tree.member_cmd(
-        child,
-        &[
-            "msg",
-            "publish",
-            "--record",
-            tree.env.path("route-draft.json").to_str().unwrap(),
-            "--json",
-        ],
-    )
-    .output()
-    .unwrap()
+    tree.send(child, to, "Routing check", &[])
 }
 
 #[test]
@@ -1064,11 +1041,6 @@ fn a_copy_non_root_cannot_bypass_its_root_in_either_direction() {
     let helper = tree.env.member(&tree.child, "helper");
     let out = publish_to(&tree, false, &format!("{}/{helper}", tree.child));
     assert_eq!(out.status.code(), Some(5), "{}", both(&out));
-    tree.env.write(
-        "route-draft.json",
-        &json!({"to": format!("{}/{}", tree.parent, tree.parent_member), "body": "Escalation"})
-            .to_string(),
-    );
     let start: Value = serde_json::from_slice(
         &fs::read(tree.env.path(&format!(
             "state/{}/members/{helper}/incarnation.json",
@@ -1081,10 +1053,9 @@ fn a_copy_non_root_cannot_bypass_its_root_in_either_direction() {
         .member_cmd(
             true,
             &[
-                "msg",
-                "publish",
-                "--record",
-                tree.env.path("route-draft.json").to_str().unwrap(),
+                "send",
+                &format!("{}/{}", tree.parent, tree.parent_member),
+                "Escalation",
                 "--json",
             ],
         )

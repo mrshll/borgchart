@@ -1,6 +1,6 @@
 # Team and configuration format
 
-A **team** is a folder you can share: its roles (under `roles:`), what each one is told, which plugin programs they may use, and whether they share a message bus. **brg's configuration** (`config.yaml`) holds what belongs to you rather than to a team: auth, folder trust, where team names are looked up, shared plugins and tmux. An **instance** is a team running in one working folder, given at `brg create <team> <folder>` ([concepts](concepts.md)).
+A **team** is a folder you can share: its roles (under `roles:`), what each one is told, which plugin programs they may use, and their shared message bus. **brg's configuration** (`config.yaml`) holds what belongs to you rather than to a team: auth, folder trust, where team names are looked up, shared plugins and tmux. An **instance** is a team running in one working folder, given at `brg create <team> <folder>` ([concepts](concepts.md)).
 
 ```
 examples/slack-devops/
@@ -11,7 +11,7 @@ examples/slack-devops/
 └── plugins/slackbot/   # a colocated plugin
 ```
 
-`brg validate <team>` checks the team and the configuration before anything starts and reports every problem at once. A `borgchart.yaml` in a team folder is not read.
+`brg validate <team>` checks the team and the configuration before anything starts and reports every problem at once.
 
 ## YAML rules
 
@@ -28,7 +28,6 @@ Every borgchart file is YAML 1.2 parsed strictly:
 ```yaml
 default: claude                 # vendor for roles that don't name one: claude | codex
 includes: includes              # optional; directory for {{includes/…}} (default: includes)
-bus: {}                         # optional: the members share a message bus; `bus: {alert: {plugin: notify, action: alert}}` configures an alert action (not wired now)
 
 plugins:
   slackbot:
@@ -64,28 +63,29 @@ roles:
 
 **Names.** Role, plugin and action names match `[a-z][a-z0-9_-]{0,31}`. A role's member is `<role>-<suffix>` (`triager-x7k2`). A role cannot be named `<another role>-<suffix>`, where the suffix is four characters from `23456789abcdefghjkmnpqrstuvwxyz`: that would also name a member. Environment names match `[A-Z_][A-Z0-9_]*`. The team's name is its folder's name, lowercased, with anything outside `[a-z0-9_-]` turned into `-`.
 
-The role's identity is its key under `roles:`. The old `members:` field and frontmatter `role:` are unknown fields, with no aliases. Each role keeps up to `max` members, running or stopped; `max` defaults to 1 and must be at least 1. `brg delete <instance>/<member>` removes a stopped member; its ID stays issued and is never reused. A later `create <instance>/<role>` gets a fresh ID. `create <team>` makes one member per `start: true` role, even with `max > 1`. `start <instance>` reuses kept members and only creates a member for a `start: true` role with none left; it never fills to `max`. Lowering `max` after a full stop keeps all existing members, and further creation is refused until enough are deleted.
+The role's identity is its key under `roles:`. Each role keeps up to `max` members, running or stopped; `max` defaults to 1 and must be at least 1. `brg delete <instance>/<member>` removes a stopped member; its ID stays issued and is never reused. A later `create <instance>/<role>` gets a fresh ID. `create <team>` makes one member per `start: true` role, even with `max > 1`. `start <instance>` reuses kept members and only creates a member for a `start: true` role with none left; it never fills to `max`. Lowering `max` after a full stop keeps all existing members, and further creation is refused until enough are deleted.
 
-**Messages.** With `bus:`, members publish plain `{to, body, reply_to?}` drafts, read and ack their inbox, and use one `inbox wait`. `brg status` (tree, `-i` and `--json`) shows unread message counts; no bus means no counts. The optional alert action and watcher are not wired now; the lead nudges with `brg send`. See [the bus](bus.md) for routing, storage, wait rules and commands.
+**Messages.** Every team has a bus. `send TARGET TEXT` records work, then may type it; ordinary recipients explicitly ack and use one `inbox wait`. `status` shows ordinary unread counts. Omit `bus` unless configuring a real `bus: {alert: {plugin: notify, action: alert}}` action; automatic alert dispatch is not wired. Locked recipients have immutable no-ack-required history, no inbox recovery and no new grants. See [the bus](bus.md).
+
+**`interactive`.** An agent role's boolean, default false, applies to every copy and is frozen at start. True means inbox-only: never paste/Enter, even with `send --force`. Use it for a lead whose session a person shares; remote-session users may leave it false. It is invalid with `posture: locked` or on a nested `team:` role. The bundled dev-team lead is interactive; helpers keep the false default.
 
 **Team roles.** A role with `team:` creates a nested instance instead of an agent:
 
 ```yaml
-bus: {}
 roles:
   lead: {prompt: lead.md, cwd: lead}
   dev: {team: teams/dev, parent: lead, start: false, max: 2, cwd: 'dev/{member_id}'}
 ```
 
-A team role accepts only `team`, `parent`, `start`, `max` and `cwd`. Agent options, including `prompt`, `vendor`, `posture`, `plugins`, `connectors` and `args`, are errors even when empty or false. `start` must be false or absent: `create <instance>/dev` makes a stopped copy and its folders, which the parent prepares before `start <instance>/<copy>`.
+A team role accepts only `team`, `parent`, `start`, `max` and `cwd`. Agent options, including `prompt`, `vendor`, `posture`, `plugins`, `connectors`, `interactive` and `args`, are errors even when empty or false. `start` must be false or absent: `create <instance>/dev` makes a stopped copy and its folders, which the parent prepares before `start <instance>/<copy>`.
 
-`team` names a folder containing `team.yaml`, relative to the declaring team's folder. Absolute paths, `..`, `shared:` and symlinks outside that folder are refused. It is never looked up by name. `cwd` is required and must end in exactly one `{member_id}` folder; `max` defaults to 1 and must be at least 1. The declaring team and every referenced team need `bus:`. `validate` checks referenced teams recursively and reports their errors at their own files. A team may not contain itself, directly or indirectly, as judged by resolved folders. Creation and a copy's full start also check its recorded ancestors, including after a team-folder move.
+`team` names a folder containing `team.yaml`, relative to the declaring team's folder. Absolute paths, `..`, `shared:` and symlinks outside that folder are refused. It is never looked up by name. `cwd` is required and must end in exactly one `{member_id}` folder; `max` defaults to 1 and must be at least 1. Every referenced team has its own message store. `validate` checks referenced teams recursively and reports their errors at their own files. A team may not contain itself, directly or indirectly, as judged by resolved folders. Creation and a copy's full start also check its recorded ancestors, including after a team-folder move.
 
 The declaring instance freezes where each team role resolves. Each copy records that source folder and reads its current files at its first start, then freezes its own configuration until its own full stop and start. Changes reach each copy independently of the parent instance and its other copies. If a kept copy's source folder is gone, starting it errors without looking up a replacement by name. Explicit `start <copy> --team <path>` remains available to recover a moved folder.
 
-**Parents.** A `parent` must be another agent role with `max: 1`, and parent links can't form a cycle. A plugin's `delivers_to:` also requires a `max: 1` agent role. A member's parent is the member of its parent role. Messages a plugin routes "to the parent" go along this edge. With a bus, a person may manage anything; a member at its latest running start may create, start, stop or delete anything in its subtree. Authority follows recorded parent edges within instances and across copies, at every depth, and is checked under the registry lock with the caller's start in its own instance. Members cannot manage themselves, ancestors, siblings or independent instances. A copy's roots cannot manage their own copy or each other. Stopped, replaced and incomplete starts are refused. Creating a child requires its parent role to have a member. Teams without a bus retain their existing caller rules.
+**Parents.** A `parent` must be another agent role with `max: 1`, and parent links can't form a cycle. A plugin's `delivers_to:` also requires a `max: 1` agent role. A member's parent is the member of its parent role. Messages a plugin routes "to the parent" go along this edge. A person may manage anything; a member at its latest running start may create, start, stop or delete anything in its subtree. Authority follows recorded parent edges within instances and across copies, at every depth, and is checked under the registry lock with the caller's start in its own instance. Members cannot manage themselves, ancestors, siblings or independent instances. A copy's roots cannot manage their own copy or each other. Stopped, replaced and incomplete starts are refused. Creating a child requires its parent role to have a member.
 
-**`env`.** A list of names (`[A, B]`, each a secret), list items with a value (`[A, {B: value}]`), or a map (`{A: , B: value}`); a name without a value is a secret. Secrets come from the environment `brg create` or `brg start` runs in: brg stores none. `brg secret <team>` lists them and whether each is set.
+**`env`.** A map of names (`{A: , B: value}`); a name without a value is a secret. Secrets come from the environment `brg create` or `brg start` runs in: brg stores none. `brg secret <team>` lists them and whether each is set.
 
 **`cwd`.** Relative to the instance's working folder and inside it (no `..`, no absolute path, and it may not leave the folder through a symlink); it may use `{member_id}`, the member's ID. It must exist when the member starts. A role without one starts in the working folder (a `locked` Codex member: in its temp folder).
 
@@ -118,14 +118,6 @@ You read each new message in the channel and decide whether it needs the lead.
 - **The body** is the member's standing instruction, sent as its opening prompt.
 - **Includes:** a line that is exactly `{{includes/<stem>}}` is replaced by `<includes>/<stem>.md`. Includes are one level deep: an included file can't include another.
 - **Paths:** prompts, includes and plugin paths must stay inside the team directory. `..` and symlinks that lead outside are refused.
-
-### Older shape
-
-A directory with `topology.yaml`, or member frontmatter with `name` and `claude_model`/`codex_model`, is the older shape. To convert it:
-
-1. Rename `topology.yaml` to `team.yaml`.
-2. Rename `members:` to `roles:` in `team.yaml`. Remove `name:` or `role:` from each role file's frontmatter.
-3. Replace `claude_model: X` / `codex_model: Y` with `models: {claude: X, codex: Y}`.
 
 ## Plugins
 

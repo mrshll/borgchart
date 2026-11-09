@@ -36,6 +36,13 @@ pub(super) fn check_route(bus: &Bus, actor: &Actor, to: &str) -> Result<(), Stri
     if peer.meta.members.contains_key(&recipient)
         && (parent == Some(to) || recipient_parent == Some(sender.as_str()))
     {
+        // A locked recipient's input must be verified before committing,
+        // which the sender cannot do from its own store.
+        if peer.meta.members[&recipient].posture == "locked" {
+            return Err(format!(
+                "`{to}` is locked; locked members cannot receive messages across a parent edge"
+            ));
+        }
         Ok(())
     } else {
         Err(format!(

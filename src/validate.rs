@@ -103,11 +103,10 @@ fn check_team_tree(v: &Validated, ancestors: &[PathBuf], recursive: bool, report
     let mut pending = vec![(
         v.team.clone(),
         ancestors.to_vec(),
-        !ancestors.is_empty(),
         v.team.dir.join(team::TEAM_FILE),
     )];
     let mut checked = BTreeSet::new();
-    while let Some((team, mut parents, referenced, declaring_file)) = pending.pop() {
+    while let Some((team, mut parents, declaring_file)) = pending.pop() {
         let file = team.dir.join(team::TEAM_FILE);
         if parents.contains(&team.dir) {
             report.error(
@@ -116,12 +115,6 @@ fn check_team_tree(v: &Validated, ancestors: &[PathBuf], recursive: bool, report
             );
             continue;
         }
-        if team.bus.is_none() && (referenced || !team.team_roles.is_empty()) {
-            report.error(
-                Some(&file),
-                "add `bus: {}`; declaring team roles and every team they name require a bus",
-            );
-        }
         if !checked.insert(team.dir.clone()) {
             continue;
         }
@@ -129,7 +122,7 @@ fn check_team_tree(v: &Validated, ancestors: &[PathBuf], recursive: bool, report
         if recursive {
             for role in team.team_roles.values() {
                 if let Some(child) = team::load(&role.dir, report) {
-                    pending.push((child, parents.clone(), true, file.clone()));
+                    pending.push((child, parents.clone(), file.clone()));
                 }
             }
         }
@@ -174,6 +167,14 @@ fn cross_check(v: &Validated, report: &mut Report) {
         }
     }
 
+    for (id, role) in &v.team.roles {
+        if role.interactive && v.posture(id) == Posture::Locked {
+            report.error(
+                team_file,
+                format!("member `{id}`: `interactive` cannot be used with `locked`"),
+            );
+        }
+    }
     if let Some(bus) = &v.team.bus {
         check_bus(v, bus, team_file, report);
     }
@@ -332,16 +333,6 @@ fn cross_check(v: &Validated, report: &mut Report) {
 }
 
 fn check_bus(v: &Validated, bus: &team::BusConfig, team_file: Option<&Path>, report: &mut Report) {
-    for id in v.team.roles.keys() {
-        if v.posture(id) == Posture::Locked {
-            report.error(
-                team_file,
-                format!(
-                    "bus: member `{id}` is `locked`; the bus doesn't support `locked` members yet"
-                ),
-            );
-        }
-    }
     if let Some(alert) = &bus.alert {
         match v.team.plugins.get(&alert.plugin) {
             None => report.error(

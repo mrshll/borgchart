@@ -4,7 +4,9 @@
 //! The tests also run inside team members (the git hooks, or a member that
 //! runs `cargo test`). There `BORGCHART_*` names the member's real
 //! deployment and message storage, and `TMUX` its tmux server. A process
-//! that a test starts with those inherited can write into that team.
+//! that a test starts with those inherited can write into that team. Inside
+//! a git hook, `GIT_DIR` names this repository: a `git` a test starts with
+//! it inherited works on the repository instead of the test's own folder.
 //!
 //! Each test's tmux servers live in a private directory ([`PrivateTmux`]),
 //! never in `/tmp/tmux-<uid>`: brg gets it as `BORGCHART_TMUX_TMPDIR`, the
@@ -36,7 +38,9 @@ pub fn scrub(cmd: &mut Command) -> &mut Command {
 
 fn points_at_a_team(key: &OsStr) -> bool {
     let key = key.to_string_lossy();
-    key.starts_with("BORGCHART_") || matches!(&*key, "TMUX" | "TMUX_PANE" | "TMUX_TMPDIR")
+    key.starts_with("BORGCHART_")
+        || key.starts_with("GIT_")
+        || matches!(&*key, "TMUX" | "TMUX_PANE" | "TMUX_TMPDIR")
 }
 
 /// `program`, scrubbed.
@@ -317,8 +321,9 @@ rm -rf -- "$dir"
     /// tmux's global options up to the command (`capture-pane -S -20` names
     /// no socket) and allows only `-L name`, `-S path`, `-f file` and `-C`,
     /// each a separate argument: any other would need a full option parser
-    /// to tell what follows it. Without `-L` or `-S`, tmux would use `$TMUX`
-    /// or the default server: refused. A refusal exits 2 and adds a line to
+    /// to tell what follows it. Four exact vendor read queries without a
+    /// socket flag may use a verified private `$TMUX` socket, pinned with
+    /// `-S`; all other socketless calls are refused. A refusal exits 2 and adds a line to
     /// the directory's refusal record.
     fn write_guard(&self) {
         let canon = self.path.to_str().unwrap();
@@ -377,7 +382,32 @@ for a in "$@"; do
   want=
 done
 [ -z "$want" ] || refuse "$want without a value"
-[ -n "$server" ] || refuse "no -L or -S"
+if [ -z "$server" ]; then
+  # These are the vendor's observed queries, not a general tmux parser.
+  # Exact argument counts and formats exclude command chains and #() jobs.
+  query=
+  if [ "$#" = 3 ] && [ "$1" = show ]; then
+    [ "$2" = -Av ] && [ "$3" = mouse ] && query=1
+    [ "$2" = -gv ] && [ "$3" = focus-events ] && query=1
+  elif [ "$#" = 5 ] && [ "$1" = display-message ] && [ "$2" = -p ] && [ "$3" = -t ]; then
+    case $4 in %?*) target=${{4#%}} ;; *) refuse "socketless target" ;; esac
+    case $target in *[!0-9]*) refuse "socketless target" ;; esac
+    case $5 in
+      '#{{session_name}}:#{{window_id}}.#{{pane_id}}'|'#{{client_termtype}}	#{{allow-passthrough}}	#{{focus-events}}	#{{pane_top}}	#{{pane_left}}	#{{status}}	#{{status-position}}	#{{window_bigger}}') query=1 ;;
+    esac
+  fi
+  [ -n "$query" ] || refuse "no -L or -S; not an exact vendor read query"
+  case ${{TMUX-}} in *,*,*) ;; *) refuse "no private TMUX identity" ;; esac
+  socket=${{TMUX%%,*}}
+  identity=${{TMUX#*,}}
+  pid=${{identity%%,*}}
+  index=${{identity#*,}}
+  case $pid in ''|*[!0-9]*) refuse "invalid TMUX pid" ;; esac
+  case $index in ''|*[!0-9]*) refuse "invalid TMUX index" ;; esac
+  inside "$socket" || refuse "TMUX outside private socket layout"
+  [ -S "$socket" ] || refuse "TMUX is not a live socket"
+  exec '{real}' -S "$socket" "$@"
+fi
 exec '{real}' "$@"
 "#
         );

@@ -3,8 +3,6 @@
 //! Every command prints `{ok, code, outcome, …}` with `--json`, and exits
 //! with the bus outcome codes (`docs/bus.md`).
 
-use std::io::Read;
-use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
@@ -13,24 +11,11 @@ use serde_json::{Value, json};
 
 use super::context::{self, Actor, Caller};
 use super::outcome::{Code, Failure, ok_json};
-use super::record::{MAX_RECORD_BYTES, Recipient, Record, parse_record_id};
+use super::record::{Recipient, Record, parse_record_id};
 use super::store::{self, Bus, Inbox};
 
 #[derive(Subcommand)]
 pub enum MsgCommand {
-    /// Publish a record from a JSON draft (a file, or `-`/nothing for stdin).
-    #[command(after_long_help = super::help::publish())]
-    Publish {
-        /// The draft (default: stdin).
-        #[arg(long)]
-        record: Option<PathBuf>,
-        /// Publish as an outside caller with this name.
-        #[arg(long)]
-        external: Option<String>,
-        /// Print {ok, code, outcome, id, ...} as JSON.
-        #[arg(long)]
-        json: bool,
-    },
     /// Show one record, with its body. Never acknowledges it.
     Read {
         /// The record ID (`m<number>`).
@@ -145,49 +130,8 @@ pub(crate) fn open_bus(instance: Option<&str>) -> Result<Bus, Failure> {
     store::open(&inst.state)
 }
 
-fn read_draft(record: Option<&PathBuf>) -> Result<Vec<u8>, Failure> {
-    let mut bytes = Vec::new();
-    let limit = MAX_RECORD_BYTES as u64 + 1;
-    match record {
-        Some(p) if p.as_os_str() != "-" => std::fs::File::open(p)
-            .and_then(|f| f.take(limit).read_to_end(&mut bytes))
-            .map_err(|e| Failure::io(&format!("cannot read {}", p.display()), e))?,
-        _ => std::io::stdin()
-            .take(limit)
-            .read_to_end(&mut bytes)
-            .map_err(|e| Failure::io("cannot read the draft from stdin", e))?,
-    };
-    Ok(bytes)
-}
-
 pub fn msg(instance: Option<&str>, command: MsgCommand) -> ExitCode {
     match command {
-        MsgCommand::Publish {
-            record,
-            external,
-            json,
-        } => finish(
-            json,
-            (|| {
-                let caller = context::caller(external.as_deref())?;
-                let bus = open_bus(instance)?;
-                let draft = read_draft(record.as_ref())?;
-                let p = store::publish(&bus, &caller, &draft)?;
-                Ok(Output {
-                    json: ok_json(
-                        "committed",
-                        json!({
-                            "id": p.id,
-                            "seq": p.seq,
-                            "at": p.at,
-                            "to": p.to,
-                            "from": p.from,
-                        }),
-                    ),
-                    text: format!("committed: {} (to {})\n", p.id, p.to),
-                })
-            })(),
-        ),
         MsgCommand::Read { id, json } => finish(
             json,
             (|| {
@@ -320,7 +264,13 @@ fn render(r: &Record, acked: bool, full: bool) -> String {
         r.at,
         r.from,
         r.to,
-        if acked { "  (acked)" } else { "" }
+        if !r.ack_required {
+            "  (ack not required)"
+        } else if acked {
+            "  (acked)"
+        } else {
+            ""
+        }
     );
     if full {
         if !r.reply_to.is_empty() {

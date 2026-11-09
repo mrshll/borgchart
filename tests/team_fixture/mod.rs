@@ -29,7 +29,7 @@ plugins:
     path: plugins/slackbot
     process: [./watch.py]
     delivers_to: triager
-    env: [SLACK_BOT_TOKEN, {SLACK_CHANNEL_ID: C0000EXAMPLE}]
+    env: {SLACK_BOT_TOKEN: , SLACK_CHANNEL_ID: C0000EXAMPLE}
     actions:
       read: slackbot read <ts>
       reply: slackbot reply <thread_ts> <text>

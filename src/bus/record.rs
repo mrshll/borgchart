@@ -42,7 +42,7 @@ impl std::fmt::Display for Recipient {
     }
 }
 
-/// A message supplied to `brg msg publish`.
+/// A message prepared by `brg send`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Draft {
@@ -56,6 +56,7 @@ pub struct Draft {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Record {
+    pub ack_required: bool,
     pub schema: u32,
     pub id: String,
     pub seq: u64,

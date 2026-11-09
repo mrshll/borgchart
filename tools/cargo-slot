@@ -1,0 +1,38 @@
+#!/bin/bash
+# One per-user pair of build slots, shared by every checkout.
+set -u
+for dependency in flock systemd-run mkdir sleep; do
+  command -v "$dependency" >/dev/null 2>&1 || {
+    echo "cargo-slot: required command unavailable: $dependency" >&2
+    exit 127
+  }
+done
+[ "$#" -gt 0 ] || { echo "usage: cargo-slot command [args...]" >&2; exit 2; }
+umask 077
+root=${HOME:?}/.local/state
+case "$HOME" in
+  /*) ;;
+  *) echo "cargo-slot: lock root must be absolute" >&2; exit 1 ;;
+esac
+D=$root/borgchart/cargo-slots
+mkdir -p "$D" || exit 1
+export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-6}
+while true; do
+  for slot in 0 1; do
+    if [ -e "$D/cargo-slot-$slot" ]; then
+      exec 9<"$D/cargo-slot-$slot" || exit 1
+    else
+      exec 9>"$D/cargo-slot-$slot" || exit 1
+    fi
+    flock -n -E 75 9
+    status=$?
+    if [ "$status" -eq 0 ]; then
+      # Keep the lock in this shell, never in the command or its descendants.
+      systemd-run --user --scope --quiet -p MemoryMax=8G -p MemorySwapMax=0 "$@" 9>&-
+      exit $?
+    fi
+    exec 9>&-
+    [ "$status" -eq 75 ] || exit "$status"
+  done
+  sleep 0.1 || exit 1
+done
