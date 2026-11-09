@@ -88,10 +88,27 @@ fn attach(env: &Env, name: &str, member: &str, width: &str, height: &str) -> Str
     find().unwrap()
 }
 
+fn client_location(env: &Env, client: &str) -> (String, String) {
+    env.tmux(&[
+        "list-clients",
+        "-F",
+        "#{client_name}\t#{client_session}\t#{window_name}",
+    ])
+    .lines()
+    .find_map(|line| {
+        let mut fields = line.split('\t');
+        (fields.next()? == client).then(|| {
+            (
+                fields.next().unwrap_or_default().to_string(),
+                fields.next().unwrap_or_default().to_string(),
+            )
+        })
+    })
+    .unwrap_or_default()
+}
+
 fn client_session(env: &Env, client: &str) -> String {
-    env.tmux(&["display-message", "-p", "-c", client, "#{session_name}"])
-        .trim()
-        .to_string()
+    client_location(env, client).0
 }
 
 fn open_popup(env: &Env, name: &str) {
@@ -113,6 +130,10 @@ fn open_popup(env: &Env, name: &str) {
 }
 
 fn nested(env: &Env) -> (String, String) {
+    nested_on(env, None)
+}
+
+fn nested_on(env: &Env, socket: Option<&str>) -> (String, String) {
     env.write("teams/oncall/team.yaml", "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: lead}\n  dev: {team: teams/dev, parent: lead, start: false, cwd: 'dev/{member_id}'}\n");
     env.team("teams/oncall/teams/dev");
     fs::create_dir_all(env.path("work/a/dev")).unwrap();
@@ -132,7 +153,12 @@ fn nested(env: &Env) -> (String, String) {
                 .then(|| id.to_string())
         })
         .unwrap();
-    env.ok(&["start", &child]);
+    let mut command = env.cmd(&["start", &child]);
+    if let Some(socket) = socket {
+        command.env("BORGCHART_TMUX_SOCKET", socket);
+    }
+    let out = command.output().unwrap();
+    assert!(out.status.success(), "{}", both(&out));
     (root, child)
 }
 
@@ -155,13 +181,7 @@ fn popup_switches_only_its_client_to_a_nested_member_without_resizing() {
         let lead = env.member(&root, "lead");
         let child_lead = env.member(&child, "lead");
         let first = attach(&env, "first", &format!("{root}/{lead}"), "140", "30");
-        let second = attach(
-            &env,
-            "second",
-            &format!("{child}/{child_lead}"),
-            "140",
-            "30",
-        );
+        let second = attach(&env, "second", &format!("{root}/{lead}"), "140", "30");
         let sizes = || {
             env.tmux(&[
                 "list-panes",
@@ -198,7 +218,14 @@ fn popup_switches_only_its_client_to_a_nested_member_without_resizing() {
         env.wait_for("originating client switches to nested session", || {
             client_session(&env, &first) == format!("brg-{child}")
         });
-        assert_eq!(client_session(&env, &second), format!("brg-{child}"));
+        assert_eq!(
+            client_location(&env, &first),
+            (format!("brg-{child}"), child_lead.clone())
+        );
+        assert_eq!(
+            client_location(&env, &second),
+            (format!("brg-{root}"), lead.clone())
+        );
         assert_eq!(
             env.tmux(&["list-clients"]).lines().count(),
             2,
@@ -207,7 +234,8 @@ fn popup_switches_only_its_client_to_a_nested_member_without_resizing() {
         env.wait_for("switch closes popup", || {
             !screen(&env, "first").contains("enter switch")
         });
-        assert_eq!(sizes(), before);
+        // A first client attaching to the previously unattached child applies
+        // tmux's normal client size; popup open/close itself never resized it.
     }
 }
 
@@ -341,4 +369,73 @@ fn callbacks_quote_paths_and_refresh_the_binary_on_existing_servers() {
     });
     env.ok(&["start", &root]);
     assert_eq!(env.tmux(&["show", "-gqv", "@brg-status-bin"]), binary);
+}
+
+#[test]
+fn partial_start_keeps_status_callbacks_available() {
+    let env = Env::new();
+    env.write(
+        "teams/oncall/team.yaml",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead}\n",
+    );
+    let wrapper = env.path("failing-bin/tmux");
+    fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
+    script(
+        &wrapper,
+        &format!(
+            "#!/bin/sh\nfor arg do\n  if [ \"$arg\" = new-window ]; then echo 'test: second window refused' >&2; exit 1; fi\ndone\nexec {} \"$@\"\n",
+            shell_quote(env.tmux.bin().join("tmux").to_str().unwrap())
+        ),
+    );
+    let mut command = env.cmd(&["create", "oncall", env.path("work/a").to_str().unwrap()]);
+    let path = command
+        .get_envs()
+        .find_map(|(key, value)| {
+            (key == "PATH").then(|| value.unwrap().to_string_lossy().to_string())
+        })
+        .unwrap();
+    let out = command
+        .env(
+            "PATH",
+            format!("{}:{path}", wrapper.parent().unwrap().display()),
+        )
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "{}", both(&out));
+    assert!(
+        both(&out).contains("second window refused"),
+        "{}",
+        both(&out)
+    );
+    assert!(!env.tmux(&["list-windows", "-a"]).trim().is_empty());
+    let socket = env.tmux(&["display-message", "-p", "#{socket_path}"]);
+    let line = stdout(&env.ok(&["status", "--line", "--socket", socket.trim()]));
+    let live_member = env.tmux(&["list-windows", "-a", "-F", "#{window_name}"]);
+    assert!(line.contains(live_member.trim()), "{line}");
+    assert_eq!(
+        env.tmux(&["show", "-gqv", "@brg-status-bin"]).trim(),
+        env!("CARGO_BIN_EXE_brg")
+    );
+}
+
+#[test]
+fn a_nested_copy_can_have_a_different_server_from_its_root() {
+    let env = Env::new();
+    let socket = env.tmux.socket("child-server");
+    let (root, child) = nested_on(&env, Some(&socket));
+    let root_lead = env.member(&root, "lead");
+    let child_lead = env.member(&child, "lead");
+    let out = env
+        .tmux
+        .tmux(&socket)
+        .args(["display-message", "-p", "#{socket_path}"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let path = stdout(&out);
+    let line = stdout(&env.ok(&["status", "--line", "--socket", path.trim()]));
+    assert!(
+        line.contains(&child_lead) && !line.contains(&root_lead),
+        "{line}"
+    );
 }

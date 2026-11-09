@@ -1425,6 +1425,7 @@ fn compact_status_line_shows_members_and_hides_stopped_rows() {
     assert!(text.contains(&env.m("beta")), "{text}");
     assert!(!text.contains("pager") && !text.contains("gamma"), "{text}");
     assert!(!text.contains('\u{1b}'), "tmux styles, not ANSI: {text}");
+    assert!(text.contains("#[dim]○#[default]"), "{text}");
     assert!(env.brg(&["stop", "beta"]).status.success());
     let text = stdout(&env.brg(&["status", "--line"]));
     assert!(

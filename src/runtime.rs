@@ -768,6 +768,7 @@ fn start_members(
             unrecord_windows(state, &mut meta, fresh && !any_window, may_still_run);
         }
         result?;
+        record_socket(&tmux, state, &mut meta)?;
         any_window = true;
         // Without a bus, the instance's state is where `status` learns that a
         // member ran.
@@ -868,30 +869,9 @@ fn start_members(
                 unrecord_windows(state, &mut meta, fresh && !any_window, may_still_run);
             }
             result?;
+            record_socket(&tmux, state, &mut meta)?;
             any_window = true;
             plugin_outcomes.push((name.clone(), "started".into()));
-        }
-    }
-
-    // Record where the tmux server is, so `stop` and liveness
-    // checks ask it directly, whatever the caller's tmux environment.
-    if fresh {
-        let path = started
-            .iter()
-            .find_map(|s| s.pane.as_ref().map(|p| p.socket.clone()))
-            .or_else(|| {
-                tmux.ok(&["display-message", "-p", "#{socket_path}"])
-                    .ok()
-                    .map(|t| t.trim().to_string())
-                    .filter(|t| t.starts_with('/'))
-            });
-        if let Some(path) = path {
-            meta.socket_path = Some(PathBuf::from(path));
-            write_private(
-                &state.meta_file(),
-                &serde_json::to_vec_pretty(&meta).map_err(|e| e.to_string())?,
-            )
-            .map_err(|e| format!("cannot write state: {e}"))?;
         }
     }
 
@@ -1124,17 +1104,9 @@ fn start_members(
         }
     }
 
-    // The running server reads its config only once. Keep callbacks on the
-    // executable used by this successful start, without overriding user display settings.
-    if tmux.has_session(&session)
-        && let Err(error) = tmux.ok(&[
-            "set-option",
-            "-g",
-            "@brg-status-bin",
-            &brg.display().to_string(),
-        ])
-    {
-        eprintln!("brg: could not refresh status callbacks: {error}");
+    // Refresh even when every member was already running.
+    if tmux.has_session(&session) {
+        refresh_status_callbacks(&tmux, &brg);
     }
     let nodes = member_nodes(inst, v, |id| outcomes.get(id).cloned().unwrap_or_default());
     let plugins: Vec<(String, Vec<String>)> = plugin_outcomes
@@ -2518,6 +2490,33 @@ fn unrecord_windows(state: &StateDir, meta: &mut Meta, nothing_started: bool, be
     }
 }
 
+/// Record the first live window's server before later startup work can fail.
+fn record_socket(tmux: &Tmux, state: &StateDir, meta: &mut Meta) -> Result<(), String> {
+    if meta.socket_path.is_none()
+        && let Ok(path) = tmux.ok(&["display-message", "-p", "#{socket_path}"])
+        && path.trim().starts_with('/')
+    {
+        meta.socket_path = Some(PathBuf::from(path.trim()));
+        write_private(
+            &state.meta_file(),
+            &serde_json::to_vec_pretty(meta).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| format!("cannot write state: {e}"))?;
+    }
+    Ok(())
+}
+
+fn refresh_status_callbacks(tmux: &Tmux, brg: &Path) {
+    if let Err(error) = tmux.ok(&[
+        "set-option",
+        "-g",
+        "@brg-status-bin",
+        &brg.display().to_string(),
+    ]) {
+        eprintln!("brg: could not refresh status callbacks: {error}");
+    }
+}
+
 fn start_window(
     tmux: &Tmux,
     brg: &Path,
@@ -2547,7 +2546,9 @@ fn start_window(
         shell_quote(window)
     );
     tmux.start_window(session, window, &command)
-        .map_err(|e| format!("cannot start `{window}`: {e}"))
+        .map_err(|e| format!("cannot start `{window}`: {e}"))?;
+    refresh_status_callbacks(tmux, brg);
+    Ok(())
 }
 
 /// `brg stop <instance>[/<member>]`.
