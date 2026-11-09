@@ -1,13 +1,13 @@
-//! The status line brg's tmux bar shows (`brg status --line`), and Enter in
-//! `status -i` inside brg's own server: real tmux on a private socket, fake
-//! agents.
+//! The status line brg's tmux bar shows (`brg status --line`), the bar and
+//! `prefix S` pop-up in brg's tmux config, and Enter in `status -i` inside
+//! brg's own server: real tmux on a private socket, fake agents.
 #![cfg(feature = "test-support")]
 
 mod common;
 
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
@@ -300,6 +300,138 @@ fn status_line_marks_each_running_member_and_hides_stopped_ones() {
         .unwrap();
     assert!(!out.status.success(), "{out:?}");
     assert!(out.stdout.is_empty(), "{out:?}");
+}
+
+/// A copy of brg in a folder whose name a shell or tmux would misread
+/// unquoted.
+fn awkward_brg(root: &Path) -> PathBuf {
+    let dir = root.join("it's a \"#{x}\" $HOME (y);");
+    fs::create_dir_all(&dir).unwrap();
+    let brg = dir.join("brg");
+    fs::copy(env!("CARGO_BIN_EXE_brg"), &brg).unwrap();
+    brg
+}
+
+#[test]
+fn brg_tmux_config_puts_the_status_line_on_top_and_binds_the_pop_up() {
+    let paths = tempfile::tempdir().unwrap();
+    let env = Env::with_brg(awkward_brg(paths.path()));
+    let id = env.create();
+    let session = format!("brg-{id}");
+
+    assert_eq!(env.tmux(&["show", "-gv", "status-position"]), "top\n");
+
+    // The bar's command, expanded for the session and run by the server
+    // itself, with its own environment, as tmux runs the bar's. (`display
+    // -p` would show the expansion with `$` escaped.)
+    let right = env.tmux(&["show", "-gv", "status-right"]);
+    let command = right
+        .trim_end()
+        .strip_prefix("#(")
+        .and_then(|c| c.strip_suffix(')'))
+        .unwrap_or_else(|| panic!("status-right runs no command: {right}"));
+    let printed = paths.path().join("printed");
+    let out = env
+        .tmux
+        .tmux(&env.socket)
+        .args(["run-shell", "-t", &format!("={session}:")])
+        .arg(format!("{command} >'{}' 2>&1", printed.display()))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{command}: {out:?}");
+    assert_eq!(fs::read_to_string(&printed).unwrap(), env.line(&id));
+
+    // `prefix S` in a real client (attached from a pane of an outer server,
+    // which gives it a terminal) opens `status -i` in a pop-up, top right,
+    // 2 cells from the edges; Enter moves the client to alpha and closes it.
+    let alpha = env.member(&id, "alpha");
+    let socket = env.tmux(&["display", "-p", "#{socket_path}"]);
+    let outer = env.tmux.socket("brg-bar-out");
+    let status = env
+        .tmux
+        .tmux(&outer)
+        .args(["new-session", "-d", "-s", "o", "-x", "120", "-y", "30"])
+        .arg(format!(
+            "env -u TMUX {} -S '{}' attach -t '={session}:'",
+            env.tmux.guard().display(),
+            socket.trim_end()
+        ))
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let screen = || {
+        let out = env
+            .tmux
+            .tmux(&outer)
+            .args(["capture-pane", "-p", "-t", "=o:"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    let client_window = || env.tmux(&["list-clients", "-F", "#{window_name}"]);
+    env.wait_for("a client on brg's server", || !client_window().is_empty());
+    let first = client_window();
+    let keys = |keys: &[&str]| {
+        let status = env
+            .tmux
+            .tmux(&outer)
+            .args(["send-keys", "-t", "=o:"])
+            .args(keys)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    };
+    keys(&["C-b", "S"]);
+    env.wait_for("the pop-up with alpha's row", || {
+        let s = screen();
+        let lines: Vec<&str> = s.lines().collect();
+        lines.len() > 3
+            && lines[2]
+                .chars()
+                .skip(54)
+                .collect::<String>()
+                .starts_with("┌─ brg status")
+            && lines[2].chars().count() == 118
+            && s.contains(&alpha)
+    });
+    // The client's current window is the one it attached to until Enter.
+    if first == format!("{alpha}\n") {
+        keys(&["j"]);
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    let selected = if first == format!("{alpha}\n") {
+        env.member(&id, "beta")
+    } else {
+        alpha
+    };
+    keys(&["Enter"]);
+    env.wait_for(
+        "the client on the selected member, the pop-up closed",
+        || client_window() == format!("{selected}\n") && !screen().contains("brg status"),
+    );
+
+    // On a client narrower and shorter than the pop-up, it fills the width
+    // and keeps 2 rows above it; q closes it.
+    let status = env
+        .tmux
+        .tmux(&outer)
+        .args(["resize-window", "-t", "=o:", "-x", "50", "-y", "14"])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    env.wait_for("the narrow client", || {
+        env.tmux(&["list-clients", "-F", "#{client_width}"]) == "50\n"
+    });
+    keys(&["C-b", "S"]);
+    env.wait_for("the narrow pop-up", || {
+        let s = screen();
+        let lines: Vec<&str> = s.lines().collect();
+        lines.len() == 14 && lines[2].starts_with("┌─ brg status") && lines[13].starts_with("└")
+    });
+    keys(&["q"]);
+    env.wait_for("the narrow pop-up closed", || {
+        !screen().contains("brg status")
+    });
 }
 
 #[test]
