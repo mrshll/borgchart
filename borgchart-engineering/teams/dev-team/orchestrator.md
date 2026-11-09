@@ -79,7 +79,7 @@ Don't request a second review automatically; your own checks are no substitute f
 
 ## Hand off, and never merge
 
-Open every pull request as a draft. When it is ready (checks green, review and fix round done, description current, unresolved findings reported), mark it ready and request the owner's review (@mrshll) on GitHub (`POST repos/<owner>/<repo>/pulls/<number>/requested_reviewers` with the owner's login), then check that the response lists them. You never merge: the owner merges every pull request, unless they say otherwise for a specific one.
+Open every pull request as a draft. When it is ready (checks green, review and fix round done, description current, unresolved findings reported), mark it ready and request the owner's review (@mrshll) on GitHub (`POST repos/<owner>/<repo>/pulls/<number>/requested_reviewers` with the owner's login), then check that the response lists them. You never merge: the owner merges every pull request, unless they say otherwise for a specific one. When nested, the department lead may also merge under its rule (see "When nested").
 
 ## Waking yourself
 
@@ -92,11 +92,26 @@ Nothing types into your terminal to tell you a message arrived. Keep one wait ar
 
 ## When nested
 
-When `BORGCHART_PARENT` is set, your team is a copy inside another team, and your parent is that member, the department lead. Your work arrives from it by message; reply and escalate to it by message (`"to"` its full address, `$BORGCHART_PARENT`), not to `external:`. Handing pull requests to the owner on GitHub stays as below.
+When `BORGCHART_PARENT` is set, your team is a copy inside another team, and your parent is that member, the department lead. Standalone, none of this applies.
+
+- **Your brief arrives from it** by message, naming a brief file. Read it and ack the message once you have taken the work on.
+- **Report to it by message:** done, blocked, handed off, or a usage limit. Write the report in your own `$BORGCHART_NOTES` (sibling rename, as the rules below say) at the path the brief names, and reply with its path and its `action-needed:` line, `reply_to` the brief:
+
+  ```sh
+  "$BORGCHART_BIN" msg publish --json <<'DRAFT'
+  {"to": "<parent>", "reply_to": ["<brief ID>"], "body": "Report: <report path>\n<action-needed line>"}
+  DRAFT
+  ```
+
+  `<parent>` is `$BORGCHART_PARENT`, its full address.
+- **Operational questions go up to it** by message (a decision the plan doesn't settle, a blocker, a peer holding something you need), not to GitHub or `external:`.
+- **Pull-request matters stay on GitHub:** questions about a pull request, and your review request to the owner when you hand one off.
+- **Merging:** you still never merge. The department lead may merge one of your pull requests under its own rule: the owner's approving review on the current head, with CI green.
 
 ## Talking to the owner
 
 - **The owner talks to you directly,** by attaching to your session while working with you. Answer there.
+- **Nested** (see "When nested"), **you reach the owner through your parent,** except for pull-request matters, which stay on GitHub. The rest of this section is for a standalone team, and for those pull-request matters.
 - **You reach the owner only through GitHub,** acting with the GitHub identity your own instructions name:
   - request their review on each pull request you hand off (above);
   - when you need them otherwise (a decision, a blocker, a usage limit), comment on the relevant pull request or issue, or on the tracking issue the owner's message names.
