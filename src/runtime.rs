@@ -751,6 +751,7 @@ fn start_members(
                 member: id.clone(),
                 incarnation: lifecycle::new_incarnation_id(state, id),
                 started_at: utc_now(),
+                boot_id: lifecycle::boot_id(),
                 vendor_version: if joining {
                     vendor_version(member.vendor, &base)
                 } else {
@@ -2014,6 +2015,15 @@ pub fn liveness_of(inst: &Instance) -> BTreeMap<String, Liveness> {
                 }
             }
             (Some(m), _) if m.stopped_at.is_some() || !m.windows_started => Liveness::Gone,
+            (Some(_), Some(Err(_)))
+                if incarnation
+                    .as_ref()
+                    .ok()
+                    .and_then(|i| i.as_ref())
+                    .is_some_and(lifecycle::previous_boot) =>
+            {
+                Liveness::Gone
+            }
             (Some(_), Some(Err(_))) if inst.record.stopping => match &incarnation {
                 Ok(Some(inc)) => inc
                     .pane
@@ -2713,10 +2723,20 @@ fn stop_one(
         // nothing has started since.
         Err(_) if meta.stopped_at.is_some() || !meta.windows_started => Vec::new(),
         Err(e) => {
-            if only.is_some() || !server.absent() {
+            let old_member = only.is_some_and(|id| {
+                matches!(lifecycle::load_incarnation(state, id),
+                    Ok(Some(inc)) if lifecycle::previous_boot(&inc))
+            });
+            // Member boot records say nothing about plugin windows. A full
+            // stop still needs proof that the recorded server is absent.
+            if (only.is_some() && !old_member) || !server.absent() {
                 return Err(format!("{e}; fix this error, then retry: brg stop {team}"));
             }
-            for (id, _) in inst.record.kept_members() {
+            for (id, _) in inst
+                .record
+                .kept_members()
+                .filter(|(id, _)| only.is_none_or(|only| id.as_str() == only))
+            {
                 let inc = lifecycle::load_incarnation(state, id).map_err(|error| {
                     format!(
                         "{error}; restore `{team}/{id}`'s start record, then retry: brg stop {team}"
@@ -2724,6 +2744,7 @@ fn stop_one(
                 })?;
                 if let Some(inc) = inc
                     && inc.ended_at.is_none()
+                    && !lifecycle::previous_boot(&inc)
                     && let Some(pane) = inc.pane
                     && !lifecycle::process_exited(pane.pane_pid)
                 {
@@ -2845,7 +2866,7 @@ fn stop_one(
                 Some(p) if lifecycle::Server::from_recorded(&p.socket) == server => {
                     killed.contains(&p.pane_id) || !rows.iter().any(|r| r.pane_id == p.pane_id)
                 }
-                Some(p) => lifecycle::pane_liveness(p) == Liveness::Gone,
+                Some(_) => lifecycle::liveness(state, id, &inc.incarnation) == Liveness::Gone,
             };
             if stopped {
                 lifecycle::end_incarnation(state, id, lifecycle::ENDED_STOPPED)?;
@@ -2914,7 +2935,7 @@ pub struct StatusRow {
     /// The folder a start accepted Claude's trust dialog for, if it did.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trust_accepted: Option<String>,
-    /// With a bus: whether the member's current incarnation may still be
+    /// Whether the member's current incarnation may still be
     /// running (`alive`, `gone` or `unknown`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub liveness: Option<Liveness>,

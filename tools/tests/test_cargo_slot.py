@@ -29,6 +29,7 @@ def environment(tmp_path: Path) -> dict[str, str]:
     env = dict(os.environ)
     env.pop("CARGO_BUILD_JOBS", None)
     env.update(
+        HOME=str(tmp_path / "home"),
         PATH=f"{bin_dir}:{os.environ['PATH']}",
         XDG_RUNTIME_DIR=str(tmp_path / "runtime"),
         XDG_STATE_HOME=str(tmp_path / "state"),
@@ -78,27 +79,23 @@ def test_options_jobs_arguments_and_status(
     ]
 
 
-@pytest.mark.parametrize("location", ["runtime", "state", "home"])
 def test_two_slots_shared_across_working_directories(
     environment: dict[str, str],
     tmp_path: Path,
-    location: str,
 ) -> None:
-    if location != "runtime":
-        environment.pop("XDG_RUNTIME_DIR")
-    if location == "home":
-        environment.pop("XDG_STATE_HOME")
-        environment["HOME"] = str(tmp_path / "home")
-    root = {
-        "runtime": tmp_path / "runtime",
-        "state": tmp_path / "state",
-        "home": tmp_path / "home" / ".local" / "state",
-    }[location]
+    root = Path(environment["HOME"]) / ".local" / "state"
     processes = []
     try:
         for index in range(3):
             cwd = tmp_path / str(index)
             cwd.mkdir()
+            caller_env = environment.copy()
+            if index == 1:
+                caller_env.pop("XDG_RUNTIME_DIR")
+                caller_env.pop("XDG_STATE_HOME")
+            elif index == 2:
+                caller_env["XDG_RUNTIME_DIR"] = str(tmp_path / "other-runtime")
+                caller_env["XDG_STATE_HOME"] = str(tmp_path / "other-state")
             processes.append(
                 subprocess.Popen(
                     [
@@ -111,7 +108,7 @@ def test_two_slots_shared_across_working_directories(
                         str(tmp_path / f"release-{index}"),
                     ],
                     cwd=cwd,
-                    env=environment,
+                    env=caller_env,
                 )
             )
             if index < 2:
@@ -155,7 +152,9 @@ def test_background_child_does_not_hold_slot(
     pid = int(pidfile.read_text())
     try:
         os.kill(pid, 0)
-        locks = list(Path(environment["XDG_RUNTIME_DIR"]).rglob("cargo-slot-*"))
+        locks = list(
+            (Path(environment["HOME"]) / ".local" / "state").rglob("cargo-slot-*")
+        )
         assert locks
         for lock in locks:
             result = subprocess.run(
@@ -209,32 +208,38 @@ def test_dependency_error_is_not_retried_or_bypassed(
     assert not marker.exists()
 
 
-@pytest.mark.parametrize("runtime", ["empty", "unwritable"])
-def test_invalid_runtime_does_not_fall_back(
+@pytest.mark.parametrize("xdg", ["empty", "relative", "unwritable"])
+def test_xdg_paths_are_ignored(
     environment: dict[str, str],
     tmp_path: Path,
-    runtime: str,
+    xdg: str,
 ) -> None:
     directory = tmp_path / "denied"
     directory.mkdir(mode=0o500)
-    environment["XDG_RUNTIME_DIR"] = "" if runtime == "empty" else str(directory)
+    value = {
+        "empty": "",
+        "relative": "relative-directory",
+        "unwritable": str(directory),
+    }[xdg]
+    environment["XDG_RUNTIME_DIR"] = value
+    environment["XDG_STATE_HOME"] = value
     try:
-        result = subprocess.run(
-            [str(WRAPPER), "true"],
-            env=environment,
-            check=False,
-            capture_output=True,
-            timeout=5,
+        subprocess.run(
+            [str(WRAPPER), "true"], env=environment, cwd=tmp_path, check=True, timeout=5
         )
-        assert result.returncode != 0
-        assert not Path(environment["RECORD"]).exists()
-        assert not Path(environment["XDG_STATE_HOME"]).exists()
+        assert (
+            Path(environment["HOME"])
+            / ".local/state/borgchart/cargo-slots/cargo-slot-0"
+        ).exists()
+        assert not list(directory.iterdir())
     finally:
         directory.chmod(0o700)
 
 
 def test_existing_readonly_locks(environment: dict[str, str]) -> None:
-    directory = Path(environment["XDG_RUNTIME_DIR"]) / "borgchart" / "cargo-slots"
+    directory = (
+        (Path(environment["HOME"]) / ".local" / "state") / "borgchart" / "cargo-slots"
+    )
     directory.mkdir(parents=True)
     for index in range(2):
         lock = directory / f"cargo-slot-{index}"
@@ -259,7 +264,7 @@ def test_killed_holder_releases_lock(
         holder.kill()
         holder.wait(timeout=5)
         lock = (
-            Path(environment["XDG_RUNTIME_DIR"])
+            (Path(environment["HOME"]) / ".local" / "state")
             / "borgchart"
             / "cargo-slots"
             / "cargo-slot-0"
@@ -273,11 +278,28 @@ def test_killed_holder_releases_lock(
             os.kill(int(pidfile.read_text()), 15)
 
 
-@pytest.mark.parametrize("name", ["XDG_RUNTIME_DIR", "XDG_STATE_HOME"])
-def test_relative_lock_root_refused(environment: dict[str, str], name: str) -> None:
-    if name == "XDG_STATE_HOME":
-        environment.pop("XDG_RUNTIME_DIR")
-    environment[name] = "relative-directory"
+@pytest.mark.parametrize("home", [None, "", "relative-directory"])
+def test_invalid_home_refused(
+    environment: dict[str, str], tmp_path: Path, home: str | None
+) -> None:
+    if home is None:
+        environment.pop("HOME")
+    else:
+        environment["HOME"] = home
+    result = subprocess.run(
+        [str(WRAPPER), "true"],
+        env=environment,
+        cwd=tmp_path,
+        capture_output=True,
+        check=False,
+        timeout=5,
+    )
+    assert result.returncode != 0
+    assert not Path(environment["RECORD"]).exists()
+
+
+def test_unusable_home_fails_closed(environment: dict[str, str]) -> None:
+    Path(environment["HOME"]).touch()
     result = subprocess.run(
         [str(WRAPPER), "true"],
         env=environment,
