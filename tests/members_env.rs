@@ -205,7 +205,7 @@ fn with_pager(env: &Env) {
         "teams/oncall/team.yaml",
         &TEAM.replace(
             "roles:\n  lead:\n    prompt: lead.md\n",
-            "plugins:\n  pager:\n    path: plugins/pager\n    env: [PAGER_TOKEN, {PAGER_ROOM: R0000EXAMPLE}]\n    actions:\n      read: pager read <id>\nroles:\n  lead:\n    prompt: lead.md\n    plugins: {pager: [read]}\n",
+            "plugins:\n  pager:\n    path: plugins/pager\n    env: {PAGER_TOKEN: , PAGER_ROOM: R0000EXAMPLE}\n    actions:\n      read: pager read <id>\nroles:\n  lead:\n    prompt: lead.md\n    plugins: {pager: [read]}\n",
         ),
     );
     let script = env.path("teams/oncall/plugins/pager/pager");

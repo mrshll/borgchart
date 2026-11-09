@@ -241,14 +241,8 @@ pub fn check_join(
     team: &str,
     restart: &str,
 ) -> Result<(), String> {
-    match &meta.config {
-        Some(c) if c.digest == snapshot.digest => {}
-        Some(c) => return Err(changed_since_start(team, restart, c, snapshot)),
-        None => {
-            return Err(format!(
-                "instance `{team}` was started by an older brg; restart it: {restart}"
-            ));
-        }
+    if meta.config.digest != snapshot.digest {
+        return Err(changed_since_start(team, restart, &meta.config, snapshot));
     }
     for name in meta.plugins.keys() {
         if !state.plugin_env_file(name).exists() {
@@ -405,21 +399,17 @@ pub enum Server {
 }
 
 impl Server {
-    /// A recorded socket: an absolute path, or (in older records) a name.
+    /// A recorded socket: an absolute path.
     pub fn from_recorded(socket: &str) -> Self {
-        if socket.starts_with('/') {
-            Server::Path(PathBuf::from(socket))
-        } else {
-            Server::Name(socket.to_string())
-        }
+        Server::Path(PathBuf::from(socket))
     }
 
     /// The instance's server, as recorded at its start.
     pub fn of(meta: &Meta) -> Self {
-        match (&meta.socket_path, &meta.socket) {
-            (Some(path), _) => Server::Path(path.clone()),
-            (None, Some(name)) => Server::Name(name.clone()),
-            (None, None) => Server::Name(state::tmux_socket()),
+        match &meta.socket_path {
+            Some(path) => Server::Path(path.clone()),
+            // The start never reached a window: only the name is known.
+            None => Server::Name(meta.socket.clone()),
         }
     }
 
@@ -741,10 +731,5 @@ mod tests {
         assert_eq!(pane_in(&[row("%1", 11, false)], "%1", 10), Liveness::Gone);
         assert_eq!(pane_in(&[row("%2", 10, false)], "%1", 10), Liveness::Gone);
         assert_eq!(pane_in(&[], "%1", 10), Liveness::Gone);
-        assert_eq!(
-            Server::from_recorded("/tmp/x/sock"),
-            Server::Path("/tmp/x/sock".into())
-        );
-        assert_eq!(Server::from_recorded("name"), Server::Name("name".into()));
     }
 }
