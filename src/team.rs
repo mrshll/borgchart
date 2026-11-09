@@ -180,6 +180,8 @@ pub struct Team {
     pub name: String,
     /// SHA-256 of `team.yaml` as it was read and parsed.
     pub file_sha256: String,
+    /// Canonical catalog include directory, captured during validation.
+    pub catalog_includes: Option<PathBuf>,
     pub default_vendor: Vendor,
     /// Optional alert settings; every team has a coordination bus.
     pub bus: Option<BusConfig>,
@@ -343,6 +345,7 @@ pub struct Role {
 /// A role whose copies are nested instances, prepared before their first start.
 #[derive(Debug, Clone, Serialize)]
 pub struct TeamRole {
+    pub name: String,
     pub dir: PathBuf,
     pub parent: Option<String>,
     pub max: usize,
@@ -406,6 +409,8 @@ pub enum PluginLocation {
     Team(String),
     /// `shared:<name>`, resolved under the configuration's `plugins_dir`.
     Shared(String),
+    /// A validated directory under the declaring catalog's real shared folder.
+    Catalog(PathBuf),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -488,17 +493,18 @@ pub fn parse_model(value: &str) -> Result<Model, String> {
 /// Load and check a team directory. Problems go into `report`; a team is
 /// returned only when there were no errors.
 pub fn load(dir: &Path, report: &mut Report) -> Option<Team> {
-    load_inner(dir, report, true)
+    let config = crate::config::load(report)?;
+    load_with(dir, &config.teams, None, report)
 }
 
-/// Load an instance's own files without requiring referenced teams to
-/// remain on disk. Their current files are checked when a copy is created
-/// or started, independently of the declaring instance's frozen config.
-pub(crate) fn load_own(dir: &Path, report: &mut Report) -> Option<Team> {
-    load_inner(dir, report, false)
-}
-
-fn load_inner(dir: &Path, report: &mut Report, require_teams: bool) -> Option<Team> {
+/// Resolve names through the configured catalog. Own-only callers may supply
+/// their frozen paths to retain references whose definitions are unavailable.
+pub(crate) fn load_with(
+    dir: &Path,
+    search: &[PathBuf],
+    frozen: Option<&BTreeMap<String, PathBuf>>,
+    report: &mut Report,
+) -> Option<Team> {
     let real = dir.canonicalize();
     let dir = real.as_deref().unwrap_or(dir);
     let team_file = dir.join(TEAM_FILE);
@@ -550,6 +556,22 @@ fn load_inner(dir: &Path, report: &mut Report, require_teams: bool) -> Option<Te
         .clone()
         .unwrap_or_else(|| "includes".to_string());
 
+    let catalog_includes = if includes_dir.starts_with("catalog:") {
+        match resolve_asset(dir, &includes_dir) {
+            Ok(path) if path.is_dir() => Some(path),
+            Ok(_) => {
+                report.error(Some(&team_file), "includes must name a directory");
+                None
+            }
+            Err(e) => {
+                report.error(Some(&team_file), e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Plugins first, so member grants can be checked against them.
     let mut plugins = BTreeMap::new();
     for (name, p) in &raw.plugins {
@@ -562,8 +584,7 @@ fn load_inner(dir: &Path, report: &mut Report, require_teams: bool) -> Option<Te
     let mut team_roles = BTreeMap::new();
     for (id, m) in &raw.roles {
         if let Some(path) = &m.team {
-            if let Some(role) = load_team_role(dir, &team_file, id, m, path, require_teams, report)
-            {
+            if let Some(role) = load_team_role(search, frozen, &team_file, id, m, path, report) {
                 team_roles.insert(id.clone(), role);
             }
             continue;
@@ -602,6 +623,7 @@ fn load_inner(dir: &Path, report: &mut Report, require_teams: bool) -> Option<Te
         name: team_name(dir),
         file_sha256: crate::config_snapshot::sha256_hex(text.as_bytes()),
         default_vendor,
+        catalog_includes,
         bus: raw.bus.map(|b| BusConfig {
             alert: b.alert.map(|a| AlertConfig {
                 plugin: a.plugin,
@@ -612,6 +634,23 @@ fn load_inner(dir: &Path, report: &mut Report, require_teams: bool) -> Option<Te
         team_roles,
         plugins,
     })
+}
+
+fn resolve_asset(dir: &Path, path: &str) -> Result<PathBuf, String> {
+    let Some(relative) = path.strip_prefix("catalog:") else {
+        return resolve_within(dir, path);
+    };
+    let Some(relative) = relative.strip_prefix("shared/") else {
+        return Err("catalog assets must start with `catalog:shared/`".into());
+    };
+    let catalog = dir.parent().ok_or("team has no catalog directory")?;
+    let shared = catalog.join("shared");
+    let metadata = std::fs::symlink_metadata(&shared)
+        .map_err(|e| format!("cannot read catalog shared folder: {e}"))?;
+    if metadata.file_type().is_symlink() {
+        return Err("catalog shared folder must not be a symlink".into());
+    }
+    resolve_within(&shared, relative)
 }
 
 fn read_text(path: &Path) -> Result<String, String> {
@@ -655,8 +694,12 @@ fn load_plugin(
                 );
                 None
             }
-            None => match resolve_within(dir, path) {
-                Ok(real) if real.is_dir() => Some(PluginLocation::Team(path.to_string())),
+            None => match resolve_asset(dir, path) {
+                Ok(real) if real.is_dir() => Some(if path.starts_with("catalog:") {
+                    PluginLocation::Catalog(real)
+                } else {
+                    PluginLocation::Team(path.to_string())
+                }),
                 Ok(_) => {
                     report.error(Some(team_file), at(format!("`{path}` is not a directory")));
                     None
@@ -742,8 +785,12 @@ fn load_plugin(
     }
 
     // Commands that live in a team-local plugin directory must exist and be executable.
-    if let Some(PluginLocation::Team(rel)) = &location {
-        let plugin_dir = dir.join(rel);
+    let local_dir = match &location {
+        Some(PluginLocation::Team(rel)) => Some(dir.join(rel)),
+        Some(PluginLocation::Catalog(path)) => Some(path.clone()),
+        _ => None,
+    };
+    if let Some(plugin_dir) = local_dir {
         let mut commands: Vec<&str> = actions.values().map(Action::command).collect();
         if let Some(command) = &p.command {
             commands.push(command);
@@ -792,12 +839,12 @@ fn check_executable(
 
 #[allow(clippy::too_many_arguments)]
 fn load_team_role(
-    dir: &Path,
+    search: &[PathBuf],
+    frozen: Option<&BTreeMap<String, PathBuf>>,
     team_file: &Path,
     id: &str,
     role: &RoleRaw,
     path: &str,
-    require_team: bool,
     report: &mut Report,
 ) -> Option<TeamRole> {
     let load = || -> Result<TeamRole, String> {
@@ -810,37 +857,15 @@ fn load_team_role(
         if role.start == Some(true) {
             return Err("a team role must have `start: false` or omit `start`; create and prepare each copy before starting it".into());
         }
-        if path.starts_with("shared:") {
-            return Err("`team` must be a path inside this team's folder; replace `shared:` with a relative folder".into());
+        if path.is_empty()
+            || path.contains(['/', ':', '\\'])
+            || matches!(path, "." | "..")
+            || is_path(path)
+        {
+            return Err("`team` must be a team name from the configured teams directories, not a path or shared: reference".into());
         }
-        let dir = if require_team {
-            resolve_within(dir, path)?
-        } else {
-            let rel = Path::new(path);
-            if path.is_empty() {
-                return Err("path is empty".into());
-            }
-            if rel.is_absolute() {
-                return Err(format!("`{path}` must be a relative path"));
-            }
-            if rel
-                .components()
-                .any(|c| matches!(c, std::path::Component::ParentDir))
-            {
-                return Err(format!("`{path}` must not contain `..`"));
-            }
-            let resolved = crate::paths::resolve_existing_prefix(&dir.join(rel));
-            if !resolved.starts_with(dir) {
-                return Err(format!(
-                    "`{path}` resolves outside {} (through a symlink)",
-                    dir.display()
-                ));
-            }
-            resolved
-        };
-        if require_team && !dir.join(TEAM_FILE).is_file() {
-            return Err(format!("`{path}` needs a `{TEAM_FILE}`"));
-        }
+        let dir = find(path, search)
+            .or_else(|error| frozen.and_then(|paths| paths.get(id)).cloned().ok_or(error))?;
         let cwd = role.cwd.as_deref().ok_or("a team role needs `cwd`")?;
         check_cwd(cwd)?;
         if Path::new(cwd)
@@ -856,6 +881,7 @@ fn load_team_role(
             return Err("`max` must be at least 1".into());
         }
         Ok(TeamRole {
+            name: path.to_string(),
             dir,
             parent: role.parent.clone(),
             max: role.max.unwrap_or(1),
@@ -1165,7 +1191,7 @@ fn resolve_includes(
             continue;
         }
         let rel = format!("{includes_dir}/{stem}.md");
-        match resolve_within(dir, &rel) {
+        match resolve_asset(dir, &rel) {
             Ok(real) => match read_text(&real) {
                 Ok(text) => {
                     let text = text.replace("\r\n", "\n");

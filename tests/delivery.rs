@@ -25,9 +25,9 @@ impl Tree {
         let env = Env::new();
         env.write(
             "teams/oncall/team.yaml",
-            "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: lead}\n  dev: {team: teams/dev, parent: lead, start: false, max: 2, cwd: 'dev/{member_id}'}\n",
+            "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: lead}\n  dev: {team: dev, parent: lead, start: false, max: 2, cwd: 'dev/{member_id}'}\n",
         );
-        env.team("teams/oncall/teams/dev");
+        env.team("teams/dev");
         fs::create_dir(env.path("work/a/lead")).unwrap();
         let parent = env.create("oncall", "work/a");
         env.ok(&["create", &format!("{parent}/dev")]);

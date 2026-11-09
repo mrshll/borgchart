@@ -830,7 +830,7 @@ impl Env {
             &self.state.meta_file(),
             json!({"team_dir":folder,"folder":folder,
             "brg":env!("CARGO_BIN_EXE_brg"),
-            "config":{"version":1,"digest":"00","inputs":{}},
+            "config":{"version":1,"digest":"00","inputs":{},"team_dirs":{}},
             "socket":"brg-wake-test","windows_started":true,
             "base_env":{},"plugins":{},"members":{"m":{
                 "role":"worker","vendor":vendor.as_str(),"posture":if locked {"locked"} else {"vendor"},

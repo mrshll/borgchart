@@ -14,16 +14,16 @@ fn department() -> Env {
     let env = Env::new();
     env.write(
         "teams/oncall/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: lead}\n  helper: {prompt: helper.md, parent: lead, start: false, cwd: lead}\n  scout: {prompt: scout.md, start: false, cwd: lead}\n  dev: {team: teams/dev, parent: lead, start: false, max: 4, cwd: 'dev/{member_id}'}\n",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: lead}\n  helper: {prompt: helper.md, parent: lead, start: false, cwd: lead}\n  scout: {prompt: scout.md, start: false, cwd: lead}\n  dev: {team: dev, parent: lead, start: false, max: 4, cwd: 'dev/{member_id}'}\n",
     );
-    env.team("teams/oncall/teams/dev");
+    env.team("teams/dev");
     env.write(
-        "teams/oncall/teams/dev/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: repo}\n  helper: {prompt: helper.md, parent: lead, start: false, cwd: repo}\n  design: {team: teams/design, parent: lead, start: false, cwd: 'design/{member_id}'}\n",
+        "teams/dev/team.yaml",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: repo}\n  helper: {prompt: helper.md, parent: lead, start: false, cwd: repo}\n  design: {team: design, parent: lead, start: false, cwd: 'design/{member_id}'}\n",
     );
-    env.team("teams/oncall/teams/dev/teams/design");
+    env.team("teams/design");
     env.write(
-        "teams/oncall/teams/dev/teams/design/team.yaml",
+        "teams/design/team.yaml",
         "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: work}\n  scout: {prompt: scout.md, cwd: work}\n",
     );
     fs::create_dir(env.path("work/a/lead")).unwrap();
@@ -398,7 +398,7 @@ fn recorded_copy_parents_survive_live_team_edits() {
     let original = fs::read_to_string(&team).unwrap();
     fs::write(
         &team,
-        original.replace("teams/dev, parent: lead", "teams/dev, parent: scout"),
+        original.replace("dev, parent: lead", "dev, parent: scout"),
     )
     .unwrap();
     member_refused(&env, &dept, "scout", &["stop", &dev]);

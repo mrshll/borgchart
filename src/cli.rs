@@ -77,6 +77,11 @@ enum Command {
     Stop {
         /// `<instance>`, or `<instance>/<member>`.
         target: String,
+        /// Stop the member's subtree deepest first, including copies. Members
+        /// may target descendants, never themselves. Other lifecycle changes
+        /// wait until this walk finishes. An instance target already cascades.
+        #[arg(short = 'r', long)]
+        recursive: bool,
     },
     /// Remove a stopped instance, or a stopped member (its ID stays issued).
     /// With a bus, a member caller may manage only its subtree, using its
@@ -349,9 +354,12 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
             };
             print_outcome(or_fail!(result))
         }
-        Command::Stop { target } => {
+        Command::Stop { target, recursive } => {
             let result = match or_fail!(address::resolve(&target)) {
                 (inst, Target::Instance) => runtime::stop(&inst, None),
+                (inst, Target::Member(m) | Target::Role(m)) if recursive => {
+                    runtime::stop_recursive(&inst, &m)
+                }
                 (inst, Target::Member(m) | Target::Role(m)) => runtime::stop(&inst, Some(&m)),
             };
             for m in or_fail!(result) {
