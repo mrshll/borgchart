@@ -1,7 +1,7 @@
 # The design panel for the development team in ../dev-team: two designers,
 # one per vendor, each writing an independent proposal from the same blind
-# brief. The dev-team lead creates it as its own instance in a design
-# worktree, and deletes it after; see ../dev-team/README.md. No bus:
+# brief. The owner creates it as a separate instance in a design
+# worktree and deletes it after; see ../dev-team/README.md. The
 # designers exchange files with the lead (the brief, questions, answers,
 # proposals) in the instance's notes folder.
 roles:

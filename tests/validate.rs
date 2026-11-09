@@ -49,6 +49,7 @@ fn valid_team_loads() {
     assert_eq!(triager.vendor, Vendor::Claude);
     assert_eq!(triager.model.as_ref().unwrap().name, "haiku");
     assert_eq!(triager.posture, Posture::Locked);
+    assert!(!triager.interactive);
     assert!(triager.instruction.contains("Be brief."));
     assert!(!triager.instruction.contains("{{includes"));
     assert_eq!(
@@ -67,9 +68,9 @@ fn nested_team() -> Fixture {
     let f = Fixture::new();
     f.write(
         "team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  dev: {team: teams/dev, parent: lead, cwd: 'dev/{member_id}'}\n",
+        "roles:\n  lead: {prompt: lead.md}\n  dev: {team: teams/dev, parent: lead, cwd: 'dev/{member_id}'}\n",
     );
-    f.write("teams/dev/team.yaml", "bus: {}\nroles: {}\n");
+    f.write("teams/dev/team.yaml", "roles: {}\n");
     f
 }
 
@@ -130,7 +131,7 @@ fn team_roles_refuse_indirect_cycles() {
     std::os::unix::fs::symlink(f.dir.path(), f.path("teams/dev/ancestor")).unwrap();
     f.write(
         "teams/dev/team.yaml",
-        "bus: {}\nroles: {back: {team: ancestor, cwd: 'back/{member_id}'}}\n",
+        "roles: {back: {team: ancestor, cwd: 'back/{member_id}'}}\n",
     );
     let report = refused(&f);
     assert!(
@@ -152,9 +153,9 @@ fn reused_team_folders_and_equal_team_names_are_not_cycles() {
     );
     f.write(
         "teams/dev/team.yaml",
-        "bus: {}\nroles: {panel: {team: dev, cwd: 'panel/{member_id}'}}\n",
+        "roles: {panel: {team: dev, cwd: 'panel/{member_id}'}}\n",
     );
-    f.write("teams/dev/dev/team.yaml", "bus: {}\nroles: {}\n");
+    f.write("teams/dev/dev/team.yaml", "roles: {}\n");
     let (report, validated) = f.run();
     assert!(validated.is_some(), "{}", errors(&report));
 }
@@ -180,7 +181,7 @@ fn team_roles_refuse_parent_components_even_when_the_target_is_inside() {
 #[test]
 fn team_roles_refuse_shared_paths_even_when_a_local_folder_matches() {
     let f = nested_team();
-    f.write("shared:dev/team.yaml", "bus: {}\nroles: {}\n");
+    f.write("shared:dev/team.yaml", "roles: {}\n");
     f.edit("team.yaml", "team: teams/dev", "team: shared:dev");
     expect_error(&f, "replace `shared:` with a relative folder");
 }
@@ -189,7 +190,7 @@ fn team_roles_refuse_shared_paths_even_when_a_local_folder_matches() {
 fn team_roles_refuse_symlinks_outside_the_declaring_folder() {
     let f = nested_team();
     let outside = tempfile::tempdir().unwrap();
-    fs::write(outside.path().join("team.yaml"), "bus: {}\nroles: {}\n").unwrap();
+    fs::write(outside.path().join("team.yaml"), "roles: {}\n").unwrap();
     std::os::unix::fs::symlink(outside.path(), f.path("outside")).unwrap();
     f.edit("team.yaml", "team: teams/dev", "team: outside");
     expect_error(&f, "resolves outside");
@@ -249,6 +250,8 @@ fn team_roles_refuse_agent_fields_including_empty_and_false_values() {
         "connectors: []",
         "untrusted_input: false",
         "accept_risk: false",
+        "interactive: true",
+        "interactive: false",
         "prompt: null",
         "connectors: null",
         "vendor: null",
@@ -275,38 +278,16 @@ fn team_roles_refuse_agent_fields_including_empty_and_false_values() {
 }
 
 #[test]
-fn teams_declaring_team_roles_require_a_bus() {
+fn nested_teams_need_no_bus_opt_in_at_any_depth() {
     let f = nested_team();
-    f.edit("team.yaml", "bus: {}\n", "");
-    expect_error(
-        &f,
-        "declaring team roles and every team they name require a bus",
-    );
-}
-
-#[test]
-fn referenced_teams_require_a_bus_at_every_depth() {
-    let f = nested_team();
-    f.write("teams/dev/team.yaml", "roles: {}\n");
-    let report = refused(&f);
-    assert!(
-        report
-            .errors()
-            .any(|d| d.file == Some(f.path("teams/dev/team.yaml"))
-                && d.to_string().contains("require a bus"))
-    );
+    assert!(f.run().1.is_some());
     f.write(
         "teams/dev/team.yaml",
-        "bus: {}\nroles: {panel: {team: panel, cwd: 'panel/{member_id}'}}\n",
+        "roles: {panel: {team: panel, cwd: 'panel/{member_id}'}}\n",
     );
     f.write("teams/dev/panel/team.yaml", "roles: {}\n");
-    let report = refused(&f);
-    assert!(
-        report
-            .errors()
-            .any(|d| d.file == Some(f.path("teams/dev/panel/team.yaml"))
-                && d.to_string().contains("require a bus"))
-    );
+    let (report, validated) = f.run();
+    assert!(validated.is_some(), "{}", errors(&report));
 }
 
 #[test]
@@ -314,7 +295,7 @@ fn validate_reports_subteam_errors_at_the_subteam_file() {
     let f = nested_team();
     f.write(
         "teams/dev/team.yaml",
-        "bus: {}\nroles: {helper: {prompt: missing.md}}\n",
+        "roles: {helper: {prompt: missing.md}}\n",
     );
     let report = refused(&f);
     assert!(report.errors().any(|d| {
@@ -952,16 +933,15 @@ fn bus_config_loads() {
         (alert.plugin.as_str(), alert.action.as_str()),
         ("notify", "alert")
     );
-    // `bus: {}` turns the bus on without an alert.
+    // No bus opt-in is needed; absent bus means no alert configuration.
     f.edit(
         "team/team.yaml",
-        "  alert: {plugin: notify, action: alert}\n",
+        "bus:\n  alert: {plugin: notify, action: alert}\n",
         "",
     );
-    f.edit("team/team.yaml", "bus:\n", "bus: {}\n");
     let (report, validated) = run_bus(&f);
     let v = validated.unwrap_or_else(|| panic!("{}", errors(&report)));
-    assert_eq!(v.team.bus.unwrap().alert, None);
+    assert!(v.team.bus.is_none());
 }
 
 #[test]
@@ -996,7 +976,7 @@ fn bus_config_is_checked() {
 }
 
 #[test]
-fn bus_refuses_locked_members() {
+fn universal_bus_accepts_locked_members_without_expanding_posture() {
     let f = bus_fixture();
     f.edit(
         "team/team.yaml",
@@ -1004,9 +984,33 @@ fn bus_refuses_locked_members() {
         "    prompt: helper.md\n    posture: locked\n",
     );
     let (report, validated) = run_bus(&f);
+    let v = validated.unwrap_or_else(|| panic!("{}", errors(&report)));
+    assert_eq!(v.team.roles["helper"].posture, Posture::Locked);
+    assert!(!v.team.roles["helper"].interactive);
+    assert!(v.team.roles["helper"].grants.is_empty());
+}
+
+#[test]
+fn interactive_is_opt_in_and_invalid_for_locked_recipients() {
+    let f = bus_fixture();
+    f.edit(
+        "team/team.yaml",
+        "    prompt: helper.md\n",
+        "    prompt: helper.md\n    interactive: true\n    max: 2\n",
+    );
+    let (report, validated) = run_bus(&f);
+    let v = validated.unwrap_or_else(|| panic!("{}", errors(&report)));
+    assert!(v.team.roles["helper"].interactive);
+    assert!(!v.team.roles["lead"].interactive);
+    f.edit(
+        "team/team.yaml",
+        "    interactive: true\n",
+        "    interactive: true\n    posture: locked\n",
+    );
+    let (report, validated) = run_bus(&f);
     assert!(validated.is_none());
     assert!(
-        errors(&report).contains("doesn't support `locked` members"),
+        errors(&report).contains("`interactive` cannot be used with `locked`"),
         "{}",
         errors(&report)
     );

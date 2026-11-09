@@ -13,6 +13,7 @@ use serde::Serialize;
 use crate::address::{self, Instance};
 use crate::bus::context;
 use crate::bus::layout::StorePaths;
+use crate::bus::store;
 use crate::bus::time::utc_now;
 use crate::config::Auth;
 use crate::exec::{ExecSpec, PluginEnv, identity_env};
@@ -349,7 +350,6 @@ fn start_members(
     let team = inst.id.clone();
     let restart = state::restart_hint(&inst.id);
     let snapshot = v.config_snapshot();
-    let bus = v.team.bus.clone();
     let role_of = |id: &str| -> Result<&crate::team::Role, String> {
         record
             .role_of(id)
@@ -454,10 +454,27 @@ fn start_members(
             lifecycle::check_stopped(state, meta, &restart)?;
         }
     }
-    let storage = bus.as_ref().map(|_| StorePaths::new(state));
-    if let Some(paths) = &storage {
+    {
+        let paths = StorePaths::new(state);
         if paths.validate(&state.id)? {
             lifecycle::open_work(state).map_err(|e| unreadable_store(inst, &e))?;
+            if let Some(old) = &previous {
+                let bus = store::open(state).map_err(|e| e.message)?;
+                let snap = store::snapshot(&bus).map_err(|e| e.message)?;
+                for (member, meta) in &old.members {
+                    if meta.posture != "locked"
+                        && v.posture(&meta.role) == Posture::Locked
+                        && !lifecycle::unacked_work(&bus, &snap, Some(member))
+                            .items
+                            .is_empty()
+                    {
+                        return Err(format!(
+                            "{}/{member} has unacknowledged messages; settle them before changing to locked posture",
+                            state.id
+                        ));
+                    }
+                }
+            }
         }
         paths.initialize(state)?;
     }
@@ -501,6 +518,7 @@ fn start_members(
         let role = record.role_of(id)?;
         let member = v.team.roles.get(role)?;
         Some(MemberMeta {
+            interactive: member.interactive,
             role: role.to_string(),
             vendor: member.vendor.as_str().into(),
             posture: match v.posture(role) {
@@ -724,28 +742,24 @@ fn start_members(
         if let Some((key, value)) = keys.get(id) {
             env.insert(key.clone(), value.clone());
         }
-        // With a bus, each start is a new incarnation, recorded before its
-        // window exists and again once its pane is known.
-        let incarnation = match &storage {
-            Some(_) => {
-                let inc = Incarnation {
-                    member: id.clone(),
-                    incarnation: lifecycle::new_incarnation_id(state, id),
-                    started_at: utc_now(),
-                    vendor_version: if joining {
-                        vendor_version(member.vendor, &base)
-                    } else {
-                        meta.members.get(id).and_then(|m| m.vendor_version.clone())
-                    },
-                    pane: None,
-                    ended_at: None,
-                    ended_reason: None,
-                };
-                lifecycle::begin_incarnation(state, &inc)?;
-                env.insert(context::ENV_INCARNATION.into(), inc.incarnation.clone());
-                Some(inc)
-            }
-            None => None,
+        // Record every start before its window exists.
+        let incarnation = {
+            let inc = Incarnation {
+                member: id.clone(),
+                incarnation: lifecycle::new_incarnation_id(state, id),
+                started_at: utc_now(),
+                vendor_version: if joining {
+                    vendor_version(member.vendor, &base)
+                } else {
+                    meta.members.get(id).and_then(|m| m.vendor_version.clone())
+                },
+                pane: None,
+                ended_at: None,
+                ended_reason: None,
+            };
+            lifecycle::begin_incarnation(state, &inc)?;
+            env.insert(context::ENV_INCARNATION.into(), inc.incarnation.clone());
+            inc
         };
         let result = start_window(
             &tmux,
@@ -760,7 +774,7 @@ fn start_members(
                 cwd,
             },
         );
-        if let (Some(_), Err(_)) = (&incarnation, &result) {
+        if result.is_err() {
             // tmux didn't create the window, so nothing runs it.
             let _ = lifecycle::end_incarnation(state, id, lifecycle::ENDED_START_FAILED);
         }
@@ -769,28 +783,13 @@ fn start_members(
         }
         result?;
         any_window = true;
-        // Without a bus, the instance's state is where `status` learns that a
-        // member ran.
-        if storage.is_none()
-            && let Some(m) = meta.members.get_mut(id)
-            && m.started != Some(true)
-        {
-            m.started = Some(true);
-            write_private(
-                &state.meta_file(),
-                &serde_json::to_vec_pretty(&meta).map_err(|e| e.to_string())?,
-            )
-            .map_err(|e| format!("cannot write state: {e}"))?;
-        }
         let pane = lifecycle::pane_identity(&tmux, &session, id);
         if pane.is_none() && posture == Posture::Locked {
             // Without its pane, later checks couldn't tell this member from a
             // replacement, so it couldn't be stopped safely if its gate never
             // reported in. Stop it now, while the locks are held.
             let _ = tmux.kill_window(&session, id);
-            if incarnation.is_some() {
-                let _ = lifecycle::end_incarnation(state, id, lifecycle::ENDED_START_FAILED);
-            }
+            let _ = lifecycle::end_incarnation(state, id, lifecycle::ENDED_START_FAILED);
             set(
                 &mut outcomes,
                 id,
@@ -800,10 +799,17 @@ fn start_members(
             failed = true;
             continue;
         }
-        if let Some(mut inc) = incarnation {
-            inc.pane = pane.clone();
-            lifecycle::complete_incarnation(state, &inc)?;
+        let mut inc = incarnation;
+        inc.pane = pane.clone();
+        lifecycle::complete_incarnation(state, &inc)?;
+        if let Some(member_meta) = meta.members.get_mut(id) {
+            member_meta.started = Some(true);
         }
+        write_private(
+            &state.meta_file(),
+            &serde_json::to_vec_pretty(&meta).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| format!("cannot record member start: {e}"))?;
         started.push(Started {
             id: id.clone(),
             vendor: member.vendor,
@@ -1376,8 +1382,8 @@ pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
     })?;
     let dir = crate::team::find(team_arg, &config.teams)?;
     let v = validate_printing(&dir, true)?;
-    if v.team.bus.is_some() && has_member_context() {
-        return Err("members cannot create an independent team with a bus; ask a person, or declare it as a team role and run brg create <instance>/<role>".into());
+    if has_member_context() {
+        return Err("members cannot create an independent team; ask a person, or declare it as a team role and run brg create <instance>/<role>".into());
     }
     let folder_path = match folder.strip_prefix("~/") {
         Some(rest) => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest),
@@ -1646,7 +1652,6 @@ fn check_copy_folder(inst: &Instance, role: &crate::team::Role, id: &str) -> Res
 
 /// Member authority follows recorded parent edges, at any depth. Creation
 /// checks early, then every change repeats the check under the registry lock.
-/// Teams without a bus retain their existing caller rules.
 pub(crate) fn check_parent_authority(
     inst: &Instance,
     role: &str,
@@ -1659,13 +1664,6 @@ pub(crate) fn check_parent_authority(
     }
     let recorded = target.and_then(|id| state::read_meta(&inst.state)?.members.get(id).cloned());
     let parent = if let Some(recorded) = recorded {
-        // The store records whether the instance started with a bus. A
-        // damaged bus must not make a caller a person or prevent stopping.
-        if crate::bus::store::open(&inst.state)
-            .is_err_and(|f| f.code == crate::bus::outcome::Code::NotConfigured)
-        {
-            return Ok(());
-        }
         recorded.parent.map(|parent| parent_address(inst, &parent))
     } else {
         let loaded;
@@ -1676,9 +1674,6 @@ pub(crate) fn check_parent_authority(
                 &loaded
             }
         };
-        if v.team.bus.is_none() {
-            return Ok(());
-        }
         if !creating {
             return Err(format!(
                 "member `{}` has no recorded parent; ask a person to manage it",
@@ -1725,28 +1720,9 @@ fn parent_address(inst: &Instance, parent: &str) -> String {
 }
 
 /// A copy belongs below its recorded parent member, never below its roots.
-fn check_instance_authority(inst: &Instance, v: Option<&Validated>) -> Result<(), String> {
+fn check_instance_authority(inst: &Instance) -> Result<(), String> {
     if !has_member_context() {
         return Ok(());
-    }
-    if state::read_meta(&inst.state).is_some() {
-        if crate::bus::store::open(&inst.state)
-            .is_err_and(|f| f.code == crate::bus::outcome::Code::NotConfigured)
-        {
-            return Ok(());
-        }
-    } else {
-        let loaded;
-        let v = match v {
-            Some(v) => v,
-            None => {
-                loaded = validated(inst)?;
-                &loaded
-            }
-        };
-        if v.team.bus.is_none() {
-            return Ok(());
-        }
     }
     check_subtree_authority(inst.record.parent.clone(), &inst.id)
 }
@@ -1846,7 +1822,7 @@ fn repoint(inst: &mut Instance, team: &Path) -> Result<(), String> {
     let lock = registry::lock()?;
     inst.reload()?;
     crate::nesting::check_not_stopping(inst)?;
-    check_instance_authority(inst, None)?;
+    check_instance_authority(inst)?;
     if is_running(inst) {
         return Err(format!(
             "instance `{}` is running; a new team folder applies only from a full stop: brg stop {}",
@@ -1963,7 +1939,7 @@ fn start_instance(
         address::member(&inst, id)?;
         check_parent_authority(&inst, inst.record.role_of(id).unwrap(), Some(&v), Some(id))?;
     } else {
-        check_instance_authority(&inst, Some(&v))?;
+        check_instance_authority(&inst)?;
     }
     match member {
         Some(id) => start_members(lock, &inst, &v, vec![id], false),
@@ -2259,7 +2235,7 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
 pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
     let lock = registry::lock()?;
     inst.reload()?;
-    check_instance_authority(&inst, None)?;
+    check_instance_authority(&inst)?;
     let state_lock = lifecycle::lock_state(&inst.state)?;
     let copies = crate::nesting::descendants(&inst)?;
     if !copies.is_empty() {
@@ -2554,7 +2530,7 @@ pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> 
     if only.is_some() {
         return stop_one(&lock, inst, only);
     }
-    check_instance_authority(inst, None)?;
+    check_instance_authority(inst)?;
     let descendants = crate::nesting::descendants(inst)?;
     let mut copies = Vec::new();
     let mut errors = Vec::new();
@@ -3004,9 +2980,7 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
     let tmux = tmux_for(state);
     let windows = tmux.windows(&session);
     let meta = state::read_meta(state).unwrap_or_default();
-    let (counts, bus_note) = if v.team.bus.is_none() {
-        (None, None)
-    } else {
+    let (counts, bus_note) = {
         match crate::bus::store::open(state).and_then(|bus| {
             let snap = crate::bus::store::snapshot(&bus)?;
             if !snap.healthy() {
@@ -3502,7 +3476,12 @@ pub enum SendError {
     NotAlive(String),
     Blocked(String),
     Refused(String),
-    Busy(String),
+    Uncertain(String),
+    Committed {
+        id: String,
+        delivery: &'static str,
+        message: String,
+    },
 }
 
 impl SendError {
@@ -3512,7 +3491,7 @@ impl SendError {
             SendError::NotAlive(_) => 3,
             SendError::Blocked(_) => 4,
             SendError::Refused(_) => 5,
-            SendError::Busy(_) => 6,
+            SendError::Uncertain(_) | SendError::Committed { .. } => 5,
         }
     }
     pub fn message(&self) -> &str {
@@ -3521,7 +3500,8 @@ impl SendError {
             | SendError::NotAlive(m)
             | SendError::Blocked(m)
             | SendError::Refused(m)
-            | SendError::Busy(m) => m,
+            | SendError::Uncertain(m) => m,
+            SendError::Committed { message, .. } => message,
         }
     }
 }
@@ -3554,97 +3534,297 @@ pub fn check_text(text: &str) -> Result<(), SendError> {
     Ok(())
 }
 
-/// `brg send <instance>/<member> <text>`.
+/// The durable result of a send. Typing is an optional notification for ordinary recipients.
+#[derive(Debug, Serialize)]
+pub struct SendOutcome {
+    pub id: String,
+    pub delivery: &'static str,
+    pub reason: String,
+    pub message: String,
+}
+
+fn send_failure(f: crate::bus::outcome::Failure) -> SendError {
+    if f.code == crate::bus::outcome::Code::NotConfigured {
+        SendError::NotAlive(f.message)
+    } else {
+        SendError::Refused(f.message)
+    }
+}
+
+/// Store a message, then optionally submit its envelope to the same incarnation.
 pub fn send(
     inst: &Instance,
-    member: &str,
+    recipient: &str,
     text: &str,
     force: bool,
     from: Option<&str>,
-) -> Result<String, SendError> {
-    check_text(text)?;
-    let member = &address::member(inst, member).map_err(SendError::Usage)?;
-    let from = from
-        .map(|f| address::member(inst, f).map_err(SendError::Usage))
-        .transpose()?;
-    let from = from.as_deref();
-    let state = &inst.state;
-    let meta = state::read_meta(state)
-        .ok_or_else(|| SendError::NotAlive(format!("instance `{}` isn't running", inst.id)))?;
-    let member_meta = meta
-        .members
-        .get(member)
-        .ok_or_else(|| SendError::NotAlive(format!("`{}` hasn't started", inst.at(member))))?;
-    let vendor = match member_meta.vendor.as_str() {
-        "codex" => Vendor::Codex,
-        _ => Vendor::Claude,
+    external: Option<&str>,
+    reply_to: &[String],
+) -> Result<SendOutcome, SendError> {
+    use crate::bus::{
+        record::{Draft, Recipient},
+        store,
     };
-    let locked = member_meta.posture == "locked";
-    if let Some(from) = from {
-        let parent = meta.members.get(from).and_then(|m| m.parent.as_deref());
-        if parent != Some(member) {
+    check_text(text)?;
+    let caller = context::caller(external).map_err(send_failure)?;
+    if matches!(caller, context::Caller::Operator) {
+        return Err(SendError::Usage(
+            "outside senders must pass --external NAME".into(),
+        ));
+    }
+    // Nested roots cannot bypass D2 by naming another instance or an external author.
+    context::instance(Some(&inst.id)).map_err(send_failure)?;
+    let to = if matches!(Recipient::parse(recipient), Some(Recipient::External(_))) {
+        recipient.to_string()
+    } else {
+        address::member(inst, recipient).map_err(SendError::NotAlive)?
+    };
+    let bus = store::open(&inst.state).map_err(send_failure)?;
+    let from = from
+        .map(|id| address::member(inst, id).map_err(SendError::Refused))
+        .transpose()?;
+    if let Some(from) = &from {
+        if let context::Caller::Member { member, .. } = &caller
+            && member != from
+        {
+            return Err(SendError::Refused(
+                "--from must name the calling member".into(),
+            ));
+        }
+        if bus.meta.members.get(from).and_then(|m| m.parent.as_deref()) != Some(to.as_str()) {
             return Err(SendError::Refused(format!(
-                "`{from}` may only send to its parent, and `{member}` is not it"
+                "`{from}` may only send to its parent, and `{to}` is not it"
             )));
         }
     }
-    if locked && !state.gate_marker(member).exists() {
-        return Err(SendError::Refused(format!(
-            "`{member}` is `locked` but its gate is not active; it gets no input until it is (restart it with `brg stop {0}` and `brg start {0}`)",
-            inst.at(member)
+    let target_meta = bus.meta.members.get(&to);
+    if target_meta.is_none() && !matches!(Recipient::parse(&to), Some(Recipient::External(_))) {
+        return Err(SendError::NotAlive(format!(
+            "`{to}` has no recorded start; start it before sending"
         )));
     }
-    let session = state.session();
-    let tmux = tmux_for(state);
-
-    // Lock files are created at a start, outside any sandbox; inside one, `send`
-    // only opens its member's existing file read-only.
-    let lock = state::open_lock(&state.lock_file(member))
-        .map_err(|e| SendError::Refused(format!("cannot open the send lock: {e}")))?;
-    lock.lock()
-        .map_err(|e| SendError::Refused(format!("cannot lock: {e}")))?;
-
-    let w = tmux
-        .window(&session, member)
-        .ok_or_else(|| SendError::NotAlive(format!("`{member}` is not running")))?;
-    if w.dead {
-        return Err(SendError::NotAlive(format!("`{member}` has exited")));
+    let locked = target_meta.is_some_and(|m| m.posture == "locked");
+    let interactive = target_meta.is_some_and(|m| m.interactive);
+    let vendor = if target_meta.is_some_and(|m| m.vendor == "codex") {
+        Vendor::Codex
+    } else {
+        Vendor::Claude
+    };
+    let original = if target_meta.is_some() {
+        lifecycle::load_incarnation(&inst.state, &to).map_err(SendError::Refused)?
+    } else {
+        None
+    };
+    let pane = original
+        .as_ref()
+        .filter(|inc| inc.ended_at.is_none())
+        .and_then(|inc| inc.pane.clone());
+    let tmux = tmux_for(&inst.state);
+    if locked {
+        let pane = pane
+            .as_ref()
+            .ok_or_else(|| SendError::NotAlive(format!("`{to}` is not running")))?;
+        let before = send_snapshot(
+            &tmux.with_socket(&pane.socket),
+            &inst.state,
+            &to,
+            pane,
+            vendor,
+            force,
+            true,
+        )?;
+        let mut view = crate::composer::view(vendor, &before.screen, Some(before.geometry))
+            .map_err(SendError::Refused)?;
+        view.busy = false;
+        if view.reading() != crate::composer::Reading::Empty {
+            return Err(SendError::Refused(
+                "locked input box is not positively empty; draft preserved".into(),
+            ));
+        }
+        let actor = store::actor_for(&bus, &caller).map_err(send_failure)?;
+        // Reserve the widest possible record ID before allocating one.
+        let preview = send_envelope(
+            "m18446744073709551615",
+            &store::actor_label(&actor),
+            from.as_deref(),
+            text,
+            false,
+        );
+        if !view.can_verify_submission(&preview, before.screen.lines().count()) {
+            return Err(SendError::Refused(
+                "message exceeds the locked screen-verification budget; nothing recorded or pasted"
+                    .into(),
+            ));
+        }
     }
+    let draft = serde_json::to_vec(&Draft {
+        to: to.clone(),
+        body: text.into(),
+        reply_to: reply_to.to_vec(),
+    })
+    .map_err(|e| SendError::Refused(e.to_string()))?;
+    let record = store::publish(&bus, &caller, &draft).map_err(send_failure)?;
+    let mut outcome = SendOutcome {
+        id: record.id.clone(),
+        delivery: "stored",
+        reason: "recipient is not running".into(),
+        message: format!("committed: {} (to {to})", record.id),
+    };
+    if target_meta.is_none() {
+        outcome.reason = "external inbox".into();
+        return Ok(outcome);
+    }
+    if interactive {
+        outcome.reason = "interactive recipient".into();
+        return Ok(outcome);
+    }
+    let envelope = send_envelope(
+        &record.id,
+        &record.from,
+        from.as_deref(),
+        &record.body,
+        record.ack_required,
+    );
+    let typed = (|| {
+        let pane = pane
+            .as_ref()
+            .ok_or_else(|| SendError::NotAlive(format!("`{to}` is not running")))?;
+        let lock = state::open_lock(&inst.state.lock_file(&to))
+            .map_err(|e| SendError::Refused(format!("cannot open send lock: {e}")))?;
+        lock.lock()
+            .map_err(|e| SendError::Refused(format!("cannot lock send: {e}")))?;
+        let current = lifecycle::load_incarnation(&inst.state, &to).map_err(SendError::Refused)?;
+        if current.as_ref().is_none_or(|inc| {
+            inc.ended_at.is_some()
+                || inc.incarnation != original.as_ref().expect("pane has incarnation").incarnation
+                || inc.pane.as_ref() != Some(pane)
+        }) {
+            return Err(SendError::Refused(
+                "recipient incarnation changed after commit".into(),
+            ));
+        }
+        let meta = state::read_meta(&inst.state)
+            .ok_or_else(|| SendError::Refused("recipient metadata unavailable".into()))?;
+        if meta
+            .members
+            .get(&to)
+            .is_none_or(|m| m.interactive || (m.posture == "locked") != locked)
+        {
+            return Err(SendError::Refused(
+                "recipient delivery posture changed after commit".into(),
+            ));
+        }
+        let tmux = tmux.with_socket(&pane.socket);
+        let before = send_snapshot(&tmux, &inst.state, &to, pane, vendor, force, locked)?;
+        let mut view = crate::composer::view(vendor, &before.screen, Some(before.geometry))
+            .map_err(SendError::Refused)?;
+        view.busy = false; // Working is allowed; the input box must still be empty.
+        if view.reading() != crate::composer::Reading::Empty {
+            return Err(SendError::Refused(
+                "input box is not positively empty; draft preserved".into(),
+            ));
+        }
+        if !view.can_verify_submission(&envelope, before.screen.lines().count()) {
+            return Err(SendError::Refused(
+                "message exceeds the screen-verification budget; no text pasted".into(),
+            ));
+        }
+        paste_send(&tmux, &inst.state, &to, pane, vendor, locked, &envelope)
+    })();
+    match typed {
+        Ok(()) => {
+            outcome.delivery = "typed";
+            outcome.reason = "submitted".into();
+            Ok(outcome)
+        }
+        Err(error) => {
+            let uncertain = matches!(error, SendError::Uncertain(_));
+            if locked {
+                Err(SendError::Committed {
+                    id: record.id,
+                    delivery: if uncertain {
+                        "uncertain"
+                    } else {
+                        "recorded-not-typed"
+                    },
+                    message: error.message().to_string(),
+                })
+            } else {
+                outcome.delivery = if uncertain { "uncertain" } else { "stored" };
+                outcome.reason = error.message().to_string();
+                Ok(outcome)
+            }
+        }
+    }
+}
+
+fn send_envelope(
+    id: &str,
+    author: &str,
+    from: Option<&str>,
+    body: &str,
+    ack_required: bool,
+) -> String {
+    let relay = from
+        .map(|from| format!("; relayed for {from}"))
+        .unwrap_or_default();
+    if ack_required {
+        format!(
+            "[brg {id} from {author}{relay}]\n{body}\n[Ignore duplicate delivery if already acked; otherwise brg msg ack {id} when taking responsibility.]"
+        )
+    } else {
+        format!("[brg {id} from {author}{relay}; ack not required]\n{body}")
+    }
+}
+
+fn send_snapshot(
+    tmux: &Tmux,
+    state: &StateDir,
+    member: &str,
+    pane: &PaneIdentity,
+    vendor: Vendor,
+    force: bool,
+    locked: bool,
+) -> Result<crate::wake::Snapshot, SendError> {
+    if locked && !state.gate_marker(member).exists() {
+        return Err(SendError::Refused(
+            "locked recipient's gate is not active".into(),
+        ));
+    }
+    let snap = crate::wake::snapshot(tmux, pane)
+        .ok_or_else(|| SendError::NotAlive("recipient pane is not alive or changed".into()))?;
     let rules = rules::load(vendor).map_err(SendError::Refused)?;
-    let reading = rules.read(&w.title, &tmux.capture(&session, member));
-    match reading.state {
+    let plain = crate::composer::plain(&crate::composer::parse(&snap.screen));
+    match rules.read(&snap.title, &plain).state {
         State::Blocked => {
-            return Err(SendError::Blocked(format!(
-                "`{member}` is waiting at a prompt; attach to answer it (`brg attach {}`)",
-                inst.at(member)
-            )));
+            return Err(SendError::Blocked(
+                "recipient is waiting at a dialog; no input sent".into(),
+            ));
         }
         State::Unknown if !force => {
-            return Err(SendError::Refused(format!(
-                "`{member}`'s state is unknown; pass --force to send anyway"
-            )));
-        }
-        // In `vendor` posture a permission dialog can appear mid-turn, and an
-        // Enter meant for the prompt would answer it. `locked` members can't
-        // be prompted, so they take input while working.
-        State::Working if !locked => {
-            return Err(SendError::Busy(format!(
-                "`{member}` is in the middle of a turn; try again when it is idle"
-            )));
+            return Err(SendError::Refused(
+                "recipient state is unknown; --force permits the state check only".into(),
+            ));
         }
         _ => {}
     }
-    // Keys would go to copy mode, not the member: its Enter would be lost.
-    if w.in_mode {
-        return Err(SendError::Blocked(format!(
-            "`{member}`: {}; nothing was sent. To send, {}",
-            tmux::IN_MODE,
-            tmux::leave_mode_hint(&inst.at(member))
-        )));
+    if snap.in_mode {
+        return Err(SendError::Blocked("recipient pane is in copy mode".into()));
     }
+    Ok(snap)
+}
 
+fn paste_send(
+    tmux: &Tmux,
+    state: &StateDir,
+    member: &str,
+    pane: &PaneIdentity,
+    vendor: Vendor,
+    locked: bool,
+    text: &str,
+) -> Result<(), SendError> {
     let buffer = format!(
-        "brg-{}-{}",
+        "brg-send-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -3653,37 +3833,53 @@ pub fn send(
     );
     tmux.run_with_stdin(&["load-buffer", "-b", &buffer, "-"], text.as_bytes())
         .map_err(SendError::Refused)?;
-    let t = target(&session, member);
-    let pasted = tmux
-        .ok(&["paste-buffer", "-p", "-d", "-b", &buffer, "-t", &t])
-        .map_err(SendError::Refused);
-    if pasted.is_err() {
+    if let Err(e) = tmux.ok(&[
+        "paste-buffer",
+        "-p",
+        "-d",
+        "-b",
+        &buffer,
+        "-t",
+        &pane.pane_id,
+    ]) {
         let _ = tmux.run(&["delete-buffer", "-b", &buffer]);
+        return Err(SendError::Uncertain(format!("paste failed: {e}")));
     }
-    pasted?;
-    // Check again before pressing Enter, in case a dialog appeared or the
-    // pane went into copy mode meanwhile.
-    let now = tmux.window(&session, member);
-    let title = now.as_ref().map(|w| w.title.clone()).unwrap_or_default();
-    if rules.read(&title, &tmux.capture(&session, member)).state == State::Blocked {
-        return Err(SendError::Blocked(format!(
-            "`{member}` showed a prompt while the text was being pasted; Enter was not pressed. Attach to check it (`brg attach {}`)",
-            inst.at(member)
-        )));
+    // After paste, Unknown alone is expected when a vendor hides its idle footer.
+    // The exact composer check below and dialog/copy/pane checks still apply.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let after = send_snapshot(tmux, state, member, pane, vendor, true, locked)
+            .map_err(|e| SendError::Uncertain(e.message().into()))?;
+        if crate::composer::view(vendor, &after.screen, Some(after.geometry))
+            .is_ok_and(|view| view.holds_submission(text))
+        {
+            break;
+        }
+        if Instant::now() >= deadline {
+            return Err(SendError::Uncertain(
+                "pasted text cannot be verified exactly; Enter withheld, inspect the draft".into(),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
-    // A window that can't be read now counts as one in copy mode: Enter is
-    // only pressed on a pane known to take it.
-    if now.as_ref().is_none_or(|w| w.in_mode) {
-        return Err(SendError::Blocked(format!(
-            "`{member}`: {} after the text was pasted; Enter was not pressed, and the text is in its input box. Check it: {}",
-            tmux::IN_MODE,
-            tmux::leave_mode_hint(&inst.at(member))
-        )));
+    tmux.ok(&["send-keys", "-t", &pane.pane_id, "Enter"])
+        .map_err(SendError::Uncertain)?;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let after = send_snapshot(tmux, state, member, pane, vendor, true, locked)
+            .map_err(|e| SendError::Uncertain(e.message().into()))?;
+        if crate::wake::after_enter(vendor, Some(&after)).is_ok() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(SendError::Uncertain(
+                "Enter sent but submission could not be confirmed; do not automatically retry"
+                    .into(),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
-    tmux.ok(&["send-keys", "-t", &t, "Enter"])
-        .map_err(SendError::Refused)?;
-    drop(lock);
-    Ok(format!("sent to {member}"))
 }
 
 /// `brg logs <instance>/<member>` (or a plugin process).

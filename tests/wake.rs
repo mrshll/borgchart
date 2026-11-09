@@ -807,3 +807,252 @@ fn a_pane_is_found_by_its_socket_path() {
     assert_eq!(r, WakeResult::Submitted);
     assert_eq!(e.submissions(), vec![REMINDER.to_string()]);
 }
+
+impl Env {
+    fn send_setup(&self, vendor: Vendor, locked: bool, interactive: bool) {
+        use serde_json::json;
+        let write = |path: &std::path::Path, value: serde_json::Value| {
+            borgchart::state::write_private(path, &serde_json::to_vec(&value).unwrap()).unwrap();
+        };
+        let folder = self.dir.path();
+        write(
+            &folder.join("registry.json"),
+            json!({"schema":1,"instances":{"state":{
+            "team":"sample","team_dir":folder,"folder":folder,"created_at":"2026-11-09T00:00:00Z"
+        }},"issued":{}}),
+        );
+        write(
+            &self.state.instance_file(),
+            json!({"schema":1,"id":"state","team":"sample",
+            "team_dir":folder,"folder":folder,"created_at":"2026-11-09T00:00:00Z","members":{"m":{"role":"worker"}}}),
+        );
+        write(
+            &self.state.meta_file(),
+            json!({"team_dir":folder,"folder":folder,
+            "brg":env!("CARGO_BIN_EXE_brg"),"base_env":{},"plugins":{},"members":{"m":{
+                "role":"worker","vendor":vendor.as_str(),"posture":if locked {"locked"} else {"vendor"},
+                "interactive":interactive,"parent":null,"vendor_version":null
+            }}}),
+        );
+        write(
+            &self.state.current_incarnation("m"),
+            json!({"member":"m","incarnation":"m-1",
+            "started_at":"2026-11-09T00:00:00Z","pane":self.pane()}),
+        );
+        borgchart::bus::layout::StorePaths::new(&self.state)
+            .initialize(&self.state)
+            .unwrap();
+        if locked {
+            fs::write(self.state.gate_marker("m"), "active").unwrap();
+        }
+    }
+
+    fn send_message(&self, text: &str, extra: &[&str]) -> (i32, serde_json::Value) {
+        let mut cmd = common::command(env!("CARGO_BIN_EXE_brg"));
+        cmd.env_clear()
+            .env(
+                "PATH",
+                self.private
+                    .path_with(&std::env::var("PATH").unwrap_or_default()),
+            )
+            .env("HOME", self.dir.path())
+            .env("BORGCHART_STATE_HOME", self.dir.path())
+            .env("BORGCHART_CONFIG", self.dir.path().join("unused.yaml"))
+            .args(["send", "state/m", text, "--external", "test", "--json"])
+            .args(extra);
+        self.private.brg_env(&mut cmd, &self.socket);
+        let out = cmd.output().unwrap();
+        let value = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{out:?}"));
+        (out.status.code().unwrap(), value)
+    }
+}
+
+#[test]
+fn unified_send_types_into_working_composers_and_keeps_a_record() {
+    for vendor in [Vendor::Claude, Vendor::Codex] {
+        let e = Env::new(vendor);
+        e.send_setup(vendor, false, false);
+        e.control("mode=working");
+        let (code, out) = e.send_message("hello\nsecond line", &[]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(out["delivery"], "typed", "{out}");
+        let submits = e.events("submit");
+        assert_eq!(submits.len(), 1, "{submits:?}");
+        let body = submits[0]["text"].as_str().unwrap();
+        assert!(body.contains("[brg m1 from external:test]"), "{body}");
+        assert!(body.contains("hello\nsecond line"), "{body}");
+        assert!(body.contains("brg msg ack m1"), "{body}");
+        let bus = borgchart::bus::store::open(&e.state).unwrap();
+        let snap = borgchart::bus::store::snapshot(&bus).unwrap();
+        assert_eq!(snap.records[&1].body, "hello\nsecond line");
+        assert!(snap.records[&1].ack_required);
+        assert!(snap.acks.is_empty());
+    }
+}
+
+#[test]
+fn unified_send_preserves_drafts_and_skips_unverifiable_and_interactive_messages() {
+    for (interactive, text, draft) in [
+        (true, "hello".to_string(), false),
+        (false, "x".repeat(16 * 1024), false),
+        (false, "line\n".repeat(20), false),
+        (false, "hello".to_string(), true),
+    ] {
+        let e = Env::new(Vendor::Claude);
+        e.send_setup(Vendor::Claude, false, interactive);
+        if draft {
+            e.keys(&["draft"]);
+        }
+        let (code, out) = e.send_message(&text, &["--force"]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(out["delivery"], "stored", "{out}");
+        assert!(e.events("paste").is_empty());
+        assert!(e.events("submit").is_empty());
+        if draft {
+            assert!(e.screen().contains("draft"));
+        }
+    }
+}
+
+#[test]
+fn unified_send_rechecks_dialogs_after_paste_and_reports_locked_uncertainty() {
+    for locked in [false, true] {
+        let e = Env::new(Vendor::Claude);
+        e.send_setup(Vendor::Claude, locked, false);
+        e.control("on_paste=dialog");
+        let (code, out) = e.send_message("hello", &[]);
+        assert_eq!(code, if locked { 5 } else { 0 }, "{out}");
+        assert_eq!(out["id"], "m1");
+        assert_eq!(out["delivery"], "uncertain", "{out}");
+        assert!(e.events("submit").is_empty());
+        let bus = borgchart::bus::store::open(&e.state).unwrap();
+        let snap = borgchart::bus::store::snapshot(&bus).unwrap();
+        assert_eq!(snap.records[&1].ack_required, !locked);
+        assert_eq!(
+            borgchart::bus::store::progress(&bus, &snap)["m"].unread,
+            usize::from(!locked)
+        );
+        if locked {
+            let actor = borgchart::bus::context::Caller::Member {
+                member: "m".into(),
+                incarnation: "m-1".into(),
+            };
+            let ack = borgchart::bus::store::ack(&bus, &actor, &["m1".into()]).unwrap();
+            assert_eq!(ack[0].1, borgchart::bus::store::AckOutcome::NotRequired);
+            assert!(!bus.paths.ack("m1").exists());
+            assert!(
+                borgchart::lifecycle::open_work(&e.state)
+                    .unwrap()
+                    .items
+                    .is_empty()
+            );
+        }
+    }
+}
+
+#[test]
+fn locked_dialog_is_refused_before_recording_even_with_force() {
+    let e = Env::new(Vendor::Claude);
+    e.send_setup(Vendor::Claude, true, false);
+    e.control("mode=dialog");
+    let (code, out) = e.send_message("hello", &["--force"]);
+    assert_eq!(code, 4, "{out}");
+    assert!(out.get("id").is_none());
+    let bus = borgchart::bus::store::open(&e.state).unwrap();
+    assert!(
+        borgchart::bus::store::snapshot(&bus)
+            .unwrap()
+            .records
+            .is_empty()
+    );
+    assert!(e.events("paste").is_empty());
+}
+
+#[test]
+fn locked_delivery_has_no_ack_hint_and_stays_no_ack_after_posture_change() {
+    let e = Env::new(Vendor::Claude);
+    e.send_setup(Vendor::Claude, true, false);
+    let (code, out) = e.send_message("hello", &[]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(out["delivery"], "typed", "{out}");
+    let submissions = e.events("submit");
+    let text = submissions[0]["text"].as_str().unwrap();
+    assert!(text.contains("ack not required"), "{text}");
+    assert!(!text.contains("brg msg ack"), "{text}");
+    e.send_setup(Vendor::Claude, false, false);
+    let bus = borgchart::bus::store::open(&e.state).unwrap();
+    let snap = borgchart::bus::store::snapshot(&bus).unwrap();
+    assert!(!snap.records[&1].ack_required);
+    assert_eq!(borgchart::bus::store::progress(&bus, &snap)["m"].unread, 0);
+    let wrong_actor = borgchart::bus::context::Caller::External {
+        name: "test".into(),
+    };
+    assert!(borgchart::bus::store::ack(&bus, &wrong_actor, &["m1".into()]).is_err());
+}
+
+#[test]
+fn enter_without_observed_submission_is_uncertain_and_never_retried() {
+    let e = Env::new(Vendor::Claude);
+    e.send_setup(Vendor::Claude, true, false);
+    e.control("enter=ignore");
+    let (code, out) = e.send_message("hello", &[]);
+    assert_eq!(code, 5, "{out}");
+    assert_eq!(out["delivery"], "uncertain", "{out}");
+    assert_eq!(out["id"], "m1");
+    assert_eq!(e.events("enter").len(), 1);
+    assert!(e.events("submit").is_empty());
+}
+
+#[test]
+fn locked_oversize_refuses_before_commit_or_paste() {
+    let e = Env::new(Vendor::Claude);
+    e.send_setup(Vendor::Claude, true, false);
+    let (code, out) = e.send_message(&"x".repeat(16 * 1024), &[]);
+    assert_eq!(code, 5, "{out}");
+    assert!(out.get("id").is_none());
+    assert!(e.events("paste").is_empty());
+    let bus = borgchart::bus::store::open(&e.state).unwrap();
+    assert!(
+        borgchart::bus::store::snapshot(&bus)
+            .unwrap()
+            .records
+            .is_empty()
+    );
+}
+
+#[test]
+fn an_ack_file_for_a_locked_record_is_corrupt_not_consumption() {
+    let e = Env::new(Vendor::Claude);
+    e.send_setup(Vendor::Claude, true, false);
+    assert_eq!(e.send_message("hello", &[]).0, 0);
+    let bus = borgchart::bus::store::open(&e.state).unwrap();
+    let actor = borgchart::bus::context::Caller::Member {
+        member: "m".into(),
+        incarnation: "m-1".into(),
+    };
+    assert_eq!(
+        borgchart::bus::store::ack(&bus, &actor, &["m1".into()]).unwrap()[0].1,
+        borgchart::bus::store::AckOutcome::NotRequired
+    );
+    assert!(
+        !bus.paths.acks_dir().exists()
+            || fs::read_dir(bus.paths.acks_dir()).unwrap().next().is_none()
+    );
+    borgchart::state::write_private(
+        &bus.paths.ack("m1"),
+        &serde_json::to_vec(&serde_json::json!({
+            "schema":3,"id":"m1","at":"2026-11-09T00:00:00Z",
+            "by":{"type":"member","member":"m","incarnation":"m-1"}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let snap = borgchart::bus::store::snapshot(&bus).unwrap();
+    assert!(!snap.healthy());
+    assert!(
+        snap.problems
+            .iter()
+            .any(|p| p.contains("does not require acknowledgement"))
+    );
+    assert!(!snap.is_acked(1));
+}

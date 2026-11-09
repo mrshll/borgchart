@@ -230,7 +230,7 @@ pub struct OpenWork {
     pub items: Vec<String>,
 }
 
-/// The open work in `state`'s messages (none without a bus). `Err` when
+/// The open work in `state`'s messages (none before its first start). `Err` when
 /// the messages can't be read: their contents can't be inspected.
 pub fn open_work(state: &StateDir) -> Result<OpenWork, String> {
     use crate::bus::outcome::Code;
@@ -258,7 +258,11 @@ pub(crate) fn unacked_work(
     only: Option<&str>,
 ) -> OpenWork {
     let mut work = OpenWork::default();
-    for r in snap.records.values().filter(|r| !snap.is_acked(r.seq)) {
+    for r in snap
+        .records
+        .values()
+        .filter(|r| r.ack_required && !snap.is_acked(r.seq))
+    {
         if only.is_some_and(|member| r.to != member)
             || bus.record.members.get(&r.to).is_some_and(|m| m.deleted)
         {

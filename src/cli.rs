@@ -1,5 +1,6 @@
 //! Command-line interface for `brg` (also installed as `borgchart`).
 
+use std::io::Read;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -135,7 +136,8 @@ enum Command {
         #[arg(short = 'n', long, default_value_t = 200)]
         lines: usize,
     },
-    /// Paste text into a member and press Enter, as one submission.
+    /// Store a message and submit it to a non-interactive recipient when safe.
+    #[command(after_long_help = crate::bus::help::send())]
     Send {
         /// The member to type into: `<instance>/<member>`.
         member: String,
@@ -149,11 +151,17 @@ enum Command {
         /// message): brg checks that the target is that member's parent.
         #[arg(long)]
         from: Option<String>,
-        /// Print {ok, code, message} as JSON.
+        /// Name an outside author; members use their own fenced identity.
+        #[arg(long)]
+        external: Option<String>,
+        /// Reference an existing record (repeatable).
+        #[arg(long)]
+        reply_to: Vec<String>,
+        /// Print {ok, code, message, id, delivery, reason} as JSON.
         #[arg(long)]
         json: bool,
     },
-    /// Publish, read and acknowledge bus records.
+    /// Read and acknowledge bus records.
     Msg {
         /// The instance (outside a member; inside one, only its own).
         #[arg(long, global = true)]
@@ -226,6 +234,33 @@ fn instance_and_name(arg: &str) -> Result<(Instance, String), String> {
             address::members_list(&inst)
         )),
     }
+}
+
+fn send_target(arg: &str) -> Result<(Instance, String), runtime::SendError> {
+    use runtime::SendError::{NotAlive, Usage};
+    let (instance, name) = arg
+        .rsplit_once('/')
+        .map_or((None, arg), |(i, n)| (Some(i), n));
+    if instance.is_some_and(|id| !id.split('/').all(crate::names::is_valid_member_id)) {
+        return Err(Usage("invalid target instance syntax".into()));
+    }
+    if name.starts_with("external:") {
+        if crate::bus::record::Recipient::parse(name).is_none() {
+            return Err(Usage("invalid external recipient".into()));
+        }
+        let id = instance
+            .map(str::to_string)
+            .or_else(address::own)
+            .ok_or_else(|| Usage("name the target instance".into()))?;
+        return Ok((address::instance(&id).map_err(NotAlive)?, name.to_string()));
+    }
+    if !arg.split('/').all(crate::names::is_valid_member_id) {
+        return Err(Usage("invalid target address syntax".into()));
+    }
+    if instance.is_none() && address::own().is_none() {
+        return Err(Usage("name the target instance".into()));
+    }
+    instance_and_name(arg).map_err(NotAlive)
 }
 
 fn print_outcome(outcome: runtime::UpOutcome) -> ExitCode {
@@ -444,35 +479,71 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
             text,
             force,
             from,
+            external,
+            reply_to,
             json,
         } => {
-            let text = text.join(" ");
-            let result = instance_and_name(&member)
-                .map_err(runtime::SendError::Usage)
-                .and_then(|(inst, name)| {
-                    runtime::send(&inst, &name, &text, force, from.as_deref())
-                });
-            if json {
-                let out = match &result {
-                    Ok(m) => serde_json::json!({"ok": true, "code": 0, "message": m}),
-                    Err(e) => {
-                        serde_json::json!({"ok": false, "code": e.code(), "message": e.message()})
-                    }
-                };
-                println!("{out}");
-            }
+            let result = (|| {
+                let mut text = text.join(" ");
+                if text == "-" {
+                    text.clear();
+                    std::io::stdin()
+                        .take((runtime::MAX_SEND_BYTES + 1) as u64)
+                        .read_to_string(&mut text)
+                        .map_err(|e| {
+                            runtime::SendError::Usage(format!("cannot read stdin: {e}"))
+                        })?;
+                }
+                let (inst, name) = send_target(&member)?;
+                runtime::send(
+                    &inst,
+                    &name,
+                    &text,
+                    force,
+                    from.as_deref(),
+                    external.as_deref(),
+                    &reply_to,
+                )
+            })();
             match result {
-                Ok(m) => {
-                    if !json {
-                        println!("{m}");
+                Ok(out) => {
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::json!({"ok": true, "code": 0, "outcome": "committed", "message": out.message, "id": out.id, "delivery": out.delivery, "reason": out.reason})
+                        );
+                    } else {
+                        println!("{}: {} ({})", out.message, out.delivery, out.reason);
                     }
                     ExitCode::SUCCESS
                 }
-                Err(e) => {
-                    if !json {
-                        eprintln!("brg: {}", e.message());
+                Err(error) => {
+                    if json {
+                        let outcome = match error.code() {
+                            2 => "usage",
+                            3 => "not-alive",
+                            4 => "blocked",
+                            _ => "refused",
+                        };
+                        let mut value = serde_json::json!({"ok": false, "code": error.code(), "outcome": outcome, "message": error.message()});
+                        if let runtime::SendError::Committed { id, delivery, .. } = &error {
+                            value["id"] = id.clone().into();
+                            value["delivery"] = (*delivery).into();
+                            value["reason"] = error.message().into();
+                        }
+                        println!("{value}");
+                    } else {
+                        eprintln!(
+                            "brg: {}{}",
+                            error.message(),
+                            match &error {
+                                runtime::SendError::Committed { id, .. } =>
+                                    format!(" (committed {id})"),
+                                _ => String::new(),
+                            }
+                        );
                     }
-                    ExitCode::from(e.code())
+                    ExitCode::from(error.code())
                 }
             }
         }

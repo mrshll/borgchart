@@ -1,7 +1,7 @@
 //! A development team (`dev-team/`) and its design panel
 //! (`dev-design-team/`): the README's deployment validates, the member
 //! files expand and stay generic, one message round works with `fake-agent`
-//! members, and the lead can seat the design panel.
+//! members, and the owner can seat the design panel.
 
 mod common;
 
@@ -430,17 +430,34 @@ mod round {
                 .unwrap()
         }
 
-        /// Run a shell script inside `role`'s member, as its own tool call.
+        /// Execute fixture tools with the member's captured, fenced environment.
+        /// Fixture setup must not depend on typing into an interactive lead.
+        fn run_tool(&self, member: &str, path: &Path) {
+            let log =
+                fs::read_to_string(self.path(&format!("home/fake-agent/{member}.jsonl"))).unwrap();
+            let start: serde_json::Value = log
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .rfind(|event| event["event"] == "start")
+                .unwrap();
+            let env: std::collections::BTreeMap<String, String> =
+                serde_json::from_value(start["env"].clone()).unwrap();
+            let status = Command::new("/bin/sh")
+                .arg(path)
+                .env_clear()
+                .envs(env)
+                .current_dir(start["cwd"].as_str().unwrap())
+                .status()
+                .unwrap();
+            assert!(status.success(), "fixture tool: {status}");
+        }
+
         fn run_in(&self, role: &str, name: &str, script: &str) {
             let path = self.path(&format!("s/{name}.sh"));
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(&path, script).unwrap();
             self.wait_idle(role);
-            self.ok(&[
-                "send",
-                &self.at(role),
-                &format!("tool sh {}", path.display()),
-            ]);
+            self.run_tool(&self.m(role), &path);
         }
 
         fn wait_idle(&self, role: &str) {
@@ -604,13 +621,14 @@ mod round {
         let brief_tmp = notes.join("change-brief.md.tmp");
         fs::write(&brief_tmp, format!("Task: a fictional change.\nScope: tests only.\nNon-goals: product changes.\nChecks: fake round.\nBranch: example/change.\nCheckout: {}\nReport: {}\nDeadline: 2026-11-09T00:00:00Z\n", copy_folder.display(), report.display())).unwrap();
         fs::rename(brief_tmp, &brief).unwrap();
-        let assign = documented(&lead_body, "\"$BORGCHART_BIN\" msg publish")
+        let assign = documented(&lead_body, "\"$BORGCHART_BIN\" send")
             .replace("<member>", &implementer)
             .replace("<brief path>", &brief.display().to_string());
         team.documented("lead", "brief", &assign, false);
         let (sent, code) = team.output("brief");
         assert_eq!(code, 0, "{sent}");
         assert_eq!(sent["id"], "m1");
+        assert_eq!(sent["delivery"], "stored");
 
         // The lead arms its documented wait before the helper replies.
         let wait = documented(&lead_body, "\"$BORGCHART_BIN\" inbox wait --json");
@@ -644,6 +662,7 @@ mod round {
         let (inbox, code) = team.output("impl-inbox");
         assert_eq!(code, 0, "{inbox}");
         assert_eq!(ids(&inbox), ["m1"]);
+        assert_eq!(inbox["records"][0]["ack_required"], true);
         assert!(
             inbox["records"][0]["body"]
                 .as_str()
@@ -669,17 +688,20 @@ mod round {
             ),
         );
         team.wait_for("the report", || report.exists());
-        let reply = documented(&base, "\"$BORGCHART_BIN\" msg publish")
+        let reply = documented(&base, "\"$BORGCHART_BIN\" send")
             .replace("<parent>", &lead)
-            .replace("<brief ID>", "m1")
+            .replace("<brief-ID>", "m1")
             .replace("<report path>", &report.display().to_string())
             .replace("<action-needed line>", "action-needed: none");
         team.documented("implementer", "report-reply", &reply, false);
         let (sent, code) = team.output("report-reply");
         assert_eq!(code, 0, "{sent}");
         assert_eq!(sent["id"], "m2");
+        assert_eq!(sent["delivery"], "stored");
+        assert!(!team.log("lead").contains("\"event\":\"submit\""));
         let (woke, code) = team.output("reply-wait");
         assert_eq!((code, ids(&woke)), (0, vec!["m2".to_string()]));
+        assert_eq!(woke["records"][0]["ack_required"], true);
         assert_eq!(woke["records"][0]["reply_to"], serde_json::json!(["m1"]));
         assert!(
             woke["records"][0]["body"]
@@ -718,36 +740,25 @@ mod round {
         team.ok(&["stop", &team.inst()]);
     }
 
-    /// The lead seats the design panel as a separate instance, from inside
-    /// the lead: `create` from the panel's team in the design checkout, then
-    /// `stop` and `delete` by the instance's ID.
+    /// Only the owner creates the independent design instance.
     #[test]
-    fn the_lead_seats_the_design_panel_as_an_instance() {
+    fn the_owner_seats_the_design_panel_as_an_instance() {
         let team = new_team("design");
         team.create();
-
-        let run = |name: &str, args: &str| {
-            let out = team.path(&format!("s/{name}.out"));
-            team.run_in(
-                "lead",
-                name,
-                &format!(
-                    "\"$BORGCHART_BIN\" {args} > {o} 2>&1; echo \"exit $?\" >> {o}\n",
-                    o = out.display()
-                ),
-            );
-            team.wait_for(&format!("{name} output"), || {
-                fs::read_to_string(&out).is_ok_and(|t| t.contains("exit "))
-            });
-            fs::read_to_string(&out).unwrap()
+        let folder = team.path("work/design").display().to_string();
+        let refused = as_lead(&team, &["create", "dev-design-team", &folder]);
+        assert!(!refused.status.success());
+        assert!(team.instance_of("dev-design-team").is_none());
+        let run = |args: &[&str]| {
+            let output = team.brg(args);
+            format!(
+                "{}{}exit {}\n",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+                output.status.code().unwrap()
+            )
         };
-        let up = run(
-            "panel-up",
-            &format!(
-                "create dev-design-team {}",
-                team.path("work/design").display()
-            ),
-        );
+        let up = run(&["create", "dev-design-team", &folder]);
         assert!(up.ends_with("exit 0\n"), "{up}");
         let panel = up.split_whitespace().next().unwrap().to_string();
         assert!(panel.starts_with("dev-design-team-"), "{up}");
@@ -804,11 +815,7 @@ mod round {
                         .any(|r| r["member"] == member.as_str() && r["state"] == "idle")
                 })
             });
-            team.ok(&[
-                "send",
-                &format!("{panel}/{member}"),
-                &format!("tool sh {}", script.display()),
-            ]);
+            team.run_tool(&member, &script);
         }
         let rule = fs::read_to_string(dev_team().join("orchestrator.md")).unwrap();
         let wait = rule
@@ -843,14 +850,14 @@ mod round {
             }
         }
 
-        let down = run("panel-down", &format!("stop {panel}"));
+        let down = run(&["stop", &panel]);
         assert!(down.ends_with("exit 0\n"), "{down}");
         let rows: serde_json::Value =
             serde_json::from_slice(&team.brg(&["status", &panel, "--json"]).stdout).unwrap();
         for row in rows.as_array().unwrap() {
             assert_eq!(row["state"], "stopped", "{rows}");
         }
-        let gone = run("panel-delete", &format!("delete {panel}"));
+        let gone = run(&["delete", &panel]);
         assert!(gone.ends_with("exit 0\n"), "{gone}");
         assert!(team.instance_of("dev-design-team").is_none());
         // The dev team still runs.
@@ -909,22 +916,12 @@ mod round {
         team.create();
         let inst = team.inst();
         let lead = team.m("lead");
-        let note = team.path("note.json");
-        fs::write(
-            &note,
-            format!(r#"{{"to": "{lead}", "body": "Fictional note."}}"#),
-        )
-        .unwrap();
-        let note = note.display().to_string();
         team.ok(&[
-            "msg",
-            "publish",
+            "send",
             "--external",
             "owner",
-            "--record",
-            &note,
-            "--instance",
-            &inst,
+            &format!("{inst}/{lead}"),
+            "Fictional note.",
         ]);
         assert_eq!(
             json(&as_lead(&team, &["inbox", "--json"])).0["records"][0]["id"],

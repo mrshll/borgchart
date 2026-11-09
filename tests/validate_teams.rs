@@ -11,9 +11,9 @@ use instance_env::*;
 
 fn department() -> (Env, String) {
     let env = Env::new();
-    env.write("teams/oncall/team.yaml", "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: lead}\n  dev: {team: teams/dev, parent: lead, max: 3, cwd: 'dev/{member_id}'}\n");
+    env.write("teams/oncall/team.yaml", "roles:\n  lead: {prompt: lead.md, cwd: lead}\n  dev: {team: teams/dev, parent: lead, max: 3, cwd: 'dev/{member_id}'}\n");
     env.team("teams/oncall/teams/dev");
-    env.write("teams/oncall/teams/dev/team.yaml", "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: repo}\n  helper: {prompt: helper.md, parent: lead, start: false, cwd: repo}\n");
+    env.write("teams/oncall/teams/dev/team.yaml", "roles:\n  lead: {prompt: lead.md, cwd: repo}\n  helper: {prompt: helper.md, parent: lead, start: false, cwd: repo}\n");
     fs::create_dir(env.path("work/a/lead")).unwrap();
     let dept = env.create("oncall", "work/a");
     (env, dept)
@@ -196,12 +196,12 @@ fn missing_subteam_yaml_does_not_block_department_commands() {
 
 fn missing_running_subteam_during_status_and_stop(remove_folder: bool) {
     let env = Env::new();
-    env.write("teams/oncall/team.yaml", "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: lead}\n  helper: {prompt: helper.md, parent: lead, cwd: lead}\n  dev: {team: teams/dev, parent: lead, start: false, max: 3, cwd: 'dev/{member_id}'}\n  ops: {team: teams/ops, parent: lead, start: false, max: 3, cwd: 'ops/{member_id}'}\n");
+    env.write("teams/oncall/team.yaml", "roles:\n  lead: {prompt: lead.md, cwd: lead}\n  helper: {prompt: helper.md, parent: lead, cwd: lead}\n  dev: {team: teams/dev, parent: lead, start: false, max: 3, cwd: 'dev/{member_id}'}\n  ops: {team: teams/ops, parent: lead, start: false, max: 3, cwd: 'ops/{member_id}'}\n");
     for role in ["dev", "ops"] {
         env.team(&format!("teams/oncall/teams/{role}"));
         env.write(
             &format!("teams/oncall/teams/{role}/team.yaml"),
-            "bus: {}\nroles: {lead: {prompt: lead.md, cwd: repo}}\n",
+            "roles: {lead: {prompt: lead.md, cwd: repo}}\n",
         );
     }
     fs::create_dir(env.path("work/a/lead")).unwrap();
@@ -382,14 +382,14 @@ fn changed_team_path_resolution_requires_the_declaring_instance_to_restart() {
     env.ok(&["stop", &dept]);
     let selected = env.path("teams/oncall/teams/selected");
     std::os::unix::fs::symlink("dev", &selected).unwrap();
-    env.write("teams/oncall/team.yaml", "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: lead}\n  dev: {team: teams/selected, parent: lead, max: 3, cwd: 'dev/{member_id}'}\n");
+    env.write("teams/oncall/team.yaml", "roles:\n  lead: {prompt: lead.md, cwd: lead}\n  dev: {team: teams/selected, parent: lead, max: 3, cwd: 'dev/{member_id}'}\n");
     env.ok(&["start", &dept]);
     let (kept, _) = copy(&env, &dept);
     env.ok(&["start", &kept]);
     env.team("teams/oncall/teams/other");
     env.write(
         "teams/oncall/teams/other/team.yaml",
-        "bus: {}\nroles: {lead: {prompt: lead.md, cwd: repo}}\n",
+        "roles: {lead: {prompt: lead.md, cwd: repo}}\n",
     );
     env.write(
         "teams/oncall/teams/other/lead.md",
@@ -420,7 +420,7 @@ fn move_ancestor_within_copy(env: &Env, dept: &str) {
     env.team("teams/oncall/teams/dev/teams/oncall");
     env.write(
         "teams/oncall/teams/dev/teams/oncall/team.yaml",
-        "bus: {}\nroles: {lead: {prompt: lead.md, cwd: lead}}\n",
+        "roles: {lead: {prompt: lead.md, cwd: lead}}\n",
     );
     env.ok(&[
         "start",
@@ -430,7 +430,7 @@ fn move_ancestor_within_copy(env: &Env, dept: &str) {
             .display()
             .to_string(),
     ]);
-    env.write("teams/oncall/teams/dev/team.yaml", "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: repo}\n  panel: {team: teams/oncall, cwd: 'panel/{member_id}'}\n");
+    env.write("teams/oncall/teams/dev/team.yaml", "roles:\n  lead: {prompt: lead.md, cwd: repo}\n  panel: {team: teams/oncall, cwd: 'panel/{member_id}'}\n");
 }
 
 #[test]
@@ -461,5 +461,44 @@ fn full_start_refuses_a_subteam_edited_to_contain_its_actual_ancestor() {
         count,
         "a refused start must launch nothing"
     );
+    env.ok(&["stop", &dept]);
+}
+
+#[test]
+fn interactive_is_not_an_option_on_nested_team_roles() {
+    let (env, dept) = department();
+    env.ok(&["stop", &dept]);
+    let path = env.path("teams/oncall/team.yaml");
+    let original = fs::read_to_string(&path).unwrap();
+    for value in ["true", "false"] {
+        fs::write(
+            &path,
+            original.replace(
+                "team: teams/dev,",
+                &format!("team: teams/dev, interactive: {value},"),
+            ),
+        )
+        .unwrap();
+        let error = env.fails(&["validate", "oncall"]);
+        assert!(
+            error.contains("interactive") && error.contains("team role"),
+            "{value}: {error}"
+        );
+    }
+}
+
+#[test]
+fn department_and_copy_get_stores_without_bus_opt_in() {
+    let (env, dept) = department();
+    let (child, _) = copy(&env, &dept);
+    env.ok(&["start", &child]);
+    for instance in [&dept, &child] {
+        let identity: serde_json::Value = serde_json::from_slice(
+            &fs::read(env.path(&format!("state/{instance}/messages/store.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(identity["format"], 3);
+        assert_eq!(identity["instance"], instance.as_str());
+    }
     env.ok(&["stop", &dept]);
 }

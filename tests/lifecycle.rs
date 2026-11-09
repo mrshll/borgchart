@@ -715,7 +715,7 @@ fn members_run_the_brg_that_started_them() {
         // Members find the brg that started them as `$BORGCHART_BIN`.
         assert_eq!(lead["BORGCHART_BIN"], built, "{lead}");
         assert!(lead.get("BORGCHART_RUN").is_none());
-        assert_eq!(lead.get("BORGCHART_INCARNATION").is_some(), bus);
+        assert!(lead.get("BORGCHART_INCARNATION").is_some());
         let state = env.state_dir();
         for name in ["brg", "borgchart"] {
             assert!(
@@ -1268,7 +1268,13 @@ fn detach_children(env: &Env, member: &str, strays: &mut Strays) -> [u32; 2] {
         ),
     );
     let script = env.path(&format!("detached/{member}.sh"));
-    env.ok(&["send", member, &format!("tool sh {}", script.display())]);
+    env.ok(&[
+        "send",
+        member,
+        &format!("tool sh {}", script.display()),
+        "--external",
+        "ops",
+    ]);
     env.wait_for("both children", |_| {
         dir.join("a").exists() && dir.join("b").exists()
     });

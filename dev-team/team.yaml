@@ -4,19 +4,18 @@
 # the lead makes copies/ once and prepares a worktree before each brief.
 # See README.md.
 #
-# Every member uses `vendor` posture: the bus doesn't support `locked`
-# members yet. Each member file names both vendors' models, so moving a
-# member to the other vendor is a change to its `vendor:` line here.
+# Every member uses `vendor` posture for development tools. Each member
+# file names both vendors' models, so moving a member to the other vendor is a change to its `vendor:` line here.
 #
-# The lead seats the design panel, a separate team (../dev-design-team), as
+# The owner seats the design panel, a separate team (../dev-design-team), as
 # its own instance before costly-to-reverse design choices.
 default: claude
-bus: {}
 
 roles:
   lead:
     prompt: orchestrator.md
-    vendor: claude      # a Codex lead needs a wake mechanism brg doesn't have yet
+    vendor: claude
+    interactive: true  # inbox-only; a person may share the lead session
     start: true
   implementer:
     prompt: implementer.md

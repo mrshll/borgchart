@@ -387,7 +387,7 @@ fn a_member_acts_only_on_its_own_instance() {
     let out = env.as_member(
         &lead,
         0,
-        &["msg", "publish", "--external", "ops", "--instance", &b],
+        &["send", &format!("{b}/lead"), "hello", "--external", "ops"],
     );
     assert!(!out.status.success(), "{}", both(&out));
     env.ok(&["stop", &a]);
@@ -502,4 +502,67 @@ fn a_roles_added_folders_replace_brgs_in_either_form() {
         );
         env.ok(&["stop", &a]);
     }
+}
+
+#[test]
+fn plugin_actions_preserve_and_fence_the_launch_incarnation() {
+    let env = Env::new();
+    with_pager(&env);
+    fs::write(env.path("teams/oncall/plugins/pager/pager"),
+        "#!/bin/sh\nif [ \"${1-}\" = send ]; then exec \"$BORGCHART_BIN\" send external:ops hello --json; fi\nprintf '%s\\n' \"$BORGCHART_INSTANCE\" \"$BORGCHART_MEMBER\" \"$BORGCHART_INCARNATION\"\n").unwrap();
+    let out = keyed(&env, &["create", "oncall", &env.folder("work/a")]);
+    assert!(out.status.success(), "{}", both(&out));
+    let instance = first_word(&stdout(&out));
+    let lead = env.member(&instance, "lead");
+    let state = env.folder(&format!("state/{instance}"));
+    let args = ["_run", &state, &lead, "pager", "pager"];
+    let start = &env.starts(&lead)[0]["env"];
+    let out = env.as_member(&lead, 0, &args);
+    assert!(out.status.success(), "{}", both(&out));
+    assert_eq!(
+        stdout(&out),
+        format!(
+            "{instance}\n{lead}\n{}\n",
+            start["BORGCHART_INCARNATION"].as_str().unwrap()
+        )
+    );
+    let vars: BTreeMap<String, String> = serde_json::from_value(start.clone()).unwrap();
+    for (key, value) in [
+        ("BORGCHART_INCARNATION", "stale-1"),
+        ("BORGCHART_INCARNATION", ""),
+        ("BORGCHART_MEMBER", "another"),
+        ("BORGCHART_INSTANCE", "other-1234"),
+    ] {
+        let out = common::command(env!("CARGO_BIN_EXE_brg"))
+            .env_clear()
+            .envs(&vars)
+            .env(key, value)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{key}: {}", both(&out));
+        assert!(out.stdout.is_empty());
+    }
+    let out = env.cmd(&args).output().unwrap();
+    assert!(!out.status.success(), "{}", both(&out));
+    assert!(out.stdout.is_empty());
+    let mut send_args = args.to_vec();
+    send_args.push("send");
+    let out = env.as_member(&lead, 0, &send_args);
+    assert!(out.status.success(), "{}", both(&out));
+    let record: Value = serde_json::from_slice(
+        &env.ok(&["msg", "read", "m1", "--instance", &instance, "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(record["record"]["from"], lead);
+    // End the identity without deleting plugin settings, so the fence itself is tested.
+    let path = env.path(&format!("state/{instance}/members/{lead}/incarnation.json"));
+    let mut ended: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    ended["ended_at"] = json!("2026-11-09T00:00:00Z");
+    fs::write(&path, ended.to_string()).unwrap();
+    let out = env.as_member(&lead, 0, &args);
+    assert!(!out.status.success(), "{}", both(&out));
+    assert!(both(&out).contains("was stopped"));
+    env.ok(&["stop", &instance]);
 }
