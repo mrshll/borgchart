@@ -50,6 +50,150 @@ fn latest_prompt(env: &Env, inst: &str, member: &str) -> String {
         .to_string()
 }
 
+fn broken_subteam_during_department_command(command: &str) {
+    let (env, dept) = department();
+    let team = env.path("teams/oncall/team.yaml");
+    // Add the department's own on-demand role before freezing its config.
+    env.ok(&["stop", &dept]);
+    let original = fs::read_to_string(&team).unwrap();
+    fs::write(
+        &team,
+        format!(
+            "{original}  helper: {{prompt: helper.md, parent: lead, start: false, cwd: lead}}\n"
+        ),
+    )
+    .unwrap();
+    env.ok(&["start", &dept]);
+    let lead = env.member(&dept, "lead");
+    if command == "member start" {
+        env.ok(&["stop", &format!("{dept}/{lead}")]);
+    }
+    let subteam = env.path("teams/oncall/teams/dev/team.yaml");
+    let valid = fs::read_to_string(&subteam).unwrap();
+    fs::write(&subteam, valid.replace("lead.md", "missing.md")).unwrap();
+    match command {
+        "status" => assert_eq!(env.state_of(&dept, "lead"), "idle"),
+        "agent creation" => {
+            env.ok(&["create", &format!("{dept}/helper")]);
+            env.wait_for("department helper idle", || {
+                env.state_of(&dept, "helper") == "idle"
+            });
+        }
+        "member start" => {
+            env.ok(&["start", &format!("{dept}/{lead}")]);
+            env.wait_for("department lead restarted", || {
+                env.state_of(&dept, "lead") == "idle"
+            });
+        }
+        "full start" => {
+            env.ok(&["start", &dept]);
+            assert_eq!(env.state_of(&dept, "lead"), "idle");
+        }
+        _ => unreachable!(),
+    }
+    fs::write(subteam, valid).unwrap();
+    env.ok(&["stop", &dept]);
+}
+
+#[test]
+fn broken_subteam_does_not_block_department_status() {
+    broken_subteam_during_department_command("status");
+}
+
+#[test]
+fn broken_subteam_does_not_block_department_agent_creation() {
+    broken_subteam_during_department_command("agent creation");
+}
+
+#[test]
+fn broken_subteam_does_not_block_department_member_start() {
+    broken_subteam_during_department_command("member start");
+}
+
+#[test]
+fn broken_subteam_does_not_block_department_full_start() {
+    broken_subteam_during_department_command("full start");
+}
+
+#[test]
+fn broken_subteam_still_blocks_copy_creation_and_start() {
+    let (env, dept) = department();
+    let (child, _) = copy(&env, &dept);
+    let team = env.path("teams/oncall/teams/dev/team.yaml");
+    let original = fs::read_to_string(&team).unwrap();
+    fs::write(&team, original.replace("lead.md", "missing.md")).unwrap();
+    for args in [
+        vec!["validate", "oncall"],
+        vec!["create", &format!("{dept}/dev")],
+        vec!["start", &child],
+    ] {
+        assert!(env.fails(&args).contains("missing.md"));
+    }
+    fs::write(team, original).unwrap();
+    env.ok(&["stop", &dept]);
+}
+
+fn missing_subteam_during_department_commands(remove_folder: bool) {
+    let (env, dept) = department();
+    let team = env.path("teams/oncall/team.yaml");
+    env.ok(&["stop", &dept]);
+    let original = fs::read_to_string(&team).unwrap();
+    fs::write(
+        &team,
+        format!(
+            "{original}  helper: {{prompt: helper.md, parent: lead, start: false, cwd: lead}}\n"
+        ),
+    )
+    .unwrap();
+    env.ok(&["start", &dept]);
+    let (child, _) = copy(&env, &dept);
+    let lead = env.member(&dept, "lead");
+    let subteam = env.path("teams/oncall/teams/dev");
+    let saved = env.path("saved-dev");
+    if remove_folder {
+        fs::rename(&subteam, &saved).unwrap();
+    } else {
+        fs::rename(subteam.join("team.yaml"), &saved).unwrap();
+    }
+    // The declaring instance may still create and manage its own agents.
+    env.ok(&["create", &format!("{dept}/helper")]);
+    env.ok(&["start", &dept]);
+    env.ok(&["stop", &format!("{dept}/{lead}")]);
+    env.ok(&["start", &format!("{dept}/{lead}")]);
+    let before = env.registry();
+    assert!(
+        env.fails(&["create", &format!("{dept}/dev")])
+            .contains("team.yaml")
+    );
+    assert!(env.fails(&["start", &child]).contains("team folder"));
+    let validation = env.fails(&["validate", "oncall"]);
+    assert!(
+        validation.contains(if remove_folder {
+            "does not exist"
+        } else {
+            "needs a `team.yaml`"
+        }),
+        "{validation}"
+    );
+    assert_eq!(env.registry(), before);
+    if remove_folder {
+        fs::rename(saved, subteam).unwrap();
+    } else {
+        fs::rename(saved, subteam.join("team.yaml")).unwrap();
+    }
+    env.ok(&["stop", &dept]);
+}
+
+#[test]
+fn missing_subteam_folder_does_not_block_department_commands() {
+    missing_subteam_during_department_commands(true);
+}
+
+#[test]
+fn missing_subteam_yaml_does_not_block_department_commands() {
+    missing_subteam_during_department_commands(false);
+}
+
 #[test]
 fn changed_subteam_reaches_only_the_copy_that_fully_restarts() {
     let (env, dept) = department();
@@ -191,6 +335,9 @@ fn full_start_refuses_a_subteam_edited_to_contain_its_actual_ancestor() {
     env.ok(&["start", &child]);
     let lead = env.member(&child, "lead");
     move_ancestor_within_copy(&env, &dept);
+    env.wait_for("restored copy lead launch recorded", || {
+        env.starts(&lead).len() == 2
+    });
     let count = env.starts(&lead).len();
     env.fails(&["start", &child]);
     assert_eq!(

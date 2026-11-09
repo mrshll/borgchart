@@ -1323,8 +1323,12 @@ fn refuse_legacy_sessions(tmux: &Tmux) -> Result<(), String> {
 }
 
 /// Validate a team folder, printing what validation found; `Err` on errors.
-fn validate_printing(dir: &Path) -> Result<Validated, String> {
-    let (report, validated) = validate(dir);
+fn validate_printing(dir: &Path, recursive: bool) -> Result<Validated, String> {
+    let (report, validated) = if recursive {
+        validate(dir)
+    } else {
+        crate::validate::validate_own(dir)
+    };
     for diag in &report.diags {
         eprintln!("{diag}");
     }
@@ -1371,7 +1375,10 @@ pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
             .join("\n")
     })?;
     let dir = crate::team::find(team_arg, &config.teams)?;
-    let v = validate_printing(&dir)?;
+    let v = validate_printing(&dir, true)?;
+    if v.team.bus.is_some() && has_member_context() {
+        return Err("members cannot create an independent team with a bus; ask a person, or declare it as a team role and run brg create <instance>/<role>".into());
+    }
     let folder_path = match folder.strip_prefix("~/") {
         Some(rest) => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest),
         None => PathBuf::from(folder),
@@ -1948,7 +1955,7 @@ fn start_instance(
             inst.record.folder.display()
         ));
     }
-    let v = validate_printing(&inst.record.team_dir)?;
+    let v = validate_printing(&inst.record.team_dir, inst.id.contains('/'))?;
     let lock = registry::lock()?;
     inst.reload()?;
     crate::nesting::check_not_stopping(&inst)?;
@@ -3000,7 +3007,7 @@ fn validated(inst: &Instance) -> Result<Validated, String> {
             inst.id
         ));
     }
-    let (report, validated) = validate(&inst.record.team_dir);
+    let (report, validated) = crate::validate::validate_own(&inst.record.team_dir);
     validated.ok_or_else(|| {
         report
             .errors()

@@ -74,6 +74,61 @@ fn member_refused(env: &Env, inst: &str, role: &str, args: &[&str]) {
         "{inst}/{role} {args:?}: {}",
         both(&out)
     );
+    let error = both(&out);
+    assert!(
+        (error.contains("outside `") && error.contains("'s subtree"))
+            || error.contains("start is incomplete, replaced or stopped"),
+        "{inst}/{role} {args:?}: expected authority refusal: {error}"
+    );
+}
+
+#[test]
+fn members_cannot_create_independent_bus_instances() {
+    let env = department();
+    let dept = env.create("oncall", "work/a");
+    let before = env.registry();
+    let folder = env.path("work/b").display().to_string();
+    let out = member_cmd(&env, &dept, "lead", 0, &["create", "oncall", &folder])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "{}", both(&out));
+    let error = both(&out);
+    assert!(error.contains("ask a person"), "{error}");
+    assert!(error.contains("brg create <instance>/<role>"), "{error}");
+    assert_eq!(env.registry(), before);
+    env.ok(&["stop", &dept]);
+}
+
+#[test]
+fn members_can_create_independent_teams_without_a_bus() {
+    let env = department();
+    let dept = env.create("oncall", "work/a");
+    env.team("teams/panel");
+    env.write(
+        "teams/panel/team.yaml",
+        "roles: {lead: {prompt: lead.md}}\n",
+    );
+    let folder = env.path("work/b").display().to_string();
+    let out = member_ok(&env, &dept, "lead", &["create", "panel", &folder]);
+    let panel = stdout(&out).split_whitespace().next().unwrap().to_string();
+    env.wait_for("independent panel idle", || {
+        env.state_of(&panel, "lead") == "idle"
+    });
+    member_ok(&env, &dept, "lead", &["stop", &panel]);
+    member_ok(&env, &dept, "lead", &["delete", &panel]);
+    env.ok(&["stop", &dept]);
+}
+
+#[test]
+fn people_can_create_independent_bus_instances() {
+    let env = department();
+    let dept = env.create("oncall", "work/a");
+    let other = env.create("oncall", "work/b");
+    assert_ne!(dept, other);
+    assert_eq!(env.state_of(&dept, "lead"), "idle");
+    assert_eq!(env.state_of(&other, "lead"), "idle");
+    env.ok(&["stop", &other]);
+    env.ok(&["stop", &dept]);
 }
 
 fn copy_from_output(env: &Env, out: &Output) -> (String, PathBuf) {
@@ -457,7 +512,11 @@ fn missing_parent_records_do_not_grant_authority_from_live_config() {
     meta["members"].as_object_mut().unwrap().remove(&helper);
     fs::write(&path, meta.to_string()).unwrap();
     for verb in ["stop", "delete"] {
-        member_refused(&env, &dept, "lead", &[verb, &target]);
+        let out = member_cmd(&env, &dept, "lead", 0, &[verb, &target])
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{}", both(&out));
+        assert!(both(&out).contains("has no recorded parent; ask a person"));
         assert_eq!(env.member(&dept, "helper"), helper);
     }
     fs::write(path, original).unwrap();

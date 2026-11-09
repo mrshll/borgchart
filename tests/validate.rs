@@ -81,12 +81,45 @@ fn refused(f: &Fixture) -> Report {
 }
 
 #[test]
+fn agent_parent_refuses_team_roles() {
+    let f = nested_team();
+    f.edit(
+        "team.yaml",
+        "  dev:",
+        "  helper: {prompt: lead.md, parent: dev}\n  dev:",
+    );
+    expect_error(&f, "parent `dev` is a team role; name an agent role");
+}
+
+#[test]
+fn team_parent_refuses_team_roles() {
+    let f = nested_team();
+    f.edit(
+        "team.yaml",
+        "  dev:",
+        "  panel: {team: teams/dev, parent: dev, cwd: 'panel/{member_id}'}\n  dev:",
+    );
+    expect_error(&f, "parent `dev` is a team role; name an agent role");
+}
+
+#[test]
+fn plugin_delivery_refuses_team_roles() {
+    let f = nested_team();
+    f.edit(
+        "team.yaml",
+        "roles:",
+        "plugins: {events: {process: [watch], delivers_to: dev}}\nroles:",
+    );
+    expect_error(&f, "`dev` is a team role; name an agent role");
+}
+
+#[test]
 fn team_roles_refuse_direct_cycles_through_resolved_folder_aliases() {
     let f = nested_team();
     std::os::unix::fs::symlink(f.dir.path(), f.path("self")).unwrap();
     for path in [".", "./", "self"] {
         f.edit("team.yaml", "team: teams/dev", &format!("team: {path}"));
-        refused(&f);
+        expect_error(&f, "team cycle:");
         f.edit("team.yaml", &format!("team: {path}"), "team: teams/dev");
     }
 }
@@ -103,7 +136,8 @@ fn team_roles_refuse_indirect_cycles() {
     assert!(
         report
             .errors()
-            .any(|d| d.file == Some(f.path("teams/dev/team.yaml")))
+            .any(|d| d.file == Some(f.path("teams/dev/team.yaml"))
+                && d.to_string().contains("resolves outside"))
     );
 }
 
@@ -133,14 +167,14 @@ fn team_roles_refuse_absolute_team_paths() {
         "team: teams/dev",
         &format!("team: {}", f.path("teams/dev").display()),
     );
-    refused(&f);
+    expect_error(&f, "must be a relative path");
 }
 
 #[test]
 fn team_roles_refuse_parent_components_even_when_the_target_is_inside() {
     let f = nested_team();
     f.edit("team.yaml", "team: teams/dev", "team: teams/dev/../dev");
-    refused(&f);
+    expect_error(&f, "must not contain `..`");
 }
 
 #[test]
@@ -148,7 +182,7 @@ fn team_roles_refuse_shared_paths_even_when_a_local_folder_matches() {
     let f = nested_team();
     f.write("shared:dev/team.yaml", "bus: {}\nroles: {}\n");
     f.edit("team.yaml", "team: teams/dev", "team: shared:dev");
-    refused(&f);
+    expect_error(&f, "replace `shared:` with a relative folder");
 }
 
 #[test]
@@ -158,7 +192,7 @@ fn team_roles_refuse_symlinks_outside_the_declaring_folder() {
     fs::write(outside.path().join("team.yaml"), "bus: {}\nroles: {}\n").unwrap();
     std::os::unix::fs::symlink(outside.path(), f.path("outside")).unwrap();
     f.edit("team.yaml", "team: teams/dev", "team: outside");
-    refused(&f);
+    expect_error(&f, "resolves outside");
 }
 
 #[test]
@@ -173,7 +207,14 @@ fn team_roles_require_cwd_ending_in_one_member_id_folder() {
         let f = nested_team();
         let replacement = cwd.map(|c| format!(", cwd: '{c}'")).unwrap_or_default();
         f.edit("team.yaml", ", cwd: 'dev/{member_id}'", &replacement);
-        refused(&f);
+        expect_error(
+            &f,
+            if cwd.is_none() {
+                "a team role needs `cwd`"
+            } else {
+                "a team role's cwd must end in `{member_id}`"
+            },
+        );
     }
 }
 
@@ -185,7 +226,7 @@ fn team_roles_refuse_automatic_start_before_preparation() {
         "team: teams/dev",
         "team: teams/dev, start: true",
     );
-    refused(&f);
+    expect_error(&f, "create and prepare each copy before starting it");
     f.edit("team.yaml", "start: true", "start: false");
     assert!(f.run().1.is_some());
 }
@@ -194,7 +235,7 @@ fn team_roles_refuse_automatic_start_before_preparation() {
 fn team_roles_refuse_zero_copy_limits() {
     let f = nested_team();
     f.edit("team.yaml", "team: teams/dev", "team: teams/dev, max: 0");
-    refused(&f);
+    expect_error(&f, "`max` must be at least 1");
 }
 
 #[test]
@@ -208,10 +249,10 @@ fn team_roles_refuse_agent_fields_including_empty_and_false_values() {
         "connectors: []",
         "untrusted_input: false",
         "accept_risk: false",
-        "models: {}",
-        "interactive: false",
+        "prompt: null",
+        "connectors: null",
         "vendor: null",
-        "plugins: null",
+        "posture: null",
     ] {
         let f = nested_team();
         f.edit(
@@ -219,7 +260,17 @@ fn team_roles_refuse_agent_fields_including_empty_and_false_values() {
             "team: teams/dev",
             &format!("team: teams/dev, {field}"),
         );
-        refused(&f);
+        let report = refused(&f);
+        let name = field.split(':').next().unwrap();
+        assert!(
+            report.errors().any(|d| {
+                d.file == Some(f.path("team.yaml"))
+                    && d.to_string()
+                        .contains(&format!("role `dev`: remove `{name}`"))
+            }),
+            "{field}: {}",
+            errors(&report)
+        );
     }
 }
 
@@ -227,7 +278,10 @@ fn team_roles_refuse_agent_fields_including_empty_and_false_values() {
 fn teams_declaring_team_roles_require_a_bus() {
     let f = nested_team();
     f.edit("team.yaml", "bus: {}\n", "");
-    refused(&f);
+    expect_error(
+        &f,
+        "declaring team roles and every team they name require a bus",
+    );
 }
 
 #[test]
@@ -238,7 +292,8 @@ fn referenced_teams_require_a_bus_at_every_depth() {
     assert!(
         report
             .errors()
-            .any(|d| d.file == Some(f.path("teams/dev/team.yaml")))
+            .any(|d| d.file == Some(f.path("teams/dev/team.yaml"))
+                && d.to_string().contains("require a bus"))
     );
     f.write(
         "teams/dev/team.yaml",
@@ -249,7 +304,8 @@ fn referenced_teams_require_a_bus_at_every_depth() {
     assert!(
         report
             .errors()
-            .any(|d| d.file == Some(f.path("teams/dev/panel/team.yaml")))
+            .any(|d| d.file == Some(f.path("teams/dev/panel/team.yaml"))
+                && d.to_string().contains("require a bus"))
     );
 }
 
@@ -261,11 +317,11 @@ fn validate_reports_subteam_errors_at_the_subteam_file() {
         "bus: {}\nroles: {helper: {prompt: missing.md}}\n",
     );
     let report = refused(&f);
-    assert!(
-        report
-            .errors()
-            .any(|d| d.file == Some(f.path("teams/dev/team.yaml")))
-    );
+    assert!(report.errors().any(|d| {
+        d.file == Some(f.path("teams/dev/team.yaml"))
+            && d.to_string()
+                .contains("role `helper`: prompt `missing.md` does not exist")
+    }));
 }
 
 #[test]

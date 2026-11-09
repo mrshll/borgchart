@@ -57,13 +57,23 @@ pub fn validate_against(team_dir: &Path, ancestors: &[PathBuf]) -> (Report, Opti
     let Some(config) = config::load(&mut report) else {
         return (report, None);
     };
-    validate_into(team_dir, config, report, ancestors)
+    validate_into(team_dir, config, report, ancestors, true)
+}
+
+/// Validate only the declaring instance's files. Referenced teams are
+/// checked separately when a copy is created or started.
+pub(crate) fn validate_own(team_dir: &Path) -> (Report, Option<Validated>) {
+    let mut report = Report::default();
+    let Some(config) = config::load(&mut report) else {
+        return (report, None);
+    };
+    validate_into(team_dir, config, report, &[], false)
 }
 
 /// [`validate`] with a configuration already loaded (tests, and callers
 /// that must not read the caller's configuration file).
 pub fn validate_with(team_dir: &Path, config: Config) -> (Report, Option<Validated>) {
-    validate_into(team_dir, config, Report::default(), &[])
+    validate_into(team_dir, config, Report::default(), &[], true)
 }
 
 fn validate_into(
@@ -71,19 +81,25 @@ fn validate_into(
     config: Config,
     mut report: Report,
     ancestors: &[PathBuf],
+    recursive: bool,
 ) -> (Report, Option<Validated>) {
-    let Some(team) = team::load(team_dir, &mut report) else {
+    let loaded = if recursive {
+        team::load(team_dir, &mut report)
+    } else {
+        team::load_own(team_dir, &mut report)
+    };
+    let Some(team) = loaded else {
         return (report, None);
     };
     let validated = Validated { team, config };
-    check_team_tree(&validated, ancestors, &mut report);
+    check_team_tree(&validated, ancestors, recursive, &mut report);
     if report.has_errors() {
         return (report, None);
     }
     (report, Some(validated))
 }
 
-fn check_team_tree(v: &Validated, ancestors: &[PathBuf], report: &mut Report) {
+fn check_team_tree(v: &Validated, ancestors: &[PathBuf], recursive: bool, report: &mut Report) {
     let mut pending = vec![(
         v.team.clone(),
         ancestors.to_vec(),
@@ -110,9 +126,11 @@ fn check_team_tree(v: &Validated, ancestors: &[PathBuf], report: &mut Report) {
             continue;
         }
         parents.push(team.dir.clone());
-        for role in team.team_roles.values() {
-            if let Some(child) = team::load(&role.dir, report) {
-                pending.push((child, parents.clone(), true, file.clone()));
+        if recursive {
+            for role in team.team_roles.values() {
+                if let Some(child) = team::load(&role.dir, report) {
+                    pending.push((child, parents.clone(), true, file.clone()));
+                }
             }
         }
         cross_check(
