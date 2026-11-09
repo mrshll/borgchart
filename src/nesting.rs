@@ -70,7 +70,7 @@ pub fn create(
     inst.reload()?;
     check_not_stopping(&inst)?;
     crate::runtime::check_parent_authority(&inst, role_name, Some(v), None)?;
-    if let Some(meta) = state::read_meta(&inst.state)
+    if let Some(meta) = state::read_meta(&inst.state)?
         && meta.stopped_at.is_none()
     {
         crate::lifecycle::check_join(
