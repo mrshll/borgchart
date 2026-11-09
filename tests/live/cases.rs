@@ -780,16 +780,20 @@ pub fn background_wait(w: &World) -> Outcome {
     // 3. Only now: a fresh nonce, sent only as a bus message.
     let nonce = world::nonce();
     let reply = format!("REPLY {}", world::reversed(&nonce));
-    let draft = serde_json::json!({"to": t.member(), "body": format!("nonce {nonce}")});
+    let body = format!("nonce {nonce}");
     let mut cmd = t.brg_command();
-    cmd.args(["msg", "publish", "--external", "live"])
-        .args(["--record", "-", "--json", "--instance"])
-        .arg(t.instance());
-    let published =
-        match limited_with_stdin(&mut cmd, w.limits.brg, Some(draft.to_string().as_bytes())) {
-            Ok(o) => serde_json::from_slice::<Value>(&o.stdout).unwrap_or(Value::Null),
-            Err(e) => return Outcome::Fail(format!("publish {e}")),
-        };
+    cmd.args([
+        "send",
+        &format!("{}/{}", t.instance(), t.member()),
+        "-",
+        "--external",
+        "live",
+        "--json",
+    ]);
+    let published = match limited_with_stdin(&mut cmd, w.limits.brg, Some(body.as_bytes())) {
+        Ok(o) => serde_json::from_slice::<Value>(&o.stdout).unwrap_or(Value::Null),
+        Err(e) => return Outcome::Fail(format!("send {e}")),
+    };
     if published["ok"] != true {
         return Outcome::Fail(format!("publish failed: {published}"));
     }
