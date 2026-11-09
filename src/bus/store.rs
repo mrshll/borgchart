@@ -63,12 +63,14 @@ pub fn open(state: &StateDir) -> Result<Bus, Failure> {
             ),
         ));
     }
-    let mut meta = state::read_meta(state).ok_or_else(|| {
-        Failure::new(
-            Code::Corrupt,
-            format!("instance `{}`'s start record cannot be read", state.id),
-        )
-    })?;
+    let mut meta = state::read_meta(state)
+        .map_err(|e| Failure::new(Code::Corrupt, e))?
+        .ok_or_else(|| {
+            Failure::new(
+                Code::Corrupt,
+                format!("instance `{}`'s start record cannot be read", state.id),
+            )
+        })?;
     meta.members
         .retain(|id, _| !record.members.get(id).is_some_and(|m| m.deleted));
     Ok(Bus {

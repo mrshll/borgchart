@@ -4,7 +4,9 @@
 //! The tests also run inside team members (the git hooks, or a member that
 //! runs `cargo test`). There `BORGCHART_*` names the member's real
 //! deployment and message storage, and `TMUX` its tmux server. A process
-//! that a test starts with those inherited can write into that team.
+//! that a test starts with those inherited can write into that team. Inside
+//! a git hook, `GIT_DIR` names this repository: a `git` a test starts with
+//! it inherited works on the repository instead of the test's own folder.
 //!
 //! Each test's tmux servers live in a private directory ([`PrivateTmux`]),
 //! never in `/tmp/tmux-<uid>`: brg gets it as `BORGCHART_TMUX_TMPDIR`, the
@@ -36,7 +38,9 @@ pub fn scrub(cmd: &mut Command) -> &mut Command {
 
 fn points_at_a_team(key: &OsStr) -> bool {
     let key = key.to_string_lossy();
-    key.starts_with("BORGCHART_") || matches!(&*key, "TMUX" | "TMUX_PANE" | "TMUX_TMPDIR")
+    key.starts_with("BORGCHART_")
+        || key.starts_with("GIT_")
+        || matches!(&*key, "TMUX" | "TMUX_PANE" | "TMUX_TMPDIR")
 }
 
 /// `program`, scrubbed.

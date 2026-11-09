@@ -1,0 +1,14 @@
+#!/bin/sh
+# A stand-in usage source for the seat plugin: it answers every vendor and
+# model with the same fictional reading. A machine replaces it with a real
+# source, installed as `usage-source` beside `seat` (see README.md).
+#
+#   usage-source <vendor> <model>
+#
+# prints one JSON object: `used_percent` (0 to 100, or null for unknown)
+# and, optionally, `resets_at` (a UTC time).
+if [ "$#" -ne 2 ]; then
+  echo "usage: usage-source <vendor> <model>" >&2
+  exit 2
+fi
+echo '{"used_percent": 12, "resets_at": "2026-01-01T00:00:00Z"}'

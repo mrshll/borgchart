@@ -41,10 +41,13 @@ sweep() {
 
 [ "$#" -gt 0 ] || set -- fmt clippy test py
 # Inside a team member, BORGCHART_* names that member's real instance and
-# message storage. The tests run with them pointing nowhere, so a test that
-# forgets to clear them fails instead of writing into the team. (No value
-# holds a space: the list is split on spaces.)
-nowhere="BORGCHART_CONFIG=/nonexistent/caller-team/config.yaml
+# message storage, and inside a git hook GIT_DIR names this repository. The
+# tests run with them pointing nowhere, so a test that forgets to clear them
+# fails instead of writing into the team or the repository. (No value holds
+# a space: the list is split on spaces.)
+nowhere="GIT_DIR=/nonexistent/caller-repo/.git
+  GIT_WORK_TREE=/nonexistent/caller-repo
+  BORGCHART_CONFIG=/nonexistent/caller-team/config.yaml
   BORGCHART_STATE_HOME=/nonexistent/caller-team/state
   BORGCHART_STATE_DIR=/nonexistent/caller-team/member-state
   BORGCHART_INSTANCE=caller-team-2222
@@ -88,7 +91,7 @@ for check in "$@"; do
         exit 1
       fi
       ;;
-    py) run py uv run --no-project --with pytest==8.3.5 pytest -p no:cacheprovider examples/slack-devops/plugins/slackbot/tests ;;
+    py) run py uv run --no-project --with pytest==8.3.5 pytest -p no:cacheprovider examples/slack-devops/plugins/slackbot/tests examples/seat/tests ;;
     *)
       echo "checks: unknown check '$check' (use fmt, clippy, fast, test or py)" >&2
       exit 2

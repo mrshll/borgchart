@@ -1,6 +1,6 @@
 # A development team
 
-This folder defines a brg team for developing a software project: a lead and four helper roles it starts on demand. `../dev-design-team/` is its design panel, a separate team the lead seats before costly-to-reverse design choices. Both folders are generic: everything about one machine (the checkout, brg's configuration, your vendor logins) stays on it, and what one piece of work needs (the tracking issue, a handover note) goes to the lead in a message.
+This folder defines a brg team for developing a software project: a lead and four helper roles it starts on demand. `teams/dev-design-team/` is its design panel, the child team of its `design` role, which the lead creates before costly-to-reverse design choices. The team runs on its own, as below, or as a child team: the `dev` role of the team that holds it (`borgchart-engineering/`), where its lead's parent is that team's root lead. Both folders are generic: everything about one machine (the checkout, brg's configuration, your vendor logins) stays on it, and what one piece of work needs (the tracking issue, a handover note) goes to the lead in a message.
 
 | Member | Default vendor and model | Starts | Does |
 | --- | --- | --- | --- |
@@ -15,22 +15,23 @@ Each member file names both vendors' models; `vendor:` in `team.yaml` picks one.
 
 ## Setup
 
-brg finds teams by name in the search paths of its configuration, `~/.config/borgchart/config.yaml`:
+brg runs the team by its folder's path. Keep a **pinned copy** of the repository, taken at the commit of the brg you run, not the checkout the team works in, and run brg from its root. A running instance's files are frozen: if the team's own work changed them under it, the instance would refuse to create or start members until a full stop.
+
+The lead checks seating with the `seat` plugin, `shared:seat`, so brg's configuration, `~/.config/borgchart/config.yaml`, names the folder that holds it:
 
 ```yaml
 schema: 1
 auth: login
-teams:
-  - /path/to/teams   # holds a pinned copy of dev-team/ and dev-design-team/
+plugins_dir: /path/to/plugins   # holds seat/: a copy of examples/seat/ with this machine's usage source
 ```
 
-Keep the teams in the search path as a **pinned copy** of these folders, taken at the commit of the brg you run, not the checkout the team works in. A running instance's files are frozen: if the implementer switched branches under them, the instance would refuse to create or start members until a full stop.
+[`examples/seat/`](../../../examples/seat/) is the plugin, with a README on installing a real usage source. Without one, every seating check answers `wait`.
 
 ## Run it
 
 1. **Use a stable brg,** installed outside any checkout the team changes: every member runs the brg that started it (`$BORGCHART_BIN`).
-2. **Check the teams:** `brg validate dev-team` and `brg validate dev-design-team`.
-3. **Create the instance** in the shared checkout: `brg create dev-team <checkout>`. It prints the instance's ID (`dev-team-k3f9`) and its tree: the lead `started`, the implementer `on demand (none created)`, other helpers `not created (start: false)`. Before creating a copy, the lead makes `<checkout>/copies/` once and, from the shared checkout, runs `echo /copies/ >> "$(git -C <checkout> rev-parse --git-common-dir)/info/exclude"`; brg creates each copy's empty `copies/{member_id}` folder. Before each brief, prepare its worktree with `git -C <checkout> worktree add <checkout>/copies/<member ID> <branch>` when empty. The branch must not be checked out elsewhere: detach the shared checkout first, or use `git -C <checkout> worktree add --detach <checkout>/copies/<member ID> <base>` and let the copy create its branch. Confirm `git -C <copy> rev-parse --show-toplevel` is the copy's cwd and name it in the brief.
+2. **Check the teams:** `brg validate ./borgchart-engineering/teams/dev-team` and `brg validate ./borgchart-engineering/teams/dev-team/teams/dev-design-team`.
+3. **Prepare the instance's folder and create the instance.** The folder (`<folder>`) holds the shared checkout at `<folder>/repo`, a clone or a git worktree, where the lead, reviewer, researcher and monitor start. Then run `brg create ./borgchart-engineering/teams/dev-team <folder>`. It prints the instance's ID (`dev-team-k3f9`) and its tree: the lead `started`, the implementer `on demand (none created)`, other helpers `not created (start: false)`. Implementer copies work beside the checkout, in `<folder>/copies/<member ID>`: the lead makes `<folder>/copies/` once, brg creates each copy's empty folder, and the lead puts a worktree there before each brief (`git -C <folder>/repo worktree add <folder>/copies/<member ID> <branch>`). The design panel's copies go in `<folder>/design/<copy>/`. `orchestrator.md` has the lead's steps.
 4. **Tell the lead what this work is:** write `brief.json` with `{"to": "<lead member>", "body": "Tracking issue: <issue>; handover: <note path>."}`, then `brg msg publish --external owner --instance dev-team-k3f9 --record brief.json`. `brg status dev-team-k3f9` gives the full member ID. Messages are durable; if the lead misses one, nudge it with `brg send dev-team-k3f9/<lead member> 'check your inbox'`.
 5. **Answer the folder-trust screens,** once per folder: when `brg status dev-team-k3f9` shows a member `blocked`, run `brg attach dev-team-k3f9/<member>`, answer, and detach. brg makes the instance's messages and notes writable for every member, and adds nothing else. A copy's git writes go to the shared checkout's `.git`, so sandboxed Codex copies need approval for each commit unless the owner's Codex config allows that folder; a separate clone per copy is the alternative.
 6. **Work with the lead** in its session (`brg attach dev-team-k3f9/<lead member>`). It reaches you on GitHub: review requests on the draft pull requests it hands off, and comments when it needs you.
