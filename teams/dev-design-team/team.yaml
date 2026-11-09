@@ -1,9 +1,9 @@
 # The design panel: two designers, one per vendor, each writing an
 # independent proposal from the same blind brief. It is a child team: the
-# dev team's `design` role (../../team.yaml), and borgchart-engineering's
+# dev team's `design` role (../dev-team/team.yaml), and borgchart-engineering's
 # `design` role. Its parent creates a copy stopped, puts a detached worktree
 # at the baseline in the copy's `work/`, starts it, and deletes it after;
-# see ../../orchestrator.md. Designers exchange files with the lead (the
+# see ../dev-team/orchestrator.md. Designers exchange files with the lead (the
 # brief, questions, answers, proposals) in the copy's notes folder. Every
 # team has a message store.
 

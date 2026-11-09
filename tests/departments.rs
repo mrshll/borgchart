@@ -37,10 +37,10 @@ fn department() -> Env {
     let env = Env::new();
     env.write(
         "teams/oncall/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: lead}\n  dev: {team: teams/dev, parent: lead, start: false, max: 2, cwd: 'dev/{member_id}'}\n",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: lead}\n  dev: {team: dev, parent: lead, start: false, max: 2, cwd: 'dev/{member_id}'}\n",
     );
-    env.team("teams/oncall/teams/dev");
-    let team = env.path("teams/oncall/teams/dev/team.yaml");
+    env.team("teams/dev");
+    let team = env.path("teams/dev/team.yaml");
     fs::write(
         &team,
         fs::read_to_string(&team)
@@ -56,10 +56,10 @@ fn department() -> Env {
 fn nested_addresses_start_and_stop_only_the_named_copy_or_member() {
     let env = department();
     env.write(
-        "teams/oncall/teams/dev/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: repo}\n  helper: {prompt: helper.md, parent: lead, start: false, cwd: repo}\n  design: {team: teams/design, parent: lead, start: false, cwd: 'design/{member_id}'}\n",
+        "teams/dev/team.yaml",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: repo}\n  helper: {prompt: helper.md, parent: lead, start: false, cwd: repo}\n  design: {team: design, parent: lead, start: false, cwd: 'design/{member_id}'}\n",
     );
-    env.team("teams/oncall/teams/dev/teams/design");
+    env.team("teams/design");
     let dept = env.create("oncall", "work/a");
     let (first, folder) = create_copy(&env, &dept, "dev");
     let (peer, peer_folder) = create_copy(&env, &dept, "dev");
@@ -217,11 +217,11 @@ fn missing_nested_copy_reports_kept_alternatives() {
 #[test]
 fn status_nests_copies_once_with_full_paths_and_states() {
     let env = department();
-    let dev_team = env.path("teams/oncall/teams/dev/team.yaml");
-    fs::write(&dev_team, format!("{}  design: {{team: teams/design, parent: lead, start: false, cwd: 'design/{{member_id}}'}}\n", fs::read_to_string(&dev_team).unwrap())).unwrap();
-    env.team("teams/oncall/teams/dev/teams/design");
+    let dev_team = env.path("teams/dev/team.yaml");
+    fs::write(&dev_team, format!("{}  design: {{team: design, parent: lead, start: false, cwd: 'design/{{member_id}}'}}\n", fs::read_to_string(&dev_team).unwrap())).unwrap();
+    env.team("teams/design");
     let team = env.path("teams/oncall/team.yaml");
-    fs::write(&team, format!("{}  review: {{team: teams/dev, parent: lead, start: false, cwd: 'review/{{member_id}}'}}\n  research: {{team: teams/dev, parent: lead, start: false, max: 2, cwd: 'research/{{member_id}}'}}\n", fs::read_to_string(&team).unwrap())).unwrap();
+    fs::write(&team, format!("{}  review: {{team: dev, parent: lead, start: false, cwd: 'review/{{member_id}}'}}\n  research: {{team: dev, parent: lead, start: false, max: 2, cwd: 'research/{{member_id}}'}}\n", fs::read_to_string(&team).unwrap())).unwrap();
     let dept = env.create("oncall", "work/a");
     let dept_lead = env.member(&dept, "lead");
     let rows = env.rows(&dept);
@@ -557,23 +557,23 @@ fn depth_three_copies_wait_for_preparation_and_cascade_before_parent_deletion() 
     let env = Env::new();
     env.write(
         "teams/oncall/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md, start: true, cwd: lead}\n  dev: {team: teams/dev, parent: lead, start: false, max: 2, cwd: 'dev/{member_id}'}\n",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md, start: true, cwd: lead}\n  dev: {team: dev, parent: lead, start: false, max: 2, cwd: 'dev/{member_id}'}\n",
     );
     env.write(
-        "teams/oncall/teams/dev/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md, start: true, cwd: repo}\n  design: {team: teams/design, parent: lead, start: false, cwd: 'design/{member_id}'}\n",
+        "teams/dev/team.yaml",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md, start: true, cwd: repo}\n  design: {team: design, parent: lead, start: false, cwd: 'design/{member_id}'}\n",
     );
     env.write(
-        "teams/oncall/teams/dev/lead.md",
+        "teams/dev/lead.md",
         "---\nmodels: {claude: opus high}\n---\nLead the fictional development team.\n",
     );
     env.write(
-        "teams/oncall/teams/dev/teams/design/team.yaml",
+        "teams/design/team.yaml",
         "bus: {}\nroles:\n  amber: {prompt: amber.md, start: true, cwd: work}\n  violet: {prompt: violet.md, start: true, cwd: work}\n",
     );
     for role in ["amber", "violet"] {
         env.write(
-            &format!("teams/oncall/teams/dev/teams/design/{role}.md"),
+            &format!("teams/design/{role}.md"),
             "---\nmodels: {claude: opus high}\n---\nReview the fictional design.\n",
         );
     }

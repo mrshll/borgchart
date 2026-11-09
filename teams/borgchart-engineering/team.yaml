@@ -7,15 +7,14 @@
 # The lead is Claude in `vendor` posture: managing copies needs a vendor
 # that lets brg write its state and start members. The inbox-only lead
 # uses a background inbox wait. This team's researchers and monitors use the
-# dev team's role files, and every member's file ends with the dev team's
-# common include (team-neutral rules; the dev-only ones are in its dev
-# include), so each rule lives in one place.
+# shared researcher/monitor instructions; common and dev-only rules each
+# live once in the catalog shared includes.
 default: claude
-includes: teams/dev-team/includes
+includes: catalog:shared/includes
 
 plugins:
   seat:
-    path: teams/dev-team/plugins/seat
+    path: catalog:shared/plugins/seat
     actions:
       route: seat route <vendor> <model>
 
@@ -28,19 +27,19 @@ roles:
     cwd: lead               # a checkout of the repository, made before `brg create`
     plugins: {seat: [route]}
   dev:
-    team: teams/dev-team
+    team: dev-team
     parent: lead
     start: false
     max: 4
     cwd: dev/{member_id}
   design:
-    team: teams/dev-team/teams/dev-design-team
+    team: dev-design-team
     parent: lead
     start: false
     max: 2
     cwd: design/{member_id}
   researcher:
-    prompt: teams/dev-team/researcher.md
+    prompt: researcher.md
     vendor: codex
     parent: lead
     start: false
@@ -48,7 +47,7 @@ roles:
     cwd: lead
     args: [--search]        # Codex's web search
   monitor:
-    prompt: teams/dev-team/monitor.md
+    prompt: monitor.md
     vendor: claude
     parent: lead
     start: false

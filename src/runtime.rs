@@ -1308,12 +1308,8 @@ fn check_state_overlap(folder: &Path, instance_state: &Path) -> Result<(), Strin
 }
 
 /// Validate a team folder, printing what validation found; `Err` on errors.
-fn validate_printing(dir: &Path, recursive: bool) -> Result<Validated, String> {
-    let (report, validated) = if recursive {
-        validate(dir)
-    } else {
-        crate::validate::validate_own(dir)
-    };
+fn validate_printing(dir: &Path) -> Result<Validated, String> {
+    let (report, validated) = validate(dir);
     for diag in &report.diags {
         eprintln!("{diag}");
     }
@@ -1360,7 +1356,7 @@ pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
             .join("\n")
     })?;
     let dir = crate::team::find(team_arg, &config.teams)?;
-    let v = validate_printing(&dir, true)?;
+    let v = validate_printing(&dir)?;
     if has_member_context() {
         return Err("members cannot create an independent team; ask a person, or declare it as a team role and run brg create <instance>/<role>".into());
     }
@@ -1924,7 +1920,13 @@ fn start_instance(
             inst.record.folder.display()
         ));
     }
-    let v = validate_printing(&inst.record.team_dir, inst.id.contains('/'))?;
+    let fresh = state::read_meta(&inst.state)?.is_none_or(|meta| meta.stopped_at.is_some())
+        || !tmux_for(&inst.state).has_session(&inst.state.session());
+    let v = if member.is_none() && (fresh || inst.id.contains('/')) {
+        validate_printing(&inst.record.team_dir)?
+    } else {
+        validated(&inst)?
+    };
     let lock = registry::lock()?;
     inst.reload()?;
     crate::nesting::check_not_stopping(&inst)?;
@@ -3157,7 +3159,13 @@ fn validated(inst: &Instance) -> Result<Validated, String> {
             inst.id
         ));
     }
-    let (report, validated) = crate::validate::validate_own(&inst.record.team_dir);
+    let frozen = state::read_meta(&inst.state)
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+        .config
+        .team_dirs;
+    let (report, validated) = crate::validate::validate_own(&inst.record.team_dir, &frozen);
     validated.ok_or_else(|| {
         report
             .errors()

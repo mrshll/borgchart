@@ -116,8 +116,13 @@ impl Bus {
         }
         check_route(&self.meta, actor, to).map_err(|e| {
             let mut report = crate::diag::Report::default();
-            if crate::team::load(&self.record.team_dir, &mut report)
-                .is_some_and(|team| team.roles.contains_key(to))
+            if crate::team::load_with(
+                &self.record.team_dir,
+                &[],
+                Some(&self.meta.config.team_dirs),
+                &mut report,
+            )
+            .is_some_and(|team| team.roles.contains_key(to))
             {
                 e.replace(
                     "brg create <instance>/<role>",
