@@ -53,6 +53,98 @@ fn department() -> Env {
 }
 
 #[test]
+fn nested_addresses_start_and_stop_only_the_named_copy_or_member() {
+    let env = department();
+    env.write(
+        "teams/oncall/teams/dev/team.yaml",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: repo}\n  helper: {prompt: helper.md, parent: lead, start: false, cwd: repo}\n  design: {team: teams/design, parent: lead, start: false, cwd: 'design/{member_id}'}\n",
+    );
+    env.team("teams/oncall/teams/dev/teams/design");
+    let dept = env.create("oncall", "work/a");
+    let (first, folder) = create_copy(&env, &dept, "dev");
+    let (peer, peer_folder) = create_copy(&env, &dept, "dev");
+    for (copy, folder) in [(&first, &folder), (&peer, &peer_folder)] {
+        fs::create_dir(folder.join("repo")).unwrap();
+        env.ok(&["start", copy]);
+    }
+    let (panel, _) = create_copy(&env, &first, "design");
+    env.ok(&["start", &panel]);
+    env.ok(&["create", &format!("{first}/helper")]);
+    let helper = env.member(&first, "helper");
+    assert!(!helper.is_empty());
+    let lead = env.member(&first, "lead");
+    let designer = env.member(&panel, "lead");
+
+    for (instance, member) in [(&first, &lead), (&first, &helper), (&panel, &designer)] {
+        env.ok(&["stop", &format!("{instance}/{member}")]);
+        assert_eq!(
+            env.state_of(instance, if member == &helper { "helper" } else { "lead" }),
+            "stopped"
+        );
+        assert_eq!(env.state_of(&peer, "lead"), "idle");
+        assert_eq!(env.state_of(&dept, "lead"), "idle");
+        if instance == &first {
+            assert_eq!(env.state_of(&panel, "lead"), "idle");
+        } else {
+            assert_eq!(env.state_of(&first, "lead"), "idle");
+            assert_eq!(env.state_of(&first, "helper"), "idle");
+        }
+        env.ok(&["start", &format!("{instance}/{member}")]);
+        env.wait_for("addressed member idle", || {
+            env.state_of(instance, if member == &helper { "helper" } else { "lead" }) == "idle"
+        });
+    }
+    env.ok(&["stop", &first]);
+    assert_eq!(env.state_of(&first, "lead"), "stopped");
+    assert_eq!(env.state_of(&first, "helper"), "stopped");
+    assert_eq!(env.state_of(&panel, "lead"), "stopped");
+    assert_eq!(env.state_of(&peer, "lead"), "idle");
+    assert_eq!(env.state_of(&dept, "lead"), "idle");
+    env.ok(&["start", &first]);
+    assert_eq!(env.state_of(&first, "lead"), "idle");
+    assert_eq!(env.state_of(&first, "helper"), "idle");
+    assert_eq!(env.state_of(&peer, "lead"), "idle");
+    env.ok(&["stop", &dept]);
+}
+
+#[test]
+fn invalid_address_segments_are_refused_before_reading_the_registry() {
+    let env = Env::new();
+    // A valid address would fail reading this registry. Invalid addresses
+    // must be refused by the parser before reaching it, even inside a member.
+    env.write("state/registry.json", "not a registry");
+    for address in [
+        "",
+        ".",
+        "..",
+        "/oncall-2222",
+        "oncall-2222/",
+        "oncall-2222//lead",
+        "oncall-2222/../lead",
+        "oncall-2222/./lead",
+        "oncall-2222/bad.name",
+        "bad.name",
+    ] {
+        for command in ["start", "stop"] {
+            for inside in [false, true] {
+                let mut cmd = env.cmd(&[command, address]);
+                if inside {
+                    cmd.env("BORGCHART_INSTANCE", "oncall-2222");
+                }
+                let out = cmd.output().unwrap();
+                assert!(!out.status.success());
+                let error = both(&out);
+                assert!(
+                    error.contains("invalid address segment"),
+                    "{command} {address:?} inside={inside}: {error}"
+                );
+                assert!(!error.contains("registry.json"), "{error}");
+            }
+        }
+    }
+}
+
+#[test]
 fn team_copies_keep_separate_stores_and_slots_until_deleted() {
     let env = department();
     let dept = env.create("oncall", "work/a");

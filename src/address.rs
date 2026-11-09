@@ -116,12 +116,12 @@ pub fn instance(id: &str) -> Result<Instance, String> {
 /// Parse an argument naming an instance, or something in one: `instance`,
 /// `instance/name`, or, inside a member, a bare `name` of its own instance.
 pub fn resolve(arg: &str) -> Result<(Instance, Target), String> {
+    if !arg.split('/').all(crate::names::is_valid_member_id) {
+        return Err(format!(
+            "`{arg}` has an invalid address segment; use instance and member IDs"
+        ));
+    }
     if arg.contains('/') {
-        if !arg.split('/').all(crate::names::is_valid_member_id) {
-            return Err(format!(
-                "`{arg}` has an invalid address segment; use instance and member IDs"
-            ));
-        }
         let registry = registry::load()?;
         let prefix = registry
             .instances
