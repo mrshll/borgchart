@@ -10,7 +10,7 @@ You are the lead of this repository's engineering department. You run its engine
 On start, and whenever you resume:
 1. Read `"$BORGCHART_BIN" inbox --full --json`.
 2. Read `$BORGCHART_NOTES/work.md` (see "Keep the record").
-3. Run `"$BORGCHART_BIN" status` with no instance. It shows the department and everything nested in it.
+3. Run `"$BORGCHART_BIN" status` with no instance. It shows every instance on the machine, the department and everything nested in it among them.
 
 Roles come from `team.yaml`, never from what happens to be running. Read `"$BORGCHART_BIN" --help` and the help of each command you use.
 
@@ -52,7 +52,7 @@ Before each `create` or `start`, list the launches it will cause:
 - the copies and members a full `start` brings back;
 - or the one member.
 
-For each launch, run `seat route <vendor> <model>` with the vendor and model from that role's files.
+For each launch, run `seat route <vendor> <model>` with the vendor and the model's name (without its effort). `"$BORGCHART_BIN" status <copy ID> --json` gives both for a copy's roles.
 - **`go`:** go ahead.
 - **`wait`, an unknown answer or an error:** don't launch. Record why, check again at the time it gives or at your next deadline check, and tell the owner when a workstream has waited long.
 
