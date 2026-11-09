@@ -27,6 +27,9 @@ pub struct Incarnation {
     /// `[a-z0-9._-]`, unique within the instance.
     pub incarnation: String,
     pub started_at: String,
+    /// The machine boot in which this start was launched, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boot_id: Option<String>,
     /// The vendor CLI version measured at this start.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vendor_version: Option<String>,
@@ -62,6 +65,48 @@ pub enum Liveness {
     /// It can't be told (no pane recorded yet, tmux unreachable): treat as
     /// possibly alive. Never free its checkout on this.
     Unknown,
+}
+
+/// Machine boot identity. Failure to read it never proves a start gone.
+pub fn boot_id() -> Option<String> {
+    #[cfg(feature = "test-support")]
+    if let Ok(value) = std::env::var("BORGCHART_TEST_BOOT_ID") {
+        return nonempty_boot_id(&value);
+    }
+    static BOOT_ID: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    BOOT_ID.get_or_init(read_boot_id).clone()
+}
+
+fn read_boot_id() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    let value = fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
+    #[cfg(target_os = "macos")]
+    let value = {
+        let out = Command::new("/usr/sbin/sysctl")
+            .args(["-n", "kern.bootsessionuuid"])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        String::from_utf8(out.stdout).ok()?
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let value = String::new();
+    nonempty_boot_id(&value)
+}
+
+fn nonempty_boot_id(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+/// A different known boot proves that every process from this start ended.
+pub fn previous_boot(inc: &Incarnation) -> bool {
+    match (&inc.boot_id, boot_id()) {
+        (Some(recorded), Some(current)) => recorded != &current,
+        _ => false,
+    }
 }
 
 /// Read a member's current start record, without creating anything.
@@ -581,9 +626,14 @@ pub fn liveness(state: &StateDir, member: &str, incarnation: &str) -> Liveness {
     if inc.ended_at.is_some() {
         return Liveness::Gone;
     }
-    match &inc.pane {
+    let live = match &inc.pane {
         Some(pane) => pane_liveness(pane),
         None => Liveness::Unknown,
+    };
+    if live == Liveness::Unknown && previous_boot(&inc) {
+        Liveness::Gone
+    } else {
+        live
     }
 }
 
