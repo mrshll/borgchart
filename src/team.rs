@@ -14,8 +14,6 @@ use crate::paths::{is_executable, resolve_within};
 use crate::yaml;
 
 pub const TEAM_FILE: &str = "team.yaml";
-pub const LEGACY_TEAM_FILE: &str = "topology.yaml";
-pub const FORMAT_DOC: &str = "docs/format.md";
 
 /// Reasoning-effort words accepted after a model name.
 pub const EFFORTS: &[&str] = &["minimal", "low", "medium", "high", "xhigh", "max"];
@@ -503,16 +501,7 @@ pub fn load(dir: &Path, report: &mut Report) -> Option<Team> {
     let dir = real.as_deref().unwrap_or(dir);
     let team_file = dir.join(TEAM_FILE);
     if !team_file.exists() {
-        if dir.join(LEGACY_TEAM_FILE).exists() {
-            report.error(
-                Some(&dir.join(LEGACY_TEAM_FILE)),
-                format!(
-                    "this team uses the older `{LEGACY_TEAM_FILE}` shape; rename it to `{TEAM_FILE}` and update member files as described in {FORMAT_DOC}"
-                ),
-            );
-        } else {
-            report.error(Some(&team_file), "team file not found");
-        }
+        report.error(Some(&team_file), "team file not found");
         return None;
     }
     let text = match read_text(&team_file) {
@@ -1010,15 +999,6 @@ fn read_role_file(
             return None;
         }
     };
-    if looks_legacy(&split.frontmatter) {
-        report.error(
-            Some(shown),
-            format!(
-                "this role file uses the older frontmatter (`name`, `claude_model`/`codex_model`); remove `name` and use `models` as described in {FORMAT_DOC}"
-            ),
-        );
-        return None;
-    }
     let front: FrontmatterRaw = if split.frontmatter.trim().is_empty() {
         FrontmatterRaw::default()
     } else {
@@ -1036,15 +1016,6 @@ fn read_role_file(
         body,
         crate::config_snapshot::sha256_hex(text.as_bytes()),
     ))
-}
-
-fn looks_legacy(frontmatter: &str) -> bool {
-    let has = |key: &str| {
-        frontmatter
-            .lines()
-            .any(|l| l.trim_start().starts_with(&format!("{key}:")) && !l.starts_with(' '))
-    };
-    has("name") && (has("claude_model") || has("codex_model"))
 }
 
 /// Own-line `{{includes/<stem>}}` directives, one level deep.

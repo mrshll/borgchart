@@ -201,23 +201,6 @@ fn frontmatter_bom_and_crlf_are_accepted() {
 }
 
 #[test]
-fn legacy_team_file_points_to_docs() {
-    let f = Fixture::new();
-    fs::rename(f.path("team.yaml"), f.path("topology.yaml")).unwrap();
-    expect_error(&f, "docs/format.md");
-}
-
-#[test]
-fn legacy_frontmatter_points_to_docs() {
-    let f = Fixture::new();
-    f.write(
-        "lead.md",
-        "---\nname: lead\nclaude_model: opus\n---\nTriage.\n",
-    );
-    expect_error(&f, "older frontmatter");
-}
-
-#[test]
 fn prompt_symlink_outside_team_is_refused() {
     let f = Fixture::new();
     let outside = tempfile::tempdir().unwrap();

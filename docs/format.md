@@ -11,7 +11,7 @@ examples/slack-devops/
 └── plugins/slackbot/   # a colocated plugin
 ```
 
-`brg validate <team>` checks the team and the configuration before anything starts and reports every problem at once. A `borgchart.yaml` in a team folder is not read.
+`brg validate <team>` checks the team and the configuration before anything starts and reports every problem at once.
 
 ## YAML rules
 
@@ -64,7 +64,7 @@ roles:
 
 **Names.** Role, plugin and action names match `[a-z][a-z0-9_-]{0,31}`. A role's member is `<role>-<suffix>` (`triager-x7k2`). A role cannot be named `<another role>-<suffix>`, where the suffix is four characters from `23456789abcdefghjkmnpqrstuvwxyz`: that would also name a member. Environment names match `[A-Z_][A-Z0-9_]*`. The team's name is its folder's name, lowercased, with anything outside `[a-z0-9_-]` turned into `-`.
 
-The role's identity is its key under `roles:`. The old `members:` field and frontmatter `role:` are unknown fields, with no aliases. Each role keeps up to `max` members, running or stopped; `max` defaults to 1 and must be at least 1. `brg delete <instance>/<member>` removes a stopped member; its ID stays issued and is never reused. A later `create <instance>/<role>` gets a fresh ID. `create <team>` makes one member per `start: true` role, even with `max > 1`. `start <instance>` reuses kept members and only creates a member for a `start: true` role with none left; it never fills to `max`. Lowering `max` after a full stop keeps all existing members, and further creation is refused until enough are deleted.
+The role's identity is its key under `roles:`. Each role keeps up to `max` members, running or stopped; `max` defaults to 1 and must be at least 1. `brg delete <instance>/<member>` removes a stopped member; its ID stays issued and is never reused. A later `create <instance>/<role>` gets a fresh ID. `create <team>` makes one member per `start: true` role, even with `max > 1`. `start <instance>` reuses kept members and only creates a member for a `start: true` role with none left; it never fills to `max`. Lowering `max` after a full stop keeps all existing members, and further creation is refused until enough are deleted.
 
 **Messages.** With `bus:`, members publish plain `{to, body, reply_to?}` drafts, read and ack their inbox, and use one `inbox wait`. `brg status` (tree, `-i` and `--json`) shows unread message counts; no bus means no counts. The optional alert action and watcher are not wired now; the lead nudges with `brg send`. See [the bus](bus.md) for routing, storage, wait rules and commands.
 
@@ -103,14 +103,6 @@ You read each new message in the channel and decide whether it needs the lead.
 - **The body** is the member's standing instruction, sent as its opening prompt.
 - **Includes:** a line that is exactly `{{includes/<stem>}}` is replaced by `<includes>/<stem>.md`. Includes are one level deep: an included file can't include another.
 - **Paths:** prompts, includes and plugin paths must stay inside the team directory. `..` and symlinks that lead outside are refused.
-
-### Older shape
-
-A directory with `topology.yaml`, or member frontmatter with `name` and `claude_model`/`codex_model`, is the older shape. To convert it:
-
-1. Rename `topology.yaml` to `team.yaml`.
-2. Rename `members:` to `roles:` in `team.yaml`. Remove `name:` or `role:` from each role file's frontmatter.
-3. Replace `claude_model: X` / `codex_model: Y` with `models: {claude: X, codex: Y}`.
 
 ## Plugins
 
