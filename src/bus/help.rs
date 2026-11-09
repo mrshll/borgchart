@@ -36,18 +36,19 @@ pub fn wait() -> String {
     "Waits for your own inbox, or external:NAME with --external NAME.
 --timeout is 60-86400 seconds, default 86400. --full includes message bodies;
 --json prints the same inbox object as `brg inbox --json`.
-The 60 s floor matches the loop guard on every nonzero exit, timeout included.
+The 60 s floor applies to nonzero exits except fenced, timeout included.
 
 The first readable scan marks the newest message. A new unacked message to
 you returns at once. Messages already present return after 60 seconds only if
 still unacked; if all were acked meanwhile, waiting continues. A new message
 can return sooner. Ack everything you have taken on before waiting.
 Each later poll reads only the next message and checks your current session.
-Errors, including usage errors, wait at least 60 seconds too; explicit help
-and signals may end immediately.
+Errors, including usage errors, wait at least 60 seconds too; fenced, explicit
+help and signals may end immediately.
 
 Outcomes: ok (0) prints the inbox; timeout (9) means nothing new in time.
-fenced (8) means your session ended or was replaced: stop. Other outcomes are
+fenced (8) means your session ended or was replaced: stop. Member liveness is
+checked about once a second; an unknown result keeps waiting. Other outcomes are
 usage (2), not-configured (3), refused (4), invalid (5), corrupt (7),
 not-found (10) and error (1).
 "

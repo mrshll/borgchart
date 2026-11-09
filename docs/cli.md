@@ -29,7 +29,7 @@
 | `brg logs <instance>/<member> [-n LINES]` | Show recent output of a member, or of a plugin process (`<instance>/<plugin>`) |
 | `brg send [--external NAME] TARGET TEXT [--reply-to ID] [--force] [--from MEMBER] [--json]` | Record a message, then optionally type it; `TEXT` may be `-` for stdin. Outside callers must name `--external NAME`; members retain their fenced identity |
 | `brg inbox [--member ID \| --external NAME] [--full] [--json]` | List every unacked message to you (or another member's inbox, read-only), oldest first; --full includes bodies. Reading never acknowledges |
-| `brg inbox wait [--external NAME] [--timeout SECONDS] [--full] [--json]` | One wait for your inbox: new unacked messages return at once, existing messages after 60 seconds only if still unacked. Errors also wait at least 60 seconds; help/signals are exempt. Timeout 60–86400 seconds, default 86400, exits 9. A stopped/replaced member exits 8 (`fenced`); stop waiting |
+| `brg inbox wait [--external NAME] [--timeout SECONDS] [--full] [--json]` | One wait for your inbox: new unacked messages return at once, existing messages after 60 seconds only if still unacked. Errors also wait at least 60 seconds; fenced/help/signals are exempt. Timeout 60–86400 seconds, default 86400, exits 9. A stopped/exited/replaced member exits 8 (`fenced`); stop waiting |
 | `brg msg read ID [--json]` | Show one message in full, including an acknowledged one |
 | `brg msg ack ID… [--external NAME] [--json]` | Acknowledge messages addressed to you; acking twice is a no-op |
 | `brg bus check [--json]` | Check the store for gaps, unreadable files and stray temporaries; never writes |

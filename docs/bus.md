@@ -102,12 +102,12 @@ Repeating an ack returns `already` for that ID. Locked records have `ack_require
 "$BORGCHART_BIN" inbox wait --timeout 600 --full --json
 ```
 
-- Timeout is 60–86400 seconds, default 86400; the 60 s floor matches the loop guard on every nonzero exit, including timeout. With no new message by the deadline it exits 9 (`timeout`).
+- Timeout is 60–86400 seconds, default 86400; the 60 s floor matches the loop guard on every nonzero exit except `fenced`, including timeout. With no new message by the deadline it exits 9 (`timeout`).
 - The highest sequence in the first readable scan is the start mark. A new unacked message to you above it returns at once.
 - If unacked messages were already there, it returns after 60 seconds, only if some are still unacked. If all were acked meanwhile, it keeps waiting for a new one or the timeout.
-- Errors, including missing identity, unreadable records and usage errors, return no sooner than 60 seconds after command start. Explicit help and signals are exempt.
+- Errors, including missing identity, unreadable records and usage errors, return no sooner than 60 seconds after command start. `fenced`, explicit help and signals are exempt.
 - Each poll (250 ms) checks the current start and reads only the next message file, moving past other recipients. An existing next file that won't parse is an error, never skipped.
-- A stopped or replaced member exits 8 (`fenced`), even without a publication. Stop waiting and tell the owner; never change identity variables to retry.
+- A stopped, exited or replaced member exits 8 (`fenced`), even without a publication. Wait checks member liveness about once a second, including while waiting for a publisher's lock; unknown liveness keeps waiting. Member waits require tmux evidence and do not infer exit from a sandbox process listing. Stop waiting and tell the owner; never change identity variables to retry.
 
 Ack everything you've taken on, then arm one wait: Claude with its Bash tool in background mode, Codex in the foreground (`--timeout 600`). On exit 9 wait again. Leaving messages unacked wakes you about once a minute.
 
@@ -150,6 +150,6 @@ These are separate from `brg send`'s codes.
 | 4 | `refused` | Caller context not allowed |
 | 5 | `invalid` | Request failed validation |
 | 7 | `corrupt` | Unreadable or inconsistent store |
-| 8 | `fenced` | Stopped or replaced member |
+| 8 | `fenced` | Stopped, exited or replaced member |
 | 9 | `timeout` | Wait deadline passed |
 | 10 | `not-found` | No such message |
