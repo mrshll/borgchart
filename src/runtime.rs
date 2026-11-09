@@ -3779,7 +3779,11 @@ fn switch_pause() {}
 /// Whether this process runs inside the instance's own tmux server, as in
 /// the `prefix S` pop-up.
 pub fn inside_server(inst: &Instance) -> bool {
-    let socket = state::read_meta(&inst.state).and_then(|m| m.socket_path);
+    // An unreadable start record isn't this server: the attach path then refuses it.
+    let socket = state::read_meta(&inst.state)
+        .ok()
+        .flatten()
+        .and_then(|m| m.socket_path);
     crate::tmux::names_server(std::env::var("TMUX").ok().as_deref(), socket.as_deref())
 }
 
@@ -3791,7 +3795,7 @@ pub fn switch_to(inst: &Instance, name: &str, client: Option<&str>) -> Result<()
     let session = inst.state.session();
     let tmux = tmux_for(&inst.state);
     let window = window_name(inst, &tmux, &session, name)?;
-    let Some(socket) = state::read_meta(&inst.state).and_then(|m| m.socket_path) else {
+    let Some(socket) = state::read_meta(&inst.state)?.and_then(|m| m.socket_path) else {
         return Err(format!("`{}` is not running", inst.at(name)));
     };
     switch_pause();
