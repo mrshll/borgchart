@@ -427,6 +427,18 @@ impl Server {
             .collect())
     }
 
+    /// An absent or refused recorded socket confirms that the server's
+    /// windows are gone. Other connection errors leave that unknown.
+    pub fn absent(&self) -> bool {
+        let Server::Path(path) = self else {
+            return false;
+        };
+        matches!(
+            std::os::unix::net::UnixStream::connect(path).map_err(|e| e.kind()),
+            Err(io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused)
+        )
+    }
+
     /// The server's absolute socket path and PID, as the server reports
     /// them. Needs a session on the server.
     pub fn identity(&self) -> Result<(PathBuf, u32), String> {
@@ -525,7 +537,7 @@ pub fn pane_liveness(pane: &PaneIdentity) -> Liveness {
 /// Whether process `pid` has certainly exited: `ps` lists this process but
 /// not `pid`. Any process with that ID (even a reused one) is not proof, and
 /// neither is a `ps` that can't run or doesn't list this process.
-fn process_exited(pid: u32) -> bool {
+pub(crate) fn process_exited(pid: u32) -> bool {
     let me = std::process::id();
     if pid == 0 || pid == me {
         return false;

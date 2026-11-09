@@ -488,13 +488,17 @@ fn start_members(
     }
 
     let parent_member = |member: &crate::team::Role| {
-        member.parent.as_ref().map(|p| {
-            record
-                .members_of(p)
-                .into_iter()
-                .next()
-                .unwrap_or_else(|| p.clone())
-        })
+        member
+            .parent
+            .as_ref()
+            .map(|p| {
+                record
+                    .members_of(p)
+                    .into_iter()
+                    .next()
+                    .unwrap_or_else(|| p.clone())
+            })
+            .or_else(|| record.parent.clone())
     };
     let member_meta = |id: &str, base: &BTreeMap<String, String>| -> Option<MemberMeta> {
         let role = record.role_of(id)?;
@@ -704,6 +708,11 @@ fn start_members(
         env.insert("PATH".into(), path);
         env.insert(address::ENV_INSTANCE.into(), state.id.clone());
         env.insert(context::ENV_MEMBER.into(), id.clone());
+        if member.parent.is_none()
+            && let Some(parent) = &record.parent
+        {
+            env.insert("BORGCHART_PARENT".into(), parent.clone());
+        }
         env.insert(crate::exec::ENV_ROLE.into(), member.id.clone());
         env.insert(
             crate::exec::ENV_NOTES.into(),
@@ -1292,8 +1301,12 @@ fn check_state_overlap(folder: &Path, instance_state: &Path) -> Result<(), Strin
 }
 
 /// Validate a team folder, printing what validation found; `Err` on errors.
-fn validate_printing(dir: &Path) -> Result<Validated, String> {
-    let (report, validated) = validate(dir);
+fn validate_printing(dir: &Path, recursive: bool) -> Result<Validated, String> {
+    let (report, validated) = if recursive {
+        validate(dir)
+    } else {
+        crate::validate::validate_own(dir)
+    };
     for diag in &report.diags {
         eprintln!("{diag}");
     }
@@ -1340,7 +1353,10 @@ pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
             .join("\n")
     })?;
     let dir = crate::team::find(team_arg, &config.teams)?;
-    let v = validate_printing(&dir)?;
+    let v = validate_printing(&dir, true)?;
+    if v.team.bus.is_some() && has_member_context() {
+        return Err("members cannot create an independent team with a bus; ask a person, or declare it as a team role and run brg create <instance>/<role>".into());
+    }
     let folder_path = match folder.strip_prefix("~/") {
         Some(rest) => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest),
         None => PathBuf::from(folder),
@@ -1438,6 +1454,11 @@ fn rollback_pause() {}
 /// `brg create <instance>/<role>`: a new member of the role, started.
 pub fn create_member(mut inst: Instance, role: &str) -> Result<UpOutcome, String> {
     let v = validated(&inst)?;
+    if let Some(team_role) = v.team.team_roles.get(role) {
+        check_parent_authority(&inst, role, Some(&v), None)?;
+        create_authority_pause();
+        return crate::nesting::create(inst, &v, role, team_role);
+    }
     let Some(member) = v.team.roles.get(role) else {
         return Err(format!(
             "instance `{}`'s team has no role `{role}`; its roles: {}",
@@ -1446,8 +1467,11 @@ pub fn create_member(mut inst: Instance, role: &str) -> Result<UpOutcome, String
         ));
     };
     precheck(&v, &[member], !is_running(&inst))?;
+    check_parent_authority(&inst, role, Some(&v), None)?;
+    create_authority_pause();
     let lock = registry::lock()?;
     inst.reload()?;
+    crate::nesting::check_not_stopping(&inst)?;
     check_parent_authority(&inst, role, Some(&v), None)?;
     let existing = inst.record.members_of(role);
     if existing.len() >= member.max {
@@ -1472,6 +1496,24 @@ pub fn create_member(mut inst: Instance, role: &str) -> Result<UpOutcome, String
     lock.save_instance(&inst.state, &inst.record)?;
     start_members(lock, &inst, &v, vec![id], false)
 }
+
+/// Pause after the preliminary create check, before taking the registry
+/// lock. Tests can restart the caller here to exercise the locked recheck.
+#[cfg(feature = "test-support")]
+fn create_authority_pause() {
+    let Some(path) = std::env::var_os("BORGCHART_TEST_CREATE_AUTHORITY_PAUSE").map(PathBuf::from)
+    else {
+        return;
+    };
+    let _ = std::fs::write(path.with_extension("waiting"), "");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !path.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[cfg(not(feature = "test-support"))]
+fn create_authority_pause() {}
 
 /// Create only a new member's missing `{member_id}` leaf, after checking its
 /// unresolved path. Ancestors must exist; an existing leaf is kept as is.
@@ -1578,20 +1620,17 @@ fn check_copy_folder(inst: &Instance, role: &crate::team::Role, id: &str) -> Res
     Ok(())
 }
 
-/// Parent authority for member lifecycle operations. The registry lock
-/// holds both the target's membership and the parent's latest start still.
+/// Member authority follows recorded parent edges, at any depth. Creation
+/// checks early, then every change repeats the check under the registry lock.
 /// Teams without a bus retain their existing caller rules.
-fn check_parent_authority(
+pub(crate) fn check_parent_authority(
     inst: &Instance,
     role: &str,
     validated_team: Option<&Validated>,
     target: Option<&str>,
 ) -> Result<(), String> {
     let creating = target.is_none();
-    let has_member_context = [context::ENV_MEMBER, context::ENV_INCARNATION]
-        .iter()
-        .any(|key| std::env::var(key).is_ok_and(|value| !value.is_empty()));
-    if !has_member_context && !creating {
+    if !has_member_context() && !creating {
         return Ok(());
     }
     let recorded = match target {
@@ -1606,7 +1645,7 @@ fn check_parent_authority(
         {
             return Ok(());
         }
-        recorded.parent
+        recorded.parent.map(|parent| parent_address(inst, &parent))
     } else {
         let loaded;
         let v = match validated_team {
@@ -1619,12 +1658,19 @@ fn check_parent_authority(
         if v.team.bus.is_none() {
             return Ok(());
         }
-        let definition = v.team.roles.get(role).ok_or_else(|| {
+        if !creating {
+            return Err(format!(
+                "member `{}` has no recorded parent; ask a person to manage it",
+                inst.at(target.expect("existing member"))
+            ));
+        }
+        let parent_role = v.team.roles.get(role).map(|r| r.parent.as_deref())
+            .or_else(|| v.team.team_roles.get(role).map(|r| r.parent.as_deref()))
+            .ok_or_else(|| {
             format!(
                 "role `{role}` is no longer in the team; ask a person to stop or delete its members"
             )
         })?;
-        let parent_role = definition.parent.as_deref();
         let parent = parent_role.and_then(|p| inst.record.members_of(p).into_iter().next());
         if creating
             && parent.is_none()
@@ -1637,30 +1683,114 @@ fn check_parent_authority(
             ));
         }
         parent
+            .map(|parent| inst.at(&parent))
+            .or_else(|| inst.record.parent.clone())
     };
-    let caller = context::caller(None).map_err(|e| e.message)?;
+    check_subtree_authority(parent, &inst.at(target.unwrap_or(role)))
+}
+
+fn has_member_context() -> bool {
+    [context::ENV_MEMBER, context::ENV_INCARNATION]
+        .iter()
+        .any(|key| std::env::var(key).is_ok_and(|value| !value.is_empty()))
+}
+
+fn parent_address(inst: &Instance, parent: &str) -> String {
+    if parent.contains('/') {
+        parent.to_string()
+    } else {
+        inst.at(parent)
+    }
+}
+
+/// A copy belongs below its recorded parent member, never below its roots.
+fn check_instance_authority(inst: &Instance, v: Option<&Validated>) -> Result<(), String> {
+    if !has_member_context() {
+        return Ok(());
+    }
+    if state::read_meta(&inst.state)?.is_some() {
+        if crate::bus::store::open(&inst.state)
+            .is_err_and(|f| f.code == crate::bus::outcome::Code::NotConfigured)
+        {
+            return Ok(());
+        }
+    } else {
+        let loaded;
+        let v = match v {
+            Some(v) => v,
+            None => {
+                loaded = validated(inst)?;
+                &loaded
+            }
+        };
+        if v.team.bus.is_none() {
+            return Ok(());
+        }
+    }
+    check_subtree_authority(inst.record.parent.clone(), &inst.id)
+}
+
+fn check_subtree_authority(mut parent: Option<String>, target: &str) -> Result<(), String> {
     let context::Caller::Member {
         member,
         incarnation,
-    } = caller
+    } = context::caller(None).map_err(|e| e.message)?
     else {
         return Ok(());
     };
-    context::instance(Some(&inst.id)).map_err(|e| e.message)?;
-    if parent.as_deref() != Some(member.as_str()) {
+    // Targets may cross instance boundaries; the caller's start is always
+    // checked in its own instance, never in the target's store.
+    let own = context::instance(None).map_err(|e| e.message)?;
+    let caller = address::instance(&own)?;
+    let current = lifecycle::load_incarnation(&caller.state, &member)?;
+    if caller.record.role_of(&member).is_none()
+        || !current.is_some_and(|inc| {
+            inc.member == member
+                && inc.incarnation == incarnation
+                && inc.ended_at.is_none()
+                && inc
+                    .pane
+                    .is_some_and(|pane| lifecycle::pane_liveness(&pane) == Liveness::Alive)
+        })
+    {
         return Err(format!(
-            "only a person or role `{role}`'s parent member may manage its members; this caller is `{member}`"
+            "`{own}/{member}`'s start is incomplete, replaced or stopped; only its latest running start may manage its subtree"
         ));
     }
-    let current = lifecycle::load_incarnation(&inst.state, &member)?;
-    if !current.is_some_and(|inc| {
-        inc.member == member && inc.incarnation == incarnation && inc.ended_at.is_none()
-    }) {
-        return Err(format!(
-            "`{member}`'s start was replaced or stopped; only its latest running start may manage role `{role}`"
-        ));
+    let caller_address = caller.at(&member);
+    let refusal = format!(
+        "`{target}` is outside `{caller_address}`'s subtree; ask a person or an ancestor member to manage it"
+    );
+    if target == caller_address {
+        return Err(refusal);
     }
-    Ok(())
+    let mut seen = std::collections::BTreeSet::new();
+    while let Some(address) = parent {
+        if address == caller_address {
+            return Ok(());
+        }
+        if !seen.insert(address.clone()) {
+            break;
+        }
+        let Some((instance, member)) = address.rsplit_once('/') else {
+            break;
+        };
+        let ancestor = address::instance(instance)?;
+        if ancestor.record.role_of(member).is_none() {
+            break;
+        }
+        let meta = state::read_meta(&ancestor.state)?.ok_or_else(|| format!(
+            "instance `{instance}`'s start record cannot be read; ask a person to manage `{target}`"
+        ))?;
+        let recorded = meta.members.get(member).ok_or_else(|| {
+            format!("member `{address}` has no recorded parent; ask a person to manage `{target}`")
+        })?;
+        parent = recorded
+            .parent
+            .as_ref()
+            .map(|p| parent_address(&ancestor, p));
+    }
+    Err(refusal)
 }
 
 /// Refuse when the instance's start.json exists but can't be read: brg
@@ -1706,6 +1836,8 @@ fn repoint(inst: &mut Instance, team: &Path) -> Result<(), String> {
     }
     let lock = registry::lock()?;
     inst.reload()?;
+    crate::nesting::check_not_stopping(inst)?;
+    check_instance_authority(inst, None)?;
     // `is_running` would guess the server from the caller's settings.
     unreadable_start_record(inst, "its team folder can't be changed")?;
     if is_running(inst) {
@@ -1779,9 +1911,18 @@ fn unreadable_store(inst: &Instance, e: &str) -> String {
 
 /// `brg start <instance>[/<member>] [--team <path>]`.
 pub fn start(
+    inst: Instance,
+    member: Option<&str>,
+    team: Option<&Path>,
+) -> Result<UpOutcome, String> {
+    start_instance(inst, member, team, true)
+}
+
+fn start_instance(
     mut inst: Instance,
     member: Option<&str>,
     team: Option<&Path>,
+    restore_copies: bool,
 ) -> Result<UpOutcome, String> {
     if let Some(dir) = team {
         if member.is_some() {
@@ -1807,16 +1948,22 @@ pub fn start(
             inst.record.folder.display()
         ));
     }
-    let v = validate_printing(&inst.record.team_dir)?;
+    let v = validate_printing(&inst.record.team_dir, inst.id.contains('/'))?;
     let lock = registry::lock()?;
     inst.reload()?;
+    crate::nesting::check_not_stopping(&inst)?;
     if let Some(id) = &member {
         address::member(&inst, id)?;
         check_parent_authority(&inst, inst.record.role_of(id).unwrap(), Some(&v), Some(id))?;
+    } else {
+        check_instance_authority(&inst, Some(&v))?;
     }
     match member {
         Some(id) => start_members(lock, &inst, &v, vec![id], false),
         None => {
+            if let Some((parent, _)) = inst.id.rsplit_once('/') {
+                crate::nesting::validate_child(&address::instance(parent)?, &v.team.dir)?;
+            }
             let mut created_folders = Vec::new();
             let result = (|| {
                 let ids = full_start_members(&lock, &mut inst, &v, &mut created_folders)?;
@@ -1825,7 +1972,40 @@ pub fn start(
             if result.is_err() {
                 remove_unkept_copy_folders(&inst, created_folders);
             }
-            result
+            let mut outcome = result?;
+            if !restore_copies {
+                return Ok(outcome);
+            }
+            let registered = registry::load()?;
+            let mut copies: Vec<_> = inst
+                .record
+                .copies_running_at_stop
+                .iter()
+                .flatten()
+                .collect();
+            copies.sort_by_key(|id| id.split('/').count());
+            for id in copies {
+                let full_id = inst.at(id);
+                if !registered.instances.contains_key(&full_id) {
+                    continue;
+                }
+                let copy = address::instance(&full_id);
+                if copy.as_ref().is_ok_and(is_running) {
+                    continue;
+                }
+                match copy.and_then(|copy| start_instance(copy, None, None, false)) {
+                    Ok(copy) => {
+                        outcome.tree.push_str(&copy.tree);
+                        outcome.notes.extend(copy.notes);
+                        outcome.failed |= copy.failed;
+                    }
+                    Err(error) => {
+                        outcome.notes.push(format!("{full_id}: {error}"));
+                        outcome.failed = true;
+                    }
+                }
+            }
+            Ok(outcome)
         }
     }
 }
@@ -1841,6 +2021,7 @@ pub fn liveness_of(inst: &Instance) -> BTreeMap<String, Liveness> {
     let rows = meta.as_ref().map(|m| lifecycle::Server::of(m).panes());
     let mut out = BTreeMap::new();
     for (id, _) in inst.record.kept_members() {
+        let incarnation = lifecycle::load_incarnation(state, id);
         let by_window = match (&meta, &rows) {
             // The start record can't be read: which server runs it is unknown.
             (None, _) if unreadable => Liveness::Unknown,
@@ -1857,9 +2038,17 @@ pub fn liveness_of(inst: &Instance) -> BTreeMap<String, Liveness> {
                 }
             }
             (Some(m), _) if m.stopped_at.is_some() || !m.windows_started => Liveness::Gone,
+            (Some(_), Some(Err(_))) if inst.record.stopping => match &incarnation {
+                Ok(Some(inc)) => inc
+                    .pane
+                    .as_ref()
+                    .map(lifecycle::pane_liveness)
+                    .unwrap_or(Liveness::Unknown),
+                _ => Liveness::Unknown,
+            },
             _ => Liveness::Unknown,
         };
-        let by_record = match lifecycle::load_incarnation(state, id) {
+        let by_record = match incarnation {
             Ok(None) => Liveness::Gone,
             Ok(Some(inc)) => lifecycle::liveness(state, id, &inc.incarnation),
             Err(_) => Liveness::Unknown,
@@ -1883,6 +2072,22 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
     inst.reload()?;
     let id = address::member(&inst, name)?;
     check_parent_authority(&inst, inst.record.role_of(&id).unwrap(), None, Some(&id))?;
+    let copies: Vec<_> = crate::nesting::descendants(&inst)?
+        .into_iter()
+        .filter(|copy| {
+            copy.instance.as_ref().map_or(true, |copy| {
+                copy.record.parent.as_deref() == Some(&inst.at(&id))
+            })
+        })
+        .map(|copy| copy.id)
+        .collect();
+    if !copies.is_empty() {
+        return Err(format!(
+            "member `{}` has kept copies; delete them first:\n  {}",
+            inst.at(&id),
+            copies.join("\n  ")
+        ));
+    }
     if tmux_for(&inst.state)
         .window(&inst.state.session(), &id)
         .is_some_and(|w| !w.dead)
@@ -2046,9 +2251,26 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
 /// `brg delete <instance> [--force]`: remove a stopped instance's state
 /// folder (messages, notes, brg's files) and its registration. Its working
 /// folder is never touched.
-pub fn delete(inst: Instance, force: bool) -> Result<Vec<String>, String> {
+pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
     let lock = registry::lock()?;
+    inst.reload()?;
+    check_instance_authority(&inst, None)?;
     let state_lock = lifecycle::lock_state(&inst.state)?;
+    let copies = crate::nesting::descendants(&inst)?;
+    if !copies.is_empty() {
+        return Err(format!(
+            "instance `{}` has kept copies; delete them first:\n  {}",
+            inst.id,
+            copies
+                .iter()
+                .map(|copy| copy.id.as_str())
+                .collect::<Vec<_>>()
+                .join("\n  ")
+        ));
+    }
+    if inst.record.stopping {
+        crate::nesting::check_not_stopping(&inst)?;
+    }
     unreadable_start_record(&inst, "it can't be deleted, even with --force")?;
     let live = liveness_of(&inst);
     let alive: Vec<&String> = live
@@ -2109,12 +2331,21 @@ pub fn delete(inst: Instance, force: bool) -> Result<Vec<String>, String> {
             ));
         }
     }
+    let mut registry = lock.load()?;
+    registry.instances.remove(&inst.id);
+    if let Some((parent_id, copy_id)) = inst.id.rsplit_once('/') {
+        let parent_state = StateDir::new(parent_id);
+        let mut parent = registry::read_instance(&parent_state)?;
+        if let Some(copy) = parent.copies.get_mut(copy_id) {
+            copy.deleted = true;
+            copy.cwd = None;
+        }
+        lock.save_instance(&parent_state, &parent)?;
+    }
+    lock.save(&registry)?;
     drop(state_lock);
     std::fs::remove_dir_all(&inst.state.root)
         .map_err(|e| format!("cannot remove {}: {e}", inst.state.root.display()))?;
-    let mut registry = lock.load()?;
-    registry.instances.remove(&inst.id);
-    lock.save(&registry)?;
     Ok(vec![format!(
         "deleted {}; its working folder {} was left as it is",
         inst.id,
@@ -2306,13 +2537,181 @@ fn start_window(
 /// `brg stop <instance>[/<member>]`.
 ///
 /// Works on the tmux server recorded at the start, refusing a caller whose
-/// `BORGCHART_TMUX_SOCKET` names another, and changes nothing unless that
-/// server answers. A member's incarnation is marked ended, and launch files
-/// and secrets removed, only once its pane was stopped or the server showed
-/// it gone. A full stop of a running instance records which members were
+/// `BORGCHART_TMUX_SOCKET` names another. Every full stop persists a cascade;
+/// an absent server requires any recorded pane processes to have exited. A member's
+/// incarnation is marked ended, and launch files and secrets removed, only
+/// once its pane was stopped or confirmed gone. A full stop records which members were
 /// running, for the next `start`; stopping a stopped one changes nothing.
 pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> {
     let lock = registry::lock()?;
+    let mut current = inst.clone();
+    current.reload()?;
+    let inst = &current;
+    if only.is_some() {
+        return stop_one(&lock, inst, only);
+    }
+    check_instance_authority(inst, None)?;
+    let descendants = crate::nesting::descendants(inst)?;
+    let mut copies = Vec::new();
+    let mut errors = Vec::new();
+    for copy in descendants {
+        match copy.instance {
+            Ok(copy) => copies.push(copy),
+            Err(error) => errors.push(format!(
+                "{}: {error}; restore its state folder and instance.json, then retry: brg stop {}",
+                copy.id, inst.id
+            )),
+        }
+    }
+    for target in std::iter::once(inst).chain(copies.iter()) {
+        check_stop_socket(target)?;
+    }
+    forget_copy_restore(&lock, inst)?;
+    // Mark the enclosing instance first. Even an interruption while writing
+    // descendant records fences the entire subtree through its ancestor.
+    for target in std::iter::once(inst).chain(copies.iter().rev()) {
+        mark_stopping(&lock, target)?;
+    }
+    drop(lock);
+    stop_pause();
+    copies.push(inst.clone());
+    let mut messages = Vec::new();
+    let nested = copies.len() > 1;
+    for mut copy in copies {
+        let lock = registry::lock()?;
+        copy.reload()?;
+        // Another stop may have finished this instance while the lock was
+        // released. Never stop a new start after its cascade has finished.
+        if !copy.record.stopping {
+            continue;
+        }
+        let result = stop_one(&lock, &copy, None);
+        let confirmed = result.is_ok();
+        match result {
+            Ok(own) if nested => messages.extend(
+                own.into_iter()
+                    .map(|message| format!("{}: {message}", copy.id)),
+            ),
+            Ok(own) => messages.extend(own),
+            Err(error) => errors.push(format!("{}: {error}", copy.id)),
+        }
+        let stopped = liveness_of(&copy)
+            .values()
+            .all(|live| *live == Liveness::Gone);
+        let descendants_stopped = crate::nesting::descendants(&copy)?.iter().all(|child| {
+            child
+                .instance
+                .as_ref()
+                .is_ok_and(|child| !child.record.stopping)
+        });
+        if confirmed && stopped && descendants_stopped && !is_running(&copy) {
+            copy.reload()?;
+            copy.record.stopping = false;
+            lock.save_instance(&copy.state, &copy.record)?;
+        } else {
+            errors.push(format!(
+                "instance `{}` is still stopping; finish its cascade: brg stop {}",
+                copy.id, inst.id
+            ));
+        }
+    }
+    if errors.is_empty() {
+        Ok(messages)
+    } else {
+        messages.extend(errors);
+        Err(messages.join("\n"))
+    }
+}
+
+/// Check every target before persisting any stop marks or stopping panes.
+fn check_stop_socket(inst: &Instance) -> Result<(), String> {
+    if let Some(name) = state::read_meta(&inst.state)?.map(|meta| meta.socket)
+        && name != state::tmux_socket()
+    {
+        return Err(format!(
+            "instance `{}` is on tmux socket `{name}`, not `{}`; stop it with BORGCHART_TMUX_SOCKET={name} brg stop {}. Nothing was changed",
+            inst.id,
+            state::tmux_socket(),
+            inst.id
+        ));
+    }
+    Ok(())
+}
+
+/// An explicit copy stop removes its whole subtree from every ancestor's
+/// restore snapshot. Called under the same registry lock as the stop marks.
+fn forget_copy_restore(lock: &registry::Lock, inst: &Instance) -> Result<(), String> {
+    let mut id = inst.id.as_str();
+    while let Some((parent_id, _)) = id.rsplit_once('/') {
+        let mut parent = address::instance(parent_id)?;
+        if let Some(copies) = &mut parent.record.copies_running_at_stop {
+            let relative = &inst.id[parent_id.len() + 1..];
+            let prefix = format!("{relative}/");
+            copies.retain(|copy| copy != relative && !copy.starts_with(&prefix));
+            lock.save_instance(&parent.state, &parent.record)?;
+        }
+        id = parent_id;
+    }
+    Ok(())
+}
+
+/// Persist the restore snapshots before killing any pane. A resumed stop
+/// keeps the original snapshots, even if its panes have disappeared since.
+fn mark_stopping(lock: &registry::Lock, inst: &Instance) -> Result<(), String> {
+    if inst.record.stopping {
+        return Ok(());
+    }
+    let mut record = inst.record.clone();
+    let running: std::collections::BTreeSet<_> = liveness_of(inst)
+        .into_iter()
+        .filter(|(_, live)| *live != Liveness::Gone)
+        .map(|(id, _)| id)
+        .collect();
+    if !running.is_empty() {
+        record.running_at_stop = Some(running);
+    }
+    let mut running_copies = std::collections::BTreeSet::new();
+    for copy in crate::nesting::descendants(inst)? {
+        let Ok(copy) = copy.instance else {
+            continue;
+        };
+        if is_running(&copy)
+            || liveness_of(&copy)
+                .values()
+                .any(|live| *live != Liveness::Gone)
+        {
+            running_copies.insert(copy.id[inst.id.len() + 1..].to_string());
+        }
+    }
+    if is_running(inst) || !running_copies.is_empty() || record.copies_running_at_stop.is_none() {
+        record.copies_running_at_stop = Some(running_copies);
+    }
+    record.stopping = true;
+    lock.save_instance(&inst.state, &record)
+}
+
+/// Pause with the marks persisted and the registry unlocked, so a CLI test
+/// can exercise a live child's create/start or kill an interrupted stop.
+#[cfg(feature = "test-support")]
+fn stop_pause() {
+    let Some(path) = std::env::var_os("BORGCHART_TEST_STOP_PAUSE").map(PathBuf::from) else {
+        return;
+    };
+    let _ = std::fs::write(path.with_extension("waiting"), "");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !path.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[cfg(not(feature = "test-support"))]
+fn stop_pause() {}
+
+fn stop_one(
+    lock: &registry::Lock,
+    inst: &Instance,
+    only: Option<&str>,
+) -> Result<Vec<String>, String> {
     let mut current = inst.clone();
     current.reload()?;
     let inst = &current;
@@ -2328,12 +2727,8 @@ pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> 
         // Nothing was ever recorded here, so brg started nothing to stop.
         return Ok(vec!["not running".into()]);
     };
-    let caller_socket = state::tmux_socket();
-    if meta.socket != caller_socket {
-        let name = &meta.socket;
-        return Err(format!(
-            "instance `{team}` is on tmux socket `{name}`, not `{caller_socket}`; stop it with BORGCHART_TMUX_SOCKET={name} brg stop {team}. Nothing was changed"
-        ));
+    if only.is_some() {
+        check_stop_socket(inst)?;
     }
     let server = lifecycle::Server::of(&meta);
     let rows = match server.panes() {
@@ -2342,20 +2737,31 @@ pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> 
         // nothing has started since.
         Err(_) if meta.stopped_at.is_some() || !meta.windows_started => Vec::new(),
         Err(e) => {
-            return Err(format!(
-                "{e}; nothing was changed. If instance `{team}` is really gone (for example after a reboot), `brg start {team}` and then `brg stop {team}` clear it"
-            ));
+            if only.is_some() || !server.absent() {
+                return Err(format!("{e}; fix this error, then retry: brg stop {team}"));
+            }
+            for (id, _) in inst.record.kept_members() {
+                let inc = lifecycle::load_incarnation(state, id).map_err(|error| {
+                    format!(
+                        "{error}; restore `{team}/{id}`'s start record, then retry: brg stop {team}"
+                    )
+                })?;
+                if let Some(inc) = inc
+                    && inc.ended_at.is_none()
+                    && let Some(pane) = inc.pane
+                    && !lifecycle::process_exited(pane.pane_pid)
+                {
+                    return Err(format!(
+                        "{e}; brg can't confirm that `{team}/{id}`'s recorded process {} exited; end that process and ensure `ps` can check it, then retry: brg stop {team}",
+                        pane.pane_pid
+                    ));
+                }
+            }
+            Vec::new()
         }
     };
     let in_session = |r: &&lifecycle::PaneRow| r.session == session;
     let mut messages = Vec::new();
-    // The members running now, for the next full start.
-    let running: std::collections::BTreeSet<String> = rows
-        .iter()
-        .filter(in_session)
-        .filter(|r| !r.dead && inst.record.members.contains_key(&r.window))
-        .map(|r| r.window.clone())
-        .collect();
     // The processes under the panes this `stop` stops, found before tmux
     // kills the panes: some may have left the pane's session, and would
     // outlive it. Only live panes in this session on the recorded server,
@@ -2471,31 +2877,26 @@ pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> 
         )
         .map_err(|e| format!("cannot write state: {e}"))?;
     }
-    // A full stop of a running instance records who ran; a second stop
-    // keeps the first's record. Stopping one member takes it off.
-    let mut record = registry::read_instance(state)?;
-    let before = record.running_at_stop.clone();
-    match only {
-        None if !running.is_empty() => record.running_at_stop = Some(running),
-        None => {}
-        Some(id) => {
-            if let Some(set) = record.running_at_stop.as_mut() {
-                set.remove(id);
-            }
+    // Stopping one member removes it from the next full-start snapshot.
+    if let Some(id) = only {
+        let mut record = registry::read_instance(state)?;
+        if record
+            .running_at_stop
+            .as_mut()
+            .is_some_and(|set| set.remove(id))
+        {
+            lock.save_instance(state, &record)?;
         }
-    }
-    if record.running_at_stop != before {
-        lock.save_instance(state, &record)?;
     }
     Ok(messages)
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct StatusRow {
-    /// The member's ID, a role's name (a role with no member yet), or a
-    /// plugin's name.
+    /// The local member or copy ID, a role with nothing created yet, or
+    /// a plugin's name.
     pub name: String,
-    /// `member`, `role` (no member yet) or `plugin`.
+    /// `member`, `role` (no member or copy yet), `copy` or `plugin`.
     pub kind: &'static str,
     pub instance: String,
     /// The instance's name.
@@ -2511,7 +2912,8 @@ pub struct StatusRow {
     /// `"<model>"` or `"<model> <effort>"`, as declared.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// The member's parent, if it has one: rows come in tree order.
+    /// A local parent member ID, a copy's full parent address, or the
+    /// instance path that a nested root belongs to. Rows are in tree order.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
     pub posture: Option<String>,
@@ -2532,6 +2934,9 @@ pub struct StatusRow {
     /// Unacked messages; absent when the instance has no readable bus.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unread: Option<usize>,
+    /// A copy's running members, excluding members of its own copies.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub running: Option<usize>,
     /// A `start: true` member that ran and is `stopped` while the rest of
     /// the instance runs: it should be running.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -2577,7 +2982,7 @@ fn validated(inst: &Instance) -> Result<Validated, String> {
             inst.id
         ));
     }
-    let (report, validated) = validate(&inst.record.team_dir);
+    let (report, validated) = crate::validate::validate_own(&inst.record.team_dir);
     validated.ok_or_else(|| {
         report
             .errors()
@@ -2652,6 +3057,7 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
                 trust_accepted: None,
                 liveness: None,
                 unread: None,
+                running: None,
                 expected_running: false,
                 start: member.start,
             });
@@ -2696,6 +3102,7 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
             unread: counts
                 .as_ref()
                 .map(|all| all.get(id).copied().unwrap_or_default().unread),
+            running: None,
             expected_running: false,
             start: member.start,
             rule: None,
@@ -2777,6 +3184,7 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
             vendor_version: None,
             trust_accepted: None,
             unread: None,
+            running: None,
             expected_running: false,
             start: false,
         };
@@ -2814,7 +3222,136 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
             None => note,
         });
     }
-    Ok(rows)
+    for (role_name, role) in &v.team.team_roles {
+        let copies: Vec<_> = inst
+            .record
+            .copies
+            .iter()
+            .filter(|(_, c)| !c.deleted && c.role == *role_name)
+            .collect();
+        let parent = role.parent.as_ref().map(|p| {
+            inst.record
+                .members_of(p)
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| p.clone())
+        });
+        if copies.is_empty() {
+            rows.push(StatusRow {
+                name: role_name.clone(),
+                kind: "role",
+                instance: inst.id.clone(),
+                team: inst.record.team.clone(),
+                member: None,
+                start_id: None,
+                role: Some(role_name.clone()),
+                vendor: None,
+                model: None,
+                parent: parent.clone(),
+                posture: None,
+                state: if role.max > 1 {
+                    ON_DEMAND.into()
+                } else {
+                    "not created (start: false)".into()
+                },
+                rule: None,
+                detail: None,
+                vendor_version: None,
+                trust_accepted: None,
+                liveness: None,
+                unread: None,
+                running: None,
+                expected_running: false,
+                start: false,
+            });
+        }
+        for (id, _) in copies {
+            let full_id = inst.at(id);
+            let (copy, mut children, error) = match address::instance(&full_id)
+                .and_then(|copy| status(&copy).map(|children| (copy, children)))
+            {
+                Ok((copy, children)) => (Some(copy), children, None),
+                Err(error) => (None, Vec::new(), Some(error)),
+            };
+            let running = children
+                .iter()
+                .filter(|r| {
+                    r.kind == "member"
+                        && r.instance == full_id
+                        && (r.state != "stopping" || r.liveness == Some(Liveness::Alive))
+                        && !matches!(r.state.as_str(), STOPPED | NOT_STARTED | "exited")
+                })
+                .count();
+            rows.push(StatusRow {
+                name: id.clone(),
+                kind: "copy",
+                instance: full_id.clone(),
+                team: copy
+                    .as_ref()
+                    .map(|copy| copy.record.team.clone())
+                    .unwrap_or_else(|| crate::team::team_name(&role.dir)),
+                member: None,
+                start_id: None,
+                role: Some(role_name.clone()),
+                vendor: None,
+                model: None,
+                parent: copy
+                    .as_ref()
+                    .and_then(|copy| copy.record.parent.clone())
+                    .or_else(|| parent.as_deref().map(|parent| inst.at(parent))),
+                posture: None,
+                state: if error.is_some() {
+                    "unreadable"
+                } else if copy.as_ref().is_some_and(|copy| copy.record.stopping) {
+                    "stopping"
+                } else if running > 0 {
+                    "running"
+                } else {
+                    STOPPED
+                }
+                .into(),
+                rule: None,
+                detail: error.clone(),
+                vendor_version: None,
+                trust_accepted: None,
+                liveness: None,
+                unread: None,
+                running: error.is_none().then_some(running),
+                expected_running: false,
+                start: false,
+            });
+            for child in &mut children {
+                if child.parent.is_none() {
+                    child.parent = Some(full_id.clone());
+                }
+            }
+            rows.extend(children);
+        }
+    }
+    if inst.record.stopping {
+        for row in rows
+            .iter_mut()
+            .filter(|row| row.instance == inst.id && row.kind != "role")
+        {
+            row.state = "stopping".into();
+            row.expected_running = false;
+        }
+    }
+    let nodes = status_nodes(&rows);
+    let positions: BTreeMap<_, _> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, r)| (status_key(r), i))
+        .collect();
+    let mut ordered: Vec<_> = tree::order(&nodes)
+        .into_iter()
+        .map(|(i, _)| rows[positions[&nodes[i].id]].clone())
+        .collect();
+    ordered.extend(
+        rows.into_iter()
+            .filter(|r| r.kind == "plugin" && r.parent.is_none()),
+    );
+    Ok(ordered)
 }
 
 /// Drop control characters (terminal escapes) from plugin-written text.
@@ -2861,6 +3398,17 @@ fn pending(dir: &Path) -> Option<String> {
 pub fn status_cells(r: &StatusRow) -> Vec<String> {
     match r.kind {
         "member" => {}
+        "copy" => {
+            return vec![
+                r.team.clone(),
+                if matches!(r.state.as_str(), "stopping" | "unreadable") {
+                    r.state.clone()
+                } else {
+                    format!("{} running", r.running.unwrap_or(0))
+                },
+                r.detail.clone().unwrap_or_default(),
+            ];
+        }
         "role" => return vec![r.state.clone()],
         _ => return vec![r.state.clone(), r.detail.clone().unwrap_or_default()],
     }
@@ -2884,22 +3432,60 @@ pub fn status_cells(r: &StatusRow) -> Vec<String> {
 }
 
 pub fn render_status(header: &str, rows: &[StatusRow]) -> String {
-    let nodes: Vec<tree::Node> = rows
+    let nodes = status_nodes(rows);
+    let plugins: Vec<(String, Vec<String>)> = rows
         .iter()
-        .filter(|r| r.kind == "member" || r.kind == "role")
+        .filter(|r| r.kind == "plugin" && r.parent.is_none())
+        .map(|r| (r.name.clone(), status_cells(r)))
+        .collect();
+    let names: BTreeMap<_, _> = rows
+        .iter()
+        .map(|r| (status_key(r), status_name(r)))
+        .collect();
+    tree::render_named(
+        header,
+        &nodes,
+        &plugins,
+        std::io::stdout().is_terminal(),
+        |id| names[id].clone(),
+    )
+}
+
+/// A row's identity stays unique when local IDs repeat in different copies.
+pub fn status_key(row: &StatusRow) -> String {
+    match row.kind {
+        "copy" => row.instance.clone(),
+        "plugin" => format!("{}/plugin:{}", row.instance, row.name),
+        _ => format!("{}/{}", row.instance, row.name),
+    }
+}
+
+/// The short label shared by the text and interactive trees.
+pub fn status_name(row: &StatusRow) -> String {
+    if row.kind == "plugin" {
+        format!("plugin {}", row.name)
+    } else {
+        row.name.clone()
+    }
+}
+
+/// Qualified nodes shared by status ordering and both tree renderers.
+pub fn status_nodes(rows: &[StatusRow]) -> Vec<tree::Node> {
+    rows.iter()
+        .filter(|r| r.kind != "plugin" || r.parent.is_some())
         .map(|r| tree::Node {
-            id: r.name.clone(),
-            parent: r.parent.clone(),
+            id: status_key(r),
+            parent: r.parent.as_ref().map(|p| {
+                if p.contains('/') {
+                    p.clone()
+                } else {
+                    format!("{}/{p}", r.instance)
+                }
+            }),
             cols: status_cells(r),
             dim: r.kind == "role" && r.state == ON_DEMAND,
         })
-        .collect();
-    let plugins: Vec<(String, Vec<String>)> = rows
-        .iter()
-        .filter(|r| r.kind == "plugin")
-        .map(|r| (r.name.clone(), status_cells(r)))
-        .collect();
-    tree::render(header, &nodes, &plugins, std::io::stdout().is_terminal())
+        .collect()
 }
 
 /// Why `send` refused, with its exit code.

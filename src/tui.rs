@@ -132,17 +132,7 @@ fn draw(
     let prefixes: Vec<std::collections::BTreeMap<String, String>> = sections
         .iter()
         .map(|section| {
-            let nodes: Vec<tree::Node> = section
-                .rows
-                .iter()
-                .filter(|r| r.kind == "member" || r.kind == "role")
-                .map(|r| tree::Node {
-                    id: r.name.clone(),
-                    parent: r.parent.clone(),
-                    cols: Vec::new(),
-                    dim: r.kind == "role" && r.state == runtime::ON_DEMAND,
-                })
-                .collect();
+            let nodes = runtime::status_nodes(&section.rows);
             tree::order(&nodes)
                 .into_iter()
                 .map(|(i, p)| (nodes[i].id.clone(), p))
@@ -158,17 +148,17 @@ fn draw(
                 return Default::default();
             };
             let r = &sections[s].rows[r];
-            let name = match r.kind {
-                "member" | "role" => format!(
-                    "{}{}",
-                    prefixes[s].get(&r.name).cloned().unwrap_or_default(),
-                    r.name
-                ),
-                _ => format!("plugin {}", r.name),
-            };
+            let name = format!(
+                "{}{}",
+                prefixes[s]
+                    .get(&runtime::status_key(r))
+                    .cloned()
+                    .unwrap_or_default(),
+                runtime::status_name(r)
+            );
             let mut cols = runtime::status_cells(r);
             match r.kind {
-                "member" => {}
+                "member" | "copy" => {}
                 // A role with no kept member shows its creation state.
                 "role" => {
                     cols.insert(0, String::new());
@@ -337,12 +327,22 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
                     );
                     continue;
                 };
+                if row.kind != "member" {
+                    message = format!("{} is a {}; select one of its members", row.name, row.kind);
+                    continue;
+                }
                 if row.state == runtime::STOPPED || row.state == runtime::NOT_STARTED {
                     message = format!("{} is not running", row.name);
                     continue;
                 }
                 let name = row.name.clone();
-                let inst = section.inst.clone();
+                let inst = match address::instance(&row.instance) {
+                    Ok(inst) => inst,
+                    Err(e) => {
+                        message = e;
+                        continue;
+                    }
+                };
                 ratatui::restore();
                 let outcome = runtime::attach_and_wait(&inst, &name);
                 terminal = match ratatui::try_init() {

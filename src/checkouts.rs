@@ -44,6 +44,14 @@ pub fn held(_lock: &registry::Lock, except: &str) -> Result<Vec<Held>, String> {
                 continue;
             }
         };
+        if inst.record.stopping {
+            out.push(Held {
+                instance: id.clone(),
+                folder: inst.record.folder.clone(),
+                why: format!("its cascade is unfinished; run brg stop {id}"),
+            });
+            continue;
+        }
         if crate::state::read_meta(&inst.state).is_err() {
             // Its start record can't be read: brg can't tell which server
             // runs it, so its folder stays held.

@@ -107,11 +107,22 @@ pub fn render(
     plugins: &[(String, Vec<String>)],
     colour: bool,
 ) -> String {
+    render_named(team, nodes, plugins, colour, |id| id.to_string())
+}
+
+/// Render qualified tree keys with caller-provided display names.
+pub fn render_named(
+    team: &str,
+    nodes: &[Node],
+    plugins: &[(String, Vec<String>)],
+    colour: bool,
+    name: impl Fn(&str) -> String,
+) -> String {
     let ordered = order(nodes);
     let rows: Vec<Vec<String>> = ordered
         .iter()
         .map(|(i, prefix)| {
-            let mut row = vec![format!("{prefix}{}", nodes[*i].id)];
+            let mut row = vec![format!("{prefix}{}", name(&nodes[*i].id))];
             row.extend(nodes[*i].cols.iter().cloned());
             row
         })

@@ -62,13 +62,13 @@ pub fn known() -> String {
     }
 }
 
-/// Every registered instance, read from the registry now: what a bare
-/// `brg status` shows.
+/// Every top-level instance, read now. Status nests copies beneath these.
 pub fn every() -> Result<Vec<Instance>, String> {
     let registry = registry::load()?;
     Ok(registry
         .instances
         .keys()
+        .filter(|id| !id.contains('/'))
         .filter_map(|id| instance(id).ok())
         .collect())
 }
@@ -76,6 +76,11 @@ pub fn every() -> Result<Vec<Instance>, String> {
 /// The registered instance `id`. The error says what to write instead when
 /// `id` is a team's name, a member or a path.
 pub fn instance(id: &str) -> Result<Instance, String> {
+    if !id.split('/').all(crate::names::is_valid_member_id) {
+        return Err(format!(
+            "`{id}` has an invalid address segment; use instance and member IDs"
+        ));
+    }
     let registry = registry::load()?;
     if registry.instances.contains_key(id) {
         let state = StateDir::new(id);
@@ -111,21 +116,56 @@ pub fn instance(id: &str) -> Result<Instance, String> {
 /// Parse an argument naming an instance, or something in one: `instance`,
 /// `instance/name`, or, inside a member, a bare `name` of its own instance.
 pub fn resolve(arg: &str) -> Result<(Instance, Target), String> {
-    if let Some((inst, rest)) = arg.split_once('/') {
-        if rest.is_empty() || rest.contains('/') {
+    if !arg.split('/').all(crate::names::is_valid_member_id) {
+        return Err(format!(
+            "`{arg}` has an invalid address segment; use instance and member IDs"
+        ));
+    }
+    if arg.contains('/') {
+        let registry = registry::load()?;
+        let prefix = registry
+            .instances
+            .keys()
+            .filter(|id| {
+                arg == id.as_str()
+                    || arg
+                        .strip_prefix(id.as_str())
+                        .is_some_and(|tail| tail.starts_with('/'))
+            })
+            .max_by_key(|id| id.len());
+        if let Some(prefix) = prefix {
+            let inst = instance(prefix)?;
+            if arg == prefix {
+                return Ok((inst, Target::Instance));
+            }
+            let rest = &arg[prefix.len() + 1..];
+            if !rest.contains('/') {
+                let target = target(&inst, rest);
+                return Ok((inst, target));
+            }
+            let missing = rest.split('/').next().expect("nonempty address tail");
+            let kept: Vec<_> = inst
+                .record
+                .copies
+                .iter()
+                .filter(|(_, copy)| !copy.deleted)
+                .map(|(id, _)| inst.at(id))
+                .collect();
             return Err(format!(
-                "`{arg}`: write `<instance>/<member>` or `<instance>/<role>`"
+                "`{prefix}` has no copy `{missing}`; {}",
+                if kept.is_empty() {
+                    format!(
+                        "it has no kept copies; create one with brg create {prefix}/<team-role>"
+                    )
+                } else {
+                    format!("its kept copies: {}", kept.join(", "))
+                }
             ));
         }
-        let inst = instance(inst).map_err(|e| {
-            if registry::load().is_ok_and(|r| !r.instances.contains_key(inst)) {
-                format!("{e}. For a folder, write `./{arg}`")
-            } else {
-                e
-            }
-        })?;
-        let target = target(&inst, rest);
-        return Ok((inst, target));
+        return Err(format!(
+            "no instance prefix for `{arg}`; {}. For a folder, write `./{arg}`",
+            known()
+        ));
     }
     if let Some(own) = own() {
         let inst = instance(&own)

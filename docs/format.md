@@ -68,7 +68,22 @@ The role's identity is its key under `roles:`. Each role keeps up to `max` membe
 
 **Messages.** With `bus:`, members publish plain `{to, body, reply_to?}` drafts, read and ack their inbox, and use one `inbox wait`. `brg status` (tree, `-i` and `--json`) shows unread message counts; no bus means no counts. The optional alert action and watcher are not wired now; the lead nudges with `brg send`. See [the bus](bus.md) for routing, storage, wait rules and commands.
 
-**Parents.** A `parent` must be another role with `max: 1`, and parent links can't form a cycle. A plugin's `delivers_to:` also requires a `max: 1` role. A member's parent is the member of its parent role. Messages a plugin routes "to the parent" go along this edge. With a bus, only a person or the declared parent's latest running start may create, start, stop or delete a member. Other members, replaced starts and callers from another instance are refused. Creating a child requires its parent role to have a member. Teams without a bus retain their existing caller rules; whole-instance operations retain theirs too.
+**Team roles.** A role with `team:` creates a nested instance instead of an agent:
+
+```yaml
+bus: {}
+roles:
+  lead: {prompt: lead.md, cwd: lead}
+  dev: {team: teams/dev, parent: lead, start: false, max: 2, cwd: 'dev/{member_id}'}
+```
+
+A team role accepts only `team`, `parent`, `start`, `max` and `cwd`. Agent options, including `prompt`, `vendor`, `posture`, `plugins`, `connectors` and `args`, are errors even when empty or false. `start` must be false or absent: `create <instance>/dev` makes a stopped copy and its folders, which the parent prepares before `start <instance>/<copy>`.
+
+`team` names a folder containing `team.yaml`, relative to the declaring team's folder. Absolute paths, `..`, `shared:` and symlinks outside that folder are refused. It is never looked up by name. `cwd` is required and must end in exactly one `{member_id}` folder; `max` defaults to 1 and must be at least 1. The declaring team and every referenced team need `bus:`. `validate` checks referenced teams recursively and reports their errors at their own files. A team may not contain itself, directly or indirectly, as judged by resolved folders. Creation and a copy's full start also check its recorded ancestors, including after a team-folder move.
+
+The declaring instance freezes where each team role resolves. Each copy records that source folder and reads its current files at its first start, then freezes its own configuration until its own full stop and start. Changes reach each copy independently of the parent instance and its other copies. If a kept copy's source folder is gone, starting it errors without looking up a replacement by name. Explicit `start <copy> --team <path>` remains available to recover a moved folder.
+
+**Parents.** A `parent` must be another agent role with `max: 1`, and parent links can't form a cycle. A plugin's `delivers_to:` also requires a `max: 1` agent role. A member's parent is the member of its parent role. Messages a plugin routes "to the parent" go along this edge. With a bus, a person may manage anything; a member at its latest running start may create, start, stop or delete anything in its subtree. Authority follows recorded parent edges within instances and across copies, at every depth, and is checked under the registry lock with the caller's start in its own instance. Members cannot manage themselves, ancestors, siblings or independent instances. A copy's roots cannot manage their own copy or each other. Stopped, replaced and incomplete starts are refused. Creating a child requires its parent role to have a member. Teams without a bus retain their existing caller rules.
 
 **`env`.** A map of names (`{A: , B: value}`); a name without a value is a secret. Secrets come from the environment `brg create` or `brg start` runs in: brg stores none. `brg secret <team>` lists them and whether each is set.
 

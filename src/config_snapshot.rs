@@ -17,7 +17,8 @@ pub struct ConfigSnapshot {
     /// role file), `members/<role>/instruction` (its body with includes
     /// expanded), and the global settings that reach members:
     /// `config/auth`, `config/auto_trust` and `config/plugins/<name>` (where
-    /// a shared plugin resolves).
+    /// a shared plugin resolves), plus `teams/<role>` (the resolved source
+    /// folder; each copy freezes the source's contents independently).
     pub inputs: BTreeMap<String, String>,
 }
 
@@ -54,6 +55,12 @@ impl Validated {
             crate::team::TEAM_FILE.to_string(),
             self.team.file_sha256.clone(),
         );
+        for (id, role) in &self.team.team_roles {
+            inputs.insert(
+                format!("teams/{id}"),
+                sha256_hex(role.dir.as_os_str().as_encoded_bytes()),
+            );
+        }
         for (id, m) in &self.team.roles {
             inputs.insert(format!("members/{id}/prompt"), m.prompt_sha256.clone());
             inputs.insert(

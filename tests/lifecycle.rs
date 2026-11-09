@@ -1062,7 +1062,7 @@ fn down_refuses_a_different_tmux_socket() {
 }
 
 #[test]
-fn down_refuses_when_tmux_cannot_be_reached() {
+fn inaccessible_tmux_fences_full_start_until_stop_can_retry() {
     for bus in [true, false] {
         refuses_when_unreachable(bus);
     }
@@ -1079,9 +1079,16 @@ fn refuses_when_unreachable(bus: bool) {
             .output()
             .unwrap();
         assert_eq!(out.status.code(), Some(1), "{args:?}: {}", both(&out));
-        assert!(both(&out).contains("nothing was changed"), "{}", both(&out));
-
-        assert_unchanged(&before, &env.snapshot());
+        assert!(both(&out).contains("cannot start tmux"), "{}", both(&out));
+        if args.len() == 1 {
+            let refused = both(&env.brg(&["start"]));
+            assert!(
+                refused.contains(&format!("brg stop {}", env.inst())),
+                "{refused}"
+            );
+        } else {
+            assert_unchanged(&before, &env.snapshot());
+        }
         assert!(lead_window_alive(&env), "bus: {bus}");
     }
     // A redirected tmux environment still stops the recorded server.
@@ -1153,13 +1160,17 @@ fn an_up_that_cannot_see_the_server_does_not_make_down_say_not_running() {
         assert!(out.status.success(), "bus: {bus}: {}", both(&out));
         let out = no_tmux(&["stop"]);
         assert_eq!(out.status.code(), Some(1), "bus: {bus}: {}", both(&out));
-        assert!(both(&out).contains("nothing was changed"), "{}", both(&out));
+        let refused = both(&env.brg(&["start"]));
+        assert!(
+            refused.contains(&format!("brg stop {}", env.inst())),
+            "{refused}"
+        );
         assert!(lead_window_alive(&env), "bus: {bus}");
     }
 }
 
 #[test]
-fn down_still_refuses_when_only_a_plugin_process_ran() {
+fn killed_plugin_only_server_does_not_wedge_stop_or_start() {
     for bus in [false, true] {
         let env = Env::new(bus);
         env.write(
@@ -1180,9 +1191,9 @@ fn down_still_refuses_when_only_a_plugin_process_ran() {
             e.tmux(&["list-windows", "-a"]).contains("_pager")
         });
         env.tmux(&["kill-server"]);
-        let out = env.brg(&["stop"]);
-        assert_eq!(out.status.code(), Some(1), "bus: {bus}: {}", both(&out));
-        assert!(both(&out).contains("nothing was changed"), "{}", both(&out));
+        env.ok(&["stop"]);
+        env.ok(&["start"]);
+        env.ok(&["stop"]);
     }
 }
 

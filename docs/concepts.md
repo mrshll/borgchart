@@ -106,7 +106,7 @@ Two folders with the same name can both run. Their instances are told apart by t
 
 **Members are always named in full.** Commands that act on a member (`attach`, `prompt`, `stop`), and messages, take its full ID (`lead-q8m3`). A role name there is refused, listing the role's members. There are no shortcuts for now.
 
-**Parents are roles.** `parent: lead` names a role, and a member's parent is the member filling that role. So a parent role must have one member: `validate` refuses a `parent:` that names a role with `max > 1`. The same goes for a plugin's `delivers_to:`.
+**Parents are agent roles.** `parent: lead` names an agent role, and a member's parent is the member filling that role. So a parent role must have one member: `validate` refuses a `parent:` that names a team role or a role with `max > 1`. The same goes for a plugin's `delivers_to:`.
 
 **Recipients.** A message goes to one member, or from a team's root member to `external:NAME`. An instance isn't a recipient: a message naming only an instance (`dev-design-k3f9`) is refused, listing its members. For now a member's messages stay inside its own instance. Messages between chosen members of different instances, such as two teams' leads, are planned (#62): a person links a role in one instance with a role in another. The message format leaves room for them, so they need no second format change. A team that works as part of another, such as a design panel inside the dev team, becomes a department (#25) and shares its instance.
 
@@ -204,7 +204,7 @@ Every `BORGCHART_*` variable that a member, plugin or test can see:
 | `BORGCHART_FILE` | members, plugins, the caller | removed | commands find the instance from `BORGCHART_INSTANCE` or `--instance` |
 | — | the caller, members, tests | `BORGCHART_CONFIG` | the global configuration file (default `~/.config/borgchart/config.yaml`); members get the caller's, so their own `brg create` finds the same teams |
 | `BORGCHART_BIN` | members, plugins | unchanged | the brg that started them |
-| `BORGCHART_PARENT` | plugin actions | unchanged | the calling member's parent (a member) |
+| `BORGCHART_PARENT` | plugin actions, copy roots' windows | unchanged | the calling member's parent; for copy roots, their parent's full address |
 | `BORGCHART_DELIVER_TO` | plugin processes | unchanged | the member a process hands work to (its `delivers_to` role's only member) |
 | `BORGCHART_STATE_DIR` | plugins | unchanged | the plugin's private folder |
 | `BORGCHART_TMUX_SOCKET` | members, plugins, tests | unchanged (decided) | which tmux server runs the instance |
