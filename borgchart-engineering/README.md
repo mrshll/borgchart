@@ -32,8 +32,8 @@ These are the cutover steps. They work once nesting (D1) and delivery between a 
 
 1. **Use a stable brg and a pinned copy of this folder,** installed outside any checkout the teams change. Every member runs the brg that started it.
 2. **Install the seating plugin** as `<plugins_dir>/seat`, with a real usage source for this machine: see [`examples/seat/`](../examples/seat/). Set `plugins_dir` in brg's configuration.
-3. **Check it:** `brg validate <pinned copy>`.
-4. **Make the lead's checkout:** `git clone <repository> <folder>/lead`, or add a worktree there from a checkout you already have. Set its hooks path as the repository's README says.
+3. **Install `cargo-slot` on `PATH`** for every member. Use one shared two-slot lock domain across all teams, an 8 GiB memory cap, no swap and six cargo jobs. During coexistence with an earlier supervisor, reuse its existing lock domain; move it only after all builds have stopped and all callers use the replacement. The wrapper must retain its lock while the command runs without leaking the lock descriptor into child daemons. Then **check it:** `brg validate <pinned copy>`.
+4. **Make the lead's checkout:** `git clone <repository> <folder>/lead`, or add a worktree there from a checkout you already have. Set its hooks path as the repository's README says, and run `agent-gh --setup` there before the first commit.
 5. **Create the department:** `brg create <pinned copy> <folder>`. It prints the instance ID and its tree: the lead started, every other role not yet created.
 6. **Answer the folder-trust screens,** once per folder. When `brg status` shows a member `blocked`, run `brg attach <member address>`, answer, and detach.
 7. **Tell the lead what to work on.** Attach to it and say so, or publish a message to it as the dev team's README shows (`brg msg publish --external owner --instance <instance> --record brief.json`). It reaches you on GitHub: review requests from the dev leads, and comments when it needs you.
@@ -43,4 +43,7 @@ These are the cutover steps. They work once nesting (D1) and delivery between a 
 
 - **The owner reviews and approves every pull request.** Each dev lead hands off its own pull requests. The department lead may merge one only after the owner's approving review on its current head, with CI green, by a merge commit.
 - **Seating is checked before every launch,** through the `seat` plugin's `route` action. `wait` or an unknown answer means wait, never another vendor or model.
-- **Machine-specific things stay off this folder:** the usage source goes in the plugins folder, and the GitHub identity in the owner's own vendor instructions.
+- **Git and GitHub practice** lives in [`teams/dev-team/includes/git.md`](teams/dev-team/includes/git.md), shared by the department lead, dev lead and implementer, with writes limited by role. The approved public account is `mrshll-agent`. Vendor instructions still apply.
+- **Machine-specific installation stays local:** usage-reader paths, login/cache access and the shared build-lock location do not belong in this folder. There is no private policy overlay.
+
+Before cutover, smoke-test seating and the build wrapper from the actual member environment. Normal tool approvals still apply; team instructions do not override vendor approval settings. Arrange how GitHub reviews and comments reach the lead: this definition waits on the brg inbox and does not install a GitHub event watcher.

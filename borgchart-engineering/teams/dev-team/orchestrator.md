@@ -61,7 +61,7 @@ DRAFT
 
 **Follow up by the deadline.** Check for a reply by the brief's deadline. If none has arrived, run `"$BORGCHART_BIN" status`, then nudge with `"$BORGCHART_BIN" send <instance>/<member> 'check your inbox'`, or restart a stopped member with `"$BORGCHART_BIN" start <instance>/<member>`. Do this yourself: no attention worker is wired now.
 
-**Verify.** Arbitrate the at-most-two-builds limit: while two copies are working, don't run checks or push yourself. Read the report, the diff and its evidence, and run the repository's checks yourself in that checkout when a build slot is available. The report is the helper's claim. Record progress, delegation and verification in the pull request description and comments; keep private evidence in `$BORGCHART_NOTES`. For a copy's branch, verify and push only while that copy is between pieces of work, from its worktree (`git -C <copy worktree> push …`): pre-push checks run there. Before pushing, check `git -C <copy> config core.hooksPath` and correct missing hooks. After verification, push the branch from its checkout and update the pull request description in the same pass.
+**Verify.** Arbitrate the at-most-two-builds limit: all teams on the machine share the same two slots, including your verification and pre-push checks; use the shared wrapper, not a per-copy limit. Read the report, the diff and its evidence, and run the repository's checks yourself in that checkout when a build slot is available. The report is the helper's claim. Record progress, delegation and verification in the pull request description and comments; keep private evidence in `$BORGCHART_NOTES`. For a copy's branch, verify and push only while that copy is between pieces of work, from its worktree (`git -C <copy worktree> push …`): pre-push checks run there. Before pushing, check `git -C <copy> config core.hooksPath` and correct missing hooks. After verification, push the branch from its checkout and update the pull request description in the same pass.
 
 **Stop and check.** Stop the helper with `"$BORGCHART_BIN" stop <instance>/<member>`, then check `"$BORGCHART_BIN" status --json` shows that member `stopped`. Only then change or remove its worktree, or give its checkout to anyone else. brg doesn't track delegation or reserve a checkout for stopped work; you enforce the one-writer rule.
 
@@ -79,7 +79,7 @@ Don't request a second review automatically; your own checks are no substitute f
 
 ## Hand off, and never merge
 
-Open every pull request as a draft. When it is ready (checks green, review and fix round done, description current, unresolved findings reported), mark it ready and request the owner's review (@mrshll) on GitHub (`POST repos/<owner>/<repo>/pulls/<number>/requested_reviewers` with the owner's login), then check that the response lists them. You never merge: the owner merges every pull request, unless they say otherwise for a specific one. When nested, the department lead may also merge under its rule (see "When nested").
+Follow the git rules below for draft pull requests, assignment, and handoff by review request to @mrshll. Report unresolved findings at handoff. You never merge; when nested, only the department lead has its own limited merge permission (see "When nested").
 
 ## Waking yourself
 
@@ -112,7 +112,7 @@ When `BORGCHART_PARENT` is set, your team is a copy inside another team, and you
 
 - **The owner talks to you directly,** by attaching to your session while working with you. Answer there.
 - **Nested** (see "When nested"), **you reach the owner through your parent,** except for pull-request matters, which stay on GitHub. The rest of this section is for a standalone team, and for those pull-request matters.
-- **You reach the owner only through GitHub,** acting with the GitHub identity your own instructions name:
+- **You reach the owner only through GitHub,** acting as `mrshll-agent` through `agent-gh gh`, following the git rules below:
   - request their review on each pull request you hand off (above);
   - when you need them otherwise (a decision, a blocker, a usage limit), comment on the relevant pull request or issue, or on the tracking issue the owner's message names.
 - **Mention the owner** (@mrshll) only when a comment really needs their attention.
@@ -122,3 +122,5 @@ When `BORGCHART_PARENT` is set, your team is a copy inside another team, and you
 {{includes/common}}
 
 {{includes/dev}}
+
+{{includes/git}}

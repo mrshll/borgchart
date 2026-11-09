@@ -54,3 +54,13 @@ Run the tests from the repository's root:
 ```
 uv run --no-project --with pytest==8.3.5 pytest examples/seat/tests
 ```
+
+## Reusing an existing machine router
+
+If the machine already has `subscription-usage` and `usage-route`, keep their account-aware readers local. Install a local `seat/seat` adapter instead of this example's threshold-based executable. Give it the absolute router and configuration paths locally; brg does not forward arbitrary shell environment variables into plugin commands. The adapter itself must be inside `plugins_dir/seat` (a symlink outside the plugin folder fails validation). Use `uv run` for a Python adapter.
+
+The adapter accepts the same `route <vendor> <model>` arguments and invokes the router for exactly that vendor and model. It prints `go: <reason>` and exits 0 only when the router exits successfully, returns a valid available route for that vendor/model (accounting for documented aliases), and reports fresh known usage. Preserve the router's warnings, including scope, utilization, observation time and reset time. Never launch the returned argv or change brg's chosen effort; this interface asks about quota, not launch configuration.
+
+Every missing executable, timeout, nonzero router exit, malformed response, unknown or stale observation, denied scope, or mismatched route produces `wait: <reason>` and exit 3. Map the router's own configuration/error exit 2 to wait as well; reserve adapter exit 2 for bad `seat` arguments. Keep model/catalog failures distinguishable from unavailable quota. Never ask for an automatic vendor, select a fallback, override a wait, spend credits or read credential files in the adapter. Normal execution approval is needed if the reader cannot reach its network or private cache.
+
+This preserves the machine router's policy, rather than adding the example's 80% cutoff. For a router that warns at 90% and blocks at 100%, a known 99% reading can still return `go`; confirm that policy before use. Test the installed adapter with both vendors and every declared model, including alias changes, stale/unknown usage, scoped limits, malformed output, timeouts and source failures. Then check it from a real lead's plugin environment. The example source and its tests do not prove that the local adapter is installed or working.

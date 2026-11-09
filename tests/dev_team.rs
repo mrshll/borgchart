@@ -229,6 +229,25 @@ fn includes_resolve_and_are_shared() {
     assert!(!team_dir("dev-design-team").join("includes").exists());
 }
 
+/// Shared GitHub-write procedures reach only the department/dev leads and
+/// local committers, including when the dev team runs standalone.
+#[test]
+fn git_rules_reach_only_the_roles_that_write() {
+    let git = fs::read_to_string(dev_team().join("includes/git.md")).unwrap();
+    for folder in [department(), dev_team(), team_dir("dev-design-team")] {
+        let mut report = borgchart::diag::Report::default();
+        let team = borgchart::team::load(&folder, &mut report).unwrap();
+        for (id, role) in &team.roles {
+            assert_eq!(
+                role.instruction.contains(git.trim()),
+                id == "lead" || id == "implementer",
+                "{} {id}",
+                folder.display()
+            );
+        }
+    }
+}
+
 /// Claude Code refuses foreground sleep and poll loops, and Codex starts no
 /// turn when a background command exits. So wherever a Claude member's
 /// instructions sleep, they do it in a background command, and every wait
@@ -348,9 +367,8 @@ fn denied_word(text: &str) -> Option<String> {
 #[test]
 fn the_team_files_stay_generic() {
     assert!(denied_word("the owner merges").is_none());
-    // Only the owner's handle is allowed, only in the department's and the
-    // dev team's own files, and only as `@<handle>`: other forms and other
-    // denied words stay denied.
+    // The owner has approved the machine account and GitHub wrapper in
+    // team instructions. Other private names and machine paths stay denied.
     assert!(denied_word("mrshll-agent").is_some());
 
     // Every file of the department, its teams included.
@@ -361,14 +379,14 @@ fn the_team_files_stay_generic() {
         let held = files.iter().filter(|f| f.starts_with(team_dir(team)));
         assert!(held.count() >= 2, "{team}: {files:?}");
     }
-    // Machine paths, private tooling and people stay in the private
-    // deployment file, never here.
+    // Machine paths and unapproved private names never belong here.
     let home = regex::Regex::new(r"/(home|Users)/[^/\s]+|/tmp/|/root/").unwrap();
     // The one exception: the department's and the dev team's files (not
     // the panel's) name the repository's owner and reviewer by his public
     // handle, exactly as `@<handle>`.
     let owner = regex::Regex::new(r"@mrshll([^A-Za-z0-9_-]|$)").unwrap();
     let panel = team_dir("dev-design-team");
+    let word = regex::Regex::new(r"[A-Za-z0-9_-]+").unwrap();
     for file in files {
         let text = fs::read_to_string(&file).unwrap();
         let text = if !file.starts_with(&panel) {
@@ -376,6 +394,11 @@ fn the_team_files_stay_generic() {
         } else {
             text
         };
+        let text = word.replace_all(&text, |caps: &regex::Captures<'_>| match &caps[0] {
+            "mrshll-agent" | "agent-gh" => String::new(),
+            "mrshll" if file == dev_team().join("includes/git.md") => String::new(),
+            other => other.to_string(),
+        });
         assert_eq!(denied_word(&text), None, "{}", file.display());
         assert!(
             !home.is_match(&text),
