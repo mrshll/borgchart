@@ -24,6 +24,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Poll GitHub into the bus using local account policy.
+    Github(crate::github::Cli),
     /// Check a team folder and brg's configuration without starting anything.
     Validate {
         /// The team: its name in the search paths, or a path to its folder
@@ -313,6 +315,7 @@ pub fn main() -> ExitCode {
 
 fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
     match cli.command {
+        Command::Github(args) => crate::github::run(args),
         Command::Validate { team, json, probe } => run_validate(&team, json, probe),
         Command::Create { target, folder } => {
             let team_like = crate::team::is_path(&target) || !target.contains('/');

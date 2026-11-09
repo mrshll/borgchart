@@ -3,6 +3,7 @@
 //! This crate is not a public library: nothing here is promised stable.
 
 pub mod address;
+pub mod bounded_process;
 pub mod bus;
 pub mod checkouts;
 pub mod cli;
@@ -13,6 +14,7 @@ pub mod diag;
 pub mod exec;
 pub mod frontmatter;
 pub mod gate;
+pub mod github;
 pub mod launch;
 pub mod lifecycle;
 pub mod names;

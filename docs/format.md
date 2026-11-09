@@ -230,3 +230,11 @@ tmux: {user_config: true}     # load your own tmux config on brg's server (defau
     - sessions created or attached as the config loads: brg's server then outlives `brg stop`.
     The check is best effort. It reads each line's first command, skips key bindings, and follows files your config sources by an absolute or `~/` path. A relative include is reported, not followed: tmux finds it from the folder brg runs in.
   - To keep your own bindings without this, run `brg attach` from inside your own tmux: your outer server's prefix and bindings still work around it (press the prefix twice to reach brg's).
+
+## Built-in GitHub intake
+
+`brg github` can run through a plugin process and deliver verified pointers to one
+role. See the [GitHub example](../examples/github/README.md) for local policy,
+explicit initialization, bounded ticks and operator recovery. The `github/`
+directory directly under brg's state home is reserved for intake state; it is
+outside instance and plugin-process state directories.
