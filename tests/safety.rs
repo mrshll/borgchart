@@ -1,5 +1,5 @@
-//! Safety around instances: checkouts held across instances, old sessions,
-//! brg's own state folder, changed files and storage that can't be read.
+//! Safety around instances: checkouts held across instances, brg's own
+//! state folder, changed files and storage that can't be read.
 //!
 //! Run with `cargo test --features test-support`.
 #![cfg(feature = "test-support")]
@@ -152,28 +152,6 @@ fn unknown_liveness_keeps_the_reservation_and_blocks_delete() {
     let err = env.fails(&["delete", &a, "--force"]);
     assert!(err.contains("even with --force"), "{err}");
     assert!(env.path(&format!("state/{a}")).is_dir());
-}
-
-#[test]
-fn a_live_old_session_refuses_every_start() {
-    let env = Env::new();
-    let a = env.create("oncall", "work/a");
-    env.ok(&["stop", &a]);
-    env.tmux(&[
-        "new-session",
-        "-d",
-        "-s",
-        "brg-oldteam-0a1b2c3d",
-        "sleep",
-        "60",
-    ]);
-    let err = env.fails(&["start", &a]);
-    assert!(err.contains("brg-oldteam-0a1b2c3d"), "{err}");
-    let err = env.fails(&["create", "oncall", &env.folder("work/b")]);
-    assert!(err.contains("brg-oldteam-0a1b2c3d"), "{err}");
-    env.tmux(&["kill-session", "-t", "=brg-oldteam-0a1b2c3d"]);
-    env.ok(&["start", &a]);
-    env.ok(&["stop", &a]);
 }
 
 // --- 7. Moved folders ---

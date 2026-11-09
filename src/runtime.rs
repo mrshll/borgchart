@@ -410,7 +410,6 @@ fn start_members(
             pre_notes.push(format!("note: {}: {note}", inst.at(id)));
         }
     }
-    refuse_legacy_sessions(&tmux_for(state))?;
     let wanted: Vec<(String, PathBuf)> = cwds.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     crate::checkouts::reserve(&lock, &inst.id, &wanted)?;
     let (values, missing) = plugin_values(v);
@@ -1292,31 +1291,6 @@ fn check_state_overlap(folder: &Path, instance_state: &Path) -> Result<(), Strin
     Ok(())
 }
 
-/// Refuse every member start while a tmux session from before instances
-/// (any `brg-*` session that isn't a registered instance's) is alive on
-/// brg's server: brg can't tell which folders it uses.
-fn refuse_legacy_sessions(tmux: &Tmux) -> Result<(), String> {
-    let Ok(out) = tmux.ok(&["list-sessions", "-F", "#{session_name}"]) else {
-        return Ok(());
-    };
-    let registry = registry::load()?;
-    let old: Vec<&str> = out
-        .lines()
-        .map(str::trim)
-        .filter(|s| {
-            s.strip_prefix("brg-")
-                .is_some_and(|id| !registry.instances.contains_key(id))
-        })
-        .collect();
-    if old.is_empty() {
-        return Ok(());
-    }
-    Err(format!(
-        "tmux sessions from before instances are still running on brg's server ({}); brg can't tell which folders they use, so it starts nothing until they stop. Stop them with the brg that started them",
-        old.join(", ")
-    ))
-}
-
 /// Validate a team folder, printing what validation found; `Err` on errors.
 fn validate_printing(dir: &Path) -> Result<Validated, String> {
     let (report, validated) = validate(dir);
@@ -1387,10 +1361,6 @@ pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
     precheck(&v, &starting, true)?;
     check_state_overlap(&folder, &state::state_home())
         .map_err(|e| format!("the working {e}; nothing was created"))?;
-    refuse_legacy_sessions(&Tmux::new(
-        &state::state_home().join("tmux.conf"),
-        base_env(),
-    ))?;
     let lock = registry::lock()?;
     crate::checkouts::check_folder(&lock, &folder)?;
     let (state, mut record) =
