@@ -19,15 +19,18 @@ Inside a member:
 
 pub fn publish() -> String {
     format!(
-        "A member publishes as itself to its parent or children. A root may also send
-outside the instance to external:<name>. An outside caller uses --external
+        "A member publishes as itself to its parent or children. Across a copy's
+parent edge, use the recipient's full instance/member address; a copy's roots
+get their parent's address in BORGCHART_PARENT. The tree's root may also send
+to external:<name>. An outside caller uses --external
 NAME and may send to any member.
 
 Draft (one JSON object; other fields are refused):
-  to         a member ID, or external:<name>
+  to         a member ID, full instance/member address, or external:<name>
   body       text, at most {MAX_BODY_BYTES} bytes
   reply_to   optional IDs this answers or follows, at most {MAX_REFS}
-Every reference must name an existing message. Text may contain newlines and
+Every reference must name an existing local message. Replies across an edge
+map back to the original message in the receiving store. Text may contain newlines and
 tabs, with no other control characters. The entire draft is at most
 {MAX_RECORD_BYTES} bytes. Each publish creates a new message.
 
@@ -50,6 +53,7 @@ pub fn inbox() -> String {
 bodies. --member ID reads another member's inbox; --external NAME reads that
 outside recipient's inbox. Outside a member, pass --instance ID.
 
+Inbox imports messages from the stores across this member's parent edges.
 Reading never acknowledges. Use `msg read ID` for an older message and
 `msg ack ID...` once you have taken messages on, then `inbox wait`.
 Progress and reports belong in your notes and GitHub.
@@ -72,7 +76,8 @@ The first readable scan marks the newest message. A new unacked message to
 you returns at once. Messages already present return after 60 seconds only if
 still unacked; if all were acked meanwhile, waiting continues. A new message
 can return sooner. Ack everything you have taken on before waiting.
-Each later poll reads only the next message and checks your current session.
+Each later poll reads the next local message, polls the stores across your
+parent edges, and checks your current session.
 Errors, including usage errors, wait at least 60 seconds too; explicit help
 and signals may end immediately.
 

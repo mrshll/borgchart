@@ -107,6 +107,9 @@ fn hide_paths(text: &str, store_root: &Path, team_dir: Option<&Path>) -> String 
 impl Bus {
     /// Refuse deleted recipients and name the concrete create command for roles.
     fn check_route(&self, actor: &Actor, to: &str) -> Result<(), String> {
+        if to.contains('/') {
+            return super::delivery::check_route(self, actor, to);
+        }
         if self.record.members.get(to).is_some_and(|m| m.deleted) {
             return Err(format!(
                 "member `{to}` was deleted; it cannot receive messages"
@@ -192,7 +195,7 @@ fn fence_member(bus: &Bus, member: &str, incarnation: &str) -> Result<(), Failur
 
 /// Take the publication lock and refresh the routing under it. A store must
 /// already be recognised; mutations never create storage over damaged data.
-fn lock_for_mutation(bus: &Bus) -> Result<(Bus, fs::File), Failure> {
+pub(super) fn lock_for_mutation(bus: &Bus) -> Result<(Bus, fs::File), Failure> {
     let fresh = open(&bus.state)?;
     fsx::ensure_private_tree(&fresh.state.root, &fresh.paths.root).map_err(|e| {
         Failure::new(
@@ -480,7 +483,14 @@ pub fn actor_label(actor: &Actor) -> String {
 }
 
 fn is_recipient(actor: &Actor, record: &Record) -> bool {
-    actor_label(actor) == record.to
+    let label = actor_label(actor);
+    label == record.to
+        || (record.origin.is_some()
+            && matches!(actor, Actor::Member { .. })
+            && record
+                .to
+                .rsplit_once('/')
+                .is_some_and(|(_, member)| member == label))
 }
 
 fn scan_acks(
@@ -597,7 +607,12 @@ pub(crate) fn not_a_member(meta: &state::Meta, m: &str) -> String {
 
 /// Every successful publish commits a new immutable message.
 pub fn publish(bus: &Bus, caller: &Caller, draft_bytes: &[u8]) -> Result<Record, Failure> {
-    let draft = parse_draft(draft_bytes)?;
+    let mut draft = parse_draft(draft_bytes)?;
+    if let Some(local) = draft.to.strip_prefix(&format!("{}/", bus.instance))
+        && !local.contains('/')
+    {
+        draft.to = local.to_string();
+    }
     let actor = actor_for(bus, caller)?;
     bus.check_route(&actor, &draft.to)
         .map_err(|e| Failure::new(Code::Invalid, e))?;
@@ -614,14 +629,35 @@ pub fn publish(bus: &Bus, caller: &Caller, draft_bytes: &[u8]) -> Result<Record,
         ));
     }
     let seq = snap.records.len() as u64 + 1;
+    let remote = draft.to.contains('/');
+    let reply_to = if remote {
+        draft
+            .reply_to
+            .iter()
+            .map(|id| {
+                let referenced = snap.get(id).expect("checked reference");
+                match &referenced.origin {
+                    Some(origin) => format!("{}/{}", origin.instance, origin.id),
+                    None => format!("{}/{id}", bus.instance),
+                }
+            })
+            .collect()
+    } else {
+        draft.reply_to
+    };
     let rec = Record {
         schema: super::SCHEMA,
         id: record_id(seq),
         seq,
         at: time::utc_now(),
-        from: actor_label(&actor),
+        from: if remote {
+            format!("{}/{}", bus.instance, actor_label(&actor))
+        } else {
+            actor_label(&actor)
+        },
         to: draft.to,
-        reply_to: draft.reply_to,
+        origin: None,
+        reply_to,
         body: draft.body,
     };
     let bytes =
@@ -662,10 +698,11 @@ pub fn progress(bus: &Bus, snap: &Snapshot) -> BTreeMap<String, Progress> {
         .map(|id| (id.clone(), Progress::default()))
         .collect();
     for r in snap.records.values() {
-        if bus.record.members.get(&r.to).is_some_and(|m| m.deleted) {
+        let to = local_recipient(bus, &r.to);
+        if bus.record.members.get(to).is_some_and(|m| m.deleted) {
             continue;
         }
-        let p = out.entry(r.to.clone()).or_default();
+        let p = out.entry(to.to_string()).or_default();
         p.total += 1;
         p.newest = r.seq;
         if !snap.is_acked(r.seq) {
@@ -691,12 +728,32 @@ pub fn list(bus: &Bus, snap: &Snapshot, to: &Recipient) -> Inbox {
         records: snap
             .records
             .values()
-            .filter(|r| r.to == to && !snap.is_acked(r.seq))
+            .filter(|r| local_recipient(bus, &r.to) == to && !snap.is_acked(r.seq))
             .cloned()
             .collect(),
         unacked: p.unread,
         total: p.total,
     }
+}
+
+/// Cross-edge records keep full addresses on disk; local inbox selection
+/// continues to use this instance's member IDs.
+fn local_recipient<'a>(bus: &Bus, to: &'a str) -> &'a str {
+    to.strip_prefix(&format!("{}/", bus.instance)).unwrap_or(to)
+}
+
+/// Pull edge messages before reading, checking a member's current start
+/// again under the local append lock.
+pub fn import(
+    bus: &Bus,
+    caller: &Caller,
+    to: &Recipient,
+    deadline: Instant,
+) -> Result<(), Failure> {
+    if matches!(caller, Caller::Member { .. }) {
+        actor_for(bus, caller)?;
+    }
+    super::delivery::import(bus, caller, to, deadline)
 }
 
 /// A stored record as shown to callers.
@@ -815,6 +872,7 @@ pub fn wait(
     let deadline = started + duration;
     let minimum = started + wait_minimum();
     let timeout = || Failure::new(Code::Timeout, "nothing new before the timeout");
+    import(bus, caller, to, deadline)?;
     let mut snap = match wait_snapshot(bus, deadline)? {
         WaitSnapshot::Ready(snap) => snap,
         WaitSnapshot::TimedOut => return Err(timeout()),
@@ -826,12 +884,17 @@ pub fn wait(
     let mut old_pending = snap
         .records
         .values()
-        .any(|r| r.to == recipient && !snap.is_acked(r.seq));
+        .any(|r| local_recipient(bus, &r.to) == recipient && !snap.is_acked(r.seq));
+    #[cfg(feature = "test-support")]
+    if let Some(path) = std::env::var_os("BORGCHART_TEST_WAIT_READY") {
+        fs::write(path, b"").map_err(|e| Failure::io("cannot signal the test wait", e))?;
+    }
     loop {
         actor_for(bus, caller)?;
+        import(bus, caller, to, deadline)?;
         let mut arrived = false;
         while let Some(record) = next_record(&bus.paths, next)? {
-            arrived |= record.to == recipient;
+            arrived |= local_recipient(bus, &record.to) == recipient;
             snap.records.insert(next, record);
             next += 1;
             if Instant::now() >= deadline {
@@ -1032,6 +1095,7 @@ mod tests {
             at: "2026-11-05T19:00:00.000Z".into(),
             from: "a".into(),
             to: "lead".into(),
+            origin: None,
             reply_to: vec![],
             body: String::new(),
         };

@@ -7,6 +7,7 @@
 
 pub mod cli;
 pub mod context;
+mod delivery;
 pub mod fsx;
 pub mod help;
 pub mod layout;
@@ -16,4 +17,4 @@ pub mod store;
 pub mod time;
 
 /// The on-disk schema of records and acknowledgements written by this brg.
-pub const SCHEMA: u32 = 2;
+pub const SCHEMA: u32 = 3;

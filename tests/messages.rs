@@ -243,7 +243,7 @@ fn ack_refresh_catches_up_the_locked_tail_before_validating_acks() {
         .unwrap();
     lock.lock().unwrap();
     for (seq, to) in [(2, &helper), (3, &lead)] {
-        let record = json!({"schema": 2, "id": format!("m{seq}"), "seq": seq,
+        let record = json!({"schema": borgchart::bus::SCHEMA, "id": format!("m{seq}"), "seq": seq,
             "at": "2026-11-08T00:00:00Z", "from": "external:ops", "to": to,
             "body": "published during ack refresh"});
         borgchart::bus::fsx::write_new(
@@ -254,7 +254,7 @@ fn ack_refresh_catches_up_the_locked_tail_before_validating_acks() {
     }
     for (id, recipient) in [("m1", &lead), ("m2", &helper)] {
         let start = env.starts(recipient).last().unwrap().clone();
-        let ack = json!({"schema": 2, "id": id, "at": "2026-11-08T00:00:00Z",
+        let ack = json!({"schema": borgchart::bus::SCHEMA, "id": id, "at": "2026-11-08T00:00:00Z",
             "by": {"type": "member", "member": recipient,
                 "incarnation": start["env"]["BORGCHART_INCARNATION"]}});
         borgchart::bus::fsx::write_new(
@@ -375,7 +375,7 @@ fn polling_does_not_reread_an_old_record() {
     fs::set_permissions(&old, fs::Permissions::from_mode(0o000)).unwrap();
     // Simulate a whole committed next record: a real sender still refuses
     // damaged old data. This tests the wait's incremental reader only.
-    let record = json!({"schema": 2, "id": "m2", "seq": 2, "at": "2026-11-08T00:00:00Z", "from": "external:ops", "to": lead, "body": "new"});
+    let record = json!({"schema": borgchart::bus::SCHEMA, "id": "m2", "seq": 2, "at": "2026-11-08T00:00:00Z", "from": "external:ops", "to": lead, "body": "new"});
     borgchart::bus::fsx::write_new(
         &records.join("0000000002.json"),
         record.to_string().as_bytes(),

@@ -333,6 +333,17 @@ pub fn inbox(instance: Option<&str>, args: InboxArgs, started: Instant) -> ExitC
             (|| {
                 let bus = open_bus(instance)?;
                 let t = target(&bus, &args.who)?;
+                let caller = if args.who.member.is_some() {
+                    Caller::Operator
+                } else {
+                    context::caller(args.who.external.as_deref())?
+                };
+                store::import(
+                    &bus,
+                    &caller,
+                    &t.recipient,
+                    Instant::now() + Duration::from_secs(1),
+                )?;
                 let snap = store::snapshot(&bus)?;
                 let inbox = store::list(&bus, &snap, &t.recipient);
                 Ok(inbox_output(&t, &inbox, &snap, args.full))

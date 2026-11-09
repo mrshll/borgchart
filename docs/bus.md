@@ -22,7 +22,7 @@ One store lasts for the instance's whole life; message numbers continue across s
 
 | Path | Contents |
 | --- | --- |
-| `store.json` | Format 2 and the instance ID |
+| `store.json` | Format 3 and the instance ID |
 | `lock` | Publication/acknowledgement lock |
 | `records/<seq>.json` | Immutable messages, numbered from 1 without gaps; filenames use ten decimal digits |
 | `acks/<id>.json` | Recipient acknowledgements, such as `m1.json` |
@@ -38,9 +38,10 @@ Directories must be real, owned by you and private (0700; files 0600). Immutable
 Inside a member use `"$BORGCHART_BIN"`, the brg that started it. Its instance, member and start ID come from `BORGCHART_INSTANCE`, `BORGCHART_MEMBER` and `BORGCHART_INCARNATION`. Outside a member every bus command requires `--instance ID`; inside one that option may only repeat its own instance.
 
 - Members publish to their parent or children, by full member ID. Only a root may also publish to `external:NAME`.
+- A copy's root members and their parent in the enclosing instance can also publish across their parent edge. Use the full `instance/member` address; a copy's roots receive their parent's address in `BORGCHART_PARENT`.
 - Outside callers use `--external NAME` and may publish to any member. Their replies go to `external:NAME`. That flag is refused inside a member.
 - An operator without an identity can read a named member's inbox and individual messages, and check the store, but cannot publish or ack.
-- A member is addressable after its first start, including while stopped. A role name or another instance's member is refused; there is no role queue or cross-instance delivery.
+- A member is addressable after its first start, including while stopped. A role name or another instance's member outside a parent edge is refused; there is no role queue.
 
 ## Draft and message
 
@@ -55,10 +56,16 @@ Every reference must name an existing message. The body is at most 65536 bytes, 
 brg adds identity and a UTC timestamp. For example:
 
 ```json
-{"schema": 2, "id": "m2", "seq": 2, "at": "2026-11-08T00:00:00Z", "from": "implementer-x7k2", "to": "lead-q8m3", "reply_to": ["m1"], "body": "Report: notes/change-report.md"}
+{"schema": 3, "id": "m2", "seq": 2, "at": "2026-11-08T00:00:00Z", "from": "implementer-x7k2", "to": "lead-q8m3", "reply_to": ["m1"], "body": "Report: notes/change-report.md"}
 ```
 
 `from` is a member ID or `external:NAME`. Each publication makes a new message, even with an identical draft. Delegation, progress and verification belong in the pull request description and comments; briefs and reports can live in `$BORGCHART_NOTES`.
+
+Across a parent edge, `from` and `to` are full addresses. Publication writes only the sender's store, after checking the edge. The recipient's next `inbox`, or each poll of `inbox wait`, reads the peer store under a read-only shared lock, releases it, and appends under its own lock. No command holds two stores' locks at once or writes a peer store.
+
+An imported record gets its own local ID and an `origin`, for example `{"instance": "oncall-2a3b/dev-a7k2", "id": "m1"}`. The origin lives in the same immutable file as the message. Under the receiver's lock, imports skip origins already held, so concurrent readers and crash retries create one local record. Imported messages are never sent on again. A sender restart after publication does not invalidate its committed message.
+
+Draft `reply_to` entries still name local messages. For a cross-edge publication, brg stores qualified references to their original instance and ID. On import, references map back to the receiver's own IDs where available; other references remain qualified. Same-instance messages keep bare member IDs and local references. Format 3 has no reader for older stores; create fresh instances when upgrading from format 2.
 
 ## Commands
 
@@ -81,7 +88,7 @@ brg inbox --instance dev-team-k3f9 --member lead-q8m3 --json
 ```
 
 ```json
-{"ok": true, "code": 0, "outcome": "ok", "recipient": "lead-q8m3", "records": [{"schema": 2, "id": "m1", "seq": 1, "at": "2026-11-08T00:00:00Z", "from": "external:owner", "to": "lead-q8m3", "body_bytes": 5, "acked": false}], "unacked": 1, "total": 1, "store": "ok"}
+{"ok": true, "code": 0, "outcome": "ok", "recipient": "lead-q8m3", "records": [{"schema": 3, "id": "m1", "seq": 1, "at": "2026-11-08T00:00:00Z", "from": "external:owner", "to": "lead-q8m3", "body_bytes": 5, "acked": false}], "unacked": 1, "total": 1, "store": "ok"}
 ```
 
 **Read:** `brg msg read ID [--json]` shows one message in full, including an acknowledged one.
@@ -91,7 +98,7 @@ brg msg read m1 --instance dev-team-k3f9 --json
 ```
 
 ```json
-{"ok": true, "code": 0, "outcome": "ok", "record": {"schema": 2, "id": "m1", "seq": 1, "at": "2026-11-08T00:00:00Z", "from": "external:owner", "to": "lead-q8m3", "body": "Hello", "acked": false}}
+{"ok": true, "code": 0, "outcome": "ok", "record": {"schema": 3, "id": "m1", "seq": 1, "at": "2026-11-08T00:00:00Z", "from": "external:owner", "to": "lead-q8m3", "body": "Hello", "acked": false}}
 ```
 
 **Ack:** `brg msg ack ID… [--external NAME] [--json]` acknowledges only messages addressed to the caller. It validates every ID before writing any ack. Ack once you have taken responsibility, before waiting for more work.
@@ -116,7 +123,7 @@ Repeating an ack returns `already` for that ID.
 - The highest sequence in the first readable scan is the start mark. A new unacked message to you above it returns at once.
 - If unacked messages were already there, it returns after 60 seconds, only if some are still unacked. If all were acked meanwhile, it keeps waiting for a new one or the timeout.
 - Errors, including missing identity, unreadable records and usage errors, return no sooner than 60 seconds after command start. Explicit help and signals are exempt.
-- Each poll (250 ms) checks the current start and reads only the next message file, moving past other recipients. An existing next file that won't parse is an error, never skipped.
+- Each poll (250 ms) checks the current start, imports from parent-edge stores, and reads the next local message file, moving past other recipients. Peer lock waits are bounded. An existing next file that won't parse is an error, never skipped.
 - A stopped or replaced member exits 8 (`fenced`), even without a publication. Stop waiting and tell the owner; never change identity variables to retry.
 
 Ack everything you've taken on, then arm one wait: Claude with its Bash tool in background mode, Codex in the foreground (`--timeout 600`). On exit 9 wait again. Leaving messages unacked wakes you about once a minute.
