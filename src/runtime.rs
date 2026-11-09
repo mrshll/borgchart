@@ -1920,7 +1920,8 @@ fn start_instance(
             inst.record.folder.display()
         ));
     }
-    let fresh = state::read_meta(&inst.state)?.is_none_or(|meta| meta.stopped_at.is_some());
+    let fresh = state::read_meta(&inst.state)?.is_none_or(|meta| meta.stopped_at.is_some())
+        || !tmux_for(&inst.state).has_session(&inst.state.session());
     let v = if member.is_none() && (fresh || inst.id.contains('/')) {
         validate_printing(&inst.record.team_dir)?
     } else {

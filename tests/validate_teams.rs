@@ -544,3 +544,37 @@ fn ambiguous_catalog_does_not_block_status_but_refuses_new_copies() {
     env.ok(&["stop", &dept]);
     assert!(env.fails(&["start", &dept]).contains("more than one team"));
 }
+
+#[test]
+fn unclean_restart_refuses_missing_named_child() {
+    let (env, dept) = department();
+    env.tmux(&["kill-server"]);
+    fs::rename(env.path("teams/dev"), env.path("saved-dev")).unwrap();
+    let output = env.brg(&["start", &dept]);
+    assert!(!output.status.success(), "{}", both(&output));
+    assert!(both(&output).contains("no team `dev`"), "{}", both(&output));
+    env.ok(&["status", &dept]);
+}
+
+#[test]
+fn unstarted_copy_keeps_missing_member_creation_hint() {
+    let (env, dept) = department();
+    env.team("teams/design");
+    let team = env.path("teams/dev/team.yaml");
+    let original = fs::read_to_string(&team).unwrap();
+    fs::write(
+        &team,
+        format!(
+            "{original}  design: {{team: design, parent: lead, cwd: 'design/{{member_id}}'}}\n"
+        ),
+    )
+    .unwrap();
+    let (child, _) = copy(&env, &dept);
+    let error = env.fails(&["start", &format!("{child}/helper")]);
+    assert!(
+        error.contains(&format!(
+            "role `helper` has no member; create one with `brg create {child}/helper`"
+        )),
+        "{error}"
+    );
+}

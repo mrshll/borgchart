@@ -224,8 +224,14 @@ pub fn member(inst: &Instance, name: &str) -> Result<String, String> {
         .unwrap_or_default()
         .config
         .team_dirs;
-    if crate::team::load_with(&inst.record.team_dir, &[], Some(&frozen), &mut report)
-        .is_some_and(|team| team.roles.contains_key(name))
+    let config = crate::config::load(&mut report).unwrap_or_default();
+    if crate::team::load_with(
+        &inst.record.team_dir,
+        &config.teams,
+        Some(&frozen),
+        &mut report,
+    )
+    .is_some_and(|team| team.roles.contains_key(name))
     {
         return Err(format!(
             "role `{name}` has no member; create one with `brg create {}`",
