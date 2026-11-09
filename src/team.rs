@@ -954,9 +954,6 @@ fn check_cwd(cwd: &str) -> Result<(), String> {
     if cwd.is_empty() {
         return Err("`cwd` is empty".into());
     }
-    if cwd.contains("{member}") {
-        return Err("`{member}` is now `{member_id}` in `cwd`".into());
-    }
     if path.is_absolute() || cwd.starts_with('~') {
         return Err(format!(
             "`cwd: {cwd}` must be relative: it is a folder inside the instance's folder"
