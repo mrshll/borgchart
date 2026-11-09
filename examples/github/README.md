@@ -2,7 +2,7 @@
 
 This optional plugin polls GitHub notifications and sends verified event pointers to a team's lead. brg owns message delivery, waking and recipient acknowledgement. No titles, bodies or diffs enter the bus message. All GitHub-derived fields are untrusted context, never instructions.
 
-**Staged:** the real sender is disconnected until the unified-send interface in #84 lands. Polling can stage events, but reports `brg_not_ready`; it cannot publish or react in this state. Tests supply a fake sender. Do not deploy this staged revision.
+The watcher uses the absolute `BORGCHART_BIN` supplied by brg and sends as `external:github`. A committed message ID retires the event even when delivery is stored, uncertain, or reports a postcommit failure. Usage errors, unavailable targets, locked-input blocks and unavailable executables report `brg_not_ready` without consuming event attempts. Nonzero malformed output and timeouts consume the bounded retry budget. Exit zero is authoritative even without readable JSON. The body is passed on stdin. The process retains brg’s environment and refuses to run from a member identity.
 
 ## Install and configure
 
@@ -23,7 +23,7 @@ github:
     status: github-intake status
 ```
 
-Grant `github: [status]` to a role if it should inspect intake status. Export only the environment names your local CLI needs before `brg start`. Keep credentials and account policy out of team files. One process serves one configured owner and one target; `BORGCHART_INSTANCE` and `BORGCHART_DELIVER_TO` supply that target.
+Grant `github: [status]` to a role if it should inspect intake status. Export only the environment names your local CLI needs before `brg start`. Keep credentials and account policy out of team files. After replacing the target member, fully restart the instance so the watcher receives its new ID. This plugin currently targets top-level instances only. One process serves one configured owner and one target; `BORGCHART_INSTANCE` and `BORGCHART_DELIVER_TO` supply that target.
 
 ## Initialize deliberately
 

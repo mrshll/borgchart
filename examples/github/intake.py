@@ -31,8 +31,6 @@ STOP = ("deadline", "transport", "rate_limit", "clock", "account_identity")
 
 STOP += ("http_401",)
 
-BRG_SEND: Callable[[dict[str, str], str, float], str | None] | None = None
-
 BRG_ATTEMPTS = 3
 
 BRG_TIMEOUT = 15.0
@@ -156,18 +154,20 @@ def next_page(
     return result
 
 
-def gh(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+def gh(
+    argv: list[str], timeout: float, body: str | None = None
+) -> subprocess.CompletedProcess[str]:
     """Run the configured CLI in its own process group; kill that group on timeout."""
     process = subprocess.Popen(
         argv,
-        stdin=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL if body is None else subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         start_new_session=True,
     )
     try:
-        stdout, stderr = process.communicate(timeout=timeout)
+        stdout, stderr = process.communicate(input=body, timeout=timeout)
     except subprocess.TimeoutExpired:
         try:
             os.killpg(process.pid, signal.SIGKILL)
@@ -674,6 +674,69 @@ def hold_item(row: dict[str, Any], item: str, full_name: str, kind: str) -> None
 
 class BrgUnavailable(Exception):
     """Transport/config is unavailable and definitely did not publish anything."""
+
+
+def send_brg(target: dict[str, str], text: str, timeout: float) -> str | None:
+    """Commit as external:github; delivery state never requests a resend."""
+    binary = os.environ.get("BORGCHART_BIN", "")
+    if (
+        not Path(binary).is_absolute()
+        or any(
+            os.environ.get(name)
+            for name in ("BORGCHART_MEMBER", "BORGCHART_INCARNATION")
+        )
+        or target != delivery_target()
+    ):
+        raise BrgUnavailable("brg_environment")
+    try:
+        result = gh(
+            [
+                binary,
+                "send",
+                "--external",
+                "github",
+                "--json",
+                target["instance"] + "/" + target["member"],
+                "-",
+            ],
+            timeout,
+            text,
+        )
+    except OSError as error:
+        raise BrgUnavailable("brg_executable") from error
+    # The exit status itself promises commitment, even if its JSON was lost.
+    if result.returncode == 0:
+        return "committed"
+    if result.returncode in (2, 3, 4):
+        raise BrgUnavailable("brg_route")
+    if len(result.stdout) > 65536:
+        raise ValueError("oversized brg result")
+    data = json.loads(result.stdout)
+    if (
+        not isinstance(data, dict)
+        or type(data.get("code")) is not int
+        or data["code"] != result.returncode
+    ):
+        raise ValueError("unconfirmed brg result")
+    if (
+        data["code"] != 5
+        or data.get("outcome") != "refused"
+        or data.get("ok") is not False
+    ):
+        raise ValueError("unconfirmed brg outcome")
+    if "id" in data:
+        if (
+            not isinstance(data["id"], str)
+            or not re.fullmatch(r"m[1-9][0-9]*", data["id"])
+            or data.get("delivery")
+            not in ("typed", "stored", "uncertain", "recorded-not-typed")
+        ):
+            raise ValueError("unconfirmed brg commitment")
+        return data["id"]
+    return None
+
+
+BRG_SEND: Callable[[dict[str, str], str, float], str | None] | None = send_brg
 
 
 def brg_pointer(item: dict[str, Any]) -> str:

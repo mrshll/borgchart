@@ -40,6 +40,7 @@ struct Agent {
     mode: Mode,
     work_until: Option<Instant>,
     lines: Vec<String>,
+    input: String,
     trust_choice: usize,
     start_hooks: Vec<String>,
 }
@@ -124,7 +125,7 @@ fn hooks(vendor: Vendor, args: &[String]) -> (Vec<String>, Vec<String>) {
 
 impl Agent {
     fn draw(&self) {
-        let (title, body) = match (self.vendor, self.mode) {
+        let (title, mut body) = match (self.vendor, self.mode) {
             (_, Mode::Mute) => ("plain".to_string(), vec!["$ ".to_string()]),
             (_, Mode::CodexTrust) => (
                 String::new(),
@@ -224,6 +225,65 @@ impl Agent {
                 ],
             ),
         };
+        // Render the actual composer/cursor so production exact-input checks
+        // remain exercised. This fixture does not relax the send guard.
+        let mut cursor = None;
+        if matches!(self.mode, Mode::Idle | Mode::Working) {
+            let width = rustix::termios::tcgetwinsize(rustix::stdio::stdout())
+                .map(|w| w.ws_col as usize)
+                .unwrap_or(80);
+            let decoded =
+                String::from_utf8_lossy(&self.input.chars().map(|c| c as u8).collect::<Vec<_>>())
+                    .to_string();
+            let mut rows = Vec::new();
+            for line in decoded.split('\n') {
+                let chars = line.chars().collect::<Vec<_>>();
+                if chars.is_empty() {
+                    rows.push(String::new());
+                }
+                for chunk in chars.chunks(width.saturating_sub(2).max(1)) {
+                    rows.push(chunk.iter().collect::<String>());
+                }
+            }
+            body.clear();
+            if self.mode == Mode::Working {
+                body.push(
+                    if self.vendor == Vendor::Claude {
+                        "✻ Working… (1s)"
+                    } else {
+                        "• Working (1s • esc to interrupt)"
+                    }
+                    .into(),
+                );
+            }
+            let rule = format!("\x1b[38;5;244m{}\x1b[39m", "─".repeat(width));
+            if self.vendor == Vendor::Claude {
+                body.push(rule.clone());
+            }
+            for (i, row) in rows.iter().enumerate() {
+                cursor = Some((body.len(), 2 + row.chars().count()));
+                body.push(if i > 0 {
+                    format!("  {row}")
+                } else if self.vendor == Vendor::Claude {
+                    if self.mode == Mode::Working {
+                        format!("\x1b[38;5;246m❯\u{a0}\x1b[39m{row}")
+                    } else {
+                        format!("❯\u{a0}{row}")
+                    }
+                } else if decoded.is_empty() {
+                    "\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anything\x1b[0m".into()
+                } else {
+                    format!("\x1b[1m›\x1b[0m {row}")
+                });
+            }
+            if self.vendor == Vendor::Claude {
+                body.push(rule);
+                body.push("  -- INSERT -- ⏵⏵ don't ask on (shift+tab to cycle)".into());
+            } else {
+                body.push(String::new());
+                body.push("  ? for shortcuts · Vim: Insert".into());
+            }
+        }
         let mut out = String::from("\x1b[2J\x1b[H");
         out.push_str(&format!("\x1b]0;{title}\x07"));
         if self.vendor == Vendor::Claude && matches!(self.mode, Mode::Idle | Mode::Working) {
@@ -231,14 +291,27 @@ impl Agent {
             // the input box, which the idle rule needs to see.
             out.push_str("▝▜██████▀  Fake Claude\r\n");
         }
-        let tail: Vec<&String> = self.lines.iter().rev().take(20).collect();
+        let tail: Vec<&String> = self.lines.iter().rev().take(3).collect();
+        let history_rows = tail.len();
         for line in tail.into_iter().rev() {
-            out.push_str(line);
+            let width = rustix::termios::tcgetwinsize(rustix::stdio::stdout())
+                .map(|size| usize::from(size.ws_col))
+                .unwrap_or(80)
+                .max(2);
+            out.extend(line.chars().take(width - 1));
             out.push_str("\r\n");
         }
         for line in body {
             out.push_str(&line);
             out.push_str("\r\n");
+        }
+        if let Some((row, col)) = cursor {
+            let banner = usize::from(self.vendor == Vendor::Claude);
+            out.push_str(&format!(
+                "\x1b[{};{}H",
+                banner + history_rows + row + 1,
+                col + 1
+            ));
         }
         let mut stdout = std::io::stdout();
         let _ = stdout.write_all(out.as_bytes());
@@ -251,7 +324,22 @@ impl Agent {
             serde_json::json!({"event": "submit", "text": text}),
         );
         self.lines.push(format!("> {}", text.replace('\n', " / ")));
-        let first = text.lines().next().unwrap_or("").trim();
+        // Interpret only the body of brg's deterministic test envelope; keep
+        // the complete submitted text above for ID/author/ACK assertions.
+        let body = if text.starts_with("[brg ") {
+            let (header, body) = text.split_once('\n').expect("brg envelope body");
+            assert!(header.ends_with(']'));
+            if header.contains("; ack not required]") {
+                body
+            } else {
+                body.rsplit_once("\n[Ignore duplicate delivery if already acked;")
+                    .expect("ordinary envelope ACK hint")
+                    .0
+            }
+        } else {
+            text
+        };
+        let first = body.lines().next().unwrap_or("").trim();
         let (word, rest) = first.split_once(' ').unwrap_or((first, ""));
         match word {
             "work" => {
@@ -407,6 +495,7 @@ fn main() {
         },
         work_until: None,
         lines: Vec::new(),
+        input: String::new(),
         trust_choice: if flag("trust-yes") { 1 } else { 0 },
         start_hooks,
     };
@@ -430,7 +519,6 @@ fn main() {
 
     let mut pending: Vec<u8> = Vec::new();
     let mut in_paste = false;
-    let mut text = String::new();
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(b) => pending.push(b),
@@ -457,6 +545,7 @@ fn main() {
             if pending.starts_with(b"\x1b[201~") {
                 in_paste = false;
                 pending.drain(..6);
+                agent.draw();
                 continue;
             }
             if pending.starts_with(b"\x1b[B") || pending.starts_with(b"\x1b[A") {
@@ -477,7 +566,7 @@ fn main() {
             let b = pending.remove(0);
             if in_paste {
                 // Terminals (and tmux) paste newlines as CR; real CLIs read them as line breaks.
-                text.push(if b == b'\r' { '\n' } else { b as char });
+                agent.input.push(if b == b'\r' { '\n' } else { b as char });
                 continue;
             }
             match b {
@@ -508,7 +597,7 @@ fn main() {
                         agent.mode = Mode::Idle;
                         agent.draw();
                     } else {
-                        let submitted = std::mem::take(&mut text);
+                        let submitted = std::mem::take(&mut agent.input);
                         let decoded = String::from_utf8_lossy(
                             &submitted.chars().map(|c| c as u8).collect::<Vec<u8>>(),
                         )
@@ -530,7 +619,7 @@ fn main() {
                     restore_terminal();
                     return;
                 }
-                _ => text.push(b as char),
+                _ => agent.input.push(b as char),
             }
         }
     }

@@ -41,7 +41,7 @@ plugins:
     path: plugins/pager
     process: [./watch.sh]
     delivers_to: alpha
-    env: [PAGER_TOKEN, {PAGER_ROOM: R0000EXAMPLE}]
+    env: {PAGER_TOKEN: , PAGER_ROOM: R0000EXAMPLE}
     actions:
       read: pager read <id>
       ping: pager ping <id>
@@ -161,10 +161,17 @@ roles:
                 let mut v = vec![cmd.to_string()];
                 let mut member_done = false;
                 let mut from = false;
+                let mut external = false;
                 for a in rest {
                     if from {
                         v.push(self.member_id(a).unwrap_or_else(|| a.to_string()));
                         from = false;
+                    } else if external {
+                        v.push(a.to_string());
+                        external = false;
+                    } else if *a == "--external" {
+                        v.push(a.to_string());
+                        external = true;
                     } else if *a == "--from" {
                         v.push(a.to_string());
                         from = true;
@@ -328,6 +335,37 @@ fn submissions(env: &Env, member: &str) -> Vec<String> {
         .collect()
 }
 
+fn record_for(env: &Env, role: &str, body: &str) -> serde_json::Value {
+    let records = env.path(&format!(
+        "state/{}/messages/records",
+        env.instance().unwrap()
+    ));
+    let record = fs::read_dir(records)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            serde_json::from_slice::<serde_json::Value>(&fs::read(entry.path()).ok()?).ok()
+        })
+        .find(|record| record["to"] == env.m(role) && record["body"] == body)
+        .unwrap_or_else(|| panic!("missing stored body {body:?} for {role}"));
+    assert_eq!(record["schema"], 3);
+    assert_eq!(record["from"], "external:runtime-test");
+    record
+}
+
+fn envelope(env: &Env, role: &str, body: &str, ack_required: bool) -> String {
+    let record = record_for(env, role, body);
+    assert_eq!(record["ack_required"], ack_required);
+    let id = record["id"].as_str().unwrap();
+    if ack_required {
+        format!(
+            "[brg {id} from external:runtime-test]\n{body}\n[Ignore duplicate delivery if already acked; otherwise brg msg ack {id} when taking responsibility.]"
+        )
+    } else {
+        format!("[brg {id} from external:runtime-test; ack not required]\n{body}")
+    }
+}
+
 #[test]
 fn up_status_send_logs_down() {
     let env = Env::new();
@@ -350,18 +388,18 @@ fn up_status_send_logs_down() {
             .any(|r| r["name"] == "pager" && r["state"] == "alive" && r["detail"] == "ok")
     });
 
-    let out = env.brg(&["send", "alpha", "hello there"]);
+    let out = env.brg(&["send", "--external", "runtime-test", "alpha", "hello there"]);
     assert!(
         out.status.success(),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
     env.wait_for("submission", |e| {
-        submissions(e, "alpha").contains(&"hello there".to_string())
+        submissions(e, "alpha").contains(&envelope(e, "alpha", "hello there", false))
     });
 
     let logs = env.brg(&["logs", "alpha"]);
-    assert!(stdout(&logs).contains("> hello there"), "{}", stdout(&logs));
+    assert!(stdout(&logs).contains("hello there"), "{}", stdout(&logs));
 
     let table = env.brg(&["status"]);
     // The instance's tree under its header line, then plugin processes.
@@ -421,7 +459,11 @@ fn up_twice_is_harmless() {
 fn crash_shows_as_exited() {
     let env = Env::new();
     env.up();
-    assert!(env.brg(&["send", "beta", "crash 3"]).status.success());
+    assert!(
+        env.brg(&["send", "--external", "runtime-test", "beta", "crash 3"])
+            .status
+            .success()
+    );
     env.wait_for("beta exited", |e| e.state_of("beta") == "exited");
     // tmux occasionally loses a pane's exit status; when it has one, it must be right.
     let beta = env
@@ -433,8 +475,12 @@ fn crash_shows_as_exited() {
         beta["detail"].is_null() || beta["detail"] == "status 3",
         "{beta}"
     );
-    // Sending to an exited member is refused with exit code 3.
-    assert_eq!(env.brg(&["send", "beta", "hi"]).status.code(), Some(3));
+    // Ordinary work survives an exited recipient; it is committed, not typed.
+    let out = env.brg(&["send", "--external", "runtime-test", "--json", "beta", "hi"]);
+    assert!(out.status.success());
+    let result: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(result["delivery"], "stored");
+    assert_eq!(record_for(&env, "beta", "hi")["ack_required"], true);
 }
 
 #[test]
@@ -442,12 +488,18 @@ fn send_refusals() {
     let env = Env::new();
     env.up();
 
-    // Blocked at a dialog: refused with 4, and nothing is typed into the dialog.
-    assert!(env.brg(&["send", "beta", "dialog"]).status.success());
+    // Ordinary dialog delivery is stored successfully; nothing answers the dialog.
+    assert!(
+        env.brg(&["send", "--external", "runtime-test", "beta", "dialog"])
+            .status
+            .success()
+    );
     env.wait_for("beta blocked", |e| e.state_of("beta") == "blocked");
     assert_eq!(
-        env.brg(&["send", "beta", "yes please"]).status.code(),
-        Some(4)
+        env.brg(&["send", "--external", "runtime-test", "beta", "yes please"])
+            .status
+            .code(),
+        Some(0)
     );
     assert!(
         !env.events("beta")
@@ -455,49 +507,131 @@ fn send_refusals() {
             .any(|e| e["event"] == "dialog-answer")
     );
 
-    // Unknown state: refused with 5 unless --force.
-    assert!(env.brg(&["send", "alpha", "mute"]).status.success());
+    assert_eq!(record_for(&env, "beta", "yes please")["ack_required"], true);
+
+    // Force permits unknown state, but never an unverifiable composer.
+    let muted = env.brg(&[
+        "send",
+        "--external",
+        "runtime-test",
+        "--json",
+        "alpha",
+        "mute",
+    ]);
+    assert_eq!(muted.status.code(), Some(5));
+    let result: serde_json::Value = serde_json::from_slice(&muted.stdout).unwrap();
+    assert_eq!(result["delivery"], "uncertain");
+    assert_eq!(result["id"], record_for(&env, "alpha", "mute")["id"]);
     env.wait_for("alpha unknown", |e| e.state_of("alpha") == "unknown");
-    assert_eq!(env.brg(&["send", "alpha", "hi"]).status.code(), Some(5));
-    assert!(
-        env.brg(&["send", "--force", "alpha", "forced"])
+    assert_eq!(
+        env.brg(&["send", "--external", "runtime-test", "alpha", "hi"])
             .status
-            .success()
+            .code(),
+        Some(5)
     );
-    env.wait_for("forced", |e| {
-        submissions(e, "alpha").contains(&"forced".to_string())
-    });
+    let forced = env.brg(&[
+        "send",
+        "--external",
+        "runtime-test",
+        "--force",
+        "--json",
+        "alpha",
+        "forced",
+    ]);
+    assert_eq!(forced.status.code(), Some(5));
+    let result: serde_json::Value = serde_json::from_slice(&forced.stdout).unwrap();
+    assert!(
+        result.get("id").is_none(),
+        "preflight must not commit: {result}"
+    );
+    assert!(
+        !submissions(&env, "alpha")
+            .iter()
+            .any(|text| text.contains("forced"))
+    );
 
     // Control characters and leading slash: refused with 5.
     assert_eq!(
-        env.brg(&["send", "gamma", "x\u{1b}[201~y"]).status.code(),
+        env.brg(&[
+            "send",
+            "--external",
+            "runtime-test",
+            "gamma",
+            "x\u{1b}[201~y"
+        ])
+        .status
+        .code(),
         Some(5)
     );
-    assert_eq!(env.brg(&["send", "alpha", "/clear"]).status.code(), Some(5));
-    // A role with no member yet: a usage error, 2.
-    assert_eq!(env.brg(&["send", "gamma", "hi"]).status.code(), Some(2));
-    // A member that isn't running: 3.
+    assert_eq!(
+        env.brg(&["send", "--external", "runtime-test", "alpha", "/clear"])
+            .status
+            .code(),
+        Some(5)
+    );
+    // A role with no member yet is unaddressable, 3.
+    assert_eq!(
+        env.brg(&["send", "--external", "runtime-test", "gamma", "hi"])
+            .status
+            .code(),
+        Some(3)
+    );
+    // An ordinary stopped member still receives durable work.
     assert!(env.brg(&["start", "gamma"]).status.success());
     assert!(env.brg(&["stop", "gamma"]).status.success());
-    assert_eq!(env.brg(&["send", "gamma", "hi"]).status.code(), Some(3));
+    assert_eq!(
+        env.brg(&["send", "--external", "runtime-test", "gamma", "hi"])
+            .status
+            .code(),
+        Some(0)
+    );
 
-    let json = env.brg(&["send", "--json", "gamma", "hi"]);
+    let json = env.brg(&[
+        "send",
+        "--external",
+        "runtime-test",
+        "--json",
+        "gamma",
+        "hi",
+    ]);
     let v: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
-    assert_eq!(v["code"], 3);
+    assert_eq!(v["code"], 0);
+    assert_eq!(v["delivery"], "stored");
+    assert_eq!(record_for(&env, "gamma", "hi")["ack_required"], true);
 }
 
 #[test]
-fn vendor_members_mid_turn_are_busy_but_locked_ones_take_input() {
+fn working_members_accept_tagged_input_with_correct_ack_metadata() {
     let env = Env::new();
     env.up();
-    assert!(env.brg(&["send", "beta", "work 5"]).status.success());
+    assert!(
+        env.brg(&["send", "--external", "runtime-test", "beta", "work 5"])
+            .status
+            .success()
+    );
     env.wait_for("beta working", |e| e.state_of("beta") == "working");
-    assert_eq!(env.brg(&["send", "beta", "more"]).status.code(), Some(6));
-    assert!(env.brg(&["send", "alpha", "work 5"]).status.success());
+    assert_eq!(
+        env.brg(&["send", "--external", "runtime-test", "beta", "more"])
+            .status
+            .code(),
+        Some(0)
+    );
+    env.wait_for("ordinary mid-turn envelope", |e| {
+        submissions(e, "beta").contains(&envelope(e, "beta", "more", true))
+    });
+    assert!(
+        env.brg(&["send", "--external", "runtime-test", "alpha", "work 5"])
+            .status
+            .success()
+    );
     env.wait_for("alpha working", |e| e.state_of("alpha") == "working");
-    assert!(env.brg(&["send", "alpha", "queued"]).status.success());
+    assert!(
+        env.brg(&["send", "--external", "runtime-test", "alpha", "queued"])
+            .status
+            .success()
+    );
     env.wait_for("queued", |e| {
-        submissions(e, "alpha").contains(&"queued".to_string())
+        submissions(e, "alpha").contains(&envelope(e, "alpha", "queued", false))
     });
 }
 
@@ -507,14 +641,26 @@ fn concurrent_sends_arrive_as_separate_submissions() {
     env.up();
     let a = "first line A\nsecond line A";
     let b = "first line B\nsecond line B";
-    let mut c1 = env.brg_cmd(&["send", "alpha", a]).spawn().unwrap();
-    let mut c2 = env.brg_cmd(&["send", "alpha", b]).spawn().unwrap();
+    let mut c1 = env
+        .brg_cmd(&["send", "--external", "runtime-test", "alpha", a])
+        .spawn()
+        .unwrap();
+    let mut c2 = env
+        .brg_cmd(&["send", "--external", "runtime-test", "alpha", b])
+        .spawn()
+        .unwrap();
     assert!(c1.wait().unwrap().success());
     assert!(c2.wait().unwrap().success());
     env.wait_for("both submissions", |e| submissions(e, "alpha").len() >= 2);
     let subs = submissions(&env, "alpha");
-    assert!(subs.contains(&a.to_string()), "{subs:?}");
-    assert!(subs.contains(&b.to_string()), "{subs:?}");
+    assert!(
+        subs.contains(&envelope(&env, "alpha", a, false)),
+        "{subs:?}"
+    );
+    assert!(
+        subs.contains(&envelope(&env, "alpha", b, false)),
+        "{subs:?}"
+    );
 }
 
 #[test]
@@ -545,7 +691,11 @@ fn locked_gate_allows_only_granted_commands() {
         (format!("tool touch {}", side.display()), false),
     ];
     for (text, _) in &tries {
-        assert!(env.brg(&["send", "alpha", text]).status.success());
+        assert!(
+            env.brg(&["send", "--external", "runtime-test", "alpha", text])
+                .status
+                .success()
+        );
     }
     env.wait_for("all tool calls", |e| {
         e.events("alpha")
@@ -584,16 +734,33 @@ fn locked_gate_allows_only_granted_commands() {
 }
 
 #[test]
-fn identity_comes_from_the_shim_not_the_environment() {
+fn shim_requires_matching_fenced_member_identity() {
     let env = Env::new();
     env.up();
     let shim = walk(&env.path("state"))
         .into_iter()
         .find(|p| p.ends_with(format!("members/{}/bin/pager", env.m("alpha"))))
         .unwrap();
-    let out = common::command(&shim)
+    let captured = |role: &str| -> std::collections::BTreeMap<String, String> {
+        let start = env
+            .events(role)
+            .into_iter()
+            .find(|e| e["event"] == "start")
+            .unwrap();
+        serde_json::from_value(start["env"].clone()).unwrap()
+    };
+    // A valid but different member cannot borrow the shim's granted authority.
+    let refused = common::command(&shim)
+        .env_clear()
+        .envs(captured("beta"))
         .args(["read", "5"])
-        .env("BORGCHART_MEMBER", env.m("beta"))
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    let out = common::command(&shim)
+        .env_clear()
+        .envs(captured("alpha"))
+        .args(["read", "5"])
         .env("PAGER_TOKEN", "")
         .output()
         .unwrap();
@@ -988,7 +1155,16 @@ fn folder_trust_is_left_alone_when_turned_off() {
         assert_eq!(env.state_of("alpha"), "blocked");
         // Its gate hasn't reported in, so it gets no input.
         assert_eq!(
-            env.brg(&["send", "--force", "alpha", "hi"]).status.code(),
+            env.brg(&[
+                "send",
+                "--external",
+                "runtime-test",
+                "--force",
+                "alpha",
+                "hi"
+            ])
+            .status
+            .code(),
             Some(5)
         );
     }
@@ -1131,7 +1307,16 @@ fn codex_trust_screen_is_left_for_a_person_unless_auto_trust_covers_the_folder()
         if deploy.contains("locked") {
             // Its gate hasn't reported in, so it gets no input.
             assert_eq!(
-                env.brg(&["send", "--force", "beta", "hi"]).status.code(),
+                env.brg(&[
+                    "send",
+                    "--external",
+                    "runtime-test",
+                    "--force",
+                    "beta",
+                    "hi"
+                ])
+                .status
+                .code(),
                 Some(5),
                 "{deploy}"
             );
@@ -1213,22 +1398,56 @@ fn send_from_must_target_the_senders_parent() {
     let env = Env::new();
     env.up();
     assert!(
-        env.brg(&["send", "--from", "beta", "alpha", "note"])
-            .status
-            .success()
+        env.brg(&[
+            "send",
+            "--external",
+            "runtime-test",
+            "--from",
+            "beta",
+            "alpha",
+            "note"
+        ])
+        .status
+        .success()
     );
+    let record = record_for(&env, "alpha", "note");
+    assert_eq!(record["ack_required"], false);
+    let id = record["id"].as_str().unwrap();
+    let expected = format!(
+        "[brg {id} from external:runtime-test; relayed for {}; ack not required]\nnote",
+        env.m("beta")
+    );
+    env.wait_for("relay retains external author and route", |e| {
+        submissions(e, "alpha") == [expected.clone()]
+    });
     assert_eq!(
-        env.brg(&["send", "--from", "alpha", "beta", "note"])
-            .status
-            .code(),
+        env.brg(&[
+            "send",
+            "--external",
+            "runtime-test",
+            "--from",
+            "alpha",
+            "beta",
+            "note"
+        ])
+        .status
+        .code(),
         Some(5)
     );
     // A role with no member isn't a sender.
     assert_eq!(
-        env.brg(&["send", "--from", "gamma", "beta", "note"])
-            .status
-            .code(),
-        Some(2)
+        env.brg(&[
+            "send",
+            "--external",
+            "runtime-test",
+            "--from",
+            "gamma",
+            "beta",
+            "note"
+        ])
+        .status
+        .code(),
+        Some(5)
     );
 }
 
@@ -1256,16 +1475,21 @@ fn send_refuses_a_pane_in_copy_mode_until_it_leaves() {
     env.tmux(&["copy-mode", "-t", &pane]);
     assert!(in_copy_mode(&env, &pane));
     for args in [
-        &["send", "beta", "first"][..],
-        &["send", "--force", "beta", "forced"],
+        &["send", "--external", "runtime-test", "beta", "first"][..],
+        &[
+            "send",
+            "--external",
+            "runtime-test",
+            "--force",
+            "beta",
+            "forced",
+        ],
     ] {
         let out = env.brg(args);
-        let err = String::from_utf8_lossy(&out.stderr);
-        assert_eq!(out.status.code(), Some(4), "{args:?}: {err}");
-        assert!(
-            err.contains(&format!("`{}`", env.m("beta"))) && err.contains("copy mode"),
-            "{err}"
-        );
+        assert!(out.status.success(), "{args:?}: {}", stdout(&out));
+        let body = args.last().unwrap();
+        assert_eq!(record_for(&env, "beta", body)["ack_required"], true);
+        assert!(submissions(&env, "beta").is_empty());
     }
     // The copy-mode detail doesn't hide one `status` already gives: here, a
     // broken rules override.
@@ -1278,10 +1502,17 @@ fn send_refuses_a_pane_in_copy_mode_until_it_leaves() {
     fs::remove_file(env.path("home/.config/borgchart/rules/codex.yaml")).unwrap();
     env.tmux(&["send-keys", "-X", "-t", &pane, "cancel"]);
     assert!(!in_copy_mode(&env, &pane));
-    assert!(env.brg(&["send", "beta", "second"]).status.success());
+    assert!(
+        env.brg(&["send", "--external", "runtime-test", "beta", "second"])
+            .status
+            .success()
+    );
     env.wait_for("second", |e| !submissions(e, "beta").is_empty());
-    // Exactly the second text: the refused sends typed nothing.
-    assert_eq!(submissions(&env, "beta"), ["second"]);
+    // Exactly the second envelope: stored copy-mode sends typed nothing.
+    assert_eq!(
+        submissions(&env, "beta"),
+        [envelope(&env, "beta", "second", true)]
+    );
 }
 
 /// A team whose `alpha` shows Claude's trust dialog for its folder,
@@ -1411,4 +1642,64 @@ fn walk(root: &Path) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+#[test]
+fn send_requires_named_external_author_before_recording() {
+    let env = Env::new();
+    env.up();
+    let output = env.brg(&["send", "beta", "not attributed"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(submissions(&env, "beta").is_empty());
+    let records = env.path(&format!(
+        "state/{}/messages/records",
+        env.instance().unwrap()
+    ));
+    assert!(!records.exists() || fs::read_dir(records).unwrap().next().is_none());
+}
+
+#[test]
+fn interactive_recipient_stores_even_with_force() {
+    let env = Env::new();
+    env.role_extra("beta", "    interactive: true\n");
+    env.up();
+    let output = env.brg(&[
+        "send",
+        "--external",
+        "runtime-test",
+        "--force",
+        "--json",
+        "beta",
+        "owner inbox",
+    ]);
+    assert!(output.status.success(), "{}", stdout(&output));
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let record = record_for(&env, "beta", "owner inbox");
+    assert_eq!(result["id"], record["id"]);
+    assert_eq!(result["delivery"], "stored");
+    assert_eq!(record["ack_required"], true);
+    assert!(submissions(&env, "beta").is_empty());
+}
+
+#[test]
+fn long_ordinary_body_is_stored_without_composer_submission() {
+    let env = Env::new();
+    env.up();
+    // The conservative paste budget is not the record body limit.
+    let body = "x".repeat(16 * 1024);
+    let output = env.brg(&[
+        "send",
+        "--external",
+        "runtime-test",
+        "--json",
+        "beta",
+        &body,
+    ]);
+    assert!(output.status.success(), "{}", stdout(&output));
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let record = record_for(&env, "beta", &body);
+    assert_eq!(result["id"], record["id"]);
+    assert_eq!(result["delivery"], "stored");
+    assert_eq!(record["ack_required"], true);
+    assert!(submissions(&env, "beta").is_empty());
 }

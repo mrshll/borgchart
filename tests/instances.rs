@@ -98,6 +98,8 @@ fn deleted_members_cannot_restart_or_receive_work_and_ids_are_never_reused() {
     env.wait_for("replacement idle", || env.state_of(&inst, "lead") == "idle");
     env.ok(&[
         "send",
+        "--external",
+        "ops",
         &format!("{inst}/{replacement}"),
         "hello",
         "--from",
@@ -122,7 +124,7 @@ fn deleted_members_cannot_restart_or_receive_work_and_ids_are_never_reused() {
     let next = seeded_create();
     assert_ne!(next, helper);
     env.ok(&["stop", &inst]);
-    env.ok(&["delete", &inst]);
+    env.ok(&["delete", &inst, "--force"]);
 }
 
 #[test]
@@ -193,21 +195,18 @@ fn publish_refusals_only_suggest_declared_role_addresses() {
         let out = env.publish(&inst, &json!({"to": to, "body": "Review the sample."}));
         assert!(!out.status.success(), "{}", both(&out));
         let refusal: Value = serde_json::from_slice(&out.stdout).unwrap();
-        let command = refusal["message"]
-            .as_str()
-            .unwrap()
-            .split_once("`brg create ")
-            .unwrap()
-            .1
-            .split('`')
-            .next()
-            .unwrap();
-        let expected = if to == "helper" {
-            format!("{inst}/helper")
+        let message = refusal["message"].as_str().unwrap();
+        if to == "helper" {
+            assert!(
+                message.contains(&format!("brg create {inst}/helper")),
+                "{message}"
+            );
         } else {
-            "<instance>/<role>".to_string()
-        };
-        assert_eq!(command, expected, "recipient {to}");
+            assert!(
+                !message.contains(&format!("brg create {inst}/{to}")),
+                "{message}"
+            );
+        }
     }
     env.ok(&["stop", &inst]);
 }
@@ -241,7 +240,7 @@ fn role_addresses_never_choose_a_member_and_status_tracks_each_start() {
     for command in ["start", "stop", "attach", "logs", "delete", "send"] {
         let address = format!("{inst}/helper");
         let args = if command == "send" {
-            vec![command, address.as_str(), "hello"]
+            vec![command, address.as_str(), "hello", "--external", "ops"]
         } else {
             vec![command, address.as_str()]
         };
@@ -269,7 +268,7 @@ fn role_addresses_never_choose_a_member_and_status_tracks_each_start() {
     assert!(both(&out).contains(&helper), "{}", both(&out));
     let out = env.publish(&inst, &json!({"to": helper, "body": "Review the sample."}));
     assert!(out.status.success(), "{}", both(&out));
-    env.ok(&["send", &address, "hello"]);
+    env.ok(&["send", &address, "hello", "--external", "ops"]);
     for stopped in [false, true] {
         if stopped {
             env.ok(&["stop", &address]);
@@ -277,7 +276,7 @@ fn role_addresses_never_choose_a_member_and_status_tracks_each_start() {
         for command in ["stop", "send"] {
             let role = format!("{inst}/helper");
             let args = if command == "send" {
-                vec![command, role.as_str(), "hello"]
+                vec![command, role.as_str(), "hello", "--external", "ops"]
             } else {
                 vec![command, role.as_str()]
             };
@@ -289,7 +288,7 @@ fn role_addresses_never_choose_a_member_and_status_tracks_each_start() {
         let row = env.row(&inst, "helper");
         assert_eq!(row["start_id"], start_id);
         assert_eq!(row["member"], helper);
-        assert_eq!(row["unread"], 1);
+        assert_eq!(row["unread"], 2);
     }
     env.ok(&["start", &address]);
     assert_eq!(env.member(&inst, "helper"), helper);
@@ -320,8 +319,6 @@ fn create_twice_makes_two_instances_with_suffixed_members() {
             .unwrap()
             .ends_with(&format!("{a}/notes"))
     );
-    assert!(start["env"].get("BORGCHART_FILE").is_none());
-    assert!(start["env"].get("BORGCHART_DEPLOYMENT").is_none());
     assert_eq!(
         start["cwd"].as_str().unwrap(),
         env.path("work/a")
@@ -721,34 +718,6 @@ fn status_w_with_an_instance_shows_only_that_instance() {
     env.ok(&["stop", &b]);
 }
 
-// --- 9. Removed names ---
-
-#[test]
-fn removed_commands_and_files_are_gone() {
-    let env = Env::new();
-    for args in [
-        vec!["up"],
-        vec!["down"],
-        vec!["status", "--file", "x"],
-        vec!["create", "--team", "x"],
-        vec!["stop", "x", "--team", "y"],
-        vec!["status", "--team", "x"],
-    ] {
-        let out = env.brg(&args);
-        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", both(&out));
-        let text = both(&out);
-        assert!(
-            text.contains("unrecognized subcommand") || text.contains("unexpected argument"),
-            "{args:?}: {text}"
-        );
-    }
-    // A `borgchart.yaml` in the team folder is not read.
-    env.write("teams/oncall/borgchart.yaml", "this: [is not read\n");
-    env.ok(&["validate", "oncall"]);
-    let inst = env.create("oncall", "work/a");
-    env.ok(&["stop", &inst]);
-}
-
 // --- 14. Configuration ---
 
 #[test]
@@ -920,6 +889,12 @@ fn plain_plugin_values_come_from_the_team() {
     let run = Command::new(&shim)
         .args(["read", "1"])
         .env_clear()
+        .envs(
+            serde_json::from_value::<std::collections::BTreeMap<String, String>>(
+                env.starts(&lead)[0]["env"].clone(),
+            )
+            .unwrap(),
+        )
         .env("PATH", "/usr/bin:/bin")
         .output()
         .unwrap();

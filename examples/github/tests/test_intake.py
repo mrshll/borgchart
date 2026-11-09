@@ -461,8 +461,9 @@ def test_commit_retires_before_reaction(
 
 
 def test_staged_transport_does_not_consume(
-    cfg: dict[str, Any], state: dict[str, Any]
+    cfg: dict[str, Any], state: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(g, "BRG_SEND", None)
     api, key = queued(cfg, state)
     g.produce_brg(cfg, state, time.monotonic() + 120, [], api)
     assert key in state["row"]["pending"]
@@ -849,6 +850,7 @@ def test_main_init_status_and_missing_state(
 def test_staged_health_reason(
     cfg: dict[str, Any], state: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(g, "BRG_SEND", None)
     api, _ = queued(cfg, state)
     monkeypatch.setattr(g, "API", lambda *args: api)
     monkeypatch.setattr(g, "collect", lambda *args: None)

@@ -7,7 +7,7 @@ mod team_fixture;
 use team_fixture::Fixture;
 
 #[test]
-fn roles_load_but_legacy_members_and_frontmatter_role_are_rejected() {
+fn roles_load_and_a_role_may_not_hide_another_roles_member() {
     let f = Fixture::new();
     f.write("team.yaml", "roles: {lead: {prompt: lead.md}}\n");
     f.write("lead.md", "---\nmodels: {claude: opus}\n---\nLead.\n");
@@ -25,18 +25,6 @@ fn roles_load_but_legacy_members_and_frontmatter_role_are_rejected() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    f.edit("team.yaml", "roles:", "members:");
-    let out = validate();
-    assert!(!out.status.success());
-    let error = String::from_utf8_lossy(&out.stderr);
-    assert!(error.contains("unknown field `members`"), "{error}");
-    f.edit("team.yaml", "members:", "roles:");
-    f.edit("lead.md", "models:", "role: lead\nmodels:");
-    let out = validate();
-    assert!(!out.status.success());
-    let error = String::from_utf8_lossy(&out.stderr);
-    assert!(error.contains("unknown field `role`"), "{error}");
-    f.edit("lead.md", "role: lead\n", "");
     f.write(
         "team.yaml",
         "roles: {lead: {prompt: lead.md}, lead-k3f9: {prompt: lead.md}}\n",

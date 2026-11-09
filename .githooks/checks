@@ -5,8 +5,8 @@
 #   .githooks/checks fast         # the fast tier: tests that start no process
 #   .githooks/checks fmt clippy   # any subset, in the order given
 #
-# Set CHECKS_WRAP to a command that prefixes every check, for example a
-# script that limits memory or how many builds run at once.
+# Checks use the shared, memory-capped build slots by default. CHECKS_WRAP
+# explicitly replaces the wrapper (and may include arguments).
 set -eu
 cd "$(git rev-parse --show-toplevel)"
 
@@ -16,7 +16,7 @@ run() {
   echo "checks: $name: $*" >&2
   # CHECKS_WRAP is split on spaces on purpose: it may be a command with arguments.
   # shellcheck disable=SC2086
-  if ! ${CHECKS_WRAP:-} "$@"; then
+  if ! ${CHECKS_WRAP:-./tools/cargo-slot} "$@"; then
     echo "checks: $name failed" >&2
     exit 1
   fi
@@ -41,10 +41,13 @@ sweep() {
 
 [ "$#" -gt 0 ] || set -- fmt clippy test py
 # Inside a team member, BORGCHART_* names that member's real instance and
-# message storage. The tests run with them pointing nowhere, so a test that
-# forgets to clear them fails instead of writing into the team. (No value
-# holds a space: the list is split on spaces.)
-nowhere="BORGCHART_CONFIG=/nonexistent/caller-team/config.yaml
+# message storage, and inside a git hook GIT_DIR names this repository. The
+# tests run with them pointing nowhere, so a test that forgets to clear them
+# fails instead of writing into the team or the repository. (No value holds
+# a space: the list is split on spaces.)
+nowhere="GIT_DIR=/nonexistent/caller-repo/.git
+  GIT_WORK_TREE=/nonexistent/caller-repo
+  BORGCHART_CONFIG=/nonexistent/caller-team/config.yaml
   BORGCHART_STATE_HOME=/nonexistent/caller-team/state
   BORGCHART_STATE_DIR=/nonexistent/caller-team/member-state
   BORGCHART_INSTANCE=caller-team-2222
@@ -88,7 +91,7 @@ for check in "$@"; do
         exit 1
       fi
       ;;
-    py) run py uv run --no-project --with pytest==8.3.5 pytest -p no:cacheprovider examples/slack-devops/plugins/slackbot/tests examples/github/tests ;;
+    py) run py uv run --no-project --with pytest==8.3.5 pytest -p no:cacheprovider examples/slack-devops/plugins/slackbot/tests tools/tests examples/github/tests ;;
     *)
       echo "checks: unknown check '$check' (use fmt, clippy, fast, test or py)" >&2
       exit 2

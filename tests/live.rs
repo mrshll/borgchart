@@ -40,12 +40,269 @@ mod wake_matrix;
 #[path = "live/world.rs"]
 mod world;
 
+#[test]
+#[ignore = "bounded real mid-turn probe; set BORGCHART_LIVE=1"]
+fn send_midturn_probe() {
+    if std::env::var("BORGCHART_LIVE").as_deref() != Ok("1") {
+        return;
+    }
+    let mut w = world::World::live();
+    let (who, vendor) = match std::env::var("BORGCHART_LIVE_VENDORS").as_deref() {
+        Ok("claude") => (rules::Who::Claude, borgchart::team::Vendor::Claude),
+        Ok("codex") | Err(_) => (rules::Who::Codex, borgchart::team::Vendor::Codex),
+        _ => panic!("send probe requires exactly claude or codex"),
+    };
+    w.preflight(&[who]);
+    let version = w.versions[&who].clone().unwrap();
+    wake_matrix::set_dirs(wake_matrix::Dirs {
+        work: w.trusted.join("send"),
+        keep: w.evidence.clone(),
+        limit: std::time::Duration::from_secs(300),
+    });
+    println!("probe evidence: {}", w.evidence.display());
+    wake_matrix::send_midturn_probe(vendor, version);
+}
+
+#[test]
+#[ignore = "real isolated Claude background inbox wait; set BORGCHART_LIVE=1"]
+fn claude_background_inbox_probe() {
+    if std::env::var("BORGCHART_LIVE").as_deref() != Ok("1") {
+        return;
+    }
+    let mut w = world::World::live();
+    w.preflight(&[rules::Who::Claude]);
+    assert!(w.versions[&rules::Who::Claude].is_ok());
+    println!("background inbox evidence: {}", w.evidence.display());
+    let outcome = cases::background_wait(&w);
+    std::fs::write(
+        w.evidence.join("background-outcome.txt"),
+        format!("{outcome:?}\n"),
+    )
+    .unwrap();
+    println!("{outcome:?}");
+    assert!(matches!(outcome, rules::Outcome::Pass(_)), "{outcome:?}");
+}
+
+#[test]
+#[ignore = "real isolated composer matrix; set BORGCHART_LIVE=1"]
+fn send_composer_matrix() {
+    if std::env::var("BORGCHART_LIVE").as_deref() != Ok("1") {
+        return;
+    }
+    let (who, vendor) = match std::env::var("BORGCHART_LIVE_VENDORS").as_deref() {
+        Ok("claude") => (rules::Who::Claude, borgchart::team::Vendor::Claude),
+        Ok("codex") => (rules::Who::Codex, borgchart::team::Vendor::Codex),
+        _ => panic!("select exactly one vendor"),
+    };
+    let mut w = world::World::live();
+    w.preflight(&[who]);
+    let version = w.versions[&who].clone().unwrap();
+    wake_matrix::set_dirs(wake_matrix::Dirs {
+        work: w.trusted.join("composer"),
+        keep: w.evidence.clone(),
+        limit: std::time::Duration::from_secs(600),
+    });
+    println!("composer evidence: {}", w.evidence.display());
+    let (rows, qualified) = wake_matrix::qualify(vendor, Some(version), true);
+    let table = wake_matrix::table(vendor, &rows);
+    std::fs::write(w.evidence.join("composer-matrix.md"), &table).unwrap();
+    println!(
+        "{table}\nExisting wake qualification: {qualified}; not a full send-gate qualification"
+    );
+    assert!(rows.iter().all(|r| r[3] != "FAIL"));
+}
+
+#[test]
+#[ignore = "real vendor tool context precondition only; set BORGCHART_LIVE=1"]
+fn direct_vendor_context_probe() {
+    if std::env::var("BORGCHART_LIVE").as_deref() != Ok("1") {
+        return;
+    }
+    let (who, vendor) = match std::env::var("BORGCHART_LIVE_VENDORS").as_deref() {
+        Ok("claude") => (rules::Who::Claude, borgchart::team::Vendor::Claude),
+        Ok("codex") => (rules::Who::Codex, borgchart::team::Vendor::Codex),
+        _ => panic!("select exactly one vendor"),
+    };
+    let mut w = world::World::live();
+    w.preflight(&[who]);
+    let version = w.versions[&who].clone().unwrap();
+    wake_matrix::set_dirs(wake_matrix::Dirs {
+        work: w.trusted.join("context"),
+        keep: w.evidence.clone(),
+        limit: std::time::Duration::from_secs(240),
+    });
+    println!("context evidence: {}", w.evidence.display());
+    wake_matrix::direct_context_probe(vendor, version);
+}
+
+#[test]
+#[ignore = "real isolated near-limit paste observation; set BORGCHART_LIVE=1"]
+fn send_near_limit_probe() {
+    if std::env::var("BORGCHART_LIVE").as_deref() != Ok("1") {
+        return;
+    }
+    let (who, vendor) = match std::env::var("BORGCHART_LIVE_VENDORS").as_deref() {
+        Ok("claude") => (rules::Who::Claude, borgchart::team::Vendor::Claude),
+        Ok("codex") => (rules::Who::Codex, borgchart::team::Vendor::Codex),
+        _ => panic!("select exactly one vendor"),
+    };
+    let mut w = world::World::live();
+    w.preflight(&[who]);
+    let version = w.versions[&who].clone().unwrap();
+    wake_matrix::set_dirs(wake_matrix::Dirs {
+        work: w.trusted.join("near-limit"),
+        keep: w.evidence.clone(),
+        limit: std::time::Duration::from_secs(120),
+    });
+    println!("near-limit evidence: {}", w.evidence.display());
+    wake_matrix::near_limit_probe(vendor, version);
+}
+
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use borgchart::team::Vendor;
 use rules::{Matrix, Mode, Outcome, REQUIRED, Who};
 use world::World;
+
+#[test]
+fn private_socketless_vendor_reads_remain_isolated() {
+    let private = common::PrivateTmux::new();
+    let other = common::PrivateTmux::new();
+    assert!(
+        other
+            .tmux("other")
+            .args(["new-session", "-d", "-s", "other", "sleep 60"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        private
+            .tmux("queries")
+            .args(["new-session", "-d", "-s", "g", "sleep 60"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let out = private
+        .tmux("queries")
+        .args(["display-message", "-p", "#{socket_path},#{pid},0"])
+        .output()
+        .unwrap();
+    let tmux_env = String::from_utf8(out.stdout).unwrap().trim().to_string();
+    let query = |env: Option<&str>, args: &[&str]| {
+        let mut cmd = common::command(private.guard());
+        if let Some(env) = env {
+            cmd.env("TMUX", env);
+        }
+        cmd.args(args).output().unwrap()
+    };
+    for args in [
+        vec!["show", "-Av", "mouse"],
+        vec!["show", "-gv", "focus-events"],
+        vec![
+            "display-message",
+            "-p",
+            "-t",
+            "%0",
+            "#{session_name}:#{window_id}.#{pane_id}",
+        ],
+        vec![
+            "display-message",
+            "-p",
+            "-t",
+            "%0",
+            "#{client_termtype}\t#{allow-passthrough}\t#{focus-events}\t#{pane_top}\t#{pane_left}\t#{status}\t#{status-position}\t#{window_bigger}",
+        ],
+    ] {
+        assert!(query(Some(&tmux_env), &args).status.success(), "{args:?}");
+    }
+    let socket = tmux_env.split(',').next().unwrap();
+    let uid = std::fs::metadata(private.dir())
+        .map(|m| std::os::unix::fs::MetadataExt::uid(&m))
+        .unwrap();
+    let default_server = format!("/tmp/tmux-{uid}/default,1,0");
+    let real_server = format!("/tmp/tmux-{uid}/{},1,0", borgchart::state::DEFAULT_SOCKET);
+    let outside = format!("{}/tmux-{uid}/other,1,0", other.dir().display(),);
+    let regular = std::path::Path::new(socket).with_file_name("regular");
+    std::fs::write(&regular, "not a socket").unwrap();
+    let regular = format!("{},1,0", regular.display());
+    let link = std::path::Path::new(socket).with_file_name("linked");
+    std::os::unix::fs::symlink(socket, &link).unwrap();
+    let linked = format!("{},1,0", link.display());
+    let missing = format!(
+        "{}/missing,1,0",
+        std::path::Path::new(socket).parent().unwrap().display()
+    );
+    let traversal = format!(
+        "{}/../queries,1,0",
+        std::path::Path::new(socket).parent().unwrap().display()
+    );
+    let malformed = format!("{socket},1,0,extra");
+    for env in [
+        None,
+        Some(default_server.as_str()),
+        Some(real_server.as_str()),
+        Some(regular.as_str()),
+        Some(outside.as_str()),
+        Some(linked.as_str()),
+        Some(missing.as_str()),
+        Some(traversal.as_str()),
+        Some(malformed.as_str()),
+        Some(socket),
+        Some("bad,1,0"),
+    ] {
+        assert_eq!(
+            query(env, &["show", "-Av", "mouse"]).status.code(),
+            Some(2),
+            "{env:?}"
+        );
+        private.clear_refused();
+    }
+    for args in [
+        vec!["kill-server"],
+        vec!["show", "-Av", "mouse", ";", "kill-server"],
+        vec![
+            "display-message",
+            "-p",
+            "-t",
+            "%0",
+            "#(touch /tmp/never-run)",
+        ],
+        vec![
+            "display-message",
+            "-p",
+            "-t",
+            "other:0",
+            "#{session_name}:#{window_id}.#{pane_id}",
+        ],
+        vec!["-f", "/dev/null", "show", "-Av", "mouse"],
+    ] {
+        assert_eq!(
+            query(Some(&tmux_env), &args).status.code(),
+            Some(2),
+            "{args:?}"
+        );
+        private.clear_refused();
+    }
+    assert!(
+        private
+            .tmux("queries")
+            .args(["has-session", "-t", "g"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        other
+            .tmux("other")
+            .args(["has-session", "-t", "other"])
+            .status()
+            .unwrap()
+            .success()
+    );
+}
 
 /// One case by ID, with any sub-check results it produces.
 fn case(w: &World, id: &str, submit: bool) -> Vec<(String, Outcome)> {
