@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+: "${BORGCHART_BIN:?brg must provide its absolute executable}"
+case "$BORGCHART_BIN" in /*) ;; *) exit 1;; esac
+exec "$BORGCHART_BIN" github watch

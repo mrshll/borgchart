@@ -1167,3 +1167,81 @@ fn send_target_syntax_errors_are_usage_and_missing_start_is_not_alive() {
     assert_eq!(out.code, 3, "{:?}", out.json);
     assert!(f.records().is_empty());
 }
+
+#[test]
+fn github_tick_commits_pointer_once_through_real_send() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    let gh = f.dir.path().join("fake-gh");
+    let repo = json!({"id":104,"full_name":"example-owner/example-repo","owner":{"id":103,"login":"example-owner","type":"User"}});
+    let issue = json!({"id":105,"number":7,"repository_url":"https://api.github.com/repos/example-owner/example-repo","url":"https://api.github.com/repos/example-owner/example-repo/issues/7","state":"open","assignees":[{"id":101,"type":"User"}],"user":{"id":102,"type":"User"}});
+    let events = json!([{"id":106,"event":"assigned","created_at":"2026-01-02T00:00:00Z","url":"https://api.github.com/repos/example-owner/example-repo/issues/events/106","actor":{"id":102,"type":"User"},"assigner":{"id":102,"type":"User"},"assignee":{"id":101,"type":"User"}}]);
+    let feed = json!([{"id":"1","updated_at":"2026-01-02T00:00:00Z","repository":repo,"subject":{"type":"Issue","url":"https://api.github.com/repos/example-owner/example-repo/issues/7"}}]);
+    let script = format!(
+        r#"#!/bin/sh
+for arg do path=$arg; done
+printf 'HTTP/2 200 OK\r\nDate: %s\r\n' "$(date -u '+%a, %d %b %Y %H:%M:%S GMT')"
+case "$path" in
+ user) body='{{"id":101,"login":"example-agent","type":"User"}}';;
+ notifications*) printf 'Last-Modified: Fri, 02 Jan 2026 00:00:00 GMT\r\n'; body='{feed}';;
+ repositories/104) body='{repo}';;
+ repos/example-owner/example-repo/issues/7) body='{issue}';;
+ repos/example-owner/example-repo/issues/7/events*) body='{events}';;
+ *) body='[]';;
+esac
+printf '\r\n%s\n' "$body"
+"#
+    );
+    fs::write(&gh, script).unwrap();
+    fs::set_permissions(&gh, fs::Permissions::from_mode(0o700)).unwrap();
+    let config = f.dir.path().join("github.json");
+    fs::write(&config, serde_json::to_vec(&json!({"gh":[gh],"agent":{"id":101,"login":"example-agent"},"trusted_actor_ids":[102],"owner_policy":{"owner":{"id":103,"login":"example-owner","type":"User"},"repository_policy":"include_new"}})).unwrap()).unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_brg"))
+            .env_clear()
+            .env("HOME", f.dir.path())
+            .env("PATH", "/usr/bin:/bin")
+            .env("BORGCHART_STATE_HOME", f.root())
+            .env("BORGCHART_CONFIG", f.dir.path().join("config.yaml"))
+            .env("BORGCHART_INSTANCE", TEAM)
+            .env("BORGCHART_DELIVER_TO", "lead")
+            .args(["github", "--config", config.to_str().unwrap()])
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let init = run(&["init", "--since", "2026-01-01T00:00:00Z"]);
+    assert!(
+        init.status.success(),
+        "{}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    let tick = run(&["tick"]);
+    assert!(
+        tick.status.success(),
+        "{} {}",
+        String::from_utf8_lossy(&tick.stdout),
+        String::from_utf8_lossy(&tick.stderr)
+    );
+    assert_eq!(f.records().len(), 1);
+    let records = f.records();
+    let record: Value =
+        serde_json::from_slice(&fs::read(f.store_dir().join("records").join(&records[0])).unwrap())
+            .unwrap();
+    assert_eq!(record["from"], "external:github");
+    let pointer: Value = serde_json::from_str(record["body"].as_str().unwrap()).unwrap();
+    assert_eq!(pointer["untrusted"], true);
+    assert_eq!(pointer["repository_id"], 104);
+    let state_path = f.root().join("github/101-103/state.json");
+    let mut state: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    assert!(state["row"]["pending"].as_object().unwrap().is_empty());
+    state["feed"]["due_ms"] = json!(0);
+    fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+    let tick = run(&["tick"]);
+    assert!(
+        tick.status.success(),
+        "{}",
+        String::from_utf8_lossy(&tick.stderr)
+    );
+    assert_eq!(f.records().len(), 1);
+}
