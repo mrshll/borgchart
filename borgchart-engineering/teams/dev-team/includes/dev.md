@@ -6,6 +6,6 @@ These rules add to the ones above for the members who work in the repository's c
 
 **One writer per checkout.** The owner has approved parallel implementers: up to `max` implementer copies may work at once, each in its own worktree. The lead may keep a worktree across briefs while the copy is kept, and removes it with `git worktree remove` before deleting the copy.
 
-**Checks.** The repository's checks are `.githooks/checks` (with `CHECKS_WRAP=cargo-slot`); run single tests while iterating and the full checks before reporting `complete`. Follow the brief's build permission; if deferred, report `ready for checks` and wait. Use exactly one wrapping layer: never also run `cargo-slot .githooks/checks`. Set `CHECKS_WRAP=cargo-slot` for pushes too, since pre-push runs these checks. Never use `--no-verify`.
+**Checks.** Run `.githooks/checks`; run single tests while iterating and the full checks before reporting `complete`. Follow the brief's build permission; if deferred, report `ready for checks` and wait. The shared common rules cover the automatic build cap. Never use `--no-verify`.
 
 **Code style.** Match the existing code: small modules, plain error strings that say what to do next, `//!` module docs.

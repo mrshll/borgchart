@@ -60,30 +60,25 @@ fn readme_commands(prefix: &str) -> Vec<String> {
         .collect()
 }
 
-/// A stand-in for the machine's seating plugin: it records what it was
+/// A test-only stand-in for the bundled seating plugin: it records what it was
 /// asked and always answers `go`.
 const FAKE_SEAT: &str =
     "#!/bin/sh\necho \"$*\" >> \"$(dirname \"$0\")/asked\"\necho 'go: a fictional usage source'\n";
 
 /// As the README sets it up: a pinned copy of the repository's department
 /// (the dev team and its panel inside it) in `dir/pinned`, where brg runs; the seating
-/// plugin, here a fake, in `dir/plugins/seat`; and a README configuration
-/// block pointing there (`dir/config.yaml`). The instance's folder is
+/// plugin replaced by a fake only in that test copy; and the README configuration
+/// in `dir/config.yaml`. The instance's folder is
 /// `dir/work`, with its shared checkout in `dir/work/repo`.
 fn setup(dir: &Path, text: &str) -> PathBuf {
     fs::create_dir_all(dir.join("work/repo")).unwrap();
     copy_dir(&department(), &dir.join("pinned/borgchart-engineering"));
-    let seat = dir.join("plugins/seat");
+    let seat = dir.join("pinned/borgchart-engineering/teams/dev-team/plugins/seat");
     fs::create_dir_all(&seat).unwrap();
     fs::write(seat.join("seat"), FAKE_SEAT).unwrap();
     fs::set_permissions(seat.join("seat"), fs::Permissions::from_mode(0o755)).unwrap();
-    let filled = text.replace(
-        "/path/to/plugins",
-        &dir.join("plugins").display().to_string(),
-    );
-    assert!(!filled.contains("/path/to"), "{filled}");
     let file = dir.join("config.yaml");
-    fs::write(&file, filled).unwrap();
+    fs::write(&file, text).unwrap();
     fs::create_dir_all(dir.join("home")).unwrap();
     file
 }
@@ -121,7 +116,7 @@ fn validate(dir: &Path, config: &Path, team: &str) -> Output {
 
 /// What a reader copies from the README works as written: both teams
 /// validate by the README's paths, with the seating plugin in
-/// `plugins_dir`, with no errors and no warnings.
+/// its bundled folder, with no errors and no warnings.
 #[test]
 fn the_readme_configuration_validates_cleanly() {
     let blocks = readme_configs();
@@ -153,7 +148,7 @@ fn the_readme_configuration_validates_cleanly() {
     }
 }
 /// The department validates from its folder, with the README's
-/// configuration and the seating plugin in `plugins_dir`, cleanly.
+/// configuration and bundled seating plugin, cleanly.
 #[test]
 fn the_department_validates_cleanly() {
     let dir = tempfile::tempdir().unwrap();
@@ -945,7 +940,10 @@ mod round {
             asked.push(format!("route {vendor} {model}"));
         }
         assert_eq!(
-            fs::read_to_string(team.path("plugins/seat/asked")).unwrap(),
+            fs::read_to_string(
+                team.path("pinned/borgchart-engineering/teams/dev-team/plugins/seat/asked")
+            )
+            .unwrap(),
             asked.join("\n") + "\n"
         );
 

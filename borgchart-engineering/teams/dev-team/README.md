@@ -17,17 +17,12 @@ Each member file names both vendors' models; `vendor:` in `team.yaml` picks one.
 
 brg runs the team by its folder's path. Keep a **pinned copy** of the repository, taken at the commit of the brg you run, not the checkout the team works in, and run brg from its root. A running instance's files are frozen: if the team's own work changed them under it, the instance would refuse to create or start members until a full stop.
 
-The lead checks seating with the `seat` plugin, `shared:seat`, so brg's configuration, `~/.config/borgchart/config.yaml`, names the folder that holds it:
+The root and dev leads use the same bundled [seating plugin](plugins/seat/README.md), before every launch. It finds `usage-route` on `PATH`, or the executable named in `$XDG_CONFIG_HOME/borgchart/seat-reader` (default `~/.config/borgchart/seat-reader`). The quota reader remains an external dependency; missing, failed or unknown usage means wait. No plugin copy or `plugins_dir` setting is needed. brg's configuration can remain:
 
 ```yaml
 schema: 1
 auth: login
-plugins_dir: /path/to/plugins   # holds seat/: a copy of examples/seat/ with this machine's usage source
 ```
-
-[`examples/seat/`](../../../examples/seat/) is the plugin, with a README on installing a real usage source. Without one, every seating check answers `wait`.
-
-Install `cargo-slot` on every member's `PATH` before starting; see the [root-team setup](../../README.md#run-it) for the cap and shared lock requirements. All concurrent teams must use the same two slots, including during a supervisor cutover.
 
 ## Run it
 
@@ -45,7 +40,7 @@ Install `cargo-slot` on every member's `PATH` before starting; see the [root-tea
 - **One writer per checkout, one piece of work per copy.** Implementers work only in their own `copies/{member_id}` worktree, never the shared checkout. The lead must not change the shared checkout (edits, checkouts, resets) while a reviewer, researcher or monitor works there; do other git work in a copy's worktree between pieces, or wait. The reviewer reads the pull request's head after the push; these helpers are read-only and write reports only.
 - **Parallel implementers** are approved, up to two copies, each in its own worktree. Push a copy's branch through `agent-gh` only between its pieces of work, from its worktree so pre-push checks run there; check `git -C <copy> config core.hooksPath` and correct missing hooks first. A kept copy may retain its worktree across briefs; remove it with `git worktree remove` before deleting the copy. If removal refuses uncommitted or untracked work, commit or report it first; never use `--force`.
 - **Helpers get a brief message before starting work.** They read `inbox --full`, ack once they take it on, write their report atomically, then reply naming the report and its `action-needed:` line. The lead verifies, stops them and checks `status` shows them stopped before reusing their checkout. It follows up by each brief's deadline with `status`, a `send` nudge, or `start` for a stopped helper. Progress and delegation live in the pull request description and comments.
-- **Heavy builds are memory-capped,** at most two builds across all teams on the machine at a time, through `cargo-slot`; lead verification and pre-push checks use the same slots. Each copy's brief grants full checks now or asks it to report `ready for checks` and wait. Run `.githooks/checks` and pushes with `CHECKS_WRAP=cargo-slot`; never also wrap the checks script itself. Never use `--no-verify`.
+- **Builds and checks** follow the shared [common rules](includes/common.md); each copy's brief grants full checks now or asks it to report `ready for checks` and wait.
 - **Waiting:** ack everything you have taken on, then run `inbox wait`: Claude with its Bash tool in background mode, Codex in the foreground with `--timeout 600`. Exit 9 means wait again; exit 8 (`fenced`) means stop waiting and tell the owner. An unacked message wakes you about once a minute. The monitor's watch remains background for Claude, foreground for Codex in commands of at most 10 minutes.
 - **Change the team's files only when no work is open.** A changed file takes effect at the next full `brg stop` and `brg start`.
 - **One fresh review per pull request,** followed by one fix round.
