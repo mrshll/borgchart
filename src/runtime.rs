@@ -2556,10 +2556,10 @@ fn stop_one(
 
 #[derive(Debug, Clone, Serialize)]
 pub struct StatusRow {
-    /// The member's ID, a role's name (a role with no member yet), or a
-    /// plugin's name.
+    /// The local member or copy ID, a role with nothing created yet, or
+    /// a plugin's name.
     pub name: String,
-    /// `member`, `role` (no member yet) or `plugin`.
+    /// `member`, `role` (no member or copy yet), `copy` or `plugin`.
     pub kind: &'static str,
     pub instance: String,
     /// The instance's name.
@@ -2575,7 +2575,8 @@ pub struct StatusRow {
     /// `"<model>"` or `"<model> <effort>"`, as declared.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// The member's parent, if it has one: rows come in tree order.
+    /// A local parent member ID, a copy's full parent address, or the
+    /// instance path that a nested root belongs to. Rows are in tree order.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
     pub posture: Option<String>,
@@ -2596,6 +2597,9 @@ pub struct StatusRow {
     /// Unacked messages; absent when the instance has no readable bus.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unread: Option<usize>,
+    /// A copy's running members, excluding members of its own copies.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub running: Option<usize>,
     /// A `start: true` member that ran and is `stopped` while the rest of
     /// the instance runs: it should be running.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -2716,6 +2720,7 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
                 trust_accepted: None,
                 liveness: None,
                 unread: None,
+                running: None,
                 expected_running: false,
                 start: member.start,
             });
@@ -2763,6 +2768,7 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
             unread: counts
                 .as_ref()
                 .map(|all| all.get(id).copied().unwrap_or_default().unread),
+            running: None,
             expected_running: false,
             start: member.start,
             rule: None,
@@ -2844,6 +2850,7 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
             vendor_version: None,
             trust_accepted: None,
             unread: None,
+            running: None,
             expected_running: false,
             start: false,
         };
@@ -2881,7 +2888,106 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
             None => note,
         });
     }
-    Ok(rows)
+    for (role_name, role) in &v.team.team_roles {
+        let copies: Vec<_> = inst
+            .record
+            .copies
+            .iter()
+            .filter(|(_, c)| !c.deleted && c.role == *role_name)
+            .collect();
+        let parent = role.parent.as_ref().map(|p| {
+            inst.record
+                .members_of(p)
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| p.clone())
+        });
+        if copies.is_empty() {
+            rows.push(StatusRow {
+                name: role_name.clone(),
+                kind: "role",
+                instance: inst.id.clone(),
+                team: inst.record.team.clone(),
+                member: None,
+                start_id: None,
+                role: Some(role_name.clone()),
+                vendor: None,
+                model: None,
+                parent,
+                posture: None,
+                state: if role.max > 1 {
+                    ON_DEMAND.into()
+                } else {
+                    "not created (start: false)".into()
+                },
+                rule: None,
+                detail: None,
+                vendor_version: None,
+                trust_accepted: None,
+                liveness: None,
+                unread: None,
+                running: None,
+                expected_running: false,
+                start: false,
+            });
+        }
+        for (id, _) in copies {
+            let copy = address::instance(&inst.at(id))?;
+            let mut children = status(&copy)?;
+            let running = children
+                .iter()
+                .filter(|r| {
+                    r.kind == "member"
+                        && r.instance == copy.id
+                        && !matches!(r.state.as_str(), STOPPED | NOT_STARTED | "exited")
+                })
+                .count();
+            rows.push(StatusRow {
+                name: id.clone(),
+                kind: "copy",
+                instance: copy.id.clone(),
+                team: copy.record.team.clone(),
+                member: None,
+                start_id: None,
+                role: Some(role_name.clone()),
+                vendor: None,
+                model: None,
+                parent: copy.record.parent.clone(),
+                posture: None,
+                state: if running > 0 { "running" } else { STOPPED }.into(),
+                rule: None,
+                detail: None,
+                vendor_version: None,
+                trust_accepted: None,
+                liveness: None,
+                unread: None,
+                running: Some(running),
+                expected_running: false,
+                start: false,
+            });
+            for child in &mut children {
+                if child.parent.is_none() {
+                    child.parent = Some(copy.id.clone());
+                }
+            }
+            rows.extend(children);
+        }
+    }
+    let nodes = status_nodes(&rows);
+    let positions: BTreeMap<_, _> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, r)| (status_key(r), i))
+        .collect();
+    let mut ordered: Vec<_> = tree::order(&nodes)
+        .into_iter()
+        .map(|(i, _)| rows[positions[&nodes[i].id]].clone())
+        .collect();
+    ordered.extend(
+        rows.into_iter()
+            .filter(|r| r.kind == "plugin" && r.parent.is_none()),
+    );
+    Ok(ordered)
 }
 
 /// Drop control characters (terminal escapes) from plugin-written text.
@@ -2928,6 +3034,13 @@ fn pending(dir: &Path) -> Option<String> {
 pub fn status_cells(r: &StatusRow) -> Vec<String> {
     match r.kind {
         "member" => {}
+        "copy" => {
+            return vec![
+                r.team.clone(),
+                format!("{} running", r.running.unwrap_or(0)),
+                String::new(),
+            ];
+        }
         "role" => return vec![r.state.clone()],
         _ => return vec![r.state.clone(), r.detail.clone().unwrap_or_default()],
     }
@@ -2951,22 +3064,60 @@ pub fn status_cells(r: &StatusRow) -> Vec<String> {
 }
 
 pub fn render_status(header: &str, rows: &[StatusRow]) -> String {
-    let nodes: Vec<tree::Node> = rows
+    let nodes = status_nodes(rows);
+    let plugins: Vec<(String, Vec<String>)> = rows
         .iter()
-        .filter(|r| r.kind == "member" || r.kind == "role")
+        .filter(|r| r.kind == "plugin" && r.parent.is_none())
+        .map(|r| (r.name.clone(), status_cells(r)))
+        .collect();
+    let names: BTreeMap<_, _> = rows
+        .iter()
+        .map(|r| (status_key(r), status_name(r)))
+        .collect();
+    tree::render_named(
+        header,
+        &nodes,
+        &plugins,
+        std::io::stdout().is_terminal(),
+        |id| names[id].clone(),
+    )
+}
+
+/// A row's identity stays unique when local IDs repeat in different copies.
+pub fn status_key(row: &StatusRow) -> String {
+    match row.kind {
+        "copy" => row.instance.clone(),
+        "plugin" => format!("{}/plugin:{}", row.instance, row.name),
+        _ => format!("{}/{}", row.instance, row.name),
+    }
+}
+
+/// The short label shared by the text and interactive trees.
+pub fn status_name(row: &StatusRow) -> String {
+    if row.kind == "plugin" {
+        format!("plugin {}", row.name)
+    } else {
+        row.name.clone()
+    }
+}
+
+/// Qualified nodes shared by status ordering and both tree renderers.
+pub fn status_nodes(rows: &[StatusRow]) -> Vec<tree::Node> {
+    rows.iter()
+        .filter(|r| r.kind != "plugin" || r.parent.is_some())
         .map(|r| tree::Node {
-            id: r.name.clone(),
-            parent: r.parent.clone(),
+            id: status_key(r),
+            parent: r.parent.as_ref().map(|p| {
+                if p.contains('/') {
+                    p.clone()
+                } else {
+                    format!("{}/{p}", r.instance)
+                }
+            }),
             cols: status_cells(r),
             dim: r.kind == "role" && r.state == ON_DEMAND,
         })
-        .collect();
-    let plugins: Vec<(String, Vec<String>)> = rows
-        .iter()
-        .filter(|r| r.kind == "plugin")
-        .map(|r| (r.name.clone(), status_cells(r)))
-        .collect();
-    tree::render(header, &nodes, &plugins, std::io::stdout().is_terminal())
+        .collect()
 }
 
 /// Why `send` refused, with its exit code.

@@ -70,39 +70,56 @@ fn nested_addresses_start_and_stop_only_the_named_copy_or_member() {
     let (panel, _) = create_copy(&env, &first, "design");
     env.ok(&["start", &panel]);
     env.ok(&["create", &format!("{first}/helper")]);
-    let helper = env.member(&first, "helper");
+    // Status includes descendants: pick this instance's own role, even
+    // when the panel has an uncreated role with the same name.
+    let row = |instance: &str, role: &str| {
+        env.rows(instance)
+            .into_iter()
+            .find(|r| r["instance"] == instance && r["role"] == role)
+            .unwrap()
+    };
+    let state_of =
+        |instance: &str, role: &str| row(instance, role)["state"].as_str().unwrap().to_string();
+    let helper = row(&first, "helper")["member"]
+        .as_str()
+        .unwrap()
+        .to_string();
     assert!(!helper.is_empty());
     let lead = env.member(&first, "lead");
     let designer = env.member(&panel, "lead");
 
-    for (instance, member) in [(&first, &lead), (&first, &helper), (&panel, &designer)] {
+    for (instance, member, role) in [
+        (&first, &lead, "lead"),
+        (&first, &helper, "helper"),
+        (&panel, &designer, "lead"),
+    ] {
         env.ok(&["stop", &format!("{instance}/{member}")]);
-        assert_eq!(
-            env.state_of(instance, if member == &helper { "helper" } else { "lead" }),
-            "stopped"
-        );
-        assert_eq!(env.state_of(&peer, "lead"), "idle");
-        assert_eq!(env.state_of(&dept, "lead"), "idle");
-        if instance == &first {
-            assert_eq!(env.state_of(&panel, "lead"), "idle");
-        } else {
-            assert_eq!(env.state_of(&first, "lead"), "idle");
-            assert_eq!(env.state_of(&first, "helper"), "idle");
+        assert_eq!(state_of(instance, role), "stopped");
+        for (other, other_role) in [
+            (&dept, "lead"),
+            (&peer, "lead"),
+            (&first, "lead"),
+            (&first, "helper"),
+            (&panel, "lead"),
+        ] {
+            if other != instance || other_role != role {
+                assert_eq!(state_of(other, other_role), "idle");
+            }
         }
         env.ok(&["start", &format!("{instance}/{member}")]);
         env.wait_for("addressed member idle", || {
-            env.state_of(instance, if member == &helper { "helper" } else { "lead" }) == "idle"
+            state_of(instance, role) == "idle"
         });
     }
     env.ok(&["stop", &first]);
     assert_eq!(env.state_of(&first, "lead"), "stopped");
-    assert_eq!(env.state_of(&first, "helper"), "stopped");
+    assert_eq!(state_of(&first, "helper"), "stopped");
     assert_eq!(env.state_of(&panel, "lead"), "stopped");
     assert_eq!(env.state_of(&peer, "lead"), "idle");
     assert_eq!(env.state_of(&dept, "lead"), "idle");
     env.ok(&["start", &first]);
     assert_eq!(env.state_of(&first, "lead"), "idle");
-    assert_eq!(env.state_of(&first, "helper"), "idle");
+    assert_eq!(state_of(&first, "helper"), "idle");
     assert_eq!(env.state_of(&peer, "lead"), "idle");
     env.ok(&["stop", &dept]);
 }
@@ -113,6 +130,11 @@ fn invalid_address_segments_are_refused_before_reading_the_registry() {
     // A valid address would fail reading this registry. Invalid addresses
     // must be refused by the parser before reaching it, even inside a member.
     env.write("state/registry.json", "not a registry");
+    let registry_path = env.path("state/registry.json").display().to_string();
+    assert!(
+        env.fails(&["start", "oncall-2222"])
+            .contains(&registry_path)
+    );
     for address in [
         "",
         ".",
@@ -125,7 +147,12 @@ fn invalid_address_segments_are_refused_before_reading_the_registry() {
         "oncall-2222/bad.name",
         "bad.name",
     ] {
-        for command in ["start", "stop"] {
+        for command in ["start", "stop", "create"] {
+            // `create` also accepts team-folder paths; only its nested
+            // role-address form goes through address resolution.
+            if command == "create" && !address.starts_with("oncall-2222/") {
+                continue;
+            }
             for inside in [false, true] {
                 let mut cmd = env.cmd(&[command, address]);
                 if inside {
@@ -135,13 +162,264 @@ fn invalid_address_segments_are_refused_before_reading_the_registry() {
                 assert!(!out.status.success());
                 let error = both(&out);
                 assert!(
-                    error.contains("invalid address segment"),
+                    !error.contains(&registry_path),
                     "{command} {address:?} inside={inside}: {error}"
                 );
-                assert!(!error.contains("registry.json"), "{error}");
             }
         }
     }
+}
+
+#[test]
+fn status_nests_copies_once_with_full_paths_and_states() {
+    let env = department();
+    let dev_team = env.path("teams/oncall/teams/dev/team.yaml");
+    fs::write(&dev_team, format!("{}  design: {{team: teams/design, parent: lead, start: false, cwd: 'design/{{member_id}}'}}\n", fs::read_to_string(&dev_team).unwrap())).unwrap();
+    env.team("teams/oncall/teams/dev/teams/design");
+    let team = env.path("teams/oncall/team.yaml");
+    fs::write(&team, format!("{}  review: {{team: teams/dev, parent: lead, start: false, cwd: 'review/{{member_id}}'}}\n  research: {{team: teams/dev, parent: lead, start: false, max: 2, cwd: 'research/{{member_id}}'}}\n", fs::read_to_string(&team).unwrap())).unwrap();
+    let dept = env.create("oncall", "work/a");
+    let dept_lead = env.member(&dept, "lead");
+    let rows = env.rows(&dept);
+    assert_eq!(
+        rows.iter().find(|r| r["role"] == "review").unwrap()["state"],
+        "not created (start: false)"
+    );
+    assert_eq!(
+        rows.iter().find(|r| r["role"] == "research").unwrap()["state"],
+        "on demand (none created)"
+    );
+    let (first, first_folder) = create_copy(&env, &dept, "dev");
+    let (second, second_folder) = create_copy(&env, &dept, "dev");
+    for (copy, folder) in [(&first, &first_folder), (&second, &second_folder)] {
+        fs::create_dir(folder.join("repo")).unwrap();
+        let out = env
+            .cmd(&["start", copy])
+            .env("BORGCHART_SUFFIX_SEED", "73")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", both(&out));
+    }
+    let lead = env.member(&first, "lead");
+    assert_eq!(
+        lead,
+        env.member(&second, "lead"),
+        "exercise repeated local IDs across copies"
+    );
+    let (panel, _) = create_copy(&env, &first, "design");
+    env.ok(&["start", &panel]);
+    let panel_lead = env.member(&panel, "lead");
+    env.ok(&["stop", &format!("{first}/{lead}")]);
+    let rows = env.rows(&dept);
+    for (copy, running) in [(&first, 0), (&second, 1)] {
+        let index = rows
+            .iter()
+            .position(|r| r["kind"] == "copy" && r["instance"] == *copy)
+            .expect("copy must appear under its parent");
+        assert_eq!(rows[index]["parent"], format!("{dept}/{dept_lead}"));
+        assert_eq!(rows[index]["team"], "dev");
+        assert_eq!(rows[index]["running"], running);
+        let member_index = rows
+            .iter()
+            .position(|r| r["instance"] == *copy && r["member"] == lead)
+            .unwrap();
+        assert!(member_index > index);
+        assert_eq!(
+            rows[member_index]["state"],
+            if running == 0 { "stopped" } else { "idle" }
+        );
+    }
+    let bare: Vec<serde_json::Value> =
+        serde_json::from_slice(&env.ok(&["status", "--json"]).stdout).unwrap();
+    let panel_index = bare
+        .iter()
+        .position(|r| r["kind"] == "copy" && r["instance"] == panel)
+        .expect("depth-three copy must be visible");
+    assert_eq!(bare[panel_index]["parent"], format!("{first}/{lead}"));
+    assert!(
+        bare.iter()
+            .skip(panel_index + 1)
+            .any(|r| r["instance"] == panel && r["member"] == panel_lead)
+    );
+    for copy in [&first, &second] {
+        assert_eq!(
+            bare.iter()
+                .filter(|r| r["instance"] == *copy && r["member"] == lead)
+                .count(),
+            1,
+            "a nested member must appear once"
+        );
+    }
+    for args in [vec!["status"], vec!["status", &dept]] {
+        let text = stdout(&env.ok(&args));
+        assert_eq!(text.lines().filter(|line| line.contains(&lead)).count(), 2);
+        for copy in [&first, &second] {
+            assert!(
+                !text
+                    .lines()
+                    .any(|line| line.starts_with(&format!("{copy}  team ")))
+            );
+            let name = copy.rsplit('/').next().unwrap();
+            assert!(text.lines().any(|line| line.contains(name)
+                && line.contains("dev")
+                && line.contains("running")));
+        }
+    }
+    env.ok(&["start", &format!("{first}/{lead}")]);
+    let rows = env.rows(&dept);
+    assert_eq!(
+        rows.iter()
+            .find(|r| r["kind"] == "copy" && r["instance"] == first)
+            .unwrap()["running"],
+        1
+    );
+    env.ok(&["stop", &dept]);
+}
+
+#[test]
+fn nested_status_screens_attach_in_the_selected_members_instance() {
+    let env = department();
+    let dept = env.create("oncall", "work/a");
+    let (copy, folder) = create_copy(&env, &dept, "dev");
+    let (peer, peer_folder) = create_copy(&env, &dept, "dev");
+    for (id, folder) in [(&copy, &folder), (&peer, &peer_folder)] {
+        fs::create_dir(folder.join("repo")).unwrap();
+        let out = env
+            .cmd(&["start", id])
+            .env("BORGCHART_SUFFIX_SEED", "73")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", both(&out));
+    }
+    let lead = env.member(&copy, "lead");
+    assert_eq!(lead, env.member(&peer, "lead"));
+    let outer = env.tmux.socket("department-screen");
+    let screen = || {
+        let out = env
+            .tmux
+            .tmux(&outer)
+            .args(["capture-pane", "-p", "-t", "=screen:"])
+            .output()
+            .unwrap();
+        stdout(&out)
+    };
+    let keys = |keys: &[&str]| {
+        let out = env
+            .tmux
+            .tmux(&outer)
+            .args(["send-keys", "-t", "=screen:"])
+            .args(keys)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", both(&out));
+    };
+    for args in [
+        vec!["status", "-w", "--interval", "1"],
+        vec!["status", "-i"],
+        vec!["status", &dept, "-i"],
+    ] {
+        let cmd = env.cmd(&args);
+        let quoted = borgchart::state::shell_quote;
+        let vars: Vec<_> = cmd
+            .get_envs()
+            .filter_map(|(k, v)| {
+                v.map(|v| format!("{}={}", k.to_string_lossy(), quoted(&v.to_string_lossy())))
+            })
+            .collect();
+        let run = format!(
+            "#!/bin/sh\nexec env -i TERM=xterm-256color {} {} {}\n",
+            vars.join(" "),
+            quoted(env!("CARGO_BIN_EXE_brg")),
+            args.iter().map(|a| quoted(a)).collect::<Vec<_>>().join(" ")
+        );
+        let path = env.path("screen.sh");
+        script(&path, &run);
+        let out = env
+            .tmux
+            .tmux(&outer)
+            .args([
+                "-f",
+                "/dev/null",
+                "new-session",
+                "-d",
+                "-s",
+                "screen",
+                "-x",
+                "220",
+                "-y",
+                "40",
+            ])
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", both(&out));
+        let copy_name = copy.rsplit('/').next().unwrap();
+        env.wait_for("nested screen", || {
+            screen().contains(copy_name) && screen().contains(&lead)
+        });
+        let text = screen();
+        assert_eq!(
+            text.lines().filter(|line| line.contains(&lead)).count(),
+            2,
+            "{text}"
+        );
+        assert!(
+            !text.contains(&format!("{copy}  team ")),
+            "nested copy must not have a top-level header: {text}"
+        );
+        assert!(
+            text.lines().any(
+                |line| line.contains(copy_name) && (line.contains("└─") || line.contains("├─"))
+            ),
+            "{text}"
+        );
+        if args.contains(&"-w") {
+            env.ok(&["stop", &format!("{copy}/{lead}")]);
+            env.wait_for("watch refresh after nested stop", || {
+                screen()
+                    .lines()
+                    .any(|line| line.contains(&lead) && line.contains("stopped"))
+            });
+            env.ok(&["start", &format!("{copy}/{lead}")]);
+        } else {
+            let rows = env.rows(&dept);
+            let selected = rows
+                .iter()
+                .position(|r| r["instance"] == copy && r["member"] == lead)
+                .unwrap();
+            let copy_index = rows
+                .iter()
+                .position(|r| r["kind"] == "copy" && r["instance"] == copy)
+                .unwrap();
+            let moves = copy_index + usize::from(!args.contains(&dept.as_str()));
+            for _ in 0..moves {
+                keys(&["j"]);
+            }
+            keys(&["Enter"]);
+            env.wait_for("copy row refuses attach", || {
+                screen().contains("select one of its members")
+            });
+            assert!(env.tmux(&["list-clients"]).trim().is_empty());
+            for _ in copy_index..selected {
+                keys(&["j"]);
+            }
+            keys(&["Enter"]);
+            env.wait_for("attach in selected nested instance", || {
+                env.tmux(&["list-clients", "-F", "#{session_name}"]).trim() == format!("brg-{copy}")
+            });
+            keys(&["C-b", "d"]);
+            env.wait_for("detach to nested status", || {
+                env.tmux(&["list-clients"]).trim().is_empty() && screen().contains("enter attach")
+            });
+            keys(&["q"]);
+        }
+        let _ = env
+            .tmux
+            .tmux(&outer)
+            .args(["kill-session", "-t", "=screen"])
+            .output();
+    }
+    env.ok(&["stop", &dept]);
 }
 
 #[test]

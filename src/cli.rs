@@ -99,9 +99,9 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Show who is running and what they are doing: one instance, or every one.
+    /// Show an instance tree, or every top-level instance, with nested copies.
     Status {
-        /// The instance (default: every instance).
+        /// The instance (default: every top-level instance and its copies).
         instance: Option<String>,
         /// Print the rows as JSON.
         #[arg(long, conflicts_with_all = ["watch", "interactive"])]

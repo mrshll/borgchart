@@ -62,13 +62,13 @@ pub fn known() -> String {
     }
 }
 
-/// Every registered instance, read from the registry now: what a bare
-/// `brg status` shows.
+/// Every top-level instance, read now. Status nests copies beneath these.
 pub fn every() -> Result<Vec<Instance>, String> {
     let registry = registry::load()?;
     Ok(registry
         .instances
         .keys()
+        .filter(|id| !id.contains('/'))
         .filter_map(|id| instance(id).ok())
         .collect())
 }
