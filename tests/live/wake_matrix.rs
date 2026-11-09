@@ -73,6 +73,359 @@ fn base_env() -> BTreeMap<String, String> {
     env
 }
 
+/// A direct vendor has no brg member identity. Its brg commands must see
+/// only an empty, owned registry/config, never discover a real team.
+fn direct_run_env(
+    private: &common::PrivateTmux,
+    socket: &str,
+    keep: &std::path::Path,
+    mut env: BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    env.retain(|key, _| {
+        !key.starts_with("BORGCHART_")
+            && !matches!(key.as_str(), "TMUX" | "TMUX_PANE" | "TMUX_TMPDIR")
+    });
+    let config = keep.join("isolated-brg.yaml");
+    let state = keep.join("isolated-brg-state");
+    let xdg_state = keep.join("xdg-state");
+    std::fs::create_dir_all(&xdg_state).unwrap();
+    env.insert("XDG_STATE_HOME".into(), xdg_state.display().to_string());
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::write(&config, "schema: 1\nteams: []\nauto_trust: false\n").unwrap();
+    let bin = std::path::Path::new(env!("CARGO_BIN_EXE_brg"));
+    let path = format!(
+        "{}:{}",
+        bin.parent().unwrap().display(),
+        env.get("PATH").cloned().unwrap_or_default()
+    );
+    env.insert("PATH".into(), private.path_with(&path));
+    env.insert("BORGCHART_BIN".into(), bin.display().to_string());
+    env.insert("BORGCHART_CONFIG".into(), config.display().to_string());
+    env.insert("BORGCHART_STATE_HOME".into(), state.display().to_string());
+    env.insert(
+        "BORGCHART_TMUX_TMPDIR".into(),
+        private.dir().display().to_string(),
+    );
+    env.insert("BORGCHART_TMUX_SOCKET".into(), socket.into());
+    write_context_probe(keep, &env);
+    env
+}
+
+/// Run by the real vendor tool shell. Never repairs missing context or invokes
+/// brg until every check succeeds; diagnostics contain key names, not values.
+fn write_context_probe(keep: &std::path::Path, env: &BTreeMap<String, String>) {
+    let quote = borgchart::state::shell_quote;
+    let mut script = String::from("#!/bin/sh\nset -eu\n");
+    for key in [
+        "BORGCHART_BIN",
+        "BORGCHART_CONFIG",
+        "BORGCHART_STATE_HOME",
+        "BORGCHART_TMUX_SOCKET",
+        "BORGCHART_TMUX_TMPDIR",
+        "XDG_STATE_HOME",
+    ] {
+        writeln!(
+            script,
+            "[ \"${{{key}-}}\" = {} ] || {{ echo BLOCKED_context_{key}; exit 78; }}",
+            quote(&env[key])
+        )
+        .unwrap();
+    }
+    for key in [
+        "BORGCHART_MEMBER",
+        "BORGCHART_INSTANCE",
+        "BORGCHART_STATE_DIR",
+        "BORGCHART_ROLE",
+        "BORGCHART_NOTES",
+        "BORGCHART_INCARNATION",
+    ] {
+        writeln!(
+            script,
+            "[ \"${{{key}+present}}\" != present ] || {{ echo BLOCKED_identity_{key}; exit 78; }}"
+        )
+        .unwrap();
+    }
+    // Preserve the PATH-resolution probe and its refusal tests. The separate
+    // absolute probe never resolves or executes an installed brg.
+    let mut absolute = script.clone();
+    let bin = &env["BORGCHART_BIN"];
+    assert!(std::path::Path::new(bin).is_absolute());
+    // Both generation and verification use the same absolute system utility;
+    // macOS ships shasum rather than GNU sha256sum. Never resolve it via PATH.
+    let hash_command: &[&str] = if cfg!(target_os = "macos") {
+        &["/usr/bin/shasum", "-a", "256"]
+    } else {
+        &["/usr/bin/sha256sum"]
+    };
+    let digest = Command::new(hash_command[0])
+        .args(&hash_command[1..])
+        .arg(bin)
+        .output()
+        .unwrap();
+    assert!(digest.status.success());
+    let digest = String::from_utf8(digest.stdout).unwrap();
+    writeln!(
+        absolute,
+        "[ -f {0} ] && [ -x {0} ] && [ ! -L {0} ] || {{ echo BLOCKED_absolute_binary; exit 78; }}",
+        quote(bin)
+    )
+    .unwrap();
+    writeln!(
+        absolute,
+        "[ \"$({} {})\" = {} ] || {{ echo BLOCKED_absolute_digest; exit 78; }}",
+        hash_command
+            .iter()
+            .map(|arg| quote(arg))
+            .collect::<Vec<_>>()
+            .join(" "),
+        quote(bin),
+        quote(digest.trim_end())
+    )
+    .unwrap();
+    writeln!(
+        absolute,
+        "echo OWNED_ABSOLUTE_CONTEXT_VERIFIED\n{} status --json",
+        quote(bin)
+    )
+    .unwrap();
+    std::fs::write(keep.join("absolute-context-probe.sh"), absolute).unwrap();
+    writeln!(
+        script,
+        "[ \"$(command -v brg)\" = {} ] || {{ echo BLOCKED_binary_resolution; exit 78; }}",
+        quote(&env["BORGCHART_BIN"])
+    )
+    .unwrap();
+    writeln!(
+        script,
+        "echo OWNED_CONTEXT_VERIFIED\n{} status --json",
+        quote(&env["BORGCHART_BIN"])
+    )
+    .unwrap();
+    std::fs::write(keep.join("context-probe.sh"), script).unwrap();
+}
+
+#[test]
+fn direct_vendor_brg_cannot_fall_back_to_inherited_defaults() {
+    use std::os::unix::fs::PermissionsExt;
+    let parent = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+    std::fs::create_dir_all(&parent).unwrap();
+    let keep = tempfile::tempdir_in(parent).unwrap();
+    let private = common::PrivateTmux::new();
+    let socket = private.socket("context-proof");
+    let poison = keep.path().join("poison");
+    let home = poison.join("home");
+    let default_state = home.join(".local/state/borgchart");
+    let inherited_state = poison.join("inherited-state");
+    let poisoned_xdg = poison.join("xdg-state");
+    let xdg_registry = poisoned_xdg.join("borgchart");
+    let fake_bin = poison.join("bin");
+    for path in [&default_state, &inherited_state, &xdg_registry, &fake_bin] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+    for state in [&default_state, &inherited_state, &xdg_registry] {
+        std::fs::write(
+            state.join("registry.json"),
+            "INVALID_DEFAULT_REGISTRY_MUST_NOT_BE_READ",
+        )
+        .unwrap();
+    }
+    let fake_brg = fake_bin.join("brg");
+    std::fs::write(&fake_brg, "#!/bin/sh\necho WRONG_DEFAULT_BINARY\nexit 99\n").unwrap();
+    std::fs::set_permissions(&fake_brg, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let bad_config = poison.join("invalid.yaml");
+    std::fs::write(&bad_config, "INVALID_DEFAULT_CONFIG").unwrap();
+    let inherited = BTreeMap::from([
+        ("HOME".into(), home.display().to_string()),
+        ("XDG_STATE_HOME".into(), poisoned_xdg.display().to_string()),
+        (
+            "PATH".into(),
+            format!("{}:/usr/bin:/bin", fake_bin.display()),
+        ),
+        ("BORGCHART_CONFIG".into(), bad_config.display().to_string()),
+        (
+            "BORGCHART_STATE_HOME".into(),
+            inherited_state.display().to_string(),
+        ),
+        ("BORGCHART_TMUX_SOCKET".into(), "borgchart".into()),
+        ("BORGCHART_TMUX_TMPDIR".into(), poison.display().to_string()),
+        ("BORGCHART_MEMBER".into(), "foreign-member".into()),
+        ("BORGCHART_INSTANCE".into(), "foreign-instance".into()),
+        ("BORGCHART_BIN".into(), fake_brg.display().to_string()),
+        ("TMUX".into(), "/tmp/tmux-1000/borgchart,1,0".into()),
+    ]);
+    let context = keep.path().join("owned");
+    let env = direct_run_env(&private, &socket, &context, inherited);
+    assert_eq!(env["HOME"], home.display().to_string());
+    assert_eq!(
+        env["XDG_STATE_HOME"],
+        context.join("xdg-state").display().to_string()
+    );
+    let probe = context.join("context-probe.sh");
+    for key in [
+        "BORGCHART_BIN",
+        "BORGCHART_CONFIG",
+        "BORGCHART_STATE_HOME",
+        "BORGCHART_TMUX_SOCKET",
+        "BORGCHART_TMUX_TMPDIR",
+        "XDG_STATE_HOME",
+        "PATH",
+    ] {
+        for foreign in [false, true] {
+            let mut bad = env.clone();
+            if foreign {
+                bad.insert(key.into(), "/nonexistent/foreign-context".into());
+            } else {
+                bad.remove(key);
+            }
+            let output = Command::new("/bin/sh")
+                .arg(&probe)
+                .env_clear()
+                .envs(bad)
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(78), "{key}: {output:?}");
+            assert!(!String::from_utf8_lossy(&output.stdout).contains("OWNED_CONTEXT_VERIFIED"));
+        }
+    }
+    let absolute_probe = context.join("absolute-context-probe.sh");
+    for key in [
+        "BORGCHART_BIN",
+        "BORGCHART_CONFIG",
+        "BORGCHART_STATE_HOME",
+        "BORGCHART_TMUX_SOCKET",
+        "BORGCHART_TMUX_TMPDIR",
+        "XDG_STATE_HOME",
+    ] {
+        for foreign in [false, true] {
+            let mut bad = env.clone();
+            if foreign {
+                bad.insert(key.into(), "/nonexistent/foreign-context".into());
+            } else {
+                bad.remove(key);
+            }
+            let output = Command::new("/bin/sh")
+                .arg(&absolute_probe)
+                .env_clear()
+                .envs(bad)
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(78), "{key}: {output:?}");
+            assert!(
+                !String::from_utf8_lossy(&output.stdout)
+                    .contains("OWNED_ABSOLUTE_CONTEXT_VERIFIED")
+            );
+        }
+    }
+    // An unusable PATH cannot select the poison binary or prevent absolute execution.
+    let mut no_lookup = env.clone();
+    no_lookup.insert("PATH".into(), fake_bin.display().to_string());
+    let output = Command::new("/bin/sh")
+        .arg(&absolute_probe)
+        .env_clear()
+        .envs(no_lookup)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "OWNED_ABSOLUTE_CONTEXT_VERIFIED\n[]\n"
+    );
+    // A replaced executable must be refused before it can run, even when all
+    // owned context values match and PATH cannot supply a hashing utility.
+    let changed_context = keep.path().join("changed-binary");
+    std::fs::create_dir_all(&changed_context).unwrap();
+    let changed_bin = changed_context.join("brg");
+    std::fs::write(&changed_bin, "#!/bin/sh\necho ORIGINAL_BINARY\n").unwrap();
+    std::fs::set_permissions(&changed_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut changed_env = env.clone();
+    changed_env.insert("BORGCHART_BIN".into(), changed_bin.display().to_string());
+    changed_env.insert("PATH".into(), fake_bin.display().to_string());
+    write_context_probe(&changed_context, &changed_env);
+    std::fs::write(&changed_bin, "#!/bin/sh\necho REPLACED_BINARY\n").unwrap();
+    let refused = Command::new("/bin/sh")
+        .arg(changed_context.join("absolute-context-probe.sh"))
+        .env_clear()
+        .envs(changed_env)
+        .output()
+        .unwrap();
+    assert_eq!(refused.status.code(), Some(78), "{refused:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&refused.stdout),
+        "BLOCKED_absolute_digest\n"
+    );
+    let checked = Command::new("/bin/sh")
+        .arg(&probe)
+        .env_clear()
+        .envs(&env)
+        .output()
+        .unwrap();
+    assert!(checked.status.success(), "{checked:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&checked.stdout),
+        "OWNED_CONTEXT_VERIFIED\n[]\n"
+    );
+    let mut fallback = env.clone();
+    fallback.remove("BORGCHART_STATE_HOME");
+    let fallback_result = Command::new(env!("CARGO_BIN_EXE_brg"))
+        .args(["status", "--json"])
+        .env_clear()
+        .envs(fallback)
+        .output()
+        .unwrap();
+    assert!(fallback_result.status.success(), "{fallback_result:?}");
+    assert_eq!(String::from_utf8_lossy(&fallback_result.stdout), "[]\n");
+    let conf = keep.path().join("tmux.conf");
+    std::fs::write(&conf, tmux::CONFIG).unwrap();
+    let tmux = Tmux::on_socket(&socket, &conf, env);
+    let script = keep.path().join("vendor.sh");
+    let output = keep.path().join("result");
+    std::fs::write(&script, format!("#!/bin/sh\n{{ command -v brg; brg status --json; printf 'status=%s\\n' \"$?\"; brg inbox; printf 'inbox=%s\\n' \"$?\"; printf 'socket=%s\\nstate=%s\\nmember=%s\\n' \"$BORGCHART_TMUX_SOCKET\" \"$BORGCHART_STATE_HOME\" \"${{BORGCHART_MEMBER-unset}}\"; }} >{} 2>&1\n", borgchart::state::shell_quote(&output.display().to_string()))).unwrap();
+    tmux.ok(&[
+        "new-session",
+        "-d",
+        "-s",
+        "proof",
+        "-c",
+        keep.path().to_str().unwrap(),
+        &format!(
+            "sh {}",
+            borgchart::state::shell_quote(&script.display().to_string())
+        ),
+    ])
+    .unwrap();
+    let start = Instant::now();
+    let result = loop {
+        let result = std::fs::read_to_string(&output).unwrap_or_default();
+        if result.contains("member=") {
+            break result;
+        }
+        assert!(start.elapsed() < Duration::from_secs(10), "{result}");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(result.starts_with(env!("CARGO_BIN_EXE_brg")), "{result}");
+    assert!(result.contains("[]\nstatus=0"), "{result}");
+    assert!(
+        !result.contains("inbox=0"),
+        "unconfigured direct vendor got an inbox: {result}"
+    );
+    assert!(result.contains("socket=context-proof\n"), "{result}");
+    assert!(
+        result.contains(&format!(
+            "state={}\nmember=unset",
+            context.join("isolated-brg-state").display()
+        )),
+        "{result}"
+    );
+    assert!(!result.contains("WRONG_DEFAULT_BINARY"), "{result}");
+    assert!(private.refused().is_empty());
+    for state in [&default_state, &inherited_state, &xdg_registry] {
+        assert_eq!(
+            std::fs::read_to_string(state.join("registry.json")).unwrap(),
+            "INVALID_DEFAULT_REGISTRY_MUST_NOT_BE_READ"
+        );
+    }
+}
+
 struct Run {
     /// First, so its servers stop before anything else goes.
     private: common::PrivateTmux,
@@ -100,6 +453,285 @@ fn show(r: &WakeResult) -> String {
     }
 }
 
+/// Context-only precondition: no wake reminder or inbox command. Actual tool
+/// output must be reviewed from this owned session before any later wake run.
+pub fn direct_context_probe(vendor: Vendor, version: String) {
+    let run = Run::new(vendor, Some(version));
+    std::fs::copy(
+        root().join("absolute-context-probe.sh"),
+        work().join("context-probe.sh"),
+    )
+    .unwrap();
+    run.start(200, 60);
+    let rules = rules::load(vendor).unwrap();
+    let review = |stage: &str| {
+        run.save(stage);
+        println!(
+            "Review {} before creating {}",
+            stage,
+            root().join(format!("{stage}.reviewed")).display()
+        );
+        let start = Instant::now();
+        while !root().join(format!("{stage}.reviewed")).exists() {
+            assert!(
+                start.elapsed() < Duration::from_secs(60),
+                "BLOCKED: private screen review missing"
+            );
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    };
+    review("context-idle");
+    let s = run.snap();
+    assert_eq!(
+        rules
+            .read(&s.title, &composer::plain(&composer::parse(&s.screen)))
+            .state,
+        rules::State::Idle
+    );
+    assert_eq!(run.reading(), Reading::Empty);
+    assert!(!s.in_mode);
+    let prompt = "Run /bin/sh ./context-probe.sh once. Report output; stop if blocked. No other commands, retries, edits or environment changes.";
+    run.paste(prompt);
+    review("context-before-enter");
+    let s = run.snap();
+    let state = rules
+        .read(&s.title, &composer::plain(&composer::parse(&s.screen)))
+        .state;
+    let view = composer::view(vendor, &s.screen, Some(s.geometry)).unwrap();
+    let exact = view.holds(prompt);
+    std::fs::write(root().join("context-enter-guards.txt"), format!(
+        "state={state:?}\nnot_blocked={}\nnot_copy_mode={}\nnot_busy={}\nexact={exact}\ngeometry={:?}\nview={view:?}\n",
+        state != rules::State::Blocked, !s.in_mode, !view.busy, s.geometry
+    )).unwrap();
+    assert_ne!(state, rules::State::Blocked);
+    assert!(
+        !s.in_mode && !view.busy && exact,
+        "BLOCKED: initial composer guard"
+    );
+    run.keys(&["Enter"]);
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(90) {
+        std::thread::sleep(Duration::from_secs(1));
+        run.save("context-observation");
+        let s = run.snap();
+        let plain = composer::plain(&composer::parse(&s.screen));
+        assert_ne!(
+            rules.read(&s.title, &plain).state,
+            rules::State::Blocked,
+            "BLOCKED: approval; no further keys"
+        );
+        assert!(
+            !plain.contains("BLOCKED_context_")
+                && !plain.contains("BLOCKED_identity_")
+                && !plain.contains("BLOCKED_binary_resolution")
+                && !plain.contains("BLOCKED_absolute_"),
+            "BLOCKED: tool context mismatch"
+        );
+        if start.elapsed() > Duration::from_secs(10)
+            && wake::before_paste(vendor, &rules, &s).is_none()
+        {
+            println!(
+                "Context turn ended; owned session tool output still requires verification. No wake submitted."
+            );
+            return;
+        }
+    }
+    panic!("BLOCKED: context probe completion timeout; no wake submitted");
+}
+
+/// A bounded observation, not a full send qualification. Stop at any gate;
+/// keep timestamped screens so receipt and original completion can be reviewed.
+pub fn send_midturn_probe(vendor: Vendor, version: String) {
+    let run = Run::new(vendor, Some(version));
+    std::fs::write(root().join("send-facts.txt"), format!("{:#?}\n", run.facts)).unwrap();
+    let started = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run.start(200, 60)));
+    run.save("send-start");
+    assert!(started.is_ok(), "BLOCKED: startup; see send-start screen");
+    let rules = rules::load(vendor).unwrap();
+    let review = |stage: &str| {
+        run.save(stage);
+        println!(
+            "Review {} before creating {}",
+            stage,
+            root().join(format!("{stage}.reviewed")).display()
+        );
+        let start = Instant::now();
+        while !root().join(format!("{stage}.reviewed")).exists() {
+            assert!(
+                start.elapsed() < Duration::from_secs(60),
+                "BLOCKED: private screen review missing"
+            );
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    };
+    review("send-idle-review");
+    let s = run.snap();
+    assert!(!s.in_mode);
+    assert_eq!(
+        rules
+            .read(&s.title, &composer::plain(&composer::parse(&s.screen)))
+            .state,
+        rules::State::Idle,
+        "BLOCKED: startup not positively idle"
+    );
+    assert_eq!(
+        run.reading(),
+        Reading::Empty,
+        "BLOCKED: startup composer not empty"
+    );
+    let view = composer::view(vendor, &s.screen, Some(s.geometry)).unwrap();
+    std::fs::write(
+        root().join("send-mode.txt"),
+        format!(
+            "configured={:?}, observed={:?}\n",
+            run.facts.editor, view.vim
+        ),
+    )
+    .unwrap();
+    let nonce = super::world::nonce();
+    let completion = format!("ORIGINAL_DONE_{nonce}");
+    let receipt = format!("RECEIVED_{nonce}");
+    let prompt = match vendor {
+        Vendor::Codex => format!(
+            "Isolated input delivery test. Do not read files, use network, or change files. Run `sleep 60`, wait for completion, then include {completion} in your reply. Also act on any tagged input received during this turn."
+        ),
+        Vendor::Claude => {
+            std::fs::create_dir_all(work().join("fixtures")).unwrap();
+            for n in 1..=96 {
+                std::fs::write(
+                    work().join(format!("fixtures/fixture-{n:02}.txt")),
+                    format!("Synthetic test fixture {n}.\nValue: {n}\n"),
+                )
+                .unwrap();
+            }
+            format!(
+                "Read only the 96 synthetic files fixtures/fixture-01.txt through fixtures/fixture-96.txt, in order using individual Read tool calls. Sum their Value fields and report the total plus {completion}. No shell, network, other files or edits. Also act on tagged input during this task."
+            )
+        }
+    };
+    let payload = format!(
+        "[brg test message {nonce} from external:live-probe]\nDuring this current turn, include {receipt} in your next reply alongside the original completion marker.\n[/brg test message {nonce}]"
+    );
+    std::fs::write(
+        root().join("send-inputs.txt"),
+        format!("INITIAL\n{prompt}\nPAYLOAD\n{payload}\n"),
+    )
+    .unwrap();
+    run.paste(&prompt);
+    review("send-initial-enter-review");
+    let s = run.snap();
+    assert_ne!(
+        rules
+            .read(&s.title, &composer::plain(&composer::parse(&s.screen)))
+            .state,
+        rules::State::Blocked,
+        "BLOCKED: dialog before initial Enter"
+    );
+    assert!(!s.in_mode);
+    assert!(
+        !composer::view(vendor, &s.screen, Some(s.geometry))
+            .unwrap()
+            .busy,
+        "BLOCKED: turn started before initial Enter"
+    );
+    assert!(
+        composer::view(vendor, &s.screen, Some(s.geometry))
+            .unwrap()
+            .holds(&prompt),
+        "BLOCKED: initial text not exact"
+    );
+    run.keys(&["Enter"]);
+    let start = Instant::now();
+    let mut pasted = false;
+    let fixture_read =
+        regex::Regex::new(r"(?mi)(?:read(?:ing)? [0-9]+ files?|Read\(.*fixture-)").unwrap();
+    while start.elapsed() < Duration::from_secs(100) {
+        let s = run.snap();
+        let reading = rules.read(&s.title, &composer::plain(&composer::parse(&s.screen)));
+        let elapsed = start.elapsed().as_millis();
+        std::fs::write(
+            root()
+                .join("screens")
+                .join(format!("{}-send-{elapsed:06}.ansi", vendor.as_str())),
+            format!(
+                "UTC: {}\nTitle: {}\nState: {:?}\n{}",
+                borgchart::bus::time::utc_now(),
+                s.title,
+                reading,
+                s.screen
+            ),
+        )
+        .unwrap();
+        assert_ne!(
+            reading.state,
+            rules::State::Blocked,
+            "BLOCKED: dialog left unanswered"
+        );
+        assert!(
+            !s.screen.contains("You interrupted"),
+            "FAIL: active turn interrupted"
+        );
+        let active_task = || match vendor {
+            Vendor::Codex => super::world::tree(run.pane().pane_pid)
+                .iter()
+                .any(|p| p.argv == ["sleep", "60"]),
+            Vendor::Claude => {
+                let plain = composer::plain(&composer::parse(&run.screen()));
+                fixture_read.is_match(&plain)
+            }
+        };
+        if !pasted && reading.state == rules::State::Working && active_task() {
+            review("send-working-review");
+            run.save("send-working-rechecked");
+            let s = run.snap();
+            assert!(!s.in_mode);
+            assert_eq!(
+                rules
+                    .read(&s.title, &composer::plain(&composer::parse(&s.screen)))
+                    .state,
+                rules::State::Working,
+                "BLOCKED: not working before paste"
+            );
+            assert!(
+                vendor == Vendor::Claude || active_task(),
+                "BLOCKED: active task evidence missing before paste"
+            );
+            run.paste(&payload);
+            review("send-before-enter");
+            let s = run.snap();
+            assert!(!s.in_mode);
+            assert_eq!(
+                rules
+                    .read(&s.title, &composer::plain(&composer::parse(&s.screen)))
+                    .state,
+                rules::State::Working,
+                "BLOCKED: state changed before Enter"
+            );
+            assert!(
+                vendor == Vendor::Claude || active_task(),
+                "BLOCKED: active task evidence missing before Enter"
+            );
+            // holds() deliberately rejects busy composers and hard newlines.
+            // This bounded payload has three short, unwrapped lines; compare
+            // those directly while separately requiring Working above.
+            let view = composer::view(vendor, &s.screen, Some(s.geometry)).unwrap();
+            assert!(!view.placeholder);
+            assert_eq!(
+                view.lines.join("\n"),
+                payload,
+                "BLOCKED: mid-turn text not exact"
+            );
+            run.keys(&["Enter"]);
+            pasted = true;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    assert!(pasted, "BLOCKED: no observable active task");
+    println!(
+        "PARTIAL: probe captured; manually verify original completion, tagged receipt and steering; never a full gate pass"
+    );
+}
+
 fn show_reading(r: &Reading) -> String {
     match r {
         Reading::Empty => "empty".into(),
@@ -107,6 +739,43 @@ fn show_reading(r: &Reading) -> String {
         Reading::Busy => "busy".into(),
         Reading::Unknown(w) => format!("unknown ({w})"),
     }
+}
+
+/// Paste only: large-message placeholders must not be mistaken for exact
+/// payload verification. No Enter is sent by this observation case.
+pub fn near_limit_probe(vendor: Vendor, version: String) {
+    let run = Run::new(vendor, Some(version));
+    run.start(200, 60);
+    let rules = rules::load(vendor).unwrap();
+    let before = run.snap();
+    run.save("near-limit-before");
+    assert!(
+        wake::before_paste(vendor, &rules, &before).is_none(),
+        "BLOCKED: not positively empty/idle"
+    );
+    let line = "Synthetic payload line; harmless fixture data only. 0123456789abcdef\n";
+    let mut body = line.repeat(300);
+    body.truncate(16 * 1024);
+    let text = format!(
+        "[brg test message near-limit from external:live-probe]\n{body}\n[/brg test message near-limit]"
+    );
+    std::fs::write(root().join("near-limit-input.txt"), &text).unwrap();
+    run.paste(&text);
+    run.save("near-limit-pasted-no-enter");
+    let s = run.snap();
+    let view = composer::view(vendor, &s.screen, Some(s.geometry));
+    let detail = format!(
+        "body_bytes={} envelope_bytes={}\nlaunch={:?}\nreading={:?}\nview={view:?}\nNO ENTER SENT; no delivery claim\n",
+        body.len(),
+        text.len(),
+        run.facts,
+        run.reading()
+    );
+    std::fs::write(root().join("near-limit-result.txt"), &detail).unwrap();
+    println!(
+        "{}: 16384-byte body pasted, screen captured, no Enter; exact-content verification and delivery remain unqualified",
+        vendor.as_str()
+    );
 }
 
 impl Run {
@@ -117,13 +786,7 @@ impl Run {
         std::fs::create_dir_all(root().join("screens")).unwrap();
         let conf = root().join(format!("tmux-{}.conf", vendor.as_str()));
         std::fs::write(&conf, tmux::CONFIG).unwrap();
-        let mut tmux_env = base_env();
-        let path = tmux_env.get("PATH").cloned().unwrap_or_default();
-        tmux_env.insert("PATH".into(), private.path_with(&path));
-        tmux_env.insert(
-            "BORGCHART_TMUX_TMPDIR".into(),
-            private.dir().display().to_string(),
-        );
+        let tmux_env = direct_run_env(&private, &socket, &root(), base_env());
         let tmux = Tmux::on_socket(&socket, &conf, tmux_env);
         let argv: Vec<String> = match vendor {
             Vendor::Claude => vec!["claude".into()],
@@ -195,11 +858,14 @@ impl Run {
             self.tmux.ok(&args).unwrap();
         }
         let start = Instant::now();
+        let startup_rules = rules::load(self.vendor).unwrap();
         while start.elapsed() < Duration::from_secs(30) {
             std::thread::sleep(Duration::from_millis(500));
-            if self.reading() == Reading::Empty {
+            if wake::before_paste(self.vendor, &startup_rules, &self.snap()).is_none() {
                 std::thread::sleep(Duration::from_millis(1500));
-                return;
+                if wake::before_paste(self.vendor, &startup_rules, &self.snap()).is_none() {
+                    return;
+                }
             }
         }
         panic!(
@@ -308,6 +974,14 @@ impl Run {
             self.vendor.as_str()
         );
         self.rows.push([case.into(), want.into(), got, ok.into()]);
+        if std::env::var("BORGCHART_LIVE_STOP_ON_FAILURE").as_deref() == Ok("1") {
+            std::fs::write(
+                root().join("composer-matrix-progress.md"),
+                table(self.vendor, &self.rows),
+            )
+            .unwrap();
+            assert_ne!(ok, "FAIL", "live composer case failed: {case}");
+        }
     }
 
     /// An attempt on a draft must defer and leave the draft as it was.

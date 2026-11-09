@@ -14,7 +14,10 @@ Slack channel ──▶ watch.py ──(message ts)──▶ triager ──slack
   - The lead has `read`, `thread` and `reply`.
   - Neither can run anything else, read files, or see the bot token: the token lives with brg's shims, not in the agents' environment.
 - **`escalate` sends IDs and fixed values only.** Its `severity` is one of `low`, `medium`, `high`, and its `reason` one of `outage`, `deploy`, `security`, `question`, `other`. Message text never travels from one agent to another.
-- **Failed deliveries** (say the lead is waiting at a prompt) are kept in the plugin's `undelivered.jsonl` and retried by the watcher until they go through. `brg status` shows how many are pending in this plugin queue. That is separate from the message bus's per-member unread counts (tree, `-i`, `--json`); this `locked` team has no bus and shows no such counts.
+- **Recording/delivery failures** are queued for delivery in the existing plugin `undelivered.jsonl` and retried by the watcher; a failure does not necessarily mean the parent is unavailable. Locked Codex plugin actions cannot write message storage, so their failed direct send uses this spool. Locked Claude plugin actions retain their existing rights and send as the actual member. No grants are added.
+- **The watcher sends as `external:slackbot`.** `--from` checks an escalation's parent route without changing the author; the validated body preserves the originating member. The watcher rebuilds notices from IDs/enums, never queued free text, and never overrides a member identity.
+- **Every team has a bus.** Locked notices remain readable history with `ack_required: false`, labelled “ack not required,” not “recipient acked.” They are excluded from pending inbox/wait/unread counts; locked recipients get no bus commands or inbox recovery. Bodies persist under existing plugin read rights, and store size/scan cost grow without automatic retention.
+- **Do not republish committed ordinary sends.** Code 0 can mean stored or uncertain typing; the watcher treats it as success and removes its spool entry. A locked typing failure after commit is nonzero with its ID; the existing retry path may duplicate history or uncertain input.
 
 What the lead can't do: look at systems. It is a smart auto-responder that acknowledges, explains likely causes and asks good questions. Giving it more read-only tools is future work.
 
@@ -68,7 +71,10 @@ The plugin's replay tests use a fake Slack API, and cover:
 - a rate limit;
 - prompt-injection text that never reaches another agent;
 - out-of-list escalation values;
-- a blocked lead, retried until delivered;
+- direct member sends and named external watcher retries;
+- recording refusal queued without widening locked grants;
+- stored ordinary success not republished;
+- a blocked locked lead, retried until delivered;
 - forged queue entries;
 - replies that contain the token.
 

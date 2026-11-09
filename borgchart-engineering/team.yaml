@@ -5,13 +5,12 @@
 # prepares its folder and checks seating, then starts it. See README.md.
 #
 # The lead is Claude in `vendor` posture: managing copies needs a vendor
-# that lets brg write its state and start members, and a Codex lead has no
-# wake mechanism yet. This team's researchers and monitors use the
+# that lets brg write its state and start members. The inbox-only lead
+# uses a background inbox wait. This team's researchers and monitors use the
 # dev team's role files, and every member's file ends with the dev team's
 # common include (team-neutral rules; the dev-only ones are in its dev
 # include), so each rule lives in one place.
 default: claude
-bus: {}
 includes: teams/dev-team/includes
 
 plugins:
@@ -23,6 +22,7 @@ plugins:
 roles:
   lead:
     prompt: lead.md
+    interactive: true
     vendor: claude
     start: true
     cwd: lead               # a checkout of the repository, made before `brg create`

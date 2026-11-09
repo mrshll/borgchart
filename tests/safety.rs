@@ -158,11 +158,11 @@ fn killed_server_holds_checkout_until_full_stop_confirms_processes_gone() {
     env.ok(&["stop", &b]);
 }
 
-/// A no-bus instance `A` running in `work/a`, whose start.json is then
+/// An instance `A` running in `work/a`, whose start.json is then
 /// damaged: brg can no longer read which tmux server runs it.
 fn damaged_start_record() -> (Env, String) {
     let env = Env::new();
-    env.write("teams/oncall/team.yaml", &TEAM.replace("bus: {}\n", ""));
+    env.write("teams/oncall/team.yaml", TEAM);
     let a = env.create("oncall", "work/a");
     fs::write(
         env.path(&format!("state/{a}/start.json")),
@@ -337,10 +337,10 @@ fn locked_members_cant_work_around_the_team_folder_and_vendor_ones_get_a_note() 
     let a = first_word(&stdout(&out));
     env.ok(&["stop", &a]);
     env.ok(&["delete", &a]);
-    // `locked`: refused (a team without a bus may have `locked` members).
+    // `locked`: refused because the working folder includes the team files.
     env.write(
         "teams/oncall/team.yaml",
-        &TEAM.replace("bus: {}\n", "").replace(
+        &TEAM.replace(
             "  lead:\n    prompt: lead.md\n",
             "  lead:\n    prompt: lead.md\n    posture: locked\n",
         ),

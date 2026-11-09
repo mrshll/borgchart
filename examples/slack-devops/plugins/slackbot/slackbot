@@ -12,6 +12,9 @@
 
 severity: low | medium | high
 reason:   outage | deploy | security | question | other
+
+Escalation recording failures are queued for delivery by the watcher.
+A committed send is not retried just because typing was deferred.
 """
 
 from __future__ import annotations
@@ -90,7 +93,7 @@ def cmd_escalate(ts: str, severity: str, reason: str) -> int:
     text = slackapi.escalation_notice(sender, ts, severity, reason)
     code, message = slackapi.brg_send(parent, text, sender=sender)
     if code == 0:
-        print(f"escalated to {parent}")
+        print(f"recorded escalation to {parent}")
         return 0
     slackapi.record_undelivered(
         {
@@ -107,7 +110,7 @@ def cmd_escalate(ts: str, severity: str, reason: str) -> int:
         }
     )
     print(
-        f"{parent} is unavailable ({message}); recorded, and it will be delivered when {parent} is free",
+        f"queued for delivery to {parent} ({message}); the watcher will retry",
         file=sys.stderr,
     )
     return 1

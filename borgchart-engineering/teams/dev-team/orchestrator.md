@@ -49,17 +49,17 @@ A copy's git writes go to the shared checkout's `.git`, so a sandboxed Codex cop
 
 **Seating.** Before each `create` or `start` of a helper or the panel, list the launches it causes (a helper's `create` starts it; a panel copy's `start` starts both designers) and run `seat route <vendor> <model>` for each. Go ahead only when every answer is `go`. `wait`, an unknown answer or an error means wait and check again later; never take another vendor or model instead.
 
-**Brief.** Write a brief file in `$BORGCHART_NOTES` by sibling rename: the task, scope, non-goals, checks, branch and checkout, report path, deadline and teammates involved; for the monitor, include the interval and reporting trigger. Each copy's brief says whether it may run full checks now or must report `ready for checks` and wait. Then send one message naming it, replacing the placeholders and keeping valid JSON:
+**Brief.** Write a brief file in `$BORGCHART_NOTES` by sibling rename: the task, scope, non-goals, checks, branch and checkout, report path, deadline and teammates involved; for the monitor, include the interval and reporting trigger. Each copy's brief says whether it may run full checks now or must report `ready for checks` and wait. Then send one message naming it, replacing the placeholders and using plain text:
 
 ```sh
-"$BORGCHART_BIN" msg publish --json <<'DRAFT'
-{"to": "<member>", "body": "Read <brief path>; take on the work and report there as directed."}
-DRAFT
+"$BORGCHART_BIN" send <member> --json - <<'MESSAGE'
+Read <brief path>; take on the work and report there as directed.
+MESSAGE
 ```
 
-**Follow it.** The helper reads the brief, acks once it has taken the work on, and replies naming its report when done. Answer requests for help promptly with a plain message naming the request in `reply_to`. For research or design help, decide whether to start the researcher or design panel, or decline, then reply. To change or stop work, send a message and wait for the helper's reply confirming what it stopped. To redo finished work, stop the helper, send a new brief message and start it again. Ack each message once you have taken it on.
+**Follow it.** The helper reads the brief, acks once it has taken the work on, and replies naming its report when done. Answer requests for help promptly with a plain message naming the request in `--reply-to`. For research or design help, decide whether to start the researcher or design panel, or decline, then reply. To change or stop work, send a message and wait for the helper's reply confirming what it stopped. To redo finished work, stop the helper, send a new brief message and start it again. Ack each message once you have taken it on.
 
-**Follow up by the deadline.** Check for a reply by the brief's deadline. If none has arrived, run `"$BORGCHART_BIN" status`, then nudge with `"$BORGCHART_BIN" send <instance>/<member> 'check your inbox'`, or restart a stopped member with `"$BORGCHART_BIN" start <instance>/<member>`. Do this yourself: no attention worker is wired now.
+**Follow up by the deadline.** Check ordinary untyped records' ack/status at the existing brief deadline. Start a stopped helper with `"$BORGCHART_BIN" start <instance>/<member>`; if idle and still unacked, send one follow-up with `"$BORGCHART_BIN" send <member> --reply-to <brief-ID> 'Please check the referenced brief'`; otherwise escalate. Do not busy-poll or resend an ordinary successful send because its delivery was stored or uncertain. Inspect unacked work before stop/delete, and avoid unnecessary closing messages or routine `--force` deletion.
 
 **Verify.** Follow the shared build rules. Read the report, the diff and its evidence, and run the repository's checks yourself in that checkout when a build slot is available. The report is the helper's claim. Record progress, delegation and verification in the pull request description and comments; keep private evidence in `$BORGCHART_NOTES`. For a copy's branch, verify and push only while that copy is between pieces of work, from its worktree (`agent-gh git -C <copy worktree> push …`): pre-push checks run there. Before pushing, check `git -C <copy> config core.hooksPath` and correct missing hooks. After verification, push the branch from its checkout and update the pull request description in the same pass.
 
@@ -70,7 +70,7 @@ DRAFT
 Before handoff, each pull request gets one fresh review, then one fix round:
 
 1. after the push, move the shared checkout to the pull request's head commit (`git -C <folder>/repo checkout --detach <head>`);
-2. write the review brief in `$BORGCHART_NOTES` (pull request number, base and head commits, report path, scope, checks and deadline), send a plain message naming it to the reviewer, and start it; it reads and acks the message, then replies naming its report with `reply_to` the brief message;
+2. write the review brief in `$BORGCHART_NOTES` (pull request number, base and head commits, report path, scope, checks and deadline), send a plain message naming it to the reviewer, and start it; it reads and acks the message, then replies naming its report with `--reply-to` the brief message;
 3. read its report and evidence, verify, ack the reply, stop it and check `status` shows it stopped as above;
 4. check the implementer's revert report (which tests fail when the change is reverted), and treat the reviewer's flags on redundant or detail-only tests as findings;
 5. fix each actionable finding, or explain with evidence why you decline it, in one fix round, then run the checks again.
@@ -83,7 +83,7 @@ Follow the git rules below for draft pull requests, assignment, and handoff by r
 
 ## Waking yourself
 
-Nothing types into your terminal to tell you a message arrived. Keep one wait armed when you need replies:
+Your lead role is `interactive: true`: messages stay in the inbox without typing into your terminal, even with `--force`. Keep one wait armed when you need replies:
 
 1. **At the start of every turn,** read `"$BORGCHART_BIN" inbox --full --json`. Act on the messages and ack everything you have taken on before arming a wait. Track the work in the pull request and your notes.
 2. **Before finishing every turn,** if no wait of yours is running, arm the one wait. **Claude:** run `"$BORGCHART_BIN" inbox wait --json --full` with your Bash tool in **background** mode; its exit wakes you. **Codex:** run `"$BORGCHART_BIN" inbox wait --timeout 600 --json --full` in the **foreground**; a background command starts no new turn. A new unacked message returns at once; messages already there return after 60 seconds only if some are still unacked. The output is your inbox, with bodies.
@@ -95,15 +95,16 @@ Nothing types into your terminal to tell you a message arrived. Keep one wait ar
 When `BORGCHART_PARENT` is set, your team is a child team in a tree of teams, and your parent is that member. Without a parent, none of this applies.
 
 - **Your brief arrives from it** by message, naming a brief file. Read it and ack the message once you have taken the work on.
-- **Report to it by message:** done, blocked, handed off, or a usage limit. Write the report in your own `$BORGCHART_NOTES` (sibling rename, as the rules below say) at the path the brief names, and reply with its path and its `action-needed:` line, `reply_to` the brief:
+- **Report to it by message:** done, blocked, handed off, or a usage limit. Write the report in your own `$BORGCHART_NOTES` (sibling rename, as the rules below say) at the path the brief names, and reply with its path and its `action-needed:` line, `--reply-to` the brief:
 
-  ```sh
-  "$BORGCHART_BIN" msg publish --json <<'DRAFT'
-  {"to": "<parent>", "reply_to": ["<brief ID>"], "body": "Report: <report path>\n<action-needed line>"}
-  DRAFT
-  ```
+```sh
+"$BORGCHART_BIN" send <parent> --reply-to <brief-ID> --json - <<'MESSAGE'
+Report: <report path>
+<action-needed line>
+MESSAGE
+```
 
-  `<parent>` is `$BORGCHART_PARENT`, its full address.
+  `<parent>` is `$BORGCHART_PARENT`, its full address. This nested-workstream procedure requires D2 and the README cutover smoke check; do not start a nested workstream before that gate. Do not use identity overrides or direct typing to bypass that boundary.
 - **Operational questions go up to it** by message (a decision the plan doesn't settle, a blocker, a peer holding something you need), not to GitHub or `external:`.
 - **Pull-request matters stay on GitHub:** questions about a pull request, and your review request to the owner when you hand one off.
 - **Merging:** you still never merge. Only the root lead of the tree may merge one of your pull requests, under its own rule: the owner's approving review on the current head, with CI green.
