@@ -327,13 +327,45 @@ pub fn wait_snapshot(bus: &Bus, deadline: Instant) -> Result<WaitSnapshot, Failu
 
 /// Edge reads must actually hold the sender's read-only shared lock. A missing
 /// lock cannot be taken as an empty store when the sender may have published.
-pub(super) fn peer_snapshot(bus: &Bus, deadline: Instant) -> Result<WaitSnapshot, Failure> {
+/// After the initial snapshot, read only records at or above the peer cursor.
+pub(super) fn peer_snapshot(
+    bus: &Bus,
+    deadline: Instant,
+    next: Option<u64>,
+) -> Result<WaitSnapshot, Failure> {
+    #[cfg(feature = "test-support")]
+    peer_read_log(&next.map_or_else(|| "full".to_string(), |seq| format!("next:{seq}")))?;
     let _lock = match read_lock_until(&bus.paths, Some(deadline))? {
         ReadLock::TimedOut => return Ok(WaitSnapshot::TimedOut),
         ReadLock::NoStore => return Err(Failure::new(Code::Error, "messages/lock is missing")),
         ReadLock::Held(lock) => lock,
     };
-    Ok(WaitSnapshot::Ready(scan(&bus.paths)))
+    let Some(mut next) = next else {
+        return Ok(WaitSnapshot::Ready(scan(&bus.paths)));
+    };
+    let mut snap = Snapshot::default();
+    while let Some(record) = next_record(&bus.paths, next)? {
+        snap.records.insert(next, record);
+        next += 1;
+        if Instant::now() >= deadline {
+            break;
+        }
+    }
+    Ok(WaitSnapshot::Ready(snap))
+}
+
+#[cfg(feature = "test-support")]
+fn peer_read_log(read: &str) -> Result<(), Failure> {
+    use std::io::Write;
+    if let Some(path) = std::env::var_os("BORGCHART_TEST_PEER_READ_LOG") {
+        let mut log = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map_err(|e| Failure::io("cannot open the test peer read log", e))?;
+        writeln!(log, "{read}").map_err(|e| Failure::io("cannot log the test peer read", e))?;
+    }
+    Ok(())
 }
 
 /// A consistent read of the whole store, under `messages/lock` shared.
@@ -802,18 +834,28 @@ fn local_recipient<'a>(bus: &Bus, to: &'a str) -> &'a str {
     to.strip_prefix(&format!("{}/", bus.instance)).unwrap_or(to)
 }
 
-/// Pull edge messages before reading, checking a member's current start
-/// again under the local append lock.
+/// Read the local inbox and pull missing edge messages, checking a member's
+/// current start again under the local append lock.
 pub fn import(
     bus: &Bus,
     caller: &Caller,
     to: &Recipient,
     deadline: Instant,
-) -> Result<Vec<String>, Failure> {
+) -> Result<Snapshot, Failure> {
     if matches!(caller, Caller::Member { .. }) {
         actor_for(bus, caller)?;
     }
-    super::delivery::import(bus, caller, to, deadline)
+    let mut snap = match wait_snapshot(bus, deadline)? {
+        WaitSnapshot::Ready(snap) => snap,
+        WaitSnapshot::TimedOut => {
+            return Err(Failure::new(
+                Code::Timeout,
+                "message store is busy; try the inbox again",
+            ));
+        }
+    };
+    super::delivery::Imports::default().import(bus, caller, to, &mut snap, deadline)?;
+    Ok(snap)
 }
 
 /// A stored record as shown to callers.
@@ -932,13 +974,13 @@ pub fn wait(
     let deadline = started + duration;
     let minimum = started + wait_minimum();
     let timeout = || Failure::new(Code::Timeout, "nothing new before the timeout");
-    let notes = import(bus, caller, to, deadline)?;
     let mut snap = match wait_snapshot(bus, deadline)? {
         WaitSnapshot::Ready(snap) => snap,
-        WaitSnapshot::TimedOut => return Err(timeout().with_notes(notes)),
+        WaitSnapshot::TimedOut => return Err(timeout()),
     };
     snap.require_healthy()?;
-    snap.notes = notes;
+    let mut imports = super::delivery::Imports::default();
+    imports.import(bus, caller, to, &mut snap, deadline)?;
     let mark = snap.records.last_key_value().map_or(0, |(&seq, _)| seq);
     let mut next = mark + 1;
     let recipient = to.to_string();
@@ -952,7 +994,7 @@ pub fn wait(
     }
     loop {
         actor_for(bus, caller).map_err(|error| error.with_notes(snap.notes.clone()))?;
-        snap.notes = import(bus, caller, to, deadline)?;
+        imports.import(bus, caller, to, &mut snap, deadline)?;
         let mut arrived = false;
         while let Some(record) = next_record(&bus.paths, next)? {
             arrived |= local_recipient(bus, &record.to) == recipient;

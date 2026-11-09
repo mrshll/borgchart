@@ -1,6 +1,7 @@
 //! Pull immutable messages along parent edges. Peer snapshots release their
 //! read-only shared locks before the receiving store takes its own lock.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use super::context::{Actor, Caller};
@@ -88,7 +89,7 @@ fn peers(bus: &Bus, member: &str) -> Result<(Vec<Bus>, Vec<String>), Failure> {
 
 fn peer_note(instance: &str, problem: &str) -> String {
     format!(
-        "instance `{instance}`'s {problem}; check `brg bus check --instance {instance}` and try its inbox again"
+        "instance `{instance}`'s {problem}; tell your parent or the owner (`brg bus check --instance {instance}` outside a member), then try your inbox again"
     )
 }
 
@@ -97,15 +98,41 @@ struct Pending {
     notes: Vec<String>,
 }
 
+#[derive(Default)]
+struct PeerPoll {
+    next: Option<u64>,
+    records: Vec<Record>,
+}
+
+/// Each wait remembers immutable peer history and retains undelivered records
+/// until the local snapshot confirms their origins were appended.
+#[derive(Default)]
+pub(super) struct Imports {
+    peers: BTreeMap<String, PeerPoll>,
+}
+
 /// Read every available edge independently, so one broken peer cannot hide
 /// either another peer's records or the receiver's local inbox.
-fn pending(bus: &Bus, member: &str, deadline: Instant) -> Result<Pending, Failure> {
+fn pending(
+    bus: &Bus,
+    member: &str,
+    local: &Snapshot,
+    polls: &mut Imports,
+    deadline: Instant,
+) -> Result<Pending, Failure> {
     let recipient = format!("{}/{member}", bus.instance);
     let (peers, mut notes) = peers(bus, member)?;
     let mut pending = Vec::new();
+    let held: BTreeSet<_> = local
+        .records
+        .values()
+        .filter_map(|r| r.origin.as_ref())
+        .map(|origin| (origin.instance.as_str(), origin.id.as_str()))
+        .collect();
     for peer in peers {
         let until = deadline.min(Instant::now() + Duration::from_millis(50));
-        let snap = match store::peer_snapshot(&peer, until) {
+        let poll = polls.peers.entry(peer.instance.clone()).or_default();
+        let snap = match store::peer_snapshot(&peer, until, poll.next) {
             Ok(WaitSnapshot::Ready(snap)) if snap.healthy() => snap,
             Ok(WaitSnapshot::TimedOut) => {
                 notes.push(peer_note(&peer.instance, "message store is busy"));
@@ -116,12 +143,20 @@ fn pending(bus: &Bus, member: &str, deadline: Instant) -> Result<Pending, Failur
                 continue;
             }
         };
-        for record in candidates(&peer, snap, &recipient) {
+        poll.next = Some(
+            snap.records
+                .last_key_value()
+                .map_or(poll.next.unwrap_or(1), |(&seq, _)| seq + 1),
+        );
+        poll.records.extend(candidates(&peer, snap, &recipient));
+        poll.records
+            .retain(|record| !held.contains(&(peer.instance.as_str(), record.id.as_str())));
+        for record in &poll.records {
             let origin = Origin {
                 instance: peer.instance.clone(),
                 id: record.id.clone(),
             };
-            pending.push((origin, record));
+            pending.push((origin, record.clone()));
         }
     }
     Ok(Pending {
@@ -144,16 +179,14 @@ pub(super) fn unread(
             let Pending {
                 records: pending,
                 notes,
-            } = pending(bus, member, Instant::now() + Duration::from_secs(1))?;
-            let missing = pending
-                .iter()
-                .filter(|(origin, _)| {
-                    !snap
-                        .records
-                        .values()
-                        .any(|r| r.origin.as_ref() == Some(origin))
-                })
-                .count();
+            } = pending(
+                bus,
+                member,
+                snap,
+                &mut Imports::default(),
+                Instant::now() + Duration::from_secs(1),
+            )?;
+            let missing = pending.len();
             Ok((
                 member.clone(),
                 store::Unread {
@@ -221,79 +254,115 @@ fn local_reference(bus: &Bus, snap: &Snapshot, reference: &str) -> String {
         .map_or_else(|| reference.to_string(), |record| record.id.clone())
 }
 
-pub(super) fn import(
-    bus: &Bus,
-    caller: &Caller,
-    to: &Recipient,
-    deadline: Instant,
-) -> Result<Vec<String>, Failure> {
-    let Recipient::Member(member) = to else {
-        return Ok(Vec::new());
-    };
-    let Pending {
-        records: pending,
-        notes,
-    } = pending(bus, member, deadline)?;
-    if pending.is_empty() {
-        return Ok(notes);
-    }
-    #[cfg(feature = "test-support")]
-    import_gate(deadline)?;
-    // All peer snapshots (and therefore their shared locks) are gone.
-    let Some((bus, _lock)) = store::lock_for_import(bus, deadline)? else {
-        return Err(
-            Failure::new(Code::Timeout, "message import is busy; try the inbox again")
-                .with_notes(notes),
-        );
-    };
-    if matches!(caller, Caller::Member { .. }) {
-        store::actor_for(&bus, caller)?;
-    }
-    let mut snap = store::scan(&bus.paths);
-    snap.require_healthy()?;
-    for (origin, mut record) in pending {
-        if snap
-            .records
-            .values()
-            .any(|r| r.origin.as_ref() == Some(&origin))
-        {
-            continue;
-        }
-        let seq = snap.records.len() as u64 + 1;
-        record.seq = seq;
-        record.id = record_id(seq);
-        record.origin = Some(origin);
-        record.reply_to = record
-            .reply_to
-            .iter()
-            .map(|reference| local_reference(&bus, &snap, reference))
-            .collect();
-        let bytes = serde_json::to_vec_pretty(&record)
-            .map_err(|e| Failure::new(Code::Error, e.to_string()))?;
-        if bytes.len() > MAX_RECORD_BYTES {
-            return Err(Failure::new(
-                Code::Invalid,
-                "the imported record would be too large; shorten the message before publishing",
-            ));
-        }
-        #[cfg(feature = "test-support")]
-        crash("before-append");
-        match fsx::write_new(&bus.paths.record(seq), &bytes)
-            .map_err(|e| Failure::io("cannot import the record", e))?
-        {
-            Written::Created => {}
-            Written::Exists => {
-                return Err(Failure::new(
-                    Code::Corrupt,
-                    "the next record already exists; `brg bus check` lists the problems",
+impl Imports {
+    pub(super) fn import(
+        &mut self,
+        bus: &Bus,
+        caller: &Caller,
+        to: &Recipient,
+        local: &mut Snapshot,
+        deadline: Instant,
+    ) -> Result<(), Failure> {
+        local.notes.clear();
+        match self.try_import(bus, caller, to, local, deadline) {
+            Ok(()) => {}
+            Err(error) if error.code == Code::Fenced => {
+                return Err(error.with_notes(local.notes.clone()));
+            }
+            Err(error) => {
+                local.notes.extend(error.notes);
+                local.notes.push(format!(
+                    "message import deferred: {}; try your inbox again",
+                    error.message
                 ));
             }
         }
-        #[cfg(feature = "test-support")]
-        crash("after-append");
-        snap.records.insert(seq, record);
+        Ok(())
     }
-    Ok(notes)
+
+    fn try_import(
+        &mut self,
+        bus: &Bus,
+        caller: &Caller,
+        to: &Recipient,
+        local: &mut Snapshot,
+        deadline: Instant,
+    ) -> Result<(), Failure> {
+        if matches!(caller, Caller::Member { .. }) {
+            store::actor_for(bus, caller)?;
+        }
+        let Recipient::Member(member) = to else {
+            return Ok(());
+        };
+        let Pending {
+            records: pending,
+            notes,
+        } = pending(bus, member, local, self, deadline)?;
+        local.notes = notes;
+        if pending.is_empty() {
+            return Ok(());
+        }
+        #[cfg(feature = "test-support")]
+        import_gate(deadline)?;
+        // All peer snapshots (and therefore their shared locks) are gone.
+        let until = deadline.min(Instant::now() + Duration::from_millis(50));
+        let Some((bus, _lock)) = store::lock_for_import(bus, until)? else {
+            return Err(Failure::new(
+                Code::Timeout,
+                "this store is busy; import will retry",
+            ));
+        };
+        if matches!(caller, Caller::Member { .. }) {
+            store::actor_for(&bus, caller)?;
+        }
+        let mut snap = store::scan(&bus.paths);
+        snap.require_healthy()?;
+        for (origin, mut record) in pending {
+            if snap
+                .records
+                .values()
+                .any(|r| r.origin.as_ref() == Some(&origin))
+            {
+                continue;
+            }
+            let seq = snap.records.len() as u64 + 1;
+            record.seq = seq;
+            record.id = record_id(seq);
+            record.origin = Some(origin);
+            record.reply_to = record
+                .reply_to
+                .iter()
+                .map(|reference| local_reference(&bus, &snap, reference))
+                .collect();
+            let bytes = serde_json::to_vec_pretty(&record)
+                .map_err(|e| Failure::new(Code::Error, e.to_string()))?;
+            if bytes.len() > MAX_RECORD_BYTES {
+                return Err(Failure::new(
+                    Code::Invalid,
+                    "the imported record would be too large; shorten the message before publishing",
+                ));
+            }
+            #[cfg(feature = "test-support")]
+            crash("before-append");
+            match fsx::write_new(&bus.paths.record(seq), &bytes)
+                .map_err(|e| Failure::io("cannot import the record", e))?
+            {
+                Written::Created => {}
+                Written::Exists => {
+                    return Err(Failure::new(
+                        Code::Corrupt,
+                        "the next record already exists; `brg bus check` lists the problems",
+                    ));
+                }
+            }
+            #[cfg(feature = "test-support")]
+            crash("after-append");
+            snap.records.insert(seq, record);
+        }
+        snap.notes = std::mem::take(&mut local.notes);
+        *local = snap;
+        Ok(())
+    }
 }
 
 #[cfg(feature = "test-support")]

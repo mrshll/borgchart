@@ -3019,7 +3019,7 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
         match crate::bus::store::open(state).and_then(|bus| {
             let snap = match crate::bus::store::wait_snapshot(
                 &bus,
-                std::time::Instant::now() + std::time::Duration::from_millis(50),
+                std::time::Instant::now() + std::time::Duration::from_secs(1),
             )? {
                 crate::bus::store::WaitSnapshot::Ready(snap) => snap,
                 crate::bus::store::WaitSnapshot::TimedOut => {
@@ -3038,6 +3038,9 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
             crate::bus::store::unread(&bus, &snap)
         }) {
             Ok(counts) => (Some(counts), None),
+            Err(error) if error.code == crate::bus::outcome::Code::Timeout => {
+                (None, Some("messages busy; try again".to_string()))
+            }
             Err(_) => (
                 None,
                 Some("messages unavailable; brg bus check".to_string()),

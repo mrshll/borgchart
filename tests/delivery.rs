@@ -500,8 +500,19 @@ fn wait_discovers_a_copy_created_or_first_started_after_it_begins() {
 #[test]
 fn a_busy_local_import_lock_respects_inbox_and_wait_deadlines() {
     let tree = Tree::new();
+    value(tree.env.publish(
+        &tree.parent,
+        &json!({"to": tree.parent_member, "body": "Readable local work"}),
+    ));
     tree.publish(true, "Pending import", &[]);
     for wait in [false, true] {
+        if wait {
+            value(
+                tree.member_cmd(false, &["msg", "ack", "m1", "--json"])
+                    .output()
+                    .unwrap(),
+            );
+        }
         let gate = tree.env.path(if wait {
             "local-wait-gate"
         } else {
@@ -511,12 +522,16 @@ fn a_busy_local_import_lock_respects_inbox_and_wait_deadlines() {
         let args = if wait {
             vec!["inbox", "wait", "--timeout", "60", "--json"]
         } else {
-            vec!["inbox", "--json"]
+            vec!["inbox", "--full", "--json"]
         };
         let child = tree
             .member_cmd(false, &args)
             .env("BORGCHART_TEST_IMPORT_GATE", &gate)
-            .env("BORGCHART_WAIT_TIMEOUT_MS", "700")
+            .env(
+                "BORGCHART_TEST_WAIT_READY",
+                tree.env.path("wait-ready-busy-local"),
+            )
+            .env("BORGCHART_WAIT_TIMEOUT_MS", "5000")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -532,13 +547,197 @@ fn a_busy_local_import_lock_respects_inbox_and_wait_deadlines() {
         lock.lock_shared().unwrap();
         let started = Instant::now();
         fs::write(gate.join("proceed"), "").unwrap();
-        let out = finish(child);
-        assert!(!out.status.success(), "{}", both(&out));
         if wait {
-            assert_eq!(out.status.code(), Some(9), "{}", both(&out));
+            let ready = tree.env.path("wait-ready-busy-local");
+            tree.env
+                .wait_for("wait while local import is busy", || ready.exists());
+            // A real stop needs this lock to end the incarnation. Simulate
+            // its ended start so this tests fencing independently of stop.
+            let path = tree.env.path(&format!(
+                "state/{}/members/{}/incarnation.json",
+                tree.parent, tree.parent_member
+            ));
+            let mut incarnation: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            incarnation["ended_at"] = json!("2026-01-01T00:00:00Z");
+            let replacement = path.with_extension("replacement");
+            fs::write(&replacement, serde_json::to_vec(&incarnation).unwrap()).unwrap();
+            fs::rename(replacement, path).unwrap();
+            let out = finish(child);
+            drop(lock);
+            assert_eq!(out.status.code(), Some(8), "{}", both(&out));
+            assert!(started.elapsed() < Duration::from_secs(3));
+            let out: Value = serde_json::from_slice(&out.stdout).unwrap();
+            assert!(!out["notes"].as_array().unwrap().is_empty(), "{out}");
+            continue;
         }
+        let out = finish(child);
+        let out = value(out);
+        assert_eq!(out["records"][0]["body"], "Readable local work");
+        assert!(!out["notes"].as_array().unwrap().is_empty(), "{out}");
         assert!(started.elapsed() < Duration::from_secs(2));
     }
+}
+
+#[test]
+fn busy_import_retries_cached_peer_records_after_the_local_lock_is_released() {
+    let tree = Tree::new();
+    tree.publish(true, "First pending report", &[]);
+    let gate = tree.env.path("retry-import-gate");
+    fs::create_dir(&gate).unwrap();
+    let ready = tree.env.path("wait-ready-retry");
+    let reads = tree.env.path("retry-peer-reads");
+    let waiting = tree
+        .member_cmd(
+            false,
+            &["inbox", "wait", "--timeout", "60", "--full", "--json"],
+        )
+        .env("BORGCHART_TEST_IMPORT_GATE", &gate)
+        .env("BORGCHART_TEST_WAIT_READY", &ready)
+        .env("BORGCHART_TEST_PEER_READ_LOG", &reads)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    tree.env.wait_for("import before a busy local lock", || {
+        fs::read_dir(&gate).unwrap().count() == 1
+    });
+    let lock = fs::File::open(
+        tree.env
+            .path(&format!("state/{}/messages/lock", tree.parent)),
+    )
+    .unwrap();
+    lock.lock_shared().unwrap();
+    fs::write(gate.join("proceed"), "").unwrap();
+    tree.env
+        .wait_for("wait after deferred import", || ready.exists());
+    tree.publish(true, "Second pending report", &[]);
+    tree.env
+        .wait_for("both reports retained during contention", || {
+            fs::read_to_string(&reads)
+                .unwrap_or_default()
+                .lines()
+                .any(|line| line == "next:3")
+        });
+    drop(lock);
+    let inbox = value(finish(waiting));
+    let bodies: Vec<_> = inbox["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|record| record["body"].as_str().unwrap())
+        .collect();
+    assert_eq!(bodies, ["First pending report", "Second pending report"]);
+}
+
+#[test]
+fn already_imported_origins_do_not_take_the_publication_lock() {
+    let tree = Tree::new();
+    tree.publish(true, "Already delivered", &[]);
+    tree.inbox(false);
+    let gate = tree.env.path("unneeded-import");
+    fs::create_dir(&gate).unwrap();
+    fs::write(gate.join("proceed"), "").unwrap();
+    let lock = fs::File::open(
+        tree.env
+            .path(&format!("state/{}/messages/lock", tree.parent)),
+    )
+    .unwrap();
+    lock.lock_shared().unwrap();
+    let out = value(
+        tree.member_cmd(false, &["inbox", "--full", "--json"])
+            .env("BORGCHART_TEST_IMPORT_GATE", &gate)
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(out["records"][0]["body"], "Already delivered");
+    assert_eq!(fs::read_dir(&gate).unwrap().count(), 1);
+    assert!(out["notes"].as_array().unwrap().is_empty(), "{out}");
+}
+
+#[test]
+fn wait_reads_peer_history_once_then_only_new_sequences() {
+    let tree = Tree::new();
+    tree.publish(true, "Previous report", &[]);
+    let inbox = tree.inbox(false);
+    value(
+        tree.member_cmd(
+            false,
+            &[
+                "msg",
+                "ack",
+                inbox["records"][0]["id"].as_str().unwrap(),
+                "--json",
+            ],
+        )
+        .output()
+        .unwrap(),
+    );
+    let log = tree.env.path("peer-reads");
+    let out = finish(
+        tree.member_cmd(false, &["inbox", "wait", "--timeout", "60", "--json"])
+            .env("BORGCHART_TEST_PEER_READ_LOG", &log)
+            .env("BORGCHART_WAIT_TIMEOUT_MS", "1100")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    assert_eq!(out.status.code(), Some(9), "{}", both(&out));
+    let reads = fs::read_to_string(log).unwrap();
+    assert_eq!(
+        reads.lines().filter(|line| *line == "full").count(),
+        1,
+        "{reads}"
+    );
+    assert!(
+        reads
+            .lines()
+            .filter(|line| line.starts_with("next:"))
+            .count()
+            >= 2,
+        "{reads}"
+    );
+}
+
+#[test]
+fn a_damaged_local_import_still_lists_readable_inbox_records() {
+    let tree = Tree::new();
+    for body in ["Readable local work", "Damaged work"] {
+        value(tree.env.publish(
+            &tree.parent,
+            &json!({"to": tree.parent_member, "body": body}),
+        ));
+    }
+    tree.publish(true, "Pending import", &[]);
+    fs::write(
+        tree.env.path(&format!(
+            "state/{}/messages/records/0000000002.json",
+            tree.parent
+        )),
+        "unreadable",
+    )
+    .unwrap();
+    let inbox = tree.inbox(false);
+    assert_eq!(inbox["store"], "incomplete");
+    assert_eq!(inbox["records"][0]["body"], "Readable local work");
+    assert!(!inbox["notes"].as_array().unwrap().is_empty(), "{inbox}");
+}
+
+#[test]
+fn status_distinguishes_a_busy_local_store_from_damage() {
+    let tree = Tree::new();
+    let lock = fs::File::open(
+        tree.env
+            .path(&format!("state/{}/messages/lock", tree.parent)),
+    )
+    .unwrap();
+    lock.lock().unwrap();
+    let row = tree.env.row(&tree.parent, "lead");
+    assert!(row["unread"].is_null(), "{row}");
+    // The retry action, rather than a repair command, is the status contract.
+    let detail = row["detail"].as_str().unwrap();
+    assert!(detail.contains("try again"), "{row}");
+    assert!(!detail.contains("bus check"), "{row}");
 }
 
 #[test]

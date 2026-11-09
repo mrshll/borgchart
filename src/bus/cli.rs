@@ -346,18 +346,7 @@ pub fn inbox(instance: Option<&str>, args: InboxArgs, started: Instant) -> ExitC
                     context::caller(args.who.external.as_deref())?
                 };
                 let deadline = Instant::now() + Duration::from_secs(1);
-                let notes = store::import(&bus, &caller, &t.recipient, deadline)?;
-                let mut snap = match store::wait_snapshot(&bus, deadline)? {
-                    store::WaitSnapshot::Ready(snap) => snap,
-                    store::WaitSnapshot::TimedOut => {
-                        return Err(Failure::new(
-                            Code::Timeout,
-                            "message store is busy; try the inbox again",
-                        )
-                        .with_notes(notes));
-                    }
-                };
-                snap.notes = notes;
+                let snap = store::import(&bus, &caller, &t.recipient, deadline)?;
                 let inbox = store::list(&bus, &snap, &t.recipient);
                 Ok(inbox_output(&t, &inbox, &snap, args.full))
             })(),
