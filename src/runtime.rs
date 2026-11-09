@@ -539,7 +539,7 @@ fn start_members(
         None => {
             let base = base_env();
             Tmux::new(&state.tmux_conf(), base.clone())
-                .write_config(user_config.as_deref(), &brg)
+                .write_config(user_config.as_deref())
                 .map_err(|e| format!("cannot write tmux config: {e}"))?;
             let mut meta = Meta {
                 team_dir: v.team.dir.clone(),
@@ -3404,42 +3404,6 @@ pub fn status_cells(r: &StatusRow) -> Vec<String> {
     ]
 }
 
-/// `brg status --line`: one line in tmux style syntax for brg's status bar.
-/// Each running member of `instances` (not of their copies) gets a mark for its
-/// state and its unread count; stopped, exited and never-started members are
-/// left out.
-pub fn status_line(instances: &[&str], rows: &[StatusRow]) -> String {
-    let marks: Vec<String> = rows
-        .iter()
-        .filter(|r| {
-            r.kind == "member"
-                && instances.contains(&r.instance.as_str())
-                && r.state != STOPPED
-                && r.state != "exited"
-                && r.state != NOT_STARTED
-        })
-        .map(|r| {
-            let mark = match r.state.as_str() {
-                "working" => "#[fg=green]●",
-                "blocked" => "#[fg=red]◆",
-                "idle" | "done" => "#[fg=colour245]○",
-                _ => "#[fg=yellow]?",
-            };
-            // `##` is tmux's literal `#`: nothing in a row can start a style.
-            let mut text = format!("{mark}#[default] {}", r.name.replace('#', "##"));
-            if let Some(n) = r.unread.filter(|&n| n > 0) {
-                text.push_str(&format!(" #[fg=cyan]{n}✉#[default]"));
-            }
-            text
-        })
-        .collect();
-    if marks.is_empty() {
-        "no members running".into()
-    } else {
-        marks.join("  ")
-    }
-}
-
 pub fn render_status(header: &str, rows: &[StatusRow]) -> String {
     let nodes = status_nodes(rows);
     let plugins: Vec<(String, Vec<String>)> = rows
@@ -3953,68 +3917,6 @@ fn attach_command(inst: &Instance, name: &str) -> Result<Command, String> {
     Ok(cmd)
 }
 
-/// Test builds: `BORGCHART_TEST_SWITCH_PAUSE=<path>` makes Enter's switch
-/// write `<path>.waiting` and wait (up to 30 s) for `<path>` before it
-/// switches, so a test can use another client meanwhile.
-#[cfg(feature = "test-support")]
-fn switch_pause() {
-    let Some(path) = std::env::var_os("BORGCHART_TEST_SWITCH_PAUSE").map(PathBuf::from) else {
-        return;
-    };
-    let _ = std::fs::write(path.with_extension("waiting"), "");
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while !path.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
-#[cfg(not(feature = "test-support"))]
-fn switch_pause() {}
-
-/// Whether this process runs inside the instance's own tmux server, as in
-/// the `prefix S` pop-up.
-pub fn inside_server(inst: &Instance) -> bool {
-    // An unreadable start record isn't this server: the attach path then refuses it.
-    let socket = state::read_meta(&inst.state)
-        .ok()
-        .flatten()
-        .and_then(|m| m.socket_path);
-    crate::tmux::names_server(std::env::var("TMUX").ok().as_deref(), socket.as_deref())
-}
-
-/// Switch `client`, or with none the tmux client this process runs under,
-/// to the member's window. tmux finds that client from the caller's `TMUX`
-/// and `TMUX_PANE`, so they are kept; a pop-up has no pane, so it names its
-/// client.
-pub fn switch_to(inst: &Instance, name: &str, client: Option<&str>) -> Result<(), String> {
-    let session = inst.state.session();
-    let tmux = tmux_for(&inst.state);
-    let window = window_name(inst, &tmux, &session, name)?;
-    let Some(socket) = state::read_meta(&inst.state)?.and_then(|m| m.socket_path) else {
-        return Err(format!("`{}` is not running", inst.at(name)));
-    };
-    switch_pause();
-    let mut cmd = Command::new("tmux");
-    cmd.arg("-S").arg(socket).arg("switch-client");
-    if let Some(client) = client {
-        cmd.args(["-c", client]);
-    }
-    let out = cmd
-        .args(["-t", &target(&session, &window)])
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|e| format!("cannot start tmux: {e}"))?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "cannot switch to {}: {}",
-            inst.at(&window),
-            String::from_utf8_lossy(&out.stderr).trim()
-        ))
-    }
-}
-
 /// `brg attach <instance>/<member>`: replaces this process with a tmux client.
 pub fn attach(inst: &Instance, name: &str) -> Result<(), String> {
     let err = attach_command(inst, name)?.exec();
@@ -4095,64 +3997,6 @@ mod tests {
             member_cwd(&dir.path().join("gone"), None, "lead-2a3b")
                 .unwrap_err()
                 .contains("is gone")
-        );
-    }
-
-    fn row(name: &str, instance: &str) -> StatusRow {
-        StatusRow {
-            name: name.into(),
-            kind: "member",
-            instance: instance.into(),
-            team: "team".into(),
-            member: None,
-            start_id: None,
-            role: None,
-            vendor: None,
-            model: None,
-            parent: None,
-            posture: None,
-            state: "idle".into(),
-            rule: None,
-            detail: None,
-            vendor_version: None,
-            trust_accepted: None,
-            liveness: None,
-            unread: None,
-            running: None,
-            expected_running: false,
-            start: true,
-        }
-    }
-
-    /// A `#` in a row would otherwise reach tmux as a style (`#[...]`) or a
-    /// command (`#(...)`) in brg's status bar.
-    #[test]
-    fn status_line_escapes_tmux_formats() {
-        assert_eq!(
-            status_line(&["team-ab12"], &[row("x#[fg=red]#(true)", "team-ab12")]),
-            "#[fg=colour245]○#[default] x##[fg=red]##(true)"
-        );
-    }
-
-    /// `status` nests a copy's members under the instance's rows, but the
-    /// bar is for the session's own instance; and a member that has never
-    /// run (kept in a stopped instance) isn't running.
-    #[test]
-    fn status_line_leaves_out_copies_members_and_unstarted_ones() {
-        let unstarted = StatusRow {
-            state: NOT_STARTED.into(),
-            ..row("helper-m4n5", "team-ab12")
-        };
-        assert_eq!(
-            status_line(
-                &["team-ab12"],
-                &[
-                    row("lead-x7k2", "team-ab12"),
-                    row("lead-k3f9", "team-ab12/sub-q2w4"),
-                    unstarted,
-                ]
-            ),
-            "#[fg=colour245]○#[default] lead-x7k2"
         );
     }
 

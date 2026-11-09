@@ -73,18 +73,6 @@ pub fn every() -> Result<Vec<Instance>, String> {
         .collect())
 }
 
-/// Every top-level instance, like `every`, but an error for the first whose
-/// record can't be read rather than leaving it out.
-pub fn every_readable() -> Result<Vec<Instance>, String> {
-    let registry = registry::load()?;
-    registry
-        .instances
-        .keys()
-        .filter(|id| !id.contains('/'))
-        .map(|id| instance(id).map_err(|e| format!("{id}: {e}")))
-        .collect()
-}
-
 /// The registered instance `id`. The error says what to write instead when
 /// `id` is a team's name, a member or a path.
 pub fn instance(id: &str) -> Result<Instance, String> {

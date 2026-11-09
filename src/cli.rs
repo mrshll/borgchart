@@ -112,10 +112,6 @@ enum Command {
         /// Print the rows as JSON.
         #[arg(long, conflicts_with_all = ["watch", "interactive"])]
         json: bool,
-        /// One line for tmux's status bar: each running member's state mark
-        /// and unread count, in tmux style syntax.
-        #[arg(long, conflicts_with_all = ["json", "watch", "interactive"])]
-        line: bool,
         /// Refresh the table every few seconds.
         #[arg(short, long, conflicts_with = "interactive")]
         watch: bool,
@@ -125,10 +121,6 @@ enum Command {
         /// An interactive screen: j/k to move, Enter to attach, q to quit.
         #[arg(short, long)]
         interactive: bool,
-        /// The tmux client Enter moves inside brg's server (the `prefix S`
-        /// pop-up names the one that opened it).
-        #[arg(long, hide = true, requires = "interactive")]
-        client: Option<String>,
     },
     /// Open a member's live session (detach with your tmux prefix, then d).
     Attach {
@@ -408,11 +400,9 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
         Command::Status {
             instance,
             json,
-            line,
             watch,
             interactive,
             interval,
-            client,
         } => {
             let one = match &instance {
                 Some(id) => match or_fail!(address::resolve(id)) {
@@ -428,7 +418,7 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
             };
             if watch || interactive {
                 let result = if interactive {
-                    crate::tui::interactive(one.as_ref(), client.as_deref())
+                    crate::tui::interactive(one.as_ref())
                 } else {
                     crate::tui::watch(
                         one.as_ref(),
@@ -442,9 +432,6 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
             }
             let all: Vec<Instance> = match one {
                 Some(inst) => vec![inst],
-                // The line says what runs: an instance left out would be
-                // missing from it.
-                None if line => or_fail!(address::every_readable()),
                 None => or_fail!(address::every()),
             };
             let mut code = ExitCode::SUCCESS;
@@ -462,14 +449,7 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
                     }
                 }
             }
-            if line {
-                // A refusal prints no line: "no members running", or a line
-                // missing an instance's members, would be wrong.
-                if code == ExitCode::SUCCESS {
-                    let ids: Vec<&str> = all.iter().map(|inst| inst.id.as_str()).collect();
-                    println!("{}", runtime::status_line(&ids, &rows));
-                }
-            } else if json {
+            if json {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&rows).unwrap_or_default()

@@ -43,62 +43,15 @@ set -as terminal-features ',*:RGB'
 /// so a later start can tell when the running server differs from what it asks.
 pub const USER_CONFIG_OPTION: &str = "@brg-user-config";
 
-/// The instance a session is for, as a tmux format: its name without
-/// `brg-`, keeping only the characters an instance ID can have, so it is a
-/// plain word for the shell and for tmux's command parser.
-const SESSION_INSTANCE: &str = "#{s|[^-_a-z0-9/]||:#{s|^brg-||:session_name}}";
-
-/// The client a key binding runs for, as a tmux format: its name (a
-/// terminal's path) keeping only the characters such a path has, so it is a
-/// plain word for tmux's command parser.
-const CLIENT: &str = "#{s|[^-_./a-zA-Z0-9]||:client_name}";
-
-/// The status bar and `prefix S` pop-up, with `brg` the absolute path of the
-/// brg writing the config: the bar on top, its right side `brg status
-/// --line` for the attached session's instance, and the pop-up `brg status
-/// -i` for it, told which client pressed the keys so Enter moves that one,
-/// top right, 2 cells from the edges (narrower and shorter on a
-/// small client; tmux's `-y` is the pop-up's bottom line). tmux runs both
-/// with its server's environment, which brg started it with.
-fn status_config(brg: &Path) -> String {
-    let brg = brg.display().to_string();
-    // The bar's command is expanded as a format, then run by sh: the path
-    // comes from an option, quoted for sh by `q:` (a `)` in it written
-    // inline would end `#(`).
-    let right = format!("#(#{{q:@brg-bin}} status --line {SESSION_INSTANCE})");
-    // The pop-up's command is not expanded, so `run-shell -C` expands the
-    // whole `display-popup` command (`##` is a literal `#`), then parses it
-    // as tmux commands; the path, a word of its own there, runs without a
-    // shell.
-    let popup = format!(
-        "display-popup -x '#{{?#{{e|<:#{{client_width}},66}},0,#{{e|-:#{{client_width}},66}}}}' -y '#{{?#{{e|<:#{{client_height}},18}},#{{client_height}},18}}' -w '#{{?#{{e|<:#{{client_width}},66}},#{{client_width}},64}}' -h '#{{?#{{e|<:#{{client_height}},18}},#{{e|-:#{{client_height}},2}},16}}' -E {} status -i --client={CLIENT} {SESSION_INSTANCE}",
-        quote(&brg.replace('#', "##"))
-    );
-    format!(
-        "set -g @brg-bin {}\nset -g status-position top\nset -g status-interval 5\nset -g status-right-length 200\nset -g status-right {}\nbind-key S run-shell -C {}\n",
-        quote(&brg),
-        quote(&right),
-        quote(&popup)
-    )
-}
-
-/// `text` as one word for tmux's command parser, which reads nothing inside
-/// single quotes: `'` itself goes in double quotes.
-fn quote(text: &str) -> String {
-    format!("'{}'", text.replace('\'', "'\"'\"'"))
-}
-
 /// The config text: brg's own, or, with `user` (a path without `'` or a
 /// newline), brg's, then that file, then brg's required options again.
-/// `brg` is the brg the bar and pop-up run.
-pub fn config_text(user: Option<&Path>, brg: &Path) -> String {
-    let own = format!("{CONFIG}{}", status_config(brg));
+pub fn config_text(user: Option<&Path>) -> String {
     let Some(user) = user else {
-        return own;
+        return CONFIG.to_string();
     };
     let user = user.display();
     format!(
-        "{own}set -gF @brg-default-terminal '#{{default-terminal}}'\nset -gF @brg-default-shell '#{{default-shell}}'\nsource-file -q '{user}'\n{REQUIRED}set -g {USER_CONFIG_OPTION} '{user}'\n"
+        "{CONFIG}set -gF @brg-default-terminal '#{{default-terminal}}'\nset -gF @brg-default-shell '#{{default-shell}}'\nsource-file -q '{user}'\n{REQUIRED}set -g {USER_CONFIG_OPTION} '{user}'\n"
     )
 }
 
@@ -168,8 +121,8 @@ impl Tmux {
         }
     }
 
-    pub fn write_config(&self, user: Option<&Path>, brg: &Path) -> std::io::Result<()> {
-        crate::state::write_script(&self.config, &config_text(user, brg))?;
+    pub fn write_config(&self, user: Option<&Path>) -> std::io::Result<()> {
+        crate::state::write_script(&self.config, &config_text(user))?;
         std::fs::set_permissions(
             &self.config,
             std::os::unix::fs::PermissionsExt::from_mode(0o600),
@@ -347,52 +300,7 @@ impl Tmux {
     }
 }
 
-/// Whether `tmux_env`, a `$TMUX` value (`<socket path>,<pid>,<session>`),
-/// names the server listening at `socket`: the caller runs inside it.
-pub fn names_server(tmux_env: Option<&str>, socket: Option<&Path>) -> bool {
-    let (Some(env), Some(socket)) = (tmux_env, socket) else {
-        return false;
-    };
-    // The path itself may hold commas; the last two fields can't.
-    let mut fields = env.rsplitn(3, ',');
-    match (fields.next(), fields.next(), fields.next()) {
-        (Some(_), Some(_), Some(path)) => Path::new(path) == socket,
-        _ => false,
-    }
-}
-
 /// An exact-match target for a window.
 pub fn target(session: &str, window: &str) -> String {
     format!("={session}:={window}")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Enter in `status -i` switches the client only inside the member's own
-    /// server; anywhere else a switch would move some other server's client,
-    /// or fail where an attach works.
-    #[test]
-    fn names_server_only_for_the_same_socket() {
-        let socket = Path::new("/run/tmux-1000/borg,chart");
-        assert!(names_server(
-            Some("/run/tmux-1000/borg,chart,4242,3"),
-            Some(socket)
-        ));
-        assert!(!names_server(
-            Some("/run/tmux-1000/default,4242,3"),
-            Some(socket)
-        ));
-        assert!(!names_server(
-            Some("/run/tmux-1000/borg,chart"),
-            Some(socket)
-        ));
-        assert!(!names_server(Some(""), Some(socket)));
-        assert!(!names_server(None, Some(socket)));
-        assert!(!names_server(
-            Some("/run/tmux-1000/borg,chart,4242,3"),
-            None
-        ));
-    }
 }
