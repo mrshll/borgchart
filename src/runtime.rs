@@ -1308,12 +1308,8 @@ fn check_state_overlap(folder: &Path, instance_state: &Path) -> Result<(), Strin
 }
 
 /// Validate a team folder, printing what validation found; `Err` on errors.
-fn validate_printing(dir: &Path, recursive: bool) -> Result<Validated, String> {
-    let (report, validated) = if recursive {
-        validate(dir)
-    } else {
-        crate::validate::validate_own(dir)
-    };
+fn validate_printing(dir: &Path) -> Result<Validated, String> {
+    let (report, validated) = validate(dir);
     for diag in &report.diags {
         eprintln!("{diag}");
     }
@@ -1360,7 +1356,7 @@ pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
             .join("\n")
     })?;
     let dir = crate::team::find(team_arg, &config.teams)?;
-    let v = validate_printing(&dir, true)?;
+    let v = validate_printing(&dir)?;
     if has_member_context() {
         return Err("members cannot create an independent team; ask a person, or declare it as a team role and run brg create <instance>/<role>".into());
     }
@@ -1924,7 +1920,13 @@ fn start_instance(
             inst.record.folder.display()
         ));
     }
-    let v = validate_printing(&inst.record.team_dir, inst.id.contains('/'))?;
+    let fresh = state::read_meta(&inst.state)?.is_none_or(|meta| meta.stopped_at.is_some())
+        || !tmux_for(&inst.state).has_session(&inst.state.session());
+    let v = if member.is_none() && (fresh || inst.id.contains('/')) {
+        validate_printing(&inst.record.team_dir)?
+    } else {
+        validated(&inst)?
+    };
     let lock = registry::lock()?;
     inst.reload()?;
     crate::nesting::check_not_stopping(&inst)?;
@@ -2548,15 +2550,7 @@ pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> 
             )),
         }
     }
-    for target in std::iter::once(inst).chain(copies.iter()) {
-        check_stop_socket(target)?;
-    }
-    forget_copy_restore(&lock, inst)?;
-    // Mark the enclosing instance first. Even an interruption while writing
-    // descendant records fences the entire subtree through its ancestor.
-    for target in std::iter::once(inst).chain(copies.iter().rev()) {
-        mark_stopping(&lock, target)?;
-    }
+    mark_cascade(&lock, inst, &copies)?;
     drop(lock);
     stop_pause();
     copies.push(inst.clone());
@@ -2564,41 +2558,14 @@ pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> 
     let nested = copies.len() > 1;
     for mut copy in copies {
         let lock = registry::lock()?;
-        copy.reload()?;
-        // Another stop may have finished this instance while the lock was
-        // released. Never stop a new start after its cascade has finished.
-        if !copy.record.stopping {
-            continue;
-        }
-        let result = stop_one(&lock, &copy, None);
-        let confirmed = result.is_ok();
-        match result {
-            Ok(own) if nested => messages.extend(
-                own.into_iter()
-                    .map(|message| format!("{}: {message}", copy.id)),
-            ),
-            Ok(own) => messages.extend(own),
-            Err(error) => errors.push(format!("{}: {error}", copy.id)),
-        }
-        let stopped = liveness_of(&copy)
-            .values()
-            .all(|live| *live == Liveness::Gone);
-        let descendants_stopped = crate::nesting::descendants(&copy)?.iter().all(|child| {
-            child
-                .instance
-                .as_ref()
-                .is_ok_and(|child| !child.record.stopping)
-        });
-        if confirmed && stopped && descendants_stopped && !is_running(&copy) {
-            copy.reload()?;
-            copy.record.stopping = false;
-            lock.save_instance(&copy.state, &copy.record)?;
-        } else {
-            errors.push(format!(
-                "instance `{}` is still stopping; finish its cascade: brg stop {}",
-                copy.id, inst.id
-            ));
-        }
+        finish_marked(
+            &lock,
+            &mut copy,
+            &inst.id,
+            nested,
+            &mut messages,
+            &mut errors,
+        )?;
     }
     if errors.is_empty() {
         Ok(messages)
@@ -2606,6 +2573,220 @@ pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> 
         messages.extend(errors);
         Err(messages.join("\n"))
     }
+}
+
+/// Persist D1's copy cascade while the caller holds the registry lock.
+fn mark_cascade(lock: &registry::Lock, inst: &Instance, copies: &[Instance]) -> Result<(), String> {
+    for target in std::iter::once(inst).chain(copies.iter()) {
+        check_stop_socket(target)?;
+    }
+    forget_copy_restore(lock, inst)?;
+    // Mark the enclosing instance first. Even an interruption while writing
+    // descendant records fences the entire subtree through its ancestor.
+    for target in std::iter::once(inst).chain(copies.iter().rev()) {
+        mark_stopping(lock, target)?;
+    }
+    Ok(())
+}
+
+/// Finish one persisted copy step. Plain full stops release the registry lock
+/// between steps; recursive member stops keep it for their entire walk.
+fn finish_marked(
+    lock: &registry::Lock,
+    copy: &mut Instance,
+    root: &str,
+    nested: bool,
+    messages: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) -> Result<(), String> {
+    copy.reload()?;
+    // Another stop may have finished this instance while the lock was
+    // released. Never stop a new start after its cascade has finished.
+    if !copy.record.stopping {
+        return Ok(());
+    }
+    let result = stop_one(lock, copy, None);
+    let confirmed = result.is_ok();
+    match result {
+        Ok(own) if nested => messages.extend(
+            own.into_iter()
+                .map(|message| format!("{}: {message}", copy.id)),
+        ),
+        Ok(own) => messages.extend(own),
+        Err(error) => errors.push(format!("{}: {error}", copy.id)),
+    }
+    let stopped = liveness_of(copy)
+        .values()
+        .all(|live| *live == Liveness::Gone);
+    let descendants_stopped = crate::nesting::descendants(copy)?.iter().all(|child| {
+        child
+            .instance
+            .as_ref()
+            .is_ok_and(|child| !child.record.stopping)
+    });
+    if confirmed && stopped && descendants_stopped && !is_running(copy) {
+        copy.reload()?;
+        copy.record.stopping = false;
+        lock.save_instance(&copy.state, &copy.record)?;
+    } else {
+        errors.push(format!(
+            "instance `{}` is still stopping; finish its cascade: brg stop {}",
+            copy.id, root
+        ));
+    }
+    Ok(())
+}
+
+/// One member stop or a complete existing D1 copy cascade.
+enum SubtreeStop {
+    Member(String),
+    Copy {
+        root: Box<Instance>,
+        descendants: Vec<Instance>,
+    },
+}
+
+/// Collect recorded parent edges, not roles from a possibly edited team file.
+fn member_stop_walk(
+    inst: &Instance,
+    meta: &Meta,
+    member: &str,
+    copies: &[Instance],
+    seen: &mut BTreeSet<String>,
+    walk: &mut Vec<SubtreeStop>,
+) -> Result<(), String> {
+    if !seen.insert(member.to_string()) {
+        return Err(format!("recorded parent cycle at `{}`", inst.at(member)));
+    }
+    let parent = inst.at(member);
+    for (child, _) in inst.record.kept_members() {
+        if meta
+            .members
+            .get(child)
+            .and_then(|m| m.parent.as_ref())
+            .is_some_and(|p| parent_address(inst, p) == parent)
+        {
+            member_stop_walk(inst, meta, child, copies, seen, walk)?;
+        }
+    }
+    for root in copies
+        .iter()
+        .filter(|copy| copy.record.parent.as_deref() == Some(&parent))
+    {
+        let descendants = crate::nesting::descendants(root)?
+            .into_iter()
+            .map(|copy| copy.instance.map_err(|error| format!(
+                "{}: {error}; restore its state folder and instance.json, then retry: brg stop {}", copy.id, root.id)))
+            .collect::<Result<Vec<_>, _>>()?;
+        walk.push(SubtreeStop::Copy {
+            root: Box::new(root.clone()),
+            descendants,
+        });
+    }
+    walk.push(SubtreeStop::Member(member.to_string()));
+    Ok(())
+}
+
+/// Stop a member and everything below it without allowing new children
+/// between steps. No instance state lock spans two nodes in this walk.
+pub fn stop_recursive(inst: &Instance, member: &str) -> Result<Vec<String>, String> {
+    let lock = registry::lock()?;
+    let mut inst = inst.clone();
+    inst.reload()?;
+    address::member(&inst, member)?;
+    check_parent_authority(
+        &inst,
+        inst.record.role_of(member).unwrap(),
+        None,
+        Some(member),
+    )?;
+    let meta = state::read_meta(&inst.state)?
+        .ok_or_else(|| format!("instance `{}`'s start record cannot be read", inst.id))?;
+    let copies = inst
+        .record
+        .copies
+        .iter()
+        .filter(|(_, copy)| !copy.deleted)
+        .map(|(id, _)| {
+            let copy = inst.at(id);
+            address::instance(&copy).map_err(|error| format!(
+                "{copy}: {error}; restore its state folder and instance.json, then retry: brg stop -r {}", inst.at(member)))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut walk = Vec::new();
+    member_stop_walk(
+        &inst,
+        &meta,
+        member,
+        &copies,
+        &mut BTreeSet::new(),
+        &mut walk,
+    )?;
+    // Refuse authority or socket mismatches before changing any target.
+    check_stop_socket(&inst)?;
+    for target in &walk {
+        match target {
+            SubtreeStop::Member(id) => {
+                check_parent_authority(&inst, inst.record.role_of(id).unwrap(), None, Some(id))?
+            }
+            SubtreeStop::Copy { root, descendants } => {
+                for copy in std::iter::once(root.as_ref()).chain(descendants.iter()) {
+                    check_instance_authority(copy)?;
+                    check_stop_socket(copy)?;
+                }
+            }
+        }
+    }
+    let target = inst.at(member);
+    let mut messages = Vec::new();
+    let result = (|| {
+        stop_pause();
+        for node in walk {
+            match node {
+                SubtreeStop::Member(id) => {
+                    let own = stop_one(&lock, &inst, Some(&id)).map_err(|error| {
+                        let hint = format!(", then retry: brg stop {}", inst.id);
+                        error.strip_suffix(&hint).unwrap_or(&error).to_string()
+                    })?;
+                    messages.extend(own);
+                    inst.reload()?;
+                    if liveness_of(&inst).get(&id) != Some(&Liveness::Gone) {
+                        return Err(format!("{}: still running or unconfirmed", inst.at(&id)));
+                    }
+                }
+                SubtreeStop::Copy {
+                    root,
+                    mut descendants,
+                } => {
+                    mark_cascade(&lock, &root, &descendants)?;
+                    let cascade = root.id.clone();
+                    descendants.push(*root);
+                    for mut copy in descendants {
+                        let mut errors = Vec::new();
+                        finish_marked(
+                            &lock,
+                            &mut copy,
+                            &cascade,
+                            true,
+                            &mut messages,
+                            &mut errors,
+                        )?;
+                        if !errors.is_empty() {
+                            return Err(errors.join("\n"));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        messages.push(format!(
+            "{error}; retry the subtree stop: brg stop -r {target}"
+        ));
+        return Err(messages.join("\n"));
+    }
+    Ok(messages)
 }
 
 /// Check every target before persisting any stop marks or stopping panes.
@@ -2675,8 +2856,8 @@ fn mark_stopping(lock: &registry::Lock, inst: &Instance) -> Result<(), String> {
     lock.save_instance(&inst.state, &record)
 }
 
-/// Pause with the marks persisted and the registry unlocked, so a CLI test
-/// can exercise a live child's create/start or kill an interrupted stop.
+/// Pause after preparation so tests can exercise racing create/start.
+/// Full stops release the registry lock; recursive member stops keep it.
 #[cfg(feature = "test-support")]
 fn stop_pause() {
     let Some(path) = std::env::var_os("BORGCHART_TEST_STOP_PAUSE").map(PathBuf::from) else {
@@ -2978,7 +3159,13 @@ fn validated(inst: &Instance) -> Result<Validated, String> {
             inst.id
         ));
     }
-    let (report, validated) = crate::validate::validate_own(&inst.record.team_dir);
+    let frozen = state::read_meta(&inst.state)
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+        .config
+        .team_dirs;
+    let (report, validated) = crate::validate::validate_own(&inst.record.team_dir, &frozen);
     validated.ok_or_else(|| {
         report
             .errors()

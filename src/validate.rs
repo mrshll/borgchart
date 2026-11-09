@@ -38,6 +38,7 @@ impl Validated {
         let dir = match plugin.location.as_ref()? {
             PluginLocation::Team(rel) => self.team.dir.join(rel),
             PluginLocation::Shared(shared) => self.config.plugins_dir.as_ref()?.join(shared),
+            PluginLocation::Catalog(path) => return Some(path.clone()),
         };
         Some(dir.canonicalize().unwrap_or(dir))
     }
@@ -57,23 +58,26 @@ pub fn validate_against(team_dir: &Path, ancestors: &[PathBuf]) -> (Report, Opti
     let Some(config) = config::load(&mut report) else {
         return (report, None);
     };
-    validate_into(team_dir, config, report, ancestors, true)
+    validate_into(team_dir, config, report, ancestors, None)
 }
 
 /// Validate only the declaring instance's files. Referenced teams are
 /// checked separately when a copy is created or started.
-pub(crate) fn validate_own(team_dir: &Path) -> (Report, Option<Validated>) {
+pub(crate) fn validate_own(
+    team_dir: &Path,
+    frozen: &std::collections::BTreeMap<String, PathBuf>,
+) -> (Report, Option<Validated>) {
     let mut report = Report::default();
     let Some(config) = config::load(&mut report) else {
         return (report, None);
     };
-    validate_into(team_dir, config, report, &[], false)
+    validate_into(team_dir, config, report, &[], Some(frozen))
 }
 
 /// [`validate`] with a configuration already loaded (tests, and callers
 /// that must not read the caller's configuration file).
 pub fn validate_with(team_dir: &Path, config: Config) -> (Report, Option<Validated>) {
-    validate_into(team_dir, config, Report::default(), &[], true)
+    validate_into(team_dir, config, Report::default(), &[], None)
 }
 
 fn validate_into(
@@ -81,13 +85,10 @@ fn validate_into(
     config: Config,
     mut report: Report,
     ancestors: &[PathBuf],
-    recursive: bool,
+    frozen: Option<&std::collections::BTreeMap<String, PathBuf>>,
 ) -> (Report, Option<Validated>) {
-    let loaded = if recursive {
-        team::load(team_dir, &mut report)
-    } else {
-        team::load_own(team_dir, &mut report)
-    };
+    let recursive = frozen.is_none();
+    let loaded = team::load_with(team_dir, &config.teams, frozen, &mut report);
     let Some(team) = loaded else {
         return (report, None);
     };
@@ -111,7 +112,7 @@ fn check_team_tree(v: &Validated, ancestors: &[PathBuf], recursive: bool, report
         if parents.contains(&team.dir) {
             report.error(
                 Some(&declaring_file),
-                format!("team cycle: {} is already an ancestor; change the `team` path so the team does not contain itself", team.dir.display()),
+                format!("team cycle: {} is already an ancestor; change the `team` reference so the team does not contain itself", team.dir.display()),
             );
             continue;
         }
@@ -121,7 +122,7 @@ fn check_team_tree(v: &Validated, ancestors: &[PathBuf], recursive: bool, report
         parents.push(team.dir.clone());
         if recursive {
             for role in team.team_roles.values() {
-                if let Some(child) = team::load(&role.dir, report) {
+                if let Some(child) = team::load_with(&role.dir, &v.config.teams, None, report) {
                     pending.push((child, parents.clone(), file.clone()));
                 }
             }

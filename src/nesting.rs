@@ -101,6 +101,7 @@ pub fn create(
             kept.join(", ")
         ));
     }
+    crate::team::find(&role.name, &v.config.teams)?;
     let id = inst.record.issue_copy(role_name)?;
     let folder = copy_folder(&inst, role, &id)?;
     crate::checkouts::check_folder(&lock, &folder)?;
