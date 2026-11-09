@@ -44,6 +44,14 @@ pub fn held(_lock: &registry::Lock, except: &str) -> Result<Vec<Held>, String> {
                 continue;
             }
         };
+        if inst.record.stopping {
+            out.push(Held {
+                instance: id.clone(),
+                folder: inst.record.folder.clone(),
+                why: format!("its cascade is unfinished; run brg stop {id}"),
+            });
+            continue;
+        }
         let folder_of = |m: &str| {
             inst.record
                 .members

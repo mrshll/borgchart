@@ -62,13 +62,13 @@ pub fn known() -> String {
     }
 }
 
-/// Every registered instance, read from the registry now: what a bare
-/// `brg status` shows.
+/// Every top-level instance, read now. Status nests copies beneath these.
 pub fn every() -> Result<Vec<Instance>, String> {
     let registry = registry::load()?;
     Ok(registry
         .instances
         .keys()
+        .filter(|id| !id.contains('/'))
         .filter_map(|id| instance(id).ok())
         .collect())
 }
@@ -116,12 +116,12 @@ pub fn instance(id: &str) -> Result<Instance, String> {
 /// Parse an argument naming an instance, or something in one: `instance`,
 /// `instance/name`, or, inside a member, a bare `name` of its own instance.
 pub fn resolve(arg: &str) -> Result<(Instance, Target), String> {
+    if !arg.split('/').all(crate::names::is_valid_member_id) {
+        return Err(format!(
+            "`{arg}` has an invalid address segment; use instance and member IDs"
+        ));
+    }
     if arg.contains('/') {
-        if !arg.split('/').all(crate::names::is_valid_member_id) {
-            return Err(format!(
-                "`{arg}` has an invalid address segment; use instance and member IDs"
-            ));
-        }
         let registry = registry::load()?;
         let prefix = registry
             .instances
@@ -143,6 +143,24 @@ pub fn resolve(arg: &str) -> Result<(Instance, Target), String> {
                 let target = target(&inst, rest);
                 return Ok((inst, target));
             }
+            let missing = rest.split('/').next().expect("nonempty address tail");
+            let kept: Vec<_> = inst
+                .record
+                .copies
+                .iter()
+                .filter(|(_, copy)| !copy.deleted)
+                .map(|(id, _)| inst.at(id))
+                .collect();
+            return Err(format!(
+                "`{prefix}` has no copy `{missing}`; {}",
+                if kept.is_empty() {
+                    format!(
+                        "it has no kept copies; create one with brg create {prefix}/<team-role>"
+                    )
+                } else {
+                    format!("its kept copies: {}", kept.join(", "))
+                }
+            ));
         }
         return Err(format!(
             "no instance prefix for `{arg}`; {}. For a folder, write `./{arg}`",

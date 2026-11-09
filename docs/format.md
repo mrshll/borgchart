@@ -68,27 +68,28 @@ The role's identity is its key under `roles:`. The old `members:` field and fron
 
 **Messages.** With `bus:`, members publish plain `{to, body, reply_to?}` drafts, read and ack their inbox, and use one `inbox wait`. `brg status` (tree, `-i` and `--json`) shows unread message counts; no bus means no counts. The optional alert action and watcher are not wired now; the lead nudges with `brg send`. See [the bus](bus.md) for routing, storage, wait rules and commands.
 
-**Parents.** A `parent` must be another role with `max: 1`, and parent links can't form a cycle. A plugin's `delivers_to:` also requires a `max: 1` role. A member's parent is the member of its parent role. Messages a plugin routes "to the parent" go along this edge. With a bus, only a person or the declared parent's latest running start may create, start, stop or delete a member. Other members, replaced starts and callers from another instance are refused. Creating a child requires its parent role to have a member. Teams without a bus retain their existing caller rules; whole-instance operations retain theirs too.
+**Team roles.** A role with `team:` creates a nested instance instead of an agent:
+
+```yaml
+bus: {}
+roles:
+  lead: {prompt: lead.md, cwd: lead}
+  dev: {team: teams/dev, parent: lead, start: false, max: 2, cwd: 'dev/{member_id}'}
+```
+
+A team role accepts only `team`, `parent`, `start`, `max` and `cwd`. Agent options, including `prompt`, `vendor`, `posture`, `plugins`, `connectors` and `args`, are errors even when empty or false. `start` must be false or absent: `create <instance>/dev` makes a stopped copy and its folders, which the parent prepares before `start <instance>/<copy>`.
+
+`team` names a folder containing `team.yaml`, relative to the declaring team's folder. Absolute paths, `..`, `shared:` and symlinks outside that folder are refused. It is never looked up by name. `cwd` is required and must end in exactly one `{member_id}` folder; `max` defaults to 1 and must be at least 1. The declaring team and every referenced team need `bus:`. `validate` checks referenced teams recursively and reports their errors at their own files. A team may not contain itself, directly or indirectly, as judged by resolved folders. Creation and a copy's full start also check its recorded ancestors, including after a team-folder move.
+
+The declaring instance freezes where each team role resolves. Each copy records that source folder and reads its current files at its first start, then freezes its own configuration until its own full stop and start. Changes reach each copy independently of the parent instance and its other copies. If a kept copy's source folder is gone, starting it errors without looking up a replacement by name. Explicit `start <copy> --team <path>` remains available to recover a moved folder.
+
+**Parents.** A `parent` must be another agent role with `max: 1`, and parent links can't form a cycle. A plugin's `delivers_to:` also requires a `max: 1` agent role. A member's parent is the member of its parent role. Messages a plugin routes "to the parent" go along this edge. With a bus, a person may manage anything; a member at its latest running start may create, start, stop or delete anything in its subtree. Authority follows recorded parent edges within instances and across copies, at every depth, and is checked under the registry lock with the caller's start in its own instance. Members cannot manage themselves, ancestors, siblings or independent instances. A copy's roots cannot manage their own copy or each other. Stopped, replaced and incomplete starts are refused. Creating a child requires its parent role to have a member. Teams without a bus retain their existing caller rules.
 
 **`env`.** A list of names (`[A, B]`, each a secret), list items with a value (`[A, {B: value}]`), or a map (`{A: , B: value}`); a name without a value is a secret. Secrets come from the environment `brg create` or `brg start` runs in: brg stores none. `brg secret <team>` lists them and whether each is set.
 
 **`cwd`.** Relative to the instance's working folder and inside it (no `..`, no absolute path, and it may not leave the folder through a symlink); it may use `{member_id}`, the member's ID. It must exist when the member starts. A role without one starts in the working folder (a `locked` Codex member: in its temp folder).
 
 `{member_id}` is optional: without it, copies share the role's folder. If used, it must be the last folder name, such as `copies/{member_id}`. When `cwd` ends in `{member_id}`, brg makes only the missing empty leaf when issuing a new member (`create`, or a full `start` that gives a `start: true` role a new member), for any `max`; every folder above it must already exist, and an existing leaf is used as is. The parent can put a worktree there before briefing the copy. Starting an existing member never creates its folder, and `delete` leaves them alone. For a `{member_id}` role, creation and every start refuse a copy whose folder equals, contains or sits inside a kept copy's folder of the same role, including symlinked aliases and stopped copies; delete a member to free its folder. The checks and creation share the registry lock, so concurrent creates cannot claim overlapping folders. Different roles in one instance may still share a folder.
-
-**Team roles.** A role with `team:` instead of `prompt:` is a team role: its members are copies, nested instances of that team (see [teams as members](teams.md#teams-as-members)). It takes only these fields:
-
-```yaml
-  dev: {team: teams/dev-team, parent: lead, start: false, max: 4, cwd: "dev/{member_id}"}
-```
-
-- **`team`:** a folder holding a `team.yaml`, relative to the declaring team's folder, with no `..`, no absolute path, no `shared:` and no symlink out of the folder.
-- **`parent`:** an agent role; the copy's root members get that role's member as their parent.
-- **`start`:** `false` or absent. Copies are always created stopped, by `brg create <instance>/<role>`, and started by `brg start <instance>/<copy>` once their folders are prepared.
-- **`max`:** as for agent roles (default 1).
-- **`cwd`:** required, ending in `{member_id}` as its last folder name. `create` makes it and the folders above it. The copy's own members' `cwd` (for example `repo` or `work`) is prepared by the parent before `start`.
-
-Agent-only fields (`prompt`, `vendor`, `posture`, `plugins`, `args` and the rest) are refused: a copy's members take them from the sub-team's own files. A team with team roles needs `bus:`, and so does every team a `team:` names.
 
 **`args`.** Extra vendor launch arguments. Treat them as trusted, like the rest of the team: they can widen an agent's permissions. A `-c check_for_update_on_startup=…` (Codex) overrides brg's default of turning the update check off, so an unattended member doesn't stop at Codex's "Update available" prompt; a `-c sandbox_workspace_write.writable_roots=…` (Codex) or `--add-dir` (Claude) replaces the folders brg makes writable, and a `-c projects…` replaces brg's Codex trust.
 
