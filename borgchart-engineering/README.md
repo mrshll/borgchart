@@ -28,6 +28,8 @@ The dev team still runs on its own, as any team folder does: see [its README](te
 
 ## Run it
 
+These are the cutover steps. They work once nesting (D1) and delivery between a department and its copies (D2) are in, and the live smoke check has passed (#80, "Cutover"). Until then the department lead can't brief a copy's lead, or hear back from it.
+
 1. **Use a stable brg and a pinned copy of this folder,** installed outside any checkout the teams change. Every member runs the brg that started it.
 2. **Install the seating plugin** as `<plugins_dir>/seat`, with a real usage source for this machine: see [`examples/seat/`](../examples/seat/). Set `plugins_dir` in brg's configuration.
 3. **Check it:** `brg validate <pinned copy>`.

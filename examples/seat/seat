@@ -48,8 +48,14 @@ class Wait(Exception):
 
 def threshold(folder: Path) -> float:
     path = folder / "threshold"
-    if not path.exists():
+    # Only a threshold that isn't there at all means the default: a broken
+    # link or an unreadable entry is a configured threshold we can't read.
+    try:
+        path.lstat()
+    except FileNotFoundError:
         return DEFAULT_THRESHOLD
+    except OSError as e:
+        raise Wait(f"the threshold file {path} is unreadable: {e}") from e
     try:
         value = float(path.read_text().strip())
     except (OSError, ValueError) as e:

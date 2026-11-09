@@ -33,7 +33,7 @@ The answer is `go` when `used_percent` is below the threshold: 80 by default, or
 - a source that exits non-zero or takes over 30 seconds;
 - `null` usage;
 - output that isn't such an object, or a `used_percent` that isn't a number from 0 to 100;
-- an unreadable `threshold` file.
+- an unreadable `threshold` file, including a link whose target is gone.
 
 `usage-source.example` is a stand-in that answers every vendor and model with the same fictional reading. The tests (`tests/`) use their own fake sources.
 

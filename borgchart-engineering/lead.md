@@ -97,7 +97,7 @@ A stopped member keeps its ID. A watch runs until its own deadline, whatever hap
 Keep one wait armed, bounded by your next deadline:
 
 1. **At the start of every turn,** read `"$BORGCHART_BIN" inbox --full --json`. Act on the messages and ack what you've taken on. Then handle every deadline or seating retry that is due (step 3).
-2. **Before finishing every turn,** if no wait of yours is running, run `"$BORGCHART_BIN" inbox wait --timeout <seconds> --json --full` with your Bash tool in **background** mode. `<seconds>` runs to the earliest deadline or retry in your record, between 60 and 86400. Its exit wakes you.
+2. **Before finishing every turn,** make sure exactly one wait of yours is running and that it ends no later than the earliest deadline or retry in your record. If none is running, or the one running ends after that time (a deadline you just set is earlier), stop that one first, then run `"$BORGCHART_BIN" inbox wait --timeout <seconds> --json --full` with your Bash tool in **background** mode. `<seconds>` runs to that earliest time, between 60 and 86400; note when the wait ends in your record. Its exit wakes you.
    - **Exit 9:** a deadline is due; handle it, then wait again.
    - **Exit 8 (`fenced`):** your session is no longer current. Stop waiting, never change the `BORGCHART_*` variables, and tell the owner.
    - **Other errors:** wait at least 60 seconds, run `"$BORGCHART_BIN" bus check`, and report the problem.

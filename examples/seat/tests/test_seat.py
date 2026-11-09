@@ -79,6 +79,19 @@ def test_a_threshold_file_replaces_the_default(tmp_path: Path) -> None:
         assert (code, out[:6]) == (WAIT, "wait: "), bad
 
 
+def test_a_broken_threshold_link_is_wait_not_the_default(tmp_path: Path) -> None:
+    """Catches an installed threshold whose link target is gone being read as
+    no threshold, so the looser default answers go."""
+    folder = install(tmp_path, reading('{"used_percent": 30}'))
+    target = tmp_path / "policy"
+    target.write_text("25\n")
+    (folder / "threshold").symlink_to(target)
+    assert seat(folder, "route", "claude", "opus")[0] == WAIT
+    target.unlink()
+    code, out = seat(folder, "route", "claude", "opus")
+    assert (code, out[:6]) == (WAIT, "wait: "), out
+
+
 def test_unknown_usage_is_wait(tmp_path: Path) -> None:
     """Catches unknown usage (null) taken for zero."""
     folder = install(tmp_path, reading('{"used_percent": null}'))
