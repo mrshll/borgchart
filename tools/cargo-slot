@@ -9,9 +9,8 @@ for dependency in flock systemd-run mkdir sleep; do
 done
 [ "$#" -gt 0 ] || { echo "usage: cargo-slot command [args...]" >&2; exit 2; }
 umask 077
-root=${XDG_RUNTIME_DIR-${XDG_STATE_HOME:-${HOME:?}/.local/state}}
-[ -n "$root" ] || { echo "cargo-slot: XDG_RUNTIME_DIR is empty" >&2; exit 1; }
-case "$root" in
+root=${HOME:?}/.local/state
+case "$HOME" in
   /*) ;;
   *) echo "cargo-slot: lock root must be absolute" >&2; exit 1 ;;
 esac
