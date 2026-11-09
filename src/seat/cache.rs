@@ -25,6 +25,15 @@ fn checked(file: &File, directory: bool) -> io::Result<()> {
             !m.is_file() || m.nlink() != 1
         }
     {
+        #[cfg(test)]
+        eprintln!(
+            "cache metadata rejected: directory={directory} owned={} mode={:o} regular={} dir={} links={}",
+            m.uid() == rustix::process::geteuid().as_raw(),
+            m.mode() & 0o7777,
+            m.is_file(),
+            m.is_dir(),
+            m.nlink()
+        );
         return Err(unsafe_path());
     }
     Ok(())
@@ -196,7 +205,8 @@ pub fn snapshot(
             }
             Ok(normalized)
         })();
-        let mut result = success.unwrap_or_else(|_| {
+        let mut result = success.unwrap_or_else(|error| {
+            diagnostic("probe", &error);
             policy::unknown(
                 provider,
                 SystemTime::now(),
@@ -214,8 +224,20 @@ pub fn snapshot(
         dir.write(&key, &result)?;
         Ok(result)
     })();
-    result.unwrap_or_else(|_| policy::unknown(provider, SystemTime::now(), Vec::new()))
+    result.unwrap_or_else(|error| {
+        diagnostic("cache I/O", &error);
+        policy::unknown(provider, SystemTime::now(), Vec::new())
+    })
 }
+fn diagnostic(_stage: &str, _error: &io::Error) {
+    #[cfg(test)]
+    eprintln!(
+        "{_stage}: kind={:?} os={:?}",
+        _error.kind(),
+        _error.raw_os_error()
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,43 +346,48 @@ mod tests {
     }
     #[test]
     fn concurrent_reads_serialize_and_lock_wait_is_bounded() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("cache");
-        let calls = Arc::new(AtomicUsize::new(0));
-        std::thread::scope(|scope| {
-            let mut handles = Vec::new();
-            for _ in 0..3 {
-                let calls = Arc::clone(&calls);
-                let path = &path;
-                handles.push(scope.spawn(move || {
-                    snapshot(path, Provider::Codex, false, deadline(), key, || {
-                        calls.fetch_add(1, Ordering::SeqCst);
-                        std::thread::sleep(Duration::from_millis(30));
-                        probe()
-                    })
-                }));
-            }
-            for handle in handles {
-                assert_eq!(handle.join().unwrap().status, "ok");
-            }
-        });
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        let dir = Directory::open(&path).unwrap();
-        let _lock = dir.lock(&key().unwrap(), deadline()).unwrap();
-        let start = Instant::now();
-        assert_eq!(
-            snapshot(
-                &path,
-                Provider::Codex,
-                true,
-                start + Duration::from_millis(30),
-                key,
-                || panic!("locked probe")
-            )
-            .status,
-            "unknown"
-        );
-        assert!(start.elapsed() < Duration::from_secs(1));
+        for _ in 0..24 {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("cache");
+            let calls = Arc::new(AtomicUsize::new(0));
+            let barrier = Arc::new(std::sync::Barrier::new(3));
+            std::thread::scope(|scope| {
+                let mut handles = Vec::new();
+                for _ in 0..3 {
+                    let calls = Arc::clone(&calls);
+                    let barrier = Arc::clone(&barrier);
+                    let path = &path;
+                    handles.push(scope.spawn(move || {
+                        barrier.wait();
+                        snapshot(path, Provider::Codex, false, deadline(), key, || {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            std::thread::sleep(Duration::from_millis(30));
+                            probe()
+                        })
+                    }));
+                }
+                for handle in handles {
+                    assert_eq!(handle.join().unwrap().status, "ok");
+                }
+            });
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            let dir = Directory::open(&path).unwrap();
+            let _lock = dir.lock(&key().unwrap(), deadline()).unwrap();
+            let start = Instant::now();
+            assert_eq!(
+                snapshot(
+                    &path,
+                    Provider::Codex,
+                    true,
+                    start + Duration::from_millis(30),
+                    key,
+                    || panic!("locked probe")
+                )
+                .status,
+                "unknown"
+            );
+            assert!(start.elapsed() < Duration::from_secs(1));
+        }
     }
     #[test]
     fn identity_change_and_regressed_observation_never_authorize() {
