@@ -6,6 +6,10 @@
 
 Each definition noun has an active noun, created from it by `brg create`.
 
+Definition folders and runtime working folders serve different purposes. A child
+copy keeps its own instance and message store, with its working folder nested
+under its parent instance, independently of where its team definition is stored.
+
 | Definition | Active | Created by | Examples |
 | --- | --- | --- | --- |
 | **Team**: a folder you can share, holding `team.yaml`, its role files, includes and plugins | **Instance**: the team running in one working folder, with its members, messages and notes | `brg create dev-team ~/work/x` | `dev-team-k3f9`, `dev-team-p7xm` |
