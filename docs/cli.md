@@ -70,10 +70,10 @@
 
 States are advisory: they gate `send` for safety, not access.
 
-Stopping a department continues through readable copies even when another copy's
+Stopping an instance continues through its readable copies even when another copy's
 state is unreadable, then reports the unreadable copies and exits non-zero. Restore
 their state and retry `stop` to finish the cascade. Kept copies, including unreadable
-ones, must be deleted before deleting their department. If the recorded tmux socket
+ones, must be deleted before deleting their parent instance. If the recorded tmux socket
 is absent or refuses connections, its windows are gone: members with no recorded
 process or with exited processes let the cascade finish. A surviving or unconfirmed
 recorded process keeps it marked; the refusal names the member and PID to end
