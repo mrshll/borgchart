@@ -12,12 +12,6 @@
 default: claude
 includes: catalog:shared/includes
 
-plugins:
-  seat:
-    path: catalog:shared/plugins/seat
-    actions:
-      route: seat route <vendor> <model>
-
 roles:
   lead:
     prompt: lead.md
@@ -25,7 +19,6 @@ roles:
     vendor: claude
     start: true
     cwd: lead               # a checkout of the repository, made before `brg create`
-    plugins: {seat: [route]}
   dev:
     team: dev-team
     parent: lead

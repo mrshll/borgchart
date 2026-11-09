@@ -17,7 +17,7 @@ The lead is `interactive: true` (inbox-only); helpers default to `interactive: f
 
 Keep a **pinned installation** with all sibling definitions and shared assets under `brg-<sha>/teams/`, taken at the commit of the brg you run, outside the checkout the team works in. See [catalog installation](../README.md). A running instance's files are frozen: if the team's own work changed them under it, the instance would refuse to create or start members until a full stop.
 
-The root and dev leads use the same bundled [seating plugin](../shared/plugins/seat/README.md), before every launch. It finds `usage-route` on `PATH`, or the executable named in `$XDG_CONFIG_HOME/borgchart/seat-reader` (default `~/.config/borgchart/seat-reader`). The quota reader remains an external dependency; missing, failed or unknown usage means wait. No plugin copy or `plugins_dir` setting is needed. Put `config.yaml` beside the installed `teams/` folder and set `BORGCHART_CONFIG` to its absolute path:
+The root and dev leads check built-in `"$BORGCHART_BIN" seat route <vendor> <model>` before every launch. It uses the installed vendor CLI and subscription login; missing, failed or unknown usage means wait. No seating plugin or external reader is required. See [seating](../../docs/seating.md) for the optional private cache location, authentication limits and live qualification. Put `config.yaml` beside the installed `teams/` folder and set `BORGCHART_CONFIG` to its absolute path:
 
 ```yaml
 schema: 1

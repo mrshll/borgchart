@@ -31,7 +31,7 @@ The dev team still runs on its own, as any team folder does: see [its README](..
 These are the cutover steps. They work once nesting (D1) and delivery between a parent team and its child teams (D2) are in, and the live smoke check has passed (#80, "Cutover"). Until then the root lead can't brief a copy's lead, or hear back from it.
 
 1. **Use a stable brg and a pinned copy of the complete sibling catalog,** installed as `brg-<sha>/teams/` outside any checkout the teams change (see [installation](../README.md)). Every member runs the brg that started it.
-2. **Make the quota reader available:** the bundled [seating plugin](../shared/plugins/seat/README.md) uses `usage-route` on `PATH`, or the executable named by its one local configuration setting. The reader remains external; moving it into this repository is a later step. Missing or unknown usage means wait.
+2. **Check built-in seating:** `brg seat route <vendor> <model>` uses the installed vendor CLI and subscription login. Missing, denied or unknown usage means wait. See [seating](../../docs/seating.md) for cache configuration, authentication limits and live qualification.
 3. **Check the team:** `brg validate borgchart-engineering`. The repository's checks already use `tools/cargo-slot`; no wrapper installation or `PATH` entry is needed. During supervisor cutover, drain existing builds and move all callers to the same new lock domain before starting more builds.
 4. **Make the lead's checkout:** `git clone <repository> <folder>/lead`, or add a worktree there from a checkout you already have. Set its hooks path as the repository's README says, and run `agent-gh --setup` there before the first commit.
 5. **Create the team:** `brg create borgchart-engineering <folder>`. It prints the instance ID and its tree: the lead started, every other role not yet created.
@@ -42,9 +42,9 @@ These are the cutover steps. They work once nesting (D1) and delivery between a 
 ## Working rules
 
 - **The owner reviews and approves every pull request.** Each dev lead hands off its own pull requests. Only the root lead may merge one, and only after the owner's approving review on its current head, with CI green, by a merge commit.
-- **Seating is checked before every launch,** through the `seat` plugin's `route` action. `wait` or an unknown answer means wait, never another vendor or model.
+- **Seating is checked before every launch,** through `"$BORGCHART_BIN" seat route <vendor> <model>`. `wait` or an unknown answer means wait, never another vendor or model.
 - **Git and GitHub practice** lives in [`../shared/includes/git.md`](../shared/includes/git.md), shared by the root lead, child-team lead and implementer, with writes limited by role. The approved public account is `mrshll-agent`. Vendor instructions still apply.
-- **Machine-specific configuration stays local:** quota-reader paths and login/cache access do not belong in this folder. There is no private policy overlay.
+- **Machine-specific configuration stays local:** login/cache access do not belong in this folder. There is no private policy overlay.
 
 Before cutover, smoke-test seating, the build wrapper and `agent-gh` from the actual member environment: a GitHub read and an authorized test push whose pre-push checks use the bundled throttle automatically. Normal tool approvals still apply; team instructions do not override vendor approval settings. Arrange how GitHub reviews and comments reach the lead: this definition waits on the brg inbox and does not install a GitHub event watcher.
 
