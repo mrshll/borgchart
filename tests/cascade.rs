@@ -235,46 +235,101 @@ fn unreachable_server_with_exited_processes_clears_stop_marks() {
 }
 
 #[test]
-fn unreachable_server_with_unknown_process_keeps_stop_marks() {
-    let env = department();
+fn ordinary_full_stop_fences_start_until_retried() {
+    let env = Env::new();
+    let inst = env.create("oncall", "work/a");
+    let gate = env.path("stop-gate");
+    let mut stop = env
+        .cmd(&["stop", &inst])
+        .env("BORGCHART_TEST_STOP_PAUSE", &gate)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    env.wait_for("ordinary instance marked stopping", || {
+        gate.with_extension("waiting").exists()
+    });
+    stop.kill().unwrap();
+    stop.wait().unwrap();
+    env.fails(&["start", &inst]);
+    env.ok(&["stop", &inst]);
+    start(&env, &inst);
+    env.ok(&["stop", &inst]);
+}
+
+#[test]
+fn killed_server_without_recorded_process_does_not_wedge_ordinary_stop() {
+    for missing_pane in [false, true] {
+        killed_ordinary_server_can_stop_and_restart(missing_pane);
+    }
+}
+
+fn killed_ordinary_server_can_stop_and_restart(missing_pane: bool) {
+    let env = Env::new();
+    let inst = env.create("oncall", "work/a");
+    let lead = env.member(&inst, "lead");
+    let path = env.path(&format!("state/{inst}/members/{lead}/incarnation.json"));
+    let mut record: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    if missing_pane {
+        record["pane"] = serde_json::Value::Null;
+        fs::write(path, serde_json::to_vec(&record).unwrap()).unwrap();
+    }
+    env.tmux(&["kill-server"]);
+    if missing_pane {
+        // Exercise an absent socket as well as tmux's refused stale one.
+        fs::remove_file(recorded_socket(&env, &inst)).unwrap();
+    }
+    env.ok(&["stop", &inst]);
+    start(&env, &inst);
+    env.ok(&["stop", &inst]);
+}
+
+#[test]
+fn unreachable_server_with_surviving_process_refuses_until_it_exits() {
+    for nested in [false, true] {
+        surviving_process_blocks_stop(nested);
+    }
+}
+
+fn recorded_socket(env: &Env, inst: &str) -> PathBuf {
+    let meta: serde_json::Value =
+        serde_json::from_slice(&fs::read(env.path(&format!("state/{inst}/start.json"))).unwrap())
+            .unwrap();
+    PathBuf::from(meta["socket_path"].as_str().unwrap())
+}
+
+fn surviving_process_blocks_stop(nested: bool) {
+    let env = if nested { department() } else { Env::new() };
     let dept = env.create("oncall", "work/a");
-    let (dev, _) = prepared_copy(&env, &dept, "dev", "repo");
-    start(&env, &dev);
+    let dev = if nested {
+        let (dev, _) = prepared_copy(&env, &dept, "dev", "repo");
+        start(&env, &dev);
+        dev
+    } else {
+        dept.clone()
+    };
     let lead = env.member(&dev, "lead");
     let path = env.path(&format!("state/{dev}/members/{lead}/incarnation.json"));
-    let original = fs::read(&path).unwrap();
-    let mut record: serde_json::Value = serde_json::from_slice(&original).unwrap();
-    // Zero is deliberately unjudgeable by the process-liveness fallback.
-    record["pane"]["pane_pid"] = 0.into();
+    let mut record: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let mut survivor = Command::new("sleep").env_clear().arg("60").spawn().unwrap();
+    let pid = survivor.id();
+    record["pane"]["pane_pid"] = pid.into();
     fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
     env.tmux(&["kill-server"]);
-    let refused = env.fails(&["stop", &dept]);
-    assert!(refused.contains(&dev), "{refused}");
+    let out = env.brg(&["stop", &dept]);
+    survivor.kill().unwrap();
+    survivor.wait().unwrap();
+    assert!(!out.status.success(), "{}", both(&out));
+    let refused = both(&out);
+    assert!(refused.contains(&format!("{dev}/{lead}")), "{refused}");
+    assert!(refused.contains(&pid.to_string()), "{refused}");
     for instance in [&dept, &dev] {
         env.fails(&["start", instance]);
         env.fails(&["delete", instance, "--force"]);
     }
-    // The refusal must provide a recovery command that works while fenced.
-    let recovery = refused
-        .split('`')
-        .find(|part| part.starts_with("tmux "))
-        .expect("refusal must offer a tmux recovery command");
-    let source = env.cmd(&[]);
-    let out = Command::new("sh")
-        .env_clear()
-        .envs(
-            source
-                .get_envs()
-                .filter_map(|(key, value)| value.map(|value| (key, value))),
-        )
-        .args(["-c", recovery])
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "{}", both(&out));
     env.ok(&["stop", &dept]);
     start(&env, &dept);
     env.ok(&["stop", &dept]);
-    env.tmux(&["kill-session", "-t", "=brg_recovery"]);
 }
 
 #[test]

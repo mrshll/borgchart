@@ -2541,8 +2541,8 @@ fn start_window(
 /// `brg stop <instance>[/<member>]`.
 ///
 /// Works on the tmux server recorded at the start, refusing a caller whose
-/// `BORGCHART_TMUX_SOCKET` names another, and changes nothing unless that
-/// server answers or its recorded pane processes have exited. A member's
+/// `BORGCHART_TMUX_SOCKET` names another. Every full stop persists a cascade;
+/// an absent server requires any recorded pane processes to have exited. A member's
 /// incarnation is marked ended, and launch files and secrets removed, only
 /// once its pane was stopped or confirmed gone. A full stop records which members were
 /// running, for the next `start`; stopping a stopped one changes nothing.
@@ -2567,25 +2567,8 @@ pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> 
             )),
         }
     }
-    if !inst.id.contains('/')
-        && !inst.record.stopping
-        && copies.is_empty()
-        && errors.is_empty()
-        && !validated(inst).is_ok_and(|v| !v.team.team_roles.is_empty())
-    {
-        return stop_one(&lock, inst, None);
-    }
     for target in std::iter::once(inst).chain(copies.iter()) {
-        if let Some(name) = state::read_meta(&target.state).and_then(|meta| meta.socket)
-            && name != state::tmux_socket()
-        {
-            return Err(format!(
-                "instance `{}` is on tmux socket `{name}`, not `{}`; stop it with BORGCHART_TMUX_SOCKET={name} brg stop {}. Nothing was changed",
-                target.id,
-                state::tmux_socket(),
-                target.id
-            ));
-        }
+        check_stop_socket(target)?;
     }
     forget_copy_restore(&lock, inst)?;
     // Mark the enclosing instance first. Even an interruption while writing
@@ -2642,6 +2625,21 @@ pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> 
         messages.extend(errors);
         Err(messages.join("\n"))
     }
+}
+
+/// Check every target before persisting any stop marks or stopping panes.
+fn check_stop_socket(inst: &Instance) -> Result<(), String> {
+    if let Some(name) = state::read_meta(&inst.state).and_then(|meta| meta.socket)
+        && name != state::tmux_socket()
+    {
+        return Err(format!(
+            "instance `{}` is on tmux socket `{name}`, not `{}`; stop it with BORGCHART_TMUX_SOCKET={name} brg stop {}. Nothing was changed",
+            inst.id,
+            state::tmux_socket(),
+            inst.id
+        ));
+    }
+    Ok(())
 }
 
 /// An explicit copy stop removes its whole subtree from every ancestor's
@@ -2733,13 +2731,8 @@ fn stop_one(
         // Nothing was ever recorded here, so brg started nothing to stop.
         return Ok(vec!["not running".into()]);
     };
-    let caller_socket = state::tmux_socket();
-    if let Some(name) = &meta.socket
-        && *name != caller_socket
-    {
-        return Err(format!(
-            "instance `{team}` is on tmux socket `{name}`, not `{caller_socket}`; stop it with BORGCHART_TMUX_SOCKET={name} brg stop {team}. Nothing was changed"
-        ));
+    if only.is_some() {
+        check_stop_socket(inst)?;
     }
     let server = lifecycle::Server::of(&meta);
     let rows = match server.panes() {
@@ -2748,40 +2741,31 @@ fn stop_one(
         // nothing has started since.
         Err(_) if meta.stopped_at.is_some() || meta.windows_started == Some(false) => Vec::new(),
         Err(e) => {
-            if !inst.record.stopping {
-                return Err(format!(
-                    "{e}; nothing was changed. If instance `{team}` is really gone (for example after a reboot), `brg start {team}` and then `brg stop {team}` clear it"
-                ));
+            if only.is_some() || !server.absent() {
+                return Err(format!("{e}; fix this error, then retry: brg stop {team}"));
             }
-            let uncertain: Vec<_> = liveness_of(inst)
-                .into_iter()
-                .filter(|(_, live)| *live != Liveness::Gone)
-                .map(|(id, _)| id)
-                .collect();
-            if !uncertain.is_empty() {
-                let socket = match &server {
-                    lifecycle::Server::Name(name) => format!("-L {}", shell_quote(name)),
-                    lifecycle::Server::Path(path) => {
-                        format!("-S {}", shell_quote(&path.display().to_string()))
-                    }
-                };
-                return Err(format!(
-                    "{e}; brg can't confirm that {} stopped. Restore access to the recorded server; if it exited, create a recovery session with `tmux {socket} new-session -d -s brg_recovery`, then finish the cascade: brg stop {team}",
-                    uncertain.join(", ")
-                ));
+            for (id, _) in inst.record.kept_members() {
+                let inc = lifecycle::load_incarnation(state, id).map_err(|error| {
+                    format!(
+                        "{error}; restore `{team}/{id}`'s start record, then retry: brg stop {team}"
+                    )
+                })?;
+                if let Some(inc) = inc
+                    && inc.ended_at.is_none()
+                    && let Some(pane) = inc.pane
+                    && !lifecycle::process_exited(pane.pane_pid)
+                {
+                    return Err(format!(
+                        "{e}; brg can't confirm that `{team}/{id}`'s recorded process {} exited; end that process and ensure `ps` can check it, then retry: brg stop {team}",
+                        pane.pane_pid
+                    ));
+                }
             }
             Vec::new()
         }
     };
     let in_session = |r: &&lifecycle::PaneRow| r.session == session;
     let mut messages = Vec::new();
-    // The members running now, for the next full start.
-    let running: std::collections::BTreeSet<String> = rows
-        .iter()
-        .filter(in_session)
-        .filter(|r| !r.dead && inst.record.members.contains_key(&r.window))
-        .map(|r| r.window.clone())
-        .collect();
     // The processes under the panes this `stop` stops, found before tmux
     // kills the panes: some may have left the pane's session, and would
     // outlive it. Only live panes in this session on the recorded server,
@@ -2897,21 +2881,16 @@ fn stop_one(
         )
         .map_err(|e| format!("cannot write state: {e}"))?;
     }
-    // A full stop of a running instance records who ran; a second stop
-    // keeps the first's record. Stopping one member takes it off.
-    let mut record = registry::read_instance(state)?;
-    let before = record.running_at_stop.clone();
-    match only {
-        None if !record.stopping && !running.is_empty() => record.running_at_stop = Some(running),
-        None => {}
-        Some(id) => {
-            if let Some(set) = record.running_at_stop.as_mut() {
-                set.remove(id);
-            }
+    // Stopping one member removes it from the next full-start snapshot.
+    if let Some(id) = only {
+        let mut record = registry::read_instance(state)?;
+        if record
+            .running_at_stop
+            .as_mut()
+            .is_some_and(|set| set.remove(id))
+        {
+            lock.save_instance(state, &record)?;
         }
-    }
-    if record.running_at_stop != before {
-        lock.save_instance(state, &record)?;
     }
     Ok(messages)
 }

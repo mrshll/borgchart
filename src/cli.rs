@@ -66,9 +66,11 @@ enum Command {
         team: Option<PathBuf>,
     },
     /// Stop an instance and all its copies deepest first, or one member.
-    /// For departments and copies, persist `stopping` before the cascade, refusing create/start inside
+    /// Every full stop persists `stopping` before the cascade, refusing create/start inside
     /// it until every instance is certainly stopped. Run stop again to
     /// finish an interrupted cascade. A second stop keeps who ran.
+    /// If the server is gone, end any surviving recorded process and retry stop.
+    /// For other server errors, fix access and retry stop.
     /// With a bus, a member caller may manage only its subtree, using its
     /// latest running start. A copy's roots cannot stop their own copy.
     Stop {
