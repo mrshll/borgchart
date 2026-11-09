@@ -4,7 +4,7 @@ Teams, instances, roles, copies up to `max` and the four verbs (`create`, `start
 
 ## The files
 
-A real team lives in [`dev-team/`](../dev-team/): the team this repository is developed with, plus [`dev-design-team/`](../dev-design-team/), the design panel its lead seats. The sketch below is a smaller version of it:
+A real team lives in [`dev-team/`](../borgchart-engineering/teams/dev-team/): the team this repository is developed with, plus [`dev-design-team/`](../borgchart-engineering/teams/dev-team/teams/dev-design-team/), the design panel its lead seats. The sketch below is a smaller version of it:
 
 ```
 devteam/

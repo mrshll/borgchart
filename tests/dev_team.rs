@@ -1,7 +1,8 @@
-//! A development team (`dev-team/`) and its design panel
-//! (`dev-design-team/`): the README's deployment validates, the member
-//! files expand and stay generic, one message round works with `fake-agent`
-//! members, and the lead can seat the design panel.
+//! A development team (`borgchart-engineering/teams/dev-team/`) and its
+//! design panel (`teams/dev-design-team/` inside it): the README's
+//! deployment validates, the member files expand and stay generic, one
+//! message round works with `fake-agent` members, and the lead can seat the
+//! design panel.
 
 mod common;
 
@@ -11,8 +12,14 @@ use std::process::{Command, Output};
 
 const TEAMS: [&str; 2] = ["dev-team", "dev-design-team"];
 
+/// Where each team's folder sits in the repository.
 fn team_dir(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join(name)
+    let dev = Path::new(env!("CARGO_MANIFEST_DIR")).join("borgchart-engineering/teams/dev-team");
+    match name {
+        "dev-team" => dev,
+        "dev-design-team" => dev.join("teams/dev-design-team"),
+        _ => panic!("no team folder `{name}`"),
+    }
 }
 
 fn dev_team() -> PathBuf {
