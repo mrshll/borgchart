@@ -150,7 +150,15 @@ fn write_context_probe(keep: &std::path::Path, env: &BTreeMap<String, String>) {
     let mut absolute = script.clone();
     let bin = &env["BORGCHART_BIN"];
     assert!(std::path::Path::new(bin).is_absolute());
-    let digest = Command::new("/usr/bin/sha256sum")
+    // Both generation and verification use the same absolute system utility;
+    // macOS ships shasum rather than GNU sha256sum. Never resolve it via PATH.
+    let hash_command: &[&str] = if cfg!(target_os = "macos") {
+        &["/usr/bin/shasum", "-a", "256"]
+    } else {
+        &["/usr/bin/sha256sum"]
+    };
+    let digest = Command::new(hash_command[0])
+        .args(&hash_command[1..])
         .arg(bin)
         .output()
         .unwrap();
@@ -164,7 +172,12 @@ fn write_context_probe(keep: &std::path::Path, env: &BTreeMap<String, String>) {
     .unwrap();
     writeln!(
         absolute,
-        "[ \"$(/usr/bin/sha256sum {})\" = {} ] || {{ echo BLOCKED_absolute_digest; exit 78; }}",
+        "[ \"$({} {})\" = {} ] || {{ echo BLOCKED_absolute_digest; exit 78; }}",
+        hash_command
+            .iter()
+            .map(|arg| quote(arg))
+            .collect::<Vec<_>>()
+            .join(" "),
         quote(bin),
         quote(digest.trim_end())
     )
@@ -316,6 +329,29 @@ fn direct_vendor_brg_cannot_fall_back_to_inherited_defaults() {
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
         "OWNED_ABSOLUTE_CONTEXT_VERIFIED\n[]\n"
+    );
+    // A replaced executable must be refused before it can run, even when all
+    // owned context values match and PATH cannot supply a hashing utility.
+    let changed_context = keep.path().join("changed-binary");
+    std::fs::create_dir_all(&changed_context).unwrap();
+    let changed_bin = changed_context.join("brg");
+    std::fs::write(&changed_bin, "#!/bin/sh\necho ORIGINAL_BINARY\n").unwrap();
+    std::fs::set_permissions(&changed_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut changed_env = env.clone();
+    changed_env.insert("BORGCHART_BIN".into(), changed_bin.display().to_string());
+    changed_env.insert("PATH".into(), fake_bin.display().to_string());
+    write_context_probe(&changed_context, &changed_env);
+    std::fs::write(&changed_bin, "#!/bin/sh\necho REPLACED_BINARY\n").unwrap();
+    let refused = Command::new("/bin/sh")
+        .arg(changed_context.join("absolute-context-probe.sh"))
+        .env_clear()
+        .envs(changed_env)
+        .output()
+        .unwrap();
+    assert_eq!(refused.status.code(), Some(78), "{refused:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&refused.stdout),
+        "BLOCKED_absolute_digest\n"
     );
     let checked = Command::new("/bin/sh")
         .arg(&probe)
