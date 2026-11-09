@@ -61,7 +61,7 @@ Never launch on another vendor, model or effort instead, and never buy, redeem o
 ## Start a workstream
 
 1. **Create the copy:** `"$BORGCHART_BIN" create "$BORGCHART_INSTANCE/dev"`. A team role's copy is created stopped: this prints its full instance ID (`<department>/dev-…`) and the folder to prepare, and nothing starts.
-2. **Prepare it:** `git -C <folder>/lead worktree add <copy folder>/repo <branch>`, or `--detach <base>` for a new branch the copy creates. Then check hooks.
+2. **Prepare it:** `git -C <folder>/lead worktree add <copy folder>/repo <branch>`, or `--detach <base>` for a new branch the copy creates. Then check hooks and run `agent-gh --setup` inside the new worktree before briefing its lead.
 3. **Seat-check, then start it:** `"$BORGCHART_BIN" start <copy ID>`. Check `status` shows its lead started; if it's `blocked`, tell the owner, and don't create a replacement.
 4. **Brief its lead** (see "Brief and follow"). Its full address is in `status`.
 

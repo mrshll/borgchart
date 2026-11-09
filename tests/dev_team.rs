@@ -381,9 +381,9 @@ fn the_team_files_stay_generic() {
     }
     // Machine paths and unapproved private names never belong here.
     let home = regex::Regex::new(r"/(home|Users)/[^/\s]+|/tmp/|/root/").unwrap();
-    // The one exception: the department's and the dev team's files (not
-    // the panel's) name the repository's owner and reviewer by his public
-    // handle, exactly as `@<handle>`.
+    // The owner's @handle is allowed outside the panel. Below, the approved
+    // account and wrapper are allowed everywhere, and the bare owner login
+    // only in git.md's review-request command.
     let owner = regex::Regex::new(r"@mrshll([^A-Za-z0-9_-]|$)").unwrap();
     let panel = team_dir("dev-design-team");
     let word = regex::Regex::new(r"[A-Za-z0-9_-]+").unwrap();
