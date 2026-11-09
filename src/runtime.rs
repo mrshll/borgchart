@@ -3764,6 +3764,24 @@ fn attach_command(inst: &Instance, name: &str) -> Result<Command, String> {
     Ok(cmd)
 }
 
+/// Test builds: `BORGCHART_TEST_SWITCH_PAUSE=<path>` makes Enter's switch
+/// write `<path>.waiting` and wait (up to 30 s) for `<path>` before it
+/// switches, so a test can use another client meanwhile.
+#[cfg(feature = "test-support")]
+fn switch_pause() {
+    let Some(path) = std::env::var_os("BORGCHART_TEST_SWITCH_PAUSE").map(PathBuf::from) else {
+        return;
+    };
+    let _ = std::fs::write(path.with_extension("waiting"), "");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !path.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[cfg(not(feature = "test-support"))]
+fn switch_pause() {}
+
 /// Whether this process runs inside the instance's own tmux server, as in
 /// the `prefix S` pop-up.
 pub fn inside_server(inst: &Instance) -> bool {
@@ -3771,20 +3789,25 @@ pub fn inside_server(inst: &Instance) -> bool {
     crate::tmux::names_server(std::env::var("TMUX").ok().as_deref(), socket.as_deref())
 }
 
-/// Switch the tmux client this process runs under to the member's window.
-/// tmux finds that client from the caller's `TMUX` and `TMUX_PANE`, so they
-/// are kept.
-pub fn switch_to(inst: &Instance, name: &str) -> Result<(), String> {
+/// Switch `client`, or with none the tmux client this process runs under,
+/// to the member's window. tmux finds that client from the caller's `TMUX`
+/// and `TMUX_PANE`, so they are kept; a pop-up has no pane, so it names its
+/// client.
+pub fn switch_to(inst: &Instance, name: &str, client: Option<&str>) -> Result<(), String> {
     let session = inst.state.session();
     let tmux = tmux_for(&inst.state);
     let window = window_name(inst, &tmux, &session, name)?;
     let Some(socket) = state::read_meta(&inst.state).and_then(|m| m.socket_path) else {
         return Err(format!("`{}` is not running", inst.at(name)));
     };
-    let out = Command::new("tmux")
-        .arg("-S")
-        .arg(socket)
-        .args(["switch-client", "-t", &target(&session, &window)])
+    switch_pause();
+    let mut cmd = Command::new("tmux");
+    cmd.arg("-S").arg(socket).arg("switch-client");
+    if let Some(client) = client {
+        cmd.args(["-c", client]);
+    }
+    let out = cmd
+        .args(["-t", &target(&session, &window)])
         .stdin(std::process::Stdio::null())
         .output()
         .map_err(|e| format!("cannot start tmux: {e}"))?;

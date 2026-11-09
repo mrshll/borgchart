@@ -245,9 +245,9 @@ fn draw(
 
 /// `brg status -i`. With no instance, every instance, each under its
 /// header line; Enter attaches in the selected member's own instance, or,
-/// run inside that instance's tmux server, switches this client to the
-/// member and ends.
-pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
+/// run inside that instance's tmux server, switches `client` (default: the
+/// one this runs under) to the member and ends.
+pub fn interactive(one: Option<&Instance>, client: Option<&str>) -> Result<(), String> {
     let mut sections = load(one)?;
     let headers = one.is_none();
     // One instance: the same header line as `brg status` (the instance, its
@@ -345,10 +345,10 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
                         continue;
                     }
                 };
-                // Inside brg's own server (the `prefix S` pop-up), move this
+                // Inside brg's own server (the `prefix S` pop-up), move the
                 // client to the member and end, which closes the pop-up.
                 if runtime::inside_server(&inst) {
-                    match runtime::switch_to(&inst, &name) {
+                    match runtime::switch_to(&inst, &name, client) {
                         Ok(()) => break Ok(()),
                         Err(e) => {
                             message = e;

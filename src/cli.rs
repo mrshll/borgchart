@@ -124,6 +124,10 @@ enum Command {
         /// An interactive screen: j/k to move, Enter to attach, q to quit.
         #[arg(short, long)]
         interactive: bool,
+        /// The tmux client Enter moves inside brg's server (the `prefix S`
+        /// pop-up names the one that opened it).
+        #[arg(long, hide = true, requires = "interactive")]
+        client: Option<String>,
     },
     /// Open a member's live session (detach with your tmux prefix, then d).
     Attach {
@@ -373,6 +377,7 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
             watch,
             interactive,
             interval,
+            client,
         } => {
             let one = match &instance {
                 Some(id) => match or_fail!(address::resolve(id)) {
@@ -388,7 +393,7 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
             };
             if watch || interactive {
                 let result = if interactive {
-                    crate::tui::interactive(one.as_ref())
+                    crate::tui::interactive(one.as_ref(), client.as_deref())
                 } else {
                     crate::tui::watch(
                         one.as_ref(),

@@ -390,7 +390,7 @@ fn brg_tmux_config_puts_the_status_line_on_top_and_binds_the_pop_up() {
                 .chars()
                 .skip(54)
                 .collect::<String>()
-                .starts_with("┌─ brg status")
+                .starts_with("┌──")
             && lines[2].chars().count() == 118
             && s.contains(&alpha)
     });
@@ -407,7 +407,7 @@ fn brg_tmux_config_puts_the_status_line_on_top_and_binds_the_pop_up() {
     keys(&["Enter"]);
     env.wait_for(
         "the client on the selected member, the pop-up closed",
-        || client_window() == format!("{selected}\n") && !screen().contains("brg status"),
+        || client_window() == format!("{selected}\n") && !screen().contains("j/k move"),
     );
 
     // On a client narrower and shorter than the pop-up, it fills the width
@@ -426,11 +426,11 @@ fn brg_tmux_config_puts_the_status_line_on_top_and_binds_the_pop_up() {
     env.wait_for("the narrow pop-up", || {
         let s = screen();
         let lines: Vec<&str> = s.lines().collect();
-        lines.len() == 14 && lines[2].starts_with("┌─ brg status") && lines[13].starts_with("└")
+        lines.len() == 14 && lines[2].starts_with("┌──") && lines[13].starts_with("└")
     });
     keys(&["q"]);
     env.wait_for("the narrow pop-up closed", || {
-        !screen().contains("brg status")
+        !screen().contains("j/k move")
     });
 }
 
@@ -519,28 +519,6 @@ fn status_line_leaves_out_members_whose_program_exited() {
     assert_eq!(env.line(&id), "no members running\n");
 }
 
-// Catches: a member whose program exited (its dead pane kept) shown in the
-// bar as running with an unknown state, so the bar never says nothing runs.
-#[test]
-fn status_line_leaves_out_members_whose_program_exited() {
-    let env = Env::new();
-    let id = env.create();
-    let alpha = env.member(&id, "alpha");
-    let crash = |role: &str| {
-        let member = env.member(&id, role);
-        let out = env.brg(&["send", &format!("{id}/{member}"), "crash 3"]);
-        assert!(out.status.success(), "{out:?}");
-        env.wait_for("the member exited", || env.state_of(&id, role) == "exited");
-    };
-    crash("beta");
-    assert_eq!(
-        env.line(&id),
-        format!("{}\n", mark("colour245", "○", &alpha))
-    );
-    crash("alpha");
-    assert_eq!(env.line(&id), "no members running\n");
-}
-
 // Catches: bare `--line` dropping an instance whose record can't be read and
 // printing the rest (or "no members running") as if that were everything.
 #[test]
@@ -575,4 +553,108 @@ fn bare_status_line_fails_when_an_instance_cannot_be_read() {
         String::from_utf8_lossy(&out.stderr).contains(&broken),
         "{out:?}"
     );
+}
+
+// Catches: Enter in the pop-up moving the client used most recently, which
+// may be someone else's in another session, instead of the pop-up's own.
+#[test]
+fn enter_in_the_pop_up_switches_its_own_client_not_the_last_active_one() {
+    let env = Env::new();
+    let id = env.create();
+    let session = format!("brg-{id}");
+    let alpha = env.member(&id, "alpha");
+    let socket = env.tmux(&["display", "-p", "#{socket_path}"]);
+    let socket = socket.trim_end();
+    // Another session on brg's server, whose pane shows what is typed.
+    env.tmux(&["new-session", "-d", "-s", "other"]);
+    // The pop-up's brg waits before switching until the test says go.
+    let pause = env.path("switch");
+    env.tmux(&[
+        "set-environment",
+        "-g",
+        "BORGCHART_TEST_SWITCH_PAUSE",
+        &pause.display().to_string(),
+    ]);
+
+    // Two real clients, A on the instance's session and B on the other,
+    // each attached from a pane of an outer server.
+    let outer = env.tmux.socket("brg-bar-two");
+    for (name, target) in [("a", session.as_str()), ("b", "other")] {
+        let status = env
+            .tmux
+            .tmux(&outer)
+            .args(["new-session", "-d", "-s", name, "-x", "120", "-y", "30"])
+            .arg(format!(
+                "env -u TMUX {} -S '{socket}' attach -t '={target}:'",
+                env.tmux.guard().display()
+            ))
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+    let outer_out = |args: &[&str]| {
+        let out = env.tmux.tmux(&outer).args(args).output().unwrap();
+        assert!(out.status.success(), "{args:?}: {out:?}");
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    let keys = |client: &str, keys: &[&str]| {
+        let target = format!("={client}:");
+        let mut args = vec!["send-keys", "-t", target.as_str()];
+        args.extend(keys);
+        outer_out(&args);
+    };
+    let screen = |client: &str| outer_out(&["capture-pane", "-p", "-t", &format!("={client}:")]);
+    let tty = |client: &str| {
+        outer_out(&["display", "-p", "-t", &format!("={client}:"), "#{pane_tty}"])
+            .trim_end()
+            .to_string()
+    };
+    let (a, b) = (tty("a"), tty("b"));
+    // Where a client is: `<session>:<window>`.
+    let on = |client: &str| {
+        env.tmux(&[
+            "list-clients",
+            "-F",
+            "#{client_tty} #{session_name}:#{window_name}",
+        ])
+        .lines()
+        .find_map(|l| {
+            l.strip_prefix(&format!("{client} "))
+                .map(|w| format!("{w}\n"))
+        })
+        .unwrap_or_default()
+    };
+    env.wait_for("both clients attached", || {
+        on(&a).starts_with(&format!("{session}:")) && on(&b).starts_with("other:")
+    });
+
+    let first = on(&a);
+    keys("a", &["C-b", "S"]);
+    env.wait_for("A's pop-up with alpha's row", || {
+        let s = screen("a");
+        s.contains("j/k move") && s.contains(&alpha)
+    });
+    let selected = if first == format!("{session}:{alpha}\n") {
+        keys("a", &["j"]);
+        std::thread::sleep(Duration::from_millis(300));
+        env.member(&id, "beta")
+    } else {
+        alpha
+    };
+    keys("a", &["Enter"]);
+    env.wait_for("the switch to pause", || {
+        pause.with_extension("waiting").exists()
+    });
+    // B is used after A's Enter, so it is the most recently active client.
+    keys("b", &["zq7"]);
+    env.wait_for("B's keys to reach brg's server", || {
+        env.tmux(&["capture-pane", "-p", "-t", "=other:"])
+            .contains("zq7")
+    });
+    fs::write(&pause, "").unwrap();
+
+    env.wait_for("A on the selected member, its pop-up closed", || {
+        on(&a) == format!("{session}:{selected}\n") && !screen("a").contains("j/k move")
+    });
+    assert!(on(&b).starts_with("other:"), "B moved: {}", on(&b));
 }

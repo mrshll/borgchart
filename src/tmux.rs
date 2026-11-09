@@ -48,10 +48,16 @@ pub const USER_CONFIG_OPTION: &str = "@brg-user-config";
 /// plain word for the shell and for tmux's command parser.
 const SESSION_INSTANCE: &str = "#{s|[^-_a-z0-9/]||:#{s|^brg-||:session_name}}";
 
+/// The client a key binding runs for, as a tmux format: its name (a
+/// terminal's path) keeping only the characters such a path has, so it is a
+/// plain word for tmux's command parser.
+const CLIENT: &str = "#{s|[^-_./a-zA-Z0-9]||:client_name}";
+
 /// The status bar and `prefix S` pop-up, with `brg` the absolute path of the
 /// brg writing the config: the bar on top, its right side `brg status
 /// --line` for the attached session's instance, and the pop-up `brg status
-/// -i` for it, top right, 2 cells from the edges (narrower and shorter on a
+/// -i` for it, told which client pressed the keys so Enter moves that one,
+/// top right, 2 cells from the edges (narrower and shorter on a
 /// small client; tmux's `-y` is the pop-up's bottom line). tmux runs both
 /// with its server's environment, which brg started it with.
 fn status_config(brg: &Path) -> String {
@@ -65,7 +71,7 @@ fn status_config(brg: &Path) -> String {
     // as tmux commands; the path, a word of its own there, runs without a
     // shell.
     let popup = format!(
-        "display-popup -x '#{{?#{{e|<:#{{client_width}},66}},0,#{{e|-:#{{client_width}},66}}}}' -y '#{{?#{{e|<:#{{client_height}},18}},#{{client_height}},18}}' -w '#{{?#{{e|<:#{{client_width}},66}},#{{client_width}},64}}' -h '#{{?#{{e|<:#{{client_height}},18}},#{{e|-:#{{client_height}},2}},16}}' -T ' brg status ' -E {} status -i {SESSION_INSTANCE}",
+        "display-popup -x '#{{?#{{e|<:#{{client_width}},66}},0,#{{e|-:#{{client_width}},66}}}}' -y '#{{?#{{e|<:#{{client_height}},18}},#{{client_height}},18}}' -w '#{{?#{{e|<:#{{client_width}},66}},#{{client_width}},64}}' -h '#{{?#{{e|<:#{{client_height}},18}},#{{e|-:#{{client_height}},2}},16}}' -E {} status -i --client={CLIENT} {SESSION_INSTANCE}",
         quote(&brg.replace('#', "##"))
     );
     format!(
