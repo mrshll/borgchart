@@ -218,11 +218,12 @@ impl Tmux {
         let format = format!(
             "#{{window_id}}\t#{{window_name}}\t#{{pane_id}}\t#{{{OWN_PANE}}}\t#{{pane_dead}}\t#{{pane_dead_status}}\t#{{pane_pid}}\t#{{pane_in_mode}}\t#{{pane_title}}"
         );
+        // The trailing `:` names the session, never a window of that name.
         let Ok(out) = self.ok(&[
             "list-panes",
             "-s",
             "-t",
-            &format!("={session}"),
+            &format!("={session}:"),
             "-F",
             &format,
         ]) else {
