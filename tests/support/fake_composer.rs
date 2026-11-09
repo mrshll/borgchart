@@ -110,18 +110,31 @@ impl Fake {
         self.log(serde_json::json!({"event": "control", "text": text}));
     }
 
-    /// The input box's lines, wrapped to the pane width.
+    /// The input box's lines, wrapped as the real boxes wrap (see the
+    /// `*-wrapped` screens in tests/fixtures): after the two-column prompt
+    /// or indent, at the last space before the text would pass the pane's
+    /// edge, the space dropped; a word longer than a line is cut at the edge.
     fn box_lines(&self) -> Vec<String> {
-        let w = self.width.saturating_sub(4).max(10);
+        let w = self.width.saturating_sub(2).max(10);
         let mut out = Vec::new();
         for line in self.buffer.split('\n') {
-            let chars: Vec<char> = line.chars().collect();
-            if chars.is_empty() {
-                out.push(String::new());
+            let mut current: Vec<char> = Vec::new();
+            for (i, word) in line.split(' ').enumerate() {
+                let word: Vec<char> = word.chars().collect();
+                if i > 0 {
+                    if current.len() + 1 + word.len() <= w {
+                        current.push(' ');
+                    } else {
+                        out.push(current.iter().collect());
+                        current.clear();
+                    }
+                }
+                current.extend(word);
+                while current.len() > w {
+                    out.push(current.drain(..w).collect());
+                }
             }
-            for chunk in chars.chunks(w) {
-                out.push(chunk.iter().collect());
-            }
+            out.push(current.iter().collect());
         }
         // Like the real boxes: at most 20 lines, scrolled to the end.
         let skip = out.len().saturating_sub(20);

@@ -1061,7 +1061,9 @@ fn an_ack_file_for_a_locked_record_is_corrupt_not_consumption() {
 }
 
 // Catches: the reminder typed into the window's active pane, which a pane
-// beside the member (a sidebar, or one a person opened) would be.
+// beside the member (a sidebar, or one a person opened) would be. The pane
+// is laid out as brg's sidebar on a 120-column terminal: 40 columns on the
+// right, leaving the member 79.
 #[test]
 fn the_reminder_goes_to_the_members_pane_not_a_focused_one_beside_it() {
     for v in VENDORS {
@@ -1071,9 +1073,9 @@ fn the_reminder_goes_to_the_members_pane_not_a_focused_one_beside_it() {
             .tmux
             .ok(&[
                 "split-window",
-                "-hb",
+                "-h",
                 "-l",
-                "30",
+                "40",
                 "-P",
                 "-F",
                 "#{pane_id}",
@@ -1083,6 +1085,13 @@ fn the_reminder_goes_to_the_members_pane_not_a_focused_one_beside_it() {
             ])
             .unwrap();
         let beside = beside.trim();
+        assert_eq!(
+            e.tmux
+                .ok(&["display", "-p", "-t", &pane.pane_id, "#{pane_width}"])
+                .unwrap()
+                .trim(),
+            "79"
+        );
         assert_eq!(
             e.tmux
                 .ok(&["display", "-p", "-t", "=s:=m", "#{pane_id}"])
@@ -1108,5 +1117,42 @@ fn the_reminder_goes_to_the_members_pane_not_a_focused_one_beside_it() {
         assert_eq!(e.submissions(), vec![REMINDER.to_string()]);
         let text = e.tmux.ok(&["capture-pane", "-p", "-t", beside]).unwrap();
         assert!(text.trim().is_empty(), "{v:?}: typed beside: {text}");
+    }
+}
+
+// Catches: the reminder pasted and Enter withheld ("doesn't hold exactly
+// the reminder") when the vendor wraps it onto a second line by a few
+// characters, as on panes 75–79 columns wide: a 120-column terminal with
+// brg's 40-column sidebar beside the member leaves it 79.
+#[test]
+fn the_reminder_is_submitted_when_it_just_wraps() {
+    for v in VENDORS {
+        for width in 74..=81 {
+            let e = Env::new(v);
+            e.tmux
+                .ok(&["resize-window", "-t", "=s:=m", "-x", &width.to_string()])
+                .unwrap();
+            // The fake redraws within 50 ms of a resize.
+            std::thread::sleep(Duration::from_millis(300));
+            // At 78 the reminder (76 characters after the 2-column prompt)
+            // fills its line exactly: the cursor can't show it ended there,
+            // so nothing is typed.
+            if width == REMINDER.chars().count() + 2 {
+                let (r, calls) = e.attempt(v);
+                assert!(
+                    matches!(r, WakeResult::Deferred(Defer::Uncertain(_))),
+                    "{v:?}: {r:?}"
+                );
+                assert_eq!(calls, 0, "{v:?}");
+                assert!(e.events("paste").is_empty(), "{v:?}");
+                continue;
+            }
+            assert_eq!(e.attempt(v), (WakeResult::Submitted, 1), "{v:?} at {width}");
+            assert_eq!(
+                e.submissions(),
+                vec![REMINDER.to_string()],
+                "{v:?} at {width}"
+            );
+        }
     }
 }
