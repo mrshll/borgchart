@@ -1,8 +1,9 @@
-//! A development team (`borgchart-engineering/teams/dev-team/`) and its
-//! design panel (`teams/dev-design-team/` inside it): the README's
-//! deployment validates, the member files expand and stay generic, one
-//! message round works with `fake-agent` members, and the lead can seat the
-//! design panel.
+//! The engineering department (`borgchart-engineering/`), its development
+//! team (`teams/dev-team/`) and that team's design panel
+//! (`teams/dev-design-team/` inside it): the READMEs' deployments
+//! validate, the member files expand and stay generic, one message round
+//! works with `fake-agent` members, the dev lead seats its panel, and the
+//! department lead starts a dev copy.
 
 mod common;
 
@@ -21,6 +22,11 @@ fn team_dir(name: &str) -> PathBuf {
         "dev-design-team" => dev.join("teams/dev-design-team"),
         _ => panic!("no team folder `{name}`"),
     }
+}
+
+/// The department's folder, which holds the dev team.
+fn department() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("borgchart-engineering")
 }
 
 fn dev_team() -> PathBuf {
@@ -59,17 +65,14 @@ fn readme_commands(prefix: &str) -> Vec<String> {
 const FAKE_SEAT: &str =
     "#!/bin/sh\necho \"$*\" >> \"$(dirname \"$0\")/asked\"\necho 'go: a fictional usage source'\n";
 
-/// As the README sets it up: a pinned copy of the repository's dev team
-/// (its panel inside it) in `dir/pinned`, where brg runs; the seating
+/// As the README sets it up: a pinned copy of the repository's department
+/// (the dev team and its panel inside it) in `dir/pinned`, where brg runs; the seating
 /// plugin, here a fake, in `dir/plugins/seat`; and a README configuration
 /// block pointing there (`dir/config.yaml`). The instance's folder is
 /// `dir/work`, with its shared checkout in `dir/work/repo`.
 fn setup(dir: &Path, text: &str) -> PathBuf {
     fs::create_dir_all(dir.join("work/repo")).unwrap();
-    copy_dir(
-        &dev_team(),
-        &dir.join("pinned/borgchart-engineering/teams/dev-team"),
-    );
+    copy_dir(&department(), &dir.join("pinned/borgchart-engineering"));
     let seat = dir.join("plugins/seat");
     fs::create_dir_all(&seat).unwrap();
     fs::write(seat.join("seat"), FAKE_SEAT).unwrap();
@@ -149,6 +152,20 @@ fn the_readme_configuration_validates_cleanly() {
         }
     }
 }
+/// The department validates from its folder, with the README's
+/// configuration and the seating plugin in `plugins_dir`, cleanly.
+#[test]
+fn the_department_validates_cleanly() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = setup(dir.path(), &readme_configs()[0]);
+    let out = validate(dir.path(), &config, "./borgchart-engineering");
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&out.stderr)));
+    assert!(out.status.success(), "{report}");
+    assert_eq!(report["errors"], serde_json::json!([]), "{report}");
+    assert_eq!(report["warnings"], serde_json::json!([]), "{report}");
+}
+
 /// Each team's member files, by the `prompt:` lines of its `team.yaml`.
 fn member_files(team: &str) -> Vec<PathBuf> {
     let text = fs::read_to_string(team_dir(team).join("team.yaml")).unwrap();
@@ -331,17 +348,15 @@ fn denied_word(text: &str) -> Option<String> {
 #[test]
 fn the_team_files_stay_generic() {
     assert!(denied_word("the owner merges").is_none());
-    // Only the owner's handle is allowed, only in the dev team's own files,
-    // and only as `@<handle>`: other forms and other denied words stay
-    // denied.
+    // Only the owner's handle is allowed, only in the department's and the
+    // dev team's own files, and only as `@<handle>`: other forms and other
+    // denied words stay denied.
     assert!(denied_word("mrshll-agent").is_some());
 
     // Every file of the department, its teams included.
     let mut files = Vec::new();
-    walk(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("borgchart-engineering"),
-        &mut files,
-    );
+    walk(&department(), &mut files);
+    assert!(files.contains(&department().join("lead.md")), "{files:?}");
     for team in TEAMS {
         let held = files.iter().filter(|f| f.starts_with(team_dir(team)));
         assert!(held.count() >= 2, "{team}: {files:?}");
@@ -349,15 +364,14 @@ fn the_team_files_stay_generic() {
     // Machine paths, private tooling and people stay in the private
     // deployment file, never here.
     let home = regex::Regex::new(r"/(home|Users)/[^/\s]+|/tmp/|/root/").unwrap();
-    // The one exception: the dev team's own files (not its panel's) name
-    // the repository's owner and reviewer by his public handle, exactly as
-    // `@<handle>`.
+    // The one exception: the department's and the dev team's files (not
+    // the panel's) name the repository's owner and reviewer by his public
+    // handle, exactly as `@<handle>`.
     let owner = regex::Regex::new(r"@mrshll([^A-Za-z0-9_-]|$)").unwrap();
-    let dev_team = team_dir("dev-team");
     let panel = team_dir("dev-design-team");
     for file in files {
         let text = fs::read_to_string(&file).unwrap();
-        let text = if file.starts_with(&dev_team) && !file.starts_with(&panel) {
+        let text = if !file.starts_with(&panel) {
             owner.replace_all(&text, "$1").to_string()
         } else {
             text
@@ -1034,6 +1048,247 @@ mod round {
         // The dev team still runs.
         team.wait_idle("lead");
         team.ok(&["stop", &inst]);
+    }
+
+    /// The opening prompt of `member` in `instance`: its expanded role file.
+    fn prompt_of(team: &Team, instance: &str, member: &str) -> String {
+        let log = team.path(&format!("home/fake-agent/{member}.jsonl"));
+        team.wait_for(&format!("{member} started"), || log.exists());
+        let start: serde_json::Value =
+            serde_json::from_str(fs::read_to_string(&log).unwrap().lines().next().unwrap())
+                .unwrap();
+        assert_eq!(start["env"]["BORGCHART_INSTANCE"], instance);
+        start["argv"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// The department's own steps, run from inside its lead with the
+    /// commands lead.md gives: `create` of `dev` makes a stopped copy, the
+    /// lead adds the copy's `repo/` worktree from `lead/`, checks seating
+    /// and starts it, and the dev lead's parent is the department lead.
+    /// Every launched member gets the common rules; only the dev lead gets
+    /// the dev-only ones.
+    #[test]
+    fn the_department_lead_starts_a_dev_copy_with_its_documented_steps() {
+        let team = new_team("dept");
+        let checkout = team.path("work/lead");
+        fs::create_dir_all(&checkout).unwrap();
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&checkout)
+                .args(args)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+        };
+        git(&["init", "-q"]);
+        git(&[
+            "-c",
+            "user.name=Fictional Dev",
+            "-c",
+            "user.email=dev@example.com",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "baseline",
+        ]);
+        git(&["branch", "example/work"]);
+
+        team.ok(&[
+            "create",
+            &team
+                .path("pinned/borgchart-engineering")
+                .display()
+                .to_string(),
+            &team.path("work").display().to_string(),
+        ]);
+        let dept = team
+            .instance_of("borgchart-engineering")
+            .expect("the department's instance");
+        let dept_lead = team.member_in(&dept, "lead");
+        let rows = |instance: &str| -> Vec<serde_json::Value> {
+            serde_json::from_slice(&team.brg(&["status", instance, "--json"]).stdout)
+                .unwrap_or_default()
+        };
+        let idle = |instance: &str, member: &str| {
+            team.wait_for(&format!("{member} idle"), || {
+                rows(instance)
+                    .iter()
+                    .any(|r| r["member"] == member && r["state"] == "idle")
+            });
+        };
+        let rule = member_body(&department().join("lead.md"));
+        // A documented command, run inside the department lead.
+        let run = |name: &str, script: &str| {
+            let out = team.path(&format!("s/{name}.out"));
+            let path = team.path(&format!("s/{name}.sh"));
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(
+                &path,
+                format!(
+                    "( {script}\n) > {o} 2>&1; echo \"exit $?\" >> {o}\n",
+                    o = out.display()
+                ),
+            )
+            .unwrap();
+            idle(&dept, &dept_lead);
+            team.ok(&[
+                "send",
+                &format!("{dept}/{dept_lead}"),
+                &format!("tool sh {}", path.display()),
+            ]);
+            team.wait_for(&format!("{name} output"), || {
+                fs::read_to_string(&out).is_ok_and(|t| t.contains("exit "))
+            });
+            let text = fs::read_to_string(&out).unwrap();
+            let (text, code) = text.rsplit_once("exit ").unwrap();
+            (text.to_string(), code.trim().parse::<i32>().unwrap())
+        };
+
+        let (up, code) = run(
+            "dev-create",
+            &documented(
+                &rule,
+                "\"$BORGCHART_BIN\" create \"$BORGCHART_INSTANCE/dev\"",
+            ),
+        );
+        assert_eq!(code, 0, "{up}");
+        let copy_id = up.split_whitespace().next().unwrap().to_string();
+        let copy = copy_id
+            .strip_prefix(&format!("{dept}/"))
+            .unwrap_or_else(|| panic!("{up}"))
+            .to_string();
+        assert!(copy.starts_with("dev-"), "{up}");
+        let folder = team.path("work/dev").join(&copy);
+        assert!(folder.is_dir() && !folder.join("repo").exists(), "{up}");
+        assert!(
+            rows(&copy_id).iter().all(|r| r["member"].is_null()),
+            "nothing starts at create"
+        );
+
+        let fill = |command: String| {
+            command
+                .replace("<folder>", &team.path("work").display().to_string())
+                .replace("<copy folder>", &folder.display().to_string())
+                .replace("<copy ID>", &copy_id)
+                .replace("<copy>", &copy)
+                .replace("<branch>", "example/work")
+        };
+        let (prepared, code) = run(
+            "dev-prepare",
+            &fill(documented(
+                &rule,
+                "git -C <folder>/lead worktree add <copy folder>/repo",
+            )),
+        );
+        assert_eq!(code, 0, "{prepared}");
+        assert!(folder.join("repo/.git").exists());
+
+        let lead_row = rows(&copy_id)
+            .into_iter()
+            .find(|r| r["role"] == "lead")
+            .expect("the copy's lead role");
+        let route = documented(&rule, "seat route <vendor> <model>")
+            .replace("<vendor>", lead_row["vendor"].as_str().unwrap())
+            .replace(
+                "<model>",
+                lead_row["model"]
+                    .as_str()
+                    .unwrap()
+                    .split(' ')
+                    .next()
+                    .unwrap(),
+            );
+        let (answer, code) = run("dev-seat", &route);
+        assert_eq!((code, answer.trim()), (0, "go: a fictional usage source"));
+
+        let (started, code) = run(
+            "dev-start",
+            &fill(documented(&rule, "\"$BORGCHART_BIN\" start <copy ID>")),
+        );
+        assert_eq!(code, 0, "{started}");
+        let dev_lead = team.member_in(&copy_id, "lead");
+        let log = team.path(&format!("home/fake-agent/{dev_lead}.jsonl"));
+        team.wait_for("the dev lead", || log.exists());
+        let start: serde_json::Value =
+            serde_json::from_str(fs::read_to_string(&log).unwrap().lines().next().unwrap())
+                .unwrap();
+        assert_eq!(
+            start["cwd"],
+            folder
+                .join("repo")
+                .canonicalize()
+                .unwrap()
+                .display()
+                .to_string()
+        );
+        assert_eq!(
+            start["env"]["BORGCHART_PARENT"],
+            format!("{dept}/{dept_lead}")
+        );
+        let (notes, code) = run(
+            "dev-notes",
+            &format!(
+                "echo {}",
+                fill(documented(&rule, "\"$(dirname \"$BORGCHART_NOTES\")/"))
+            ),
+        );
+        assert_eq!(code, 0, "{notes}");
+        assert_eq!(
+            Path::new(notes.trim()).canonicalize().unwrap(),
+            Path::new(start["env"]["BORGCHART_NOTES"].as_str().unwrap())
+                .canonicalize()
+                .unwrap()
+        );
+
+        // Researchers and monitors are ordinary members; `create` starts one.
+        let create = documented(
+            &rule,
+            "\"$BORGCHART_BIN\" create \"$BORGCHART_INSTANCE/researcher\"",
+        );
+        for role in ["researcher", "monitor"] {
+            let (made, code) = run(
+                &format!("{role}-create"),
+                &create.replace("/researcher", &format!("/{role}")),
+            );
+            assert_eq!(code, 0, "{made}");
+        }
+
+        let common = fs::read_to_string(dev_team().join("includes/common.md")).unwrap();
+        let dev = fs::read_to_string(dev_team().join("includes/dev.md")).unwrap();
+        let dev_rules: Vec<&str> = dev.split("\n\n").map(str::trim).collect();
+        for (instance, role, dev_only) in [
+            (&dept, "lead", false),
+            (&dept, "researcher", false),
+            (&dept, "monitor", false),
+            (&copy_id, "lead", true),
+        ] {
+            let member = team.member_in(instance, role);
+            let prompt = prompt_of(&team, instance, &member);
+            assert!(
+                prompt.contains(common.trim()),
+                "{instance} {role}: {prompt}"
+            );
+            for paragraph in &dev_rules {
+                assert_eq!(
+                    prompt.contains(paragraph),
+                    dev_only,
+                    "{instance} {role}: {paragraph}"
+                );
+            }
+            assert!(!prompt.contains("{{"), "{instance} {role}: {prompt}");
+        }
+        team.ok(&["stop", &dept]);
     }
 
     /// Run brg with exactly the environment the lead was started with, as a
