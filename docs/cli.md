@@ -19,6 +19,7 @@
 | `brg start <instance>/<member>` | Start that member again, or say it is already running |
 | `brg start <instance> --team <path>` | Point a stopped instance at its team folder's new place (the same team name), keeping its ID and messages |
 | `brg stop <instance>[/<member>]` | Stop one member or the whole instance. Every full stop marks the instance and all its copies `stopping`, then stops deepest first, including instances with no copies or team roles. `create` and `start` anywhere inside are refused until the cascade finishes. Unknown liveness keeps the mark and the folder held. Run `stop <instance>` again to finish an interrupted cascade; a second stop keeps the record of who ran |
+| `brg stop -r <instance>/<member>` | Stop the member and its recorded subtree deepest first, including copies. A member caller may target descendants, never itself. Holds the registry lock for the walk, so other lifecycle changes wait. Stops at the first failure before ancestors; repeat the command to finish. Each stopped member is removed from the next full-start snapshot. With an instance target, this is the existing full stop |
 | `brg delete <instance> [--force]` | Remove a stopped instance: its messages, notes, brg's files and its registration. Refused unless every member is certainly stopped and its cascade is finished (`--force` never overrides this). Kept copies are listed and must be deleted first. Unacked messages, or messages brg can't read, need `--force`. The working folder is never touched |
 | `brg delete <instance>/<member> [--force]` | Remove a stopped member's live state, reserving its ID forever within the instance. Unacked messages are listed with a count and need `--force`; unreadable storage also needs `--force`. Running or unknown liveness is always refused. Kept children and team copies recorded under the member, running or stopped, are refused even with `--force` and listed by full address; delete them first. Immutable messages remain as history; messages to a deleted member no longer count as pending work and new ones are refused. `create <instance>/<role>` issues a new ID; `start <instance>` also replaces a deleted member of a `start: true` role. |
 | `brg ls [--json]` | The teams in the search paths, each with its instances (running or stopped), then instances of teams elsewhere. Copies remain listed as registered instances with their full nested IDs and working folders |
@@ -74,8 +75,11 @@ state is unreadable, then reports the unreadable copies and exits non-zero. Rest
 their state and retry `stop` to finish the cascade. Kept copies, including unreadable
 ones, must be deleted before deleting their parent instance. If the recorded tmux socket
 is absent or refuses connections, its windows are gone: members with no recorded
-process or with exited processes let the cascade finish. A surviving or unconfirmed
-recorded process keeps it marked; the refusal names the member and PID to end
+process, exited processes, or starts recorded under a different machine boot let
+the cascade finish. A single-member stop also succeeds for an old-boot start when
+the recorded server is absent. Each start stores the Linux boot ID or macOS boot-session
+UUID; a missing or unreadable identity remains conservative. Reachable live panes
+still count as alive. A surviving or unconfirmed same-boot process keeps it marked; the refusal names the member and PID to end
 before retrying `brg stop <instance>`. Other server errors keep it marked: fix the
 reported error, then retry `stop`. Stopping a copy separately removes
 it and its descendants from every ancestor's next full-start restore list.

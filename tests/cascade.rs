@@ -566,3 +566,112 @@ fn member_delete_preserves_kept_copies_even_with_force() {
     env.ok(&["delete", &dept]);
     assert!(folder.is_dir());
 }
+
+#[test]
+fn recursive_member_stop_reuses_nested_copy_cascades() {
+    let env = department();
+    let dept = env.create("oncall", "work/a");
+    let (dev, _) = prepared_copy(&env, &dept, "dev", "repo");
+    start(&env, &dev);
+    let (panel, _) = prepared_copy(&env, &dev, "design", "work");
+    start(&env, &panel);
+    let lead = env.member(&dept, "lead");
+    let mut stop = env
+        .cmd(&["stop", "-r", &format!("{dept}/{lead}")])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while stop.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() >= deadline {
+            stop.kill().unwrap();
+            stop.wait().unwrap();
+            panic!("nested recursive stop did not finish; possible registry relock");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let out = stop.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", both(&out));
+    let text = stdout(&out);
+    assert!(
+        text.find(&format!("{panel}: stopped")).unwrap()
+            < text.find(&format!("{dev}: stopped")).unwrap(),
+        "{text}"
+    );
+    assert!(
+        text.find(&format!("{dev}: stopped")).unwrap()
+            < text.find(&format!("{lead}: stopped")).unwrap(),
+        "{text}"
+    );
+    for inst in [&dev, &panel] {
+        let record: serde_json::Value = serde_json::from_slice(
+            &fs::read(env.path(&format!("state/{inst}/instance.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_ne!(record["stopping"], true);
+        assert_eq!(env.state_of(inst, "lead"), "stopped");
+    }
+    env.ok(&["stop", "-r", &format!("{dept}/{lead}")]);
+    env.ok(&["stop", "-r", &dept]);
+}
+
+#[test]
+fn recursive_stop_checks_copy_sockets_before_stopping_any_member() {
+    let env = department();
+    let team = env.path("teams/oncall/team.yaml");
+    let mut text = fs::read_to_string(&team).unwrap();
+    text.push_str("  helper: {prompt: helper.md, parent: lead, cwd: lead}\n");
+    fs::write(team, text).unwrap();
+    let dept = env.create("oncall", "work/a");
+    let (dev, _) = prepared_copy(&env, &dept, "dev", "repo");
+    start(&env, &dev);
+    let path = env.path(&format!("state/{dev}/start.json"));
+    let original = fs::read(&path).unwrap();
+    let mut meta: serde_json::Value = serde_json::from_slice(&original).unwrap();
+    meta["socket"] = "another-socket".into();
+    fs::write(&path, serde_json::to_vec(&meta).unwrap()).unwrap();
+    let error = env.fails(&[
+        "stop",
+        "-r",
+        &format!("{dept}/{}", env.member(&dept, "lead")),
+    ]);
+    assert!(error.contains("Nothing was changed"), "{error}");
+    assert_eq!(env.row(&dept, "lead")["liveness"], "alive");
+    assert_eq!(own_row(&env, &dept, "helper")["liveness"], "alive");
+    let record: serde_json::Value =
+        serde_json::from_slice(&fs::read(env.path(&format!("state/{dev}/instance.json"))).unwrap())
+            .unwrap();
+    assert_ne!(record["stopping"], true);
+    fs::write(path, original).unwrap();
+    env.ok(&["stop", &dept]);
+}
+
+#[test]
+fn a_failed_member_stop_does_not_fence_a_copy_the_walk_has_not_reached() {
+    let env = department();
+    let team = env.path("teams/oncall/team.yaml");
+    let mut text = fs::read_to_string(&team).unwrap();
+    text.push_str("  helper: {prompt: helper.md, parent: lead, cwd: lead}\n");
+    fs::write(team, text).unwrap();
+    let dept = env.create("oncall", "work/a");
+    let (dev, _) = prepared_copy(&env, &dept, "dev", "repo");
+    start(&env, &dev);
+    let helper = own_row(&env, &dept, "helper")["member"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let path = env.path(&format!("state/{dept}/members/{helper}/incarnation.json"));
+    let original = fs::read(&path).unwrap();
+    fs::write(&path, "broken").unwrap();
+    let target = format!("{dept}/{}", env.member(&dept, "lead"));
+    env.fails(&["stop", "-r", &target]);
+    let record: serde_json::Value =
+        serde_json::from_slice(&fs::read(env.path(&format!("state/{dev}/instance.json"))).unwrap())
+            .unwrap();
+    assert_ne!(record["stopping"], true, "unreached copy was fenced");
+    assert_eq!(env.row(&dev, "lead")["liveness"], "alive");
+    fs::write(path, original).unwrap();
+    env.ok(&["stop", "-r", &target]);
+    env.ok(&["stop", &dept]);
+}
