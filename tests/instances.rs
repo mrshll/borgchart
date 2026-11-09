@@ -19,6 +19,47 @@ use instance_env::*;
 use serde_json::{Value, json};
 
 #[test]
+fn stopped_parents_cannot_be_deleted_before_their_kept_children() {
+    let env = Env::new();
+    let inst = env.create("oncall", "work/a");
+    let parent = env.member(&inst, "lead");
+    env.ok(&["create", &format!("{inst}/helper")]);
+    let child = env.member(&inst, "helper");
+    let parent_address = format!("{inst}/{parent}");
+    let child_address = format!("{inst}/{child}");
+    env.ok(&["stop", &inst]);
+
+    for force in [false, true] {
+        let mut args = vec!["delete", &parent_address];
+        if force {
+            args.push("--force");
+        }
+        let refusal = env.fails(&args);
+        assert!(refusal.contains(&child_address), "{refusal}");
+        assert_eq!(env.member(&inst, "lead"), parent);
+        assert_eq!(env.member(&inst, "helper"), child);
+    }
+
+    env.write("teams/oncall/team.yaml", "roles: [");
+    for force in [false, true] {
+        let mut args = vec!["delete", &parent_address];
+        if force {
+            args.push("--force");
+        }
+        let refusal = env.fails(&args);
+        assert!(refusal.contains(&child_address), "{refusal}");
+    }
+    env.write("teams/oncall/team.yaml", TEAM);
+    assert_eq!(env.member(&inst, "lead"), parent);
+    assert_eq!(env.member(&inst, "helper"), child);
+
+    env.ok(&["delete", &child_address]);
+    env.ok(&["delete", &parent_address]);
+    assert!(env.rows(&inst).iter().all(|r| r["kind"] != "member"));
+    env.ok(&["delete", &inst]);
+}
+
+#[test]
 fn deleted_members_cannot_restart_or_receive_work_and_ids_are_never_reused() {
     let env = Env::new();
     let inst = env.create("oncall", "work/a");
@@ -29,8 +70,6 @@ fn deleted_members_cannot_restart_or_receive_work_and_ids_are_never_reused() {
     let published = env.publish(&inst, &json!({"to": lead, "body": "Review the sample."}));
     assert!(published.status.success(), "{}", both(&published));
     let message: Value = serde_json::from_slice(&published.stdout).unwrap();
-    env.ok(&["create", &format!("{inst}/helper")]);
-    let child = env.member(&inst, "helper");
     env.ok(&["stop", &inst]);
     let refused = env.fails(&["delete", &address]);
     assert_eq!(env.member(&inst, "lead"), lead);
@@ -47,6 +86,8 @@ fn deleted_members_cannot_restart_or_receive_work_and_ids_are_never_reused() {
     assert!(env.rows(&inst).iter().all(|r| r["member"] != lead));
     let out = env.publish(&inst, &json!({"to": lead, "body": "Do not deliver."}));
     assert!(!out.status.success(), "{}", both(&out));
+    env.ok(&["create", &format!("{inst}/helper")]);
+    let child = env.member(&inst, "helper");
     env.ok(&["start", &inst]);
     let replacement = env.member(&inst, "lead");
     assert_ne!(replacement, lead);
@@ -80,6 +121,36 @@ fn deleted_members_cannot_restart_or_receive_work_and_ids_are_never_reused() {
     assert_ne!(next, helper);
     env.ok(&["stop", &inst]);
     env.ok(&["delete", &inst]);
+}
+
+#[test]
+fn members_with_unloadable_teams_and_incomplete_parent_records_cannot_be_deleted() {
+    for missing_record in [false, true] {
+        let env = Env::new();
+        let inst = env.create("oncall", "work/a");
+        let parent = env.member(&inst, "lead");
+        env.ok(&["create", &format!("{inst}/helper")]);
+        let child = env.member(&inst, "helper");
+        env.ok(&["stop", &inst]);
+        let start_file = env.path(&format!("state/{inst}/start.json"));
+        let start = fs::read(&start_file).unwrap();
+        if missing_record {
+            fs::remove_file(&start_file).unwrap();
+        } else {
+            let mut meta: Value = serde_json::from_slice(&start).unwrap();
+            meta["members"].as_object_mut().unwrap().remove(&child);
+            fs::write(&start_file, serde_json::to_vec(&meta).unwrap()).unwrap();
+        }
+        env.write("teams/oncall/team.yaml", "roles: [");
+        env.fails(&["delete", &format!("{inst}/{parent}"), "--force"]);
+        fs::write(&start_file, start).unwrap();
+        env.write("teams/oncall/team.yaml", TEAM);
+        assert_eq!(env.member(&inst, "lead"), parent);
+        assert_eq!(env.member(&inst, "helper"), child);
+        env.ok(&["delete", &format!("{inst}/{child}")]);
+        env.ok(&["delete", &format!("{inst}/{parent}")]);
+        env.ok(&["delete", &inst]);
+    }
 }
 
 #[test]

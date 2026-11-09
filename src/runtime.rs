@@ -1,7 +1,7 @@
 //! The tmux runtime: `create`, `start`, `stop`, `delete`, `status`, `ls`,
 //! `attach`, `logs` and `send`, on instances and their members.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -1679,6 +1679,63 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
                 inst.at(&id)
             ));
         }
+    }
+    let mut children = BTreeSet::new();
+    let mut team_loaded = false;
+    if let Ok(v) = validated(&inst) {
+        team_loaded = true;
+        for node in member_nodes(&inst, &v, |_| String::new()) {
+            if node.parent.as_deref() == Some(&id)
+                && inst
+                    .record
+                    .members
+                    .get(&node.id)
+                    .is_some_and(|m| !m.deleted)
+            {
+                children.insert(node.id);
+            }
+        }
+    }
+    let meta = state::read_meta(&inst.state);
+    if !team_loaded
+        && meta.as_ref().is_none_or(|meta| {
+            inst.record
+                .kept_members()
+                .any(|(other, _)| other != &id && !meta.members.contains_key(other))
+        })
+    {
+        return Err(format!(
+            "brg can't tell whether member `{}` has kept children, so it can't be deleted, even with --force; restore its team and start the instance: brg start {} --team <path>",
+            inst.at(&id),
+            inst.id
+        ));
+    }
+    let mut recorded_only = false;
+    if let Some(meta) = meta {
+        for (child, _) in inst.record.kept_members() {
+            if meta.members.get(child).and_then(|m| m.parent.as_deref()) == Some(&id) {
+                recorded_only |= children.insert(child.clone());
+            }
+        }
+    }
+    if !children.is_empty() {
+        return Err(format!(
+            "member `{}` has kept children; delete them first:\n  {}{}",
+            inst.at(&id),
+            children
+                .iter()
+                .map(|child| inst.at(child))
+                .collect::<Vec<_>>()
+                .join("\n  "),
+            if recorded_only {
+                format!(
+                    "\nthe team file changed since the last start; brg start {} applies it",
+                    inst.id
+                )
+            } else {
+                String::new()
+            }
+        ));
     }
     // No bus means no publication lock to create; a stray lock would make
     // an otherwise empty messages folder look damaged on its next start.
