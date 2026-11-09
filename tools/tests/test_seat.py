@@ -13,7 +13,7 @@ import pytest
 
 PLUGIN = (
     Path(__file__).resolve().parents[2]
-    / "borgchart-engineering/teams/dev-team/plugins/seat"
+    / "teams/shared/plugins/seat"
 )
 spec = importlib.util.spec_from_file_location("seat", PLUGIN / "seat.py")
 assert spec and spec.loader
