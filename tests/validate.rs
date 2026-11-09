@@ -68,9 +68,13 @@ fn nested_team() -> Fixture {
     let f = Fixture::new();
     f.write(
         "team.yaml",
-        "roles:\n  lead: {prompt: lead.md}\n  dev: {team: teams/dev, parent: lead, cwd: 'dev/{member_id}'}\n",
+        "roles:\n  lead: {prompt: lead.md}\n  dev: {team: dev, parent: lead, cwd: 'dev/{member_id}'}\n",
     );
     f.write("teams/dev/team.yaml", "roles: {}\n");
+    f.write(
+        "config.yaml",
+        &format!("schema: 1\nteams: [{}]\n", f.path("teams").display()),
+    );
     f
 }
 
@@ -98,7 +102,7 @@ fn team_parent_refuses_team_roles() {
     f.edit(
         "team.yaml",
         "  dev:",
-        "  panel: {team: teams/dev, parent: dev, cwd: 'panel/{member_id}'}\n  dev:",
+        "  panel: {team: dev, parent: dev, cwd: 'panel/{member_id}'}\n  dev:",
     );
     expect_error(&f, "parent `dev` is a team role; name an agent role");
 }
@@ -117,83 +121,43 @@ fn plugin_delivery_refuses_team_roles() {
 #[test]
 fn team_roles_refuse_direct_cycles_through_resolved_folder_aliases() {
     let f = nested_team();
-    std::os::unix::fs::symlink(f.dir.path(), f.path("self")).unwrap();
-    for path in [".", "./", "self"] {
-        f.edit("team.yaml", "team: teams/dev", &format!("team: {path}"));
-        expect_error(&f, "team cycle:");
-        f.edit("team.yaml", &format!("team: {path}"), "team: teams/dev");
-    }
+    std::os::unix::fs::symlink(f.dir.path(), f.path("teams/alias")).unwrap();
+    let name = borgchart::team::team_name(f.dir.path());
+    f.edit("team.yaml", "team: dev", &format!("team: {name}"));
+    expect_error(&f, "team cycle:");
 }
 
 #[test]
 fn team_roles_refuse_indirect_cycles() {
     let f = nested_team();
-    std::os::unix::fs::symlink(f.dir.path(), f.path("teams/dev/ancestor")).unwrap();
+    std::os::unix::fs::symlink(f.dir.path(), f.path("teams/ancestor")).unwrap();
+    let name = borgchart::team::team_name(f.dir.path());
     f.write(
         "teams/dev/team.yaml",
-        "roles: {back: {team: ancestor, cwd: 'back/{member_id}'}}\n",
+        &format!("roles: {{back: {{team: {name}, cwd: 'back/{{member_id}}'}}}}\n"),
     );
-    let report = refused(&f);
-    assert!(
-        report
-            .errors()
-            .any(|d| d.file == Some(f.path("teams/dev/team.yaml"))
-                && d.to_string().contains("resolves outside"))
-    );
+    expect_error(&f, "team cycle:");
 }
 
 #[test]
-fn reused_team_folders_and_equal_team_names_are_not_cycles() {
+fn reused_team_folders_are_not_cycles() {
     let f = nested_team();
-    std::os::unix::fs::symlink("dev", f.path("teams/alias")).unwrap();
     f.edit(
         "team.yaml",
         "  dev:",
-        "  peer: {team: teams/alias, parent: lead, cwd: 'peer/{member_id}'}\n  dev:",
+        "  peer: {team: dev, parent: lead, cwd: 'peer/{member_id}'}\n  dev:",
     );
-    f.write(
-        "teams/dev/team.yaml",
-        "roles: {panel: {team: dev, cwd: 'panel/{member_id}'}}\n",
-    );
-    f.write("teams/dev/dev/team.yaml", "roles: {}\n");
     let (report, validated) = f.run();
     assert!(validated.is_some(), "{}", errors(&report));
 }
 
 #[test]
-fn team_roles_refuse_absolute_team_paths() {
-    let f = nested_team();
-    f.edit(
-        "team.yaml",
-        "team: teams/dev",
-        &format!("team: {}", f.path("teams/dev").display()),
-    );
-    expect_error(&f, "must be a relative path");
-}
-
-#[test]
-fn team_roles_refuse_parent_components_even_when_the_target_is_inside() {
-    let f = nested_team();
-    f.edit("team.yaml", "team: teams/dev", "team: teams/dev/../dev");
-    expect_error(&f, "must not contain `..`");
-}
-
-#[test]
-fn team_roles_refuse_shared_paths_even_when_a_local_folder_matches() {
-    let f = nested_team();
-    f.write("shared:dev/team.yaml", "roles: {}\n");
-    f.edit("team.yaml", "team: teams/dev", "team: shared:dev");
-    expect_error(&f, "replace `shared:` with a relative folder");
-}
-
-#[test]
-fn team_roles_refuse_symlinks_outside_the_declaring_folder() {
-    let f = nested_team();
-    let outside = tempfile::tempdir().unwrap();
-    fs::write(outside.path().join("team.yaml"), "roles: {}\n").unwrap();
-    std::os::unix::fs::symlink(outside.path(), f.path("outside")).unwrap();
-    f.edit("team.yaml", "team: teams/dev", "team: outside");
-    expect_error(&f, "resolves outside");
+fn team_roles_refuse_paths_and_shared_references() {
+    for reference in ["/tmp/dev", "dev/../dev", "teams/dev", "./dev", "shared:dev"] {
+        let f = nested_team();
+        f.edit("team.yaml", "team: dev", &format!("team: {reference}"));
+        expect_error(&f, "must be a team name");
+    }
 }
 
 #[test]
@@ -222,11 +186,7 @@ fn team_roles_require_cwd_ending_in_one_member_id_folder() {
 #[test]
 fn team_roles_refuse_automatic_start_before_preparation() {
     let f = nested_team();
-    f.edit(
-        "team.yaml",
-        "team: teams/dev",
-        "team: teams/dev, start: true",
-    );
+    f.edit("team.yaml", "team: dev", "team: dev, start: true");
     expect_error(&f, "create and prepare each copy before starting it");
     f.edit("team.yaml", "start: true", "start: false");
     assert!(f.run().1.is_some());
@@ -235,7 +195,7 @@ fn team_roles_refuse_automatic_start_before_preparation() {
 #[test]
 fn team_roles_refuse_zero_copy_limits() {
     let f = nested_team();
-    f.edit("team.yaml", "team: teams/dev", "team: teams/dev, max: 0");
+    f.edit("team.yaml", "team: dev", "team: dev, max: 0");
     expect_error(&f, "`max` must be at least 1");
 }
 
@@ -258,11 +218,7 @@ fn team_roles_refuse_agent_fields_including_empty_and_false_values() {
         "posture: null",
     ] {
         let f = nested_team();
-        f.edit(
-            "team.yaml",
-            "team: teams/dev",
-            &format!("team: teams/dev, {field}"),
-        );
+        f.edit("team.yaml", "team: dev", &format!("team: dev, {field}"));
         let report = refused(&f);
         let name = field.split(':').next().unwrap();
         assert!(
@@ -285,7 +241,7 @@ fn nested_teams_need_no_bus_opt_in_at_any_depth() {
         "teams/dev/team.yaml",
         "roles: {panel: {team: panel, cwd: 'panel/{member_id}'}}\n",
     );
-    f.write("teams/dev/panel/team.yaml", "roles: {}\n");
+    f.write("teams/panel/team.yaml", "roles: {}\n");
     let (report, validated) = f.run();
     assert!(validated.is_some(), "{}", errors(&report));
 }

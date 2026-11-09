@@ -20,6 +20,9 @@ pub struct ConfigSnapshot {
     /// a shared plugin resolves), plus `teams/<role>` (the resolved source
     /// folder; each copy freezes the source's contents independently).
     pub inputs: BTreeMap<String, String>,
+    /// Recoverable canonical sources frozen at this instance's start. Contents
+    /// are independently frozen by each copy when that copy starts.
+    pub team_dirs: BTreeMap<String, std::path::PathBuf>,
 }
 
 pub const CONFIG_DIGEST_VERSION: u32 = 1;
@@ -42,7 +45,10 @@ impl Validated {
         for (name, plugin) in &self.team.plugins {
             if matches!(
                 plugin.location,
-                Some(crate::team::PluginLocation::Shared(_))
+                Some(
+                    crate::team::PluginLocation::Shared(_)
+                        | crate::team::PluginLocation::Catalog(_)
+                )
             ) {
                 let dir = self.plugin_dir(name).unwrap_or_default();
                 inputs.insert(
@@ -55,6 +61,12 @@ impl Validated {
             crate::team::TEAM_FILE.to_string(),
             self.team.file_sha256.clone(),
         );
+        if let Some(dir) = &self.team.catalog_includes {
+            inputs.insert(
+                "config/includes".into(),
+                sha256_hex(dir.as_os_str().as_encoded_bytes()),
+            );
+        }
         for (id, role) in &self.team.team_roles {
             inputs.insert(
                 format!("teams/{id}"),
@@ -76,6 +88,12 @@ impl Validated {
             version: CONFIG_DIGEST_VERSION,
             digest: sha256_hex(text.as_bytes()),
             inputs,
+            team_dirs: self
+                .team
+                .team_roles
+                .iter()
+                .map(|(id, role)| (id.clone(), role.dir.clone()))
+                .collect(),
         }
     }
 }

@@ -27,11 +27,11 @@ Every borgchart file is YAML 1.2 parsed strictly:
 
 ```yaml
 default: claude                 # vendor for roles that don't name one: claude | codex
-includes: includes              # optional; directory for {{includes/…}} (default: includes)
+includes: includes              # optional; team-local or catalog:shared/includes
 
 plugins:
   slackbot:
-    path: plugins/slackbot      # relative to the team dir; or shared:<name>; or omit to use PATH
+    path: plugins/slackbot      # team-local; catalog:shared/…; shared:<name>; or omit for PATH
     process: [./watch.py]       # optional: a long-running program brg starts and stops
     delivers_to: triager        # optional: the role whose member the process hands work to
     env:                        # the only variables the plugin receives
@@ -69,17 +69,19 @@ The role's identity is its key under `roles:`. Each role keeps up to `max` membe
 
 **`interactive`.** An agent role's boolean, default false, applies to every copy and is frozen at start. True means inbox-only: never paste/Enter, even with `send --force`. Use it for a lead whose session a person shares; remote-session users may leave it false. It is invalid with `posture: locked` or on a nested `team:` role. The bundled dev-team lead is interactive; helpers keep the false default.
 
+**Catalog assets.** Sibling definitions may share includes and plugins from the fixed `shared/` folder beside them. Set `includes: catalog:shared/includes` and a plugin's `path: catalog:shared/plugins/seat`. These paths are relative to the directory containing the team definition and confined to its real `shared/` folder. Other catalog prefixes, absolute paths, `..`, a symlinked shared root and symlink escapes are refused. Ordinary includes/plugins and every prompt file retain their team-root confinement. The existing `shared:<name>` plugin syntax still uses the global `plugins_dir`; it is distinct from catalog assets.
+
 **Team roles.** A role with `team:` creates a nested instance instead of an agent:
 
 ```yaml
 roles:
   lead: {prompt: lead.md, cwd: lead}
-  dev: {team: teams/dev, parent: lead, start: false, max: 2, cwd: 'dev/{member_id}'}
+  dev: {team: dev, parent: lead, start: false, max: 2, cwd: 'dev/{member_id}'}
 ```
 
 A team role accepts only `team`, `parent`, `start`, `max` and `cwd`. Agent options, including `prompt`, `vendor`, `posture`, `plugins`, `connectors`, `interactive` and `args`, are errors even when empty or false. `start` must be false or absent: `create <instance>/dev` makes a stopped copy and its folders, which the parent prepares before `start <instance>/<copy>`.
 
-`team` names a folder containing `team.yaml`, relative to the declaring team's folder. Absolute paths, `..`, `shared:` and symlinks outside that folder are refused. It is never looked up by name. `cwd` is required and must end in exactly one `{member_id}` folder; `max` defaults to 1 and must be at least 1. Every referenced team has its own message store. `validate` checks referenced teams recursively and reports their errors at their own files. A team may not contain itself, directly or indirectly, as judged by resolved folders. Creation and a copy's full start also check its recorded ancestors, including after a team-folder move.
+`team` is a team name, resolved through the configured `teams` directories exactly like `brg create <name>`. Missing and ambiguous names are refused; path forms and the old nested definition form are not supported. `cwd` is required and must end in exactly one `{member_id}` folder; `max` defaults to 1 and must be at least 1. Every referenced team has its own message store. `validate` checks referenced teams recursively and reports their errors at their own files. A team may not contain itself, directly or indirectly, as judged by resolved folders. Creation and a copy's full start also check its recorded ancestors, including after a team-folder move.
 
 The declaring instance freezes where each team role resolves. Each copy records that source folder and reads its current files at its first start, then freezes its own configuration until its own full stop and start. Changes reach each copy independently of the parent instance and its other copies. If a kept copy's source folder is gone, starting it errors without looking up a replacement by name. Explicit `start <copy> --team <path>` remains available to recover a moved folder.
 
@@ -126,6 +128,7 @@ A plugin is a plain script or program, in any language, that members run themsel
 - **What brg runs:** brg launches only the programs `team.yaml` lists. This limits what brg starts; it is not a sandbox. A listed program, or a member with a shell, can run anything.
 - **Location:**
   - `path: plugins/<dir>`: a directory inside the team. It is also the programs' working directory.
+  - `path: catalog:shared/<path>`: a shared plugin in the sibling catalog asset folder, confined as above.
   - `path: shared:<name>`: `<plugins_dir>/<name>`, where `plugins_dir` is set in brg's configuration. Where it resolves is frozen while an instance runs.
   - No `path`: the commands are whatever those names resolve to on `PATH` when the instance starts.
 - **`process`:** a long-running program, e.g. a watcher.

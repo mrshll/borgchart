@@ -4,7 +4,7 @@
 # monitor work. Each implementer copy gets a folder brg creates empty under
 # `copies/`, beside `repo/`; the lead makes `copies/` once and prepares a
 # worktree there before each brief. It runs standalone
-# (`brg create ./borgchart-engineering/teams/dev-team <folder>`, with the
+# (`brg create ./teams/dev-team <folder>`, with the
 # worktree at `<folder>/repo`) or as a child team, the `dev` role of
 # borgchart-engineering, where its lead's parent is the root lead. See
 # README.md.
@@ -14,10 +14,11 @@
 #
 # The lead checks seating with the bundled `seat` plugin before each launch.
 default: claude
+includes: catalog:shared/includes
 
 plugins:
   seat:
-    path: plugins/seat
+    path: catalog:shared/plugins/seat
     actions:
       route: seat route <vendor> <model>
 
@@ -55,11 +56,11 @@ roles:
     parent: lead
     start: false
     cwd: repo
-  # The design panel (teams/dev-design-team): a child team the lead
+  # The design panel (dev-design-team): a child team the lead
   # creates stopped, prepares (`work/`) and starts before costly-to-reverse
   # design choices, and deletes after. See orchestrator.md.
   design:
-    team: teams/dev-design-team
+    team: dev-design-team
     parent: lead
     start: false
     max: 1
