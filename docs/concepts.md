@@ -1,6 +1,6 @@
 # Concepts
 
-**Status: partly built.** Teams, instances, `roles:`, suffixed member IDs, copies up to `max`, member deletion and member status work today. Bus members may manage only their declared children, using their latest start ID. Departments and the remaining command renames are planned. The old file fields go away outright, with no aliases.
+**Status: partly built.** Teams, instances, `roles:`, suffixed member IDs, copies up to `max`, member deletion and member status work today. Bus members may manage only their declared children, using their latest start ID. Departments (team roles whose members are nested copies, #25) are being built: nesting in #83, delivery between stores after it. The remaining command renames are planned. The old file fields go away outright, with no aliases.
 
 ## Definitions and what runs from them
 
@@ -108,9 +108,9 @@ Two folders with the same name can both run. Their instances are told apart by t
 
 **Parents are roles.** `parent: lead` names a role, and a member's parent is the member filling that role. So a parent role must have one member: `validate` refuses a `parent:` that names a role with `max > 1`. The same goes for a plugin's `delivers_to:`.
 
-**Recipients.** A message goes to one member, or from a team's root member to `external:NAME`. An instance isn't a recipient: a message naming only an instance (`dev-design-k3f9`) is refused, listing its members. For now a member's messages stay inside its own instance. Messages between chosen members of different instances, such as two teams' leads, are planned (#62): a person links a role in one instance with a role in another. The message format leaves room for them, so they need no second format change. A team that works as part of another, such as a design panel inside the dev team, becomes a department (#25) and shares its instance.
+**Recipients.** A message goes to one member, or from a team's root member to `external:NAME`. An instance isn't a recipient: a message naming only an instance (`dev-design-k3f9`) is refused, listing its members. For now a member's messages stay inside its own instance. A team that works as part of another, such as a design panel inside the dev team, is a team role of it (#25): a copy with its own instance and store, whose messages to and from its parent cross stores along that edge once delivery is built. Messages between chosen members of independent instances, such as two teams' leads, are planned after that (#62): a person links a role in one instance with a role in another. The message format leaves room for them, so they need no second format change.
 
-**Departments (#25).** A role can be a team, named as any team is. Its members (`ws-a7k2`) have their own sub-members (`dev-k3f9/ws-a7k2/lead-q8m3`), inside the department's instance, its one message store and its working folder.
+**Departments (#25).** A role can be a team, named by a path inside the declaring team's folder (`team: teams/dev-team`). Its members are copies (`dev-a7k2`): nested instances, each with its own members, message store, notes, state and frozen configuration, and a working folder inside the department's. Addresses nest (`borgchart-engineering-h4k2/dev-a7k2/lead-c4nd`), and a copy's instance ID is its full path. Copies are created stopped, prepared by their parent and then started. A member may act on its whole subtree, and `stop` cascades deepest first. [teams.md](teams.md#teams-as-members-departments) has the rules, and [`borgchart-engineering/`](../borgchart-engineering/) is the real department.
 
 ## Lifetimes
 
@@ -145,7 +145,7 @@ dev-team-k3f9                       team ~/.config/borgchart/teams/dev-team/ · 
   - one line per member;
   - a role with no kept member gets `not created (start: false)` or `not created (start: true)`, following its `start` setting, or a dim `on demand (none created)` for `max > 1`. A created member that isn't running shows on its own line as `stopped`;
   - positive unread message counts appear beside members, also in `-i`; a zero adds nothing to the tree;
-  - department members nest.
+  - copies nest under their parent member, each with its full instance path.
 - **`--json` member rows:** `instance`, `team`, `member`, `role`, `parent` (a member ID), `start_id` (the current incarnation, when recorded), and the existing fields. A stop retains `start_id`; restarting changes it. With a readable bus, `unread` gives each kept member's unacked count, including zero. Without a bus it is absent; if the store cannot be read, counts are absent and status adds a short note. Deleted members have no rows. Plugin-process rows keep `kind: plugin` and their name.
 
 ## Every use of "team" today
@@ -216,4 +216,4 @@ Every `BORGCHART_*` variable that a member, plugin or test can see:
 
 ## Effects on #24 and #25
 
-Their acceptance text says `brg up --member implementer` starts the next copy; that becomes `brg create <instance>/implementer`, and copies are named `implementer-<suffix>`. #25's departments are members whose role is a team, inside one instance and its working folder. Update both issues once the names are agreed.
+Their acceptance text says `brg up --member implementer` starts the next copy; that becomes `brg create <instance>/implementer`, and copies are named `implementer-<suffix>`. #25's departments are members whose role is a team: nested copies, each its own instance, inside the department's working folder. Update both issues once the names are agreed.
