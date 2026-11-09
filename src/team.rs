@@ -152,7 +152,8 @@ impl EnvRaw {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RoleRaw {
-    prompt: String,
+    prompt: Option<String>,
+    team: Option<String>,
     vendor: Option<Vendor>,
     parent: Option<String>,
     start: Option<bool>,
@@ -168,6 +169,14 @@ struct RoleRaw {
     #[serde(default)]
     args: Vec<String>,
     cwd: Option<String>,
+}
+
+/// Preserve field presence when checking team roles: even an empty grant
+/// or a false agent option must be refused instead of silently ignored.
+#[derive(Deserialize)]
+struct RoleFieldNames {
+    #[serde(default)]
+    roles: BTreeMap<String, BTreeMap<String, serde::de::IgnoredAny>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -208,6 +217,7 @@ pub struct Team {
     /// The coordination bus, when the team uses one.
     pub bus: Option<BusConfig>,
     pub roles: BTreeMap<String, Role>,
+    pub team_roles: BTreeMap<String, TeamRole>,
     pub plugins: BTreeMap<String, Plugin>,
 }
 
@@ -324,6 +334,7 @@ pub fn team_name(dir: &Path) -> String {
         })
         .collect::<String>()
         .trim_matches('-')
+        .trim_start_matches(['-', '_'])
         .chars()
         .take(32)
         .collect();
@@ -358,6 +369,15 @@ pub struct Role {
     /// Where its members start, relative to the instance's folder; may hold
     /// `{member_id}`.
     pub cwd: Option<String>,
+}
+
+/// A role whose copies are nested instances, prepared before their first start.
+#[derive(Debug, Clone, Serialize)]
+pub struct TeamRole {
+    pub dir: PathBuf,
+    pub parent: Option<String>,
+    pub max: usize,
+    pub cwd: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -499,6 +519,17 @@ pub fn parse_model(value: &str) -> Result<Model, String> {
 /// Load and check a team directory. Problems go into `report`; a team is
 /// returned only when there were no errors.
 pub fn load(dir: &Path, report: &mut Report) -> Option<Team> {
+    load_inner(dir, report, true)
+}
+
+/// Load an instance's own files without requiring referenced teams to
+/// remain on disk. Their current files are checked when a copy is created
+/// or started, independently of the declaring instance's frozen config.
+pub(crate) fn load_own(dir: &Path, report: &mut Report) -> Option<Team> {
+    load_inner(dir, report, false)
+}
+
+fn load_inner(dir: &Path, report: &mut Report, require_teams: bool) -> Option<Team> {
     let real = dir.canonicalize();
     let dir = real.as_deref().unwrap_or(dir);
     let team_file = dir.join(TEAM_FILE);
@@ -530,6 +561,28 @@ pub fn load(dir: &Path, report: &mut Report) -> Option<Team> {
         }
     };
     let errors_before = report.errors().count();
+    if raw.roles.values().any(|role| role.team.is_some()) {
+        let fields: RoleFieldNames = match yaml::parse(&text) {
+            Ok(fields) => fields,
+            Err(e) => {
+                report.error(Some(&team_file), e);
+                return None;
+            }
+        };
+        for (id, role) in &raw.roles {
+            if role.team.is_none() {
+                continue;
+            }
+            for field in fields.roles[id].keys() {
+                if !["team", "parent", "start", "max", "cwd"].contains(&field.as_str()) {
+                    report.error(
+                        Some(&team_file),
+                        format!("role `{id}`: remove `{field}`; a team role takes only `team`, `parent`, `start`, `max` and `cwd`"),
+                    );
+                }
+            }
+        }
+    }
     let default_vendor = raw.default.unwrap_or(Vendor::Claude);
 
     let includes_dir = raw
@@ -546,7 +599,15 @@ pub fn load(dir: &Path, report: &mut Report) -> Option<Team> {
     }
 
     let mut roles = BTreeMap::new();
+    let mut team_roles = BTreeMap::new();
     for (id, m) in &raw.roles {
+        if let Some(path) = &m.team {
+            if let Some(role) = load_team_role(dir, &team_file, id, m, path, require_teams, report)
+            {
+                team_roles.insert(id.clone(), role);
+            }
+            continue;
+        }
         if let Some(member) = load_role(
             dir,
             &team_file,
@@ -588,6 +649,7 @@ pub fn load(dir: &Path, report: &mut Report) -> Option<Team> {
             }),
         }),
         roles,
+        team_roles,
         plugins,
     })
 }
@@ -708,6 +770,12 @@ fn load_plugin(
             Some(team_file),
             at(format!("`delivers_to: {target}` is not a role")),
         ),
+        (Some(target), Some(_)) if roles[target].team.is_some() => report.error(
+            Some(team_file),
+            at(format!(
+                "`{target}` is a team role; name an agent role for `delivers_to`"
+            )),
+        ),
         (Some(target), Some(_)) if roles[target].max.unwrap_or(1) > 1 => report.error(
             Some(team_file),
             at(format!(
@@ -763,6 +831,87 @@ fn check_executable(
         Ok(real) if is_executable(&real) => {}
         Ok(_) => report.error(Some(team_file), at(format!("`{rel}` is not executable"))),
         Err(e) => report.error(Some(team_file), at(e)),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn load_team_role(
+    dir: &Path,
+    team_file: &Path,
+    id: &str,
+    role: &RoleRaw,
+    path: &str,
+    require_team: bool,
+    report: &mut Report,
+) -> Option<TeamRole> {
+    let load = || -> Result<TeamRole, String> {
+        if !is_valid_id(id) {
+            return Err("name must match `[a-z][a-z0-9_-]{0,31}`".into());
+        }
+        if role.prompt.is_some() {
+            return Err("choose either `prompt` or `team`".into());
+        }
+        if role.start == Some(true) {
+            return Err("a team role must have `start: false` or omit `start`; create and prepare each copy before starting it".into());
+        }
+        if path.starts_with("shared:") {
+            return Err("`team` must be a path inside this team's folder; replace `shared:` with a relative folder".into());
+        }
+        let dir = if require_team {
+            resolve_within(dir, path)?
+        } else {
+            let rel = Path::new(path);
+            if path.is_empty() {
+                return Err("path is empty".into());
+            }
+            if rel.is_absolute() {
+                return Err(format!("`{path}` must be a relative path"));
+            }
+            if rel
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                return Err(format!("`{path}` must not contain `..`"));
+            }
+            let resolved = crate::paths::resolve_existing_prefix(&dir.join(rel));
+            if !resolved.starts_with(dir) {
+                return Err(format!(
+                    "`{path}` resolves outside {} (through a symlink)",
+                    dir.display()
+                ));
+            }
+            resolved
+        };
+        if require_team && !dir.join(TEAM_FILE).is_file() {
+            return Err(format!("`{path}` needs a `{TEAM_FILE}`"));
+        }
+        let cwd = role.cwd.as_deref().ok_or("a team role needs `cwd`")?;
+        check_cwd(cwd)?;
+        if Path::new(cwd)
+            .file_name()
+            .is_none_or(|name| name != "{member_id}")
+            || cwd.matches("{member_id}").count() != 1
+        {
+            return Err(
+                "a team role's cwd must end in `{member_id}`, for example `dev/{member_id}`".into(),
+            );
+        }
+        if role.max == Some(0) {
+            return Err("`max` must be at least 1".into());
+        }
+        Ok(TeamRole {
+            dir,
+            parent: role.parent.clone(),
+            max: role.max.unwrap_or(1),
+            cwd: cwd.to_string(),
+        })
+    };
+    match load() {
+        Ok(role) => Some(role),
+        Err(error) => {
+            report.error(Some(team_file), format!("role `{id}`: {error}"));
+            None
+        }
     }
 }
 
@@ -898,7 +1047,11 @@ fn load_role(
     }
 
     // Role file.
-    let prompt_path = match resolve_within(dir, &m.prompt) {
+    let Some(prompt) = m.prompt.as_deref() else {
+        report.error(Some(team_file), at("needs a `prompt` or `team`".into()));
+        return None;
+    };
+    let prompt_path = match resolve_within(dir, prompt) {
         Ok(p) => Some(p),
         Err(e) => {
             report.error(Some(team_file), at(format!("prompt {e}")));
@@ -909,7 +1062,7 @@ fn load_role(
     let mut instruction = String::new();
     let mut prompt_sha256 = String::new();
     if let Some(prompt_path) = &prompt_path {
-        let shown = dir.join(&m.prompt);
+        let shown = dir.join(prompt);
         if let Some((front, body, sha)) =
             read_role_file(dir, includes_dir, &shown, prompt_path, report)
         {
@@ -950,7 +1103,7 @@ fn load_role(
         accept_risk: m.accept_risk,
         grants,
         connectors,
-        prompt_file: dir.join(&m.prompt),
+        prompt_file: dir.join(prompt),
         prompt_sha256,
         instruction,
         args: m.args.clone(),
@@ -1138,6 +1291,11 @@ fn check_parents(team_file: &Path, roles: &BTreeMap<String, RoleRaw>, report: &m
             report.error(
                 Some(team_file),
                 format!("role `{id}`: parent `{parent}` is not a role"),
+            );
+        } else if roles[parent].team.is_some() {
+            report.error(
+                Some(team_file),
+                format!("role `{id}`: parent `{parent}` is a team role; name an agent role"),
             );
         } else if roles[parent].max.unwrap_or(1) > 1 {
             report.error(

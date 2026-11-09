@@ -84,10 +84,14 @@ impl StateDir {
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
-        StateDir {
+        let mut state = StateDir {
             root: root.to_path_buf(),
             id,
+        };
+        if let Ok(record) = crate::registry::read_instance(&state) {
+            state.id = record.id;
         }
+        state
     }
 
     pub fn session(&self) -> String {
