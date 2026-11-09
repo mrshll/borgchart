@@ -449,7 +449,7 @@ impl Server {
                 "-F",
                 // `|` rather than a tab: without a UTF-8 locale tmux
                 // replaces tabs in its output. No field can contain `|`.
-                "#{session_name}|#{window_name}|#{pane_id}|#{pane_pid}|#{pane_dead}|#{window_id}|#{@brg-own-pane}",
+                "#{session_name}|#{window_name}|#{pane_id}|#{pane_pid}|#{pane_dead}|#{window_id}|#{@brg-own-pane}|#{@brg-sidebar}",
             ])
             .output()
             .map_err(|e| format!("cannot start tmux: {e}"))?;
@@ -460,7 +460,7 @@ impl Server {
                 String::from_utf8_lossy(&out.stderr).trim()
             ));
         }
-        let rows: Vec<(PaneRow, bool)> = String::from_utf8_lossy(&out.stdout)
+        let rows: Vec<(PaneRow, crate::tmux::Marks)> = String::from_utf8_lossy(&out.stdout)
             .lines()
             .filter_map(|line| {
                 let mut p = line.split('|');
@@ -473,18 +473,20 @@ impl Server {
                     window_id: p.next()?.to_string(),
                     own: false,
                 };
-                Some((row, !p.next().unwrap_or("").is_empty()))
+                let own = !p.next().unwrap_or("").is_empty();
+                let sidebar = !p.next().unwrap_or("").is_empty();
+                Some((row, crate::tmux::Marks { own, sidebar }))
             })
             .collect();
         // Each window's own pane, among those beside it.
         let mut out: Vec<PaneRow> = Vec::with_capacity(rows.len());
         for (row, _) in &rows {
-            let window: Vec<&(PaneRow, bool)> = rows
+            let window: Vec<&(PaneRow, crate::tmux::Marks)> = rows
                 .iter()
                 .filter(|(r, _)| r.window_id == row.window_id)
                 .collect();
-            let marked: Vec<bool> = window.iter().map(|(_, m)| *m).collect();
-            let own = crate::tmux::own_pane(&marked).map(|i| &window[i].0.pane_id);
+            let marks: Vec<crate::tmux::Marks> = window.iter().map(|(_, m)| *m).collect();
+            let own = crate::tmux::own_pane(&marks).map(|i| &window[i].0.pane_id);
             out.push(PaneRow {
                 own: own == Some(&row.pane_id),
                 ..row.clone()
@@ -566,17 +568,20 @@ pub fn pane_identity(
             "-t",
             &crate::tmux::target(session, window),
             "-F",
-            "#{socket_path}\t#{pane_id}\t#{pane_pid}\t#{@brg-own-pane}",
+            "#{socket_path}\t#{pane_id}\t#{pane_pid}\t#{@brg-own-pane}\t#{@brg-sidebar}",
         ])
         .ok()?;
     // The window's own pane: not the first, nor the active one, which may
     // be another beside it.
     let lines: Vec<&str> = out.lines().collect();
-    let marked: Vec<bool> = lines
+    let marks: Vec<crate::tmux::Marks> = lines
         .iter()
-        .map(|l| !l.split('\t').nth(3).unwrap_or("").is_empty())
+        .map(|l| crate::tmux::Marks {
+            own: !l.split('\t').nth(3).unwrap_or("").is_empty(),
+            sidebar: !l.split('\t').nth(4).unwrap_or("").is_empty(),
+        })
         .collect();
-    let line = lines[crate::tmux::own_pane(&marked)?];
+    let line = lines[crate::tmux::own_pane(&marks)?];
     let mut parts = line.split('\t');
     let (socket, id, pid) = (parts.next()?, parts.next()?, parts.next()?);
     Some(PaneIdentity {

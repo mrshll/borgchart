@@ -431,9 +431,9 @@ fn the_sidebar_follows_a_client_between_members_and_goes_when_it_detaches() {
     env.wait_for("a sidebar once it is wide", || {
         env.sidebar_windows() == [at(&alpha)]
     });
-    // A third of the window, below three times the sidebar's width.
+    // Narrower, leaving the member 80 columns.
     let side = env.panes().into_iter().find(|p| p.sidebar).unwrap();
-    assert_eq!(side.width, 40, "{side:?}");
+    assert_eq!(side.width, 39, "{side:?}");
 
     // A sidebar whose program ends closes; no dead pane is left.
     let pid = env.tmux(&["display", "-p", "-t", &side.id, "#{pane_pid}"]);
@@ -554,5 +554,173 @@ fn with_the_sidebar_focused_brg_still_reads_types_into_and_stops_the_member() {
             .cloned()
             .collect();
         viewed.len() == 1 && viewed[0] != at(&alpha) && env.sidebar_windows() == want
+    });
+}
+
+// Catches: a window left with only its sidebar (the member's pane removed)
+// read as a running member through the sidebar, so `logs` showed the tree
+// and `delete` refused; and a lone unmarked member pane (from an older brg)
+// lost once a sidebar joined it.
+#[test]
+fn a_sidebar_is_never_taken_for_the_member() {
+    let env = Env::new();
+    let id = env.create("work");
+    let session = format!("brg-{id}");
+    let at = |w: &str| format!("{session}:{w}");
+    let alpha = env.member(&id, "alpha");
+    let beta = env.member(&id, "beta");
+    let clients = Clients::new(&env, "brg-side-own");
+
+    // alpha's pane without its mark, as an older brg left it.
+    let alpha_pane = env.member_pane(&at(&alpha));
+    env.tmux(&["set-option", "-pu", "-t", &alpha_pane.id, "@brg-own-pane"]);
+    clients.attach("a", &format!("={session}:={alpha}"), 160, 30);
+    env.wait_for("a sidebar beside alpha", || {
+        env.sidebar_windows() == [at(&alpha)]
+    });
+    env.wait_for("alpha idle beside it", || {
+        env.state_of(&id, "alpha") == "idle"
+    });
+
+    // beta's own pane goes, leaving its sidebar.
+    env.tmux(&["select-window", "-t", &format!("={session}:={beta}")]);
+    env.wait_for("a sidebar beside beta", || {
+        env.sidebar_windows() == [at(&beta)]
+    });
+    let beta_pane = env.member_pane(&at(&beta));
+    env.tmux(&["kill-pane", "-t", &beta_pane.id]);
+    let out = env.brg(&["logs", &format!("{id}/{beta}")]);
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains(&alpha),
+        "logs read the sidebar: {out:?}"
+    );
+    let out = env.brg(&["delete", "--force", &format!("{id}/{beta}")]);
+    assert!(out.status.success(), "{out:?}");
+}
+
+// Catches: a sidebar split off a member already narrowed by a pane beside
+// it, which squeezed the member to a column or two.
+#[test]
+fn a_member_already_narrow_gets_no_sidebar() {
+    let env = Env::new();
+    let id = env.create("work");
+    let session = format!("brg-{id}");
+    let at = |w: &str| format!("{session}:{w}");
+    let alpha = env.member(&id, "alpha");
+    let clients = Clients::new(&env, "brg-side-narrow");
+    clients.attach("a", &format!("={session}:={alpha}"), 160, 30);
+    env.wait_for("a sidebar beside alpha", || {
+        env.sidebar_windows() == [at(&alpha)]
+    });
+    // Hidden, a person splits a wide pane off alpha, then shows it again.
+    clients.keys("a", &["C-b", "S"]);
+    env.wait_for("no sidebar", || env.sidebar_windows().is_empty());
+    let member = env.member_pane(&at(&alpha));
+    env.tmux(&[
+        "split-window",
+        "-h",
+        "-d",
+        "-l",
+        "99",
+        "-t",
+        &member.id,
+        "cat",
+    ]);
+    let narrow = env
+        .panes()
+        .into_iter()
+        .find(|p| p.id == member.id)
+        .unwrap()
+        .width;
+    assert!(narrow < 80, "{narrow}");
+    clients.keys("a", &["C-b", "S"]);
+    settle();
+    assert!(env.sidebar_windows().is_empty(), "{:?}", env.panes());
+    let after = env.panes().into_iter().find(|p| p.id == member.id).unwrap();
+    assert_eq!(after.width, narrow, "{after:?}");
+}
+
+// Catches: the member left exactly as wide as the wake's reminder fills
+// (its length plus the prompt), where the wake can never confirm it: a
+// 118-column terminal made a 39-column sidebar and a 78-column member.
+#[test]
+fn the_member_keeps_at_least_80_columns_beside_the_sidebar() {
+    let env = Env::new();
+    let id = env.create("work");
+    let session = format!("brg-{id}");
+    let at = |w: &str| format!("{session}:{w}");
+    let alpha = env.member(&id, "alpha");
+    let clients = Clients::new(&env, "brg-side-118");
+    clients.attach("a", &format!("={session}:={alpha}"), 118, 30);
+    env.wait_for("a sidebar beside alpha", || {
+        env.sidebar_windows() == [at(&alpha)]
+    });
+    let member = env.member_pane(&at(&alpha));
+    assert!(member.width >= 80, "{member:?}");
+    // On 104 columns that would leave the sidebar under 24: none.
+    clients.resize("a", 104, 30);
+    env.wait_for("no sidebar at 104", || env.sidebar_windows().is_empty());
+    clients.resize("a", 105, 30);
+    env.wait_for("a sidebar at 105", || env.sidebar_windows() == [at(&alpha)]);
+    let member = env.member_pane(&at(&alpha));
+    assert_eq!(member.width, 80, "{member:?}");
+}
+
+// Catches: every sidebar on a shared tmux server showing the instances of
+// the state home that started the server, not the viewed session's own.
+#[test]
+fn each_sidebar_shows_its_own_state_homes_instances() {
+    let env = Env::new();
+    let one = env.create("work");
+    let first = env.member(&one, "alpha");
+    // A second state home, on the same tmux server.
+    let other = env.path("state2").display().to_string();
+    fs::create_dir_all(env.path("work2")).unwrap();
+    let out = env
+        .brg_cmd(&[
+            "create",
+            &env.path("team").display().to_string(),
+            &env.path("work2").display().to_string(),
+        ])
+        .env("BORGCHART_STATE_HOME", &other)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let rows = |id: Option<&str>| -> Vec<serde_json::Value> {
+        let mut args = vec!["status", "--json"];
+        args.extend(id);
+        let out = env
+            .brg_cmd(&args)
+            .env("BORGCHART_STATE_HOME", &other)
+            .output()
+            .unwrap();
+        serde_json::from_slice(&out.stdout).unwrap_or_default()
+    };
+    let second = rows(None)
+        .into_iter()
+        .find(|r| r["role"] == "alpha")
+        .and_then(|r| r["name"].as_str().map(String::from))
+        .unwrap();
+    let two = rows(None)
+        .into_iter()
+        .find(|r| r["role"] == "alpha")
+        .and_then(|r| r["instance"].as_str().map(String::from))
+        .unwrap();
+    let clients = Clients::new(&env, "brg-side-homes");
+    clients.attach("a", &format!("=brg-{one}:={first}"), 160, 30);
+    clients.attach("b", &format!("=brg-{two}:={second}"), 160, 30);
+    env.wait_for("a sidebar beside each", || env.sidebar_windows().len() == 2);
+    let shows = |window: &str| {
+        let side = env
+            .panes()
+            .into_iter()
+            .find(|p| p.sidebar && p.window == window)
+            .unwrap();
+        env.tmux(&["capture-pane", "-p", "-t", &side.id])
+    };
+    env.wait_for("each tree its own", || {
+        let a = shows(&format!("brg-{one}:{first}"));
+        let b = shows(&format!("brg-{two}:{second}"));
+        a.contains(&first) && !a.contains(&second) && b.contains(&second) && !b.contains(&first)
     });
 }

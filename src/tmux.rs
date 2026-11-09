@@ -5,6 +5,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
+use crate::sidebar::SIDEBAR;
 use crate::state::tmux_socket;
 
 /// The tmux config brg's private server runs with. Your own `~/.tmux.conf` is
@@ -93,16 +94,30 @@ pub fn config_text(user: Option<&Path>, brg: &Path) -> String {
 /// process) in, so that pane is found whatever else opens in its window.
 pub const OWN_PANE: &str = "@brg-own-pane";
 
-/// Which of a window's panes, given whether each carries [`OWN_PANE`], is the
-/// one brg started: the marked one, or with none marked, a window's only
-/// pane (a window an older brg opened, or one read before its mark is set).
-/// With several and none marked, none: brg doesn't guess.
-pub fn own_pane(marked: &[bool]) -> Option<usize> {
-    match marked.iter().position(|&m| m) {
-        Some(i) => Some(i),
-        None if marked.len() == 1 => Some(0),
+/// One pane's marks: whether it carries [`OWN_PANE`], and whether it is
+/// brg's sidebar ([`crate::sidebar::SIDEBAR`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Marks {
+    pub own: bool,
+    pub sidebar: bool,
+}
+
+/// Which of a window's panes is the one brg started: never a sidebar; of the
+/// rest, the marked one, or with none marked, the only one (a window an older
+/// brg opened, or one read before its mark is set). With several and none
+/// marked, none: brg doesn't guess.
+pub fn own_pane(panes: &[Marks]) -> Option<usize> {
+    let rest: Vec<usize> = (0..panes.len()).filter(|&i| !panes[i].sidebar).collect();
+    match rest.iter().find(|&&i| panes[i].own) {
+        Some(&i) => Some(i),
+        None if rest.len() == 1 => Some(rest[0]),
         None => None,
     }
+}
+
+/// A window whose every pane is a sidebar: its member's pane is gone.
+pub fn only_sidebars(panes: &[Marks]) -> bool {
+    panes.iter().all(|p| p.sidebar)
 }
 
 pub struct Tmux {
@@ -250,7 +265,7 @@ impl Tmux {
     pub fn windows(&self, session: &str) -> Vec<WindowInfo> {
         // Every pane: a window's active pane may be another one beside brg's.
         let format = format!(
-            "#{{window_id}}\t#{{window_name}}\t#{{pane_id}}\t#{{{OWN_PANE}}}\t#{{pane_dead}}\t#{{pane_dead_status}}\t#{{pane_pid}}\t#{{pane_in_mode}}\t#{{pane_title}}"
+            "#{{window_id}}\t#{{window_name}}\t#{{pane_id}}\t#{{{OWN_PANE}}}\t#{{{SIDEBAR}}}\t#{{pane_dead}}\t#{{pane_dead_status}}\t#{{pane_pid}}\t#{{pane_in_mode}}\t#{{pane_title}}"
         );
         // The trailing `:` names the session, never a window of that name.
         let Ok(out) = self.ok(&[
@@ -266,8 +281,8 @@ impl Tmux {
         // Each window's panes, in tmux's order.
         let mut by_window: Vec<(String, Vec<Vec<&str>>)> = Vec::new();
         for line in out.lines() {
-            let fields: Vec<&str> = line.splitn(9, '\t').collect();
-            if fields.len() < 8 {
+            let fields: Vec<&str> = line.splitn(10, '\t').collect();
+            if fields.len() < 9 {
                 continue;
             }
             match by_window.iter_mut().find(|(id, _)| id == fields[0]) {
@@ -278,17 +293,33 @@ impl Tmux {
         by_window
             .into_iter()
             .map(|(_, panes)| {
-                let marked: Vec<bool> = panes.iter().map(|p| !p[3].is_empty()).collect();
+                let marks: Vec<Marks> = panes
+                    .iter()
+                    .map(|p| Marks {
+                        own: !p[3].is_empty(),
+                        sidebar: !p[4].is_empty(),
+                    })
+                    .collect();
                 let name = panes[0][1].to_string();
-                match own_pane(&marked).map(|i| &panes[i]) {
+                match own_pane(&marks).map(|i| &panes[i]) {
                     Some(p) => WindowInfo {
                         name,
                         pane: Some(p[2].to_string()),
-                        dead: p[4] == "1",
-                        dead_status: p[5].parse().ok(),
-                        pid: p[6].parse().ok(),
-                        in_mode: in_mode(p[7]),
-                        title: p.get(8).unwrap_or(&"").to_string(),
+                        dead: p[5] == "1",
+                        dead_status: p[6].parse().ok(),
+                        pid: p[7].parse().ok(),
+                        in_mode: in_mode(p[8]),
+                        title: p.get(9).unwrap_or(&"").to_string(),
+                    },
+                    // Only a sidebar is left: the member's pane is gone.
+                    None if only_sidebars(&marks) => WindowInfo {
+                        name,
+                        pane: None,
+                        dead: true,
+                        dead_status: None,
+                        pid: None,
+                        in_mode: true,
+                        title: String::new(),
                     },
                     // Running for all brg can tell, but not to be typed into.
                     None => WindowInfo {
@@ -328,7 +359,8 @@ impl Tmux {
     /// mark its pane as brg's ([`OWN_PANE`]), by the ID tmux gives it: a
     /// hook may already have opened another pane in the window.
     pub fn start_window(&self, session: &str, name: &str, command: &str) -> Result<(), String> {
-        let out = if self.has_session(session) {
+        let created = !self.has_session(session);
+        let out = if !created {
             self.ok(&[
                 "new-window",
                 "-d",
@@ -362,6 +394,24 @@ impl Tmux {
         let pane = out.trim();
         if pane.starts_with('%') {
             self.ok(&["set-option", "-p", "-t", pane, OWN_PANE, "1"])?;
+        }
+        if created {
+            // Which brg deployment the session is for, for its sidebar.
+            let abs = |p: PathBuf| std::path::absolute(&p).unwrap_or(p).display().to_string();
+            let session = format!("={session}:");
+            self.ok(&[
+                "set-option",
+                "-t",
+                &session,
+                crate::sidebar::STATE_HOME,
+                &abs(crate::state::state_home()),
+                ";",
+                "set-option",
+                "-t",
+                &session,
+                crate::sidebar::CONFIG,
+                &abs(crate::config::path()),
+            ])?;
         }
         Ok(())
     }
@@ -416,10 +466,16 @@ mod tests {
     /// several panes and no mark, brg picks none rather than guess.
     #[test]
     fn own_pane_is_the_marked_one_or_a_lone_pane() {
-        assert_eq!(own_pane(&[false, true]), Some(1));
-        assert_eq!(own_pane(&[true, false]), Some(0));
-        assert_eq!(own_pane(&[false]), Some(0));
-        assert_eq!(own_pane(&[false, false]), None);
+        let m = |own, sidebar| Marks { own, sidebar };
+        assert_eq!(own_pane(&[m(false, false), m(true, false)]), Some(1));
+        assert_eq!(own_pane(&[m(true, false), m(false, false)]), Some(0));
+        assert_eq!(own_pane(&[m(false, false)]), Some(0));
+        assert_eq!(own_pane(&[m(false, false), m(false, false)]), None);
         assert_eq!(own_pane(&[]), None);
+        // A sidebar is never the member, and doesn't hide a lone member.
+        assert_eq!(own_pane(&[m(false, false), m(false, true)]), Some(0));
+        assert_eq!(own_pane(&[m(false, true)]), None);
+        assert!(only_sidebars(&[m(false, true)]));
+        assert!(!only_sidebars(&[m(false, true), m(false, false)]));
     }
 }
