@@ -17,7 +17,7 @@ Each member file names both vendors' models; `vendor:` in `team.yaml` picks one.
 
 brg runs the team by its folder's path. Keep a **pinned copy** of the repository, taken at the commit of the brg you run, not the checkout the team works in, and run brg from its root. A running instance's files are frozen: if the team's own work changed them under it, the instance would refuse to create or start members until a full stop.
 
-The root and dev leads use the same bundled [seating plugin](plugins/seat/README.md), before every launch. It finds `usage-route` on `PATH`, or the executable named in `$XDG_CONFIG_HOME/borgchart/seat-reader` (default `~/.config/borgchart/seat-reader`). The quota reader remains an external dependency; missing, failed or unknown usage means wait. No plugin copy or `plugins_dir` setting is needed. brg's configuration can remain:
+The root and dev leads use the same bundled [seating plugin and quota reader](plugins/seat/README.md) before every launch. They need `uv`, Python 3.11 or later and the authenticated vendor CLIs; no external reader checkout, plugin copy or `plugins_dir` setting is needed. Missing, failed or unknown usage means wait. brg's configuration can remain:
 
 ```yaml
 schema: 1

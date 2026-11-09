@@ -31,7 +31,7 @@ The dev team still runs on its own, as any team folder does: see [its README](te
 These are the cutover steps. They work once nesting (D1) and delivery between a parent team and its child teams (D2) are in, and the live smoke check has passed (#80, "Cutover"). Until then the root lead can't brief a copy's lead, or hear back from it.
 
 1. **Use a stable brg and a pinned copy of this folder,** installed outside any checkout the teams change. Every member runs the brg that started it.
-2. **Make the quota reader available:** the bundled [seating plugin](teams/dev-team/plugins/seat/README.md) uses `usage-route` on `PATH`, or the executable named by its one local configuration setting. The reader remains external; moving it into this repository is a later step. Missing or unknown usage means wait.
+2. **Check quota access:** the bundled [seating plugin and reader](teams/dev-team/plugins/seat/README.md) need `uv`, Python 3.11 or later and the authenticated vendor CLIs. No external reader checkout or extra configuration is required. Missing or unknown usage means wait.
 3. **Check the team:** `brg validate <pinned copy>`. The repository's checks already use `tools/cargo-slot`; no wrapper installation or `PATH` entry is needed. During supervisor cutover, drain existing builds and move all callers to the same new lock domain before starting more builds.
 4. **Make the lead's checkout:** `git clone <repository> <folder>/lead`, or add a worktree there from a checkout you already have. Set its hooks path as the repository's README says, and run `agent-gh --setup` there before the first commit.
 5. **Create the team:** `brg create <pinned copy> <folder>`. It prints the instance ID and its tree: the lead started, every other role not yet created.

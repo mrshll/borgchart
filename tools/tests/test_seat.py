@@ -165,21 +165,18 @@ def run_plugin(
 ) -> subprocess.CompletedProcess[str]:
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
-    env = {
-        **os.environ,
-        "HOME": str(tmp_path),
-        "XDG_CONFIG_HOME": str(tmp_path / "config"),
-        "PATH": str(bindir),
-    }
+    env = {"HOME": str(tmp_path), "PATH": str(bindir), "LANG": "C.UTF-8"}
+    setting = tmp_path / ".config/borgchart/seat-reader"
+    if config:
+        env["BORGCHART_CONFIG"] = str(tmp_path / "custom/config.yaml")
+        setting = tmp_path / "custom/seat-reader"
     if source is not None:
         reader = bindir / "usage-route"
         reader.write_text("#!/bin/sh\n" + source)
         reader.chmod(0o755)
-        if config:
-            setting = tmp_path / "config/borgchart/seat-reader"
-            setting.parent.mkdir(parents=True)
-            setting.write_text(str(reader))
-            env["PATH"] = "/nonexistent"
+        setting.parent.mkdir(parents=True)
+        setting.write_text(str(reader))
+        env["PATH"] = "/nonexistent"
     return subprocess.run(
         [
             sys.executable,
@@ -244,9 +241,10 @@ def test_invalid_arguments_do_not_call_reader(tmp_path: Path, args: list[str]) -
 def test_broken_config_does_not_fall_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    setting = tmp_path / "borgchart/seat-reader"
-    setting.parent.mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("BORGCHART_CONFIG", raising=False)
+    setting = tmp_path / ".config/borgchart/seat-reader"
+    setting.parent.mkdir(parents=True)
     setting.symlink_to(tmp_path / "absent")
     with pytest.raises(ValueError):
         seat.reader_command()
@@ -256,9 +254,10 @@ def test_broken_config_does_not_fall_back(
 def test_invalid_config_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
 ) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    setting = tmp_path / "borgchart/seat-reader"
-    setting.parent.mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("BORGCHART_CONFIG", raising=False)
+    setting = tmp_path / ".config/borgchart/seat-reader"
+    setting.parent.mkdir(parents=True)
     setting.write_text(value)
     with pytest.raises(ValueError):
         seat.reader_command()
@@ -360,3 +359,23 @@ def test_shell_entry_validates_runtime_protocol(
     assert result.stdout.startswith("go:" if expected == 0 else "wait:")
     if output.startswith(("go:", "wait:")):
         assert result.stdout.strip() == output
+
+
+def test_default_reader_is_bundled_not_taken_from_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "unrelated"))
+    monkeypatch.delenv("BORGCHART_CONFIG", raising=False)
+    assert seat.reader_command() == str(PLUGIN / "usage-route")
+
+
+def test_override_follows_the_actual_brg_config_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BORGCHART_CONFIG", str(tmp_path / "settings/custom.yaml"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "unrelated"))
+    setting = tmp_path / "settings/seat-reader"
+    setting.parent.mkdir()
+    setting.write_text("custom-reader")
+    assert seat.reader_command() == "custom-reader"

@@ -137,14 +137,19 @@ def refusal(stdout: str, vendor: str, model: str, now: datetime) -> str:
 
 
 def reader_command() -> str:
-    base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-    setting = base / "borgchart" / "seat-reader"
+    configured = os.environ.get("BORGCHART_CONFIG")
+    config = (
+        Path(configured).absolute()
+        if configured
+        else Path.home() / ".config/borgchart/config.yaml"
+    )
+    setting = config.parent / "seat-reader"
     try:
         reader = setting.read_text().strip()
     except FileNotFoundError:
         if setting.is_symlink():
             raise ValueError("seat-reader setting is a broken symlink") from None
-        return "usage-route"
+        return str(Path(__file__).resolve().with_name("usage-route"))
     if not reader or "\n" in reader or "\r" in reader or "\0" in reader:
         raise ValueError("seat-reader must name one executable")
     if "/" in reader and not Path(reader).is_absolute():
