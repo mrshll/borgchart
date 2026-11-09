@@ -111,6 +111,10 @@ enum Command {
         /// Print the rows as JSON.
         #[arg(long, conflicts_with_all = ["watch", "interactive"])]
         json: bool,
+        /// One line for tmux's status bar: each running member's state mark
+        /// and unread count, in tmux style syntax.
+        #[arg(long, conflicts_with_all = ["json", "watch", "interactive"])]
+        line: bool,
         /// Refresh the table every few seconds.
         #[arg(short, long, conflicts_with = "interactive")]
         watch: bool,
@@ -365,6 +369,7 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
         Command::Status {
             instance,
             json,
+            line,
             watch,
             interactive,
             interval,
@@ -414,7 +419,13 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
                     }
                 }
             }
-            if json {
+            if line {
+                // A refusal prints no line: "no members running" would be wrong.
+                if code == ExitCode::SUCCESS || !rows.is_empty() {
+                    let ids: Vec<&str> = all.iter().map(|inst| inst.id.as_str()).collect();
+                    println!("{}", runtime::status_line(&ids, &rows));
+                }
+            } else if json {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&rows).unwrap_or_default()
