@@ -75,7 +75,11 @@ pub fn run_main(
     args: &[String],
 ) -> ExitCode {
     let state = StateDir::from_root(state_root);
-    let Some(meta) = state::read_meta(&state) else {
+    let meta = match state::read_meta(&state) {
+        Ok(meta) => meta,
+        Err(e) => return fail(e),
+    };
+    let Some(meta) = meta else {
         return fail(format!(
             "instance `{}` isn't running (no state); start it with `brg start {}`",
             state.id, state.id

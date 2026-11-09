@@ -91,7 +91,11 @@ fn brg_path() -> PathBuf {
 /// socket brg's settings name.
 fn tmux_for(state: &StateDir) -> Tmux {
     let tmux = Tmux::new(&state.tmux_conf(), base_env());
-    match state::read_meta(state).and_then(|m| m.socket_path) {
+    match state::read_meta(state)
+        .ok()
+        .flatten()
+        .and_then(|m| m.socket_path)
+    {
         Some(path) => tmux.with_socket(&path.display().to_string()),
         None => tmux,
     }
@@ -427,12 +431,12 @@ fn start_members(
     state::ensure_dir(&state.root)
         .map_err(|e| format!("cannot create {}: {e}", state.root.display()))?;
     let state_lock = lifecycle::lock_state(state)?;
-    let previous = state::read_meta(state);
+    let previous = state::read_meta(state)?;
     // Unless the last start here was confirmed stopped, or never started a
     // window, a server this caller can't see may still run it.
     let may_still_run = previous
         .as_ref()
-        .is_some_and(|m| m.stopped_at.is_none() && m.windows_started != Some(false));
+        .is_some_and(|m| m.stopped_at.is_none() && m.windows_started);
     let existing = previous.clone().filter(|_| probe.has_session(&session));
     let joining = existing.is_some();
     match &existing {
@@ -440,19 +444,19 @@ fn start_members(
         None if !missing.is_empty() => return Err(missing_error()),
         None => {}
     }
-    if !joining && let Some(meta) = &previous {
-        let changed = meta.config.as_ref().is_none_or(|old| old != &snapshot);
-        if changed {
-            if only {
-                return Err(match &meta.config {
-                    Some(old) => lifecycle::changed_since_start(&team, &restart, old, &snapshot),
-                    None => format!(
-                        "instance `{team}` has no configuration snapshot; start the whole instance: {restart}"
-                    ),
-                });
-            }
-            lifecycle::check_stopped(state, meta, &restart)?;
+    if !joining
+        && let Some(meta) = &previous
+        && meta.config != snapshot
+    {
+        if only {
+            return Err(lifecycle::changed_since_start(
+                &team,
+                &restart,
+                &meta.config,
+                &snapshot,
+            ));
         }
+        lifecycle::check_stopped(state, meta, &restart)?;
     }
     let storage = bus.as_ref().map(|_| StorePaths::new(state));
     if let Some(paths) = &storage {
@@ -505,7 +509,7 @@ fn start_members(
             },
             parent: parent_member(member),
             vendor_version: vendor_version(member.vendor, base),
-            started: Some(false),
+            started: false,
         })
     };
     let fresh = existing.is_none();
@@ -520,10 +524,10 @@ fn start_members(
                 team_dir: v.team.dir.clone(),
                 folder: record.folder.clone(),
                 brg: brg.clone(),
-                socket: Some(state::tmux_socket()),
-                config: Some(snapshot.clone()),
+                socket: state::tmux_socket(),
+                config: snapshot.clone(),
                 base_env: base.clone(),
-                windows_started: Some(may_still_run),
+                windows_started: may_still_run,
                 ..Meta::default()
             };
             // Plugins: their values (secrets included) go to private files for the shims.
@@ -764,9 +768,9 @@ fn start_members(
         // member ran.
         if storage.is_none()
             && let Some(m) = meta.members.get_mut(id)
-            && m.started != Some(true)
+            && !m.started
         {
-            m.started = Some(true);
+            m.started = true;
             write_private(
                 &state.meta_file(),
                 &serde_json::to_vec_pretty(&meta).map_err(|e| e.to_string())?,
@@ -1431,7 +1435,9 @@ fn unregister_if_never_started(inst: &Instance) {
     if !registry.instances.contains_key(&inst.id) {
         return;
     }
-    let started = state::read_meta(&inst.state).is_some_and(|m| m.windows_started != Some(false));
+    // A record that can't be read may describe windows that started.
+    let started =
+        state::read_meta(&inst.state).map_or(true, |m| m.is_some_and(|m| m.windows_started));
     let live = liveness_of(inst).values().any(|l| *l != Liveness::Gone);
     if started || live || is_running(inst) {
         return;
@@ -1618,7 +1624,10 @@ fn check_parent_authority(
     if !has_member_context && !creating {
         return Ok(());
     }
-    let recorded = target.and_then(|id| state::read_meta(&inst.state)?.members.get(id).cloned());
+    let recorded = match target {
+        Some(id) => state::read_meta(&inst.state)?.and_then(|m| m.members.get(id).cloned()),
+        None => None,
+    };
     let parent = if let Some(recorded) = recorded {
         // The store records whether the instance started with a bus. A
         // damaged bus must not make a caller a person or prevent stopping.
@@ -1842,7 +1851,7 @@ pub fn start(
 pub fn liveness_of(inst: &Instance) -> BTreeMap<String, Liveness> {
     let state = &inst.state;
     let session = state.session();
-    let meta = state::read_meta(state);
+    let meta = state::read_meta(state).ok().flatten();
     let rows = meta.as_ref().map(|m| lifecycle::Server::of(m).panes());
     let mut out = BTreeMap::new();
     for (id, _) in inst.record.kept_members() {
@@ -1859,9 +1868,7 @@ pub fn liveness_of(inst: &Instance) -> BTreeMap<String, Liveness> {
                     Liveness::Gone
                 }
             }
-            (Some(m), _) if m.stopped_at.is_some() || m.windows_started == Some(false) => {
-                Liveness::Gone
-            }
+            (Some(m), _) if m.stopped_at.is_some() || !m.windows_started => Liveness::Gone,
             _ => Liveness::Unknown,
         };
         let by_record = match lifecycle::load_incarnation(state, id) {
@@ -1931,7 +1938,7 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
             }
         }
     }
-    let meta = state::read_meta(&inst.state);
+    let meta = state::read_meta(&inst.state)?;
     if !team_loaded
         && meta.as_ref().is_none_or(|meta| {
             inst.record
@@ -2021,7 +2028,7 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
     }
     // Save the tombstone first: even a partial cleanup cannot restore routing.
     lock.save_instance(&inst.state, &inst.record)?;
-    if let Some(mut meta) = state::read_meta(&inst.state) {
+    if let Some(mut meta) = state::read_meta(&inst.state)? {
         meta.members.remove(&id);
         write_private(
             &inst.state.meta_file(),
@@ -2269,7 +2276,7 @@ fn unrecord_windows(state: &StateDir, meta: &mut Meta, nothing_started: bool, be
     if !nothing_started {
         return;
     }
-    meta.windows_started = Some(before);
+    meta.windows_started = before;
     if let Ok(body) = serde_json::to_vec_pretty(meta) {
         let _ = write_private(&state.meta_file(), &body);
     }
@@ -2286,8 +2293,8 @@ fn start_window(
 ) -> Result<(), String> {
     // Recorded first: once tmux runs, `stop` must not take an unreachable
     // server for one that never started.
-    if meta.windows_started != Some(true) {
-        meta.windows_started = Some(true);
+    if !meta.windows_started {
+        meta.windows_started = true;
         write_private(
             &state.meta_file(),
             &serde_json::to_vec_pretty(meta).map_err(|e| e.to_string())?,
@@ -2328,14 +2335,13 @@ pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> 
         check_parent_authority(inst, inst.record.role_of(id).unwrap(), None, Some(id))?;
     }
     let _state_lock = lifecycle::lock_state(state)?;
-    let Some(mut meta) = state::read_meta(state) else {
+    let Some(mut meta) = state::read_meta(state)? else {
         // Nothing was ever recorded here, so brg started nothing to stop.
         return Ok(vec!["not running".into()]);
     };
     let caller_socket = state::tmux_socket();
-    if let Some(name) = &meta.socket
-        && *name != caller_socket
-    {
+    if meta.socket != caller_socket {
+        let name = &meta.socket;
         return Err(format!(
             "instance `{team}` is on tmux socket `{name}`, not `{caller_socket}`; stop it with BORGCHART_TMUX_SOCKET={name} brg stop {team}. Nothing was changed"
         ));
@@ -2345,7 +2351,7 @@ pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> 
         Ok(rows) => rows,
         // A stop was already confirmed, or nothing ever started, and
         // nothing has started since.
-        Err(_) if meta.stopped_at.is_some() || meta.windows_started == Some(false) => Vec::new(),
+        Err(_) if meta.stopped_at.is_some() || !meta.windows_started => Vec::new(),
         Err(e) => {
             return Err(format!(
                 "{e}; nothing was changed. If instance `{team}` is really gone (for example after a reboot), `brg start {team}` and then `brg stop {team}` clear it"
@@ -2599,7 +2605,7 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
     let session = state.session();
     let tmux = tmux_for(state);
     let windows = tmux.windows(&session);
-    let meta = state::read_meta(state).unwrap_or_default();
+    let meta = state::read_meta(state).ok().flatten().unwrap_or_default();
     let (counts, bus_note) = if v.team.bus.is_none() {
         (None, None)
     } else {
@@ -2668,10 +2674,7 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
         let incarnation = lifecycle::load_incarnation(state, id);
         let ran = match &incarnation {
             Ok(Some(_)) | Err(_) => true,
-            Ok(None) => meta
-                .members
-                .get(id)
-                .is_some_and(|m| m.started != Some(false)),
+            Ok(None) => meta.members.get(id).is_some_and(|m| m.started),
         };
         let mut row = StatusRow {
             name: id.clone(),
@@ -2985,6 +2988,7 @@ pub fn send(
     let from = from.as_deref();
     let state = &inst.state;
     let meta = state::read_meta(state)
+        .map_err(SendError::Refused)?
         .ok_or_else(|| SendError::NotAlive(format!("instance `{}` isn't running", inst.id)))?;
     let member_meta = meta
         .members
@@ -3127,7 +3131,7 @@ fn attach_command(inst: &Instance, name: &str) -> Result<Command, String> {
     let tmux = tmux_for(&inst.state);
     let window = window_name(inst, &tmux, &session, name)?;
     let mut cmd = Command::new("tmux");
-    match state::read_meta(&inst.state).and_then(|m| m.socket_path) {
+    match state::read_meta(&inst.state)?.and_then(|m| m.socket_path) {
         Some(path) => cmd.arg("-S").arg(path),
         None => cmd.arg("-L").arg(state::tmux_socket()),
     };

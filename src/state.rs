@@ -163,18 +163,15 @@ impl StateDir {
 pub struct Meta {
     pub team_dir: PathBuf,
     /// The instance's working folder.
-    #[serde(default)]
     pub folder: PathBuf,
     /// The absolute path of the `brg` that started the instance (plugins
     /// get it as `BORGCHART_BIN`).
     pub brg: PathBuf,
     /// The configuration the instance started with. Members started into
     /// it later must see the same.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub config: Option<ConfigSnapshot>,
+    pub config: ConfigSnapshot,
     /// The tmux socket name the instance was started on.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub socket: Option<String>,
+    pub socket: String,
     /// The tmux server's absolute socket path, read from tmux once the
     /// first window started. `stop` and liveness address the
     /// server by this, never by the caller's tmux environment.
@@ -186,10 +183,9 @@ pub struct Meta {
     pub stopped_at: Option<String>,
     /// Whether a start may have started a window, and so a tmux server, since
     /// the instance was last confirmed stopped: set before each start.
-    /// `Some(false)` lets `stop` say a team whose server can't be reached
-    /// isn't running; `None` (state from an earlier brg) means unknown.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub windows_started: Option<bool>,
+    /// `false` lets `stop` say a team whose server can't be reached isn't
+    /// running.
+    pub windows_started: bool,
     /// The small environment every window and plugin starts from (no secrets).
     pub base_env: BTreeMap<String, String>,
     pub members: BTreeMap<String, MemberMeta>,
@@ -198,7 +194,6 @@ pub struct Meta {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MemberMeta {
-    #[serde(default)]
     pub role: String,
     pub vendor: String,
     pub posture: String,
@@ -206,10 +201,8 @@ pub struct MemberMeta {
     pub vendor_version: Option<String>,
     /// Whether a start has started the member's window since the instance last
     /// started afresh (`status` tells `not started` from `stopped` by it
-    /// when the instance has no bus). `None` in state from an earlier brg,
-    /// which didn't record it: history unknown.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub started: Option<bool>,
+    /// when the instance has no bus).
+    pub started: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -219,9 +212,18 @@ pub struct PluginMeta {
     pub has_process: bool,
 }
 
-pub fn read_meta(state: &StateDir) -> Option<Meta> {
-    let text = fs::read_to_string(state.meta_file()).ok()?;
-    serde_json::from_str(&text).ok()
+/// The instance's start record: `None` when nothing was recorded, an error
+/// when the file can't be read or parsed.
+pub fn read_meta(state: &StateDir) -> Result<Option<Meta>, String> {
+    let path = state.meta_file();
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+    };
+    serde_json::from_str(&text)
+        .map(Some)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))
 }
 
 pub fn ensure_dir(path: &Path) -> std::io::Result<()> {
