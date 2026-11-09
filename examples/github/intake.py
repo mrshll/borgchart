@@ -64,7 +64,15 @@ REACTION_TARGETS = 10000
 
 REACTION_BATCHES = 200
 
-REACTION_FIELDS = ("version", "recent", "retry_at", "streak", "targets", "batches")
+REACTION_FIELDS = (
+    "version",
+    "recent",
+    "retry_at",
+    "read_retry_at",
+    "streak",
+    "targets",
+    "batches",
+)
 
 SETTLED = ("created", "existing", "failed", "refused", "uncertain")
 
@@ -149,7 +157,7 @@ def next_page(
 
 
 def gh(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
-    """Run agent-gh in its own process group; on timeout kill only that group."""
+    """Run the configured CLI in its own process group; kill that group on timeout."""
     process = subprocess.Popen(
         argv,
         stdin=subprocess.DEVNULL,
@@ -474,7 +482,6 @@ def collect_feed(api: API, config: dict[str, Any], state: dict[str, Any]) -> Non
                             full_name=full_name,
                             version=version,
                             at=utc(),
-                            attempts=0,
                             held=False,
                         ),
                     )
@@ -590,8 +597,10 @@ def collect(api: API, cfg: dict[str, Any], state: dict[str, Any]) -> None:
             collect_feed(api, cfg, state)
         except Fault as error:
             feed["due"] = max(time.time() + api.poll_seconds, error.retry_at)
-            if error.kind not in ("deadline", "rate_limit", "transport") and not (
-                transient(error.kind)
+            if (
+                error.kind not in STOP
+                and error.kind != "sso"
+                and not transient(error.kind)
             ):
                 hold(feed, error.kind)
             state["fault"] = error.kind
@@ -656,7 +665,6 @@ def hold_item(row: dict[str, Any], item: str, full_name: str, kind: str) -> None
             full_name=full_name,
             version="verify:" + utc(),
             at=utc(),
-            attempts=0,
             held=False,
         ),
     )
@@ -690,7 +698,7 @@ def brg_pointer(item: dict[str, Any]) -> str:
             repository=item["full_name"],
             number=item["number"],
             actor_id=item["actor_id"],
-            initiator=item.get("initiator", "human"),
+            initiator=item["initiator"],
             occurred_at=item["occurred_at"],
             url=f"https://github.com/{item['full_name']}/{path}/{item['number']}{fragment}",
         ),
@@ -991,7 +999,15 @@ def read_reactions(cfg: dict[str, Any]) -> dict[str, Any]:
     try:
         info = os.lstat(path)
     except FileNotFoundError:
-        return dict(version=1, recent=[], retry_at=0, streak=0, targets={}, batches={})
+        return dict(
+            version=1,
+            recent=[],
+            retry_at=0,
+            read_retry_at=0,
+            streak=0,
+            targets={},
+            batches={},
+        )
     except OSError as error:
         raise Fault("reactions") from error
     _private(info, "reactions")
@@ -1007,6 +1023,7 @@ def read_reactions(cfg: dict[str, Any]) -> dict[str, Any]:
             and len(data["recent"]) <= 240  # Bound the attempt history.
             and all(_moment(each) for each in data["recent"])
             and _moment(data["retry_at"])
+            and _moment(data["read_retry_at"])
             and type(data["streak"]) is int
             and 0 <= data["streak"] <= 64
             and isinstance(data["targets"], dict)
@@ -1135,7 +1152,7 @@ def update_reactions(cfg: dict[str, Any], change: Any) -> dict[str, Any]:
 def reaction_cooldown(cfg: dict[str, Any]) -> float:
     """The reactions' server cooldown, honored read-only by intake."""
     try:
-        return float(read_reactions(cfg)["retry_at"])
+        return float(read_reactions(cfg)["read_retry_at"])
     except Fault:
         return 0.0  # Intake never stops on the reaction trace.
 
@@ -1346,6 +1363,7 @@ def send_reactions(
 
             def cool(data: dict[str, Any]) -> None:
                 data["retry_at"] = max(data["retry_at"], api.retry_at)
+                data["read_retry_at"] = max(data["read_retry_at"], api.retry_at)
 
             while left:
                 target = left[0]
@@ -1475,6 +1493,11 @@ def send_reactions(
                     # The attempt's actual end replaces its latest possible end.
                     data["recent"] = [time.time()]
                     data["retry_at"] = max(data["retry_at"], retry_at)
+                    if reason == "rate_limited" or (
+                        status is not None
+                        and headers.get("x-ratelimit-remaining") == "0"
+                    ):
+                        data["read_retry_at"] = max(data["read_retry_at"], retry_at)
                     if outcome == "refused":
                         data["streak"] = min(64, data["streak"] + 1)
                     elif outcome in ("created", "existing"):
@@ -2525,20 +2548,65 @@ def initialize(cfg: dict[str, Any], since: str) -> None:
         )
 
 
+def retry_feed(cfg: dict[str, Any]) -> None:
+    """Retry a held feed after the operator fixes its cause; retain history."""
+    with locked(cfg):
+        state = load_state(cfg)
+        state["feed"].update(hold={}, due=0)
+        state["fault"] = None
+        persist(cfg, state)
+
+
+def retry_item(cfg: dict[str, Any], item: str) -> None:
+    """Explicitly recheck one held item without resetting cutoffs or dedup."""
+    if re.fullmatch(r"[1-9][0-9]*:[1-9][0-9]*", item) is None:
+        raise Fault("item_key")
+    with locked(cfg):
+        state = load_state(cfg)
+        pointer = state["row"]["dirty"].get(item)
+        if pointer is None or not pointer["held"]:
+            raise Fault("item_not_held")
+        pointer["held"] = False
+        (state["row"].get("hold") or {}).pop("item:" + item, None)
+        persist(cfg, state)
+
+
+def cycle_health(
+    state: dict[str, Any], due: float, waiting: bool = False
+) -> dict[str, Any]:
+    holds = state["row"].get("hold") or {}
+    retrying = sum(key.startswith("brg:") for key in holds)
+    held = bool(
+        state["feed"].get("hold") or any(not key.startswith("brg:") for key in holds)
+    )
+    fault = state["fault"]
+    ok = not held and fault in (None, "rate_limit")
+    reasons = [
+        record["reason"] for key, record in holds.items() if not key.startswith("brg:")
+    ]
+    reasons += [
+        record["reason"] for record in (state["feed"].get("hold") or {}).values()
+    ]
+    detail = fault or (
+        reasons[0] if reasons else "waiting" if waiting else "poll complete"
+    )
+    return dict(ok=ok, detail=detail, retrying=retrying, due=due)
+
+
 def cycle(cfg: dict[str, Any]) -> dict[str, Any]:
     """One serialized bounded tick; state is never silently initialized."""
     with locked(cfg):
         state = load_state(cfg)
         if cfg["mode"] == "off":
             return dict(ok=False, detail="disabled")
+        wait = max(state["backoff"], reaction_cooldown(cfg), state["feed"]["due"])
+        if time.time() < wait:
+            return cycle_health(state, wait, waiting=True)
         deadline = time.monotonic() + cfg["max_seconds"]
         state["fault"] = None
         api = API(cfg, deadline)
         plans: list[dict[str, Any]] = []
         try:
-            wait = max(state["backoff"], reaction_cooldown(cfg), state["feed"]["due"])
-            if time.time() < wait:
-                return dict(ok=False, detail="waiting", due=wait)
             verify_account(api, cfg)
             collect(api, cfg, state)
             produce_brg(cfg, state, deadline, plans, api)
@@ -2554,13 +2622,7 @@ def cycle(cfg: dict[str, Any]) -> dict[str, Any]:
             persist(cfg, state)
         for plan in plans:
             send_reactions(cfg, plan, deadline)
-        holds = bool(state["feed"].get("hold") or state["row"].get("hold"))
-        ok = not state["fault"] and not holds
-        return dict(
-            ok=ok,
-            detail=state["fault"] or ("held" if holds else "poll complete"),
-            due=state["feed"]["due"],
-        )
+        return cycle_health(state, max(state["feed"]["due"], state["backoff"]))
 
 
 def health(result: dict[str, Any]) -> None:
@@ -2612,6 +2674,10 @@ def main() -> None:
     subs = parser.add_subparsers(dest="command", required=True)
     init = subs.add_parser("init")
     init.add_argument("--since", required=True)
+    retry = subs.add_parser("retry")
+    selection = retry.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--item")
+    selection.add_argument("--feed", action="store_true")
     subs.add_parser("watch")
     subs.add_parser("status")
     args = parser.parse_args()
@@ -2624,6 +2690,11 @@ def main() -> None:
             cfg = read_config(args.config)
             if args.command == "init":
                 initialize(cfg, args.since)
+            elif args.command == "retry":
+                if args.feed:
+                    retry_feed(cfg)
+                else:
+                    retry_item(cfg, args.item)
             else:
                 state = load_state(cfg)
                 print(

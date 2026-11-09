@@ -562,3 +562,294 @@ def test_pagination_cannot_escape() -> None:
         )
         == "/notifications?page=2"
     )
+
+
+def test_reaction_only_cooldown_does_not_freeze_intake(
+    cfg: dict[str, Any], state: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api, key = queued(cfg, state)
+    trace = g.read_reactions(cfg)
+    trace["retry_at"] = time.time() + 3600
+    g.write_reactions(cfg, trace)
+    polled = []
+    monkeypatch.setattr(g, "API", lambda config, deadline: api)
+    monkeypatch.setattr(g, "collect", lambda api, config, state: polled.append(True))
+    monkeypatch.setattr(
+        g, "delivery_target", lambda: dict(instance="example-2345", member="lead-2345")
+    )
+    monkeypatch.setattr(g, "BRG_SEND", lambda target, text, timeout: "example-message")
+    result = g.cycle(cfg)
+    assert result["ok"] and polled
+    assert key not in g.load_state(cfg)["row"]["pending"]
+
+
+def test_account_rate_limit_and_normal_wait_are_healthy(
+    cfg: dict[str, Any], state: dict[str, Any]
+) -> None:
+    due = time.time() + 3600
+    trace = g.read_reactions(cfg)
+    trace["read_retry_at"] = due
+    g.write_reactions(cfg, trace)
+    first = g.cycle(cfg)
+    assert first["ok"] and first["due"] == due
+    assert g.read_state(cfg)["feed"]["due"] == 0
+    g.hold(state["row"], "brg:example", "brg_retry")
+    assert g.cycle_health(state, due)["ok"]
+    assert g.cycle_health(state, due)["retrying"] == 1
+    g.hold(state["row"], "brg_unavailable", "brg_not_ready")
+    assert not g.cycle_health(state, due)["ok"]
+
+
+def test_retry_one_held_item_preserves_dedup(
+    cfg: dict[str, Any], state: dict[str, Any]
+) -> None:
+    api, key = queued(cfg, state)
+    g.hold_item(state["row"], "104:7", "example-owner/example-repo", "http_404")
+    g.persist(cfg, state)
+    assert not g.pending_keys(state["row"])
+    g.retry_item(cfg, "104:7")
+    reloaded = g.load_state(cfg)
+    assert reloaded["row"]["seen"] == state["row"]["seen"]
+    assert g.pending_keys(reloaded["row"]) == [key]
+    assert not reloaded["row"]["dirty"]["104:7"]["held"]
+    with pytest.raises(g.Fault, match="item_not_held"):
+        g.retry_item(cfg, "999:7")
+    with pytest.raises(g.Fault, match="item_key"):
+        g.retry_item(cfg, "../7")
+
+
+def test_pointer_never_defaults_missing_provenance(
+    cfg: dict[str, Any], state: dict[str, Any]
+) -> None:
+    _, key = queued(cfg, state)
+    item = state["row"]["pending"][key]
+    del item["initiator"]
+    with pytest.raises(KeyError):
+        g.brg_pointer(item)
+
+
+def test_fake_gh_executable_get_and_rate_limit(
+    cfg: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import UTC, datetime
+    from email.utils import format_datetime
+
+    fake = tmp_path / "fake-gh"
+    fake.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$@" > "$EXAMPLE_ARGS"\ncat "$EXAMPLE_RESPONSE"\n'
+    )
+    fake.chmod(0o700)
+    args = tmp_path / "argv.txt"
+    response = tmp_path / "response.txt"
+    monkeypatch.setenv("EXAMPLE_ARGS", str(args))
+    monkeypatch.setenv("EXAMPLE_RESPONSE", str(response))
+    cfg["gh"] = [str(fake)]
+    date = format_datetime(datetime.now(UTC))
+    response.write_text(
+        "HTTP/2.0 200 OK\nDate: "
+        + date
+        + "\n\n"
+        + json.dumps(dict(id=101, login="example-agent", type="User"))
+    )
+    api = g.API(cfg)
+    g.verify_account(api, cfg)
+    argv = args.read_text().splitlines()
+    assert argv[:5] == ["api", "--hostname", "github.com", "--method", "GET"]
+    assert argv[-1] == "user"
+    response.write_text(
+        "HTTP/2.0 429 Too Many Requests\nDate: " + date + "\nRetry-After: 120\n\n{}"
+    )
+    with pytest.raises(g.Fault, match="rate_limit"):
+        api.get("/user")
+    assert api.retry_at >= time.time() + 119
+
+
+def test_reaction_reserves_before_post_and_never_retries(
+    cfg: dict[str, Any], state: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, key = queued(cfg, state)
+    cfg["reactions"] = True
+    plan = g.item_reactions(
+        cfg, cfg["owner_policy"], state["row"], [key], "example-batch"
+    )
+    g.prepare_reactions(cfg, plan)
+    monkeypatch.setattr(g, "read_config", lambda path: cfg)
+    monkeypatch.setattr(g, "_reaction_read", lambda *args: None)
+    calls = []
+
+    def post(
+        config: dict[str, Any], target: str, timeout: float
+    ) -> tuple[int, dict[str, str], Any]:
+        trace = g.read_reactions(cfg)
+        assert trace["targets"][target]["reason"] == "in_flight"
+        calls.append(target)
+        raise subprocess.TimeoutExpired("fake-gh", timeout)
+
+    monkeypatch.setattr(g, "post_eyes", post)
+    result = g.send_reactions(cfg, plan, time.monotonic() + 120)
+    assert result["uncertain"] == 1 and len(calls) == 1
+    second = g.item_reactions(
+        cfg, cfg["owner_policy"], state["row"], [key], "example-second"
+    )
+    g.prepare_reactions(cfg, second)
+    assert g.send_reactions(cfg, second, time.monotonic() + 120)["suppressed"] == 1
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "status,headers,body,blocks_reads",
+    [
+        (422, {}, {}, False),
+        (403, {}, {}, False),
+        (429, {"retry-after": "60"}, {}, True),
+        (429, {}, {}, True),
+        (403, {}, {"message": "secondary rate limit"}, True),
+        (
+            201,
+            {"x-ratelimit-remaining": "0"},
+            {"content": "eyes", "user": {"id": 101}},
+            True,
+        ),
+    ],
+)
+def test_reaction_cooldown_classification(
+    cfg: dict[str, Any],
+    state: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    status: int,
+    headers: dict[str, str],
+    body: Any,
+    blocks_reads: bool,
+) -> None:
+    _, key = queued(cfg, state)
+    cfg["reactions"] = True
+    plan = g.item_reactions(
+        cfg, cfg["owner_policy"], state["row"], [key], "example-batch"
+    )
+    g.prepare_reactions(cfg, plan)
+    monkeypatch.setattr(g, "read_config", lambda path: cfg)
+    monkeypatch.setattr(g, "_reaction_read", lambda *args: None)
+    monkeypatch.setattr(g, "post_eyes", lambda *args: (status, headers, body))
+    g.send_reactions(cfg, plan, time.monotonic() + 120)
+    assert (g.reaction_cooldown(cfg) > time.time()) is blocks_reads
+
+
+def test_crash_after_publish_consumes_attempt_and_can_duplicate(
+    cfg: dict[str, Any], state: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api, key = queued(cfg, state)
+    now = [time.time()]
+    monkeypatch.setattr(g.time, "time", lambda: now[0])
+    monkeypatch.setattr(
+        g, "delivery_target", lambda: dict(instance="example-2345", member="lead-2345")
+    )
+    sent = []
+
+    def crash(target: dict[str, str], text: str, timeout: float) -> str:
+        sent.append(text)
+        raise SystemExit("simulated process death after commit")
+
+    monkeypatch.setattr(g, "BRG_SEND", crash)
+    with pytest.raises(SystemExit):
+        g.produce_brg(cfg, state, time.monotonic() + 120, [], api)
+    recovered = g.load_state(cfg)
+    assert recovered["row"]["hold"]["brg:" + key]["attempts"] == 1
+    now[0] += 60
+
+    def commit(target: dict[str, str], text: str, timeout: float) -> str:
+        sent.append(text)
+        return "example-second-commit"
+
+    monkeypatch.setattr(g, "BRG_SEND", commit)
+    g.produce_brg(cfg, recovered, time.monotonic() + 120, [], api)
+    assert len(sent) == 2 and sent[0] == sent[1]
+    assert key not in g.load_state(cfg)["row"]["pending"]
+
+
+def test_pending_send_is_revalidated_and_cancelled(
+    cfg: dict[str, Any], state: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api, key = queued(cfg, state)
+    api.issue["state"] = "closed"
+    calls = []
+    monkeypatch.setattr(g, "BRG_SEND", lambda *args: calls.append(args))
+    g.produce_brg(cfg, state, time.monotonic() + 120, [], api)
+    assert not calls and key not in state["row"]["pending"]
+
+
+def test_config_is_local_and_refuses_temporary_state(tmp_path: Path) -> None:
+    example = Path(__file__).resolve().parents[1] / "config.example.json"
+    path = tmp_path / "config.json"
+    data = json.loads(example.read_text())
+    path.write_text(json.dumps(data))
+    cfg = g.read_config(str(path))
+    assert cfg["state"].endswith("/plugins/github/101-103/state.json")
+    data["state_home"] = str(tmp_path)
+    path.write_text(json.dumps(data))
+    with pytest.raises(g.Fault, match="config"):
+        g.read_config(str(path))
+
+
+@pytest.mark.parametrize("kind", ["http_401", "clock", "sso"])
+def test_feed_retries_temporary_faults(
+    cfg: dict[str, Any],
+    state: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+) -> None:
+    calls = []
+
+    def feed(api: Any, config: dict[str, Any], data: dict[str, Any]) -> None:
+        calls.append(1)
+        if len(calls) == 1:
+            raise g.Fault(kind)
+
+    monkeypatch.setattr(g, "collect_feed", feed)
+    api = FakeAPI(cfg)
+    g.collect(api, cfg, state)
+    state["feed"]["due"] = 0
+    g.collect(api, cfg, state)
+    assert len(calls) == 2 and not state["feed"]["hold"]
+
+
+def test_retry_feed_preserves_cutoffs_and_seen(
+    cfg: dict[str, Any], state: dict[str, Any]
+) -> None:
+    queued(cfg, state)
+    g.hold(state["feed"], "feed_page_cap")
+    state["feed"]["due"] = time.time() + 300
+    g.persist(cfg, state)
+    g.retry_feed(cfg)
+    after = g.load_state(cfg)
+    assert not after["feed"]["hold"] and after["feed"]["due"] == 0
+    assert after["row"]["seen"] == state["row"]["seen"]
+    assert after["feature_start"] == state["feature_start"]
+
+
+def test_main_init_status_and_missing_state(
+    cfg: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(g, "read_config", lambda path: cfg)
+    monkeypatch.setattr(sys, "argv", ["github-intake", "--config", "example", "status"])
+    with pytest.raises(SystemExit) as stopped:
+        g.main()
+    assert stopped.value.code == 1
+    assert "state_missing" in capsys.readouterr().err
+    monkeypatch.setattr(
+        sys, "argv", ["github-intake", "--config", "example", "init", "--since", T0]
+    )
+    g.main()
+    monkeypatch.setattr(sys, "argv", ["github-intake", "--config", "example", "status"])
+    g.main()
+    assert json.loads(capsys.readouterr().out)["pending"] == 0
+
+
+def test_staged_health_reason(
+    cfg: dict[str, Any], state: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api, _ = queued(cfg, state)
+    monkeypatch.setattr(g, "API", lambda *args: api)
+    monkeypatch.setattr(g, "collect", lambda *args: None)
+    assert g.cycle(cfg)["detail"] == "brg_not_ready"

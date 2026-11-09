@@ -6,7 +6,7 @@ This optional plugin polls GitHub notifications and sends verified event pointer
 
 ## Install and configure
 
-Copy this directory to `<plugins_dir>/github`, where `plugins_dir` is in your brg configuration. Install `uv` and an authenticated GitHub CLI. Copy `config.example.json` to a private local file, replace its example values, and set `GITHUB_INTAKE_CONFIG` to that file's absolute path. `gh` is an argv array: use `["/absolute/path/to/gh"]` or `["/absolute/path/to/agent-gh", "gh"]`; no shell is used. The plugin never stores a token.
+Copy this directory to `<plugins_dir>/github`, where `plugins_dir` is in your brg configuration. Install `uv` and an authenticated GitHub CLI. Copy `config.example.json` to a private local file, replace its example values, and set `GITHUB_INTAKE_CONFIG` to that file's absolute path. `gh` is an argv array: use `["/absolute/path/to/gh"]` or `["/absolute/path/to/account-wrapper", "gh"]`; no shell is used. The plugin never stores a token.
 
 Add to your team's `plugins` mapping (the target role must have `max: 1`):
 
@@ -45,9 +45,9 @@ With `reactions: true`, only a confirmed bus commit authorizes a best-effort eye
 
 ## Operate
 
-`github-intake status` reads local state and reaction counts. `brg status <instance>` shows the plugin's atomically written `health.json`. The loop catches cycle exceptions and retries; contention reports unhealthy and retries too. `brg stop <instance>` stops polling; a full `brg start <instance>` resumes it. There is no polling while the instance is stopped. Long outages may exceed the ten-page catchup cap; holds and capacity faults require an operator to investigate and, if desired, restart with a deliberate new cutoff. State collections are capped, not silently pruned.
+`github-intake status` reads local state and reaction counts. `brg status <instance>` shows the plugin's atomically written `health.json`. The loop catches cycle exceptions and retries; contention reports unhealthy and retries too. `brg stop <instance>` stops polling; a full `brg start <instance>` resumes it. There is no polling while the instance is stopped. Long outages may exceed the ten-page catchup cap. After correcting a deterministic feed error, run `github-intake retry --feed`; after correcting a held item, run `github-intake retry --item <repository-id>:<issue-number>`. Both preserve cutoffs and dedup. Authentication and clock errors retry on later cycles without a permanent feed hold. State collections are capped, not silently pruned; capacity may require larger configured limits or deliberate reinitialization. Time to capacity depends on activity and has not been measured.
 
-Polling honors conditional responses, server polling intervals and rate backoff. Each cycle has a deadline. A pending configuration error or staged sender does not start a model or inspect a member. Deployment, initial cutoffs and any reset are explicit operator actions.
+Polling honors conditional responses, server polling intervals and rate backoff. Reaction validation failures have a separate write-only cooldown. Genuine primary or secondary rate-limit responses pause all API requests, following [GitHub’s rate-limit guidance](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#handle-rate-limit-errors-appropriately); a missing Retry-After header does not make a secondary limit safe to ignore. Each cycle has a deadline. A pending configuration error or staged sender does not start a model or inspect a member. Deployment, initial cutoffs and any reset are explicit operator actions.
 
 ## Tests
 
