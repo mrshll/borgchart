@@ -11,9 +11,9 @@ use instance_env::*;
 
 fn department() -> (Env, String) {
     let env = Env::new();
-    env.write("teams/oncall/team.yaml", "roles:\n  lead: {prompt: lead.md, cwd: lead}\n  dev: {team: teams/dev, parent: lead, max: 3, cwd: 'dev/{member_id}'}\n");
-    env.team("teams/oncall/teams/dev");
-    env.write("teams/oncall/teams/dev/team.yaml", "roles:\n  lead: {prompt: lead.md, cwd: repo}\n  helper: {prompt: helper.md, parent: lead, start: false, cwd: repo}\n");
+    env.write("teams/oncall/team.yaml", "roles:\n  lead: {prompt: lead.md, cwd: lead}\n  dev: {team: dev, parent: lead, max: 3, cwd: 'dev/{member_id}'}\n");
+    env.team("teams/dev");
+    env.write("teams/dev/team.yaml", "roles:\n  lead: {prompt: lead.md, cwd: repo}\n  helper: {prompt: helper.md, parent: lead, start: false, cwd: repo}\n");
     fs::create_dir(env.path("work/a/lead")).unwrap();
     let dept = env.create("oncall", "work/a");
     (env, dept)
@@ -68,7 +68,7 @@ fn broken_subteam_during_department_command(command: &str) {
     if command == "member start" {
         env.ok(&["stop", &format!("{dept}/{lead}")]);
     }
-    let subteam = env.path("teams/oncall/teams/dev/team.yaml");
+    let subteam = env.path("teams/dev/team.yaml");
     let valid = fs::read_to_string(&subteam).unwrap();
     fs::write(&subteam, valid.replace("lead.md", "missing.md")).unwrap();
     match command {
@@ -119,7 +119,7 @@ fn broken_subteam_does_not_block_department_full_start() {
 fn broken_subteam_still_blocks_copy_creation_and_start() {
     let (env, dept) = department();
     let (child, _) = copy(&env, &dept);
-    let team = env.path("teams/oncall/teams/dev/team.yaml");
+    let team = env.path("teams/dev/team.yaml");
     let original = fs::read_to_string(&team).unwrap();
     fs::write(&team, original.replace("lead.md", "missing.md")).unwrap();
     for args in [
@@ -148,7 +148,7 @@ fn missing_subteam_during_department_commands(remove_folder: bool) {
     env.ok(&["start", &dept]);
     let (child, _) = copy(&env, &dept);
     let lead = env.member(&dept, "lead");
-    let subteam = env.path("teams/oncall/teams/dev");
+    let subteam = env.path("teams/dev");
     let saved = env.path("saved-dev");
     if remove_folder {
         fs::rename(&subteam, &saved).unwrap();
@@ -163,18 +163,11 @@ fn missing_subteam_during_department_commands(remove_folder: bool) {
     let before = env.registry();
     assert!(
         env.fails(&["create", &format!("{dept}/dev")])
-            .contains("team.yaml")
+            .contains("no team `dev`")
     );
     assert!(env.fails(&["start", &child]).contains("team folder"));
     let validation = env.fails(&["validate", "oncall"]);
-    assert!(
-        validation.contains(if remove_folder {
-            "does not exist"
-        } else {
-            "needs a `team.yaml`"
-        }),
-        "{validation}"
-    );
+    assert!(validation.contains("no team `dev`"), "{validation}");
     assert_eq!(env.registry(), before);
     if remove_folder {
         fs::rename(saved, subteam).unwrap();
@@ -196,11 +189,11 @@ fn missing_subteam_yaml_does_not_block_department_commands() {
 
 fn missing_running_subteam_during_status_and_stop(remove_folder: bool) {
     let env = Env::new();
-    env.write("teams/oncall/team.yaml", "roles:\n  lead: {prompt: lead.md, cwd: lead}\n  helper: {prompt: helper.md, parent: lead, cwd: lead}\n  dev: {team: teams/dev, parent: lead, start: false, max: 3, cwd: 'dev/{member_id}'}\n  ops: {team: teams/ops, parent: lead, start: false, max: 3, cwd: 'ops/{member_id}'}\n");
+    env.write("teams/oncall/team.yaml", "roles:\n  lead: {prompt: lead.md, cwd: lead}\n  helper: {prompt: helper.md, parent: lead, cwd: lead}\n  dev: {team: dev, parent: lead, start: false, max: 3, cwd: 'dev/{member_id}'}\n  ops: {team: ops, parent: lead, start: false, max: 3, cwd: 'ops/{member_id}'}\n");
     for role in ["dev", "ops"] {
-        env.team(&format!("teams/oncall/teams/{role}"));
+        env.team(&format!("teams/{role}"));
         env.write(
-            &format!("teams/oncall/teams/{role}/team.yaml"),
+            &format!("teams/{role}/team.yaml"),
             "roles: {lead: {prompt: lead.md, cwd: repo}}\n",
         );
     }
@@ -227,7 +220,7 @@ fn missing_running_subteam_during_status_and_stop(remove_folder: bool) {
         (healthy.as_str(), env.member(healthy, "lead")),
     ];
     let affected_lead = env.member(affected, "lead");
-    let subteam = env.path("teams/oncall/teams/dev");
+    let subteam = env.path("teams/dev");
     let missing = if remove_folder {
         subteam.clone()
     } else {
@@ -317,7 +310,7 @@ fn changed_subteam_reaches_only_the_copy_that_fully_restarts() {
     let (peer, _) = copy(&env, &dept);
     // Changes after create still reach a copy at its first start.
     env.write(
-        "teams/oncall/teams/dev/lead.md",
+        "teams/dev/lead.md",
         "---\nmodels: {claude: opus}\n---\nRelease amber.\n",
     );
     for inst in [&first, &peer] {
@@ -328,7 +321,7 @@ fn changed_subteam_reaches_only_the_copy_that_fully_restarts() {
     let first_lead = env.member(&first, "lead");
     let peer_lead = env.member(&peer, "lead");
     env.write(
-        "teams/oncall/teams/dev/lead.md",
+        "teams/dev/lead.md",
         "---\nmodels: {claude: opus}\n---\nRelease blue.\n",
     );
     env.fails(&["start", &first]);
@@ -364,8 +357,9 @@ fn moved_copy_team_folder_errors_without_rebinding_to_a_same_named_team() {
     let lead = env.member(&child, "lead");
     let starts = env.starts(&lead).len();
     env.ok(&["stop", &child]);
-    let original = env.path("teams/oncall/teams/dev");
-    fs::rename(&original, env.path("teams/dev")).unwrap();
+    let original = env.path("teams/dev");
+    fs::create_dir(env.path("elsewhere")).unwrap();
+    fs::rename(&original, env.path("elsewhere/dev")).unwrap();
     env.fails(&["start", &child]);
     let registry = env.registry();
     assert_eq!(
@@ -380,31 +374,35 @@ fn moved_copy_team_folder_errors_without_rebinding_to_a_same_named_team() {
 fn changed_team_path_resolution_requires_the_declaring_instance_to_restart() {
     let (env, dept) = department();
     env.ok(&["stop", &dept]);
-    let selected = env.path("teams/oncall/teams/selected");
-    std::os::unix::fs::symlink("dev", &selected).unwrap();
-    env.write("teams/oncall/team.yaml", "roles:\n  lead: {prompt: lead.md, cwd: lead}\n  dev: {team: teams/selected, parent: lead, max: 3, cwd: 'dev/{member_id}'}\n");
     env.ok(&["start", &dept]);
     let (kept, _) = copy(&env, &dept);
     env.ok(&["start", &kept]);
-    env.team("teams/oncall/teams/other");
+    env.team("redirect/dev");
     env.write(
-        "teams/oncall/teams/other/team.yaml",
+        "redirect/dev/team.yaml",
         "roles: {lead: {prompt: lead.md, cwd: repo}}\n",
     );
     env.write(
-        "teams/oncall/teams/other/lead.md",
+        "redirect/dev/lead.md",
         "---\nmodels: {claude: opus}\n---\nAlternative team.\n",
     );
-    fs::remove_file(&selected).unwrap();
-    std::os::unix::fs::symlink("other", &selected).unwrap();
-    env.fails(&["create", &format!("{dept}/dev")]);
+    env.write(
+        "config.yaml",
+        &format!("schema: 1\nteams: [{}]\n", env.path("redirect").display()),
+    );
+    let before = env.registry();
+    assert!(
+        env.fails(&["create", &format!("{dept}/dev")])
+            .contains("changed since the instance started")
+    );
+    assert_eq!(env.registry(), before);
     // A kept copy keeps its recorded source, independently of the role's
-    // current symlink target and of a later department restart.
+    // current catalog target and of a later department restart.
     env.ok(&["stop", &kept]);
     env.ok(&["start", &kept]);
     assert_eq!(
         env.registry()["instances"][&kept]["team_dir"],
-        env.path("teams/oncall/teams/dev").display().to_string()
+        env.path("teams/dev").display().to_string()
     );
     env.ok(&["stop", &dept]);
     env.ok(&["start", &dept]);
@@ -417,20 +415,27 @@ fn changed_team_path_resolution_requires_the_declaring_instance_to_restart() {
 
 fn move_ancestor_within_copy(env: &Env, dept: &str) {
     env.ok(&["stop", dept]);
-    env.team("teams/oncall/teams/dev/teams/oncall");
+    fs::rename(env.path("teams/oncall"), env.path("old-oncall")).unwrap();
+    env.team("relocated/oncall");
     env.write(
-        "teams/oncall/teams/dev/teams/oncall/team.yaml",
+        "config.yaml",
+        &format!(
+            "schema: 1\nteams: [{}, {}]\n",
+            env.path("relocated").display(),
+            env.path("teams").display()
+        ),
+    );
+    env.write(
+        "relocated/oncall/team.yaml",
         "roles: {lead: {prompt: lead.md, cwd: lead}}\n",
     );
     env.ok(&[
         "start",
         dept,
         "--team",
-        &env.path("teams/oncall/teams/dev/teams/oncall")
-            .display()
-            .to_string(),
+        &env.path("relocated/oncall").display().to_string(),
     ]);
-    env.write("teams/oncall/teams/dev/team.yaml", "roles:\n  lead: {prompt: lead.md, cwd: repo}\n  panel: {team: teams/oncall, cwd: 'panel/{member_id}'}\n");
+    env.write("teams/dev/team.yaml", "roles:\n  lead: {prompt: lead.md, cwd: repo}\n  panel: {team: oncall, cwd: 'panel/{member_id}'}\n");
 }
 
 #[test]
@@ -473,10 +478,7 @@ fn interactive_is_not_an_option_on_nested_team_roles() {
     for value in ["true", "false"] {
         fs::write(
             &path,
-            original.replace(
-                "team: teams/dev,",
-                &format!("team: teams/dev, interactive: {value},"),
-            ),
+            original.replace("team: dev,", &format!("team: dev, interactive: {value},")),
         )
         .unwrap();
         let error = env.fails(&["validate", "oncall"]);
@@ -501,4 +503,44 @@ fn department_and_copy_get_stores_without_bus_opt_in() {
         assert_eq!(identity["instance"], instance.as_str());
     }
     env.ok(&["stop", &dept]);
+}
+
+#[test]
+fn missing_named_child_blocks_fresh_start_without_losing_status_or_stop() {
+    let (env, dept) = department();
+    let meta: serde_json::Value =
+        serde_json::from_slice(&fs::read(env.path(&format!("state/{dept}/start.json"))).unwrap())
+            .unwrap();
+    assert_eq!(
+        meta["config"]["team_dirs"]["dev"],
+        env.path("teams/dev").display().to_string()
+    );
+    fs::rename(env.path("teams/dev"), env.path("saved-dev")).unwrap();
+    env.ok(&["status", &dept]);
+    env.fails(&["create", &format!("{dept}/dev")]);
+    env.ok(&["stop", &dept]);
+    assert!(env.fails(&["start", &dept]).contains("no team `dev`"));
+    env.ok(&["status", &dept]);
+    env.ok(&["stop", &dept]);
+}
+
+#[test]
+fn ambiguous_catalog_does_not_block_status_but_refuses_new_copies() {
+    let (env, dept) = department();
+    env.team("other/dev");
+    env.write(
+        "config.yaml",
+        &format!(
+            "schema: 1\nteams: [{}, {}]\n",
+            env.path("teams").display(),
+            env.path("other").display()
+        ),
+    );
+    env.ok(&["status", &dept]);
+    assert!(
+        env.fails(&["create", &format!("{dept}/dev")])
+            .contains("more than one team")
+    );
+    env.ok(&["stop", &dept]);
+    assert!(env.fails(&["start", &dept]).contains("more than one team"));
 }

@@ -14,16 +14,16 @@ fn department() -> Env {
     let env = Env::new();
     env.write(
         "teams/oncall/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: lead}\n  dev: {team: teams/dev, parent: lead, start: false, max: 4, cwd: 'dev/{member_id}'}\n",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: lead}\n  dev: {team: dev, parent: lead, start: false, max: 4, cwd: 'dev/{member_id}'}\n",
     );
-    env.team("teams/oncall/teams/dev");
+    env.team("teams/dev");
     env.write(
-        "teams/oncall/teams/dev/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: repo}\n  helper: {prompt: helper.md, parent: lead, start: false, cwd: repo}\n  scout: {prompt: scout.md, start: false, cwd: repo}\n  design: {team: teams/design, parent: lead, start: false, max: 2, cwd: 'design/{member_id}'}\n",
+        "teams/dev/team.yaml",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: repo}\n  helper: {prompt: helper.md, parent: lead, start: false, cwd: repo}\n  scout: {prompt: scout.md, start: false, cwd: repo}\n  design: {team: design, parent: lead, start: false, max: 2, cwd: 'design/{member_id}'}\n",
     );
-    env.team("teams/oncall/teams/dev/teams/design");
+    env.team("teams/design");
     env.write(
-        "teams/oncall/teams/dev/teams/design/team.yaml",
+        "teams/design/team.yaml",
         "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: work}\n  helper: {prompt: helper.md, parent: lead, start: false, cwd: work}\n",
     );
     fs::create_dir(env.path("work/a/lead")).unwrap();
@@ -369,7 +369,7 @@ fn full_start_skips_running_copy_validation_but_checks_stopped_restores() {
     env.wait_for("copy restored", || env.state_of(&dev, "lead") == "idle");
     let lead = env.member(&dev, "lead");
     let before = env.starts(&lead).len();
-    let path = env.path("teams/oncall/teams/dev/lead.md");
+    let path = env.path("teams/dev/lead.md");
     let prompt = fs::read_to_string(&path).unwrap();
     fs::write(
         &path,

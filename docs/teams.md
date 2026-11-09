@@ -4,7 +4,7 @@ Teams, instances, roles, copies up to `max` and the four verbs (`create`, `start
 
 ## The files
 
-A real team lives in [`dev-team/`](../borgchart-engineering/teams/dev-team/): the team this repository is developed with, plus [`dev-design-team/`](../borgchart-engineering/teams/dev-team/teams/dev-design-team/), the design panel its lead seats. Both sit inside [`borgchart-engineering/`](../borgchart-engineering/), the root of their tree (see "Teams as members"). The sketch below is a smaller version of it:
+A real team lives in [`dev-team/`](../teams/dev-team/): the team this repository is developed with, plus [`dev-design-team/`](../teams/dev-design-team/), the design panel its lead seats. They are siblings of [`borgchart-engineering/`](../teams/borgchart-engineering/), whose definition declares roles referring to them by name (see "Teams as members"). The sketch below is a smaller version of it:
 
 ```
 devteam/
@@ -55,7 +55,7 @@ You are the implementer on a development team. The lead assigns you one bounded 
 {{includes/base}}
 ```
 
-- **`models`:** pins a model, and optionally an effort, per vendor. Only the member's own vendor needs an entry; `borgchart-engineering/teams/dev-team/` names both, so moving a member to the other vendor is a one-line change to its `vendor:` in `team.yaml`.
+- **`models`:** pins a model, and optionally an effort, per vendor. Only the member's own vendor needs an entry; `teams/dev-team/` names both, so moving a member to the other vendor is a one-line change to its `vendor:` in `team.yaml`.
 - **Body:** the standing instruction. It's sent once, when the member starts.
 - **Includes:** one level deep.
 
@@ -156,25 +156,26 @@ roles:
 
 ## Teams as members
 
-A role can be a whole team, so teams form a tree: a team's roles can be teams, and every member has a parent (except the root), children and a subtree. The member with no parent is the **root**; the lead at the top of a tree is its **root lead**. [`borgchart-engineering/`](../borgchart-engineering/) is the real tree: its root lead runs dev teams, design panels, researchers and monitors for this repository's engineering. Nesting comes with #83 (D1); messages between a copy and its parent, which cross stores, come with the delivery change that follows it (D2).
+A role can be a whole team, so teams form a tree: a team's roles can be teams, and every member has a parent (except the root), children and a subtree. The member with no parent is the **root**; the lead at the top of a tree is its **root lead**. [`borgchart-engineering/`](../teams/borgchart-engineering/) is the real tree: its root lead runs dev teams, design panels, researchers and monitors for this repository's engineering. Nesting comes with #83 (D1); messages between a copy and its parent, which cross stores, come with the delivery change that follows it (D2).
 
 ```yaml
 # borgchart-engineering/team.yaml, shortened
 roles:
   lead:   {prompt: lead.md, start: true, interactive: true, cwd: lead}
-  dev:    {team: teams/dev-team, parent: lead, start: false, max: 4, cwd: "dev/{member_id}"}
-  design: {team: teams/dev-team/teams/dev-design-team, parent: lead, start: false, max: 2, cwd: "design/{member_id}"}
+  dev:    {team: dev-team, parent: lead, start: false, max: 4, cwd: "dev/{member_id}"}
+  design: {team: dev-design-team, parent: lead, start: false, max: 2, cwd: "design/{member_id}"}
 ```
 
 - **A team role's member is a copy:** a nested instance of the sub-team, with its own members, message store, notes, state and frozen configuration, working in its own folder inside its parent's. The copy freezes its team folder's files at its first start, and picks up changes at its own next full stop and start.
-- **`team:` is a path inside the declaring team's folder:** relative, with no `..`, no absolute path, no `shared:` and no symlink out of the folder. It's never looked up by name. A sub-team folder still runs on its own by path (`brg create ./borgchart-engineering/teams/dev-team <folder>`).
+- **`team:` names another definition:** `team: dev-team` resolves through the configured team directories, exactly like `brg create dev-team`. Missing or ambiguous names fail validation. There is no same-installation restriction or nested-path compatibility. Definitions can be siblings while runtime working folders and addresses still nest. A definition also runs independently with `brg create dev-team <folder>`.
+- **Resolution is frozen while running.** Child definition directories belong to the parent start snapshot; a changed catalog cannot silently redirect a later copy. Apply changed resolution at a full stop/start. Existing copies retain their own recorded source folders and freeze their contents independently. Missing referenced definitions remain tolerable for observing/stopping running instances, but validation, copy creation and a fresh full start refuse them.
 - **Copies are created stopped.** `brg create <instance>/dev` makes the copy and its folder, prints its ID and the folders to prepare, and starts nothing. The parent prepares them (a dev copy's `repo/` worktree), then runs `brg start <instance>/<copy>`, which starts the copy's `start: true` roles. Work folders don't overlap at any level, so the checkout check between instances needs no exception.
 - **Addresses nest:** `<instance>/<copy>/<member>`, for example `borgchart-engineering-h4k2/dev-a7k2/lead-c4nd`. A copy's instance ID is its full path. A target resolves by the longest registered instance prefix, then a member, a role or nothing. A copy's top members (those with no parent role) get their parent's full address in `BORGCHART_PARENT`.
 - **Escalation follows `parent:` one level at a time.** A copy's top members hang under the member of the team role's `parent`. Only the root writes to `external:NAME`; a child team's lead writes to its parent. Siblings don't message each other: their parent carries what one needs from another.
 - **Authority is the whole subtree.** A member, at its latest running start, may create, start, stop or delete anything below it along recorded parent edges, at any depth: its child members, the copies under it, and their members and copies. Never itself, its ancestors, its siblings or their subtrees, so a copy's top member can't stop or delete its own copy. A person may act on anything.
 - **Stopping cascades.** `stop` of a copy or of the root's instance stops members deepest first, marking the copy `stopping` so nothing new is created or started inside it meanwhile; a later `stop` finishes an interrupted one. `start` brings back the copies that were running. `delete` of an instance with kept copies is refused, listing them.
 - **Cycles are refused,** a team containing itself directly or not, at `validate` and again at `create` and a full restart. There's no depth limit. Every team and sub-team has a message store; no bus opt-in is needed.
-- **Seating is a plugin, not brg.** Before each `create` or `start`, the lead lists the launches it causes and asks a seating plugin's `route <vendor> <model>` action, which answers `go` or `wait`. Unknown or failed usage is `wait`, and a `wait` never means another vendor or model. The root and dev teams share the [bundled seating plugin](../borgchart-engineering/teams/dev-team/plugins/seat/README.md), which invokes the machine's real quota router and fails closed when it is unavailable. brg itself never checks quotas.
+- **Seating is a plugin, not brg.** Before each `create` or `start`, the lead lists the launches it causes and asks a seating plugin's `route <vendor> <model>` action, which answers `go` or `wait`. Unknown or failed usage is `wait`, and a `wait` never means another vendor or model. The root and dev teams share the [bundled seating plugin](../teams/shared/plugins/seat/README.md), which invokes the machine's real quota router and fails closed when it is unavailable. brg itself never checks quotas.
 - **Delivery between stores (D2, not built yet):** a message crosses a store only along a parent edge; the receiver's brg imports it from the sender's store at its next `inbox` or wait.
 
 ## What you never see

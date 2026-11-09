@@ -1,6 +1,5 @@
-//! The engineering department (`borgchart-engineering/`), its development
-//! team (`teams/dev-team/`) and that team's design panel
-//! (`teams/dev-design-team/` inside it): the READMEs' deployments
+//! The sibling definitions under `teams/`: the engineering department,
+//! dev team and design panel: the READMEs' deployments
 //! validate, the member files expand and stay generic, one message round
 //! works with `fake-agent` members, the dev lead seats its panel, and the
 //! department lead starts a dev copy.
@@ -14,19 +13,21 @@ use std::process::{Command, Output};
 
 const TEAMS: [&str; 2] = ["dev-team", "dev-design-team"];
 
-/// Where each team's folder sits in the repository.
-fn team_dir(name: &str) -> PathBuf {
-    let dev = Path::new(env!("CARGO_MANIFEST_DIR")).join("borgchart-engineering/teams/dev-team");
-    match name {
-        "dev-team" => dev,
-        "dev-design-team" => dev.join("teams/dev-design-team"),
-        _ => panic!("no team folder `{name}`"),
-    }
+/// The installable catalog: sibling teams and one shared asset folder.
+fn catalog() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("teams")
 }
 
-/// The department's folder, which holds the dev team.
+fn team_dir(name: &str) -> PathBuf {
+    catalog().join(name)
+}
+
 fn department() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("borgchart-engineering")
+    team_dir("borgchart-engineering")
+}
+
+fn shared() -> PathBuf {
+    catalog().join("shared")
 }
 
 fn dev_team() -> PathBuf {
@@ -65,19 +66,19 @@ fn readme_commands(prefix: &str) -> Vec<String> {
 const FAKE_SEAT: &str =
     "#!/bin/sh\necho \"$*\" >> \"$(dirname \"$0\")/asked\"\necho 'go: a fictional usage source'\n";
 
-/// As the README sets it up: a pinned copy of the repository's department
-/// (the dev team and its panel inside it) in `dir/pinned`, where brg runs; the seating
+/// As the README sets it up: a pinned copy of the complete teams catalog
+/// in `dir/pinned/teams`, where brg resolves names; the seating
 /// plugin replaced by a fake only in that test copy; and the README configuration
 /// in `dir/config.yaml`. The instance's folder is
 /// `dir/work`, with its shared checkout in `dir/work/repo`.
 fn setup(dir: &Path, text: &str) -> PathBuf {
     fs::create_dir_all(dir.join("work/repo")).unwrap();
-    copy_dir(&department(), &dir.join("pinned/borgchart-engineering"));
-    let seat = dir.join("pinned/borgchart-engineering/teams/dev-team/plugins/seat");
+    copy_dir(&catalog(), &dir.join("pinned/teams"));
+    let seat = dir.join("pinned/teams/shared/plugins/seat");
     fs::create_dir_all(&seat).unwrap();
     fs::write(seat.join("seat"), FAKE_SEAT).unwrap();
     fs::set_permissions(seat.join("seat"), fs::Permissions::from_mode(0o755)).unwrap();
-    let file = dir.join("config.yaml");
+    let file = dir.join("pinned/config.yaml");
     fs::write(&file, text).unwrap();
     fs::create_dir_all(dir.join("home")).unwrap();
     file
@@ -153,7 +154,7 @@ fn the_readme_configuration_validates_cleanly() {
 fn the_department_validates_cleanly() {
     let dir = tempfile::tempdir().unwrap();
     let config = setup(dir.path(), &readme_configs()[0]);
-    let out = validate(dir.path(), &config, "./borgchart-engineering");
+    let out = validate(dir.path(), &config, "borgchart-engineering");
     let report: serde_json::Value = serde_json::from_slice(&out.stdout)
         .unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&out.stderr)));
     assert!(out.status.success(), "{report}");
@@ -187,21 +188,22 @@ fn includes_of(file: &Path) -> Vec<String> {
 /// included, gets the common rules.
 #[test]
 fn includes_resolve_and_are_shared() {
-    let files = member_files("dev-team");
+    let mut files = member_files("dev-team");
     assert_eq!(files.len(), 5, "{files:?}");
+    files.extend(member_files("borgchart-engineering"));
     let mut uses: std::collections::BTreeMap<String, usize> = Default::default();
     for file in &files {
         let includes = includes_of(file);
         assert!(includes.contains(&"common".into()), "{}", file.display());
         for stem in includes {
-            let inc = dev_team().join(format!("includes/{stem}.md"));
+            let inc = shared().join(format!("includes/{stem}.md"));
             let body = fs::read_to_string(&inc)
                 .unwrap_or_else(|e| panic!("{}: {stem}: {e}", file.display()));
             assert!(!body.contains("{{"), "{} nests an include", inc.display());
             *uses.entry(stem).or_default() += 1;
         }
     }
-    let mut present: Vec<String> = fs::read_dir(dev_team().join("includes"))
+    let mut present: Vec<String> = fs::read_dir(shared().join("includes"))
         .unwrap()
         .map(|e| {
             let name = e.unwrap().file_name().to_string_lossy().to_string();
@@ -228,10 +230,14 @@ fn includes_resolve_and_are_shared() {
 /// local committers, including when the dev team runs standalone.
 #[test]
 fn git_rules_reach_only_the_roles_that_write() {
-    let git = fs::read_to_string(dev_team().join("includes/git.md")).unwrap();
+    let git = fs::read_to_string(shared().join("includes/git.md")).unwrap();
     for folder in [department(), dev_team(), team_dir("dev-design-team")] {
-        let mut report = borgchart::diag::Report::default();
-        let team = borgchart::team::load(&folder, &mut report).unwrap();
+        let config = borgchart::config::Config {
+            teams: vec![catalog()],
+            ..Default::default()
+        };
+        let (report, validated) = borgchart::validate::validate_with(&folder, config);
+        let team = validated.unwrap_or_else(|| panic!("{report:?}")).team;
         for (id, role) in &team.roles {
             assert_eq!(
                 role.instruction.contains(git.trim()),
@@ -252,7 +258,7 @@ fn members_wait_the_way_their_vendor_allows() {
     // Member files run as Claude by team.yaml, plus the common rules (Claude
     // helpers use them too) and the designer (one designer is Claude).
     let mut files = vec![
-        dev_team().join("includes/common.md"),
+        shared().join("includes/common.md"),
         team_dir("dev-design-team").join("designer.md"),
     ];
     let team = fs::read_to_string(dev_team().join("team.yaml")).unwrap();
@@ -270,6 +276,7 @@ fn members_wait_the_way_their_vendor_allows() {
         files.iter().any(|f| f.ends_with("orchestrator.md")),
         "{files:?}"
     );
+    files.push(shared().join("includes/monitor.md"));
     let mut sleeps = 0;
     for file in &files {
         let text = fs::read_to_string(file).unwrap();
@@ -304,7 +311,7 @@ fn members_wait_the_way_their_vendor_allows() {
 
     // A helper waiting for its answer, and a designer waiting for the
     // lead's answers, do it the way their vendor allows.
-    let base = fs::read_to_string(dev_team().join("includes/common.md")).unwrap();
+    let base = fs::read_to_string(shared().join("includes/common.md")).unwrap();
     assert!(
         base.contains("**Codex:** run it in the **foreground**"),
         "{base}"
@@ -366,9 +373,9 @@ fn the_team_files_stay_generic() {
     // team instructions. Other private names and machine paths stay denied.
     assert!(denied_word("mrshll-agent").is_some());
 
-    // Every file of the department, its teams included.
+    // Every sibling definition and shared asset in the catalog.
     let mut files = Vec::new();
-    walk(&department(), &mut files);
+    walk(&catalog(), &mut files);
     assert!(files.contains(&department().join("lead.md")), "{files:?}");
     for team in TEAMS {
         let held = files.iter().filter(|f| f.starts_with(team_dir(team)));
@@ -391,7 +398,7 @@ fn the_team_files_stay_generic() {
         };
         let text = word.replace_all(&text, |caps: &regex::Captures<'_>| match &caps[0] {
             "mrshll-agent" | "agent-gh" => String::new(),
-            "mrshll" if file == dev_team().join("includes/git.md") => String::new(),
+            "mrshll" if file == shared().join("includes/git.md") => String::new(),
             other => other.to_string(),
         });
         assert_eq!(denied_word(&text), None, "{}", file.display());
@@ -683,7 +690,7 @@ mod round {
             .as_str()
             .unwrap();
         let lead_body = member_body(&dev_team().join("orchestrator.md"));
-        let base = fs::read_to_string(dev_team().join("includes/common.md")).unwrap();
+        let base = fs::read_to_string(shared().join("includes/common.md")).unwrap();
         let opening = lead_body.lines().find(|l| !l.trim().is_empty()).unwrap();
         assert!(prompt.starts_with(opening.trim()), "{prompt}");
         assert!(prompt.contains(base.lines().next().unwrap()), "{prompt}");
@@ -961,10 +968,7 @@ mod round {
             asked.push(format!("route {vendor} {model}"));
         }
         assert_eq!(
-            fs::read_to_string(
-                team.path("pinned/borgchart-engineering/teams/dev-team/plugins/seat/asked")
-            )
-            .unwrap(),
+            fs::read_to_string(team.path("pinned/teams/shared/plugins/seat/asked")).unwrap(),
             asked.join("\n") + "\n"
         );
 
@@ -1153,7 +1157,7 @@ mod round {
         team.ok(&[
             "create",
             &team
-                .path("pinned/borgchart-engineering")
+                .path("pinned/teams/borgchart-engineering")
                 .display()
                 .to_string(),
             &team.path("work").display().to_string(),
@@ -1311,8 +1315,8 @@ mod round {
             assert_eq!(code, 0, "{made}");
         }
 
-        let common = fs::read_to_string(dev_team().join("includes/common.md")).unwrap();
-        let dev = fs::read_to_string(dev_team().join("includes/dev.md")).unwrap();
+        let common = fs::read_to_string(shared().join("includes/common.md")).unwrap();
+        let dev = fs::read_to_string(shared().join("includes/dev.md")).unwrap();
         let dev_rules: Vec<&str> = dev.split("\n\n").map(str::trim).collect();
         for (instance, role, dev_only) in [
             (&dept, "lead", false),
@@ -1433,4 +1437,22 @@ mod round {
                 .contains("list the inbox again")
         );
     }
+}
+
+#[test]
+fn pinned_sibling_catalog_validates_without_the_source_checkout() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = setup(dir.path(), &readme_configs()[0]);
+    for name in ["borgchart-engineering", "dev-team", "dev-design-team"] {
+        let output = validate(dir.path(), &config, name);
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let found = borgchart::team::list(&[dir.path().join("pinned/teams")]);
+    assert_eq!(found.len(), 3);
+    assert!(!found.iter().any(|(name, _)| name == "shared"));
 }

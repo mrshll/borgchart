@@ -665,6 +665,7 @@ mod tests {
         ConfigSnapshot {
             version: crate::config_snapshot::CONFIG_DIGEST_VERSION,
             digest: format!("{inputs:?}"),
+            team_dirs: BTreeMap::new(),
             inputs: inputs
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))

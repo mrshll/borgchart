@@ -12,7 +12,7 @@ under its parent instance, independently of where its team definition is stored.
 
 | Definition | Active | Created by | Examples |
 | --- | --- | --- | --- |
-| **Team**: a folder you can share, holding `team.yaml`, its role files, includes and plugins | **Instance**: the team running in one working folder, with its members, messages and notes | `brg create dev-team ~/work/x` | `dev-team-k3f9`, `dev-team-p7xm` |
+| **Team**: a folder you can share, holding `team.yaml` and role files, with local or catalog-shared includes and plugins | **Instance**: the team running in one working folder, with its members, messages and notes | `brg create dev-team ~/work/x` | `dev-team-k3f9`, `dev-team-p7xm` |
 | **Role**: a named part in a team (a role file, a vendor, a parent, whether it starts with the instance, how many copies may run) | **Member**: one running agent filling the role | `brg create dev-team-k3f9/implementer` | `implementer-x7k2`, `lead-q8m3` |
 
 - **Start:** one start of a member. It keeps today's unique start ID (incarnation); only a member's latest start may act as it.
@@ -22,7 +22,7 @@ under its parent instance, independently of where its team definition is stored.
 
 ## Where things live
 
-- **The team folder** holds everything that can be shared:
+- **The team folder** holds its definition; sibling teams may use one catalog `shared/` folder for common includes and plugins:
   - the roles and their role files, includes and plugins;
   - whether the team uses the message bus, and its alert action (`bus:`);
   - each role's `posture`, its extra launch arguments (`args`, such as the researcher's `--search`), and optionally a `cwd` inside the instance's folder;
@@ -113,7 +113,7 @@ Two folders with the same name can both run. Their instances are told apart by t
 
 **Recipients.** A message goes to one member, or from a team's root member to `external:NAME`. An instance isn't a recipient: a message naming only an instance (`dev-design-k3f9`) is refused, listing its members. For now a member's messages stay inside its own instance. A team that works as part of another, such as a design panel inside the dev team, is a team role of it (#25): a copy with its own instance and store, whose messages to and from its parent cross stores along that edge once delivery is built. Messages between chosen members of independent instances, such as two teams' leads, are planned after that (#62): a person links a role in one instance with a role in another. The message format leaves room for them, so they need no second format change.
 
-**Teams as members (#25).** A role can be a team, named by a path inside the declaring team's folder (`team: teams/dev-team`). Its members are copies (`dev-a7k2`): nested instances, each with its own members, message store, notes, state and frozen configuration, and a working folder inside its parent's. Teams form a tree: the member with no parent is the root. Addresses nest (`borgchart-engineering-h4k2/dev-a7k2/lead-c4nd`), and a copy's instance ID is its full path. Copies are created stopped, prepared by their parent and then started. A member may act on its whole subtree, and `stop` cascades deepest first. [teams.md](teams.md#teams-as-members) has the rules, and [`borgchart-engineering/`](../borgchart-engineering/) is the real tree.
+**Teams as members (#25).** A role can be a team, referenced by name through the configured team directories (`team: dev-team`). Its members are copies (`dev-a7k2`): nested instances, each with its own members, message store, notes, state and frozen configuration, and a working folder inside its parent's. Teams form a tree: the member with no parent is the root. Addresses nest (`borgchart-engineering-h4k2/dev-a7k2/lead-c4nd`), and a copy's instance ID is its full path. Copies are created stopped, prepared by their parent and then started. A member may act on its whole subtree, and `stop` cascades deepest first. [teams.md](teams.md#teams-as-members) has the rules, and [`borgchart-engineering/`](../teams/borgchart-engineering/) defines the runtime tree from sibling definitions under `teams/`.
 
 ## Lifetimes
 

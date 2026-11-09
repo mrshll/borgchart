@@ -218,7 +218,13 @@ pub fn member(inst: &Instance, name: &str) -> Result<String, String> {
         ));
     }
     let mut report = crate::diag::Report::default();
-    if crate::team::load(&inst.record.team_dir, &mut report)
+    let frozen = crate::state::read_meta(&inst.state)
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+        .config
+        .team_dirs;
+    if crate::team::load_with(&inst.record.team_dir, &[], Some(&frozen), &mut report)
         .is_some_and(|team| team.roles.contains_key(name))
     {
         return Err(format!(
