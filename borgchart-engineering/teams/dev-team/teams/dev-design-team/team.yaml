@@ -1,15 +1,21 @@
-# The design panel for the development team in ../dev-team: two designers,
-# one per vendor, each writing an independent proposal from the same blind
-# brief. The dev-team lead creates it as its own instance in a design
-# worktree, and deletes it after; see ../dev-team/README.md. No bus:
-# designers exchange files with the lead (the brief, questions, answers,
-# proposals) in the instance's notes folder.
+# The design panel: two designers, one per vendor, each writing an
+# independent proposal from the same blind brief. It is a nested team role:
+# the dev team's `design` role (../../team.yaml), and the department's
+# `design` role. Its parent creates a copy stopped, puts a detached worktree
+# at the baseline in the copy's `work/`, starts it, and deletes it after;
+# see ../../orchestrator.md. Designers exchange files with the lead (the
+# brief, questions, answers, proposals) in the copy's notes folder. The bus
+# is there because a copy's lifecycle, driven by its parent, needs it.
+bus: {}
+
 roles:
   designer-claude:
     prompt: designer.md
     vendor: claude
     start: true
+    cwd: work
   designer-codex:
     prompt: designer.md
     vendor: codex
     start: true
+    cwd: work
