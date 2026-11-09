@@ -3440,8 +3440,8 @@ pub fn status_cells(r: &StatusRow) -> Vec<String> {
 
 /// `brg status --line`: one line in tmux style syntax for brg's status bar.
 /// Each running member of `instances` (not of their copies) gets a mark for its
-/// state and its unread count; stopped and never-started members are left
-/// out.
+/// state and its unread count; stopped, exited and never-started members are
+/// left out.
 pub fn status_line(instances: &[&str], rows: &[StatusRow]) -> String {
     let marks: Vec<String> = rows
         .iter()
@@ -3449,6 +3449,7 @@ pub fn status_line(instances: &[&str], rows: &[StatusRow]) -> String {
             r.kind == "member"
                 && instances.contains(&r.instance.as_str())
                 && r.state != STOPPED
+                && r.state != "exited"
                 && r.state != NOT_STARTED
         })
         .map(|r| {
