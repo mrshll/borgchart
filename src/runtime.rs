@@ -2,6 +2,7 @@
 //! `attach`, `logs` and `send`, on instances and their members.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::IsTerminal;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -18,7 +19,7 @@ use crate::exec::{ExecSpec, PluginEnv, identity_env};
 use crate::launch;
 use crate::lifecycle;
 use crate::lifecycle::{Incarnation, Liveness, PaneIdentity};
-use crate::paths::overlaps;
+use crate::paths::{overlaps, resolve_existing_prefix};
 use crate::proctree;
 use crate::registry;
 use crate::rules::{self, State};
@@ -278,7 +279,7 @@ fn api_keys(
 }
 
 /// Where a member starts: its role's `cwd` inside the instance's folder
-/// (with `{member}` expanded), else the folder. The folder must exist, and a
+/// (with `{member_id}` expanded), else the folder. The folder must exist, and a
 /// role's `cwd` must stay inside it once symlinks are resolved.
 fn member_cwd(folder: &Path, cwd: Option<&str>, member: &str) -> Result<PathBuf, String> {
     let folder = folder.canonicalize().map_err(|_| {
@@ -290,7 +291,7 @@ fn member_cwd(folder: &Path, cwd: Option<&str>, member: &str) -> Result<PathBuf,
     let Some(cwd) = cwd else {
         return Ok(folder);
     };
-    let rel = cwd.replace("{member}", member);
+    let rel = cwd.replace("{member_id}", member);
     let dir = folder.join(&rel);
     let real = dir
         .canonicalize()
@@ -359,6 +360,7 @@ fn start_members(
     // Checks that need nothing written.
     for id in &member_ids {
         let member = role_of(id)?;
+        check_copy_folder(inst, member, id)?;
         let granted = launch::granted(&v.team, member);
         if let Some((plugin, command)) = launch::shim_commands(&granted)
             .into_iter()
@@ -1119,7 +1121,12 @@ fn start_members(
         .map(|(name, o)| (name, vec![o]))
         .collect();
     Ok(UpOutcome {
-        tree: tree::render(&header(inst), &nodes, &plugins),
+        tree: tree::render(
+            &header(inst),
+            &nodes,
+            &plugins,
+            std::io::stdout().is_terminal(),
+        ),
         notes,
         failed,
     })
@@ -1137,8 +1144,12 @@ pub fn header(inst: &Instance) -> String {
 }
 
 /// What `status` and a start show for a role with no member yet.
-fn not_created(start: bool) -> String {
-    format!("not created (start: {start})")
+fn not_created(role: &crate::team::Role) -> String {
+    if role.max > 1 {
+        ON_DEMAND.into()
+    } else {
+        format!("not created (start: {})", role.start)
+    }
 }
 
 /// One node per member of the instance (each under its parent role's
@@ -1165,7 +1176,8 @@ fn member_nodes(
             nodes.push(tree::Node {
                 id: role_name.clone(),
                 parent: parent_of(role),
-                cols: vec![not_created(role.start)],
+                cols: vec![not_created(role)],
+                dim: role.max > 1,
             });
         }
         for id in ids {
@@ -1173,6 +1185,7 @@ fn member_nodes(
                 cols: vec![tree::vendor_model(role), outcome(&id)],
                 id,
                 parent: parent_of(role),
+                dim: false,
             });
         }
     }
@@ -1388,9 +1401,19 @@ pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
         state,
         record,
     };
-    let result = start_members(lock, &inst, &v, ids, true);
+    let mut created_folders = Vec::new();
+    let result = (|| {
+        for id in &ids {
+            let role = &v.team.roles[inst.record.role_of(id).expect("issued role")];
+            if let Some(folder) = create_copy_folder(&inst, role, id)? {
+                created_folders.push((id.clone(), folder));
+            }
+        }
+        start_members(lock, &inst, &v, ids, true)
+    })();
     if result.is_err() {
         unregister_if_never_started(&inst);
+        remove_unkept_copy_folders(&inst, created_folders);
     }
     result
 }
@@ -1449,17 +1472,216 @@ pub fn create_member(mut inst: Instance, role: &str) -> Result<UpOutcome, String
     precheck(&v, &[member], !is_running(&inst))?;
     let lock = registry::lock()?;
     inst.reload()?;
-    if let Some(existing) = inst.record.members_of(role).first() {
+    check_parent_authority(&inst, role, Some(&v), None)?;
+    let existing = inst.record.members_of(role);
+    if existing.len() >= member.max {
+        if member.max == 1 && existing.len() == 1 {
+            return Err(format!(
+                "role `{role}` already has its member `{}` (max: 1), running or stopped; start it with `brg start {}`",
+                existing[0],
+                inst.at(&existing[0])
+            ));
+        }
         return Err(format!(
-            "role `{role}` already has its member `{existing}` (one per role for now), running or stopped; start it with `brg start {}`",
-            inst.at(existing)
+            "role `{role}` already has {} kept members (max: {}), running or stopped: {}; delete a stopped member before creating another",
+            existing.len(),
+            member.max,
+            existing.join(", ")
         ));
     }
     let id = inst
         .record
         .issue_member(role, |id| v.team.roles.contains_key(id))?;
+    let _ = create_copy_folder(&inst, member, &id)?;
     lock.save_instance(&inst.state, &inst.record)?;
     start_members(lock, &inst, &v, vec![id], false)
+}
+
+/// Create only a new member's missing `{member_id}` leaf, after checking its
+/// unresolved path. Ancestors must exist; an existing leaf is kept as is.
+/// The caller holds the registry lock across the checks and creation.
+/// Returns the new leaf so an unkept member's failed start can remove it.
+fn create_copy_folder(
+    inst: &Instance,
+    role: &crate::team::Role,
+    id: &str,
+) -> Result<Option<PathBuf>, String> {
+    check_copy_folder(inst, role, id)?;
+    let Some(cwd) = role.cwd.as_deref().filter(|c| {
+        Path::new(c)
+            .file_name()
+            .is_some_and(|name| name == "{member_id}")
+    }) else {
+        return Ok(None);
+    };
+    let folder = member_cwd(&inst.record.folder, None, id)?;
+    let rel = cwd.replace("{member_id}", id);
+    let dir = folder.join(&rel);
+    if !resolve_existing_prefix(&dir).starts_with(&folder) {
+        return Err(format!(
+            "`{id}`'s cwd `{rel}` resolves outside the instance's folder {} (through a symlink)",
+            folder.display()
+        ));
+    }
+    match std::fs::create_dir(&dir) {
+        Ok(()) => Ok(Some(dir)),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && dir.is_dir() => Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(format!(
+            "`{id}`'s cwd {} exists but isn't a folder; remove it or change `cwd`",
+            dir.display()
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(format!(
+            "cannot create `{id}`'s cwd {}: {e}; its parent folder must already exist",
+            dir.display()
+        )),
+        Err(e) => Err(format!("cannot create `{id}`'s cwd {}: {e}", dir.display())),
+    }
+}
+
+fn remove_unkept_copy_folders(inst: &Instance, created_folders: Vec<(String, PathBuf)>) {
+    // A failed start may already have saved members or launched them.
+    let registered = match registry::load() {
+        Ok(registry) => registry.instances.contains_key(&inst.id),
+        Err(_) => return,
+    };
+    let saved = if registered {
+        match registry::read_instance(&inst.state) {
+            Ok(record) => Some(record),
+            Err(_) if matches!(inst.state.instance_file().try_exists(), Ok(false)) => None,
+            Err(_) => return,
+        }
+    } else {
+        None
+    };
+    for (id, folder) in created_folders {
+        if saved
+            .as_ref()
+            .is_some_and(|record| record.role_of(&id).is_some())
+        {
+            continue;
+        }
+        let _ = std::fs::remove_dir(folder);
+    }
+}
+
+/// Same-role copies with `{member_id}` keep separate folders until deleted,
+/// even while stopped. Resolve existing prefixes and check recorded folders
+/// so a missing folder or a moved symlink cannot hide an overlap.
+fn check_copy_folder(inst: &Instance, role: &crate::team::Role, id: &str) -> Result<(), String> {
+    let Some(cwd) = role.cwd.as_deref().filter(|c| c.contains("{member_id}")) else {
+        return Ok(());
+    };
+    let others: Vec<String> = inst
+        .record
+        .members_of(&role.id)
+        .into_iter()
+        .filter(|m| m != id)
+        .collect();
+    if others.is_empty() {
+        return Ok(());
+    }
+    let cwd = inst.record.folder.join(cwd.replace("{member_id}", id));
+    for other in others {
+        let issued = &inst.record.members[&other];
+        let other_cwd = inst.record.folder.join(
+            role.cwd
+                .as_deref()
+                .unwrap_or("")
+                .replace("{member_id}", &other),
+        );
+        if overlaps(&cwd, &other_cwd) || issued.cwd.as_ref().is_some_and(|old| overlaps(&cwd, old))
+        {
+            return Err(format!(
+                "`{id}`'s folder {} overlaps kept member `{other}`'s folder {}; give copies of `{}` separate folders before creating or starting another",
+                cwd.display(),
+                other_cwd.display(),
+                role.id
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Parent authority for member lifecycle operations. The registry lock
+/// holds both the target's membership and the parent's latest start still.
+/// Teams without a bus retain their existing caller rules.
+fn check_parent_authority(
+    inst: &Instance,
+    role: &str,
+    validated_team: Option<&Validated>,
+    target: Option<&str>,
+) -> Result<(), String> {
+    let creating = target.is_none();
+    let has_member_context = [context::ENV_MEMBER, context::ENV_INCARNATION]
+        .iter()
+        .any(|key| std::env::var(key).is_ok_and(|value| !value.is_empty()));
+    if !has_member_context && !creating {
+        return Ok(());
+    }
+    let recorded = target.and_then(|id| state::read_meta(&inst.state)?.members.get(id).cloned());
+    let parent = if let Some(recorded) = recorded {
+        // The store records whether the instance started with a bus. A
+        // damaged bus must not make a caller a person or prevent stopping.
+        if crate::bus::store::open(&inst.state)
+            .is_err_and(|f| f.code == crate::bus::outcome::Code::NotConfigured)
+        {
+            return Ok(());
+        }
+        recorded.parent
+    } else {
+        let loaded;
+        let v = match validated_team {
+            Some(v) => v,
+            None => {
+                loaded = validated(inst)?;
+                &loaded
+            }
+        };
+        if v.team.bus.is_none() {
+            return Ok(());
+        }
+        let definition = v.team.roles.get(role).ok_or_else(|| {
+            format!(
+                "role `{role}` is no longer in the team; ask a person to stop or delete its members"
+            )
+        })?;
+        let parent_role = definition.parent.as_deref();
+        let parent = parent_role.and_then(|p| inst.record.members_of(p).into_iter().next());
+        if creating
+            && parent.is_none()
+            && let Some(parent_role) = parent_role
+        {
+            return Err(format!(
+                "role `{role}`'s parent role `{}` has no member; create it first: brg create {}",
+                parent_role,
+                inst.at(parent_role)
+            ));
+        }
+        parent
+    };
+    let caller = context::caller(None).map_err(|e| e.message)?;
+    let context::Caller::Member {
+        member,
+        incarnation,
+    } = caller
+    else {
+        return Ok(());
+    };
+    context::instance(Some(&inst.id)).map_err(|e| e.message)?;
+    if parent.as_deref() != Some(member.as_str()) {
+        return Err(format!(
+            "only a person or role `{role}`'s parent member may manage its members; this caller is `{member}`"
+        ));
+    }
+    let current = lifecycle::load_incarnation(&inst.state, &member)?;
+    if !current.is_some_and(|inc| {
+        inc.member == member && inc.incarnation == incarnation && inc.ended_at.is_none()
+    }) {
+        return Err(format!(
+            "`{member}`'s start was replaced or stopped; only its latest running start may manage role `{role}`"
+        ));
+    }
+    Ok(())
 }
 
 /// Whether any member or plugin process of the instance has a live window
@@ -1516,15 +1738,19 @@ fn full_start_members(
     _lock: &registry::Lock,
     inst: &mut Instance,
     v: &Validated,
+    created_folders: &mut Vec<(String, PathBuf)>,
 ) -> Result<Vec<String>, String> {
     let mut ids = std::collections::BTreeSet::new();
     for role in v.team.roles.values().filter(|m| m.start) {
         let members = inst.record.members_of(&role.id);
         if members.is_empty() {
-            ids.insert(
-                inst.record
-                    .issue_member(&role.id, |id| v.team.roles.contains_key(id))?,
-            );
+            let id = inst
+                .record
+                .issue_member(&role.id, |id| v.team.roles.contains_key(id))?;
+            if let Some(folder) = create_copy_folder(inst, role, &id)? {
+                created_folders.push((id.clone(), folder));
+            }
+            ids.insert(id);
         }
         ids.extend(members);
     }
@@ -1593,12 +1819,20 @@ pub fn start(
     inst.reload()?;
     if let Some(id) = &member {
         address::member(&inst, id)?;
+        check_parent_authority(&inst, inst.record.role_of(id).unwrap(), Some(&v), Some(id))?;
     }
     match member {
         Some(id) => start_members(lock, &inst, &v, vec![id], false),
         None => {
-            let ids = full_start_members(&lock, &mut inst, &v)?;
-            start_members(lock, &inst, &v, ids, true)
+            let mut created_folders = Vec::new();
+            let result = (|| {
+                let ids = full_start_members(&lock, &mut inst, &v, &mut created_folders)?;
+                start_members(lock, &inst, &v, ids, true)
+            })();
+            if result.is_err() {
+                remove_unkept_copy_folders(&inst, created_folders);
+            }
+            result
         }
     }
 }
@@ -1653,6 +1887,7 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
     let _state_lock = lifecycle::lock_state(&inst.state)?;
     inst.reload()?;
     let id = address::member(&inst, name)?;
+    check_parent_authority(&inst, inst.record.role_of(&id).unwrap(), None, Some(&id))?;
     if tmux_for(&inst.state)
         .window(&inst.state.session(), &id)
         .is_some_and(|w| !w.dead)
@@ -2081,13 +2316,17 @@ fn start_window(
 /// it gone. A full stop of a running instance records which members were
 /// running, for the next `start`; stopping a stopped one changes nothing.
 pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> {
+    let lock = registry::lock()?;
+    let mut current = inst.clone();
+    current.reload()?;
+    let inst = &current;
     let state = &inst.state;
     let session = state.session();
     let team = inst.id.clone();
     if let Some(id) = only {
         address::member(inst, id)?;
+        check_parent_authority(inst, inst.record.role_of(id).unwrap(), None, Some(id))?;
     }
-    let lock = registry::lock()?;
     let _state_lock = lifecycle::lock_state(state)?;
     let Some(mut meta) = state::read_meta(state) else {
         // Nothing was ever recorded here, so brg started nothing to stop.
@@ -2311,6 +2550,8 @@ pub struct StatusRow {
 pub const NOT_STARTED: &str = "not started";
 /// A member's state when it ran and has ended.
 pub const STOPPED: &str = "stopped";
+/// A role that allows copies but has no kept member.
+pub const ON_DEMAND: &str = "on demand (none created)";
 
 /// What a start and `status` print for a member that has never run.
 pub fn not_started(start: bool) -> String {
@@ -2409,7 +2650,7 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
                     Posture::Vendor => "vendor".into(),
                     Posture::Locked => "locked".into(),
                 }),
-                state: not_created(member.start),
+                state: not_created(member),
                 rule: None,
                 detail: None,
                 vendor_version: None,
@@ -2658,6 +2899,7 @@ pub fn render_status(header: &str, rows: &[StatusRow]) -> String {
             id: r.name.clone(),
             parent: r.parent.clone(),
             cols: status_cells(r),
+            dim: r.kind == "role" && r.state == ON_DEMAND,
         })
         .collect();
     let plugins: Vec<(String, Vec<String>)> = rows
@@ -2665,7 +2907,7 @@ pub fn render_status(header: &str, rows: &[StatusRow]) -> String {
         .filter(|r| r.kind == "plugin")
         .map(|r| (r.name.clone(), status_cells(r)))
         .collect();
-    tree::render(header, &nodes, &plugins)
+    tree::render(header, &nodes, &plugins, std::io::stdout().is_terminal())
 }
 
 /// Why `send` refused, with its exit code.
@@ -2964,7 +3206,7 @@ mod tests {
         let real = folder.canonicalize().unwrap();
         assert_eq!(member_cwd(&folder, None, "lead-2a3b").unwrap(), real);
         assert_eq!(
-            member_cwd(&folder, Some("copies/{member}"), "lead-2a3b").unwrap(),
+            member_cwd(&folder, Some("copies/{member_id}"), "lead-2a3b").unwrap(),
             real.join("copies/lead-2a3b")
         );
         assert!(

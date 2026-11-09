@@ -19,6 +19,7 @@ pub struct Node {
     pub id: String,
     pub parent: Option<String>,
     pub cols: Vec<String>,
+    pub dim: bool,
 }
 
 /// `"<vendor> <model>"`, as declared (`default` when the member names no
@@ -100,18 +101,31 @@ fn columns(rows: &[Vec<String>]) -> Vec<String> {
 }
 
 /// The instance's tree, then one `plugin <name>` line per plugin process.
-pub fn render(team: &str, nodes: &[Node], plugins: &[(String, Vec<String>)]) -> String {
-    let rows: Vec<Vec<String>> = order(nodes)
-        .into_iter()
+pub fn render(
+    team: &str,
+    nodes: &[Node],
+    plugins: &[(String, Vec<String>)],
+    colour: bool,
+) -> String {
+    let ordered = order(nodes);
+    let rows: Vec<Vec<String>> = ordered
+        .iter()
         .map(|(i, prefix)| {
-            let mut row = vec![format!("{prefix}{}", nodes[i].id)];
-            row.extend(nodes[i].cols.iter().cloned());
+            let mut row = vec![format!("{prefix}{}", nodes[*i].id)];
+            row.extend(nodes[*i].cols.iter().cloned());
             row
         })
         .collect();
     let mut out = format!("{team}\n");
-    for line in columns(&rows) {
+    for (line, (i, _)) in columns(&rows).into_iter().zip(ordered) {
+        let dim = colour && nodes[i].dim;
+        if dim {
+            out.push_str("\x1b[2m");
+        }
         out.push_str(&line);
+        if dim {
+            out.push_str("\x1b[0m");
+        }
         out.push('\n');
     }
     let plugin_rows: Vec<Vec<String>> = plugins
@@ -138,6 +152,7 @@ mod tests {
             id: id.into(),
             parent: parent.map(String::from),
             cols: cols.iter().map(|c| c.to_string()).collect(),
+            dim: false,
         }
     }
 
@@ -153,7 +168,7 @@ mod tests {
             node("helper", Some("lead"), &["codex example-model", "started"]),
         ];
         assert_eq!(
-            render("oncall", &nodes, &[]),
+            render("oncall", &nodes, &[], false),
             "oncall\n\
              └─ lead        claude opus high      started\n   \
              ├─ helper   codex example-model   started\n   \
@@ -202,7 +217,7 @@ mod tests {
             ("pager".to_string(), vec!["stopped".to_string(), "".into()]),
         ];
         assert_eq!(
-            render("team", &nodes, &plugins),
+            render("team", &nodes, &plugins, false),
             "team\n\
              └─ lead      claude default  idle\n   \
              └─ helper codex o3        stopped  locked\n\

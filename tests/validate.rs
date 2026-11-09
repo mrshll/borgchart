@@ -64,6 +64,61 @@ fn valid_team_loads() {
 }
 
 #[test]
+fn copy_limits_refuse_zero_and_require_member_as_the_last_folder() {
+    for (max, cwd, accepted) in [
+        (-1, Some("copies/{member_id}"), false),
+        (0, Some("copies/{member_id}"), false),
+        (1, None, true),
+        (1, Some("shared"), true),
+        (1, Some("copies/{member_id}/src"), false),
+        (2, None, true),
+        (2, Some("copies/{member_id}"), true),
+        (2, Some("copies/{member_id}/src"), false),
+        (2, Some("copies/{member_id}/{member_id}"), false),
+        (2, Some("shared"), true),
+        (2, Some("copies/prefix-{member_id}"), false),
+        (2, Some("copies/{member_id}-suffix"), false),
+        (2, Some("copies/{member_id}/../shared"), false),
+    ] {
+        let f = Fixture::new();
+        // Use a new leaf so neither parent nor plugin delivery is ambiguous.
+        let path = f.path("team.yaml");
+        let text = fs::read_to_string(&path).unwrap();
+        let cwd_line = cwd.map(|c| format!("    cwd: '{c}'\n")).unwrap_or_default();
+        fs::write(
+            path,
+            format!("{text}\n  helper:\n    prompt: lead.md\n    max: {max}\n{cwd_line}"),
+        )
+        .unwrap();
+        let (report, validated) = f.run();
+        assert_eq!(
+            validated.is_some(),
+            accepted,
+            "max={max}, cwd={cwd:?}: {}",
+            errors(&report)
+        );
+    }
+}
+
+#[test]
+fn parents_and_plugin_delivery_cannot_choose_between_copies() {
+    for target in ["lead", "triager"] {
+        let f = Fixture::new();
+        f.edit(
+            "team.yaml",
+            &format!("    prompt: {target}.md\n"),
+            &format!("    prompt: {target}.md\n    max: 2\n    cwd: copies/{{member_id}}\n"),
+        );
+        let (report, validated) = f.run();
+        assert!(
+            validated.is_none(),
+            "ambiguous target {target} accepted: {}",
+            errors(&report)
+        );
+    }
+}
+
+#[test]
 fn duplicate_keys_are_errors() {
     let f = Fixture::new();
     f.edit(
@@ -755,8 +810,9 @@ fn snapshot_describes_what_was_validated() {
 #[test]
 fn a_role_cwd_must_stay_inside_the_folder() {
     for (cwd, ok) in [
+        ("copies/{member}", false),
         ("sub", true),
-        ("copies/{member}", true),
+        ("copies/{member_id}", true),
         ("../x", false),
         ("/abs", false),
         ("~/x", false),

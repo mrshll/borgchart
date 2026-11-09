@@ -156,6 +156,7 @@ struct RoleRaw {
     vendor: Option<Vendor>,
     parent: Option<String>,
     start: Option<bool>,
+    max: Option<usize>,
     posture: Option<String>,
     #[serde(default)]
     untrusted_input: bool,
@@ -340,6 +341,8 @@ pub struct Role {
     pub model: Option<Model>,
     pub parent: Option<String>,
     pub start: bool,
+    /// Kept members, running or stopped, allowed for this role.
+    pub max: usize,
     pub posture: Posture,
     pub untrusted_input: bool,
     pub accept_risk: bool,
@@ -353,7 +356,7 @@ pub struct Role {
     /// Extra arguments for the vendor CLI.
     pub args: Vec<String>,
     /// Where its members start, relative to the instance's folder; may hold
-    /// `{member}`.
+    /// `{member_id}`.
     pub cwd: Option<String>,
 }
 
@@ -705,6 +708,12 @@ fn load_plugin(
             Some(team_file),
             at(format!("`delivers_to: {target}` is not a role")),
         ),
+        (Some(target), Some(_)) if roles[target].max.unwrap_or(1) > 1 => report.error(
+            Some(team_file),
+            at(format!(
+                "`delivers_to: {target}` needs a role with `max: 1`"
+            )),
+        ),
         _ => {}
     }
 
@@ -863,6 +872,25 @@ fn load_role(
         }
     }
 
+    let max = m.max.unwrap_or(1);
+    if max == 0 {
+        report.error(Some(team_file), at("`max` must be at least 1".into()));
+    }
+    if m.cwd.as_ref().is_some_and(|cwd| {
+        cwd.contains("{member_id}")
+            && (Path::new(cwd)
+                .file_name()
+                .is_none_or(|c| c != "{member_id}")
+                || cwd.matches("{member_id}").count() != 1)
+    }) {
+        report.error(
+            Some(team_file),
+            at(
+                "`{member_id}` must be cwd's last folder name, for example `copies/{member_id}`"
+                    .into(),
+            ),
+        );
+    }
     if let Some(cwd) = &m.cwd
         && let Err(e) = check_cwd(cwd)
     {
@@ -916,6 +944,7 @@ fn load_role(
         model,
         parent: m.parent.clone(),
         start: m.start.unwrap_or(true),
+        max,
         posture,
         untrusted_input: m.untrusted_input,
         accept_risk: m.accept_risk,
@@ -929,12 +958,15 @@ fn load_role(
     })
 }
 
-/// A role's `cwd`: relative, inside the instance's folder, with `{member}`
+/// A role's `cwd`: relative, inside the instance's folder, with `{member_id}`
 /// as its only placeholder.
 fn check_cwd(cwd: &str) -> Result<(), String> {
     let path = Path::new(cwd);
     if cwd.is_empty() {
         return Err("`cwd` is empty".into());
+    }
+    if cwd.contains("{member}") {
+        return Err("`{member}` is now `{member_id}` in `cwd`".into());
     }
     if path.is_absolute() || cwd.starts_with('~') {
         return Err(format!(
@@ -949,9 +981,9 @@ fn check_cwd(cwd: &str) -> Result<(), String> {
             "`cwd: {cwd}` must stay inside the instance's folder (no `..`)"
         ));
     }
-    if cwd.replace("{member}", "").contains(['{', '}']) {
+    if cwd.replace("{member_id}", "").contains(['{', '}']) {
         return Err(format!(
-            "`cwd: {cwd}`: the only placeholder is `{{member}}`"
+            "`cwd: {cwd}`: the only placeholder is `{{member_id}}`"
         ));
     }
     Ok(())
@@ -1106,6 +1138,11 @@ fn check_parents(team_file: &Path, roles: &BTreeMap<String, RoleRaw>, report: &m
             report.error(
                 Some(team_file),
                 format!("role `{id}`: parent `{parent}` is not a role"),
+            );
+        } else if roles[parent].max.unwrap_or(1) > 1 {
+            report.error(
+                Some(team_file),
+                format!("role `{id}`: parent `{parent}` needs `max: 1`"),
             );
         }
     }

@@ -86,12 +86,14 @@ fn deleted_members_cannot_restart_or_receive_work_and_ids_are_never_reused() {
     assert!(env.rows(&inst).iter().all(|r| r["member"] != lead));
     let out = env.publish(&inst, &json!({"to": lead, "body": "Do not deliver."}));
     assert!(!out.status.success(), "{}", both(&out));
-    env.ok(&["create", &format!("{inst}/helper")]);
-    let child = env.member(&inst, "helper");
     env.ok(&["start", &inst]);
     let replacement = env.member(&inst, "lead");
     assert_ne!(replacement, lead);
     assert_eq!(env.row(&inst, "lead")["unread"], 0);
+    // A child can't be created while its parent role has no member (#73), so
+    // it comes after the replacement.
+    env.ok(&["create", &format!("{inst}/helper")]);
+    let child = env.member(&inst, "helper");
     assert_eq!(env.row(&inst, "helper")["parent"], replacement);
     env.wait_for("replacement idle", || env.state_of(&inst, "lead") == "idle");
     env.ok(&[

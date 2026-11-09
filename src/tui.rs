@@ -110,7 +110,9 @@ fn state_style(row: &StatusRow) -> Style {
         // A `start: true` member that ended.
         runtime::STOPPED if row.expected_running => alert,
         "working" => Style::default().add_modifier(Modifier::BOLD),
-        runtime::STOPPED | runtime::NOT_STARTED => Style::default().add_modifier(Modifier::DIM),
+        runtime::STOPPED | runtime::NOT_STARTED | runtime::ON_DEMAND => {
+            Style::default().add_modifier(Modifier::DIM)
+        }
         _ => Style::default(),
     }
 }
@@ -138,6 +140,7 @@ fn draw(
                     id: r.name.clone(),
                     parent: r.parent.clone(),
                     cols: Vec::new(),
+                    dim: r.kind == "role" && r.state == runtime::ON_DEMAND,
                 })
                 .collect();
             tree::order(&nodes)
@@ -166,7 +169,7 @@ fn draw(
             let mut cols = runtime::status_cells(r);
             match r.kind {
                 "member" => {}
-                // A role with no member yet: `not created (start: false)` as its state.
+                // A role with no kept member shows its creation state.
                 "role" => {
                     cols.insert(0, String::new());
                     cols.push(String::new());
@@ -196,13 +199,19 @@ fn draw(
         .into_iter()
         .zip(&lines)
         .map(|([name, vendor, state, detail], &(s, r))| {
-            let style = r.map_or(Style::default(), |r| state_style(&sections[s].rows[r]));
-            Row::new(vec![
+            let r = r.map(|r| &sections[s].rows[r]);
+            let style = r.map_or(Style::default(), state_style);
+            let row = Row::new(vec![
                 Cell::from(name),
                 Cell::from(vendor),
                 Cell::from(state).style(style),
                 Cell::from(detail),
-            ])
+            ]);
+            if r.is_some_and(|r| r.kind == "role" && r.state == runtime::ON_DEMAND) {
+                row.style(Style::default().add_modifier(Modifier::DIM))
+            } else {
+                row
+            }
         })
         .collect();
     let table = Table::new(body, widths)

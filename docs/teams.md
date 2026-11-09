@@ -1,6 +1,6 @@
 # Defining a brg team
 
-Teams, instances, roles, members and the four verbs (`create`, `start`, `stop`, `delete`) work today, with one kept member per role. The sections on copies and departments below describe future work. [concepts.md](concepts.md) records the design; [format.md](format.md) describes the shipped format. Items marked **Open** are not decided yet. For command syntax, `brg … --help` is the authority; the tables below are a short summary.
+Teams, instances, roles, copies up to `max` and the four verbs (`create`, `start`, `stop`, `delete`) work today. The department section below describes future work. [concepts.md](concepts.md) records the design; [format.md](format.md) describes the shipped format. Items marked **Open** are not decided yet. For command syntax, `brg … --help` is the authority; the tables below are a short summary.
 
 ## The files
 
@@ -38,7 +38,7 @@ roles:
     start: false
 ```
 
-- **Roles** have a role file (`prompt`), an optional `vendor`, a `parent`, and `start`. The key under `roles:` names the role; frontmatter `role:` and the old `members:` key are rejected. `start: false` means its member is created on demand. Each role keeps at most one member, running or stopped. Roles also have a `posture` (`vendor`, the default, or `locked` for members that read untrusted text) and plugin grants.
+- **Roles** have a role file (`prompt`), an optional `vendor`, a `parent`, and `start`. The key under `roles:` names the role; frontmatter `role:` and the old `members:` key are rejected. `start: false` means its members are created on demand. Each role keeps up to `max` members (default 1), running or stopped. Roles also have a `posture` (`vendor`, the default, or `locked` for members that read untrusted text) and plugin grants.
 - **`parent`** makes the org chart, and messages follow it: a member writes to its parent or its children. The top member can also write to an outside caller (`external:NAME`).
 - **Plugins** are plain programs, declared under `plugins:` (a folder in the team, or `shared:<name>`, with the variables they receive and the actions members may be granted). brg runs only what `team.yaml` lists. A member can use only the actions it's granted; each granted action appears in its instruction with an absolute path. Secrets reach the plugin through a private file, never the agent's environment.
   - A plugin may also declare a long-running `process` (a watcher of some outside source) with `delivers_to: <role>`.
@@ -116,9 +116,9 @@ The attention worker and watcher are not wired now; the lead nudges with `brg se
 
 Decided: brg stores no secrets. A plugin's secrets come from the environment `brg create` or `brg start` runs in (for example under your password manager's `run`), go only to that plugin's 0600 file, and are removed at `brg stop`. `brg secret <team>` lists the names the plugins need and whether each is set, without values. 0600 keeps other users out, not the members: a member that isn't `locked` could read the file while it exists.
 
-## Roles with several copies (Open: design only, a later change)
+## Roles with several copies
 
-Some roles are needed as work appears, sometimes several at once: three implementers on three tasks. The direction:
+Some roles are needed as work appears, sometimes several at once: three implementers on three tasks:
 
 ```yaml
 roles:
@@ -126,47 +126,33 @@ roles:
     prompt: implementer.md
     parent: lead
     start: false
-    max: 3                             # up to three copies at once
+    max: 3                             # up to three kept copies, running or stopped
+    cwd: copies/{member_id}            # optional; brg creates the empty leaf; copies/ must exist
 ```
 
-- **Starting a copy.** Each `brg create <instance>/implementer` starts one new copy, with its own suffixed ID. Past `max` it's refused, and the refusal lists the running copies. Each copy gets the same member file, plus its own name and checkout (below).
-- **The tree** shows running copies with their live state. A role with none running gets one dim line:
+- **Starting a copy.** Each `brg create <instance>/implementer` starts one new copy, with its own suffixed ID. Past `max` it's refused, listing all kept copies, stopped ones included. For `max: 1`, the refusal points to `start`. Each copy gets the same role file and its own name; its folder follows `cwd`.
+- **The tree** shows every kept copy with its state and unread count. A `max > 1` role with no kept members gets one dim line:
 
   ```
-  devteam
-  └─ lead              claude opus high      working
-     ├─ implementer-1  claude opus medium    working
-     ├─ implementer-2  claude opus medium    idle
-     └─ reviewer       claude opus high      not started (start: false)
+  devteam-k3f9
+  └─ lead-q8m3          claude opus high      working
+     ├─ implementer-x7k2 claude opus medium   working
+     ├─ implementer-p7xm claude opus medium   idle
+     └─ reviewer        not created (start: false)
 
-  devteam
-  └─ lead            claude opus high      idle
-     └─ implementer  on demand (none running)
+  devteam-k3f9
+  └─ lead-q8m3       claude opus high      idle
+     └─ implementer  on demand (none created)
   ```
 
   Ended copies stay in the tree as stopped members until deleted.
-- **Addressing.** `devteam/implementer-2` reaches one copy. A bare `implementer` is always refused where a member is expected, listing the kept members or naming `create` when it has none.
+- **Addressing.** `devteam-k3f9/implementer-x7k2` reaches one copy. A bare `implementer` is always refused where a member is expected, listing the kept members or naming `create` when it has none.
 - **Messages go to a member.** The lead chooses a full member ID; there is no role queue.
 
-Proposed changes to this direction, and why:
-
-1. **`max` alone turns copies on; no `start: on-demand`.** `start: false` already means "on demand", and `max` defaults to 1, today's single member. This adds one key instead of a third `start` value.
-2. **Copies hang under the role's declared `parent`, and only that parent (or a person) may start one.** Message routing follows `parent`. If "whoever started it" became the parent, the org chart would change at runtime. With this rule the two readings agree.
-3. **Copy numbers aren't reused while the team's storage lives.** A new `implementer-2` would otherwise inherit an ended copy's inbox.
-4. **Taking work is a team rule.** Messages go to a chosen member, not a role queue. The lead gives each helper one piece of work and tracks it in the pull request; the helper acks once it takes responsibility.
-5. **Attention is the lead's responsibility.** It checks for a reply by the brief's deadline and nudges or restarts that member as above.
-6. **An ended copy stays addressable and can be restarted.** It is shown as stopped, with any unread message count. A stopped instance holds no checkout; the lead verifies and stops its writer before passing a checkout on.
-
-Open questions:
-
-- **Is `max` required?** Proposed: optional, default 1, with a sane upper bound (e.g. 8).
-- **Checkouts.** A checkout holds one writer, so each copy needs its own. Options:
-  - a role `cwd` with `{member}`, like `cwd: copies/{member}`, inside the instance's folder, with folders you create (simplest, and brg doesn't manage git);
-  - brg creates and later removes a git worktree per copy.
-
-  Proposed: the template first.
-- **When every copy has ended,** messages remain addressed to those stopped members. Status shows their unread counts; the lead follows up and starts a member when needed, rather than brg starting it automatically.
-- **Unfinished work:** the lead decides whether to restart the same member with `brg start <instance>/<member>` or give a new brief to another member, after checking the previous writer stopped.
+- **Capacity and restarts.** `max` is optional, defaults to 1 and must be at least 1. `start: true` with `max > 1` makes one member at instance creation. `start` reuses kept members and never fills to `max`; a `start: true` role with none left gets one new member. Lowering `max` after a full stop keeps every member and refuses creation until enough are deleted. Deleted suffixes are never reused.
+- **Parents.** `parent:` and a plugin's `delivers_to:` require a `max: 1` role. With a bus, only a person or the declared parent's latest running start may create, start, stop or delete a child member. Members cannot manage themselves or siblings, and replaced starts and members of another instance are refused. Creating a child requires a kept parent member. No-bus teams and whole-instance commands retain their existing caller rules.
+- **Folders.** `{member_id}` in `cwd` is optional. Without it, copies share the role's folder. If used, it must be the last folder name, with no `..`. When `cwd` ends in `{member_id}`, brg makes only the missing empty leaf when issuing a new member (`create`, or a full `start` that gives a `start: true` role a new member), for any `max`; every ancestor must already exist, and an existing leaf is used as is. The parent puts a worktree in it before briefing the copy. Starting an existing member never creates its folder, and `delete` leaves them alone. Copies of a `{member_id}` role may not use equal, nested or symlinked aliases of each other's folders, even while stopped. Creation and every start check folders under the registry lock. Different roles may share a folder; the team's instructions still enforce one writer per checkout.
+- **Taking work and attention** remain team rules. The lead chooses a member, gives it one brief, tracks its reply and checks its deadline. An ended copy remains addressable with unread counts until deleted; the lead can restart it with `brg start <instance>/<member>`.
 
 ## Teams as members (departments) (Open: design only, a later change)
 
@@ -208,7 +194,7 @@ Proposed changes to this direction, and why:
 1. **`team:` must be inside the team folder, or `shared:<name>` as for plugins, never a path like `../medium`.** The team folder is meant to be shareable and say nothing about one machine. A path outside it breaks that.
 2. **One message store per department, not one per sub-team.** Copies are namespaced members (`ws-2/lead`) in the department's single store. A parent-to-child message is then an ordinary local record, with one sequence, one unread-count reader and one check. Separate stores would need delivery between stores.
 3. **A sub-team copy can't write to outside callers.** Only the outermost team's top member answers `external:NAME`. Inside a department, a sub-team's top member writes to its parent. Otherwise every workstream could reach the person directly, around the department's lead.
-4. **Per-copy folders come from the role's `cwd` with `{member}`,** inside the department's one working folder.
+4. **Per-copy folders come from the role's `cwd` with `{member_id}`,** inside the department's one working folder.
 5. **The routing plugin starts as go/wait only.** Letting it change a copy's vendor or model would make `create` take overrides that member files currently pin. Add overrides only if go/wait proves too little.
 
 Open questions:
@@ -241,7 +227,7 @@ Open questions:
 
 ## Open
 
-- **Roles with several copies** and **teams as members** (above).
+- **Teams as members** (above).
 - **Sessions:** whether separate groups of teams (`--session`) are needed at all. They are kept minimal for now.
 - **Secrets:** how a hosted brg would map them to a cloud secret manager.
 - **When renames land:** `prompt`, `message …`, `rules:` and the folded commands arrive in one follow-up change (#19). Until then the commands keep today's names (`send`, `msg`, `inbox`, `bus check`).
