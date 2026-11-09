@@ -55,6 +55,10 @@ impl Env {
     }
 
     fn as_member(&self, member: &str, start: usize, args: &[&str]) -> Output {
+        // A restarted fake agent writes its start record shortly after `start` returns.
+        self.wait_for("the member's start record", || {
+            self.starts(member).len() > start
+        });
         let vars: BTreeMap<String, String> =
             serde_json::from_value(self.starts(member)[start]["env"].clone()).unwrap();
         common::command(env!("CARGO_BIN_EXE_brg"))
