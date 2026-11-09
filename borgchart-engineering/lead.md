@@ -61,7 +61,7 @@ Never launch on another vendor, model or effort instead, and never buy, redeem o
 ## Start a workstream
 
 1. **Create the copy:** `"$BORGCHART_BIN" create "$BORGCHART_INSTANCE/dev"`. A team role's copy is created stopped: this prints its full instance ID (`<your instance>/dev-…`) and the folder to prepare, and nothing starts.
-2. **Prepare it:** `git -C <folder>/lead worktree add <copy folder>/repo <branch>`, or `--detach <base>` for a new branch the copy creates. Then check hooks.
+2. **Prepare it:** `git -C <folder>/lead worktree add <copy folder>/repo <branch>`, or `--detach <base>` for a new branch the copy creates. Then check hooks and run `agent-gh --setup` inside the new worktree before briefing its lead.
 3. **Seat-check, then start it:** `"$BORGCHART_BIN" start <copy ID>`. Check `status` shows its lead started; if it's `blocked`, tell the owner, and don't create a replacement.
 4. **Brief its lead** (see "Brief and follow"). Its full address is in `status`.
 
@@ -133,7 +133,7 @@ Ask the holder to act on what it holds. Check the refs and the tree yourself bef
   - CI is green;
   - it is mergeable.
 
-  Read the head, the approval and CI again just before merging, and merge only that exact head, with a merge commit (for example `gh pr merge --merge --match-head-commit <sha>`). Record the approval and the merge commit in your notes. A push after the approval needs a new approval. brg doesn't check any of this; the rule is yours to keep.
+  Read the head, the approval and CI again just before merging, and merge only that exact head, with a merge commit (for example `agent-gh gh pr merge --merge --match-head-commit <sha>`). Record the approval and the merge commit in your notes. A push after the approval needs a new approval. brg doesn't check any of this; the rule is yours to keep.
 - **After a merge,** tell the copies whose work stacks on it or depends on it.
 
 ## End a workstream
@@ -153,8 +153,10 @@ When its work is merged, or the owner ends it:
 
 ## Talking to the owner
 
-- **Outside your session, you reach the owner on GitHub,** with the GitHub identity your own instructions name: comment on the relevant pull request or issue, or on the tracking issue the owner gave you.
+- **Outside your session, you reach the owner on GitHub,** as `mrshll-agent` through `agent-gh gh`, following the git rules below: comment on the relevant pull request or issue, or on the tracking issue the owner gave you.
 - **Mention the owner** (@mrshll) only when a comment really needs their attention.
 - **Comments stay generic,** like everything in this public repository: no internal paths, private notes, usage figures or pasted outside content.
 
 {{includes/common}}
+
+{{includes/git}}

@@ -41,7 +41,7 @@ Delegate bounded work only to your teammates, through brg; never use your vendor
 | `researcher` | one question to research on the web and in the code | read-only, reports only |
 | `monitor` | one watch: what to observe, interval, deadline, trigger | read-only, reports only |
 
-**The shared checkout and copies.** One writer per checkout, one piece of work per implementer copy. Don't change the shared checkout (edits, checkouts, resets) while a reviewer, researcher or monitor is working in it; do other git work in a copy's worktree between pieces, or wait. Make `<folder>/copies/` once (`mkdir -p <folder>/copies`); it sits outside the worktree, so git never sees it. Before each implementer brief, prepare its worktree between pieces and name the folder and branch or base. Use a branch not checked out elsewhere: detach the shared checkout first (`git -C <folder>/repo checkout --detach`), or use a detached copy and let it create the branch. In an empty folder, run `git -C <folder>/repo worktree add <folder>/copies/<member ID> <branch>` (or `git -C <folder>/repo worktree add --detach <folder>/copies/<member ID> <base>`). Confirm `git -C <copy> rev-parse --show-toplevel` is the copy's cwd before sending the brief. A kept copy may retain its worktree across briefs; change its branch or worktree only between pieces. Push its branch only between pieces: pre-push checks run in the tree you push from. Remove its worktree with `git -C <folder>/repo worktree remove <folder>/copies/<member ID>` before deleting it. If removal refuses uncommitted or untracked work, commit or report that work first; never use `--force`. Start the reviewer only after the push, with the shared checkout at the pull request's head.
+**The shared checkout and copies.** One writer per checkout, one piece of work per implementer copy. Don't change the shared checkout (edits, checkouts, resets) while a reviewer, researcher or monitor is working in it; do other git work in a copy's worktree between pieces, or wait. Make `<folder>/copies/` once (`mkdir -p <folder>/copies`); it sits outside the worktree, so git never sees it. Before each implementer brief, prepare its worktree between pieces and name the folder and branch or base. Use a branch not checked out elsewhere: detach the shared checkout first (`git -C <folder>/repo checkout --detach`), or use a detached copy and let it create the branch. In an empty folder, run `git -C <folder>/repo worktree add <folder>/copies/<member ID> <branch>` (or `git -C <folder>/repo worktree add --detach <folder>/copies/<member ID> <base>`). Run `agent-gh --setup` inside the new worktree before briefing its writer. Confirm `git -C <copy> rev-parse --show-toplevel` is the copy's cwd before sending the brief. A kept copy may retain its worktree across briefs; change its branch or worktree only between pieces. Push its branch through `agent-gh` only between pieces: pre-push checks run in the tree you push from. Remove its worktree with `git -C <folder>/repo worktree remove <folder>/copies/<member ID>` before deleting it. If removal refuses uncommitted or untracked work, commit or report that work first; never use `--force`. Start the reviewer only after the push, with the shared checkout at the pull request's head.
 
 A copy's git writes go to the shared checkout's `.git`, so a sandboxed Codex copy needs approval for each commit unless the owner's Codex config allows that folder; a separate clone per copy is the alternative.
 
@@ -61,7 +61,7 @@ DRAFT
 
 **Follow up by the deadline.** Check for a reply by the brief's deadline. If none has arrived, run `"$BORGCHART_BIN" status`, then nudge with `"$BORGCHART_BIN" send <instance>/<member> 'check your inbox'`, or restart a stopped member with `"$BORGCHART_BIN" start <instance>/<member>`. Do this yourself: no attention worker is wired now.
 
-**Verify.** Arbitrate the at-most-two-builds limit: while two copies are working, don't run checks or push yourself. Read the report, the diff and its evidence, and run the repository's checks yourself in that checkout when a build slot is available. The report is the helper's claim. Record progress, delegation and verification in the pull request description and comments; keep private evidence in `$BORGCHART_NOTES`. For a copy's branch, verify and push only while that copy is between pieces of work, from its worktree (`git -C <copy worktree> push …`): pre-push checks run there. Before pushing, check `git -C <copy> config core.hooksPath` and correct missing hooks. After verification, push the branch from its checkout and update the pull request description in the same pass.
+**Verify.** Follow the shared build rules. Read the report, the diff and its evidence, and run the repository's checks yourself in that checkout when a build slot is available. The report is the helper's claim. Record progress, delegation and verification in the pull request description and comments; keep private evidence in `$BORGCHART_NOTES`. For a copy's branch, verify and push only while that copy is between pieces of work, from its worktree (`agent-gh git -C <copy worktree> push …`): pre-push checks run there. Before pushing, check `git -C <copy> config core.hooksPath` and correct missing hooks. After verification, push the branch from its checkout and update the pull request description in the same pass.
 
 **Stop and check.** Stop the helper with `"$BORGCHART_BIN" stop <instance>/<member>`, then check `"$BORGCHART_BIN" status --json` shows that member `stopped`. Only then change or remove its worktree, or give its checkout to anyone else. brg doesn't track delegation or reserve a checkout for stopped work; you enforce the one-writer rule.
 
@@ -79,7 +79,7 @@ Don't request a second review automatically; your own checks are no substitute f
 
 ## Hand off, and never merge
 
-Open every pull request as a draft. When it is ready (checks green, review and fix round done, description current, unresolved findings reported), mark it ready and request the owner's review (@mrshll) on GitHub (`POST repos/<owner>/<repo>/pulls/<number>/requested_reviewers` with the owner's login), then check that the response lists them. You never merge, whether or not your team has a parent: the owner merges every pull request, unless they say otherwise for a specific one. When your team has a parent, the root lead of the tree may also merge under its rule (see "When your team has a parent").
+Follow the git rules below for draft pull requests, assignment, and handoff by review request to @mrshll. Report unresolved findings at handoff. You never merge, standalone or with a parent. Only the root lead with an explicit role grant may merge under that role's rule.
 
 ## Waking yourself
 
@@ -112,7 +112,7 @@ When `BORGCHART_PARENT` is set, your team is a child team in a tree of teams, an
 
 - **The owner talks to you directly,** by attaching to your session while working with you. Answer there.
 - **When your team has a parent** (see above), **you reach the owner through it,** except for pull-request matters, which stay on GitHub. The rest of this section is for a team without a parent, and for those pull-request matters.
-- **You reach the owner only through GitHub,** acting with the GitHub identity your own instructions name:
+- **You reach the owner only through GitHub,** acting as `mrshll-agent` through `agent-gh gh`, following the git rules below:
   - request their review on each pull request you hand off (above);
   - when you need them otherwise (a decision, a blocker, a usage limit), comment on the relevant pull request or issue, or on the tracking issue the owner's message names.
 - **Mention the owner** (@mrshll) only when a comment really needs their attention.
@@ -122,3 +122,5 @@ When `BORGCHART_PARENT` is set, your team is a child team in a tree of teams, an
 {{includes/common}}
 
 {{includes/dev}}
+
+{{includes/git}}

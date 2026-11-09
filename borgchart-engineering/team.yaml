@@ -16,7 +16,7 @@ includes: teams/dev-team/includes
 
 plugins:
   seat:
-    path: shared:seat       # each machine installs its own; see examples/seat
+    path: teams/dev-team/plugins/seat
     actions:
       route: seat route <vendor> <model>
 

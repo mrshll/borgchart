@@ -60,30 +60,25 @@ fn readme_commands(prefix: &str) -> Vec<String> {
         .collect()
 }
 
-/// A stand-in for the machine's seating plugin: it records what it was
+/// A test-only stand-in for the bundled seating plugin: it records what it was
 /// asked and always answers `go`.
 const FAKE_SEAT: &str =
     "#!/bin/sh\necho \"$*\" >> \"$(dirname \"$0\")/asked\"\necho 'go: a fictional usage source'\n";
 
 /// As the README sets it up: a pinned copy of the repository's department
 /// (the dev team and its panel inside it) in `dir/pinned`, where brg runs; the seating
-/// plugin, here a fake, in `dir/plugins/seat`; and a README configuration
-/// block pointing there (`dir/config.yaml`). The instance's folder is
+/// plugin replaced by a fake only in that test copy; and the README configuration
+/// in `dir/config.yaml`. The instance's folder is
 /// `dir/work`, with its shared checkout in `dir/work/repo`.
 fn setup(dir: &Path, text: &str) -> PathBuf {
     fs::create_dir_all(dir.join("work/repo")).unwrap();
     copy_dir(&department(), &dir.join("pinned/borgchart-engineering"));
-    let seat = dir.join("plugins/seat");
+    let seat = dir.join("pinned/borgchart-engineering/teams/dev-team/plugins/seat");
     fs::create_dir_all(&seat).unwrap();
     fs::write(seat.join("seat"), FAKE_SEAT).unwrap();
     fs::set_permissions(seat.join("seat"), fs::Permissions::from_mode(0o755)).unwrap();
-    let filled = text.replace(
-        "/path/to/plugins",
-        &dir.join("plugins").display().to_string(),
-    );
-    assert!(!filled.contains("/path/to"), "{filled}");
     let file = dir.join("config.yaml");
-    fs::write(&file, filled).unwrap();
+    fs::write(&file, text).unwrap();
     fs::create_dir_all(dir.join("home")).unwrap();
     file
 }
@@ -121,7 +116,7 @@ fn validate(dir: &Path, config: &Path, team: &str) -> Output {
 
 /// What a reader copies from the README works as written: both teams
 /// validate by the README's paths, with the seating plugin in
-/// `plugins_dir`, with no errors and no warnings.
+/// its bundled folder, with no errors and no warnings.
 #[test]
 fn the_readme_configuration_validates_cleanly() {
     let blocks = readme_configs();
@@ -153,7 +148,7 @@ fn the_readme_configuration_validates_cleanly() {
     }
 }
 /// The department validates from its folder, with the README's
-/// configuration and the seating plugin in `plugins_dir`, cleanly.
+/// configuration and bundled seating plugin, cleanly.
 #[test]
 fn the_department_validates_cleanly() {
     let dir = tempfile::tempdir().unwrap();
@@ -227,6 +222,25 @@ fn includes_resolve_and_are_shared() {
         assert_eq!(includes_of(&file), Vec::<String>::new());
     }
     assert!(!team_dir("dev-design-team").join("includes").exists());
+}
+
+/// Shared GitHub-write procedures reach only the department/dev leads and
+/// local committers, including when the dev team runs standalone.
+#[test]
+fn git_rules_reach_only_the_roles_that_write() {
+    let git = fs::read_to_string(dev_team().join("includes/git.md")).unwrap();
+    for folder in [department(), dev_team(), team_dir("dev-design-team")] {
+        let mut report = borgchart::diag::Report::default();
+        let team = borgchart::team::load(&folder, &mut report).unwrap();
+        for (id, role) in &team.roles {
+            assert_eq!(
+                role.instruction.contains(git.trim()),
+                id == "lead" || id == "implementer",
+                "{} {id}",
+                folder.display()
+            );
+        }
+    }
 }
 
 /// Claude Code refuses foreground sleep and poll loops, and Codex starts no
@@ -348,9 +362,8 @@ fn denied_word(text: &str) -> Option<String> {
 #[test]
 fn the_team_files_stay_generic() {
     assert!(denied_word("the owner merges").is_none());
-    // Only the owner's handle is allowed, only in the department's and the
-    // dev team's own files, and only as `@<handle>`: other forms and other
-    // denied words stay denied.
+    // The owner has approved the machine account and GitHub wrapper in
+    // team instructions. Other private names and machine paths stay denied.
     assert!(denied_word("mrshll-agent").is_some());
 
     // Every file of the department, its teams included.
@@ -361,14 +374,14 @@ fn the_team_files_stay_generic() {
         let held = files.iter().filter(|f| f.starts_with(team_dir(team)));
         assert!(held.count() >= 2, "{team}: {files:?}");
     }
-    // Machine paths, private tooling and people stay in the private
-    // deployment file, never here.
+    // Machine paths and unapproved private names never belong here.
     let home = regex::Regex::new(r"/(home|Users)/[^/\s]+|/tmp/|/root/").unwrap();
-    // The one exception: the department's and the dev team's files (not
-    // the panel's) name the repository's owner and reviewer by his public
-    // handle, exactly as `@<handle>`.
+    // The owner's @handle is allowed outside the panel. Below, the approved
+    // account and wrapper are allowed everywhere, and the bare owner login
+    // only in git.md's review-request command.
     let owner = regex::Regex::new(r"@mrshll([^A-Za-z0-9_-]|$)").unwrap();
     let panel = team_dir("dev-design-team");
+    let word = regex::Regex::new(r"[A-Za-z0-9_-]+").unwrap();
     for file in files {
         let text = fs::read_to_string(&file).unwrap();
         let text = if !file.starts_with(&panel) {
@@ -376,6 +389,11 @@ fn the_team_files_stay_generic() {
         } else {
             text
         };
+        let text = word.replace_all(&text, |caps: &regex::Captures<'_>| match &caps[0] {
+            "mrshll-agent" | "agent-gh" => String::new(),
+            "mrshll" if file == dev_team().join("includes/git.md") => String::new(),
+            other => other.to_string(),
+        });
         assert_eq!(denied_word(&text), None, "{}", file.display());
         assert!(
             !home.is_match(&text),
@@ -922,7 +940,10 @@ mod round {
             asked.push(format!("route {vendor} {model}"));
         }
         assert_eq!(
-            fs::read_to_string(team.path("plugins/seat/asked")).unwrap(),
+            fs::read_to_string(
+                team.path("pinned/borgchart-engineering/teams/dev-team/plugins/seat/asked")
+            )
+            .unwrap(),
             asked.join("\n") + "\n"
         );
 
