@@ -796,7 +796,7 @@ mod round {
         let team = new_team("design");
         let repo = team.path("work/repo");
         let git = |args: &[&str]| {
-            let out = Command::new("git")
+            let out = crate::common::command("git")
                 .arg("-C")
                 .arg(&repo)
                 .args(args)
@@ -887,7 +887,7 @@ mod round {
         );
         assert_eq!(code, 0, "{prepared}");
         let work = folder.join("work");
-        let head = Command::new("git")
+        let head = crate::common::command("git")
             .arg("-C")
             .arg(&work)
             .args(["rev-parse", "HEAD"])
@@ -1050,13 +1050,21 @@ mod round {
         team.ok(&["stop", &inst]);
     }
 
+    /// The fake agent's first record of a start, once it is fully written:
+    /// the log can exist before its first line is complete.
+    fn first_start(team: &Team, what: &str, log: &Path) -> serde_json::Value {
+        let first = || {
+            let text = fs::read_to_string(log).ok()?;
+            serde_json::from_str::<serde_json::Value>(text.lines().next()?).ok()
+        };
+        team.wait_for(what, || first().is_some());
+        first().unwrap()
+    }
+
     /// The opening prompt of `member` in `instance`: its expanded role file.
     fn prompt_of(team: &Team, instance: &str, member: &str) -> String {
         let log = team.path(&format!("home/fake-agent/{member}.jsonl"));
-        team.wait_for(&format!("{member} started"), || log.exists());
-        let start: serde_json::Value =
-            serde_json::from_str(fs::read_to_string(&log).unwrap().lines().next().unwrap())
-                .unwrap();
+        let start = first_start(team, &format!("{member} started"), &log);
         assert_eq!(start["env"]["BORGCHART_INSTANCE"], instance);
         start["argv"]
             .as_array()
@@ -1080,7 +1088,7 @@ mod round {
         let checkout = team.path("work/lead");
         fs::create_dir_all(&checkout).unwrap();
         let git = |args: &[&str]| {
-            let out = Command::new("git")
+            let out = crate::common::command("git")
                 .arg("-C")
                 .arg(&checkout)
                 .args(args)
@@ -1117,10 +1125,7 @@ mod round {
             .expect("the department's instance");
         let dept_lead = team.member_in(&dept, "lead");
         let log = team.path(&format!("home/fake-agent/{dept_lead}.jsonl"));
-        team.wait_for("the department lead", || log.exists());
-        let start: serde_json::Value =
-            serde_json::from_str(fs::read_to_string(&log).unwrap().lines().next().unwrap())
-                .unwrap();
+        let start = first_start(&team, "the department lead", &log);
         assert_eq!(
             start["cwd"],
             checkout.canonicalize().unwrap().display().to_string()
@@ -1228,10 +1233,7 @@ mod round {
         assert_eq!(code, 0, "{started}");
         let dev_lead = team.member_in(&copy_id, "lead");
         let log = team.path(&format!("home/fake-agent/{dev_lead}.jsonl"));
-        team.wait_for("the dev lead", || log.exists());
-        let start: serde_json::Value =
-            serde_json::from_str(fs::read_to_string(&log).unwrap().lines().next().unwrap())
-                .unwrap();
+        let start = first_start(&team, "the dev lead", &log);
         assert_eq!(
             start["cwd"],
             folder
