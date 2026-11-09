@@ -32,7 +32,9 @@ Draft (one JSON object; other fields are refused):
 Every reference must name an existing local message. Replies across an edge
 map back to the original message in the receiving store. Text may contain newlines and
 tabs, with no other control characters. The entire draft is at most
-{MAX_RECORD_BYTES} bytes. Each publish creates a new message.
+{MAX_RECORD_BYTES} bytes. Cross-edge records reserve space for delivery before
+committing; shorten the message if its envelope would exceed that limit.
+Each publish creates a new message.
 
 Example (a helper writes to its parent lead):
 --------
@@ -54,6 +56,7 @@ bodies. --member ID reads another member's inbox; --external NAME reads that
 outside recipient's inbox. Outside a member, pass --instance ID.
 
 Inbox imports messages from the stores across this member's parent edges.
+An unavailable peer adds a note naming the instance; local messages stay visible.
 Reading never acknowledges. Use `msg read ID` for an older message and
 `msg ack ID...` once you have taken messages on, then `inbox wait`.
 Progress and reports belong in your notes and GitHub.
@@ -77,7 +80,9 @@ you returns at once. Messages already present return after 60 seconds only if
 still unacked; if all were acked meanwhile, waiting continues. A new message
 can return sooner. Ack everything you have taken on before waiting.
 Each later poll reads the next local message, polls the stores across your
-parent edges, and checks your current session.
+parent edges (including copies created or first started during the wait), and
+checks your current session. Peer failures add notes without ending the wait;
+peer reads and the local import lock are bounded by its timeout.
 Errors, including usage errors, wait at least 60 seconds too; explicit help
 and signals may end immediately.
 

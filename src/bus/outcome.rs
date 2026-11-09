@@ -62,6 +62,7 @@ impl Code {
 pub struct Failure {
     pub code: Code,
     pub message: String,
+    pub notes: Vec<String>,
 }
 
 impl Failure {
@@ -69,6 +70,7 @@ impl Failure {
         Failure {
             code,
             message: message.into(),
+            notes: Vec::new(),
         }
     }
 
@@ -76,14 +78,23 @@ impl Failure {
         Failure::new(Code::Error, format!("{context}: {e}"))
     }
 
+    pub fn with_notes(mut self, notes: Vec<String>) -> Self {
+        self.notes = notes;
+        self
+    }
+
     /// `{"ok": false, "code": <exit>, "outcome": "<name>", "message": …}`
     pub fn to_json(&self) -> Value {
-        json!({
+        let mut value = json!({
             "ok": false,
             "code": self.code.exit(),
             "outcome": self.code.as_str(),
             "message": self.message,
-        })
+        });
+        if !self.notes.is_empty() {
+            value["notes"] = json!(self.notes);
+        }
+        value
     }
 }
 

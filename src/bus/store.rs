@@ -196,6 +196,21 @@ fn fence_member(bus: &Bus, member: &str, incarnation: &str) -> Result<(), Failur
 /// Take the publication lock and refresh the routing under it. A store must
 /// already be recognised; mutations never create storage over damaged data.
 pub(super) fn lock_for_mutation(bus: &Bus) -> Result<(Bus, fs::File), Failure> {
+    lock_for_write(bus, None)?.ok_or_else(|| Failure::new(Code::Error, "cannot lock messages/lock"))
+}
+
+/// Imports share the publication lock, but cannot outlive the read's deadline.
+pub(super) fn lock_for_import(
+    bus: &Bus,
+    deadline: Instant,
+) -> Result<Option<(Bus, fs::File)>, Failure> {
+    lock_for_write(bus, Some(deadline))
+}
+
+fn lock_for_write(
+    bus: &Bus,
+    deadline: Option<Instant>,
+) -> Result<Option<(Bus, fs::File)>, Failure> {
     let fresh = open(&bus.state)?;
     fsx::ensure_private_tree(&fresh.state.root, &fresh.paths.root).map_err(|e| {
         Failure::new(
@@ -209,9 +224,27 @@ pub(super) fn lock_for_mutation(bus: &Bus) -> Result<(Bus, fs::File), Failure> {
     })?;
     let lock = state::open_lock(&fresh.paths.bus_lock())
         .map_err(|e| Failure::io("cannot open messages/lock", e))?;
-    lock.lock()
-        .map_err(|e| Failure::io("cannot lock messages/lock", e))?;
-    Ok((open(&bus.state)?, lock))
+    if let Some(deadline) = deadline {
+        loop {
+            match lock.try_lock() {
+                Ok(()) => break,
+                Err(fs::TryLockError::WouldBlock) => {
+                    let now = Instant::now();
+                    if now >= deadline {
+                        return Ok(None);
+                    }
+                    std::thread::sleep(Duration::from_millis(20).min(deadline - now));
+                }
+                Err(fs::TryLockError::Error(e)) => {
+                    return Err(Failure::io("cannot lock messages/lock", e));
+                }
+            }
+        }
+    } else {
+        lock.lock()
+            .map_err(|e| Failure::io("cannot lock messages/lock", e))?;
+    }
+    Ok(Some((open(&bus.state)?, lock)))
 }
 
 /// The authoritative caller check, made while holding `messages/lock`:
@@ -292,6 +325,17 @@ pub fn wait_snapshot(bus: &Bus, deadline: Instant) -> Result<WaitSnapshot, Failu
     Ok(WaitSnapshot::Ready(scan(&bus.paths)))
 }
 
+/// Edge reads must actually hold the sender's read-only shared lock. A missing
+/// lock cannot be taken as an empty store when the sender may have published.
+pub(super) fn peer_snapshot(bus: &Bus, deadline: Instant) -> Result<WaitSnapshot, Failure> {
+    let _lock = match read_lock_until(&bus.paths, Some(deadline))? {
+        ReadLock::TimedOut => return Ok(WaitSnapshot::TimedOut),
+        ReadLock::NoStore => return Err(Failure::new(Code::Error, "messages/lock is missing")),
+        ReadLock::Held(lock) => lock,
+    };
+    Ok(WaitSnapshot::Ready(scan(&bus.paths)))
+}
+
 /// A consistent read of the whole store, under `messages/lock` shared.
 pub fn snapshot(bus: &Bus) -> Result<Snapshot, Failure> {
     snapshot_of(&bus.paths)
@@ -325,6 +369,8 @@ pub struct Snapshot {
     pub problems: Vec<String>,
     /// Stray temporary files left by a crash (harmless).
     pub strays: Vec<PathBuf>,
+    /// Edge failures from the latest import poll, independent of local health.
+    pub notes: Vec<String>,
 }
 
 impl Snapshot {
@@ -662,10 +708,14 @@ pub fn publish(bus: &Bus, caller: &Caller, draft_bytes: &[u8]) -> Result<Record,
     };
     let bytes =
         serde_json::to_vec_pretty(&rec).map_err(|e| Failure::new(Code::Error, e.to_string()))?;
-    if bytes.len() > MAX_RECORD_BYTES {
+    if bytes.len() > MAX_RECORD_BYTES
+        || (remote && super::delivery::import_size(&bus, &rec)? > MAX_RECORD_BYTES)
+    {
         return Err(Failure::new(
             Code::Invalid,
-            format!("the record would be over {MAX_RECORD_BYTES} bytes"),
+            format!(
+                "the record would be over {MAX_RECORD_BYTES} bytes including delivery; shorten the message"
+            ),
         ));
     }
     match fsx::write_new(&bus.paths.record(seq), &bytes)
@@ -688,6 +738,16 @@ pub struct Progress {
     pub newest: u64,
     pub lowest_unacked: Option<u64>,
     pub total: usize,
+}
+
+/// Status includes undelivered edge messages, or a note if that count is unknown.
+pub struct Unread {
+    pub count: Option<usize>,
+    pub notes: Vec<String>,
+}
+
+pub fn unread(bus: &Bus, snap: &Snapshot) -> Result<BTreeMap<String, Unread>, Failure> {
+    super::delivery::unread(bus, snap)
 }
 
 pub fn progress(bus: &Bus, snap: &Snapshot) -> BTreeMap<String, Progress> {
@@ -749,7 +809,7 @@ pub fn import(
     caller: &Caller,
     to: &Recipient,
     deadline: Instant,
-) -> Result<(), Failure> {
+) -> Result<Vec<String>, Failure> {
     if matches!(caller, Caller::Member { .. }) {
         actor_for(bus, caller)?;
     }
@@ -872,12 +932,13 @@ pub fn wait(
     let deadline = started + duration;
     let minimum = started + wait_minimum();
     let timeout = || Failure::new(Code::Timeout, "nothing new before the timeout");
-    import(bus, caller, to, deadline)?;
+    let notes = import(bus, caller, to, deadline)?;
     let mut snap = match wait_snapshot(bus, deadline)? {
         WaitSnapshot::Ready(snap) => snap,
-        WaitSnapshot::TimedOut => return Err(timeout()),
+        WaitSnapshot::TimedOut => return Err(timeout().with_notes(notes)),
     };
     snap.require_healthy()?;
+    snap.notes = notes;
     let mark = snap.records.last_key_value().map_or(0, |(&seq, _)| seq);
     let mut next = mark + 1;
     let recipient = to.to_string();
@@ -890,8 +951,8 @@ pub fn wait(
         fs::write(path, b"").map_err(|e| Failure::io("cannot signal the test wait", e))?;
     }
     loop {
-        actor_for(bus, caller)?;
-        import(bus, caller, to, deadline)?;
+        actor_for(bus, caller).map_err(|error| error.with_notes(snap.notes.clone()))?;
+        snap.notes = import(bus, caller, to, deadline)?;
         let mut arrived = false;
         while let Some(record) = next_record(&bus.paths, next)? {
             arrived |= local_recipient(bus, &record.to) == recipient;
@@ -902,8 +963,9 @@ pub fn wait(
             }
         }
         if arrived || (old_pending && Instant::now() >= minimum) {
-            refresh_acks(bus, &mut snap, &mut next, deadline)?;
-            actor_for(bus, caller)?;
+            refresh_acks(bus, &mut snap, &mut next, deadline)
+                .map_err(|error| error.with_notes(snap.notes.clone()))?;
+            actor_for(bus, caller).map_err(|error| error.with_notes(snap.notes.clone()))?;
             let inbox = list(bus, &snap, to);
             if (old_pending && Instant::now() >= minimum && !inbox.records.is_empty())
                 || inbox.records.iter().any(|r| r.seq > mark)
@@ -918,7 +980,7 @@ pub fn wait(
         }
         let now = Instant::now();
         if now >= deadline {
-            return Err(timeout());
+            return Err(timeout().with_notes(snap.notes));
         }
         let next_check = if old_pending && minimum > now {
             deadline.min(minimum)

@@ -25,7 +25,7 @@ impl Tree {
         let env = Env::new();
         env.write(
             "teams/oncall/team.yaml",
-            "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: lead}\n  dev: {team: teams/dev, parent: lead, start: false, cwd: 'dev/{member_id}'}\n",
+            "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: lead}\n  dev: {team: teams/dev, parent: lead, start: false, max: 2, cwd: 'dev/{member_id}'}\n",
         );
         env.team("teams/oncall/teams/dev");
         fs::create_dir(env.path("work/a/lead")).unwrap();
@@ -314,6 +314,349 @@ fn a_sender_restart_before_import_does_not_lose_its_committed_message() {
     assert_eq!(
         inbox["records"][0]["origin"],
         json!({"instance": tree.child, "id": sent["id"]})
+    );
+}
+
+fn assert_peer_note(out: &Value, instance: &str) {
+    let notes = out["notes"].as_array().expect("peer trouble needs a note");
+    assert!(
+        notes
+            .iter()
+            .any(|note| note.as_str().unwrap().contains(instance)),
+        "{out}"
+    );
+}
+
+#[test]
+fn peer_failures_preserve_local_inbox_and_wait() {
+    for failure in [
+        "copy", "metadata", "record", "records", "missing", "lock", "busy",
+    ] {
+        let tree = Tree::new();
+        value(tree.env.publish(
+            &tree.parent,
+            &json!({"to": tree.parent_member, "body": "Local work"}),
+        ));
+        tree.publish(true, "Remote work", &[]);
+        let root = tree.env.path(&format!("state/{}", tree.child));
+        let path = root.join(match failure {
+            "copy" => "instance.json",
+            "metadata" => "messages/store.json",
+            "record" => "messages/records/0000000001.json",
+            "records" => "messages/records",
+            "lock" => "messages/lock",
+            _ => "messages",
+        });
+        let lock = if failure == "busy" {
+            let file = fs::File::open(root.join("messages/lock")).unwrap();
+            file.lock().unwrap();
+            Some(file)
+        } else {
+            None
+        };
+        if failure == "missing" {
+            fs::rename(&path, root.join("hidden-messages")).unwrap();
+        } else if failure == "lock" {
+            fs::remove_file(&path).unwrap();
+        } else if failure != "busy" {
+            // Corrupt metadata is unreadable regardless of the test user's UID.
+            if failure == "records" {
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+            } else {
+                fs::write(&path, "unreadable").unwrap();
+            }
+        }
+        for args in [
+            vec!["inbox", "--full", "--json"],
+            vec!["inbox", "wait", "--timeout", "60", "--full", "--json"],
+        ] {
+            let out = value(finish(
+                tree.member_cmd(false, &args)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap(),
+            ));
+            assert_eq!(out["records"][0]["body"], "Local work", "{failure}: {out}");
+            assert_peer_note(&out, &tree.child);
+        }
+        drop(lock);
+        if failure == "records" {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    }
+}
+
+#[test]
+fn peer_failures_do_not_replace_wait_timeout_or_fencing() {
+    let tree = Tree::new();
+    let lock = fs::File::open(
+        tree.env
+            .path(&format!("state/{}/messages/lock", tree.child)),
+    )
+    .unwrap();
+    lock.lock().unwrap();
+    let started = Instant::now();
+    let out = finish(
+        tree.member_cmd(false, &["inbox", "wait", "--timeout", "60", "--json"])
+            .env("BORGCHART_WAIT_TIMEOUT_MS", "700")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    assert_eq!(out.status.code(), Some(9), "{}", both(&out));
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert_peer_note(&serde_json::from_slice(&out.stdout).unwrap(), &tree.child);
+    let arrival_ready = tree.env.path("wait-ready-local-arrival");
+    let waiting = tree
+        .member_cmd(
+            false,
+            &["inbox", "wait", "--timeout", "60", "--full", "--json"],
+        )
+        .env("BORGCHART_TEST_WAIT_READY", &arrival_ready)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    tree.env
+        .wait_for("wait before a local arrival", || arrival_ready.exists());
+    value(tree.env.publish(
+        &tree.parent,
+        &json!({"to": tree.parent_member, "body": "Local arrival"}),
+    ));
+    let inbox = value(finish(waiting));
+    assert_eq!(inbox["records"][0]["body"], "Local arrival");
+    assert_peer_note(&inbox, &tree.child);
+    value(
+        tree.member_cmd(
+            false,
+            &[
+                "msg",
+                "ack",
+                inbox["records"][0]["id"].as_str().unwrap(),
+                "--json",
+            ],
+        )
+        .output()
+        .unwrap(),
+    );
+    let ready = tree.env.path("wait-ready-busy-peer");
+    let waiting = tree
+        .member_cmd(false, &["inbox", "wait", "--timeout", "60", "--json"])
+        .env("BORGCHART_TEST_WAIT_READY", &ready)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    tree.env
+        .wait_for("wait with a busy peer", || ready.exists());
+    tree.env
+        .ok(&["stop", &format!("{}/{}", tree.parent, tree.parent_member)]);
+    let out = finish(waiting);
+    assert_eq!(out.status.code(), Some(8), "{}", both(&out));
+    assert_peer_note(&serde_json::from_slice(&out.stdout).unwrap(), &tree.child);
+}
+
+#[test]
+fn wait_discovers_a_copy_created_or_first_started_after_it_begins() {
+    for create_during_wait in [false, true] {
+        let mut tree = Tree::new();
+        let previous = tree.child.clone();
+        if !create_during_wait {
+            tree.env.ok(&["create", &format!("{}/dev", tree.parent)]);
+        }
+        let ready = tree.env.path("wait-ready-new-edge");
+        let waiting = tree
+            .member_cmd(
+                false,
+                &["inbox", "wait", "--timeout", "60", "--full", "--json"],
+            )
+            .env("BORGCHART_TEST_WAIT_READY", &ready)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        tree.env
+            .wait_for("wait before a new edge", || ready.exists());
+        if create_during_wait {
+            tree.env.ok(&["create", &format!("{}/dev", tree.parent)]);
+        }
+        tree.child = tree.env.registry()["instances"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .find(|id| id.starts_with(&format!("{}/", tree.parent)) && **id != previous)
+            .unwrap()
+            .clone();
+        tree.env.ok(&["start", &tree.child]);
+        tree.child_member = tree.env.member(&tree.child, "lead");
+        tree.publish(true, "New child report", &[]);
+        let out = value(finish(waiting));
+        assert_eq!(out["records"][0]["body"], "New child report");
+    }
+}
+
+#[test]
+fn a_busy_local_import_lock_respects_inbox_and_wait_deadlines() {
+    let tree = Tree::new();
+    tree.publish(true, "Pending import", &[]);
+    for wait in [false, true] {
+        let gate = tree.env.path(if wait {
+            "local-wait-gate"
+        } else {
+            "local-inbox-gate"
+        });
+        fs::create_dir(&gate).unwrap();
+        let args = if wait {
+            vec!["inbox", "wait", "--timeout", "60", "--json"]
+        } else {
+            vec!["inbox", "--json"]
+        };
+        let child = tree
+            .member_cmd(false, &args)
+            .env("BORGCHART_TEST_IMPORT_GATE", &gate)
+            .env("BORGCHART_WAIT_TIMEOUT_MS", "700")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        tree.env.wait_for("import reached the local lock", || {
+            fs::read_dir(&gate).unwrap().count() == 1
+        });
+        let lock = fs::File::open(
+            tree.env
+                .path(&format!("state/{}/messages/lock", tree.parent)),
+        )
+        .unwrap();
+        lock.lock_shared().unwrap();
+        let started = Instant::now();
+        fs::write(gate.join("proceed"), "").unwrap();
+        let out = finish(child);
+        assert!(!out.status.success(), "{}", both(&out));
+        if wait {
+            assert_eq!(out.status.code(), Some(9), "{}", both(&out));
+        }
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+}
+
+#[test]
+fn cross_edge_publish_reserves_space_for_the_import_envelope() {
+    let tree = Tree::new();
+    let probe = tree.publish(true, "", &[]);
+    let record = value(
+        tree.member_cmd(
+            true,
+            &["msg", "read", probe["id"].as_str().unwrap(), "--json"],
+        )
+        .output()
+        .unwrap(),
+    )["record"]
+        .clone();
+    let mut record = record;
+    record.as_object_mut().unwrap().remove("acked");
+    let room = 128 * 1024 - serde_json::to_vec_pretty(&record).unwrap().len();
+    let body = "\"".repeat((room - 30) / 2);
+    let draft = tree.env.path("oversize-draft.json");
+    fs::write(
+        &draft,
+        json!({"to": format!("{}/{}", tree.parent, tree.parent_member), "body": body}).to_string(),
+    )
+    .unwrap();
+    let out = tree
+        .member_cmd(
+            true,
+            &[
+                "msg",
+                "publish",
+                "--record",
+                draft.to_str().unwrap(),
+                "--json",
+            ],
+        )
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(5),
+        "publication must refuse before import gets stuck: {}",
+        both(&out)
+    );
+    let accepted = tree.publish(true, &"\"".repeat((room - 2048) / 2), &[]);
+    let inbox = tree.inbox(false);
+    assert!(
+        inbox["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["origin"]["id"] == accepted["id"])
+    );
+}
+
+#[test]
+fn status_counts_pending_edge_records_once_and_reports_unknown_peers() {
+    let tree = Tree::new();
+    tree.publish(true, "Pending in child", &[]);
+    let before = tree
+        .env
+        .ok(&["bus", "check", "--instance", &tree.parent, "--json"]);
+    assert_eq!(
+        tree.env.row(&tree.parent, "lead")["unread"],
+        1,
+        "status must include messages before import"
+    );
+    let after = tree
+        .env
+        .ok(&["bus", "check", "--instance", &tree.parent, "--json"]);
+    assert_eq!(
+        before.stdout, after.stdout,
+        "status must not import into a store"
+    );
+    let inbox = tree.inbox(false);
+    assert_eq!(
+        tree.env.row(&tree.parent, "lead")["unread"],
+        1,
+        "import must not double-count"
+    );
+    value(
+        tree.member_cmd(
+            false,
+            &[
+                "msg",
+                "ack",
+                inbox["records"][0]["id"].as_str().unwrap(),
+                "--json",
+            ],
+        )
+        .output()
+        .unwrap(),
+    );
+    assert_eq!(
+        tree.env.row(&tree.parent, "lead")["unread"],
+        0,
+        "peer originals must not resurrect acked imports"
+    );
+    tree.publish(false, "Pending in parent", &[]);
+    assert_eq!(
+        tree.env.row(&tree.child, "lead")["unread"],
+        1,
+        "a child's count includes its parent store"
+    );
+    let lock = fs::File::open(
+        tree.env
+            .path(&format!("state/{}/messages/lock", tree.child)),
+    )
+    .unwrap();
+    lock.lock().unwrap();
+    let row = tree.env.row(&tree.parent, "lead");
+    assert!(
+        row["unread"].is_null(),
+        "an unreadable peer cannot mean zero: {row}"
+    );
+    assert!(
+        row["detail"].as_str().unwrap().contains(&tree.child),
+        "{row}"
     );
 }
 

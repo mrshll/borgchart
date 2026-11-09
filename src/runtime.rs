@@ -3017,14 +3017,25 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
         (None, None)
     } else {
         match crate::bus::store::open(state).and_then(|bus| {
-            let snap = crate::bus::store::snapshot(&bus)?;
+            let snap = match crate::bus::store::wait_snapshot(
+                &bus,
+                std::time::Instant::now() + std::time::Duration::from_millis(50),
+            )? {
+                crate::bus::store::WaitSnapshot::Ready(snap) => snap,
+                crate::bus::store::WaitSnapshot::TimedOut => {
+                    return Err(crate::bus::outcome::Failure::new(
+                        crate::bus::outcome::Code::Timeout,
+                        "messages are busy",
+                    ));
+                }
+            };
             if !snap.healthy() {
                 return Err(crate::bus::outcome::Failure::new(
                     crate::bus::outcome::Code::Corrupt,
                     "incomplete messages",
                 ));
             }
-            Ok(crate::bus::store::progress(&bus, &snap))
+            crate::bus::store::unread(&bus, &snap)
         }) {
             Ok(counts) => (Some(counts), None),
             Err(_) => (
@@ -3117,7 +3128,8 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
             state: if ran { STOPPED } else { NOT_STARTED }.into(),
             unread: counts
                 .as_ref()
-                .map(|all| all.get(id).copied().unwrap_or_default().unread),
+                .and_then(|all| all.get(id))
+                .and_then(|unread| unread.count),
             running: None,
             expected_running: false,
             start: member.start,
@@ -3174,6 +3186,15 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
             }
         }
         row.expected_running = team_running && row.state == STOPPED && member.start;
+        if let Some(unread) = counts.as_ref().and_then(|all| all.get(id))
+            && !unread.notes.is_empty()
+        {
+            let notes = unread.notes.join("; ");
+            row.detail = Some(match row.detail.take() {
+                Some(detail) => format!("{detail}; {notes}"),
+                None => notes,
+            });
+        }
         rows.push(row);
     }
     for (name, plugin) in &v.team.plugins {

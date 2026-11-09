@@ -128,6 +128,9 @@ pub(crate) fn finish(json: bool, result: Result<Output, Failure>) -> ExitCode {
                 println!("{}", f.to_json());
             } else {
                 eprintln!("brg: {}", f.message);
+                for note in &f.notes {
+                    eprintln!("note: {note}");
+                }
             }
             ExitCode::from(f.code.exit())
         }
@@ -281,6 +284,9 @@ fn inbox_output(t: &Target, page: &Inbox, snap: &store::Snapshot, full: bool) ->
         })
         .collect();
     let mut text = String::new();
+    for note in &snap.notes {
+        text.push_str(&format!("note: {note}\n"));
+    }
     if !snap.healthy() {
         text.push_str("warning: the store is incomplete; `brg bus check` lists the problems\n");
     }
@@ -300,6 +306,7 @@ fn inbox_output(t: &Target, page: &Inbox, snap: &store::Snapshot, full: bool) ->
                 "unacked": page.unacked,
                 "total": page.total,
                 "store": if snap.healthy() { "ok" } else { "incomplete" },
+                "notes": snap.notes,
             }),
         ),
         text,
@@ -338,13 +345,19 @@ pub fn inbox(instance: Option<&str>, args: InboxArgs, started: Instant) -> ExitC
                 } else {
                     context::caller(args.who.external.as_deref())?
                 };
-                store::import(
-                    &bus,
-                    &caller,
-                    &t.recipient,
-                    Instant::now() + Duration::from_secs(1),
-                )?;
-                let snap = store::snapshot(&bus)?;
+                let deadline = Instant::now() + Duration::from_secs(1);
+                let notes = store::import(&bus, &caller, &t.recipient, deadline)?;
+                let mut snap = match store::wait_snapshot(&bus, deadline)? {
+                    store::WaitSnapshot::Ready(snap) => snap,
+                    store::WaitSnapshot::TimedOut => {
+                        return Err(Failure::new(
+                            Code::Timeout,
+                            "message store is busy; try the inbox again",
+                        )
+                        .with_notes(notes));
+                    }
+                };
+                snap.notes = notes;
                 let inbox = store::list(&bus, &snap, &t.recipient);
                 Ok(inbox_output(&t, &inbox, &snap, args.full))
             })(),

@@ -45,8 +45,9 @@ pub(super) fn check_route(bus: &Bus, actor: &Actor, to: &str) -> Result<(), Stri
 
 /// Stores joined to this recipient by recorded parent edges. No store lock
 /// is held while discovering an edge or opening its metadata.
-fn peers(bus: &Bus, member: &str) -> Result<Vec<Bus>, Failure> {
+fn peers(bus: &Bus, member: &str) -> Result<(Vec<Bus>, Vec<String>), Failure> {
     let mut ids = Vec::new();
+    let mut notes = Vec::new();
     if let Some(parent) = bus
         .meta
         .members
@@ -57,20 +58,133 @@ fn peers(bus: &Bus, member: &str) -> Result<Vec<Bus>, Failure> {
         ids.push(instance.to_string());
     }
     let own = format!("{}/{member}", bus.instance);
-    for (id, _) in bus.record.copies.iter().filter(|(_, copy)| !copy.deleted) {
+    let current =
+        crate::registry::read_instance(&bus.state).map_err(|e| Failure::new(Code::Error, e))?;
+    for (id, _) in current.copies.iter().filter(|(_, copy)| !copy.deleted) {
         let state = StateDir::new(&format!("{}/{id}", bus.instance));
-        let record =
-            crate::registry::read_instance(&state).map_err(|e| Failure::new(Code::Error, e))?;
+        let record = match crate::registry::read_instance(&state) {
+            Ok(record) => record,
+            Err(_) => {
+                notes.push(peer_note(&state.id, "copy record cannot be read"));
+                continue;
+            }
+        };
         if record.parent.as_deref() == Some(own.as_str()) {
             ids.push(state.id);
         }
     }
-    ids.into_iter()
-        .map(|id| store::open(&StateDir::new(&id)))
-        // A kept copy has no readable store until its first start. It
-        // cannot have published anything yet and must not block its parent.
-        .filter(|result| !matches!(result, Err(error) if error.code == Code::NotConfigured))
+    let mut peers = Vec::new();
+    for id in ids {
+        let state = StateDir::new(&id);
+        match store::open(&state) {
+            Ok(peer) => peers.push(peer),
+            // A kept copy cannot have published before its first start.
+            Err(error) if error.code == Code::NotConfigured && !state.meta_file().exists() => {}
+            Err(_) => notes.push(peer_note(&id, "message store cannot be read")),
+        }
+    }
+    Ok((peers, notes))
+}
+
+fn peer_note(instance: &str, problem: &str) -> String {
+    format!(
+        "instance `{instance}`'s {problem}; check `brg bus check --instance {instance}` and try its inbox again"
+    )
+}
+
+struct Pending {
+    records: Vec<(Origin, Record)>,
+    notes: Vec<String>,
+}
+
+/// Read every available edge independently, so one broken peer cannot hide
+/// either another peer's records or the receiver's local inbox.
+fn pending(bus: &Bus, member: &str, deadline: Instant) -> Result<Pending, Failure> {
+    let recipient = format!("{}/{member}", bus.instance);
+    let (peers, mut notes) = peers(bus, member)?;
+    let mut pending = Vec::new();
+    for peer in peers {
+        let until = deadline.min(Instant::now() + Duration::from_millis(50));
+        let snap = match store::peer_snapshot(&peer, until) {
+            Ok(WaitSnapshot::Ready(snap)) if snap.healthy() => snap,
+            Ok(WaitSnapshot::TimedOut) => {
+                notes.push(peer_note(&peer.instance, "message store is busy"));
+                continue;
+            }
+            _ => {
+                notes.push(peer_note(&peer.instance, "message store cannot be read"));
+                continue;
+            }
+        };
+        for record in candidates(&peer, snap, &recipient) {
+            let origin = Origin {
+                instance: peer.instance.clone(),
+                id: record.id.clone(),
+            };
+            pending.push((origin, record));
+        }
+    }
+    Ok(Pending {
+        records: pending,
+        notes,
+    })
+}
+
+/// Pending records count as unread without writing the receiving store. An
+/// unavailable edge makes the total unknown, including when the local count is zero.
+pub(super) fn unread(
+    bus: &Bus,
+    snap: &Snapshot,
+) -> Result<std::collections::BTreeMap<String, store::Unread>, Failure> {
+    let local = store::progress(bus, snap);
+    bus.meta
+        .members
+        .keys()
+        .map(|member| {
+            let Pending {
+                records: pending,
+                notes,
+            } = pending(bus, member, Instant::now() + Duration::from_secs(1))?;
+            let missing = pending
+                .iter()
+                .filter(|(origin, _)| {
+                    !snap
+                        .records
+                        .values()
+                        .any(|r| r.origin.as_ref() == Some(origin))
+                })
+                .count();
+            Ok((
+                member.clone(),
+                store::Unread {
+                    count: notes
+                        .is_empty()
+                        .then(|| local.get(member).copied().unwrap_or_default().unread + missing),
+                    notes,
+                },
+            ))
+        })
         .collect()
+}
+
+/// Reserve the largest receiving sequence/ID and any reply IDs that could be
+/// mapped to a longer local ID, as well as the origin's full instance path.
+pub(super) fn import_size(bus: &Bus, record: &Record) -> Result<usize, Failure> {
+    let mut imported = record.clone();
+    imported.origin = Some(Origin {
+        instance: bus.instance.clone(),
+        id: record.id.clone(),
+    });
+    imported.seq = u64::MAX;
+    imported.id = record_id(u64::MAX);
+    for reference in &mut imported.reply_to {
+        if reference.len() < imported.id.len() {
+            *reference = imported.id.clone();
+        }
+    }
+    serde_json::to_vec_pretty(&imported)
+        .map(|bytes| bytes.len())
+        .map_err(|e| Failure::new(Code::Error, e.to_string()))
 }
 
 /// Only original messages published by the peer itself can cross this edge.
@@ -112,42 +226,26 @@ pub(super) fn import(
     caller: &Caller,
     to: &Recipient,
     deadline: Instant,
-) -> Result<(), Failure> {
+) -> Result<Vec<String>, Failure> {
     let Recipient::Member(member) = to else {
-        return Ok(());
+        return Ok(Vec::new());
     };
-    let recipient = format!("{}/{member}", bus.instance);
-    let mut pending = Vec::new();
-    for peer in peers(bus, member)? {
-        let until = deadline.min(Instant::now() + Duration::from_millis(50));
-        let snap = match store::wait_snapshot(&peer, until)? {
-            WaitSnapshot::Ready(snap) => snap,
-            WaitSnapshot::TimedOut => {
-                return Err(Failure::new(
-                    Code::Error,
-                    format!(
-                        "instance `{}`'s message store is busy; try its inbox again",
-                        peer.instance
-                    ),
-                ));
-            }
-        };
-        snap.require_healthy()?;
-        for record in candidates(&peer, snap, &recipient) {
-            let origin = Origin {
-                instance: peer.instance.clone(),
-                id: record.id.clone(),
-            };
-            pending.push((origin, record));
-        }
-    }
+    let Pending {
+        records: pending,
+        notes,
+    } = pending(bus, member, deadline)?;
     if pending.is_empty() {
-        return Ok(());
+        return Ok(notes);
     }
     #[cfg(feature = "test-support")]
     import_gate(deadline)?;
     // All peer snapshots (and therefore their shared locks) are gone.
-    let (bus, _lock) = store::lock_for_mutation(bus)?;
+    let Some((bus, _lock)) = store::lock_for_import(bus, deadline)? else {
+        return Err(
+            Failure::new(Code::Timeout, "message import is busy; try the inbox again")
+                .with_notes(notes),
+        );
+    };
     if matches!(caller, Caller::Member { .. }) {
         store::actor_for(&bus, caller)?;
     }
@@ -195,7 +293,7 @@ pub(super) fn import(
         crash("after-append");
         snap.records.insert(seq, record);
     }
-    Ok(())
+    Ok(notes)
 }
 
 #[cfg(feature = "test-support")]
