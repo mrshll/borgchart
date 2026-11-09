@@ -724,29 +724,29 @@ fn start_members(
         if let Some((key, value)) = keys.get(id) {
             env.insert(key.clone(), value.clone());
         }
-        // With a bus, each start is a new incarnation, recorded before its
-        // window exists and again once its pane is known.
-        let incarnation = match &storage {
-            Some(_) => {
-                let inc = Incarnation {
-                    member: id.clone(),
-                    incarnation: lifecycle::new_incarnation_id(state, id),
-                    started_at: utc_now(),
-                    vendor_version: if joining {
-                        vendor_version(member.vendor, &base)
-                    } else {
-                        meta.members.get(id).and_then(|m| m.vendor_version.clone())
-                    },
-                    pane: None,
-                    ended_at: None,
-                    ended_reason: None,
-                };
-                lifecycle::begin_incarnation(state, &inc)?;
-                env.insert(context::ENV_INCARNATION.into(), inc.incarnation.clone());
-                Some(inc)
-            }
-            None => None,
+        // Every start is recorded before its window exists, then completed
+        // once the pane is known. Only bus members receive the bus identity.
+        let mut incarnation = Incarnation {
+            member: id.clone(),
+            incarnation: lifecycle::new_incarnation_id(state, id),
+            started_at: utc_now(),
+            boot_id: lifecycle::boot_id(),
+            vendor_version: if joining {
+                vendor_version(member.vendor, &base)
+            } else {
+                meta.members.get(id).and_then(|m| m.vendor_version.clone())
+            },
+            pane: None,
+            ended_at: None,
+            ended_reason: None,
         };
+        lifecycle::begin_incarnation(state, &incarnation)?;
+        if storage.is_some() {
+            env.insert(
+                context::ENV_INCARNATION.into(),
+                incarnation.incarnation.clone(),
+            );
+        }
         let result = start_window(
             &tmux,
             &brg,
@@ -760,7 +760,7 @@ fn start_members(
                 cwd,
             },
         );
-        if let (Some(_), Err(_)) = (&incarnation, &result) {
+        if result.is_err() {
             // tmux didn't create the window, so nothing runs it.
             let _ = lifecycle::end_incarnation(state, id, lifecycle::ENDED_START_FAILED);
         }
@@ -788,9 +788,7 @@ fn start_members(
             // replacement, so it couldn't be stopped safely if its gate never
             // reported in. Stop it now, while the locks are held.
             let _ = tmux.kill_window(&session, id);
-            if incarnation.is_some() {
-                let _ = lifecycle::end_incarnation(state, id, lifecycle::ENDED_START_FAILED);
-            }
+            let _ = lifecycle::end_incarnation(state, id, lifecycle::ENDED_START_FAILED);
             set(
                 &mut outcomes,
                 id,
@@ -800,10 +798,8 @@ fn start_members(
             failed = true;
             continue;
         }
-        if let Some(mut inc) = incarnation {
-            inc.pane = pane.clone();
-            lifecycle::complete_incarnation(state, &inc)?;
-        }
+        incarnation.pane = pane.clone();
+        lifecycle::complete_incarnation(state, &incarnation)?;
         started.push(Started {
             id: id.clone(),
             vendor: member.vendor,
@@ -2043,6 +2039,15 @@ pub fn liveness_of(inst: &Instance) -> BTreeMap<String, Liveness> {
             (Some(m), _) if m.stopped_at.is_some() || m.windows_started == Some(false) => {
                 Liveness::Gone
             }
+            (Some(_), Some(Err(_)))
+                if incarnation
+                    .as_ref()
+                    .ok()
+                    .and_then(|i| i.as_ref())
+                    .is_some_and(lifecycle::previous_boot) =>
+            {
+                Liveness::Gone
+            }
             (Some(_), Some(Err(_))) if inst.record.stopping => match &incarnation {
                 Ok(Some(inc)) => inc
                     .pane
@@ -2741,10 +2746,20 @@ fn stop_one(
         // nothing has started since.
         Err(_) if meta.stopped_at.is_some() || meta.windows_started == Some(false) => Vec::new(),
         Err(e) => {
-            if only.is_some() || !server.absent() {
+            let old_member = only.is_some_and(|id| {
+                matches!(lifecycle::load_incarnation(state, id),
+                    Ok(Some(inc)) if lifecycle::previous_boot(&inc))
+            });
+            // Member boot records say nothing about plugin windows. A full
+            // stop still needs proof that the recorded server is absent.
+            if (only.is_some() && !old_member) || !server.absent() {
                 return Err(format!("{e}; fix this error, then retry: brg stop {team}"));
             }
-            for (id, _) in inst.record.kept_members() {
+            for (id, _) in inst
+                .record
+                .kept_members()
+                .filter(|(id, _)| only.is_none_or(|only| id.as_str() == only))
+            {
                 let inc = lifecycle::load_incarnation(state, id).map_err(|error| {
                     format!(
                         "{error}; restore `{team}/{id}`'s start record, then retry: brg stop {team}"
@@ -2752,6 +2767,7 @@ fn stop_one(
                 })?;
                 if let Some(inc) = inc
                     && inc.ended_at.is_none()
+                    && !lifecycle::previous_boot(&inc)
                     && let Some(pane) = inc.pane
                     && !lifecycle::process_exited(pane.pane_pid)
                 {
@@ -2862,7 +2878,7 @@ fn stop_one(
                 Some(p) if lifecycle::Server::from_recorded(&p.socket) == server => {
                     killed.contains(&p.pane_id) || !rows.iter().any(|r| r.pane_id == p.pane_id)
                 }
-                Some(p) => lifecycle::pane_liveness(p) == Liveness::Gone,
+                Some(_) => lifecycle::liveness(state, id, &inc.incarnation) == Liveness::Gone,
             };
             if stopped {
                 lifecycle::end_incarnation(state, id, lifecycle::ENDED_STOPPED)?;
@@ -2931,7 +2947,7 @@ pub struct StatusRow {
     /// The folder a start accepted Claude's trust dialog for, if it did.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trust_accepted: Option<String>,
-    /// With a bus: whether the member's current incarnation may still be
+    /// Whether the member's current incarnation may still be
     /// running (`alive`, `gone` or `unknown`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub liveness: Option<Liveness>,

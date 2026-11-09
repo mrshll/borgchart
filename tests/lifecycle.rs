@@ -1110,6 +1110,183 @@ fn refuses_when_unreachable(bus: bool) {
 }
 
 #[test]
+fn a_previous_boot_stops_without_tmux_even_with_only_deferred_roles() {
+    for bus in [false, true] {
+        for only in [false, true] {
+            let env = Env::new(bus);
+            let team = TEAM.replace(
+                "    prompt: lead.md\n",
+                "    prompt: lead.md\n    start: false\n",
+            );
+            env.write(
+                "oncall/team.yaml",
+                &format!("{}{team}", if bus { "bus: {}\n" } else { "" }),
+            );
+            env.ok(&["start"]);
+            env.ok(&["start", "lead"]);
+            let file = env.incarnation_file("lead");
+            let mut inc = read_json(&file);
+            assert!(
+                inc["boot_id"].is_string(),
+                "each start records its boot: {inc}"
+            );
+            inc["boot_id"] = "a-previous-boot".into();
+            // Model PID reuse with a process guaranteed to remain alive.
+            inc["pane"]["pane_pid"] = std::process::id().into();
+            if !only {
+                inc["pane"]["socket"] = env
+                    .tmux
+                    .dir()
+                    .join(format!("tmux-{}/previous-socket", env.tmux.uid()))
+                    .display()
+                    .to_string()
+                    .into();
+            }
+            fs::write(&file, serde_json::to_vec(&inc).unwrap()).unwrap();
+            env.tmux(&["kill-server"]);
+            let args = if only {
+                vec!["stop", "lead"]
+            } else {
+                vec!["stop"]
+            };
+            let out = env
+                .brg_cmd(&args)
+                .env("BORGCHART_TEST_BOOT_ID", "current-boot")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "bus={bus}, only={only}: {}",
+                both(&out)
+            );
+            assert!(read_json(&file)["ended_at"].is_string());
+        }
+    }
+}
+
+#[test]
+fn boot_evidence_is_conservative_when_the_server_is_unreachable() {
+    for (recorded, current) in [
+        (Some("current-boot"), "current-boot"),
+        (None, "current-boot"),
+        (Some("previous-boot"), ""),
+        (None, ""),
+    ] {
+        let env = Env::new(true);
+        env.up();
+        let file = env.incarnation_file("lead");
+        let mut inc = read_json(&file);
+        inc["boot_id"] = recorded.into();
+        inc["pane"]["pane_pid"] = std::process::id().into();
+        fs::write(&file, serde_json::to_vec(&inc).unwrap()).unwrap();
+        env.tmux(&["kill-server"]);
+        for args in [vec!["stop", "lead"], vec!["stop"]] {
+            let out = env
+                .brg_cmd(&args)
+                .env("BORGCHART_TEST_BOOT_ID", current)
+                .output()
+                .unwrap();
+            assert!(!out.status.success(), "{}", both(&out));
+            assert!(both(&out).contains("retry: brg stop"), "{}", both(&out));
+            assert!(!both(&out).contains("brg start"));
+            assert!(read_json(&file)["ended_at"].is_null());
+        }
+    }
+}
+
+#[test]
+fn an_old_boot_releases_the_instance_before_an_explicit_stop() {
+    let env = Env::new(true);
+    env.up();
+    let file = env.incarnation_file("lead");
+    let mut inc = read_json(&file);
+    inc["boot_id"] = "previous-boot".into();
+    inc["pane"]["pane_pid"] = std::process::id().into();
+    fs::write(&file, serde_json::to_vec(&inc).unwrap()).unwrap();
+    env.tmux(&["kill-server"]);
+    assert_eq!(env.row("lead")["liveness"], "gone");
+    // Delete uses combined runtime liveness, before stopped_at can mask it.
+    env.ok(&["delete", &env.inst()]);
+}
+
+#[test]
+fn a_reachable_live_pane_is_stopped_even_with_a_different_recorded_boot() {
+    let env = Env::new(true);
+    env.up();
+    let file = env.incarnation_file("lead");
+    let mut inc = read_json(&file);
+    inc["boot_id"] = "a-previous-boot".into();
+    fs::write(&file, serde_json::to_vec(&inc).unwrap()).unwrap();
+    let state = borgchart::state::StateDir::from_root(&env.state_dir());
+    assert_eq!(
+        borgchart::lifecycle::liveness(
+            &state,
+            &env.m("lead"),
+            inc["incarnation"].as_str().unwrap()
+        ),
+        borgchart::lifecycle::Liveness::Alive
+    );
+    env.ok(&["stop"]);
+    assert!(!lead_window_alive(&env));
+}
+
+#[test]
+fn old_boot_members_do_not_prove_a_current_plugin_window_stopped() {
+    let env = Env::new(true);
+    env.up();
+    let file = env.incarnation_file("lead");
+    let mut inc = read_json(&file);
+    inc["boot_id"] = "a-previous-boot".into();
+    fs::write(&file, serde_json::to_vec(&inc).unwrap()).unwrap();
+    // A non-member window can belong to a current-boot plugin even while
+    // all member starts are from an earlier boot.
+    env.tmux(&[
+        "new-window",
+        "-t",
+        &format!("brg-{}", env.inst()),
+        "-n",
+        "plugin-current",
+        "sleep 60",
+    ]);
+    let out = env
+        .brg_cmd(&["stop"])
+        .env("BORGCHART_TEST_BOOT_ID", "current-boot")
+        .env("PATH", env.path("bin"))
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "{}", both(&out));
+    assert!(read_json(&file)["ended_at"].is_null());
+}
+
+#[test]
+fn recording_no_bus_starts_does_not_create_message_storage() {
+    let env = Env::new(false);
+    env.up();
+    assert!(!env.state_dir().join("messages/lock").exists());
+    let out = env.brg(&["bus", "check", "--instance", &env.inst(), "--json"]);
+    assert_eq!(out.status.code(), Some(3), "{}", both(&out));
+    assert!(both(&out).contains("not-configured"));
+    env.ok(&["stop"]);
+    assert!(!env.state_dir().join("messages/lock").exists());
+}
+
+#[test]
+fn a_damaged_bus_does_not_prevent_ending_start_records() {
+    let env = Env::new(true);
+    env.up();
+    fs::remove_file(env.store().join("store.json")).unwrap();
+    env.ok(&["stop"]);
+    assert!(read_json(&env.incarnation_file("lead"))["ended_at"].is_string());
+    assert!(!lead_window_alive(&env));
+}
+
+#[test]
+fn the_machine_boot_identity_is_available() {
+    let first = borgchart::lifecycle::boot_id().expect("supported systems expose a boot identity");
+    assert!(!first.is_empty());
+}
+
+#[test]
 fn down_on_a_team_that_never_started_says_not_running() {
     for bus in [false, true] {
         let env = Env::new(bus);
@@ -1700,6 +1877,7 @@ mod liveness {
             member: "lead".into(),
             incarnation: "lead.1.abcd".into(),
             started_at: utc_now(),
+            boot_id: None,
             vendor_version: None,
             pane: None,
             ended_at: None,
@@ -1740,6 +1918,7 @@ mod liveness {
             member: "lead".into(),
             incarnation: "lead.1.abcd".into(),
             started_at: utc_now(),
+            boot_id: None,
             vendor_version: None,
             pane: Some(PaneIdentity {
                 socket: dir.path().join("brg-exited").display().to_string(),
