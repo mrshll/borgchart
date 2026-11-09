@@ -2179,6 +2179,31 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
     }
     // Peer reads must finish before the local publication lock is taken.
     let pending_delivery = crate::bus::receipts::pending(&inst.state, Some(&id));
+    let pending_incoming = (|| {
+        use crate::bus::{outcome::Code, store};
+        let bus = match store::open(&inst.state) {
+            Ok(bus) => bus,
+            Err(f) if f.code == Code::NotConfigured => return Ok(0),
+            Err(f) => return Err(f.message),
+        };
+        let snap = store::snapshot(&bus).map_err(|f| f.message)?;
+        if !snap.healthy() {
+            return Err("messages are incomplete".into());
+        }
+        let local = store::progress(&bus, &snap)
+            .get(&id)
+            .copied()
+            .unwrap_or_default()
+            .unread;
+        let unread = store::unread(&bus, &snap)
+            .map_err(|f| f.message)?
+            .remove(&id)
+            .ok_or_else(|| "member's unread messages cannot be counted".to_string())?;
+        unread
+            .count
+            .map(|count| count.saturating_sub(local))
+            .ok_or_else(|| unread.notes.join("; "))
+    })();
     // No bus means no publication lock to create; a stray lock would make
     // an otherwise empty messages folder look damaged on its next start.
     let no_bus = crate::bus::store::open(&inst.state)
@@ -2188,6 +2213,7 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
     } else {
         Some(lifecycle::lock_bus(&inst.state)?)
     };
+    let mut receipt_notes = Vec::new();
     let work = (|| {
         use crate::bus::{outcome::Code, store};
         let bus = match store::open(&inst.state) {
@@ -2200,7 +2226,16 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
             return Err("messages are incomplete".into());
         }
         let mut work = lifecycle::unacked_work(&bus, &snap, Some(&id));
-        work.items.extend(pending_delivery?);
+        let pending = pending_delivery?;
+        work.items.extend(pending.items);
+        receipt_notes = pending.notes;
+        work.items.extend(std::iter::repeat_n(
+            format!(
+                "unread incoming message to {} (not yet imported)",
+                inst.at(&id)
+            ),
+            pending_incoming?,
+        ));
         Ok(work)
     })();
     match work {
@@ -2251,10 +2286,8 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
     }
     let _ = std::fs::remove_file(inst.state.exec_file(&id));
     let _ = std::fs::remove_file(inst.state.lock_file(&id));
-    Ok(vec![format!(
-        "deleted {}; its ID stays issued",
-        inst.at(&id)
-    )])
+    receipt_notes.push(format!("deleted {}; its ID stays issued", inst.at(&id)));
+    Ok(receipt_notes)
 }
 
 /// `brg delete <instance> [--force]`: remove a stopped instance's state
@@ -2322,9 +2355,11 @@ pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
             inst.id
         ));
     }
+    let mut receipt_notes = Vec::new();
     let work = lifecycle::open_work(&inst.state).and_then(|mut work| {
-        work.items
-            .extend(crate::bus::receipts::pending(&inst.state, None)?);
+        let pending = crate::bus::receipts::pending(&inst.state, None)?;
+        work.items.extend(pending.items);
+        receipt_notes = pending.notes;
         Ok(work)
     });
     match work {
@@ -2359,11 +2394,12 @@ pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
     drop(state_lock);
     std::fs::remove_dir_all(&inst.state.root)
         .map_err(|e| format!("cannot remove {}: {e}", inst.state.root.display()))?;
-    Ok(vec![format!(
+    receipt_notes.push(format!(
         "deleted {}; its working folder {} was left as it is",
         inst.id,
         inst.record.folder.display()
-    )])
+    ));
+    Ok(receipt_notes)
 }
 
 /// `brg secret <team>`: each secret its plugins need (plugin, name), and

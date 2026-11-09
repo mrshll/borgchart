@@ -910,6 +910,31 @@ fn sender_delete_lists_messages_to_a_deleted_copy() {
 }
 
 #[test]
+fn sender_delete_releases_messages_to_a_member_deleted_before_import() {
+    for member_only in [true, false] {
+        let tree = Tree::new();
+        tree.publish(true, "Report never imported", &[]);
+        tree.env.ok(&["stop", &tree.parent]);
+        // Kept-copy rules currently prevent deleting the parent member through
+        // the CLI. Model its tombstone to guard receipt accounting if that
+        // state becomes reachable; the receiver's store still holds no import.
+        let path = tree
+            .env
+            .path(&format!("state/{}/instance.json", tree.parent));
+        let mut record: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        record["members"][&tree.parent_member]["deleted"] = json!(true);
+        fs::write(path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+        let sender = if member_only {
+            format!("{}/{}", tree.child, tree.child_member)
+        } else {
+            tree.child.clone()
+        };
+        tree.env.ok(&["stop", &sender]);
+        tree.env.ok(&["delete", &sender]);
+    }
+}
+
+#[test]
 fn sender_delete_does_not_hide_unreadable_receipts() {
     for member_only in [true, false] {
         let tree = Tree::new();
@@ -950,6 +975,38 @@ fn receiver_member_delete_requires_ack_for_imported_messages() {
     tree.env.ok(&["delete", &receiver]);
 }
 
+#[test]
+fn receiver_member_delete_refuses_unimported_messages_without_importing() {
+    let tree = Tree::new();
+    tree.publish(false, "Pending incoming task", &[]);
+    let receiver = format!("{}/{}", tree.child, tree.child_member);
+    tree.env.ok(&["stop", &receiver]);
+    let before = tree
+        .env
+        .ok(&["bus", "check", "--instance", &tree.child, "--json"]);
+    tree.env.fails(&["delete", &receiver]);
+    let after = tree
+        .env
+        .ok(&["bus", "check", "--instance", &tree.child, "--json"]);
+    assert_eq!(before.stdout, after.stdout, "delete must not import");
+    tree.env.ok(&["delete", &receiver, "--force"]);
+}
+
+#[test]
+fn receiver_member_delete_requires_force_when_its_edge_is_unreadable() {
+    let tree = Tree::new();
+    let receiver = format!("{}/{}", tree.child, tree.child_member);
+    tree.env.ok(&["stop", &receiver]);
+    let lock = fs::File::open(
+        tree.env
+            .path(&format!("state/{}/messages/lock", tree.parent)),
+    )
+    .unwrap();
+    lock.lock().unwrap();
+    tree.env.fails(&["delete", &receiver]);
+    tree.env.ok(&["delete", &receiver, "--force"]);
+}
+
 fn publish_to(tree: &Tree, child: bool, to: &str) -> Output {
     tree.env.write(
         "route-draft.json",
@@ -972,12 +1029,6 @@ fn publish_to(tree: &Tree, child: bool, to: &str) -> Output {
 #[test]
 fn sibling_and_unlinked_member_routes_are_refused() {
     let tree = Tree::new();
-    tree.env.ok(&["stop", &tree.parent]);
-    tree.env.write(
-        "teams/oncall/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: lead}\n  dev: {team: teams/dev, parent: lead, start: false, max: 2, cwd: 'dev/{member_id}'}\n",
-    );
-    tree.env.ok(&["start", &tree.parent]);
     tree.env.ok(&["create", &format!("{}/dev", tree.parent)]);
     let sibling = tree.env.registry()["instances"]
         .as_object()
@@ -1003,6 +1054,58 @@ fn sibling_and_unlinked_member_routes_are_refused() {
         ]));
         assert!(inbox["records"].as_array().unwrap().is_empty());
     }
+}
+
+// Coverage only: publish-time routing already enforces the root boundary.
+#[test]
+fn a_copy_non_root_cannot_bypass_its_root_in_either_direction() {
+    let tree = Tree::new();
+    tree.env.ok(&["create", &format!("{}/helper", tree.child)]);
+    let helper = tree.env.member(&tree.child, "helper");
+    let out = publish_to(&tree, false, &format!("{}/{helper}", tree.child));
+    assert_eq!(out.status.code(), Some(5), "{}", both(&out));
+    tree.env.write(
+        "route-draft.json",
+        &json!({"to": format!("{}/{}", tree.parent, tree.parent_member), "body": "Escalation"})
+            .to_string(),
+    );
+    let start: Value = serde_json::from_slice(
+        &fs::read(tree.env.path(&format!(
+            "state/{}/members/{helper}/incarnation.json",
+            tree.child
+        )))
+        .unwrap(),
+    )
+    .unwrap();
+    let out = tree
+        .member_cmd(
+            true,
+            &[
+                "msg",
+                "publish",
+                "--record",
+                tree.env.path("route-draft.json").to_str().unwrap(),
+                "--json",
+            ],
+        )
+        .env("BORGCHART_MEMBER", &helper)
+        .env(
+            "BORGCHART_INCARNATION",
+            start["incarnation"].as_str().unwrap(),
+        )
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(5), "{}", both(&out));
+    assert!(tree.inbox(false)["records"].as_array().unwrap().is_empty());
+    let inbox = value(tree.env.ok(&[
+        "inbox",
+        "--instance",
+        &tree.child,
+        "--member",
+        &helper,
+        "--json",
+    ]));
+    assert!(inbox["records"].as_array().unwrap().is_empty());
 }
 
 #[test]
