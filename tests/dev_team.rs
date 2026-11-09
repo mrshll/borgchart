@@ -1116,6 +1116,15 @@ mod round {
             .instance_of("borgchart-engineering")
             .expect("the department's instance");
         let dept_lead = team.member_in(&dept, "lead");
+        let log = team.path(&format!("home/fake-agent/{dept_lead}.jsonl"));
+        team.wait_for("the department lead", || log.exists());
+        let start: serde_json::Value =
+            serde_json::from_str(fs::read_to_string(&log).unwrap().lines().next().unwrap())
+                .unwrap();
+        assert_eq!(
+            start["cwd"],
+            checkout.canonicalize().unwrap().display().to_string()
+        );
         let rows = |instance: &str| -> Vec<serde_json::Value> {
             serde_json::from_slice(&team.brg(&["status", instance, "--json"]).stdout)
                 .unwrap_or_default()
