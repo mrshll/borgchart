@@ -1,6 +1,6 @@
 # A development team
 
-This folder defines a brg team for developing a software project: a lead and four helper roles it starts on demand. `teams/dev-design-team/` is its design panel, the nested team of its `design` role, which the lead creates before costly-to-reverse design choices. The team runs on its own, as below, or as the `dev` role of the department that holds it (`borgchart-engineering/`), where its lead's parent is the department lead. Both folders share the department's approved GitHub account and practices; everything about one machine (the checkout, brg's configuration, your vendor logins) stays on it, and what one piece of work needs (the tracking issue, a handover note) goes to the lead in a message.
+This folder defines a brg team for developing a software project: a lead and four helper roles it starts on demand. `teams/dev-design-team/` is its design panel, the nested team of its `design` role, which the lead creates before costly-to-reverse design choices. The team runs on its own, as below, or as the `dev` role of the department that holds it (`borgchart-engineering/`), where its lead's parent is the department lead. Both folders share the tree's approved GitHub account and practices; everything about one machine (the checkout, brg's configuration, your vendor logins) stays on it, and what one piece of work needs (the tracking issue, a handover note) goes to the lead in a message.
 
 | Member | Default vendor and model | Starts | Does |
 | --- | --- | --- | --- |
@@ -27,7 +27,7 @@ plugins_dir: /path/to/plugins   # holds seat/: a copy of examples/seat/ with thi
 
 [`examples/seat/`](../../../examples/seat/) is the plugin, with a README on installing a real usage source. Without one, every seating check answers `wait`.
 
-Install `cargo-slot` on every member's `PATH` before starting; see the [department setup](../../README.md#run-it) for the cap and shared lock requirements. All concurrent teams must use the same two slots, including during a supervisor cutover.
+Install `cargo-slot` on every member's `PATH` before starting; see the [root-team setup](../../README.md#run-it) for the cap and shared lock requirements. All concurrent teams must use the same two slots, including during a supervisor cutover.
 
 ## Run it
 
@@ -41,7 +41,7 @@ Install `cargo-slot` on every member's `PATH` before starting; see the [departme
 
 ## Working rules
 
-- **The owner and reviewer is @mrshll; the lead opens draft pull requests and never merges.** It requests the owner's review on each one it hands off; the department lead also has its limited approved-head merge permission when this team is nested. The shared [git rules](includes/git.md) cover identity, assignments and review requests.
+- **The owner and reviewer is @mrshll; the lead opens draft pull requests and never merges.** It requests the owner's review on each one it hands off; only a root lead whose role explicitly grants it may merge approved heads. This dev lead never merges, standalone or with a parent. The shared [git rules](includes/git.md) cover identity, assignments and review requests.
 - **One writer per checkout, one piece of work per copy.** Implementers work only in their own `copies/{member_id}` worktree, never the shared checkout. The lead must not change the shared checkout (edits, checkouts, resets) while a reviewer, researcher or monitor works there; do other git work in a copy's worktree between pieces, or wait. The reviewer reads the pull request's head after the push; these helpers are read-only and write reports only.
 - **Parallel implementers** are approved, up to two copies, each in its own worktree. Push a copy's branch through `agent-gh` only between its pieces of work, from its worktree so pre-push checks run there; check `git -C <copy> config core.hooksPath` and correct missing hooks first. A kept copy may retain its worktree across briefs; remove it with `git worktree remove` before deleting the copy. If removal refuses uncommitted or untracked work, commit or report it first; never use `--force`.
 - **Helpers get a brief message before starting work.** They read `inbox --full`, ack once they take it on, write their report atomically, then reply naming the report and its `action-needed:` line. The lead verifies, stops them and checks `status` shows them stopped before reusing their checkout. It follows up by each brief's deadline with `status`, a `send` nudge, or `start` for a stopped helper. Progress and delegation live in the pull request description and comments.

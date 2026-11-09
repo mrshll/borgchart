@@ -43,7 +43,7 @@ These are the cutover steps. They work once nesting (D1) and delivery between a 
 
 - **The owner reviews and approves every pull request.** Each dev lead hands off its own pull requests. The department lead may merge one only after the owner's approving review on its current head, with CI green, by a merge commit.
 - **Seating is checked before every launch,** through the `seat` plugin's `route` action. `wait` or an unknown answer means wait, never another vendor or model.
-- **Git and GitHub practice** lives in [`teams/dev-team/includes/git.md`](teams/dev-team/includes/git.md), shared by the department lead, dev lead and implementer, with writes limited by role. The approved public account is `mrshll-agent`. Vendor instructions still apply.
+- **Git and GitHub practice** lives in [`teams/dev-team/includes/git.md`](teams/dev-team/includes/git.md), shared by the root lead, child-team lead and implementer, with writes limited by role. The approved public account is `mrshll-agent`. Vendor instructions still apply.
 - **Machine-specific installation stays local:** usage-reader paths, login/cache access and the shared build-lock location do not belong in this folder. There is no private policy overlay.
 
 Before cutover, smoke-test seating, the build wrapper and `agent-gh` from the actual member environment: a GitHub read and an authorized test push whose pre-push checks run with `CHECKS_WRAP=cargo-slot`. Normal tool approvals still apply; team instructions do not override vendor approval settings. Arrange how GitHub reviews and comments reach the lead: this definition waits on the brg inbox and does not install a GitHub event watcher.

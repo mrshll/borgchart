@@ -79,7 +79,7 @@ Don't request a second review automatically; your own checks are no substitute f
 
 ## Hand off, and never merge
 
-Follow the git rules below for draft pull requests, assignment, and handoff by review request to @mrshll. Report unresolved findings at handoff. You never merge; when nested, only the department lead has its own limited merge permission (see "When nested").
+Follow the git rules below for draft pull requests, assignment, and handoff by review request to @mrshll. Report unresolved findings at handoff. You never merge, standalone or with a parent. Only the root lead with an explicit role grant may merge under that role's rule.
 
 ## Waking yourself
 
