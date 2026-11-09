@@ -1,7 +1,5 @@
 //! The bus help pages use the implementation's limits and exit codes.
 
-use super::record::{MAX_BODY_BYTES, MAX_RECORD_BYTES, MAX_REFS};
-
 pub fn root() -> String {
     "Teams and instances:
   `brg create <team> <folder>` starts an instance. `start`, `stop`, `delete`
@@ -10,39 +8,11 @@ pub fn root() -> String {
 Inside a member:
   Call the brg that started you as \"$BORGCHART_BIN\". Your instance and
   identity come from your environment. Read next:
-    \"$BORGCHART_BIN\" msg publish --help
+    \"$BORGCHART_BIN\" send --help
     \"$BORGCHART_BIN\" inbox --help
     \"$BORGCHART_BIN\" inbox wait --help
 "
     .into()
-}
-
-pub fn publish() -> String {
-    format!(
-        "A member publishes as itself to its parent or children. A root may also send
-outside the instance to external:<name>. An outside caller uses --external
-NAME and may send to any member.
-
-Draft (one JSON object; other fields are refused):
-  to         a member ID, or external:<name>
-  body       text, at most {MAX_BODY_BYTES} bytes
-  reply_to   optional IDs this answers or follows, at most {MAX_REFS}
-Every reference must name an existing message. Text may contain newlines and
-tabs, with no other control characters. The entire draft is at most
-{MAX_RECORD_BYTES} bytes. Each publish creates a new message.
-
-Example (a helper writes to its parent lead):
---------
-\"$BORGCHART_BIN\" msg publish <<'EOF'
-{{\"to\": \"lead\", \"body\": \"The parser is ready.\"}}
-EOF
---------
-Prints: committed: m1 (to lead)
-
-Outcomes (also reported by --json): committed (0), usage (2),
-not-configured (3), refused (4), invalid (5), corrupt (7), fenced (8),
-not-found (10), error (1). Fenced means this member was stopped or replaced."
-    )
 }
 
 pub fn inbox() -> String {
@@ -83,4 +53,35 @@ usage (2), not-configured (3), refused (4), invalid (5), corrupt (7),
 not-found (10) and error (1).
 "
     .into()
+}
+
+pub fn send() -> String {
+    format!(
+        "Outside callers must name --external NAME. Members use their launch identity
+and may send along parent/child routes in their own instance. Only roots may
+address external:NAME. --from asserts the sender's parent route, not authorship.
+
+Ordinary messages commit before optional typing. Exit 0 means committed even
+when delivery is stored or uncertain; never automatically republish. Interactive
+recipients are inbox-only even with --force. Working recipients may absorb input
+in the current turn. Typing never acknowledges: use `msg ack ID` when taking
+responsibility, and ignore an already-acked duplicate ID from an inbox wait.
+
+Locked recipients require a live, guarded, empty composer before committing.
+Their records do not require ack and have no inbox recovery. Failures after
+commit include the ID; retry may duplicate recorded or submitted input.
+
+TEXT of - reads stdin. Body limit: {} bytes; repeat --reply-to for up to 32
+existing record IDs. Controls other than newline/tab and leading / or ! refuse.
+Typing uses a smaller conservative screen-verification budget: 1024 envelope
+bytes and at most ten estimated lines. Larger ordinary messages remain stored;
+locked messages outside that budget refuse before committing. Drafts, dialogs,
+copy mode and unverified pasted text never get an automatic Enter or clearing.
+
+Outcomes: committed (0); usage (2); unaddressable/locked not running (3);
+locked dialog or copy mode (4); validation, fence, storage or locked input
+failure (5). --json includes ok, code, message, and a committed id plus delivery
+and reason when present. Delivery: typed, stored, uncertain, recorded-not-typed.",
+        crate::runtime::MAX_SEND_BYTES
+    )
 }

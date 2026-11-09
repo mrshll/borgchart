@@ -27,6 +27,9 @@ pub struct Incarnation {
     /// `[a-z0-9._-]`, unique within the instance.
     pub incarnation: String,
     pub started_at: String,
+    /// The machine boot in which this start was launched, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boot_id: Option<String>,
     /// The vendor CLI version measured at this start.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vendor_version: Option<String>,
@@ -62,6 +65,48 @@ pub enum Liveness {
     /// It can't be told (no pane recorded yet, tmux unreachable): treat as
     /// possibly alive. Never free its checkout on this.
     Unknown,
+}
+
+/// Machine boot identity. Failure to read it never proves a start gone.
+pub fn boot_id() -> Option<String> {
+    #[cfg(feature = "test-support")]
+    if let Ok(value) = std::env::var("BORGCHART_TEST_BOOT_ID") {
+        return nonempty_boot_id(&value);
+    }
+    static BOOT_ID: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    BOOT_ID.get_or_init(read_boot_id).clone()
+}
+
+fn read_boot_id() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    let value = fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
+    #[cfg(target_os = "macos")]
+    let value = {
+        let out = Command::new("/usr/sbin/sysctl")
+            .args(["-n", "kern.bootsessionuuid"])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        String::from_utf8(out.stdout).ok()?
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let value = String::new();
+    nonempty_boot_id(&value)
+}
+
+fn nonempty_boot_id(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+/// A different known boot proves that every process from this start ended.
+pub fn previous_boot(inc: &Incarnation) -> bool {
+    match (&inc.boot_id, boot_id()) {
+        (Some(recorded), Some(current)) => recorded != &current,
+        _ => false,
+    }
 }
 
 /// Read a member's current start record, without creating anything.
@@ -224,7 +269,7 @@ pub struct OpenWork {
     pub items: Vec<String>,
 }
 
-/// The open work in `state`'s messages (none without a bus). `Err` when
+/// The open work in `state`'s messages (none before its first start). `Err` when
 /// the messages can't be read: their contents can't be inspected.
 pub fn open_work(state: &StateDir) -> Result<OpenWork, String> {
     use crate::bus::outcome::Code;
@@ -252,7 +297,11 @@ pub(crate) fn unacked_work(
     only: Option<&str>,
 ) -> OpenWork {
     let mut work = OpenWork::default();
-    for r in snap.records.values().filter(|r| !snap.is_acked(r.seq)) {
+    for r in snap
+        .records
+        .values()
+        .filter(|r| r.ack_required && !snap.is_acked(r.seq))
+    {
         if only.is_some_and(|member| r.to != member)
             || bus.record.members.get(&r.to).is_some_and(|m| m.deleted)
         {
@@ -559,28 +608,35 @@ pub(crate) fn process_exited(pid: u32) -> bool {
 
 /// Whether `member`'s incarnation `incarnation` may still be running.
 pub fn liveness(state: &StateDir, member: &str, incarnation: &str) -> Liveness {
-    liveness_with(state, member, incarnation, pane_liveness)
+    liveness_with(state, member, incarnation, |inc| {
+        let live = inc.pane.as_ref().map_or(Liveness::Unknown, pane_liveness);
+        if live == Liveness::Unknown && previous_boot(inc) {
+            Liveness::Gone
+        } else {
+            live
+        }
+    })
 }
 
-/// A member-side wait cannot use host PIDs to infer exit: its sandbox may
-/// expose a different process view. Only a recorded end or tmux proves it.
+/// A member-side wait cannot use host PIDs or boot IDs to infer exit: its
+/// sandbox may expose a different view. Only a recorded end or tmux proves it.
 pub fn wait_liveness(state: &StateDir, member: &str, incarnation: &str) -> Liveness {
-    liveness_with(
-        state,
-        member,
-        incarnation,
-        |pane| match Server::from_recorded(&pane.socket).panes() {
+    liveness_with(state, member, incarnation, |inc| {
+        let Some(pane) = &inc.pane else {
+            return Liveness::Unknown;
+        };
+        match Server::from_recorded(&pane.socket).panes() {
             Ok(rows) => pane_in(&rows, &pane.pane_id, pane.pane_pid),
             Err(_) => Liveness::Unknown,
-        },
-    )
+        }
+    })
 }
 
 fn liveness_with(
     state: &StateDir,
     member: &str,
     incarnation: &str,
-    probe: impl FnOnce(&PaneIdentity) -> Liveness,
+    probe: impl FnOnce(&Incarnation) -> Liveness,
 ) -> Liveness {
     let inc = match load_incarnation(state, member) {
         Ok(Some(i)) if i.incarnation == incarnation => Some(i),
@@ -600,10 +656,7 @@ fn liveness_with(
     if inc.ended_at.is_some() {
         return Liveness::Gone;
     }
-    match &inc.pane {
-        Some(pane) => probe(pane),
-        None => Liveness::Unknown,
-    }
+    probe(&inc)
 }
 
 #[cfg(test)]

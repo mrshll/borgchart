@@ -122,6 +122,8 @@ struct RoleRaw {
     vendor: Option<Vendor>,
     parent: Option<String>,
     start: Option<bool>,
+    #[serde(default)]
+    interactive: bool,
     max: Option<usize>,
     posture: Option<String>,
     #[serde(default)]
@@ -179,7 +181,7 @@ pub struct Team {
     /// SHA-256 of `team.yaml` as it was read and parsed.
     pub file_sha256: String,
     pub default_vendor: Vendor,
-    /// The coordination bus, when the team uses one.
+    /// Optional alert settings; every team has a coordination bus.
     pub bus: Option<BusConfig>,
     pub roles: BTreeMap<String, Role>,
     pub team_roles: BTreeMap<String, TeamRole>,
@@ -317,6 +319,8 @@ pub struct Role {
     pub model: Option<Model>,
     pub parent: Option<String>,
     pub start: bool,
+    /// Inbox-only delivery, frozen when the instance starts.
+    pub interactive: bool,
     /// Kept members, running or stopped, allowed for this role.
     pub max: usize,
     pub posture: Posture,
@@ -1049,6 +1053,7 @@ fn load_role(
         model,
         parent: m.parent.clone(),
         start: m.start.unwrap_or(true),
+        interactive: m.interactive,
         max,
         posture,
         untrusted_input: m.untrusted_input,

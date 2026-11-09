@@ -145,8 +145,8 @@ fn unexpected_entries_are_not_accepted_as_codex_masks() {
             &lead,
             &["msg", "ack", message["id"].as_str().unwrap(), "--json"],
         );
-        for out in [inbox, publish, ack] {
-            assert_eq!(out.status.code(), Some(7), "{case}: {}", both(&out));
+        for (out, code) in [(inbox, 7), (publish, 5), (ack, 7)] {
+            assert_eq!(out.status.code(), Some(code), "{case}: {}", both(&out));
         }
         env.ok(&["stop", &instance]);
     }
@@ -192,13 +192,13 @@ fn one_store_keeps_ids_references_and_acks_across_a_restart() {
     let store = env.path(&format!("state/{instance}/messages"));
     let identity: Value =
         serde_json::from_slice(&fs::read(store.join("store.json")).unwrap()).unwrap();
-    assert_eq!(identity, json!({"format": 2, "instance": instance}));
+    assert_eq!(identity, json!({"format": 3, "instance": instance}));
     let record: Value =
         serde_json::from_slice(&fs::read(store.join("records/0000000001.json")).unwrap()).unwrap();
     let ack: Value =
         serde_json::from_slice(&fs::read(store.join("acks/m1.json")).unwrap()).unwrap();
-    assert_eq!(record["schema"], 2);
-    assert_eq!(ack["schema"], 2);
+    assert_eq!(record["schema"], 3);
+    assert_eq!(ack["schema"], 3);
     assert!(record.get("run").is_none() && ack.get("run").is_none());
     assert!(!store.join("current").exists());
     env.ok(&["stop", &instance]);
@@ -235,15 +235,11 @@ fn changed_roles_keep_the_store_and_replies_to_removed_members() {
         json!({"to": lead, "reply_to": ["m1"], "body": "reply after role removal"}),
     );
     assert_eq!(record["id"], "m2");
-    env.write(
-        "root-note.json",
-        &json!({"to": "external:ops", "body": "new root"}).to_string(),
-    );
     let out = member_command(
         &env,
         &instance,
         &helper,
-        &["msg", "publish", "--record", "root-note.json", "--json"],
+        &["send", "external:ops", "new root", "--json"],
     );
     assert!(out.status.success(), "{}", both(&out));
     let record: Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -306,7 +302,7 @@ fn damaged_store(case: &str) {
     match case {
         "foreign" => fs::write(
             store.join("store.json"),
-            json!({"format": 2, "instance": "other-2345"}).to_string(),
+            json!({"format": 3, "instance": "other-2345"}).to_string(),
         )
         .unwrap(),
         "format" => fs::write(
@@ -348,4 +344,56 @@ fn a_generation_directory_is_refused_without_writes() {
 #[test]
 fn records_without_store_identity_are_refused_without_writes() {
     damaged_store("records");
+}
+
+#[test]
+fn vendor_to_locked_requires_settling_ordinary_messages() {
+    let env = Env::new();
+    let instance = env.create("oncall", "work/a");
+    let lead = env.member(&instance, "lead");
+    publish(&env, &instance, json!({"to":lead,"body":"ordinary work"}));
+    env.ok(&["stop", &instance]);
+    env.write(
+        "teams/oncall/team.yaml",
+        &TEAM.replace(
+            "    prompt: lead.md",
+            "    prompt: lead.md\n    posture: locked",
+        ),
+    );
+    let out = env.cmd(&["start", &instance]).output().unwrap();
+    assert!(!out.status.success(), "{}", both(&out));
+    assert!(
+        both(&out).contains("settle them before changing to locked"),
+        "{}",
+        both(&out)
+    );
+    let stored = fs::read(env.path(&format!(
+        "state/{instance}/messages/records/0000000001.json"
+    )))
+    .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&stored).unwrap()["ack_required"],
+        true
+    );
+    // Settle it under the vendor configuration, then the same transition succeeds.
+    env.write("teams/oncall/team.yaml", TEAM);
+    env.ok(&["start", &instance]);
+    env.wait_for("new lead launch", || env.starts(&lead).len() >= 2);
+    let ack = member_command(&env, &instance, &lead, &["msg", "ack", "m1", "--json"]);
+    assert!(ack.status.success(), "{}", both(&ack));
+    env.ok(&["stop", &instance]);
+    env.write(
+        "teams/oncall/team.yaml",
+        &TEAM.replace(
+            "    prompt: lead.md",
+            "    prompt: lead.md\n    posture: locked",
+        ),
+    );
+    env.ok(&["start", &instance]);
+    let meta: Value = serde_json::from_slice(
+        &fs::read(env.path(&format!("state/{instance}/start.json"))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(meta["members"][&lead]["posture"], "locked");
+    env.ok(&["stop", &instance]);
 }

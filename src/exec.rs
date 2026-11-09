@@ -88,6 +88,33 @@ pub fn run_main(
     let Some(plugin_meta) = meta.plugins.get(plugin) else {
         return fail(format!("unknown plugin `{plugin}`"));
     };
+    // A shim belongs to a member, but does not confer a new incarnation.
+    // Preserve and fence its caller's identity before running any action.
+    let caller = match crate::bus::context::caller(None) {
+        Ok(caller @ crate::bus::context::Caller::Member { .. }) => caller,
+        Ok(_) => return fail("plugin actions require their member's launch context".into()),
+        Err(e) => return fail(e.message),
+    };
+    let crate::bus::context::Caller::Member {
+        member: caller_member,
+        incarnation,
+    } = &caller
+    else {
+        unreachable!()
+    };
+    if caller_member != member {
+        return fail("plugin action belongs to a different member".into());
+    }
+    if let Err(e) = crate::bus::context::instance(Some(&state.id)) {
+        return fail(e.message);
+    }
+    let bus = match crate::bus::store::open(&state) {
+        Ok(bus) => bus,
+        Err(e) => return fail(e.message),
+    };
+    if let Err(e) = crate::bus::store::actor_for(&bus, &caller) {
+        return fail(e.message);
+    }
     let secrets: PluginEnv = match std::fs::read_to_string(state.plugin_env_file(plugin)) {
         Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
         Err(e) => return fail(format!("cannot read plugin `{plugin}` settings: {e}")),
@@ -102,6 +129,10 @@ pub fn run_main(
         parent.as_deref(),
         plugin,
     ));
+    env.insert(
+        crate::bus::context::ENV_INCARNATION.into(),
+        incarnation.clone(),
+    );
 
     let (program, cwd) = match &plugin_meta.dir {
         Some(dir) => (dir.join(command), dir.clone()),

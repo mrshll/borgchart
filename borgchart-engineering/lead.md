@@ -77,13 +77,15 @@ A stopped member keeps its ID. A watch runs until its own deadline, whatever hap
 
 ## Brief and follow
 
-- **Brief:** write a brief file in `$BORGCHART_NOTES` by sibling rename. It names the task, scope, non-goals, branch and folder, checks, report path, deadline and who else is involved; for a monitor, the interval and the trigger. Then send one message naming it, keeping valid JSON:
+Sends to researchers and monitors in your own instance work directly. Nested workstream operation remains gated on D2 and the README cutover smoke check; cross-instance briefs/reports for dev copies do not work yet. Do not bypass that boundary with identity overrides or pane input. Your lead is inbox-only (`interactive: true`); keep the wait below armed.
 
-  ```sh
-  "$BORGCHART_BIN" msg publish --json <<'DRAFT'
-  {"to": "<member address>", "body": "Read <brief path>; take on the work and report there as directed."}
-  DRAFT
-  ```
+- **Brief:** write a brief file in `$BORGCHART_NOTES` by sibling rename. It names the task, scope, non-goals, branch and folder, checks, report path, deadline and who else is involved; for a monitor, the interval and the trigger. Then send one message naming it, using plain text:
+
+```sh
+"$BORGCHART_BIN" send <member address> --json - <<'MESSAGE'
+Read <brief path>; take on the work and report there as directed.
+MESSAGE
+```
 
 - **Acks and reports:** the member acks once it has taken the work on, and replies naming its report.
 - **Read the report file.** A copy's lead writes in its own notes folder, at the path its brief names there. A copy's notes folder is `"$(dirname "$BORGCHART_NOTES")/<copy>/notes"`, where `<copy>` is the last part of the copy's ID (`dev-a7k2`).
@@ -103,8 +105,8 @@ Keep one wait armed, bounded by your next deadline:
    - **Other errors:** wait at least 60 seconds, run `"$BORGCHART_BIN" bus check`, and report the problem.
 3. **When a brief's deadline passes** without a reply:
    1. run `"$BORGCHART_BIN" status`;
-   2. nudge the member with `"$BORGCHART_BIN" send <member> 'check your inbox'`, or `start` it if it's stopped, and record a short follow-up deadline;
-   3. if it's still silent at that one, tell the owner.
+   2. check the brief's ack/status; start a stopped member, or send one `"$BORGCHART_BIN" send <member> --reply-to <brief-ID> 'Please check the referenced brief'` if idle and still unacked; otherwise escalate. Never automatically resend a committed message because typing was stored or uncertain;
+   3. record one follow-up deadline and tell the owner if it remains silent. Inspect unacked work before stop/delete; avoid routine force-delete.
 
 When the owner asks how things stand, lead with what needs them: unresolved `action-needed` lines, and missing or overdue reports, before each workstream's one-line state.
 
