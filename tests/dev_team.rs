@@ -172,7 +172,7 @@ fn includes_of(file: &Path) -> Vec<String> {
 }
 /// Includes resolve, don't nest, and each is shared: text used by one
 /// member file belongs in that file. Every dev-team member, the lead
-/// included, gets the shared base.
+/// included, gets the common rules.
 #[test]
 fn includes_resolve_and_are_shared() {
     let files = member_files("dev-team");
@@ -180,7 +180,7 @@ fn includes_resolve_and_are_shared() {
     let mut uses: std::collections::BTreeMap<String, usize> = Default::default();
     for file in &files {
         let includes = includes_of(file);
-        assert!(includes.contains(&"base".into()), "{}", file.display());
+        assert!(includes.contains(&"common".into()), "{}", file.display());
         for stem in includes {
             let inc = dev_team().join(format!("includes/{stem}.md"));
             let body = fs::read_to_string(&inc)
@@ -218,10 +218,10 @@ fn includes_resolve_and_are_shared() {
 /// a member of either vendor may run says how that vendor runs it.
 #[test]
 fn members_wait_the_way_their_vendor_allows() {
-    // Member files run as Claude by team.yaml, plus the shared base (Claude
-    // helpers use it too) and the designer (one designer is Claude).
+    // Member files run as Claude by team.yaml, plus the common rules (Claude
+    // helpers use them too) and the designer (one designer is Claude).
     let mut files = vec![
-        dev_team().join("includes/base.md"),
+        dev_team().join("includes/common.md"),
         team_dir("dev-design-team").join("designer.md"),
     ];
     let team = fs::read_to_string(dev_team().join("team.yaml")).unwrap();
@@ -273,7 +273,7 @@ fn members_wait_the_way_their_vendor_allows() {
 
     // A helper waiting for its answer, and a designer waiting for the
     // lead's answers, do it the way their vendor allows.
-    let base = fs::read_to_string(dev_team().join("includes/base.md")).unwrap();
+    let base = fs::read_to_string(dev_team().join("includes/common.md")).unwrap();
     assert!(
         base.contains("**Codex:** run it in the **foreground**"),
         "{base}"
@@ -634,7 +634,7 @@ mod round {
             .as_str()
             .unwrap();
         let lead_body = member_body(&dev_team().join("orchestrator.md"));
-        let base = fs::read_to_string(dev_team().join("includes/base.md")).unwrap();
+        let base = fs::read_to_string(dev_team().join("includes/common.md")).unwrap();
         let opening = lead_body.lines().find(|l| !l.trim().is_empty()).unwrap();
         assert!(prompt.starts_with(opening.trim()), "{prompt}");
         assert!(prompt.contains(base.lines().next().unwrap()), "{prompt}");
@@ -691,7 +691,7 @@ mod round {
             "{argv}"
         );
 
-        // Its first tool action is the exact full inbox command in base.md.
+        // Its first tool action is the exact full inbox command in common.md.
         let inbox = documented(&base, "\"$BORGCHART_BIN\" inbox --full");
         team.documented("implementer", "impl-inbox", &inbox, false);
         let (inbox, code) = team.output("impl-inbox");

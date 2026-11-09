@@ -104,4 +104,6 @@ When `BORGCHART_PARENT` is set, your team is a copy inside another team, and you
 - **Comments stay generic,** like everything in this public repository: no internal paths, private notes, usage figures or pasted outside content. Say what is needed and where.
 - **Usage limits.** If a member hits a usage limit or its vendor refuses to start, stop that member (`"$BORGCHART_BIN" stop <member>`), tell the owner as above, and wait. Never switch a member to another vendor, model or effort.
 
-{{includes/base}}
+{{includes/common}}
+
+{{includes/dev}}
