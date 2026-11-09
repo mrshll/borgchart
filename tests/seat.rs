@@ -187,3 +187,38 @@ fn credential_change_during_probe_waits_then_next_identity_can_probe() {
         );
     }
 }
+
+#[test]
+fn parent_components_in_cache_configuration_refuse_without_a_probe() {
+    for configured in ["../seat-cache", "nested/../seat-cache"] {
+        let f = Fixture::new();
+        fs::write(
+            f.0.path().join("config/config.yaml"),
+            format!("schema: 1\nseat: {{cache_dir: {configured}}}\n"),
+        )
+        .unwrap();
+        let out = f.run(&["seat", "route", "codex", "astra"]);
+        assert_eq!(out.status.code(), Some(3));
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "wait: invalid brg configuration"
+        );
+        assert!(
+            fs::read_dir(f.0.path().join("home/fake-usage"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+        let mut report = borgchart::diag::Report::default();
+        assert!(
+            borgchart::config::load_file(&f.0.path().join("config/config.yaml"), &mut report)
+                .is_none()
+        );
+        assert!(
+            report
+                .diags
+                .iter()
+                .any(|d| d.message.contains("seat.cache_dir"))
+        );
+    }
+}

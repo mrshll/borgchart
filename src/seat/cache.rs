@@ -57,7 +57,8 @@ impl Directory {
         }
         // Canonicalize the existing base so macOS /var and /tmp aliases work.
         // The cache leaf is deliberately excluded and must never be a symlink.
-        let base = fs::canonicalize(base)?;
+        let base = fs::canonicalize(base)
+            .inspect_err(|error| diagnostic("directory canonicalize", error))?;
         let mut parent: File = fd::open(
             &base,
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
@@ -69,7 +70,11 @@ impl Directory {
         for component in missing {
             match fd::mkdirat(&parent, &component, Mode::from_raw_mode(0o700)) {
                 Ok(()) | Err(rustix::io::Errno::EXIST) => {}
-                Err(e) => return Err(e.into()),
+                Err(e) => {
+                    let error = io::Error::from(e);
+                    diagnostic("directory mkdirat", &error);
+                    return Err(error);
+                }
             }
             let next: File = fd::openat(
                 &parent,
@@ -92,13 +97,28 @@ impl Directory {
             name,
             flags | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
             Mode::from_raw_mode(0o600),
-        )?
+        )
+        .map_err(io::Error::from)
+        .inspect_err(|error| {
+            diagnostic(
+                if flags.contains(OFlags::EXCL) {
+                    "exclusive file openat"
+                } else if flags.contains(OFlags::CREATE) {
+                    "creating file openat"
+                } else {
+                    "existing file openat"
+                },
+                error,
+            )
+        })?
         .into();
         checked(&file, false)?;
         Ok(file)
     }
     fn lock(&self, key: &str, deadline: Instant) -> io::Result<File> {
-        let file = self.file(&format!("{key}.lock"), OFlags::CREATE | OFlags::RDWR)?;
+        let file = self
+            .file(&format!("{key}.lock"), OFlags::CREATE | OFlags::RDWR)
+            .inspect_err(|error| diagnostic("lock create-open", error))?;
         loop {
             if Instant::now() >= deadline {
                 return Err(io::ErrorKind::TimedOut.into());
@@ -139,12 +159,16 @@ impl Directory {
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         );
-        let mut file = self.file(&temp, OFlags::CREATE | OFlags::EXCL | OFlags::WRONLY)?;
+        let mut file = self
+            .file(&temp, OFlags::CREATE | OFlags::EXCL | OFlags::WRONLY)
+            .inspect_err(|error| diagnostic("write temp create", error))?;
         let result = (|| {
             let bytes = serde_json::to_vec(value)
                 .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
             file.write_all(&bytes)?;
-            fd::renameat(&self.0, &temp, &self.0, format!("{key}.json"))?;
+            fd::renameat(&self.0, &temp, &self.0, format!("{key}.json"))
+                .map_err(io::Error::from)
+                .inspect_err(|error| diagnostic("write renameat", error))?;
             Ok(())
         })();
         let _ = fd::unlinkat(&self.0, &temp, fd::AtFlags::empty());
@@ -161,17 +185,21 @@ pub fn snapshot(
     mut probe: impl FnMut() -> io::Result<(serde_json::Value, SystemTime)>,
 ) -> Snapshot {
     let result = (|| -> io::Result<Snapshot> {
-        let dir = Directory::open(path)?;
+        let dir = Directory::open(path).inspect_err(|error| diagnostic("directory open", error))?;
         let key = identity()?;
         if key.len() != 64 || !key.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(unsafe_path());
         }
-        let _lock = dir.lock(&key, lock_deadline)?;
+        let _lock = dir
+            .lock(&key, lock_deadline)
+            .inspect_err(|error| diagnostic("lock", error))?;
         if identity()? != key {
             return Err(unsafe_path());
         }
         let now = SystemTime::now();
-        let previous = dir.read(&key, provider, now)?;
+        let previous = dir
+            .read(&key, provider, now)
+            .inspect_err(|error| diagnostic("read", error))?;
         if identity()? != key {
             return Err(unsafe_path());
         }
@@ -221,7 +249,8 @@ pub fn snapshot(
         } else {
             last_success
         };
-        dir.write(&key, &result)?;
+        dir.write(&key, &result)
+            .inspect_err(|error| diagnostic("write", error))?;
         Ok(result)
     })();
     result.unwrap_or_else(|error| {
@@ -484,5 +513,63 @@ mod tests {
         });
         assert_eq!(peak.load(Ordering::SeqCst), 1);
         assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+    #[test]
+    fn existing_lock_must_still_be_private_regular_with_one_link() {
+        for kind in ["symlink", "hardlink", "mode", "directory"] {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("cache");
+            let _dir = Directory::open(&path).unwrap();
+            let lock = path.join(format!("{}.lock", key().unwrap()));
+            let target = temp.path().join("untouched");
+            fs::write(&target, "unchanged").unwrap();
+            fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+            match kind {
+                "symlink" => symlink(&target, &lock).unwrap(),
+                "hardlink" => fs::hard_link(&target, &lock).unwrap(),
+                "mode" => {
+                    fs::write(&lock, "unchanged").unwrap();
+                    fs::set_permissions(&lock, fs::Permissions::from_mode(0o644)).unwrap();
+                }
+                _ => fs::create_dir(&lock).unwrap(),
+            }
+            assert_eq!(
+                snapshot(&path, Provider::Codex, false, deadline(), key, || panic!(
+                    "unsafe lock authorized a probe"
+                ))
+                .status,
+                "unknown"
+            );
+            assert_eq!(fs::read_to_string(&target).unwrap(), "unchanged");
+        }
+    }
+
+    #[test]
+    fn cold_directory_and_lock_open_succeed_for_every_contender() {
+        for _ in 0..16 {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("cache");
+            let barrier = std::sync::Barrier::new(8);
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..8)
+                    .map(|_| {
+                        scope.spawn(|| {
+                            barrier.wait();
+                            let dir = Directory::open(&path)?;
+                            let _lock = dir.lock(&key()?, deadline())?;
+                            Ok::<(), io::Error>(())
+                        })
+                    })
+                    .collect();
+                for handle in handles {
+                    let result = handle.join().unwrap();
+                    assert!(
+                        result.is_ok(),
+                        "cold lock failure: {:?}",
+                        result.err().map(|e| (e.kind(), e.raw_os_error()))
+                    );
+                }
+            });
+        }
     }
 }

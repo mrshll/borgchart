@@ -27,9 +27,13 @@ seat:
   cache_dir: ~/.cache/borgchart/seat-v2
 ```
 
-Relative paths are relative to the configuration file. Upgrade **every brg binary sharing that file** before adding `seat`: older binaries reject unknown keys. No cache migration or old `seat-reader` setting is supported. Unwritable cache means wait. If a write fails after the probe, no backoff can be stored, so a later invocation may probe again.
+Relative paths are relative to the configuration file; `..` components are rejected during configuration validation. Upgrade **every brg binary sharing that file** before adding `seat`: older binaries reject unknown keys. No cache migration or old `seat-reader` setting is supported. Unwritable cache means wait. If a write fails after the probe, no backoff can be stored, so a later invocation may probe again.
 
-Credential and configuration **metadata**, plus the CLI's identity, fence each reading. An identity change during a probe returns wait; the next invocation may probe under the new identity. This includes a routine token refresh or settings rewrite. Credential contents are never read. Raw responses, errors, profiles and tokens are never persisted in the cache.
+File-backed credential and configuration **metadata**, plus the CLI's identity, fence each reading. An identity change during a probe returns wait; the next invocation may probe under the new identity. This includes a routine token refresh or settings rewrite. Credential contents are never read. Raw responses, errors, profiles and tokens are never persisted in the cache.
+
+This fence cannot observe credentials held only in a keychain, keyring or another non-file store. If an account switch does not change the tracked files, a previous account's reading can be reused until the cache TTL expires (at most 120 seconds). Include that account-switch behavior in live qualification.
+
+An identity change resets advisory hysteresis; warnings are not carried between possibly different accounts. Old identity entries are not pruned automatically. The cache is disposable and may be cleared after all seating checks have finished.
 
 ## Authentication and qualification limits
 
