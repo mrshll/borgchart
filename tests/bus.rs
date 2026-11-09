@@ -99,11 +99,12 @@ impl Fixture {
             ("sub", Some("helper")),
         ];
         let members: BTreeMap<&str, Value> = parents.iter().map(|(m, p)| (*m,
-            json!({"role": m, "vendor": "claude", "posture": "vendor", "parent": p, "vendor_version": null})
+            json!({"role": m, "vendor": "claude", "posture": "vendor", "parent": p, "vendor_version": null, "started": true})
         )).collect();
         self.write_private(&self.root().join(TEAM).join("start.json"), &json!({
             "team_dir": self.dir.path().join("oncall"), "folder": self.dir.path().join("work"),
             "brg": env!("CARGO_BIN_EXE_brg"), "config": {"version": 1, "digest": "00", "inputs": {}},
+            "socket": "brg-bus-example", "windows_started": true,
             "base_env": {}, "members": members, "plugins": {},
         }));
     }

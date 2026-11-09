@@ -1,0 +1,67 @@
+# A development team: a lead and four helper roles it starts on demand,
+# plus its own design panel. In the instance's folder, `repo/` is the
+# shared checkout (a git worktree) where the lead, reviewer, researcher and
+# monitor work. Each implementer copy gets a folder brg creates empty under
+# `copies/`, beside `repo/`; the lead makes `copies/` once and prepares a
+# worktree there before each brief. It runs standalone
+# (`brg create ./borgchart-engineering/teams/dev-team <folder>`, with the
+# worktree at `<folder>/repo`) or as a child team, the `dev` role of
+# borgchart-engineering, where its lead's parent is the root lead. See
+# README.md.
+#
+# Every member uses `vendor` posture: the bus doesn't support `locked`
+# members yet. Each member file names both vendors' models, so moving a
+# member to the other vendor is a change to its `vendor:` line here.
+#
+# The lead checks seating with the bundled `seat` plugin before each launch.
+default: claude
+bus: {}
+
+plugins:
+  seat:
+    path: plugins/seat
+    actions:
+      route: seat route <vendor> <model>
+
+roles:
+  lead:
+    prompt: orchestrator.md
+    vendor: claude      # a Codex lead needs a wake mechanism brg doesn't have yet
+    start: true
+    cwd: repo
+    plugins: {seat: [route]}
+  implementer:
+    prompt: implementer.md
+    vendor: codex
+    parent: lead
+    start: false
+    max: 2
+    cwd: copies/{member_id}
+  reviewer:
+    prompt: reviewer.md
+    vendor: claude
+    parent: lead
+    start: false
+    cwd: repo
+  researcher:
+    prompt: researcher.md
+    vendor: codex
+    parent: lead
+    start: false
+    cwd: repo
+    args: [--search]    # Codex's web search
+  monitor:
+    prompt: monitor.md
+    vendor: claude
+    parent: lead
+    start: false
+    cwd: repo
+  # The design panel (teams/dev-design-team): a child team the lead
+  # creates stopped, prepares (`work/`) and starts before costly-to-reverse
+  # design choices, and deletes after. See orchestrator.md.
+  design:
+    team: teams/dev-design-team
+    parent: lead
+    start: false
+    max: 1
+    cwd: "design/{member_id}"
