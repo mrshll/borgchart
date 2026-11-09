@@ -555,6 +555,7 @@ mod round {
         let team = new_team("round");
         // Resolved, as brg records paths (macOS: /var is /private/var).
         let repo = team.path("work/repo").canonicalize().unwrap();
+        fs::create_dir(repo.join("copies")).unwrap();
 
         let up = team.create();
         let lead = team.m("lead");
@@ -564,8 +565,9 @@ mod round {
             "{up}"
         );
         assert!(
-            up.contains("implementer   not created (start: false)")
-                || up.contains("not created (start: false)"),
+            up.lines()
+                .any(|line| line.contains("implementer")
+                    && line.contains("on demand (none created)")),
             "{up}"
         );
 
@@ -595,11 +597,12 @@ mod round {
         team.ok(&["create", &format!("{}/implementer", team.inst())]);
         team.wait_idle("implementer");
         let implementer = team.m("implementer");
+        let copy_folder = repo.join("copies").join(&implementer);
         team.ok(&["stop", &team.at("implementer")]);
         let brief = notes.join("change-brief.md");
         let report = notes.join("change-report.md");
         let brief_tmp = notes.join("change-brief.md.tmp");
-        fs::write(&brief_tmp, format!("Task: a fictional change.\nScope: tests only.\nNon-goals: product changes.\nChecks: fake round.\nBranch: example/change.\nCheckout: {}\nReport: {}\nDeadline: 2026-11-09T00:00:00Z\n", repo.display(), report.display())).unwrap();
+        fs::write(&brief_tmp, format!("Task: a fictional change.\nScope: tests only.\nNon-goals: product changes.\nChecks: fake round.\nBranch: example/change.\nCheckout: {}\nReport: {}\nDeadline: 2026-11-09T00:00:00Z\n", copy_folder.display(), report.display())).unwrap();
         fs::rename(brief_tmp, &brief).unwrap();
         let assign = documented(&lead_body, "\"$BORGCHART_BIN\" msg publish")
             .replace("<member>", &implementer)
@@ -628,7 +631,7 @@ mod round {
             .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
             .rfind(|e| e["event"] == "start")
             .unwrap();
-        assert_eq!(start["cwd"], repo.display().to_string());
+        assert_eq!(start["cwd"], copy_folder.display().to_string());
         let argv = start["argv"].to_string();
         assert!(
             argv.starts_with("[\"codex") && argv.contains("gpt-6.1-sol"),
