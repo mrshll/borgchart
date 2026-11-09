@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+"""Seating: may a lead launch a member of this vendor and model now?
+
+    seat route <vendor> <model>
+
+Prints one line, `go: <reason>` or `wait: <reason>`, and exits with:
+
+    0  go
+    2  bad arguments (printed as `wait: ...`)
+    3  wait
+
+Any other exit status is an error, and an error also means wait.
+
+The answer comes from the usage source, `usage-source` in this script's own
+folder, run there as `./usage-source <vendor> <model>`. It prints one JSON
+object:
+
+    {"used_percent": 42.5, "resets_at": "2026-11-09T18:00:00Z"}
+
+`used_percent` is a number from 0 to 100, or null when the source can't
+tell. `resets_at` is optional, shown with a wait. The answer is `go` when
+`used_percent` is below the threshold: 80 by default, or the number in the
+file `threshold` beside this script. A missing, failing or slow source,
+unknown usage, or output that isn't such an object is `wait`.
+
+Standard library only, so it runs under any `python3`.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+GO, BAD_ARGUMENTS, WAIT = 0, 2, 3
+DEFAULT_THRESHOLD = 80.0
+SOURCE_TIMEOUT_SECONDS = 30
+NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+USAGE = "usage: seat route <vendor> <model>"
+
+
+class Wait(Exception):
+    """Why the answer is wait."""
+
+
+def threshold(folder: Path) -> float:
+    path = folder / "threshold"
+    # Only a threshold that isn't there at all means the default: a broken
+    # link or an unreadable entry is a configured threshold we can't read.
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return DEFAULT_THRESHOLD
+    except OSError as e:
+        raise Wait(f"the threshold file {path} is unreadable: {e}") from e
+    try:
+        value = float(path.read_text().strip())
+    except (OSError, ValueError) as e:
+        raise Wait(f"the threshold file {path} is unreadable: {e}") from e
+    if not 0 < value <= 100:
+        raise Wait(f"the threshold in {path} must be above 0 and at most 100")
+    return value
+
+
+def usage(folder: Path, vendor: str, model: str) -> dict:
+    source = folder / "usage-source"
+    if not source.is_file():
+        raise Wait(f"no usage source: install one as {source}")
+    try:
+        done = subprocess.run(
+            [str(source), vendor, model],
+            cwd=folder,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=SOURCE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise Wait(f"the usage source took over {SOURCE_TIMEOUT_SECONDS}s") from e
+    except OSError as e:
+        raise Wait(f"the usage source can't run: {e}") from e
+    if done.returncode != 0:
+        detail = (done.stderr.strip().splitlines() or [""])[0][:200]
+        raise Wait(
+            f"the usage source failed (exit {done.returncode}) {detail}".rstrip()
+        )
+    try:
+        reading = json.loads(done.stdout)
+    except ValueError as e:
+        raise Wait("the usage source's output isn't JSON") from e
+    if not isinstance(reading, dict) or "used_percent" not in reading:
+        raise Wait("the usage source's output has no `used_percent`")
+    return reading
+
+
+def route(vendor: str, model: str) -> str:
+    """The reason for go; raises Wait otherwise."""
+    folder = Path(__file__).resolve().parent
+    limit = threshold(folder)
+    reading = usage(folder, vendor, model)
+    used = reading["used_percent"]
+    if used is None:
+        raise Wait(f"{vendor} {model}: usage unknown")
+    if isinstance(used, bool) or not isinstance(used, (int, float)):
+        raise Wait("the usage source's `used_percent` isn't a number")
+    if not math.isfinite(used) or not 0 <= used <= 100:
+        raise Wait("the usage source's `used_percent` is outside 0 to 100")
+    if used < limit:
+        return f"{vendor} {model}: {used:g}% used, under {limit:g}%"
+    resets = reading.get("resets_at")
+    after = f"; resets {resets}" if isinstance(resets, str) and resets else ""
+    raise Wait(f"{vendor} {model}: {used:g}% used, at or over {limit:g}%{after}")
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 3 or argv[0] != "route":
+        print(f"wait: {USAGE}")
+        return BAD_ARGUMENTS
+    vendor, model = argv[1], argv[2]
+    for what, value in (("vendor", vendor), ("model", model)):
+        if not NAME.fullmatch(value):
+            print(f"wait: bad {what} {value!r}: {USAGE}")
+            return BAD_ARGUMENTS
+    try:
+        print(f"go: {route(vendor, model)}")
+        return GO
+    except Wait as e:
+        print(f"wait: {e}")
+        return WAIT
+    except Exception as e:  # noqa: BLE001 - a surprise must read as wait, never go
+        print(f"wait: seat failed: {e}")
+        return WAIT
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

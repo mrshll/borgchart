@@ -1,0 +1,56 @@
+# The team this repository's engineering runs under, at the root of a tree
+# of teams: a root lead that runs the engineering effort, with dev teams,
+# design panels, researchers and monitors as its roles. Dev teams and
+# design panels are child teams: `create` makes a copy stopped, the lead
+# prepares its folder and checks seating, then starts it. See README.md.
+#
+# The lead is Claude in `vendor` posture: managing copies needs a vendor
+# that lets brg write its state and start members, and a Codex lead has no
+# wake mechanism yet. This team's researchers and monitors use the
+# dev team's role files, and every member's file ends with the dev team's
+# common include (team-neutral rules; the dev-only ones are in its dev
+# include), so each rule lives in one place.
+default: claude
+bus: {}
+includes: teams/dev-team/includes
+
+plugins:
+  seat:
+    path: shared:seat       # each machine installs its own; see examples/seat
+    actions:
+      route: seat route <vendor> <model>
+
+roles:
+  lead:
+    prompt: lead.md
+    vendor: claude
+    start: true
+    cwd: lead               # a checkout of the repository, made before `brg create`
+    plugins: {seat: [route]}
+  dev:
+    team: teams/dev-team
+    parent: lead
+    start: false
+    max: 4
+    cwd: dev/{member_id}
+  design:
+    team: teams/dev-team/teams/dev-design-team
+    parent: lead
+    start: false
+    max: 2
+    cwd: design/{member_id}
+  researcher:
+    prompt: teams/dev-team/researcher.md
+    vendor: codex
+    parent: lead
+    start: false
+    max: 3
+    cwd: lead
+    args: [--search]        # Codex's web search
+  monitor:
+    prompt: teams/dev-team/monitor.md
+    vendor: claude
+    parent: lead
+    start: false
+    max: 3
+    cwd: lead
