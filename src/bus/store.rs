@@ -790,6 +790,7 @@ fn refresh_acks(
     snap: &mut Snapshot,
     next: &mut u64,
     deadline: Instant,
+    check: &mut impl FnMut() -> Result<(), Failure>,
 ) -> Result<(), Failure> {
     #[cfg(feature = "test-support")]
     if let Some(gate) = std::env::var_os("BORGCHART_TEST_WAIT_BEFORE_ACK_REFRESH") {
@@ -797,6 +798,7 @@ fn refresh_acks(
         fs::write(gate.join("ready"), b"")
             .map_err(|e| Failure::io("cannot signal the test ack refresh", e))?;
         while !gate.join("proceed").exists() {
+            check()?;
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return Err(Failure::new(Code::Timeout, "test ack refresh timed out"));
@@ -804,16 +806,7 @@ fn refresh_acks(
             std::thread::sleep(POLL.min(remaining));
         }
     }
-    let _lock = match read_lock_until(&bus.paths, Some(deadline))? {
-        ReadLock::TimedOut => {
-            return Err(Failure::new(
-                Code::Timeout,
-                "nothing new before the timeout",
-            ));
-        }
-        ReadLock::NoStore => None,
-        ReadLock::Held(lock) => Some(lock),
-    };
+    let _lock = wait_read_lock(bus, deadline, check)?;
     // A publisher and recipient may have committed both a message and its
     // ack since the last poll. Catch up under the same lock as the ack scan.
     while let Some(record) = next_record(&bus.paths, *next)? {
@@ -835,6 +828,28 @@ fn refresh_acks(
     snap.require_healthy()
 }
 
+/// A publisher must not keep a wait from noticing that its member ended.
+fn wait_read_lock(
+    bus: &Bus,
+    deadline: Instant,
+    check: &mut impl FnMut() -> Result<(), Failure>,
+) -> Result<Option<fs::File>, Failure> {
+    loop {
+        check()?;
+        match read_lock_until(&bus.paths, Some(deadline.min(Instant::now() + POLL)))? {
+            ReadLock::NoStore => return Ok(None),
+            ReadLock::Held(lock) => return Ok(Some(lock)),
+            ReadLock::TimedOut if Instant::now() >= deadline => {
+                return Err(Failure::new(
+                    Code::Timeout,
+                    "nothing new before the timeout",
+                ));
+            }
+            ReadLock::TimedOut => {}
+        }
+    }
+}
+
 /// One scan, then incremental reads. Already-present messages wait for the
 /// minimum; a new unacked message can return sooner. CLI errors back off too.
 pub fn wait(
@@ -847,9 +862,33 @@ pub fn wait(
     let deadline = started + duration;
     let minimum = started + wait_minimum();
     let timeout = || Failure::new(Code::Timeout, "nothing new before the timeout");
-    let mut snap = match wait_snapshot(bus, deadline)? {
-        WaitSnapshot::Ready(snap) => snap,
-        WaitSnapshot::TimedOut => return Err(timeout()),
+    let mut next_liveness = Instant::now();
+    let mut check = || {
+        actor_for(bus, caller)?;
+        if let Caller::Member {
+            member,
+            incarnation,
+        } = caller
+            && Instant::now() >= next_liveness
+        {
+            let live = lifecycle::wait_liveness(&bus.state, member, incarnation);
+            next_liveness = Instant::now() + Duration::from_secs(1);
+            if live == lifecycle::Liveness::Gone {
+                return Err(Failure::new(
+                    Code::Fenced,
+                    format!("{}/{member}'s start ended; stop waiting", bus.instance),
+                ));
+            }
+        }
+        Ok(())
+    };
+    let mut snap = loop {
+        check()?;
+        match wait_snapshot(bus, deadline.min(Instant::now() + POLL))? {
+            WaitSnapshot::Ready(snap) => break snap,
+            WaitSnapshot::TimedOut if Instant::now() >= deadline => return Err(timeout()),
+            WaitSnapshot::TimedOut => {}
+        }
     };
     snap.require_healthy()?;
     let mark = snap.records.last_key_value().map_or(0, |(&seq, _)| seq);
@@ -860,9 +899,10 @@ pub fn wait(
         .values()
         .any(|r| r.to == recipient && r.ack_required && !snap.is_acked(r.seq));
     loop {
-        actor_for(bus, caller)?;
+        check()?;
         let mut arrived = false;
         while let Some(record) = next_record(&bus.paths, next)? {
+            check()?;
             arrived |= record.to == recipient && record.ack_required;
             snap.records.insert(next, record);
             next += 1;
@@ -871,8 +911,8 @@ pub fn wait(
             }
         }
         if arrived || (old_pending && Instant::now() >= minimum) {
-            refresh_acks(bus, &mut snap, &mut next, deadline)?;
-            actor_for(bus, caller)?;
+            refresh_acks(bus, &mut snap, &mut next, deadline, &mut check)?;
+            check()?;
             let inbox = list(bus, &snap, to);
             if (old_pending && Instant::now() >= minimum && !inbox.records.is_empty())
                 || inbox.records.iter().any(|r| r.seq > mark)

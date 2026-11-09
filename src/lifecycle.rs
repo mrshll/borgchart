@@ -639,6 +639,36 @@ pub(crate) fn process_exited(pid: u32) -> bool {
 
 /// Whether `member`'s incarnation `incarnation` may still be running.
 pub fn liveness(state: &StateDir, member: &str, incarnation: &str) -> Liveness {
+    liveness_with(state, member, incarnation, |inc| {
+        let live = inc.pane.as_ref().map_or(Liveness::Unknown, pane_liveness);
+        if live == Liveness::Unknown && previous_boot(inc) {
+            Liveness::Gone
+        } else {
+            live
+        }
+    })
+}
+
+/// A member-side wait cannot use host PIDs or boot IDs to infer exit: its
+/// sandbox may expose a different view. Only a recorded end or tmux proves it.
+pub fn wait_liveness(state: &StateDir, member: &str, incarnation: &str) -> Liveness {
+    liveness_with(state, member, incarnation, |inc| {
+        let Some(pane) = &inc.pane else {
+            return Liveness::Unknown;
+        };
+        match Server::from_recorded(&pane.socket).panes() {
+            Ok(rows) => pane_in(&rows, &pane.pane_id, pane.pane_pid),
+            Err(_) => Liveness::Unknown,
+        }
+    })
+}
+
+fn liveness_with(
+    state: &StateDir,
+    member: &str,
+    incarnation: &str,
+    probe: impl FnOnce(&Incarnation) -> Liveness,
+) -> Liveness {
     let inc = match load_incarnation(state, member) {
         Ok(Some(i)) if i.incarnation == incarnation => Some(i),
         Ok(_) => match fs::read(state.incarnation_history(member, incarnation)) {
@@ -657,15 +687,7 @@ pub fn liveness(state: &StateDir, member: &str, incarnation: &str) -> Liveness {
     if inc.ended_at.is_some() {
         return Liveness::Gone;
     }
-    let live = match &inc.pane {
-        Some(pane) => pane_liveness(pane),
-        None => Liveness::Unknown,
-    };
-    if live == Liveness::Unknown && previous_boot(&inc) {
-        Liveness::Gone
-    } else {
-        live
-    }
+    probe(&inc)
 }
 
 #[cfg(test)]
