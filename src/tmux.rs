@@ -300,7 +300,52 @@ impl Tmux {
     }
 }
 
+/// Whether `tmux_env`, a `$TMUX` value (`<socket path>,<pid>,<session>`),
+/// names the server listening at `socket`: the caller runs inside it.
+pub fn names_server(tmux_env: Option<&str>, socket: Option<&Path>) -> bool {
+    let (Some(env), Some(socket)) = (tmux_env, socket) else {
+        return false;
+    };
+    // The path itself may hold commas; the last two fields can't.
+    let mut fields = env.rsplitn(3, ',');
+    match (fields.next(), fields.next(), fields.next()) {
+        (Some(_), Some(_), Some(path)) => Path::new(path) == socket,
+        _ => false,
+    }
+}
+
 /// An exact-match target for a window.
 pub fn target(session: &str, window: &str) -> String {
     format!("={session}:={window}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Enter in `status -i` switches the client only inside the member's own
+    /// server; anywhere else a switch would move some other server's client,
+    /// or fail where an attach works.
+    #[test]
+    fn names_server_only_for_the_same_socket() {
+        let socket = Path::new("/run/tmux-1000/borg,chart");
+        assert!(names_server(
+            Some("/run/tmux-1000/borg,chart,4242,3"),
+            Some(socket)
+        ));
+        assert!(!names_server(
+            Some("/run/tmux-1000/default,4242,3"),
+            Some(socket)
+        ));
+        assert!(!names_server(
+            Some("/run/tmux-1000/borg,chart"),
+            Some(socket)
+        ));
+        assert!(!names_server(Some(""), Some(socket)));
+        assert!(!names_server(None, Some(socket)));
+        assert!(!names_server(
+            Some("/run/tmux-1000/borg,chart,4242,3"),
+            None
+        ));
+    }
 }

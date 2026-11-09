@@ -3763,6 +3763,41 @@ fn attach_command(inst: &Instance, name: &str) -> Result<Command, String> {
     Ok(cmd)
 }
 
+/// Whether this process runs inside the instance's own tmux server, as in
+/// the `prefix S` pop-up.
+pub fn inside_server(inst: &Instance) -> bool {
+    let socket = state::read_meta(&inst.state).and_then(|m| m.socket_path);
+    crate::tmux::names_server(std::env::var("TMUX").ok().as_deref(), socket.as_deref())
+}
+
+/// Switch the tmux client this process runs under to the member's window.
+/// tmux finds that client from the caller's `TMUX` and `TMUX_PANE`, so they
+/// are kept.
+pub fn switch_to(inst: &Instance, name: &str) -> Result<(), String> {
+    let session = inst.state.session();
+    let tmux = tmux_for(&inst.state);
+    let window = window_name(inst, &tmux, &session, name)?;
+    let Some(socket) = state::read_meta(&inst.state).and_then(|m| m.socket_path) else {
+        return Err(format!("`{}` is not running", inst.at(name)));
+    };
+    let out = Command::new("tmux")
+        .arg("-S")
+        .arg(socket)
+        .args(["switch-client", "-t", &target(&session, &window)])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("cannot start tmux: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "cannot switch to {}: {}",
+            inst.at(&window),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
 /// `brg attach <instance>/<member>`: replaces this process with a tmux client.
 pub fn attach(inst: &Instance, name: &str) -> Result<(), String> {
     let err = attach_command(inst, name)?.exec();

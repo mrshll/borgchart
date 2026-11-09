@@ -244,7 +244,9 @@ fn draw(
 }
 
 /// `brg status -i`. With no instance, every instance, each under its
-/// header line; Enter attaches in the selected member's own instance.
+/// header line; Enter attaches in the selected member's own instance, or,
+/// run inside that instance's tmux server, switches this client to the
+/// member and ends.
 pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
     let mut sections = load(one)?;
     let headers = one.is_none();
@@ -343,6 +345,17 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
                         continue;
                     }
                 };
+                // Inside brg's own server (the `prefix S` pop-up), move this
+                // client to the member and end, which closes the pop-up.
+                if runtime::inside_server(&inst) {
+                    match runtime::switch_to(&inst, &name) {
+                        Ok(()) => break Ok(()),
+                        Err(e) => {
+                            message = e;
+                            continue;
+                        }
+                    }
+                }
                 ratatui::restore();
                 let outcome = runtime::attach_and_wait(&inst, &name);
                 terminal = match ratatui::try_init() {

@@ -1,12 +1,14 @@
-//! The status line brg's tmux bar shows (`brg status --line`): real tmux on
-//! a private socket, fake agents.
+//! The status line brg's tmux bar shows (`brg status --line`), and Enter in
+//! `status -i` inside brg's own server: real tmux on a private socket, fake
+//! agents.
 #![cfg(feature = "test-support")]
 
 mod common;
 
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 struct Env {
@@ -298,4 +300,67 @@ fn status_line_marks_each_running_member_and_hides_stopped_ones() {
         .unwrap();
     assert!(!out.status.success(), "{out:?}");
     assert!(out.stdout.is_empty(), "{out:?}");
+}
+
+#[test]
+fn enter_in_status_i_inside_brgs_server_switches_the_client_to_the_member() {
+    let env = Env::new();
+    let id = env.create();
+    let session = format!("brg-{id}");
+    let alpha = env.member(&id, "alpha");
+
+    // `status -i` in a window of brg's own server, as the pop-up runs it.
+    let script = env.path("screen.sh");
+    let mut text = String::from("#!/bin/sh\n");
+    for (k, v) in env.vars() {
+        text.push_str(&format!("export {k}='{v}'\n"));
+    }
+    text.push_str(&format!(
+        "export TERM=xterm-256color\nexec '{}' status {id} -i\n",
+        env.brg.display()
+    ));
+    common::write_executable(&script, &text);
+    env.tmux(&[
+        "new-window",
+        "-d",
+        "-t",
+        &format!("={session}:"),
+        "-n",
+        "screen",
+        &script.display().to_string(),
+    ]);
+
+    // A client on that window: control mode, held open on a pipe.
+    let mut client = env
+        .tmux
+        .tmux(&env.socket)
+        .args(["-C", "attach", "-t", &format!("={session}:=screen")])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let windows = || env.tmux(&["list-clients", "-F", "#{window_name}"]);
+    env.wait_for("the client on the screen", || windows() == "screen\n");
+    let screen = || env.tmux(&["capture-pane", "-p", "-t", &format!("={session}:=screen")]);
+    env.wait_for("alpha on the screen", || screen().contains("> "));
+
+    env.tmux(&["send-keys", "-t", &format!("={session}:=screen"), "Enter"]);
+    env.wait_for("the client on alpha's window", || {
+        windows() == format!("{alpha}\n")
+    });
+    // And the screen ended, as a pop-up would close.
+    env.wait_for("the screen to exit", || {
+        env.tmux(&[
+            "display",
+            "-p",
+            "-t",
+            &format!("={session}:=screen"),
+            "#{pane_dead}",
+        ]) == "1\n"
+    });
+
+    let _ = client.stdin.take().unwrap().write_all(b"detach\n");
+    let _ = client.kill();
+    let _ = client.wait();
 }
