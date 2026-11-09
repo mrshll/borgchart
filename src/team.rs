@@ -102,48 +102,15 @@ struct PluginRaw {
     actions: BTreeMap<String, String>,
 }
 
-/// A plugin's `env`: a list of names (each a secret, or a one-entry map
-/// `NAME: value` for a plain value), or a map of names to plain values
-/// (empty for a secret).
-#[derive(Debug, Deserialize)]
-#[serde(
-    untagged,
-    expecting = "`env` must be a list of names (or `NAME: value` entries), or a map of names to values"
-)]
-enum EnvRaw {
-    List(Vec<EnvItemRaw>),
-    Map(BTreeMap<String, Option<String>>),
-}
-
-impl Default for EnvRaw {
-    fn default() -> Self {
-        EnvRaw::List(Vec::new())
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum EnvItemRaw {
-    Name(String),
-    Value(BTreeMap<String, String>),
-}
+/// A plugin's `env`: a map of names to plain values (empty for a secret).
+#[derive(Debug, Default, Deserialize)]
+#[serde(transparent)]
+struct EnvRaw(BTreeMap<String, Option<String>>);
 
 impl EnvRaw {
     /// Every name in order, each with its plain value if it has one.
     fn entries(&self) -> Vec<(String, Option<String>)> {
-        match self {
-            EnvRaw::Map(map) => map.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
-            EnvRaw::List(items) => items
-                .iter()
-                .flat_map(|item| match item {
-                    EnvItemRaw::Name(n) => vec![(n.clone(), None)],
-                    EnvItemRaw::Value(map) => map
-                        .iter()
-                        .map(|(k, v)| (k.clone(), Some(v.clone())))
-                        .collect(),
-                })
-                .collect(),
-        }
+        self.0.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
 }
 
@@ -644,10 +611,6 @@ fn load_plugin(
                 Some(team_file),
                 at(format!("env name `{name}` must match `[A-Z_][A-Z0-9_]*`")),
             );
-        }
-        if env.contains(&name) {
-            report.error(Some(team_file), at(format!("env `{name}` is listed twice")));
-            continue;
         }
         if let Some(value) = value {
             values.insert(name.clone(), value);

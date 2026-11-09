@@ -31,7 +31,7 @@ const TEAM: &str = r#"
 plugins:
   pager:
     path: plugins/pager
-    env: [PAGER_TOKEN, {PAGER_ROOM: R0000EXAMPLE}]
+    env: {PAGER_TOKEN: , PAGER_ROOM: R0000EXAMPLE}
     actions:
       read: pager read <id>
 roles:

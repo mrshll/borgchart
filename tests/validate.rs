@@ -306,17 +306,6 @@ fn grant_of_undeclared_action_is_an_error() {
 }
 
 #[test]
-fn plugin_env_names_are_listed_once() {
-    let f = Fixture::new();
-    f.edit(
-        "team.yaml",
-        "{SLACK_CHANNEL_ID: C0000EXAMPLE}",
-        "{SLACK_CHANNEL_ID: C0000EXAMPLE}, SLACK_CHANNEL_ID",
-    );
-    expect_error(&f, "env `SLACK_CHANNEL_ID` is listed twice");
-}
-
-#[test]
 fn plugin_env_takes_plain_values_and_secrets() {
     let f = Fixture::new();
     let (report, validated) = f.run();
@@ -325,17 +314,6 @@ fn plugin_env_takes_plain_values_and_secrets() {
     assert_eq!(p.env, ["SLACK_BOT_TOKEN", "SLACK_CHANNEL_ID"]);
     assert_eq!(p.values["SLACK_CHANNEL_ID"], "C0000EXAMPLE");
     assert_eq!(p.secrets().collect::<Vec<_>>(), ["SLACK_BOT_TOKEN"]);
-    // The map form: a name without a value is a secret.
-    f.edit(
-        "team.yaml",
-        "env: [SLACK_BOT_TOKEN, {SLACK_CHANNEL_ID: C0000EXAMPLE}]",
-        "env:\n      SLACK_BOT_TOKEN:\n      SLACK_CHANNEL_ID: C0000EXAMPLE",
-    );
-    let (report, validated) = f.run();
-    let v = validated.unwrap_or_else(|| panic!("{}", errors(&report)));
-    let p = &v.team.plugins["slackbot"];
-    assert_eq!(p.secrets().collect::<Vec<_>>(), ["SLACK_BOT_TOKEN"]);
-    assert_eq!(p.values["SLACK_CHANNEL_ID"], "C0000EXAMPLE");
 }
 
 #[test]

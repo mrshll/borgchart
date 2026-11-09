@@ -70,7 +70,7 @@ The role's identity is its key under `roles:`. Each role keeps up to `max` membe
 
 **Parents.** A `parent` must be another role with `max: 1`, and parent links can't form a cycle. A plugin's `delivers_to:` also requires a `max: 1` role. A member's parent is the member of its parent role. Messages a plugin routes "to the parent" go along this edge. With a bus, only a person or the declared parent's latest running start may create, start, stop or delete a member. Other members, replaced starts and callers from another instance are refused. Creating a child requires its parent role to have a member. Teams without a bus retain their existing caller rules; whole-instance operations retain theirs too.
 
-**`env`.** A list of names (`[A, B]`, each a secret), list items with a value (`[A, {B: value}]`), or a map (`{A: , B: value}`); a name without a value is a secret. Secrets come from the environment `brg create` or `brg start` runs in: brg stores none. `brg secret <team>` lists them and whether each is set.
+**`env`.** A map of names (`{A: , B: value}`); a name without a value is a secret. Secrets come from the environment `brg create` or `brg start` runs in: brg stores none. `brg secret <team>` lists them and whether each is set.
 
 **`cwd`.** Relative to the instance's working folder and inside it (no `..`, no absolute path, and it may not leave the folder through a symlink); it may use `{member_id}`, the member's ID. It must exist when the member starts. A role without one starts in the working folder (a `locked` Codex member: in its temp folder).
 
