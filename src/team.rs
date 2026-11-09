@@ -334,6 +334,7 @@ pub fn team_name(dir: &Path) -> String {
         })
         .collect::<String>()
         .trim_matches('-')
+        .trim_start_matches(['-', '_'])
         .chars()
         .take(32)
         .collect();

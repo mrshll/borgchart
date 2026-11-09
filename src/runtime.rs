@@ -1989,9 +1989,11 @@ fn start_instance(
                 if !registered.instances.contains_key(&full_id) {
                     continue;
                 }
-                match address::instance(&full_id)
-                    .and_then(|copy| start_instance(copy, None, None, false))
-                {
+                let copy = address::instance(&full_id);
+                if copy.as_ref().is_ok_and(is_running) {
+                    continue;
+                }
+                match copy.and_then(|copy| start_instance(copy, None, None, false)) {
                     Ok(copy) => {
                         outcome.tree.push_str(&copy.tree);
                         outcome.notes.extend(copy.notes);
@@ -2017,6 +2019,7 @@ pub fn liveness_of(inst: &Instance) -> BTreeMap<String, Liveness> {
     let rows = meta.as_ref().map(|m| lifecycle::Server::of(m).panes());
     let mut out = BTreeMap::new();
     for (id, _) in inst.record.kept_members() {
+        let incarnation = lifecycle::load_incarnation(state, id);
         let by_window = match (&meta, &rows) {
             // Never started a window here.
             (None, _) => Liveness::Gone,
@@ -2033,9 +2036,17 @@ pub fn liveness_of(inst: &Instance) -> BTreeMap<String, Liveness> {
             (Some(m), _) if m.stopped_at.is_some() || m.windows_started == Some(false) => {
                 Liveness::Gone
             }
+            (Some(_), Some(Err(_))) if inst.record.stopping => match &incarnation {
+                Ok(Some(inc)) => inc
+                    .pane
+                    .as_ref()
+                    .map(lifecycle::pane_liveness)
+                    .unwrap_or(Liveness::Unknown),
+                _ => Liveness::Unknown,
+            },
             _ => Liveness::Unknown,
         };
-        let by_record = match lifecycle::load_incarnation(state, id) {
+        let by_record = match incarnation {
             Ok(None) => Liveness::Gone,
             Ok(Some(inc)) => lifecycle::liveness(state, id, &inc.incarnation),
             Err(_) => Liveness::Unknown,
@@ -2061,7 +2072,11 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
     check_parent_authority(&inst, inst.record.role_of(&id).unwrap(), None, Some(&id))?;
     let copies: Vec<_> = crate::nesting::descendants(&inst)?
         .into_iter()
-        .filter(|copy| copy.record.parent.as_deref() == Some(&inst.at(&id)))
+        .filter(|copy| {
+            copy.instance.as_ref().map_or(true, |copy| {
+                copy.record.parent.as_deref() == Some(&inst.at(&id))
+            })
+        })
         .map(|copy| copy.id)
         .collect();
     if !copies.is_empty() {
@@ -2313,9 +2328,6 @@ pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
             ));
         }
     }
-    drop(state_lock);
-    std::fs::remove_dir_all(&inst.state.root)
-        .map_err(|e| format!("cannot remove {}: {e}", inst.state.root.display()))?;
     let mut registry = lock.load()?;
     registry.instances.remove(&inst.id);
     if let Some((parent_id, copy_id)) = inst.id.rsplit_once('/') {
@@ -2328,6 +2340,9 @@ pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
         lock.save_instance(&parent_state, &parent)?;
     }
     lock.save(&registry)?;
+    drop(state_lock);
+    std::fs::remove_dir_all(&inst.state.root)
+        .map_err(|e| format!("cannot remove {}: {e}", inst.state.root.display()))?;
     Ok(vec![format!(
         "deleted {}; its working folder {} was left as it is",
         inst.id,
@@ -2520,9 +2535,9 @@ fn start_window(
 ///
 /// Works on the tmux server recorded at the start, refusing a caller whose
 /// `BORGCHART_TMUX_SOCKET` names another, and changes nothing unless that
-/// server answers. A member's incarnation is marked ended, and launch files
-/// and secrets removed, only once its pane was stopped or the server showed
-/// it gone. A full stop of a running instance records which members were
+/// server answers or its recorded pane processes have exited. A member's
+/// incarnation is marked ended, and launch files and secrets removed, only
+/// once its pane was stopped or confirmed gone. A full stop records which members were
 /// running, for the next `start`; stopping a stopped one changes nothing.
 pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> {
     let lock = registry::lock()?;
@@ -2533,10 +2548,22 @@ pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> 
         return stop_one(&lock, inst, only);
     }
     check_instance_authority(inst, None)?;
-    let mut copies = crate::nesting::descendants(inst)?;
+    let descendants = crate::nesting::descendants(inst)?;
+    let mut copies = Vec::new();
+    let mut errors = Vec::new();
+    for copy in descendants {
+        match copy.instance {
+            Ok(copy) => copies.push(copy),
+            Err(error) => errors.push(format!(
+                "{}: {error}; restore its state folder and instance.json, then retry: brg stop {}",
+                copy.id, inst.id
+            )),
+        }
+    }
     if !inst.id.contains('/')
         && !inst.record.stopping
         && copies.is_empty()
+        && errors.is_empty()
         && !validated(inst).is_ok_and(|v| !v.team.team_roles.is_empty())
     {
         return stop_one(&lock, inst, None);
@@ -2553,6 +2580,7 @@ pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> 
             ));
         }
     }
+    forget_copy_restore(&lock, inst)?;
     // Mark the enclosing instance first. Even an interruption while writing
     // descendant records fences the entire subtree through its ancestor.
     for target in std::iter::once(inst).chain(copies.iter().rev()) {
@@ -2562,7 +2590,6 @@ pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> 
     stop_pause();
     copies.push(inst.clone());
     let mut messages = Vec::new();
-    let mut errors = Vec::new();
     let nested = copies.len() > 1;
     for mut copy in copies {
         let lock = registry::lock()?;
@@ -2585,9 +2612,12 @@ pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> 
         let stopped = liveness_of(&copy)
             .values()
             .all(|live| *live == Liveness::Gone);
-        let descendants_stopped = crate::nesting::descendants(&copy)?
-            .iter()
-            .all(|child| !child.record.stopping);
+        let descendants_stopped = crate::nesting::descendants(&copy)?.iter().all(|child| {
+            child
+                .instance
+                .as_ref()
+                .is_ok_and(|child| !child.record.stopping)
+        });
         if confirmed && stopped && descendants_stopped && !is_running(&copy) {
             copy.reload()?;
             copy.record.stopping = false;
@@ -2607,6 +2637,23 @@ pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> 
     }
 }
 
+/// An explicit copy stop removes its whole subtree from every ancestor's
+/// restore snapshot. Called under the same registry lock as the stop marks.
+fn forget_copy_restore(lock: &registry::Lock, inst: &Instance) -> Result<(), String> {
+    let mut id = inst.id.as_str();
+    while let Some((parent_id, _)) = id.rsplit_once('/') {
+        let mut parent = address::instance(parent_id)?;
+        if let Some(copies) = &mut parent.record.copies_running_at_stop {
+            let relative = &inst.id[parent_id.len() + 1..];
+            let prefix = format!("{relative}/");
+            copies.retain(|copy| copy != relative && !copy.starts_with(&prefix));
+            lock.save_instance(&parent.state, &parent.record)?;
+        }
+        id = parent_id;
+    }
+    Ok(())
+}
+
 /// Persist the restore snapshots before killing any pane. A resumed stop
 /// keeps the original snapshots, even if its panes have disappeared since.
 fn mark_stopping(lock: &registry::Lock, inst: &Instance) -> Result<(), String> {
@@ -2624,6 +2671,9 @@ fn mark_stopping(lock: &registry::Lock, inst: &Instance) -> Result<(), String> {
     }
     let mut running_copies = std::collections::BTreeSet::new();
     for copy in crate::nesting::descendants(inst)? {
+        let Ok(copy) = copy.instance else {
+            continue;
+        };
         if is_running(&copy)
             || liveness_of(&copy)
                 .values()
@@ -2696,9 +2746,24 @@ fn stop_one(
                     "{e}; nothing was changed. If instance `{team}` is really gone (for example after a reboot), `brg start {team}` and then `brg stop {team}` clear it"
                 ));
             }
-            return Err(format!(
-                "{e}; instance `{team}` is still stopping. Once its recorded tmux server can be reached, finish the cascade: brg stop {team}"
-            ));
+            let uncertain: Vec<_> = liveness_of(inst)
+                .into_iter()
+                .filter(|(_, live)| *live != Liveness::Gone)
+                .map(|(id, _)| id)
+                .collect();
+            if !uncertain.is_empty() {
+                let socket = match &server {
+                    lifecycle::Server::Name(name) => format!("-L {}", shell_quote(name)),
+                    lifecycle::Server::Path(path) => {
+                        format!("-S {}", shell_quote(&path.display().to_string()))
+                    }
+                };
+                return Err(format!(
+                    "{e}; brg can't confirm that {} stopped. Restore access to the recorded server; if it exited, create a recovery session with `tmux {socket} new-session -d -s brg_recovery`, then finish the cascade: brg stop {team}",
+                    uncertain.join(", ")
+                ));
+            }
+            Vec::new()
         }
     };
     let in_session = |r: &&lifecycle::PaneRow| r.session == session;
@@ -3203,7 +3268,7 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
                 role: Some(role_name.clone()),
                 vendor: None,
                 model: None,
-                parent,
+                parent: parent.clone(),
                 posture: None,
                 state: if role.max > 1 {
                     ON_DEMAND.into()
@@ -3222,13 +3287,18 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
             });
         }
         for (id, _) in copies {
-            let copy = address::instance(&inst.at(id))?;
-            let mut children = status(&copy)?;
+            let full_id = inst.at(id);
+            let (copy, mut children, error) = match address::instance(&full_id)
+                .and_then(|copy| status(&copy).map(|children| (copy, children)))
+            {
+                Ok((copy, children)) => (Some(copy), children, None),
+                Err(error) => (None, Vec::new(), Some(error)),
+            };
             let running = children
                 .iter()
                 .filter(|r| {
                     r.kind == "member"
-                        && r.instance == copy.id
+                        && r.instance == full_id
                         && (r.state != "stopping" || r.liveness == Some(Liveness::Alive))
                         && !matches!(r.state.as_str(), STOPPED | NOT_STARTED | "exited")
                 })
@@ -3236,16 +3306,24 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
             rows.push(StatusRow {
                 name: id.clone(),
                 kind: "copy",
-                instance: copy.id.clone(),
-                team: copy.record.team.clone(),
+                instance: full_id.clone(),
+                team: copy
+                    .as_ref()
+                    .map(|copy| copy.record.team.clone())
+                    .unwrap_or_else(|| crate::team::team_name(&role.dir)),
                 member: None,
                 start_id: None,
                 role: Some(role_name.clone()),
                 vendor: None,
                 model: None,
-                parent: copy.record.parent.clone(),
+                parent: copy
+                    .as_ref()
+                    .and_then(|copy| copy.record.parent.clone())
+                    .or_else(|| parent.as_deref().map(|parent| inst.at(parent))),
                 posture: None,
-                state: if copy.record.stopping {
+                state: if error.is_some() {
+                    "unreadable"
+                } else if copy.as_ref().is_some_and(|copy| copy.record.stopping) {
                     "stopping"
                 } else if running > 0 {
                     "running"
@@ -3254,18 +3332,18 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
                 }
                 .into(),
                 rule: None,
-                detail: None,
+                detail: error.clone(),
                 vendor_version: None,
                 trust_accepted: None,
                 liveness: None,
                 unread: None,
-                running: Some(running),
+                running: error.is_none().then_some(running),
                 expected_running: false,
                 start: false,
             });
             for child in &mut children {
                 if child.parent.is_none() {
-                    child.parent = Some(copy.id.clone());
+                    child.parent = Some(full_id.clone());
                 }
             }
             rows.extend(children);
@@ -3344,12 +3422,12 @@ pub fn status_cells(r: &StatusRow) -> Vec<String> {
         "copy" => {
             return vec![
                 r.team.clone(),
-                if r.state == "stopping" {
+                if matches!(r.state.as_str(), "stopping" | "unreadable") {
                     r.state.clone()
                 } else {
                     format!("{} running", r.running.unwrap_or(0))
                 },
-                String::new(),
+                r.detail.clone().unwrap_or_default(),
             ];
         }
         "role" => return vec![r.state.clone()],

@@ -12,17 +12,26 @@ use crate::validate::Validated;
 
 /// All kept copies below an instance, deepest first. The caller holds the
 /// registry lock when using this list for a lifecycle change.
-pub fn descendants(inst: &Instance) -> Result<Vec<Instance>, String> {
+pub fn descendants(inst: &Instance) -> Result<Vec<Descendant>, String> {
     let prefix = format!("{}/", inst.id);
     let registry = registry::load()?;
     let mut copies = registry
         .instances
         .keys()
         .filter(|id| id.starts_with(&prefix))
-        .map(|id| address::instance(id))
-        .collect::<Result<Vec<_>, _>>()?;
+        .map(|id| Descendant {
+            id: id.clone(),
+            instance: address::instance(id),
+        })
+        .collect::<Vec<_>>();
     copies.sort_by_key(|copy| std::cmp::Reverse(copy.id.split('/').count()));
     Ok(copies)
+}
+
+/// A registered copy, including one whose state cannot currently be read.
+pub struct Descendant {
+    pub id: String,
+    pub instance: Result<Instance, String>,
 }
 
 /// The outermost unfinished cascade enclosing this instance, if any.

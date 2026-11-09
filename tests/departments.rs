@@ -171,6 +171,50 @@ fn invalid_address_segments_are_refused_before_reading_the_registry() {
 }
 
 #[test]
+fn underscore_team_names_create_addressable_instances() {
+    let env = Env::new();
+    env.team("teams/_scratch");
+    let out = env.ok(&[
+        "create",
+        "./teams/_scratch",
+        &env.path("work/a").display().to_string(),
+    ]);
+    let id = stdout(&out).split_whitespace().next().unwrap().to_string();
+    assert!(well_formed(&id, "scratch"), "{id}");
+    env.ok(&["status", &id]);
+    assert!(stdout(&env.ok(&["status"])).contains(&id));
+    env.ok(&["stop", &id]);
+    env.ok(&["start", &id]);
+    env.ok(&["stop", &id]);
+    env.ok(&["delete", &id, "--force"]);
+}
+
+#[test]
+fn missing_nested_copy_reports_kept_alternatives() {
+    let env = department();
+    let dept = env.create("oncall", "work/a");
+    let (copy, _) = create_copy(&env, &dept, "dev");
+    fs::create_dir(env.path("work/b/lead")).unwrap();
+    let unrelated = env.create("oncall", "work/b");
+    let missing = format!("{dept}/dev-zzzz/lead-c4nd");
+    let refused = env.fails(&["start", &missing]);
+    assert!(
+        refused.contains(&dept) && refused.contains("dev-zzzz"),
+        "{refused}"
+    );
+    assert!(
+        refused.contains(&copy),
+        "recovery must name a kept copy: {refused}"
+    );
+    assert!(
+        !refused.contains(&unrelated),
+        "alternatives must belong to the matched instance: {refused}"
+    );
+    env.ok(&["stop", &dept]);
+    env.ok(&["stop", &unrelated]);
+}
+
+#[test]
 fn status_nests_copies_once_with_full_paths_and_states() {
     let env = department();
     let dev_team = env.path("teams/oncall/teams/dev/team.yaml");
@@ -277,7 +321,7 @@ fn status_nests_copies_once_with_full_paths_and_states() {
 }
 
 #[test]
-fn nested_status_screens_attach_in_the_selected_members_instance() {
+fn nested_status_screens_keep_healthy_members_visible_when_a_copy_becomes_unreadable() {
     let env = department();
     let dept = env.create("oncall", "work/a");
     let (copy, folder) = create_copy(&env, &dept, "dev");
@@ -373,6 +417,19 @@ fn nested_status_screens_attach_in_the_selected_members_instance() {
             ),
             "{text}"
         );
+        let path = env.path(&format!("state/{peer}/instance.json"));
+        let original = fs::read(&path).unwrap();
+        fs::write(&path, "unreadable copy record").unwrap();
+        env.wait_for("screen keeps healthy rows beside unreadable copy", || {
+            let text = screen();
+            text.contains("unreadable")
+                && text.contains(copy_name)
+                && text.lines().filter(|line| line.contains(&lead)).count() == 1
+        });
+        fs::write(&path, original).unwrap();
+        env.wait_for("screen recovers restored copy", || {
+            screen().lines().filter(|line| line.contains(&lead)).count() == 2
+        });
         if args.contains(&"-w") {
             env.ok(&["stop", &format!("{copy}/{lead}")]);
             env.wait_for("watch refresh after nested stop", || {

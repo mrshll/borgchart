@@ -222,34 +222,192 @@ fn unknown_liveness_keeps_cascade_stopping_until_stop_can_confirm_it() {
 }
 
 #[test]
-fn unreachable_server_keeps_stop_mark_until_server_returns() {
+fn unreachable_server_with_exited_processes_clears_stop_marks() {
+    let env = department();
+    let dept = env.create("oncall", "work/a");
+    let (dev, _) = prepared_copy(&env, &dept, "dev", "repo");
+    start(&env, &dev);
+    env.tmux(&["kill-server"]);
+    env.ok(&["stop", &dept]);
+    start(&env, &dept);
+    start(&env, &dev);
+    env.ok(&["stop", &dept]);
+}
+
+#[test]
+fn unreachable_server_with_unknown_process_keeps_stop_marks() {
+    let env = department();
+    let dept = env.create("oncall", "work/a");
+    let (dev, _) = prepared_copy(&env, &dept, "dev", "repo");
+    start(&env, &dev);
+    let lead = env.member(&dev, "lead");
+    let path = env.path(&format!("state/{dev}/members/{lead}/incarnation.json"));
+    let original = fs::read(&path).unwrap();
+    let mut record: serde_json::Value = serde_json::from_slice(&original).unwrap();
+    // Zero is deliberately unjudgeable by the process-liveness fallback.
+    record["pane"]["pane_pid"] = 0.into();
+    fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+    env.tmux(&["kill-server"]);
+    let refused = env.fails(&["stop", &dept]);
+    assert!(refused.contains(&dev), "{refused}");
+    for instance in [&dept, &dev] {
+        env.fails(&["start", instance]);
+        env.fails(&["delete", instance, "--force"]);
+    }
+    // The refusal must provide a recovery command that works while fenced.
+    let recovery = refused
+        .split('`')
+        .find(|part| part.starts_with("tmux "))
+        .expect("refusal must offer a tmux recovery command");
+    let source = env.cmd(&[]);
+    let out = Command::new("sh")
+        .env_clear()
+        .envs(
+            source
+                .get_envs()
+                .filter_map(|(key, value)| value.map(|value| (key, value))),
+        )
+        .args(["-c", recovery])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", both(&out));
+    env.ok(&["stop", &dept]);
+    start(&env, &dept);
+    env.ok(&["stop", &dept]);
+    env.tmux(&["kill-session", "-t", "=brg_recovery"]);
+}
+
+#[test]
+fn full_start_does_not_revive_independently_stopped_copy_or_descendants() {
+    let env = department();
+    let dept = env.create("oncall", "work/a");
+    let (dev, _) = prepared_copy(&env, &dept, "dev", "repo");
+    start(&env, &dev);
+    let (panel, _) = prepared_copy(&env, &dev, "design", "work");
+    start(&env, &panel);
+    let (peer, _) = prepared_copy(&env, &dept, "dev", "repo");
+    start(&env, &peer);
+    env.ok(&["stop", &dept]);
+    start(&env, &dept);
+    env.wait_for("panel restored", || env.state_of(&panel, "lead") == "idle");
+    env.ok(&["stop", &panel]);
+    start(&env, &dev);
+    start(&env, &dept);
+    assert_eq!(own_row(&env, &panel, "lead")["state"], "stopped");
+    start(&env, &panel);
+    env.ok(&["stop", &dev]);
+    start(&env, &dept);
+    assert_eq!(own_row(&env, &dev, "lead")["state"], "stopped");
+    assert_eq!(own_row(&env, &panel, "lead")["state"], "stopped");
+    assert_eq!(own_row(&env, &peer, "lead")["state"], "idle");
+    env.ok(&["stop", &dept]);
+}
+
+#[test]
+fn full_start_skips_running_copy_validation_but_checks_stopped_restores() {
     let env = department();
     let dept = env.create("oncall", "work/a");
     let (dev, folder) = prepared_copy(&env, &dept, "dev", "repo");
     start(&env, &dev);
-    env.tmux(&["kill-server"]);
-    env.fails(&["stop", &dept]);
-    for instance in [&dept, &dev] {
-        let refused = env.fails(&["start", instance]);
-        assert!(refused.contains(&format!("brg stop {dept}")), "{refused}");
-    }
-    fs::create_dir(folder.join("repo/lead")).unwrap();
-    let refused = env.fails(&[
-        "create",
-        "oncall",
-        &folder.join("repo").display().to_string(),
-    ]);
-    assert!(refused.contains(&dept), "{refused}");
-    // Bringing back the recorded server lets stop confirm that its old
-    // panes are gone, without starting any brg member to recover.
-    env.tmux(&["new-session", "-d", "-s", "sentinel", "sleep", "60"]);
     env.ok(&["stop", &dept]);
     start(&env, &dept);
-    env.wait_for("copy restored after recorded server returned", || {
-        env.state_of(&dev, "lead") == "idle"
-    });
+    env.wait_for("copy restored", || env.state_of(&dev, "lead") == "idle");
+    let lead = env.member(&dev, "lead");
+    let before = env.starts(&lead).len();
+    let path = env.path("teams/oncall/teams/dev/lead.md");
+    let prompt = fs::read_to_string(&path).unwrap();
+    fs::write(
+        &path,
+        format!("{prompt}\nUpdated fictional instructions.\n"),
+    )
+    .unwrap();
+    env.ok(&["start", &dept]);
+    assert_eq!(env.starts(&lead).len(), before);
+    assert_eq!(env.state_of(&dev, "lead"), "idle");
+    // The restore list stays useful for later full starts, and stopped
+    // copies still go through their normal folder and configuration checks.
     env.ok(&["stop", &dept]);
-    env.tmux(&["kill-session", "-t", "=sentinel"]);
+    fs::remove_dir(folder.join("repo")).unwrap();
+    let refused = env.fails(&["start", &dept]);
+    assert!(refused.contains(&dev), "{refused}");
+    assert_eq!(env.state_of(&dept, "lead"), "idle");
+    env.ok(&["stop", &dept]);
+}
+
+#[test]
+fn unreadable_copy_does_not_hide_status_or_block_stopping_readable_instances() {
+    for damage in ["record", "missing-record", "state"] {
+        let env = department();
+        let dept = env.create("oncall", "work/a");
+        let (dev, _) = prepared_copy(&env, &dept, "dev", "repo");
+        start(&env, &dev);
+        let (peer, _) = prepared_copy(&env, &dept, "dev", "repo");
+        start(&env, &peer);
+        let (panel, _) = prepared_copy(&env, &dev, "design", "work");
+        let path = match damage {
+            "record" | "missing-record" => env.path(&format!("state/{panel}/instance.json")),
+            "state" => env.path(&format!("state/{panel}")),
+            _ => unreachable!(),
+        };
+        let moved = env.path("moved-copy-data");
+        fs::rename(&path, &moved).unwrap();
+        if damage == "record" {
+            fs::write(&path, "unreadable instance record").unwrap();
+        }
+        for args in [vec!["status", &dept, "--json"], vec!["status", "--json"]] {
+            let out = env.ok(&args);
+            let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+            assert!(
+                rows.iter()
+                    .any(|r| r["instance"] == dept && r["kind"] == "member")
+            );
+            assert!(
+                rows.iter()
+                    .any(|r| r["instance"] == dev && r["kind"] == "member")
+            );
+            let row = rows.iter().find(|r| r["instance"] == panel).unwrap();
+            assert_eq!(row["state"], "unreadable", "{damage}: {rows:?}");
+            assert!(!row["detail"].as_str().unwrap().is_empty());
+        }
+        for args in [vec!["status", &dept], vec!["status"]] {
+            let text = stdout(&env.ok(&args));
+            assert!(text.contains("unreadable"), "{text}");
+            assert!(text.contains(&env.member(&dept, "lead")), "{text}");
+        }
+        let refused = env.fails(&["stop", &dept]);
+        assert!(refused.contains(&panel), "{refused}");
+        for instance in [&dept, &dev, &peer] {
+            assert_eq!(own_row(&env, instance, "lead")["liveness"], "gone");
+        }
+        let refused = env.fails(&["delete", &dept, "--force"]);
+        assert!(
+            refused.contains(&panel) && refused.contains(&peer),
+            "{refused}"
+        );
+        if damage == "record" {
+            fs::remove_file(&path).unwrap();
+        }
+        fs::rename(moved, path).unwrap();
+        env.ok(&["stop", &dept]);
+    }
+}
+
+#[test]
+fn failed_copy_delete_preserves_registered_state() {
+    let env = department();
+    let dept = env.create("oncall", "work/a");
+    let (dev, _) = prepared_copy(&env, &dept, "dev", "repo");
+    env.ok(&["stop", &dept]);
+    let parent = env.path(&format!("state/{dept}/instance.json"));
+    let original = fs::read(&parent).unwrap();
+    fs::write(&parent, "unreadable parent record").unwrap();
+    env.fails(&["delete", &dev, "--force"]);
+    assert!(!env.registry()["instances"][&dev].is_null());
+    assert!(env.path(&format!("state/{dev}/instance.json")).is_file());
+    fs::write(parent, original).unwrap();
+    env.ok(&["delete", &dev, "--force"]);
+    assert!(env.registry()["instances"][&dev].is_null());
+    assert!(!env.path(&format!("state/{dev}")).exists());
 }
 
 #[test]
