@@ -3868,6 +3868,11 @@ pub fn send(
                     .into(),
             ));
         }
+        if view.ends_at_the_edge(&preview) {
+            return Err(SendError::Refused(format!(
+                "{EDGE}; nothing recorded or pasted"
+            )));
+        }
     }
     let draft = serde_json::to_vec(&Draft {
         to: to.clone(),
@@ -3941,6 +3946,9 @@ pub fn send(
             return Err(SendError::Refused(
                 "message exceeds the screen-verification budget; no text pasted".into(),
             ));
+        }
+        if view.ends_at_the_edge(&envelope) {
+            return Err(SendError::Refused(format!("{EDGE}; no text pasted")));
         }
         paste_send(&tmux, &inst.state, &to, pane, vendor, locked, &envelope)
     })();
@@ -4026,6 +4034,10 @@ fn send_snapshot(
     }
     Ok(snap)
 }
+
+/// Why a message whose last line would end exactly at the input box's edge
+/// isn't typed: no cursor position could confirm it.
+const EDGE: &str = "the message would end exactly at the member's input box edge, where brg can't confirm what was typed; resize its pane, or hide the status sidebar with prefix S";
 
 fn paste_send(
     tmux: &Tmux,

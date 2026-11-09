@@ -329,7 +329,6 @@ impl View {
             return false;
         };
         text.len() <= 1024
-            && !self.ends_at_the_edge(text)
             && text
                 .split('\n')
                 .map(|line| line.chars().count().max(1).div_ceil(width))
@@ -685,8 +684,6 @@ mod tests {
         assert!(!v(4).ends_at_the_edge("abcdefghi"));
         // After a hard newline.
         assert!(v(3).ends_at_the_edge("a long line\nend"));
-        assert!(!v(18).can_verify_submission("brg: one two three", 40));
-        assert!(v(19).can_verify_submission("brg: one two three", 40));
     }
 
     #[test]

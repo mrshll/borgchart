@@ -1811,3 +1811,50 @@ fn a_focused_pane_beside_a_member_is_never_read_typed_into_or_stopped_for_it() {
     );
     assert_eq!(env.state_of("alpha"), "stopped");
 }
+
+#[test]
+fn send_refuses_a_message_that_would_end_at_the_input_box_edge() {
+    // Catches: a message pasted whose last line ends exactly at the box's
+    // edge, where no cursor position can confirm it, so Enter is withheld and
+    // the text left in the box; and that refusal described as a message too
+    // long to check.
+    let env = Env::new();
+    env.up();
+    env.wait_for("beta idle", |e| e.state_of("beta") == "idle");
+    let out = env.brg(&["send", "--external", "runtime-test", "beta", "first"]);
+    assert!(out.status.success(), "{out:?}");
+    env.wait_for("the first", |e| submissions(e, "beta").len() == 1);
+    // The next envelope's last line is as long as this one's (m1, then m2).
+    let last = submissions(&env, "beta")[0]
+        .lines()
+        .last()
+        .unwrap()
+        .chars()
+        .count();
+    let beta = env.m("beta");
+    let inst = env.instance().unwrap();
+    env.tmux(&[
+        "resize-window",
+        "-t",
+        &format!("=brg-{inst}:={beta}"),
+        "-x",
+        &(last + 2).to_string(),
+    ]);
+    std::thread::sleep(Duration::from_millis(400));
+    // The message is kept, and not typed.
+    let out = env.brg(&["send", "--external", "runtime-test", "beta", "first"]);
+    assert!(out.status.success(), "{out:?}");
+    let text = stdout(&out);
+    assert!(
+        text.contains("stored") && text.contains("edge") && !text.contains("budget"),
+        "{text}"
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(submissions(&env, "beta").len(), 1);
+    assert!(
+        !env.events("beta")
+            .iter()
+            .any(|e| e["event"] == "paste" && e["text"].as_str().is_some_and(|t| t.contains("m2"))),
+        "pasted"
+    );
+}
