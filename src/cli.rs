@@ -402,6 +402,9 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
             }
             let all: Vec<Instance> = match one {
                 Some(inst) => vec![inst],
+                // The line says what runs: an instance left out would be
+                // missing from it.
+                None if line => or_fail!(address::every_readable()),
                 None => or_fail!(address::every()),
             };
             let mut code = ExitCode::SUCCESS;
@@ -420,8 +423,9 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
                 }
             }
             if line {
-                // A refusal prints no line: "no members running" would be wrong.
-                if code == ExitCode::SUCCESS || !rows.is_empty() {
+                // A refusal prints no line: "no members running", or a line
+                // missing an instance's members, would be wrong.
+                if code == ExitCode::SUCCESS {
                     let ids: Vec<&str> = all.iter().map(|inst| inst.id.as_str()).collect();
                     println!("{}", runtime::status_line(&ids, &rows));
                 }

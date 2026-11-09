@@ -518,3 +518,61 @@ fn status_line_leaves_out_members_whose_program_exited() {
     crash("alpha");
     assert_eq!(env.line(&id), "no members running\n");
 }
+
+// Catches: a member whose program exited (its dead pane kept) shown in the
+// bar as running with an unknown state, so the bar never says nothing runs.
+#[test]
+fn status_line_leaves_out_members_whose_program_exited() {
+    let env = Env::new();
+    let id = env.create();
+    let alpha = env.member(&id, "alpha");
+    let crash = |role: &str| {
+        let member = env.member(&id, role);
+        let out = env.brg(&["send", &format!("{id}/{member}"), "crash 3"]);
+        assert!(out.status.success(), "{out:?}");
+        env.wait_for("the member exited", || env.state_of(&id, role) == "exited");
+    };
+    crash("beta");
+    assert_eq!(
+        env.line(&id),
+        format!("{}\n", mark("colour245", "○", &alpha))
+    );
+    crash("alpha");
+    assert_eq!(env.line(&id), "no members running\n");
+}
+
+// Catches: bare `--line` dropping an instance whose record can't be read and
+// printing the rest (or "no members running") as if that were everything.
+#[test]
+fn bare_status_line_fails_when_an_instance_cannot_be_read() {
+    let env = Env::new();
+    let running = env.create();
+    let team = env.path("team").display().to_string();
+    fs::create_dir_all(env.path("work2")).unwrap();
+    let work = env.path("work2").display().to_string();
+    let out = env.brg(&["create", &team, &work]);
+    assert!(out.status.success(), "{out:?}");
+    let reg: serde_json::Value =
+        serde_json::from_slice(&fs::read(env.path("state/registry.json")).unwrap()).unwrap();
+    let broken = reg["instances"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .find(|k| **k != running)
+        .unwrap()
+        .clone();
+    let out = env.brg(&["status", "--line"]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stdout).contains(&env.member(&running, "alpha")));
+
+    let record = env.path(&format!("state/{broken}/instance.json"));
+    assert!(record.exists(), "{record:?}");
+    fs::write(&record, "{not json").unwrap();
+    let out = env.brg(&["status", "--line"]);
+    assert!(!out.status.success(), "{out:?}");
+    assert!(out.stdout.is_empty(), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains(&broken),
+        "{out:?}"
+    );
+}
