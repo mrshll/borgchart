@@ -3458,6 +3458,48 @@ pub fn render_status(header: &str, rows: &[StatusRow]) -> String {
     )
 }
 
+/// A compact tmux status-right line; only live or attention-needed members.
+/// Names are qualified only when local IDs repeat across nested instances.
+pub fn render_status_line(rows: &[StatusRow]) -> String {
+    let members: Vec<_> = rows
+        .iter()
+        .filter(|row| row.kind == "member" && !matches!(row.state.as_str(), STOPPED | NOT_STARTED))
+        .collect();
+    let mut counts = BTreeMap::new();
+    for row in &members {
+        *counts.entry(row.name.as_str()).or_insert(0) += 1;
+    }
+    let items: Vec<_> = members
+        .into_iter()
+        .map(|row| {
+            let (style, glyph) = match row.state.as_str() {
+                "working" => ("fg=green", "●"),
+                "idle" | "done" => ("dim", "○"),
+                "blocked" => ("fg=red,bold", "◆"),
+                _ => ("default", "?"),
+            };
+            let name = if counts[row.name.as_str()] > 1 {
+                format!("{}/{}", row.instance, row.name)
+            } else {
+                row.name.clone()
+            };
+            let unread = row
+                .unread
+                .filter(|&n| n > 0)
+                .map_or_else(String::new, |n| format!(" #[fg=cyan]{n}✉#[default]"));
+            format!(
+                "#[{style}]{glyph}#[default] {}{unread}",
+                name.replace('#', "##")
+            )
+        })
+        .collect();
+    if items.is_empty() {
+        "no members running".into()
+    } else {
+        items.join("  ")
+    }
+}
+
 /// A row's identity stays unique when local IDs repeat in different copies.
 pub fn status_key(row: &StatusRow) -> String {
     match row.kind {

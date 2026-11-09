@@ -109,8 +109,11 @@ enum Command {
         /// The instance (default: every top-level instance and its copies).
         instance: Option<String>,
         /// Print the rows as JSON.
-        #[arg(long, conflicts_with_all = ["watch", "interactive"])]
+        #[arg(long, conflicts_with_all = ["watch", "interactive", "line"])]
         json: bool,
+        /// Print a compact line with tmux styles for status-right.
+        #[arg(long, conflicts_with_all = ["watch", "interactive"])]
+        line: bool,
         /// Refresh the table every few seconds.
         #[arg(short, long, conflicts_with = "interactive")]
         watch: bool,
@@ -365,6 +368,7 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
         Command::Status {
             instance,
             json,
+            line,
             watch,
             interactive,
             interval,
@@ -419,6 +423,8 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
                     "{}",
                     serde_json::to_string_pretty(&rows).unwrap_or_default()
                 );
+            } else if line {
+                println!("{}", runtime::render_status_line(&rows));
             } else if all.is_empty() {
                 println!("{}", address::known());
             } else {

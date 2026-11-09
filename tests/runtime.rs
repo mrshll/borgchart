@@ -1412,3 +1412,31 @@ fn walk(root: &Path) -> Vec<PathBuf> {
     }
     out
 }
+
+#[test]
+fn compact_status_line_shows_members_and_hides_stopped_rows() {
+    let env = Env::new();
+    env.up();
+    let output = env.brg(&["status", "--line"]);
+    assert!(output.status.success(), "{output:?}");
+    let text = stdout(&output);
+    assert_eq!(text.lines().count(), 1, "{text}");
+    assert!(text.contains(&env.m("alpha")), "{text}");
+    assert!(text.contains(&env.m("beta")), "{text}");
+    assert!(!text.contains("pager") && !text.contains("gamma"), "{text}");
+    assert!(!text.contains('\u{1b}'), "tmux styles, not ANSI: {text}");
+    assert!(env.brg(&["stop", "beta"]).status.success());
+    let text = stdout(&env.brg(&["status", "--line"]));
+    assert!(
+        text.contains(&env.m("alpha")) && !text.contains(&env.m("beta")),
+        "{text}"
+    );
+    assert!(env.brg(&["stop"]).status.success());
+    assert_eq!(
+        stdout(&env.brg(&["status", "--line"])).trim(),
+        "no members running"
+    );
+    for mode in ["--json", "--watch", "--interactive"] {
+        assert!(!env.brg(&["status", "--line", mode]).status.success());
+    }
+}
