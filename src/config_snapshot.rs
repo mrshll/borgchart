@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 /// A digest of the instance's configuration inputs, computed from their bytes
 /// (not from brg's internal types, so a compatible brg upgrade computes the
 /// same digest for the same files).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigSnapshot {
     pub version: u32,

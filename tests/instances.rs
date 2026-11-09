@@ -319,8 +319,6 @@ fn create_twice_makes_two_instances_with_suffixed_members() {
             .unwrap()
             .ends_with(&format!("{a}/notes"))
     );
-    assert!(start["env"].get("BORGCHART_FILE").is_none());
-    assert!(start["env"].get("BORGCHART_DEPLOYMENT").is_none());
     assert_eq!(
         start["cwd"].as_str().unwrap(),
         env.path("work/a")
@@ -718,34 +716,6 @@ fn status_w_with_an_instance_shows_only_that_instance() {
     drop(watch);
     env.ok(&["stop", &a]);
     env.ok(&["stop", &b]);
-}
-
-// --- 9. Removed names ---
-
-#[test]
-fn removed_commands_and_files_are_gone() {
-    let env = Env::new();
-    for args in [
-        vec!["up"],
-        vec!["down"],
-        vec!["status", "--file", "x"],
-        vec!["create", "--team", "x"],
-        vec!["stop", "x", "--team", "y"],
-        vec!["status", "--team", "x"],
-    ] {
-        let out = env.brg(&args);
-        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", both(&out));
-        let text = both(&out);
-        assert!(
-            text.contains("unrecognized subcommand") || text.contains("unexpected argument"),
-            "{args:?}: {text}"
-        );
-    }
-    // A `borgchart.yaml` in the team folder is not read.
-    env.write("teams/oncall/borgchart.yaml", "this: [is not read\n");
-    env.ok(&["validate", "oncall"]);
-    let inst = env.create("oncall", "work/a");
-    env.ok(&["stop", &inst]);
 }
 
 // --- 14. Configuration ---

@@ -31,7 +31,7 @@ const TEAM: &str = r#"
 plugins:
   pager:
     path: plugins/pager
-    env: [PAGER_TOKEN, {PAGER_ROOM: R0000EXAMPLE}]
+    env: {PAGER_TOKEN: , PAGER_ROOM: R0000EXAMPLE}
     actions:
       read: pager read <id>
 roles:
@@ -578,36 +578,33 @@ fn members_that_ran_and_ended_are_stopped() {
 }
 
 #[test]
-fn state_from_an_earlier_brg_reads_as_stopped_not_never_started() {
+fn a_damaged_start_record_is_refused_not_read_as_not_running() {
     let env = Env::new(false);
     env.up();
-    env.up_helper();
-    env.ok(&["stop", "helper"]);
     let meta_file = env.state_dir().join("start.json");
-    let mut meta = read_json(&meta_file);
-    // New state records every member's start history explicitly.
-    assert_eq!(meta["members"][env.m("lead")]["started"], true);
-    assert_eq!(meta["members"][env.m("helper")]["role"], "helper");
+    fs::write(&meta_file, "{\"team_dir\": ").unwrap();
 
-    // An earlier brg wrote no `started` field: history unknown.
-    for m in meta["members"].as_object_mut().unwrap().values_mut() {
-        m.as_object_mut().unwrap().remove("started");
+    // Reading it as "nothing recorded" would report the running lead as
+    // not running and leave its window up.
+    for args in [&["stop"][..], &["start"][..]] {
+        let out = env.brg(args);
+        assert!(!out.status.success(), "brg {args:?}:\n{}", both(&out));
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("start.json"),
+            "brg {args:?}:\n{}",
+            both(&out)
+        );
     }
-    fs::write(&meta_file, serde_json::to_vec_pretty(&meta).unwrap()).unwrap();
-    let helper = env.row("helper");
-    assert_eq!(helper["state"], "stopped", "{helper}");
-    assert!(helper.get("expected_running").is_none(), "{helper}");
-
-    env.up_helper();
-    env.ok(&["stop", "lead"]);
-    let out = env.ok(&["status"]);
-    assert_eq!(
-        env.shown(&stdout(&out)),
-        "oncall\n\
-         └─ lead           claude opus high     stopped (should be running)\n   \
-         └─ helper      codex example-model  idle\n"
+    assert!(!env.starts("lead").is_empty());
+    assert!(
+        env.tmux(&["list-windows", "-a"]).contains(&env.m("lead")),
+        "the lead's window was stopped"
     );
-    assert_eq!(env.row("lead")["expected_running"], true);
+
+    // Listing every instance still works.
+    let mut status = env.brg_cmd(&[]);
+    let out = status.arg("status").output().unwrap();
+    assert!(out.status.success(), "{}", both(&out));
 }
 
 /// Start `helper` into the running team from a caller environment built by

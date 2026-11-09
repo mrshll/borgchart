@@ -829,9 +829,12 @@ impl Env {
         write(
             &self.state.meta_file(),
             json!({"team_dir":folder,"folder":folder,
-            "brg":env!("CARGO_BIN_EXE_brg"),"base_env":{},"plugins":{},"members":{"m":{
+            "brg":env!("CARGO_BIN_EXE_brg"),
+            "config":{"version":1,"digest":"00","inputs":{}},
+            "socket":"brg-wake-test","windows_started":true,
+            "base_env":{},"plugins":{},"members":{"m":{
                 "role":"worker","vendor":vendor.as_str(),"posture":if locked {"locked"} else {"vendor"},
-                "interactive":interactive,"parent":null,"vendor_version":null
+                "interactive":interactive,"started":true,"parent":null,"vendor_version":null
             }}}),
         );
         write(

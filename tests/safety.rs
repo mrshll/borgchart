@@ -1,5 +1,5 @@
-//! Safety around instances: checkouts held across instances, old sessions,
-//! brg's own state folder, changed files and storage that can't be read.
+//! Safety around instances: checkouts held across instances, brg's own
+//! state folder, changed files and storage that can't be read.
 //!
 //! Run with `cargo test --features test-support`.
 #![cfg(feature = "test-support")]
@@ -158,26 +158,77 @@ fn killed_server_holds_checkout_until_full_stop_confirms_processes_gone() {
     env.ok(&["stop", &b]);
 }
 
-#[test]
-fn a_live_old_session_refuses_every_start() {
+/// An instance `A` running in `work/a`, whose start.json is then
+/// damaged: brg can no longer read which tmux server runs it.
+fn damaged_start_record() -> (Env, String) {
     let env = Env::new();
+    env.write("teams/oncall/team.yaml", TEAM);
     let a = env.create("oncall", "work/a");
-    env.ok(&["stop", &a]);
-    env.tmux(&[
-        "new-session",
-        "-d",
-        "-s",
-        "brg-oldteam-0a1b2c3d",
-        "sleep",
-        "60",
-    ]);
-    let err = env.fails(&["start", &a]);
-    assert!(err.contains("brg-oldteam-0a1b2c3d"), "{err}");
-    let err = env.fails(&["create", "oncall", &env.folder("work/b")]);
-    assert!(err.contains("brg-oldteam-0a1b2c3d"), "{err}");
-    env.tmux(&["kill-session", "-t", "=brg-oldteam-0a1b2c3d"]);
-    env.ok(&["start", &a]);
-    env.ok(&["stop", &a]);
+    fs::write(
+        env.path(&format!("state/{a}/start.json")),
+        "{\"team_dir\": ",
+    )
+    .unwrap();
+    (env, a)
+}
+
+fn lead_window_up(env: &Env, a: &str) -> bool {
+    env.tmux(&["list-windows", "-a", "-F", "#{window_name} #{pane_dead}"])
+        .lines()
+        .any(|l| l == format!("{} 0", env.member(a, "lead")))
+}
+
+#[test]
+fn a_damaged_start_record_keeps_the_reservation() {
+    let (env, a) = damaged_start_record();
+    let err = env.fails(&["create", "oncall", &env.folder("work/a")]);
+    assert!(err.contains("start.json"), "{err}");
+    assert_eq!(env.registry()["instances"].as_object().unwrap().len(), 1);
+    assert!(lead_window_up(&env, &a));
+}
+
+#[test]
+fn a_damaged_start_record_blocks_delete_even_with_force() {
+    let (env, a) = damaged_start_record();
+    let other = env.tmux.socket("brg-other");
+    for socket in [&env.socket, &other] {
+        for args in [&["delete", &a][..], &["delete", &a, "--force"][..]] {
+            let out = env
+                .cmd(args)
+                .env("BORGCHART_TMUX_SOCKET", socket)
+                .output()
+                .unwrap();
+            assert!(
+                !out.status.success(),
+                "{args:?} on {socket}: {}",
+                both(&out)
+            );
+            assert!(both(&out).contains("start.json"), "{}", both(&out));
+        }
+    }
+    assert!(env.path(&format!("state/{a}")).is_dir());
+    assert!(lead_window_up(&env, &a));
+}
+
+#[test]
+fn a_damaged_start_record_blocks_a_repoint() {
+    let (env, a) = damaged_start_record();
+    env.team("moved/oncall");
+    let record = env.path(&format!("state/{a}/instance.json"));
+    let before = (fs::read_to_string(&record).unwrap(), env.registry());
+    let other = env.tmux.socket("brg-other");
+    let out = env
+        .cmd(&["start", &a, "--team", &env.folder("moved/oncall")])
+        .env("BORGCHART_TMUX_SOCKET", &other)
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "{}", both(&out));
+    assert!(both(&out).contains("start.json"), "{}", both(&out));
+    assert_eq!(
+        (fs::read_to_string(&record).unwrap(), env.registry()),
+        before
+    );
+    assert!(lead_window_up(&env, &a));
 }
 
 // --- 7. Moved folders ---
@@ -286,10 +337,10 @@ fn locked_members_cant_work_around_the_team_folder_and_vendor_ones_get_a_note() 
     let a = first_word(&stdout(&out));
     env.ok(&["stop", &a]);
     env.ok(&["delete", &a]);
-    // `locked`: refused (a team without a bus may have `locked` members).
+    // `locked`: refused because the working folder includes the team files.
     env.write(
         "teams/oncall/team.yaml",
-        &TEAM.replace("bus: {}\n", "").replace(
+        &TEAM.replace(
             "  lead:\n    prompt: lead.md\n",
             "  lead:\n    prompt: lead.md\n    posture: locked\n",
         ),

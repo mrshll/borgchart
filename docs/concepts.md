@@ -1,6 +1,6 @@
 # Concepts
 
-**Status: partly built.** Teams, instances, `roles:`, suffixed member IDs, copies up to `max`, member deletion and member status work today. Bus members may manage only their declared children, using their latest start ID. Departments and the remaining command renames are planned. The old file fields go away outright, with no aliases.
+**Status: partly built.** Teams, instances, `roles:`, suffixed member IDs, copies up to `max`, member deletion and member status work today. Bus members may manage only their declared children, using their latest start ID. Teams as members (team roles whose members are child teams, #25) are being built: nesting in #83, delivery between stores after it. The remaining command renames are planned.
 
 ## Definitions and what runs from them
 
@@ -11,7 +11,6 @@ Each definition noun has an active noun, created from it by `brg create`.
 | **Team**: a folder you can share, holding `team.yaml`, its role files, includes and plugins | **Instance**: the team running in one working folder, with its members, messages and notes | `brg create dev-team ~/work/x` | `dev-team-k3f9`, `dev-team-p7xm` |
 | **Role**: a named part in a team (a role file, a vendor, a parent, whether it starts with the instance, how many copies may run) | **Member**: one running agent filling the role | `brg create dev-team-k3f9/implementer` | `implementer-x7k2`, `lead-q8m3` |
 
-- **No deployment file.** What used to be in one is now in the team, in brg's global configuration, in the folder given at `create`, or worked out by brg for each instance (below).
 - **Start:** one start of a member. It keeps today's unique start ID (incarnation); only a member's latest start may act as it.
 - **Unchanged:**
   - **Plugins:** a *plugin* is a program the team declares, and a *plugin process* is one that runs alongside the members.
@@ -108,9 +107,9 @@ Two folders with the same name can both run. Their instances are told apart by t
 
 **Parents are agent roles.** `parent: lead` names an agent role, and a member's parent is the member filling that role. So a parent role must have one member: `validate` refuses a `parent:` that names a team role or a role with `max > 1`. The same goes for a plugin's `delivers_to:`.
 
-**Recipients.** A message goes to one member, or from a team's root member to `external:NAME`. An instance isn't a recipient: a message naming only an instance (`dev-design-k3f9`) is refused, listing its members. For now a member's messages stay inside its own instance. Messages between chosen members of different instances, such as two teams' leads, are planned (#62): a person links a role in one instance with a role in another. The message format leaves room for them, so they need no second format change. A team that works as part of another, such as a design panel inside the dev team, becomes a department (#25) and shares its instance.
+**Recipients.** A message goes to one member, or from a team's root member to `external:NAME`. An instance isn't a recipient: a message naming only an instance (`dev-design-k3f9`) is refused, listing its members. For now a member's messages stay inside its own instance. A team that works as part of another, such as a design panel inside the dev team, is a team role of it (#25): a copy with its own instance and store, whose messages to and from its parent cross stores along that edge once delivery is built. Messages between chosen members of independent instances, such as two teams' leads, are planned after that (#62): a person links a role in one instance with a role in another. The message format leaves room for them, so they need no second format change.
 
-**Departments (#25).** A role can be a team, named as any team is. Its members (`ws-a7k2`) have their own sub-members (`dev-k3f9/ws-a7k2/lead-q8m3`), inside the department's instance, its one message store and its working folder.
+**Teams as members (#25).** A role can be a team, named by a path inside the declaring team's folder (`team: teams/dev-team`). Its members are copies (`dev-a7k2`): nested instances, each with its own members, message store, notes, state and frozen configuration, and a working folder inside its parent's. Teams form a tree: the member with no parent is the root. Addresses nest (`borgchart-engineering-h4k2/dev-a7k2/lead-c4nd`), and a copy's instance ID is its full path. Copies are created stopped, prepared by their parent and then started. A member may act on its whole subtree, and `stop` cascades deepest first. [teams.md](teams.md#teams-as-members) has the rules, and [`borgchart-engineering/`](../borgchart-engineering/) is the real tree.
 
 ## Lifetimes
 
@@ -124,7 +123,6 @@ Two folders with the same name can both run. Their instances are told apart by t
 - **Checkouts:** every operation that starts a member (`create`, `start`, `start --team`) checks its resolved working folder. It refuses if that folder is the same as, inside, or around a folder that another instance's member holds while running or while brg cannot tell it stopped. Members of one instance may share a folder. `{member_id}` in `cwd` is optional: without it, copies share the role's folder. If used, it must be the last folder name, with no `..`. When `cwd` ends in `{member_id}`, brg makes only the missing empty leaf when issuing a new member (`create`, or a full `start` that gives a `start: true` role a new member), for any `max`; ancestors must exist, and an existing leaf is used as is. The parent puts a worktree there before briefing the copy. Kept copies of a `{member_id}` role have separate folders, including through symlinks and while stopped. Starting an existing member never creates its folder, and `delete` leaves working folders alone. The checks, creation and reservation happen under one registry lock, so concurrent creates can't claim overlapping folders.
 - **A new message format:** brg refuses to start an instance whose messages it can't read, and points to `brg create` for a fresh instance (its open work has to be sent again). `stop` and liveness never parse messages, so they still work on the old instance. A stopped instance holds no checkout; `delete` of unreadable messages needs `--force` ("its contents can't be inspected"). No storage generations are needed.
 - **Durability:** brg refuses a state folder under `/tmp` or any other path cleaned by age. Reads scan the store; there is no index or archiving.
-- **The upgrade:** today's storage isn't converted. It stays on disk, unread. Stop every team before upgrading: brg refuses to start anything while a tmux session under an old name is alive.
 
 **Starts** keep today's IDs (incarnations), for fencing a replaced process, identifying its recorded tmux pane, liveness and stop. `BORGCHART_INCARNATION` is the current member start's ID, not a per-member number. Start records live in brg's own files outside messages. If their state is missing or unreadable, brg refuses to guess whether a member is stopped. Instance IDs are never reused, so a process left over from a deleted instance cannot act as a member of a new one.
 
@@ -145,75 +143,28 @@ dev-team-k3f9                       team ~/.config/borgchart/teams/dev-team/ · 
   - one line per member;
   - a role with no kept member gets `not created (start: false)` or `not created (start: true)`, following its `start` setting, or a dim `on demand (none created)` for `max > 1`. A created member that isn't running shows on its own line as `stopped`;
   - positive unread message counts appear beside members, also in `-i`; a zero adds nothing to the tree;
-  - department members nest.
+  - copies nest under their parent member, each with its full instance path.
 - **`--json` member rows:** `instance`, `team`, `member`, `role`, `parent` (a member ID), `start_id` (the current incarnation, when recorded), and the existing fields. A stop retains `start_id`; restarting changes it. With a readable bus, `unread` gives each kept member's unacked count, including zero. Without a bus it is absent; if the store cannot be read, counts are absent and status adds a short note. Deleted members have no rows. Plugin-process rows keep `kind: plugin` and their name.
-
-## Every use of "team" today
-
-| Today | Means | Proposed |
-| --- | --- | --- |
-| `brg up` / `down` / `status` "the team" (help, output) | the running thing | instance |
-| `brg ls` "your teams" | deployments and what runs from them | teams, each with its instances |
-| `[team/]member` (sessions design) | instance | `[instance/]member` |
-| team name from the deployment's folder | instance | `<team>-<suffix>`, where the team's name is its folder's |
-| errors: "team `x` was restarted", "no team named `x`" | instance | "instance `x`" |
-| `BORGCHART_DEPLOYMENT` (a storage key), `BORGCHART_TEAM` (earlier proposal) | instance | `BORGCHART_INSTANCE` |
-| JSON `team` (earlier proposal) | instance | `instance`, plus `team` (the team's name) |
-| `--team DIR`, or a lone `./team.yaml`: a team run without a deployment | the definition | every team runs this way now, as `brg create <team> <folder>`. There's no discovery from the current folder. `--team` remains only on `start`, to re-point a moved team. |
-| `team:` in `borgchart.yaml` | the team folder | removed, with the file |
-| "team directory", `team.yaml` | the definition | unchanged ("team folder") |
-| tmux session `brg-<name>-<hash>` | instance | `brg-<instance>` |
-| docs: "team" for the running thing | instance | "instance"; "team" only for the definition |
-
-## Other names
-
-| Where | Earlier name | Agreed name (partly built; see status above) |
-| --- | --- | --- |
-| `team.yaml` | `members:` | `roles:` |
-| | member file (`prompt: implementer.md`) | role file (same key) |
-| | `parent:`, `delivers_to:` name a member | name a role |
-| | frontmatter `role:` (required, unused) | dropped |
-| | plugin `env:` lists names | names, or `NAME: value` for a plain value; a name without a value is a secret |
-| `borgchart.yaml` | the whole file | removed. `auth`, `auto_trust`, `plugins_dir` and `tmux` go to `config.yaml`; `bus:` (without `root` or the ages), each member's `args` and `posture`, and plugin values go to `team.yaml`; `cwd` becomes the folder given at `create`; `task:` becomes the team's includes, or a message to the lead; `bus.root` becomes the instance's state folder. |
-| | `{instance}` in `cwd` | not needed: each instance has its own folder. `{member_id}` names a copy's folder. |
-| | `{member}` in `cwd` | `{member_id}`; the old spelling is refused. |
-| CLI | `brg up` | `create` (new instance or member) and `start` (existing ones) |
-| | `brg up --member X`, `brg down --member X` | `create <instance>/X` (a role), then `start` or `stop <instance>/<member>` |
-| | `brg down` | `brg stop` |
-| | `--forget` (sessions design) | `delete` |
-| | `--file`/`-f`, `$BORGCHART_FILE`, `./borgchart.yaml` | removed |
-| | secrets from the environment `brg up` runs in | unchanged: the environment `create` or `start` runs in; `brg secret <team>` checks which are set |
-| Output | `status --json` `name`, `kind` | `member`, `role`, `instance`, `team`, plus `unread` with a readable bus; `kind` stays |
-| | `not started` | `not created (start: false)` or `not created (start: true)`, for a role; `stopped`, for a member |
-| Records | message identity | `from` is a member ID or `external:NAME`; fields are `schema`, `id`, `seq`, `at`, `from`, `to`, optional `reply_to`, and `body`. Start IDs stay in brg's own files and acknowledgement identity. |
-| On disk | message and start records | `…/borgchart/<instance>/messages/` holds `store.json`, `lock`, `records/` and `acks/`; the current start is `members/<member>/incarnation.json`, with history in `members/<member>/incarnations/<id>.json`. |
-| | brg state `…/borgchart/<name>-<hash>/` | `…/borgchart/<instance>/`, with `messages/` and `notes/`, plus the registry of instances |
-| Docs | "member" for both the part and the agent, "deployment", "team" for the running thing, `up` | "role", "member", "start", "instance", the four verbs. Covers `format.md` (its `borgchart.yaml` section becomes `config.yaml`'s, and its older-shape steps), `teams.md`, `sessions.md`, `bus.md`, `cli.md`, the `--help` text, the example, and the `dev-team/` role files. |
 
 ## Environment variables
 
 Every `BORGCHART_*` variable that a member, plugin or test can see:
 
-| Today | Seen by | Proposed | Meaning |
-| --- | --- | --- | --- |
-| `BORGCHART_DEPLOYMENT` | members, plugins, alert actions | `BORGCHART_INSTANCE` | the instance (`dev-team-k3f9`). Today's value is a storage key. |
-| — | members, plugin actions | `BORGCHART_ROLE` | the role (`implementer`) |
-| `BORGCHART_MEMBER` | members, plugin actions | unchanged | the member (`implementer-x7k2`) |
-| `BORGCHART_INCARNATION` | members | unchanged | today's unique start ID; brg refuses a stopped or replaced start |
-| — | members | `BORGCHART_NOTES` | the instance's notes folder |
-| `BORGCHART_FILE` | members, plugins, the caller | removed | commands find the instance from `BORGCHART_INSTANCE` or `--instance` |
-| — | the caller, members, tests | `BORGCHART_CONFIG` | the global configuration file (default `~/.config/borgchart/config.yaml`); members get the caller's, so their own `brg create` finds the same teams |
-| `BORGCHART_BIN` | members, plugins | unchanged | the brg that started them |
-| `BORGCHART_PARENT` | plugin actions, copy roots' windows | unchanged | the calling member's parent; for copy roots, their parent's full address |
-| `BORGCHART_DELIVER_TO` | plugin processes | unchanged | the member a process hands work to (its `delivers_to` role's only member) |
-| `BORGCHART_STATE_DIR` | plugins | unchanged | the plugin's private folder |
-| `BORGCHART_TMUX_SOCKET` | members, plugins, tests | unchanged (decided) | which tmux server runs the instance |
-| `BORGCHART_TMUX_TMPDIR` (#47) | members, plugins, tests | unchanged (decided) | where that server keeps its socket; keeps test servers private |
-| `BORGCHART_STATE_HOME` | the caller, tests | unchanged | brg's state folder, holding every instance's state folder |
-| `BORGCHART_GATE_WAIT_MS` | the caller, tests | unchanged; a tuning knob | how long a start waits for a `locked` member's gate |
-| `BORGCHART_WAIT_MIN_MS`, `BORGCHART_WAIT_TIMEOUT_MS` | tests (test builds only) | unchanged | shorten the inbox wait's minimum and timeout |
-| `BORGCHART_QUALIFY`, `…_VENDORS`, `…_SUBMIT` | the manual vendor qualification test | unchanged | turn that test on and pick its vendors |
-
-## Effects on #24 and #25
-
-Their acceptance text says `brg up --member implementer` starts the next copy; that becomes `brg create <instance>/implementer`, and copies are named `implementer-<suffix>`. #25's departments are members whose role is a team, inside one instance and its working folder. Update both issues once the names are agreed.
+| Name | Seen by | Meaning |
+| --- | --- | --- |
+| `BORGCHART_INSTANCE` | members, plugins, alert actions | the instance (`dev-team-k3f9`) |
+| `BORGCHART_ROLE` | members, plugin actions | the role (`implementer`) |
+| `BORGCHART_MEMBER` | members, plugin actions | the member (`implementer-x7k2`) |
+| `BORGCHART_INCARNATION` | members | the member's current start ID; brg refuses a stopped or replaced start |
+| `BORGCHART_NOTES` | members | the instance's notes folder |
+| `BORGCHART_CONFIG` | the caller, members, tests | the global configuration file (default `~/.config/borgchart/config.yaml`); members get the caller's, so their own `brg create` finds the same teams |
+| `BORGCHART_BIN` | members, plugins | the brg that started them |
+| `BORGCHART_PARENT` | plugin actions; the members of a copy that have no parent role | the calling member's parent (a member); for a copy's top members, the full address of the member the copy belongs to |
+| `BORGCHART_DELIVER_TO` | plugin processes | the member a process hands work to (its `delivers_to` role's only member) |
+| `BORGCHART_STATE_DIR` | plugins | the plugin's private folder |
+| `BORGCHART_TMUX_SOCKET` | members, plugins, tests | which tmux server runs the instance |
+| `BORGCHART_TMUX_TMPDIR` | members, plugins, tests | where that server keeps its socket; keeps test servers private |
+| `BORGCHART_STATE_HOME` | the caller, tests | brg's state folder, holding every instance's state folder |
+| `BORGCHART_GATE_WAIT_MS` | the caller, tests | how long a start waits for a `locked` member's gate |
+| `BORGCHART_WAIT_MIN_MS`, `BORGCHART_WAIT_TIMEOUT_MS` | tests (test builds only) | shorten the inbox wait's minimum and timeout |
+| `BORGCHART_QUALIFY`, `…_VENDORS`, `…_SUBMIT` | the manual vendor qualification test | turn that test on and pick its vendors |
