@@ -41,8 +41,8 @@ enum Command {
     /// (`create <instance>/<role>`, up to its max of kept members).
     /// Team-role copies are created stopped; prepare their folders, then start them.
     /// Agent members and top-level instances are started. With a bus, a child role's parent role must have a member.
-    /// For a role target with a bus, a member caller must be
-    /// the role's parent, using its latest running start.
+    /// For a role target with a bus, a member caller must be an ancestor,
+    /// using its latest running start in its own instance.
     /// When `cwd` ends in `{member_id}`, brg makes the empty leaf when issuing
     /// a new member (create, or a full `start` that gives a `start: true` role
     /// a new member), for any max. An agent member's parent folder must already exist.
@@ -54,9 +54,8 @@ enum Command {
         folder: Option<String>,
     },
     /// Bring an instance to what should be running, or start one member.
-    /// Reuse kept members; never fill a role to max. For a member target
-    /// with a bus, a member caller must be its parent, using the parent's
-    /// latest running start.
+    /// Reuse kept members; never fill a role to max. With a bus, a member
+    /// caller may manage only its subtree, using its latest running start.
     Start {
         /// `<instance>`, or `<instance>/<member>`.
         target: String,
@@ -66,15 +65,15 @@ enum Command {
     },
     /// Stop an instance and all its copies deepest first, or one member.
     /// Stopping a stopped one changes nothing.
-    /// For a member target with a bus, a member caller must be its parent,
-    /// using the parent's latest running start.
+    /// With a bus, a member caller may manage only its subtree, using its
+    /// latest running start. A copy's roots cannot stop their own copy.
     Stop {
         /// `<instance>`, or `<instance>/<member>`.
         target: String,
     },
     /// Remove a stopped instance, or a stopped member (its ID stays issued).
-    /// For a member target with a bus, a member caller must be its parent,
-    /// using the parent's latest running start.
+    /// With a bus, a member caller may manage only its subtree, using its
+    /// latest running start. A copy's roots cannot delete their own copy.
     Delete {
         /// `<instance>`, or `<instance>/<member>`. A bare role is refused.
         target: String,

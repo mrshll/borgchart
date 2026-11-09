@@ -1614,8 +1614,8 @@ fn check_copy_folder(inst: &Instance, role: &crate::team::Role, id: &str) -> Res
     Ok(())
 }
 
-/// Parent authority for member lifecycle operations. The registry lock
-/// holds both the target's membership and the parent's latest start still.
+/// Member authority follows recorded parent edges, at any depth. Every
+/// caller holds the registry lock across this check and the change.
 /// Teams without a bus retain their existing caller rules.
 pub(crate) fn check_parent_authority(
     inst: &Instance,
@@ -1624,10 +1624,7 @@ pub(crate) fn check_parent_authority(
     target: Option<&str>,
 ) -> Result<(), String> {
     let creating = target.is_none();
-    let has_member_context = [context::ENV_MEMBER, context::ENV_INCARNATION]
-        .iter()
-        .any(|key| std::env::var(key).is_ok_and(|value| !value.is_empty()));
-    if !has_member_context && !creating {
+    if !has_member_context() && !creating {
         return Ok(());
     }
     let recorded = target.and_then(|id| state::read_meta(&inst.state)?.members.get(id).cloned());
@@ -1639,7 +1636,7 @@ pub(crate) fn check_parent_authority(
         {
             return Ok(());
         }
-        recorded.parent
+        recorded.parent.map(|parent| parent_address(inst, &parent))
     } else {
         let loaded;
         let v = match validated_team {
@@ -1651,6 +1648,12 @@ pub(crate) fn check_parent_authority(
         };
         if v.team.bus.is_none() {
             return Ok(());
+        }
+        if !creating {
+            return Err(format!(
+                "member `{}` has no recorded parent; ask a person to manage it",
+                inst.at(target.expect("existing member"))
+            ));
         }
         let parent_role = v.team.roles.get(role).map(|r| r.parent.as_deref())
             .or_else(|| v.team.team_roles.get(role).map(|r| r.parent.as_deref()))
@@ -1671,30 +1674,114 @@ pub(crate) fn check_parent_authority(
             ));
         }
         parent
+            .map(|parent| inst.at(&parent))
+            .or_else(|| inst.record.parent.clone())
     };
-    let caller = context::caller(None).map_err(|e| e.message)?;
+    check_subtree_authority(parent, &inst.at(target.unwrap_or(role)))
+}
+
+fn has_member_context() -> bool {
+    [context::ENV_MEMBER, context::ENV_INCARNATION]
+        .iter()
+        .any(|key| std::env::var(key).is_ok_and(|value| !value.is_empty()))
+}
+
+fn parent_address(inst: &Instance, parent: &str) -> String {
+    if parent.contains('/') {
+        parent.to_string()
+    } else {
+        inst.at(parent)
+    }
+}
+
+/// A copy belongs below its recorded parent member, never below its roots.
+fn check_instance_authority(inst: &Instance, v: Option<&Validated>) -> Result<(), String> {
+    if !has_member_context() {
+        return Ok(());
+    }
+    if state::read_meta(&inst.state).is_some() {
+        if crate::bus::store::open(&inst.state)
+            .is_err_and(|f| f.code == crate::bus::outcome::Code::NotConfigured)
+        {
+            return Ok(());
+        }
+    } else {
+        let loaded;
+        let v = match v {
+            Some(v) => v,
+            None => {
+                loaded = validated(inst)?;
+                &loaded
+            }
+        };
+        if v.team.bus.is_none() {
+            return Ok(());
+        }
+    }
+    check_subtree_authority(inst.record.parent.clone(), &inst.id)
+}
+
+fn check_subtree_authority(mut parent: Option<String>, target: &str) -> Result<(), String> {
     let context::Caller::Member {
         member,
         incarnation,
-    } = caller
+    } = context::caller(None).map_err(|e| e.message)?
     else {
         return Ok(());
     };
-    context::instance(Some(&inst.id)).map_err(|e| e.message)?;
-    if parent.as_deref() != Some(member.as_str()) {
+    // Targets may cross instance boundaries; the caller's start is always
+    // checked in its own instance, never in the target's store.
+    let own = context::instance(None).map_err(|e| e.message)?;
+    let caller = address::instance(&own)?;
+    let current = lifecycle::load_incarnation(&caller.state, &member)?;
+    if caller.record.role_of(&member).is_none()
+        || !current.is_some_and(|inc| {
+            inc.member == member
+                && inc.incarnation == incarnation
+                && inc.ended_at.is_none()
+                && inc
+                    .pane
+                    .is_some_and(|pane| lifecycle::pane_liveness(&pane) == Liveness::Alive)
+        })
+    {
         return Err(format!(
-            "only a person or role `{role}`'s parent member may manage its members; this caller is `{member}`"
+            "`{own}/{member}`'s start is incomplete, replaced or stopped; only its latest running start may manage its subtree"
         ));
     }
-    let current = lifecycle::load_incarnation(&inst.state, &member)?;
-    if !current.is_some_and(|inc| {
-        inc.member == member && inc.incarnation == incarnation && inc.ended_at.is_none()
-    }) {
-        return Err(format!(
-            "`{member}`'s start was replaced or stopped; only its latest running start may manage role `{role}`"
-        ));
+    let caller_address = caller.at(&member);
+    let refusal = format!(
+        "`{target}` is outside `{caller_address}`'s subtree; ask a person or an ancestor member to manage it"
+    );
+    if target == caller_address {
+        return Err(refusal);
     }
-    Ok(())
+    let mut seen = std::collections::BTreeSet::new();
+    while let Some(address) = parent {
+        if address == caller_address {
+            return Ok(());
+        }
+        if !seen.insert(address.clone()) {
+            break;
+        }
+        let Some((instance, member)) = address.rsplit_once('/') else {
+            break;
+        };
+        let ancestor = address::instance(instance)?;
+        if ancestor.record.role_of(member).is_none() {
+            break;
+        }
+        let meta = state::read_meta(&ancestor.state).ok_or_else(|| format!(
+            "instance `{instance}`'s start record cannot be read; ask a person to manage `{target}`"
+        ))?;
+        let recorded = meta.members.get(member).ok_or_else(|| {
+            format!("member `{address}` has no recorded parent; ask a person to manage `{target}`")
+        })?;
+        parent = recorded
+            .parent
+            .as_ref()
+            .map(|p| parent_address(&ancestor, p));
+    }
+    Err(refusal)
 }
 
 /// Whether any member or plugin process of the instance has a live window
@@ -1728,6 +1815,7 @@ fn repoint(inst: &mut Instance, team: &Path) -> Result<(), String> {
     }
     let lock = registry::lock()?;
     inst.reload()?;
+    check_instance_authority(inst, None)?;
     if is_running(inst) {
         return Err(format!(
             "instance `{}` is running; a new team folder applies only from a full stop: brg stop {}",
@@ -1833,6 +1921,8 @@ pub fn start(
     if let Some(id) = &member {
         address::member(&inst, id)?;
         check_parent_authority(&inst, inst.record.role_of(id).unwrap(), Some(&v), Some(id))?;
+    } else {
+        check_instance_authority(&inst, Some(&v))?;
     }
     match member {
         Some(id) => start_members(lock, &inst, &v, vec![id], false),
@@ -2064,8 +2154,10 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
 /// `brg delete <instance> [--force]`: remove a stopped instance's state
 /// folder (messages, notes, brg's files) and its registration. Its working
 /// folder is never touched.
-pub fn delete(inst: Instance, force: bool) -> Result<Vec<String>, String> {
+pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
     let lock = registry::lock()?;
+    inst.reload()?;
+    check_instance_authority(&inst, None)?;
     let state_lock = lifecycle::lock_state(&inst.state)?;
     let copies = crate::nesting::descendants(&inst)?;
     if !copies.is_empty() {
@@ -2351,8 +2443,12 @@ fn start_window(
 /// running, for the next `start`; stopping a stopped one changes nothing.
 pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> {
     let lock = registry::lock()?;
+    let mut current = inst.clone();
+    current.reload()?;
+    let inst = &current;
     let mut messages = Vec::new();
     if only.is_none() {
+        check_instance_authority(inst, None)?;
         for copy in crate::nesting::descendants(inst)? {
             messages.extend(
                 stop_one(&lock, &copy, None)?
