@@ -443,7 +443,14 @@ pub fn before_paste(vendor: Vendor, rules: &rules::RuleSet, snap: &Snapshot) -> 
         Reading::Empty if reading.state == State::Unknown => Some(WakeResult::Deferred(
             Defer::Uncertain("no state rule matched".into()),
         )),
-        Reading::Empty => None,
+        Reading::Empty => composer::view(vendor, &snap.screen, Some(snap.geometry))
+            .ok()
+            .filter(|v| v.ends_at_the_edge(REMINDER))
+            .map(|_| {
+                WakeResult::Deferred(Defer::Uncertain(
+                    "the reminder would fill its last line exactly, so it couldn't be checked before Enter".into(),
+                ))
+            }),
     }
 }
 

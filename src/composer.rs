@@ -293,6 +293,34 @@ impl View {
         false
     }
 
+    /// Whether `text`, wrapped as the vendors wrap it (at the last space
+    /// that keeps a line within the box, a longer word cut at the edge),
+    /// would end exactly at the box's right edge. The cursor after it would
+    /// then be past the pane's last column, wherever the vendor puts it, so
+    /// [`holds`](Self::holds) and [`holds_submission`](Self::holds_submission)
+    /// could never confirm it: check before typing, not after.
+    pub fn ends_at_the_edge(&self, text: &str) -> bool {
+        let Some(width) = self.text_width.filter(|width| *width > 0) else {
+            return false;
+        };
+        let last = text.rsplit('\n').next().unwrap_or("");
+        let mut line = 0;
+        for (i, word) in last.split(' ').enumerate() {
+            let n = word.chars().count();
+            line = if i == 0 {
+                n
+            } else if line + 1 + n <= width {
+                line + 1 + n
+            } else {
+                n
+            };
+            while line > width {
+                line -= width;
+            }
+        }
+        line == width
+    }
+
     /// Conservative ASCII-width estimate, not a vendor paste limit.
     /// Wide/combining characters can fail the exact post-paste check.
     /// Larger messages remain in the inbox without leaving a collapsed draft.
@@ -301,6 +329,7 @@ impl View {
             return false;
         };
         text.len() <= 1024
+            && !self.ends_at_the_edge(text)
             && text
                 .split('\n')
                 .map(|line| line.chars().count().max(1).div_ceil(width))
@@ -638,6 +667,26 @@ mod tests {
         v.cursor = Some((0, text.len()));
         v.text_width = None;
         assert!(!v.holds(text));
+    }
+
+    /// Catches: a text pasted whose last line would end at the box's edge,
+    /// where no cursor position can confirm it, so Enter is withheld and
+    /// the text left in the box.
+    #[test]
+    fn text_ending_at_the_edge_is_found_before_typing() {
+        let v = |width| view_of(&[""], width);
+        assert!(v(18).ends_at_the_edge("brg: one two three"));
+        assert!(!v(19).ends_at_the_edge("brg: one two three"));
+        // Wrapped at a space: only the last line counts.
+        assert!(v(6).ends_at_the_edge("aa bb ccc dd"));
+        assert!(!v(7).ends_at_the_edge("aa bb ccc dd"));
+        // A word longer than a line is cut at the edge.
+        assert!(v(4).ends_at_the_edge("abcdefgh"));
+        assert!(!v(4).ends_at_the_edge("abcdefghi"));
+        // After a hard newline.
+        assert!(v(3).ends_at_the_edge("a long line\nend"));
+        assert!(!v(18).can_verify_submission("brg: one two three", 40));
+        assert!(v(19).can_verify_submission("brg: one two three", 40));
     }
 
     #[test]
