@@ -42,6 +42,13 @@ struct ConfigRaw {
     teams: Option<Vec<String>>,
     plugins_dir: Option<String>,
     tmux: Option<TmuxRaw>,
+    seat: Option<SeatRaw>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SeatRaw {
+    cache_dir: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -109,6 +116,8 @@ pub struct Config {
     pub plugins_dir: Option<PathBuf>,
     /// Your own tmux config, loaded on brg's server when you opt in.
     pub tmux_user_config: Option<UserTmuxConfig>,
+    /// Optional owned private seating cache location.
+    pub seat_cache_dir: Option<PathBuf>,
 }
 
 fn home() -> Option<PathBuf> {
@@ -140,6 +149,7 @@ impl Default for Config {
             teams: vec![default_dir().join("teams")],
             plugins_dir: None,
             tmux_user_config: None,
+            seat_cache_dir: None,
         }
     }
 }
@@ -206,6 +216,10 @@ pub fn load_file(file: &Path, report: &mut Report) -> Option<Config> {
         teams,
         plugins_dir: raw.plugins_dir.as_deref().map(|p| expand_home(base, p)),
         tmux_user_config,
+        seat_cache_dir: raw
+            .seat
+            .and_then(|seat| seat.cache_dir)
+            .map(|p| expand_home(base, &p)),
     })
 }
 

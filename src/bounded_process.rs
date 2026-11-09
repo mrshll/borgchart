@@ -1,4 +1,5 @@
 //! Bounded direct child execution. Never invokes a shell or logs child data.
+use std::borrow::Cow;
 use std::io::{self, Read, Write};
 use std::os::fd::AsFd;
 use std::os::unix::process::CommandExt;
@@ -95,6 +96,35 @@ fn drain(
 /// process group. Nonzero exits are normal outputs. Errors discard output and
 /// contain no child-supplied text. Cleanup may take up to 250ms beyond deadline.
 pub fn run(command: &mut Command, input: Option<&[u8]>, limits: Limits) -> Result<Output, Error> {
+    drive(command, input, limits, false, |_| Ok(Action::Continue))?
+        .ok_or(Error::Io(io::ErrorKind::UnexpectedEof))
+}
+
+pub(crate) enum Action {
+    Continue,
+    Send(Vec<u8>),
+    Complete,
+}
+
+/// Exchange bounded protocol messages without closing stdin after each request.
+/// The callback sees new stdout bytes only. Completion kills/reaps the group;
+/// this does not claim that the child exited successfully.
+pub(crate) fn exchange(
+    command: &mut Command,
+    initial: &[u8],
+    limits: Limits,
+    advance: impl FnMut(&[u8]) -> Result<Action, Error>,
+) -> Result<(), Error> {
+    drive(command, Some(initial), limits, true, advance).map(|_| ())
+}
+
+fn drive(
+    command: &mut Command,
+    input: Option<&[u8]>,
+    limits: Limits,
+    interactive: bool,
+    mut advance: impl FnMut(&[u8]) -> Result<Action, Error>,
+) -> Result<Option<Output>, Error> {
     if Instant::now() >= limits.deadline {
         return Err(Error::Deadline);
     }
@@ -118,22 +148,25 @@ pub fn run(command: &mut Command, input: Option<&[u8]>, limits: Limits) -> Resul
     }
     nonblocking(&stdout)?;
     nonblocking(&stderr)?;
-    let mut remaining = input.unwrap_or_default();
+    let mut pending: Cow<'_, [u8]> = Cow::Borrowed(input.unwrap_or_default());
+    let mut written = 0;
     let (mut out, mut err) = (Vec::new(), Vec::new());
     let (mut out_eof, mut err_eof) = (false, false);
     loop {
         if Instant::now() >= limits.deadline {
             return Err(Error::Deadline);
         }
-        if remaining.is_empty() {
+        if written == pending.len() && !interactive {
             stdin.take();
         }
-        if let Some(pipe) = &mut stdin {
-            match pipe.write(remaining) {
+        if let Some(pipe) = &mut stdin
+            && written < pending.len()
+        {
+            match pipe.write(&pending[written..]) {
                 Ok(0) => {
                     return Err(Error::Io(io::ErrorKind::WriteZero));
                 }
-                Ok(n) => remaining = &remaining[n..],
+                Ok(n) => written += n,
                 Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
                     stdin.take();
                 }
@@ -145,21 +178,41 @@ pub fn run(command: &mut Command, input: Option<&[u8]>, limits: Limits) -> Resul
                 Err(e) => return Err(e.into()),
             }
         }
+        let before = out.len();
         if !out_eof {
             out_eof = drain(&mut stdout, &mut out, limits.stdout_bytes, Stream::Stdout)?;
         }
         if !err_eof {
             err_eof = drain(&mut stderr, &mut err, limits.stderr_bytes, Stream::Stderr)?;
         }
+        if interactive && out.len() > before {
+            match advance(&out[before..])? {
+                Action::Continue => {}
+                Action::Send(next) if written == pending.len() && stdin.is_some() => {
+                    pending = Cow::Owned(next);
+                    written = 0;
+                }
+                Action::Send(_) => return Err(Error::Io(io::ErrorKind::InvalidData)),
+                Action::Complete => {
+                    if Instant::now() >= limits.deadline {
+                        return Err(Error::Deadline);
+                    }
+                    return Ok(None);
+                }
+            }
+        }
+        if interactive && out_eof {
+            return Err(Error::Io(io::ErrorKind::UnexpectedEof));
+        }
         if let Some(status) = child.0.try_wait()?
             && out_eof
             && err_eof
         {
-            return Ok(Output {
+            return Ok(Some(Output {
                 status,
                 stdout: out,
                 stderr: err,
-            });
+            }));
         }
         std::thread::sleep(
             Duration::from_millis(2).min(limits.deadline.saturating_duration_since(Instant::now())),
