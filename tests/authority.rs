@@ -385,3 +385,82 @@ fn ancestors_manage_grandchildren_within_one_instance() {
     assert!(env.member(&dept, "aide").is_empty());
     env.ok(&["stop", &dept]);
 }
+
+fn restart_racing_create_refuses_the_old_start(role: &str) {
+    let env = department();
+    let dept = env.create("oncall", "work/a");
+    let lead = format!("{dept}/{}", env.member(&dept, "lead"));
+    let gate = env.path("create-gate");
+    let child = member_cmd(
+        &env,
+        &dept,
+        "lead",
+        0,
+        &["create", &format!("{dept}/{role}")],
+    )
+    .env("BORGCHART_TEST_CREATE_AUTHORITY_PAUSE", &gate)
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::piped())
+    .spawn()
+    .unwrap();
+    env.wait_for("create precheck completed", || {
+        gate.with_extension("waiting").exists()
+    });
+    env.ok(&["stop", &lead]);
+    env.ok(&["start", &lead]);
+    let before = env.registry();
+    fs::write(&gate, "").unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(!out.status.success(), "stale create {role}: {}", both(&out));
+    assert_eq!(env.registry(), before);
+    assert!(env.member(&dept, "helper").is_empty());
+    assert!(!env.path("work/a/dev").exists());
+    let out = member_cmd(
+        &env,
+        &dept,
+        "lead",
+        1,
+        &["create", &format!("{dept}/{role}")],
+    )
+    .output()
+    .unwrap();
+    assert!(
+        out.status.success(),
+        "current create {role}: {}",
+        both(&out)
+    );
+    env.ok(&["stop", &dept]);
+}
+
+#[test]
+fn parent_restart_racing_agent_create_refuses_the_old_start() {
+    restart_racing_create_refuses_the_old_start("helper");
+}
+
+#[test]
+fn parent_restart_racing_team_copy_create_refuses_the_old_start() {
+    restart_racing_create_refuses_the_old_start("dev");
+}
+
+#[test]
+fn missing_parent_records_do_not_grant_authority_from_live_config() {
+    let env = department();
+    let dept = env.create("oncall", "work/a");
+    env.ok(&["create", &format!("{dept}/helper")]);
+    let helper = env.member(&dept, "helper");
+    let target = format!("{dept}/{helper}");
+    env.ok(&["stop", &target]);
+    let path =
+        borgchart::state::StateDir::from_root(&env.path(&format!("state/{dept}"))).meta_file();
+    let original = fs::read(&path).unwrap();
+    let mut meta: serde_json::Value = serde_json::from_slice(&original).unwrap();
+    meta["members"].as_object_mut().unwrap().remove(&helper);
+    fs::write(&path, meta.to_string()).unwrap();
+    for verb in ["stop", "delete"] {
+        member_refused(&env, &dept, "lead", &[verb, &target]);
+        assert_eq!(env.member(&dept, "helper"), helper);
+    }
+    fs::write(path, original).unwrap();
+    member_ok(&env, &dept, "lead", &["delete", &target]);
+    env.ok(&["stop", &dept]);
+}

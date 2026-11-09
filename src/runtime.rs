@@ -1472,6 +1472,8 @@ fn rollback_pause() {}
 pub fn create_member(mut inst: Instance, role: &str) -> Result<UpOutcome, String> {
     let v = validated(&inst)?;
     if let Some(team_role) = v.team.team_roles.get(role) {
+        check_parent_authority(&inst, role, Some(&v), None)?;
+        create_authority_pause();
         return crate::nesting::create(inst, &v, role, team_role);
     }
     let Some(member) = v.team.roles.get(role) else {
@@ -1482,6 +1484,8 @@ pub fn create_member(mut inst: Instance, role: &str) -> Result<UpOutcome, String
         ));
     };
     precheck(&v, &[member], !is_running(&inst))?;
+    check_parent_authority(&inst, role, Some(&v), None)?;
+    create_authority_pause();
     let lock = registry::lock()?;
     inst.reload()?;
     check_parent_authority(&inst, role, Some(&v), None)?;
@@ -1508,6 +1512,24 @@ pub fn create_member(mut inst: Instance, role: &str) -> Result<UpOutcome, String
     lock.save_instance(&inst.state, &inst.record)?;
     start_members(lock, &inst, &v, vec![id], false)
 }
+
+/// Pause after the preliminary create check, before taking the registry
+/// lock. Tests can restart the caller here to exercise the locked recheck.
+#[cfg(feature = "test-support")]
+fn create_authority_pause() {
+    let Some(path) = std::env::var_os("BORGCHART_TEST_CREATE_AUTHORITY_PAUSE").map(PathBuf::from)
+    else {
+        return;
+    };
+    let _ = std::fs::write(path.with_extension("waiting"), "");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !path.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[cfg(not(feature = "test-support"))]
+fn create_authority_pause() {}
 
 /// Create only a new member's missing `{member_id}` leaf, after checking its
 /// unresolved path. Ancestors must exist; an existing leaf is kept as is.
@@ -1614,8 +1636,8 @@ fn check_copy_folder(inst: &Instance, role: &crate::team::Role, id: &str) -> Res
     Ok(())
 }
 
-/// Member authority follows recorded parent edges, at any depth. Every
-/// caller holds the registry lock across this check and the change.
+/// Member authority follows recorded parent edges, at any depth. Creation
+/// checks early, then every change repeats the check under the registry lock.
 /// Teams without a bus retain their existing caller rules.
 pub(crate) fn check_parent_authority(
     inst: &Instance,
