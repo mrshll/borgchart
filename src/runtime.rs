@@ -1617,7 +1617,7 @@ fn check_copy_folder(inst: &Instance, role: &crate::team::Role, id: &str) -> Res
 /// Parent authority for member lifecycle operations. The registry lock
 /// holds both the target's membership and the parent's latest start still.
 /// Teams without a bus retain their existing caller rules.
-fn check_parent_authority(
+pub(crate) fn check_parent_authority(
     inst: &Instance,
     role: &str,
     validated_team: Option<&Validated>,
@@ -1652,12 +1652,13 @@ fn check_parent_authority(
         if v.team.bus.is_none() {
             return Ok(());
         }
-        let definition = v.team.roles.get(role).ok_or_else(|| {
+        let parent_role = v.team.roles.get(role).map(|r| r.parent.as_deref())
+            .or_else(|| v.team.team_roles.get(role).map(|r| r.parent.as_deref()))
+            .ok_or_else(|| {
             format!(
                 "role `{role}` is no longer in the team; ask a person to stop or delete its members"
             )
         })?;
-        let parent_role = definition.parent.as_deref();
         let parent = parent_role.and_then(|p| inst.record.members_of(p).into_iter().next());
         if creating
             && parent.is_none()

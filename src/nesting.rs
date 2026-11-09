@@ -34,6 +34,7 @@ pub fn create(
 ) -> Result<UpOutcome, String> {
     let lock = registry::lock()?;
     inst.reload()?;
+    crate::runtime::check_parent_authority(&inst, role_name, Some(v), None)?;
     if let Some(meta) = state::read_meta(&inst.state)
         && meta.stopped_at.is_none()
     {
