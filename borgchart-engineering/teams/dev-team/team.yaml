@@ -5,8 +5,9 @@
 # `copies/`, beside `repo/`; the lead makes `copies/` once and prepares a
 # worktree there before each brief. It runs standalone
 # (`brg create ./borgchart-engineering/teams/dev-team <folder>`, with the
-# worktree at `<folder>/repo`) or as the department's `dev` role, where its
-# lead's parent is the department lead. See README.md.
+# worktree at `<folder>/repo`) or as a child team, the `dev` role of
+# borgchart-engineering, where its lead's parent is the root lead. See
+# README.md.
 #
 # Every member uses `vendor` posture: the bus doesn't support `locked`
 # members yet. Each member file names both vendors' models, so moving a
@@ -56,7 +57,7 @@ roles:
     parent: lead
     start: false
     cwd: repo
-  # The design panel (teams/dev-design-team): a nested copy the lead
+  # The design panel (teams/dev-design-team): a child team the lead
   # creates stopped, prepares (`work/`) and starts before costly-to-reverse
   # design choices, and deletes after. See orchestrator.md.
   design:

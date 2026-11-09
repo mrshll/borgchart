@@ -2,7 +2,7 @@
 
 These rules are part of every member's standing instruction. You work for your parent; the lead works for the repository's owner. Your own instructions files (the vendor's, such as `CLAUDE.md` or `AGENTS.md`) load as normal: follow them too, and where they are stricter, they win.
 
-**brg.** Call brg as `"$BORGCHART_BIN"`: it is the brg that started you, whatever your shell puts first on `PATH`. `"$BORGCHART_BIN" --help` and `"$BORGCHART_BIN" <command> --help` are the authority for syntax. Your instance is already set for you (`BORGCHART_INSTANCE`): name members by their full IDs (`implementer-x7k2`), and don't pass `--instance`. `"$BORGCHART_BIN" status` with no instance shows every instance and everything nested in them; `"$BORGCHART_BIN" status "$BORGCHART_INSTANCE"` shows your own instance's tree, with every member's ID and unread message count.
+**brg.** Call brg as `"$BORGCHART_BIN"`: it is the brg that started you, whatever your shell puts first on `PATH`. `"$BORGCHART_BIN" --help` and `"$BORGCHART_BIN" <command> --help` are the authority for syntax. Your instance is already set for you (`BORGCHART_INSTANCE`): name members by their full IDs (`implementer-x7k2`), and don't pass `--instance`. `"$BORGCHART_BIN" status` with no instance shows every instance, with its child teams; `"$BORGCHART_BIN" status "$BORGCHART_INSTANCE"` shows your own instance's tree, with every member's ID and unread message count.
 
 **Notes.** `$BORGCHART_NOTES` is your instance's notes folder, shared by its members and outside every checkout. Agreements, reports, logs and other private material go there, never in a checkout.
 
