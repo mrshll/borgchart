@@ -510,17 +510,34 @@ mod round {
                 .unwrap()
         }
 
-        /// Run a shell script inside `role`'s member, as its own tool call.
+        /// Execute fixture tools with the member's captured, fenced environment.
+        /// Fixture setup must not depend on typing into an interactive lead.
+        fn run_tool(&self, member: &str, path: &Path) {
+            let log =
+                fs::read_to_string(self.path(&format!("home/fake-agent/{member}.jsonl"))).unwrap();
+            let start: serde_json::Value = log
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .rfind(|event| event["event"] == "start")
+                .unwrap();
+            let env: std::collections::BTreeMap<String, String> =
+                serde_json::from_value(start["env"].clone()).unwrap();
+            let status = Command::new("/bin/sh")
+                .arg(path)
+                .env_clear()
+                .envs(env)
+                .current_dir(start["cwd"].as_str().unwrap())
+                .status()
+                .unwrap();
+            assert!(status.success(), "fixture tool: {status}");
+        }
+
         fn run_in(&self, role: &str, name: &str, script: &str) {
             let path = self.path(&format!("s/{name}.sh"));
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(&path, script).unwrap();
             self.wait_idle(role);
-            self.ok(&[
-                "send",
-                &self.at(role),
-                &format!("tool sh {}", path.display()),
-            ]);
+            self.run_tool(&self.m(role), &path);
         }
 
         fn wait_idle(&self, role: &str) {
@@ -673,6 +690,10 @@ mod round {
         assert!(!prompt.contains("{{"), "{prompt}");
         assert_eq!(start["env"]["BORGCHART_BIN"], env!("CARGO_BIN_EXE_brg"));
         assert_eq!(start["cwd"], repo.display().to_string());
+        let meta = team
+            .read(&format!("state/{}/start.json", team.inst()))
+            .unwrap();
+        assert_eq!(meta["members"][&lead]["interactive"], true);
         let notes = PathBuf::from(start["env"]["BORGCHART_NOTES"].as_str().unwrap());
         assert!(notes.is_dir(), "{notes:?}");
 
@@ -689,7 +710,7 @@ mod round {
         let brief_tmp = notes.join("change-brief.md.tmp");
         fs::write(&brief_tmp, format!("Task: a fictional change.\nScope: tests only.\nNon-goals: product changes.\nChecks: fake round.\nBranch: example/change.\nCheckout: {}\nReport: {}\nDeadline: 2026-11-09T00:00:00Z\n", copy_folder.display(), report.display())).unwrap();
         fs::rename(brief_tmp, &brief).unwrap();
-        let assign = documented(&lead_body, "\"$BORGCHART_BIN\" msg publish")
+        let assign = documented(&lead_body, "\"$BORGCHART_BIN\" send")
             .replace("<member>", &implementer)
             .replace("<brief path>", &brief.display().to_string());
         team.documented("lead", "brief", &assign, false);
@@ -754,9 +775,9 @@ mod round {
             ),
         );
         team.wait_for("the report", || report.exists());
-        let reply = documented(&base, "\"$BORGCHART_BIN\" msg publish")
+        let reply = documented(&base, "\"$BORGCHART_BIN\" send")
             .replace("<parent>", &lead)
-            .replace("<brief ID>", "m1")
+            .replace("<brief-ID>", "m1")
             .replace("<report path>", &report.display().to_string())
             .replace("<action-needed line>", "action-needed: none");
         team.documented("implementer", "report-reply", &reply, false);
@@ -1009,11 +1030,7 @@ mod round {
                 "for f in questions proposal; do echo none > \"$BORGCHART_NOTES/.tmp-$f\"; mv \"$BORGCHART_NOTES/.tmp-$f\" \"$BORGCHART_NOTES/$f-$BORGCHART_ROLE.md\"; done\n",
             )
             .unwrap();
-            team.ok(&[
-                "send",
-                &format!("{panel}/{member}"),
-                &format!("tool sh {}", script.display()),
-            ]);
+            team.run_tool(&member, &script);
         }
         let wait = rule
             .lines()
@@ -1145,6 +1162,8 @@ mod round {
             .instance_of("borgchart-engineering")
             .expect("the department's instance");
         let dept_lead = team.member_in(&dept, "lead");
+        let meta = team.read(&format!("state/{dept}/start.json")).unwrap();
+        assert_eq!(meta["members"][&dept_lead]["interactive"], true);
         let log = team.path(&format!("home/fake-agent/{dept_lead}.jsonl"));
         let start = first_start(&team, "the department lead", &log);
         assert_eq!(
@@ -1177,11 +1196,7 @@ mod round {
             )
             .unwrap();
             idle(&dept, &dept_lead);
-            team.ok(&[
-                "send",
-                &format!("{dept}/{dept_lead}"),
-                &format!("tool sh {}", path.display()),
-            ]);
+            team.run_tool(&dept_lead, &path);
             team.wait_for(&format!("{name} output"), || {
                 fs::read_to_string(&out).is_ok_and(|t| t.contains("exit "))
             });
@@ -1374,22 +1389,12 @@ mod round {
         team.create();
         let inst = team.inst();
         let lead = team.m("lead");
-        let note = team.path("note.json");
-        fs::write(
-            &note,
-            format!(r#"{{"to": "{lead}", "body": "Fictional note."}}"#),
-        )
-        .unwrap();
-        let note = note.display().to_string();
         team.ok(&[
-            "msg",
-            "publish",
+            "send",
             "--external",
             "owner",
-            "--record",
-            &note,
-            "--instance",
-            &inst,
+            &format!("{inst}/{lead}"),
+            "Fictional note.",
         ]);
         assert_eq!(
             json(&as_lead(&team, &["inbox", "--json"])).0["records"][0]["id"],
