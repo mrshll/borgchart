@@ -14,15 +14,13 @@ use instance_env::*;
 use serde_json::{Value, json};
 
 fn publish(env: &Env, instance: &str, draft: &Value) -> Output {
-    let mut command = env.cmd(&[
-        "msg",
-        "publish",
-        "--instance",
-        instance,
-        "--external",
-        "ops",
-        "--json",
-    ]);
+    let target = format!("{instance}/{}", draft["to"].as_str().unwrap());
+    let mut command = env.cmd(&["send", &target, "-", "--external", "ops", "--json"]);
+    if let Some(refs) = draft["reply_to"].as_array() {
+        for reference in refs {
+            command.args(["--reply-to", reference.as_str().unwrap()]);
+        }
+    }
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -34,7 +32,7 @@ fn publish(env: &Env, instance: &str, draft: &Value) -> Output {
         .stdin
         .take()
         .unwrap()
-        .write_all(draft.to_string().as_bytes())
+        .write_all(draft["body"].as_str().unwrap_or("").as_bytes())
     {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
@@ -144,18 +142,14 @@ fn plain_message_round_trip_and_missing_reference() {
 }
 
 #[test]
-fn a_draft_with_a_key_is_refused_naming_the_field() {
+fn removed_publish_and_record_input_are_refused() {
     let env = Env::new();
-    let instance = env.create("oncall", "work/a");
-    let lead = env.member(&instance, "lead");
-    let out = publish(
-        &env,
-        &instance,
-        &json!({"to": lead, "body": "hello", "key": "old"}),
-    );
-    assert_eq!(out.status.code(), Some(5), "{}", both(&out));
-    assert!(both(&out).contains("unknown field `key`"), "{}", both(&out));
-    env.ok(&["stop", &instance]);
+    let out = env
+        .cmd(&["msg", "publish", "--record", "old.json"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(both(&out).contains("unrecognized subcommand"));
 }
 
 #[test]
@@ -243,7 +237,7 @@ fn ack_refresh_catches_up_the_locked_tail_before_validating_acks() {
         .unwrap();
     lock.lock().unwrap();
     for (seq, to) in [(2, &helper), (3, &lead)] {
-        let record = json!({"schema": 2, "id": format!("m{seq}"), "seq": seq,
+        let record = json!({"schema": 3, "id": format!("m{seq}"), "seq": seq, "ack_required": true,
             "at": "2026-11-08T00:00:00Z", "from": "external:ops", "to": to,
             "body": "published during ack refresh"});
         borgchart::bus::fsx::write_new(
@@ -254,7 +248,7 @@ fn ack_refresh_catches_up_the_locked_tail_before_validating_acks() {
     }
     for (id, recipient) in [("m1", &lead), ("m2", &helper)] {
         let start = env.starts(recipient).last().unwrap().clone();
-        let ack = json!({"schema": 2, "id": id, "at": "2026-11-08T00:00:00Z",
+        let ack = json!({"schema": 3, "id": id, "at": "2026-11-08T00:00:00Z",
             "by": {"type": "member", "member": recipient,
                 "incarnation": start["env"]["BORGCHART_INCARNATION"]}});
         borgchart::bus::fsx::write_new(
@@ -375,7 +369,7 @@ fn polling_does_not_reread_an_old_record() {
     fs::set_permissions(&old, fs::Permissions::from_mode(0o000)).unwrap();
     // Simulate a whole committed next record: a real sender still refuses
     // damaged old data. This tests the wait's incremental reader only.
-    let record = json!({"schema": 2, "id": "m2", "seq": 2, "at": "2026-11-08T00:00:00Z", "from": "external:ops", "to": lead, "body": "new"});
+    let record = json!({"schema": 3, "id": "m2", "seq": 2, "ack_required": true, "at": "2026-11-08T00:00:00Z", "from": "external:ops", "to": lead, "body": "new"});
     borgchart::bus::fsx::write_new(
         &records.join("0000000002.json"),
         record.to_string().as_bytes(),
@@ -428,11 +422,11 @@ fn status_shows_unacked_counts_and_survives_store_damage() {
     assert!(env.row(&instance, "lead").get("unread").is_none());
     env.ok(&["stop", &instance]);
 
-    // No bus is the other boundary of the unread-count scenario.
+    // Bus storage is present even without explicit bus settings.
     let env = Env::new();
     env.write("teams/oncall/team.yaml", &TEAM.replace("bus: {}\n", ""));
     let instance = env.create("oncall", "work/a");
-    assert!(env.row(&instance, "lead").get("unread").is_none());
+    assert_eq!(env.row(&instance, "lead")["unread"], 0);
     let text = stdout(&env.ok(&["status", &instance]));
     assert!(
         !text.contains("unread") && !text.contains("messages unavailable"),

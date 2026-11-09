@@ -263,10 +263,17 @@ impl World {
 
     fn finish(mut w: World, path: String) -> World {
         w.env.insert("PATH".into(), w.private.path_with(&path));
-        w.env.insert(
-            "BORGCHART_STATE_HOME".into(),
-            w.scratch.join("state").display().to_string(),
-        );
+        let state = if w.mode == Mode::Live {
+            // Real brg refuses age-cleaned state homes. Keep live test state
+            // in this run's owned evidence tree, under the same cleanup guard.
+            let state = w.evidence.join("state");
+            w.private.also_remove(&state);
+            state
+        } else {
+            w.scratch.join("state")
+        };
+        w.env
+            .insert("BORGCHART_STATE_HOME".into(), state.display().to_string());
         w.env.insert(
             "BORGCHART_GATE_WAIT_MS".into(),
             w.limits.gate_ms.to_string(),

@@ -314,10 +314,14 @@ fn slack_round_trip_through_the_example_team() {
 
     // The triager escalates the urgent one (a real triager would decide this).
     let cmd = format!("tool slackbot escalate {urgent} high deploy");
-    assert!(run.brg(&["send", "triager", &cmd]).status.success());
+    assert!(
+        run.brg(&["send", "triager", &cmd, "--external", "test"])
+            .status
+            .success()
+    );
     run.wait("lead escalation", || {
         run.submissions("lead").iter().any(|s| {
-            s.starts_with(&format!(
+            s.contains(&format!(
                 "Escalation from {}: message ts={urgent}, severity=high, reason=deploy",
                 run.member("triager")
             ))
@@ -326,7 +330,11 @@ fn slack_round_trip_through_the_example_team() {
 
     // The lead replies in the thread.
     let cmd = format!("tool slackbot reply {urgent} 'Looking into the failing deploys now'");
-    assert!(run.brg(&["send", "lead", &cmd]).status.success());
+    assert!(
+        run.brg(&["send", "lead", &cmd, "--external", "test"])
+            .status
+            .success()
+    );
     run.wait("reply posted", || !slack.lock().unwrap().posted.is_empty());
     let posted = slack.lock().unwrap().posted[0].clone();
     assert_eq!(posted["channel"], "C0000EXAMPLE");
@@ -335,7 +343,11 @@ fn slack_round_trip_through_the_example_team() {
 
     // The triager can't reply: `reply` isn't granted to it.
     let cmd = format!("tool slackbot reply {urgent} 'sneaky'");
-    assert!(run.brg(&["send", "triager", &cmd]).status.success());
+    assert!(
+        run.brg(&["send", "triager", &cmd, "--external", "test"])
+            .status
+            .success()
+    );
     std::thread::sleep(Duration::from_secs(2));
     assert_eq!(slack.lock().unwrap().posted.len(), 1);
 

@@ -147,12 +147,6 @@ fn status_i_attaches_detaches_and_quits() {
         .find(|(_, member)| member["role"] == "alpha")
         .unwrap()
         .0;
-    let draft = root.join("message.json");
-    fs::write(
-        &draft,
-        serde_json::json!({"to": alpha, "body": "pending"}).to_string(),
-    )
-    .unwrap();
     for _ in 0..2 {
         let out = common::command(brg)
             .env_clear()
@@ -160,15 +154,12 @@ fn status_i_attaches_detaches_and_quits() {
             .env("BORGCHART_STATE_HOME", root.join("state"))
             .env("BORGCHART_CONFIG", root.join("home/config.yaml"))
             .args([
-                "msg",
-                "publish",
-                "--instance",
-                instance,
+                "send",
+                &format!("{instance}/{alpha}"),
+                "pending",
                 "--external",
                 "test",
-                "--record",
             ])
-            .arg(&draft)
             .output()
             .unwrap();
         assert!(out.status.success(), "{out:?}");

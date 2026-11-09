@@ -4,9 +4,8 @@
 # `design` role. Its parent creates a copy stopped, puts a detached worktree
 # at the baseline in the copy's `work/`, starts it, and deletes it after;
 # see ../../orchestrator.md. Designers exchange files with the lead (the
-# brief, questions, answers, proposals) in the copy's notes folder. The bus
-# is there because a copy's lifecycle, driven by its parent, needs it.
-bus: {}
+# brief, questions, answers, proposals) in the copy's notes folder. Every
+# team has a message store.
 
 roles:
   designer-claude:

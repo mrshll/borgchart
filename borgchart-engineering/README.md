@@ -36,7 +36,7 @@ These are the cutover steps. They work once nesting (D1) and delivery between a 
 4. **Make the lead's checkout:** `git clone <repository> <folder>/lead`, or add a worktree there from a checkout you already have. Set its hooks path as the repository's README says, and run `agent-gh --setup` there before the first commit.
 5. **Create the team:** `brg create <pinned copy> <folder>`. It prints the instance ID and its tree: the lead started, every other role not yet created.
 6. **Answer the folder-trust screens,** once per folder. When `brg status` shows a member `blocked`, run `brg attach <member address>`, answer, and detach.
-7. **Tell the lead what to work on.** Attach to it and say so, or publish a message to it as the dev team's README shows (`brg msg publish --external owner --instance <instance> --record brief.json`). It reaches you on GitHub: review requests from the dev leads, and comments when it needs you.
+7. **Tell the lead what to work on.** Attach to it and say so, or send a message to its inbox (`brg send --external owner <instance>/<lead-member> 'Read <brief path>'`). It reaches you on GitHub: review requests from the dev leads, and comments when it needs you.
 8. **Stop it:** `brg stop <instance>` stops every copy, deepest first, then the lead. `brg start <instance>` brings back what was running.
 
 ## Working rules
@@ -47,3 +47,5 @@ These are the cutover steps. They work once nesting (D1) and delivery between a 
 - **Machine-specific configuration stays local:** quota-reader paths and login/cache access do not belong in this folder. There is no private policy overlay.
 
 Before cutover, smoke-test seating, the build wrapper and `agent-gh` from the actual member environment: a GitHub read and an authorized test push whose pre-push checks use the bundled throttle automatically. Normal tool approvals still apply; team instructions do not override vendor approval settings. Arrange how GitHub reviews and comments reach the lead: this definition waits on the brg inbox and does not install a GitHub event watcher.
+
+The root and dev leads are `interactive: true`: sends store messages without typing, even with `--force`. Helpers use guarded typing by default. Messages between instances and nested workstream operation remain gated on D2 and the cutover smoke check above. Do not bypass this boundary with member identity overrides.
