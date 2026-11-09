@@ -539,7 +539,7 @@ fn start_members(
         None => {
             let base = base_env();
             Tmux::new(&state.tmux_conf(), base.clone())
-                .write_config(user_config.as_deref())
+                .write_config(user_config.as_deref(), &brg)
                 .map_err(|e| format!("cannot write tmux config: {e}"))?;
             let mut meta = Meta {
                 team_dir: v.team.dir.clone(),

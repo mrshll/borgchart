@@ -519,11 +519,23 @@ fn main() {
 
     let mut pending: Vec<u8> = Vec::new();
     let mut in_paste = false;
+    let columns = || {
+        rustix::termios::tcgetwinsize(rustix::stdio::stdout())
+            .map(|w| w.ws_col)
+            .unwrap_or(0)
+    };
+    let mut width = columns();
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(b) => pending.push(b),
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+        // Resized (a pane split beside it, or another client): redraw, as
+        // the vendors' programs do.
+        if columns() != width {
+            width = columns();
+            agent.draw();
         }
         if let Some(until) = agent.work_until
             && Instant::now() >= until

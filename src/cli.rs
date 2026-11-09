@@ -200,6 +200,14 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Run by brg's tmux hooks: add and remove the status sidebar to match
+    /// what the server's clients view, after toggling it for one client.
+    #[command(name = "_sidebar", hide = true)]
+    Sidebar {
+        socket: String,
+        #[arg(long)]
+        toggle: Option<String>,
+    },
     #[command(name = "_gate", hide = true)]
     Gate {
         event: String,
@@ -565,6 +573,10 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
             state,
             member,
         } => crate::gate::hook_main(&event, &state, &member),
+        Command::Sidebar { socket, toggle } => {
+            or_fail!(crate::sidebar::run(&socket, toggle.as_deref()));
+            ExitCode::SUCCESS
+        }
     }
 }
 

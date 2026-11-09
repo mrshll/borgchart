@@ -23,6 +23,7 @@ pub mod proctree;
 pub mod registry;
 pub mod rules;
 pub mod runtime;
+pub mod sidebar;
 pub mod state;
 pub mod team;
 pub mod tmux;

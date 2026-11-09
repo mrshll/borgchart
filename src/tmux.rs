@@ -43,15 +43,49 @@ set -as terminal-features ',*:RGB'
 /// so a later start can tell when the running server differs from what it asks.
 pub const USER_CONFIG_OPTION: &str = "@brg-user-config";
 
-/// The config text: brg's own, or, with `user` (a path without `'` or a
-/// newline), brg's, then that file, then brg's required options again.
-pub fn config_text(user: Option<&Path>) -> String {
+/// The sidebar's hooks and `prefix S`, with `brg` the absolute path of the
+/// brg writing the config: each runs `brg _sidebar` for the server, in the
+/// background, with the server's environment, which brg started it with.
+fn sidebar_config(brg: &Path) -> String {
+    // run-shell expands its command as a format, then sh runs it: the path
+    // comes from an option, quoted for sh by `q:`.
+    let sync = "#{q:@brg-bin} _sidebar #{q:socket_path}";
+    let shell = |args: &str| quote(&format!("{sync}{args} >/dev/null 2>&1"));
+    let mut text = format!("set -g @brg-bin {}\n", quote(&brg.display().to_string()));
+    for hook in [
+        "client-attached",
+        "client-detached",
+        "client-resized",
+        "client-session-changed",
+        "session-window-changed",
+    ] {
+        let run = format!("run-shell -b {}", shell(""));
+        text.push_str(&format!("set-hook -g {hook} {}\n", quote(&run)));
+    }
+    text.push_str(&format!(
+        "bind-key S run-shell -b {}\n",
+        shell(" --toggle #{client_pid}")
+    ));
+    text
+}
+
+/// `text` as one word for tmux's command parser, which reads nothing inside
+/// single quotes: `'` itself goes in double quotes.
+fn quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\"'\"'"))
+}
+
+/// The config text: brg's own, then the sidebar's (for `brg`, the brg that
+/// writes it), or, with `user` (a path without `'` or a newline), those,
+/// then that file, then brg's required options again.
+pub fn config_text(user: Option<&Path>, brg: &Path) -> String {
+    let own = format!("{CONFIG}{}", sidebar_config(brg));
     let Some(user) = user else {
-        return CONFIG.to_string();
+        return own;
     };
     let user = user.display();
     format!(
-        "{CONFIG}set -gF @brg-default-terminal '#{{default-terminal}}'\nset -gF @brg-default-shell '#{{default-shell}}'\nsource-file -q '{user}'\n{REQUIRED}set -g {USER_CONFIG_OPTION} '{user}'\n"
+        "{own}set -gF @brg-default-terminal '#{{default-terminal}}'\nset -gF @brg-default-shell '#{{default-shell}}'\nsource-file -q '{user}'\n{REQUIRED}set -g {USER_CONFIG_OPTION} '{user}'\n"
     )
 }
 
@@ -141,8 +175,8 @@ impl Tmux {
         }
     }
 
-    pub fn write_config(&self, user: Option<&Path>) -> std::io::Result<()> {
-        crate::state::write_script(&self.config, &config_text(user))?;
+    pub fn write_config(&self, user: Option<&Path>, brg: &Path) -> std::io::Result<()> {
+        crate::state::write_script(&self.config, &config_text(user, brg))?;
         std::fs::set_permissions(
             &self.config,
             std::os::unix::fs::PermissionsExt::from_mode(0o600),
