@@ -310,6 +310,10 @@ fn status_nests_copies_once_with_full_paths_and_states() {
         }
     }
     env.ok(&["start", &format!("{first}/{lead}")]);
+    let line = stdout(&env.ok(&["status", &dept, "--line"]));
+    assert!(line.contains(&format!("{first}/{lead}")), "{line}");
+    assert!(line.contains(&format!("{second}/{lead}")), "{line}");
+    assert!(line.contains(&panel_lead), "{line}");
     let rows = env.rows(&dept);
     assert_eq!(
         rows.iter()

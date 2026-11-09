@@ -16,6 +16,11 @@ set -g update-environment ''
 set -g allow-rename off
 set -g status-left '[brg #{session_name}] '
 set -g status-left-length 40
+set -g status-position top
+set -g status-interval 5
+set -g status-right-length 1000
+set -g status-right '#(#{q:@brg-status-bin} status --line --socket #{q:socket_path})  '
+bind-key S if-shell -F '#{&&:#{e|>:#{client_width},68},#{e|>:#{client_height},20}}' { run-shell -b 'tmux -S #{q:socket_path} display-popup -c #{q:client_name} -E -x #{e|-:#{client_width},66} -y 18 -w 64 -h 16 #{q:@brg-status-bin} status -i --socket #{q:socket_path} --switch-client #{q:client_name}' } { run-shell -b 'tmux -S #{q:socket_path} display-popup -c #{q:client_name} -E -x C -y C -w 90% -h 75% #{q:@brg-status-bin} status -i --socket #{q:socket_path} --switch-client #{q:client_name}' }
 set -as terminal-features ',*:RGB'
 ";
 

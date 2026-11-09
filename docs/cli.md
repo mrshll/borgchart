@@ -49,6 +49,31 @@
 - **Inactive gate:** `send` refuses any `locked` member whose gate has not reported in, and `status` shows it as `gate-inactive`.
 - **Copy mode:** a member's pane that tmux has in copy mode (or another mode, after scrolling back in `brg attach`) would send keys to tmux, not the member. So `send`, the wake and a start's folder-trust answering type nothing into it until it leaves that mode (usually `q`), and `status` adds that to the member's details.
 
+## Status while attached
+
+The default tmux status bar sits at the top. Its right side refreshes every five
+seconds with member names, state glyphs and unread counts: green ● working, dim ○
+idle/done, red ◆ blocked, and ? for other states. Stopped members are hidden.
+`brg status --line` produces this compact output with tmux styles; an optional
+instance limits it to that tree. Duplicate member names include their instance
+paths. Text, JSON and watch output keep their existing formats.
+
+Press the tmux prefix (normally Ctrl-b), then **S** to open the status popup near
+the top-right corner. Use j/k or the arrow keys to select a member, Enter to switch
+that client to its window, and q to close. The popup includes nested members on
+that tmux server. It creates no nested attach client and leaves other clients
+alone. A failed switch stays visible in the popup.
+
+The popup is modal while open; the status line stays visible during ordinary
+work. It overlays panes without changing their sizes. On smaller terminals it
+uses a smaller, centered area and the selected row scrolls into view. This uses
+tmux 3.2 or later. User tmux configuration can override the status position,
+visibility and binding, including keeping the status bar off or using two rows.
+
+Existing tmux servers load these defaults on their next restart; upgrading brg
+alone does not replace a running server's display settings. Each successful
+`create` or `start` refreshes the executable used by status callbacks.
+
 ## States
 
 `status` reads each member's state from its screen with per-vendor rules (bundled; override in `$XDG_CONFIG_HOME/borgchart/rules/<vendor>.yaml`):

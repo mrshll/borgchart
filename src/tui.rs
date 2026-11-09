@@ -2,6 +2,7 @@
 //! screen), for one instance or, with none named, every instance.
 
 use std::io::Write;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -65,29 +66,38 @@ struct Section {
 
 /// The named instance, or every instance read from the registry now. With
 /// every instance, one whose status fails shows its error as its header.
-fn load(one: Option<&Instance>) -> Result<Vec<Section>, String> {
+fn load(one: Option<&Instance>, socket: Option<&Path>) -> Result<Vec<Section>, String> {
     let section = |inst: Instance, rows: Result<Vec<StatusRow>, String>| match rows {
-        Ok(rows) => Section {
-            header: runtime::header(&inst),
-            inst,
-            rows,
-        },
+        Ok(mut rows) => {
+            if let Some(socket) = socket {
+                runtime::retain_server_rows(&mut rows, socket);
+            }
+            Section {
+                header: runtime::header(&inst),
+                inst,
+                rows,
+            }
+        }
         Err(e) => Section {
             header: format!("{}: {e}", inst.id),
             inst,
             rows: Vec::new(),
         },
     };
-    match one {
-        Some(inst) => Ok(vec![section(inst.clone(), Ok(runtime::status(inst)?))]),
-        None => Ok(address::every()?
+    let mut sections = match one {
+        Some(inst) => vec![section(inst.clone(), Ok(runtime::status(inst)?))],
+        None => address::every()?
             .into_iter()
             .map(|inst| {
                 let rows = runtime::status(&inst);
                 section(inst, rows)
             })
-            .collect()),
+            .collect(),
+    };
+    if socket.is_some() {
+        sections.retain(|section| !section.rows.is_empty());
     }
+    Ok(sections)
 }
 
 /// The screen's lines: (section, row), where no row is the section's
@@ -117,6 +127,11 @@ fn state_style(row: &StatusRow) -> Style {
     }
 }
 
+struct ScreenOptions<'a> {
+    note: Option<&'a str>,
+    compact: bool,
+}
+
 fn draw(
     frame: &mut ratatui::Frame,
     title: &str,
@@ -124,7 +139,7 @@ fn draw(
     headers: bool,
     table_state: &mut TableState,
     message: &str,
-    note: Option<&str>,
+    options: ScreenOptions<'_>,
 ) {
     let [top, bottom] =
         Layout::vertical([Constraint::Min(3), Constraint::Length(2)]).areas(frame.area());
@@ -167,7 +182,16 @@ fn draw(
                 _ => cols.insert(0, String::new()),
             }
             let [vendor, state, detail] = <[String; 3]>::try_from(cols).unwrap_or_default();
-            [name, vendor, state, detail]
+            [
+                name,
+                if options.compact {
+                    String::new()
+                } else {
+                    vendor
+                },
+                state,
+                detail,
+            ]
         })
         .collect();
     // Each column as wide as its widest cell, as `brg status` aligns them.
@@ -179,12 +203,28 @@ fn draw(
             .unwrap_or(0) as u16
             + 2
     };
-    let widths = [
-        Constraint::Length(width(0)),
-        Constraint::Length(width(1)),
-        Constraint::Length(width(2)),
-        Constraint::Min(10),
-    ];
+    let widths = if options.compact && frame.area().width < 50 {
+        [
+            Constraint::Min(18),
+            Constraint::Length(0),
+            Constraint::Length(9),
+            Constraint::Length(0),
+        ]
+    } else if options.compact {
+        [
+            Constraint::Percentage(48),
+            Constraint::Length(0),
+            Constraint::Percentage(25),
+            Constraint::Min(8),
+        ]
+    } else {
+        [
+            Constraint::Length(width(0)),
+            Constraint::Length(width(1)),
+            Constraint::Length(width(2)),
+            Constraint::Min(10),
+        ]
+    };
     let body: Vec<Row> = cells
         .into_iter()
         .zip(&lines)
@@ -212,7 +252,7 @@ fn draw(
     // Each visible header line across the whole row, as `brg status` prints it.
     let inner = top.inner(Margin::new(1, 1));
     // Every instance, and there are none: say so, as `brg status` does.
-    if let Some(note) = note {
+    if let Some(note) = options.note {
         frame.render_widget(Paragraph::new(format!("  {note}")), inner);
     }
     let offset = table_state.offset();
@@ -235,8 +275,11 @@ fn draw(
             Rect::new(inner.x, y, inner.width, 1),
         );
     }
-    let help =
-        Line::from("j/k move · enter attach (detach: tmux prefix, then d) · r refresh · q quit");
+    let help = Line::from(if options.compact {
+        "j/k move · enter switch · q close"
+    } else {
+        "j/k move · enter attach (detach: tmux prefix, then d) · r refresh · q quit"
+    });
     frame.render_widget(
         Paragraph::new(vec![Line::from(message.to_string()), help]),
         bottom,
@@ -245,14 +288,22 @@ fn draw(
 
 /// `brg status -i`. With no instance, every instance, each under its
 /// header line; Enter attaches in the selected member's own instance.
-pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
-    let mut sections = load(one)?;
+pub fn interactive(
+    one: Option<&Instance>,
+    socket: Option<&Path>,
+    client: Option<&str>,
+) -> Result<(), String> {
+    let mut sections = load(one, socket)?;
     let headers = one.is_none();
     // One instance: the same header line as `brg status` (the instance, its
     // team folder and its working folder) as the title.
-    let title = match one {
-        Some(inst) => runtime::header(inst),
-        None => "instances".to_string(),
+    let title = if client.is_some() {
+        "brg status".to_string()
+    } else {
+        match one {
+            Some(inst) => runtime::header(inst),
+            None => "instances".to_string(),
+        }
     };
     let mut table_state = TableState::default().with_selected(Some(0));
     let mut message = String::new();
@@ -264,7 +315,11 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
         if table_state.selected().is_some_and(|s| s >= lines.len()) {
             table_state.select(Some(lines.len().saturating_sub(1)));
         }
-        let note = (headers && sections.is_empty()).then(address::known);
+        let note = if socket.is_some() && sections.is_empty() {
+            Some("no members on this tmux server".to_string())
+        } else {
+            (headers && sections.is_empty()).then(address::known)
+        };
         if let Err(e) = terminal.draw(|f| {
             draw(
                 f,
@@ -273,7 +328,10 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
                 headers,
                 &mut table_state,
                 &message,
-                note.as_deref(),
+                ScreenOptions {
+                    note: note.as_deref(),
+                    compact: client.is_some(),
+                },
             )
         }) {
             break Err(e.to_string());
@@ -283,7 +341,7 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
         match polled {
             Err(e) => break Err(e),
             Ok(false) => {
-                if let Ok(s) = load(one) {
+                if let Ok(s) = load(one, socket) {
                     sections = s;
                 }
                 last = Instant::now();
@@ -310,7 +368,7 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
                 table_state.select(Some(selected.saturating_sub(1)))
             }
             KeyCode::Char('r') => {
-                if let Ok(s) = load(one) {
+                if let Ok(s) = load(one, socket) {
                     sections = s;
                 }
                 message.clear();
@@ -343,6 +401,15 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
                         continue;
                     }
                 };
+                if let (Some(socket), Some(client)) = (socket, client) {
+                    match runtime::switch_client(&inst, &name, socket, client) {
+                        Ok(()) => break Ok(()),
+                        Err(error) => {
+                            message = error;
+                            continue;
+                        }
+                    }
+                }
                 ratatui::restore();
                 let outcome = runtime::attach_and_wait(&inst, &name);
                 terminal = match ratatui::try_init() {
@@ -354,7 +421,7 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
                     Ok(()) => format!("back from {name}"),
                     Err(e) => e,
                 };
-                if let Ok(s) = load(one) {
+                if let Ok(s) = load(one, socket) {
                     sections = s;
                 }
                 last = Instant::now();

@@ -1124,6 +1124,18 @@ fn start_members(
         }
     }
 
+    // The running server reads its config only once. Keep callbacks on the
+    // executable used by this successful start, without overriding user display settings.
+    if tmux.has_session(&session)
+        && let Err(error) = tmux.ok(&[
+            "set-option",
+            "-g",
+            "@brg-status-bin",
+            &brg.display().to_string(),
+        ])
+    {
+        eprintln!("brg: could not refresh status callbacks: {error}");
+    }
     let nodes = member_nodes(inst, v, |id| outcomes.get(id).cloned().unwrap_or_default());
     let plugins: Vec<(String, Vec<String>)> = plugin_outcomes
         .into_iter()
@@ -3458,6 +3470,29 @@ pub fn render_status(header: &str, rows: &[StatusRow]) -> String {
     )
 }
 
+/// Whether an instance belongs to this exact live tmux socket.
+fn instance_on_socket(inst: &Instance, socket: &Path) -> bool {
+    let Some(recorded) = state::read_meta(&inst.state).and_then(|meta| meta.socket_path) else {
+        return false;
+    };
+    match (recorded.canonicalize(), socket.canonicalize()) {
+        (Ok(recorded), Ok(socket)) => recorded == socket,
+        _ => false,
+    }
+}
+
+/// Scope a status view to the originating server, including nested members.
+pub fn retain_server_rows(rows: &mut Vec<StatusRow>, socket: &Path) {
+    let mut matches = BTreeMap::new();
+    rows.retain(|row| {
+        *matches.entry(row.instance.clone()).or_insert_with(|| {
+            address::instance(&row.instance)
+                .ok()
+                .is_some_and(|inst| instance_on_socket(&inst, socket))
+        })
+    });
+}
+
 /// A compact tmux status-right line; only live or attention-needed members.
 /// Names are qualified only when local IDs repeat across nested instances.
 pub fn render_status_line(rows: &[StatusRow]) -> String {
@@ -3774,6 +3809,30 @@ fn attach_command(inst: &Instance, name: &str) -> Result<Command, String> {
 pub fn attach(inst: &Instance, name: &str) -> Result<(), String> {
     let err = attach_command(inst, name)?.exec();
     Err(format!("cannot start tmux: {err}"))
+}
+
+/// Move the popup's originating client; never create a nested tmux client.
+pub fn switch_client(
+    inst: &Instance,
+    name: &str,
+    socket: &Path,
+    client: &str,
+) -> Result<(), String> {
+    if !instance_on_socket(inst, socket) {
+        return Err("the member is not on this tmux server".into());
+    }
+    let session = inst.state.session();
+    let tmux = tmux_for(&inst.state).with_socket(&socket.display().to_string());
+    let window =
+        window_name(inst, &tmux, &session, name).map_err(|_| format!("{name} is not running"))?;
+    tmux.ok(&[
+        "switch-client",
+        "-c",
+        client,
+        "-t",
+        &target(&session, &window),
+    ])?;
+    Ok(())
 }
 
 /// Attach, and return when the client detaches (used by `status -i`).

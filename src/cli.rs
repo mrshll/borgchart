@@ -114,6 +114,12 @@ enum Command {
         /// Print a compact line with tmux styles for status-right.
         #[arg(long, conflicts_with_all = ["watch", "interactive"])]
         line: bool,
+        /// Limit the view to the popup's originating tmux server.
+        #[arg(long, hide = true, conflicts_with = "watch")]
+        socket: Option<PathBuf>,
+        /// Switch the originating client instead of attaching inside the popup.
+        #[arg(long, hide = true, requires_all = ["interactive", "socket"])]
+        switch_client: Option<String>,
         /// Refresh the table every few seconds.
         #[arg(short, long, conflicts_with = "interactive")]
         watch: bool,
@@ -369,6 +375,8 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
             instance,
             json,
             line,
+            socket,
+            switch_client,
             watch,
             interactive,
             interval,
@@ -387,7 +395,11 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
             };
             if watch || interactive {
                 let result = if interactive {
-                    crate::tui::interactive(one.as_ref())
+                    crate::tui::interactive(
+                        one.as_ref(),
+                        socket.as_deref(),
+                        switch_client.as_deref(),
+                    )
                 } else {
                     crate::tui::watch(
                         one.as_ref(),
@@ -408,7 +420,10 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
             let mut text = String::new();
             for inst in &all {
                 match runtime::status(inst) {
-                    Ok(r) => {
+                    Ok(mut r) => {
+                        if let Some(socket) = &socket {
+                            runtime::retain_server_rows(&mut r, socket);
+                        }
                         text.push_str(&runtime::render_status(&runtime::header(inst), &r));
                         rows.extend(r);
                     }
