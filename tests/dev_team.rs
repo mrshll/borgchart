@@ -392,6 +392,8 @@ fn the_team_files_stay_generic() {
         let text = word.replace_all(&text, |caps: &regex::Captures<'_>| match &caps[0] {
             "mrshll-agent" | "agent-gh" => String::new(),
             "mrshll" if file == dev_team().join("includes/git.md") => String::new(),
+            // The reader removes inherited orchestrator variables before probing.
+            "HERDR_" if file == dev_team().join("plugins/seat/usage.py") => String::new(),
             other => other.to_string(),
         });
         assert_eq!(denied_word(&text), None, "{}", file.display());
