@@ -171,6 +171,14 @@ struct RoleRaw {
     cwd: Option<String>,
 }
 
+/// Preserve field presence when checking team roles: even an empty grant
+/// or a false agent option must be refused instead of silently ignored.
+#[derive(Deserialize)]
+struct RoleFieldNames {
+    #[serde(default)]
+    roles: BTreeMap<String, BTreeMap<String, serde::de::IgnoredAny>>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(
     untagged,
@@ -541,6 +549,28 @@ pub fn load(dir: &Path, report: &mut Report) -> Option<Team> {
         }
     };
     let errors_before = report.errors().count();
+    if raw.roles.values().any(|role| role.team.is_some()) {
+        let fields: RoleFieldNames = match yaml::parse(&text) {
+            Ok(fields) => fields,
+            Err(e) => {
+                report.error(Some(&team_file), e);
+                return None;
+            }
+        };
+        for (id, role) in &raw.roles {
+            if role.team.is_none() {
+                continue;
+            }
+            for field in fields.roles[id].keys() {
+                if !["team", "parent", "start", "max", "cwd"].contains(&field.as_str()) {
+                    report.error(
+                        Some(&team_file),
+                        format!("role `{id}`: remove `{field}`; a team role takes only `team`, `parent`, `start`, `max` and `cwd`"),
+                    );
+                }
+            }
+        }
+    }
     let default_vendor = raw.default.unwrap_or(Vendor::Claude);
 
     let includes_dir = raw
@@ -800,12 +830,30 @@ fn load_team_role(
         if role.prompt.is_some() {
             return Err("choose either `prompt` or `team`".into());
         }
+        if role.start == Some(true) {
+            return Err("a team role must have `start: false` or omit `start`; create and prepare each copy before starting it".into());
+        }
+        if path.starts_with("shared:") {
+            return Err("`team` must be a path inside this team's folder; replace `shared:` with a relative folder".into());
+        }
         let dir = resolve_within(dir, path)?;
         if !dir.join(TEAM_FILE).is_file() {
             return Err(format!("`{path}` needs a `{TEAM_FILE}`"));
         }
         let cwd = role.cwd.as_deref().ok_or("a team role needs `cwd`")?;
         check_cwd(cwd)?;
+        if Path::new(cwd)
+            .file_name()
+            .is_none_or(|name| name != "{member_id}")
+            || cwd.matches("{member_id}").count() != 1
+        {
+            return Err(
+                "a team role's cwd must end in `{member_id}`, for example `dev/{member_id}`".into(),
+            );
+        }
+        if role.max == Some(0) {
+            return Err("`max` must be at least 1".into());
+        }
         Ok(TeamRole {
             dir,
             parent: role.parent.clone(),

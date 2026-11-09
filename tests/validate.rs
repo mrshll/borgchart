@@ -63,6 +63,211 @@ fn valid_team_loads() {
     );
 }
 
+fn nested_team() -> Fixture {
+    let f = Fixture::new();
+    f.write(
+        "team.yaml",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  dev: {team: teams/dev, parent: lead, cwd: 'dev/{member_id}'}\n",
+    );
+    f.write("teams/dev/team.yaml", "bus: {}\nroles: {}\n");
+    f
+}
+
+fn refused(f: &Fixture) -> Report {
+    let (report, validated) = f.run();
+    assert!(validated.is_none(), "invalid team accepted");
+    assert!(report.has_errors());
+    report
+}
+
+#[test]
+fn team_roles_refuse_direct_cycles_through_resolved_folder_aliases() {
+    let f = nested_team();
+    std::os::unix::fs::symlink(f.dir.path(), f.path("self")).unwrap();
+    for path in [".", "./", "self"] {
+        f.edit("team.yaml", "team: teams/dev", &format!("team: {path}"));
+        refused(&f);
+        f.edit("team.yaml", &format!("team: {path}"), "team: teams/dev");
+    }
+}
+
+#[test]
+fn team_roles_refuse_indirect_cycles() {
+    let f = nested_team();
+    std::os::unix::fs::symlink(f.dir.path(), f.path("teams/dev/ancestor")).unwrap();
+    f.write(
+        "teams/dev/team.yaml",
+        "bus: {}\nroles: {back: {team: ancestor, cwd: 'back/{member_id}'}}\n",
+    );
+    let report = refused(&f);
+    assert!(
+        report
+            .errors()
+            .any(|d| d.file == Some(f.path("teams/dev/team.yaml")))
+    );
+}
+
+#[test]
+fn reused_team_folders_and_equal_team_names_are_not_cycles() {
+    let f = nested_team();
+    std::os::unix::fs::symlink("dev", f.path("teams/alias")).unwrap();
+    f.edit(
+        "team.yaml",
+        "  dev:",
+        "  peer: {team: teams/alias, parent: lead, cwd: 'peer/{member_id}'}\n  dev:",
+    );
+    f.write(
+        "teams/dev/team.yaml",
+        "bus: {}\nroles: {panel: {team: dev, cwd: 'panel/{member_id}'}}\n",
+    );
+    f.write("teams/dev/dev/team.yaml", "bus: {}\nroles: {}\n");
+    let (report, validated) = f.run();
+    assert!(validated.is_some(), "{}", errors(&report));
+}
+
+#[test]
+fn team_roles_refuse_absolute_team_paths() {
+    let f = nested_team();
+    f.edit(
+        "team.yaml",
+        "team: teams/dev",
+        &format!("team: {}", f.path("teams/dev").display()),
+    );
+    refused(&f);
+}
+
+#[test]
+fn team_roles_refuse_parent_components_even_when_the_target_is_inside() {
+    let f = nested_team();
+    f.edit("team.yaml", "team: teams/dev", "team: teams/dev/../dev");
+    refused(&f);
+}
+
+#[test]
+fn team_roles_refuse_shared_paths_even_when_a_local_folder_matches() {
+    let f = nested_team();
+    f.write("shared:dev/team.yaml", "bus: {}\nroles: {}\n");
+    f.edit("team.yaml", "team: teams/dev", "team: shared:dev");
+    refused(&f);
+}
+
+#[test]
+fn team_roles_refuse_symlinks_outside_the_declaring_folder() {
+    let f = nested_team();
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(outside.path().join("team.yaml"), "bus: {}\nroles: {}\n").unwrap();
+    std::os::unix::fs::symlink(outside.path(), f.path("outside")).unwrap();
+    f.edit("team.yaml", "team: teams/dev", "team: outside");
+    refused(&f);
+}
+
+#[test]
+fn team_roles_require_cwd_ending_in_one_member_id_folder() {
+    for cwd in [
+        None,
+        Some("dev"),
+        Some("dev/{member_id}/repo"),
+        Some("dev/prefix-{member_id}"),
+        Some("{member_id}/{member_id}"),
+    ] {
+        let f = nested_team();
+        let replacement = cwd.map(|c| format!(", cwd: '{c}'")).unwrap_or_default();
+        f.edit("team.yaml", ", cwd: 'dev/{member_id}'", &replacement);
+        refused(&f);
+    }
+}
+
+#[test]
+fn team_roles_refuse_automatic_start_before_preparation() {
+    let f = nested_team();
+    f.edit(
+        "team.yaml",
+        "team: teams/dev",
+        "team: teams/dev, start: true",
+    );
+    refused(&f);
+    f.edit("team.yaml", "start: true", "start: false");
+    assert!(f.run().1.is_some());
+}
+
+#[test]
+fn team_roles_refuse_zero_copy_limits() {
+    let f = nested_team();
+    f.edit("team.yaml", "team: teams/dev", "team: teams/dev, max: 0");
+    refused(&f);
+}
+
+#[test]
+fn team_roles_refuse_agent_fields_including_empty_and_false_values() {
+    for field in [
+        "prompt: lead.md",
+        "vendor: claude",
+        "posture: vendor",
+        "plugins: {}",
+        "args: []",
+        "connectors: []",
+        "untrusted_input: false",
+        "accept_risk: false",
+        "models: {}",
+        "interactive: false",
+        "vendor: null",
+        "plugins: null",
+    ] {
+        let f = nested_team();
+        f.edit(
+            "team.yaml",
+            "team: teams/dev",
+            &format!("team: teams/dev, {field}"),
+        );
+        refused(&f);
+    }
+}
+
+#[test]
+fn teams_declaring_team_roles_require_a_bus() {
+    let f = nested_team();
+    f.edit("team.yaml", "bus: {}\n", "");
+    refused(&f);
+}
+
+#[test]
+fn referenced_teams_require_a_bus_at_every_depth() {
+    let f = nested_team();
+    f.write("teams/dev/team.yaml", "roles: {}\n");
+    let report = refused(&f);
+    assert!(
+        report
+            .errors()
+            .any(|d| d.file == Some(f.path("teams/dev/team.yaml")))
+    );
+    f.write(
+        "teams/dev/team.yaml",
+        "bus: {}\nroles: {panel: {team: panel, cwd: 'panel/{member_id}'}}\n",
+    );
+    f.write("teams/dev/panel/team.yaml", "roles: {}\n");
+    let report = refused(&f);
+    assert!(
+        report
+            .errors()
+            .any(|d| d.file == Some(f.path("teams/dev/panel/team.yaml")))
+    );
+}
+
+#[test]
+fn validate_reports_subteam_errors_at_the_subteam_file() {
+    let f = nested_team();
+    f.write(
+        "teams/dev/team.yaml",
+        "bus: {}\nroles: {helper: {prompt: missing.md}}\n",
+    );
+    let report = refused(&f);
+    assert!(
+        report
+            .errors()
+            .any(|d| d.file == Some(f.path("teams/dev/team.yaml")))
+    );
+}
+
 #[test]
 fn copy_limits_refuse_zero_and_require_member_as_the_last_folder() {
     for (max, cwd, accepted) in [

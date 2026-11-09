@@ -1949,6 +1949,9 @@ pub fn start(
     match member {
         Some(id) => start_members(lock, &inst, &v, vec![id], false),
         None => {
+            if let Some((parent, _)) = inst.id.rsplit_once('/') {
+                crate::nesting::validate_child(&address::instance(parent)?, &v.team.dir)?;
+            }
             let mut created_folders = Vec::new();
             let result = (|| {
                 let ids = full_start_members(&lock, &mut inst, &v, &mut created_folders)?;

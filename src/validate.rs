@@ -47,33 +47,82 @@ impl Validated {
 /// starts. Returns the report and, when there were no errors, the resolved
 /// team and configuration.
 pub fn validate(team_dir: &Path) -> (Report, Option<Validated>) {
+    validate_against(team_dir, &[])
+}
+
+/// Validate a copy's current team files against its actual, recorded
+/// ancestor folders, including after an explicit team-folder move.
+pub fn validate_against(team_dir: &Path, ancestors: &[PathBuf]) -> (Report, Option<Validated>) {
     let mut report = Report::default();
     let Some(config) = config::load(&mut report) else {
         return (report, None);
     };
-    validate_into(team_dir, config, report)
+    validate_into(team_dir, config, report, ancestors)
 }
 
 /// [`validate`] with a configuration already loaded (tests, and callers
 /// that must not read the caller's configuration file).
 pub fn validate_with(team_dir: &Path, config: Config) -> (Report, Option<Validated>) {
-    validate_into(team_dir, config, Report::default())
+    validate_into(team_dir, config, Report::default(), &[])
 }
 
 fn validate_into(
     team_dir: &Path,
     config: Config,
     mut report: Report,
+    ancestors: &[PathBuf],
 ) -> (Report, Option<Validated>) {
     let Some(team) = team::load(team_dir, &mut report) else {
         return (report, None);
     };
     let validated = Validated { team, config };
-    cross_check(&validated, &mut report);
+    check_team_tree(&validated, ancestors, &mut report);
     if report.has_errors() {
         return (report, None);
     }
     (report, Some(validated))
+}
+
+fn check_team_tree(v: &Validated, ancestors: &[PathBuf], report: &mut Report) {
+    let mut pending = vec![(
+        v.team.clone(),
+        ancestors.to_vec(),
+        !ancestors.is_empty(),
+        v.team.dir.join(team::TEAM_FILE),
+    )];
+    let mut checked = BTreeSet::new();
+    while let Some((team, mut parents, referenced, declaring_file)) = pending.pop() {
+        let file = team.dir.join(team::TEAM_FILE);
+        if parents.contains(&team.dir) {
+            report.error(
+                Some(&declaring_file),
+                format!("team cycle: {} is already an ancestor; change the `team` path so the team does not contain itself", team.dir.display()),
+            );
+            continue;
+        }
+        if team.bus.is_none() && (referenced || !team.team_roles.is_empty()) {
+            report.error(
+                Some(&file),
+                "add `bus: {}`; declaring team roles and every team they name require a bus",
+            );
+        }
+        if !checked.insert(team.dir.clone()) {
+            continue;
+        }
+        parents.push(team.dir.clone());
+        for role in team.team_roles.values() {
+            if let Some(child) = team::load(&role.dir, report) {
+                pending.push((child, parents.clone(), true, file.clone()));
+            }
+        }
+        cross_check(
+            &Validated {
+                team,
+                config: v.config.clone(),
+            },
+            report,
+        );
+    }
 }
 
 fn cross_check(v: &Validated, report: &mut Report) {

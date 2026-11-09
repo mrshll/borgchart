@@ -69,15 +69,7 @@ pub fn create(
     let id = inst.record.issue_copy(role_name)?;
     let folder = copy_folder(&inst, role, &id)?;
     crate::checkouts::check_folder(&lock, &folder)?;
-    let child = crate::validate::validate(&role.dir);
-    let child = child.1.ok_or_else(|| {
-        child
-            .0
-            .errors()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join("\n")
-    })?;
+    let child = validate_child(&inst, &role.dir)?;
     // Reserve the ID before touching disk: a failed creation cannot reuse it.
     inst.record
         .copies
@@ -119,6 +111,34 @@ pub fn create(
             }
         )],
         failed: false,
+    })
+}
+
+/// Validate a child against its declaring instance and every kept ancestor.
+/// The caller holds the registry lock, so explicit repointing cannot race it.
+pub fn validate_child(parent: &Instance, dir: &Path) -> Result<Validated, String> {
+    let mut ancestors = Vec::new();
+    let mut current = parent.clone();
+    loop {
+        let folder = current.record.team_dir.canonicalize().map_err(|_| {
+            format!(
+                "`{}`'s team folder is gone; restore it before creating or starting a copy",
+                current.id
+            )
+        })?;
+        ancestors.push(folder);
+        let Some((id, _)) = current.id.rsplit_once('/') else {
+            break;
+        };
+        current = address::instance(id)?;
+    }
+    let (report, validated) = crate::validate::validate_against(dir, &ancestors);
+    validated.ok_or_else(|| {
+        report
+            .errors()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
     })
 }
 
