@@ -38,13 +38,14 @@ enum Command {
     },
     /// Make something new: an instance of a team working in a folder
     /// (`create <team> <folder>`), or a member of a role
-    /// (`create <instance>/<role>`, up to its max of kept members). Either
-    /// is started. With a bus, a child role's parent role must have a member.
+    /// (`create <instance>/<role>`, up to its max of kept members).
+    /// Team-role copies are created stopped; prepare their folders, then start them.
+    /// Agent members and top-level instances are started. With a bus, a child role's parent role must have a member.
     /// For a role target with a bus, a member caller must be
     /// the role's parent, using its latest running start.
     /// When `cwd` ends in `{member_id}`, brg makes the empty leaf when issuing
     /// a new member (create, or a full `start` that gives a `start: true` role
-    /// a new member), for any max. Its parent folder must already exist.
+    /// a new member), for any max. An agent member's parent folder must already exist.
     Create {
         /// `<team>` (a name, or a path starting with `/`, `./`, `../` or
         /// `~/`), or `<instance>/<role>`.
@@ -63,7 +64,8 @@ enum Command {
         #[arg(long)]
         team: Option<PathBuf>,
     },
-    /// Stop an instance, or one member. Stopping a stopped one changes nothing.
+    /// Stop an instance and all its copies deepest first, or one member.
+    /// Stopping a stopped one changes nothing.
     /// For a member target with a bus, a member caller must be its parent,
     /// using the parent's latest running start.
     Stop {

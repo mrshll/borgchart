@@ -139,6 +139,12 @@ pub struct InstanceRecord {
     /// Every member issued in this instance, by ID, with its role. A
     /// member's ID is never issued again in the instance.
     pub members: BTreeMap<String, IssuedMember>,
+    /// Team-role copies, including deleted IDs so their addresses are never reused.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub copies: BTreeMap<String, IssuedMember>,
+    /// The full address of this copy's parent member in its declaring instance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
     /// The members running when the instance was last fully stopped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub running_at_stop: Option<BTreeSet<String>>,
@@ -176,6 +182,26 @@ impl InstanceRecord {
             .get(member)
             .filter(|m| !m.deleted)
             .map(|m| m.role.as_str())
+    }
+
+    /// Issue a team-role copy, preserving its suffix after deletion.
+    pub fn issue_copy(&mut self, role: &str) -> Result<String, String> {
+        let suffix = new_suffix(|s| {
+            self.members
+                .keys()
+                .chain(self.copies.keys())
+                .any(|id| split_id(id).is_some_and(|(_, issued)| issued == s))
+        })?;
+        let id = format!("{role}-{suffix}");
+        self.copies.insert(
+            id.clone(),
+            IssuedMember {
+                role: role.to_string(),
+                deleted: false,
+                cwd: None,
+            },
+        );
+        Ok(id)
     }
 
     /// Issue a new member of `role`: `<role>-<suffix>`, never one this
@@ -293,35 +319,72 @@ pub fn create(
     // An ID nobody else used, even outside the registry (a stray folder).
     let id = format!("{team}-{suffix}");
     issued.insert(suffix);
-    let state = StateDir::new(&id);
-    if state.root.exists() {
+    let record = InstanceRecord {
+        schema: SCHEMA,
+        id,
+        team: team.to_string(),
+        team_dir: team_dir.to_path_buf(),
+        folder: folder.to_path_buf(),
+        created_at: created_at.to_string(),
+        members: BTreeMap::new(),
+        copies: BTreeMap::new(),
+        parent: None,
+        running_at_stop: None,
+    };
+    register(lock, registry, record)
+}
+
+/// Register a stopped nested instance. Its ID was issued by the parent.
+pub fn create_copy(
+    lock: &Lock,
+    id: &str,
+    team_dir: &Path,
+    folder: &Path,
+    parent: Option<String>,
+) -> Result<(StateDir, InstanceRecord), String> {
+    register(
+        lock,
+        lock.load()?,
+        InstanceRecord {
+            schema: SCHEMA,
+            id: id.to_string(),
+            team: crate::team::team_name(team_dir),
+            team_dir: team_dir.to_path_buf(),
+            folder: folder.to_path_buf(),
+            created_at: crate::bus::time::utc_now(),
+            members: BTreeMap::new(),
+            copies: BTreeMap::new(),
+            parent,
+            running_at_stop: None,
+        },
+    )
+}
+
+fn register(
+    lock: &Lock,
+    mut registry: Registry,
+    record: InstanceRecord,
+) -> Result<(StateDir, InstanceRecord), String> {
+    let id = &record.id;
+    let state = StateDir::new(id);
+    if registry.instances.contains_key(id) || state.root.exists() {
         lock.save(&registry)?;
         return Err(format!(
-            "{} already exists, though no instance `{id}` is registered; try again",
+            "{} already exists; try again with a new copy ID",
             state.root.display()
         ));
     }
     for dir in [&state.root, &state.messages_dir(), &state.notes_dir()] {
         state::ensure_dir(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     }
-    let record = InstanceRecord {
-        schema: SCHEMA,
-        id: id.clone(),
-        team: team.to_string(),
-        team_dir: team_dir.to_path_buf(),
-        folder: folder.to_path_buf(),
-        created_at: created_at.to_string(),
-        members: BTreeMap::new(),
-        running_at_stop: None,
-    };
     lock.save_instance(&state, &record)?;
     registry.instances.insert(
-        id,
+        id.clone(),
         Entry {
-            team: team.to_string(),
-            team_dir: team_dir.to_path_buf(),
-            folder: folder.to_path_buf(),
-            created_at: created_at.to_string(),
+            team: record.team.clone(),
+            team_dir: record.team_dir.clone(),
+            folder: record.folder.clone(),
+            created_at: record.created_at.clone(),
         },
     );
     lock.save(&registry)?;
@@ -363,6 +426,8 @@ mod tests {
             folder: "/work".into(),
             created_at: "2026-11-08T00:00:00Z".into(),
             members: BTreeMap::new(),
+            copies: BTreeMap::new(),
+            parent: None,
             running_at_stop: None,
         };
         // The first candidate is a declared role. It must be skipped even
@@ -394,6 +459,8 @@ mod tests {
             folder: "/y".into(),
             created_at: "now".into(),
             members: BTreeMap::new(),
+            copies: BTreeMap::new(),
+            parent: None,
             running_at_stop: None,
         };
         let a = r.issue_member("my-role", |_| false).unwrap();

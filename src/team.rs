@@ -152,7 +152,8 @@ impl EnvRaw {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RoleRaw {
-    prompt: String,
+    prompt: Option<String>,
+    team: Option<String>,
     vendor: Option<Vendor>,
     parent: Option<String>,
     start: Option<bool>,
@@ -208,6 +209,7 @@ pub struct Team {
     /// The coordination bus, when the team uses one.
     pub bus: Option<BusConfig>,
     pub roles: BTreeMap<String, Role>,
+    pub team_roles: BTreeMap<String, TeamRole>,
     pub plugins: BTreeMap<String, Plugin>,
 }
 
@@ -358,6 +360,15 @@ pub struct Role {
     /// Where its members start, relative to the instance's folder; may hold
     /// `{member_id}`.
     pub cwd: Option<String>,
+}
+
+/// A role whose copies are nested instances, prepared before their first start.
+#[derive(Debug, Clone, Serialize)]
+pub struct TeamRole {
+    pub dir: PathBuf,
+    pub parent: Option<String>,
+    pub max: usize,
+    pub cwd: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -546,7 +557,14 @@ pub fn load(dir: &Path, report: &mut Report) -> Option<Team> {
     }
 
     let mut roles = BTreeMap::new();
+    let mut team_roles = BTreeMap::new();
     for (id, m) in &raw.roles {
+        if let Some(path) = &m.team {
+            if let Some(role) = load_team_role(dir, &team_file, id, m, path, report) {
+                team_roles.insert(id.clone(), role);
+            }
+            continue;
+        }
         if let Some(member) = load_role(
             dir,
             &team_file,
@@ -588,6 +606,7 @@ pub fn load(dir: &Path, report: &mut Report) -> Option<Team> {
             }),
         }),
         roles,
+        team_roles,
         plugins,
     })
 }
@@ -766,6 +785,43 @@ fn check_executable(
     }
 }
 
+fn load_team_role(
+    dir: &Path,
+    team_file: &Path,
+    id: &str,
+    role: &RoleRaw,
+    path: &str,
+    report: &mut Report,
+) -> Option<TeamRole> {
+    let load = || -> Result<TeamRole, String> {
+        if !is_valid_id(id) {
+            return Err("name must match `[a-z][a-z0-9_-]{0,31}`".into());
+        }
+        if role.prompt.is_some() {
+            return Err("choose either `prompt` or `team`".into());
+        }
+        let dir = resolve_within(dir, path)?;
+        if !dir.join(TEAM_FILE).is_file() {
+            return Err(format!("`{path}` needs a `{TEAM_FILE}`"));
+        }
+        let cwd = role.cwd.as_deref().ok_or("a team role needs `cwd`")?;
+        check_cwd(cwd)?;
+        Ok(TeamRole {
+            dir,
+            parent: role.parent.clone(),
+            max: role.max.unwrap_or(1),
+            cwd: cwd.to_string(),
+        })
+    };
+    match load() {
+        Ok(role) => Some(role),
+        Err(error) => {
+            report.error(Some(team_file), format!("role `{id}`: {error}"));
+            None
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn load_role(
     dir: &Path,
@@ -898,7 +954,11 @@ fn load_role(
     }
 
     // Role file.
-    let prompt_path = match resolve_within(dir, &m.prompt) {
+    let Some(prompt) = m.prompt.as_deref() else {
+        report.error(Some(team_file), at("needs a `prompt` or `team`".into()));
+        return None;
+    };
+    let prompt_path = match resolve_within(dir, prompt) {
         Ok(p) => Some(p),
         Err(e) => {
             report.error(Some(team_file), at(format!("prompt {e}")));
@@ -909,7 +969,7 @@ fn load_role(
     let mut instruction = String::new();
     let mut prompt_sha256 = String::new();
     if let Some(prompt_path) = &prompt_path {
-        let shown = dir.join(&m.prompt);
+        let shown = dir.join(prompt);
         if let Some((front, body, sha)) =
             read_role_file(dir, includes_dir, &shown, prompt_path, report)
         {
@@ -950,7 +1010,7 @@ fn load_role(
         accept_risk: m.accept_risk,
         grants,
         connectors,
-        prompt_file: dir.join(&m.prompt),
+        prompt_file: dir.join(prompt),
         prompt_sha256,
         instruction,
         args: m.args.clone(),

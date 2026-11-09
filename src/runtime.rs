@@ -485,13 +485,17 @@ fn start_members(
     }
 
     let parent_member = |member: &crate::team::Role| {
-        member.parent.as_ref().map(|p| {
-            record
-                .members_of(p)
-                .into_iter()
-                .next()
-                .unwrap_or_else(|| p.clone())
-        })
+        member
+            .parent
+            .as_ref()
+            .map(|p| {
+                record
+                    .members_of(p)
+                    .into_iter()
+                    .next()
+                    .unwrap_or_else(|| p.clone())
+            })
+            .or_else(|| record.parent.clone())
     };
     let member_meta = |id: &str, base: &BTreeMap<String, String>| -> Option<MemberMeta> {
         let role = record.role_of(id)?;
@@ -701,6 +705,11 @@ fn start_members(
         env.insert("PATH".into(), path);
         env.insert(address::ENV_INSTANCE.into(), state.id.clone());
         env.insert(context::ENV_MEMBER.into(), id.clone());
+        if member.parent.is_none()
+            && let Some(parent) = &record.parent
+        {
+            env.insert("BORGCHART_PARENT".into(), parent.clone());
+        }
         env.insert(crate::exec::ENV_ROLE.into(), member.id.clone());
         env.insert(
             crate::exec::ENV_NOTES.into(),
@@ -1462,6 +1471,9 @@ fn rollback_pause() {}
 /// `brg create <instance>/<role>`: a new member of the role, started.
 pub fn create_member(mut inst: Instance, role: &str) -> Result<UpOutcome, String> {
     let v = validated(&inst)?;
+    if let Some(team_role) = v.team.team_roles.get(role) {
+        return crate::nesting::create(inst, &v, role, team_role);
+    }
     let Some(member) = v.team.roles.get(role) else {
         return Err(format!(
             "instance `{}`'s team has no role `{role}`; its roles: {}",
@@ -2054,6 +2066,18 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
 pub fn delete(inst: Instance, force: bool) -> Result<Vec<String>, String> {
     let lock = registry::lock()?;
     let state_lock = lifecycle::lock_state(&inst.state)?;
+    let copies = crate::nesting::descendants(&inst)?;
+    if !copies.is_empty() {
+        return Err(format!(
+            "instance `{}` has kept copies; delete them first:\n  {}",
+            inst.id,
+            copies
+                .iter()
+                .map(|copy| copy.id.as_str())
+                .collect::<Vec<_>>()
+                .join("\n  ")
+        ));
+    }
     let live = liveness_of(&inst);
     let alive: Vec<&String> = live
         .iter()
@@ -2118,6 +2142,15 @@ pub fn delete(inst: Instance, force: bool) -> Result<Vec<String>, String> {
         .map_err(|e| format!("cannot remove {}: {e}", inst.state.root.display()))?;
     let mut registry = lock.load()?;
     registry.instances.remove(&inst.id);
+    if let Some((parent_id, copy_id)) = inst.id.rsplit_once('/') {
+        let parent_state = StateDir::new(parent_id);
+        let mut parent = registry::read_instance(&parent_state)?;
+        if let Some(copy) = parent.copies.get_mut(copy_id) {
+            copy.deleted = true;
+            copy.cwd = None;
+        }
+        lock.save_instance(&parent_state, &parent)?;
+    }
     lock.save(&registry)?;
     Ok(vec![format!(
         "deleted {}; its working folder {} was left as it is",
@@ -2317,6 +2350,32 @@ fn start_window(
 /// running, for the next `start`; stopping a stopped one changes nothing.
 pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> {
     let lock = registry::lock()?;
+    let mut messages = Vec::new();
+    if only.is_none() {
+        for copy in crate::nesting::descendants(inst)? {
+            messages.extend(
+                stop_one(&lock, &copy, None)?
+                    .into_iter()
+                    .map(|message| format!("{}: {message}", copy.id)),
+            );
+        }
+    }
+    let own = stop_one(&lock, inst, only)?;
+    if messages.is_empty() {
+        return Ok(own);
+    }
+    messages.extend(
+        own.into_iter()
+            .map(|message| format!("{}: {message}", inst.id)),
+    );
+    Ok(messages)
+}
+
+fn stop_one(
+    lock: &registry::Lock,
+    inst: &Instance,
+    only: Option<&str>,
+) -> Result<Vec<String>, String> {
     let mut current = inst.clone();
     current.reload()?;
     let inst = &current;
