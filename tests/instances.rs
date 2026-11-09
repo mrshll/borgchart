@@ -19,6 +19,47 @@ use instance_env::*;
 use serde_json::{Value, json};
 
 #[test]
+fn stopped_parents_cannot_be_deleted_before_their_kept_children() {
+    let env = Env::new();
+    let inst = env.create("oncall", "work/a");
+    let parent = env.member(&inst, "lead");
+    env.ok(&["create", &format!("{inst}/helper")]);
+    let child = env.member(&inst, "helper");
+    let parent_address = format!("{inst}/{parent}");
+    let child_address = format!("{inst}/{child}");
+    env.ok(&["stop", &inst]);
+
+    for force in [false, true] {
+        let mut args = vec!["delete", &parent_address];
+        if force {
+            args.push("--force");
+        }
+        let refusal = env.fails(&args);
+        assert!(refusal.contains(&child_address), "{refusal}");
+        assert_eq!(env.member(&inst, "lead"), parent);
+        assert_eq!(env.member(&inst, "helper"), child);
+    }
+
+    env.write("teams/oncall/team.yaml", "roles: [");
+    for force in [false, true] {
+        let mut args = vec!["delete", &parent_address];
+        if force {
+            args.push("--force");
+        }
+        let refusal = env.fails(&args);
+        assert!(refusal.contains(&child_address), "{refusal}");
+    }
+    env.write("teams/oncall/team.yaml", TEAM);
+    assert_eq!(env.member(&inst, "lead"), parent);
+    assert_eq!(env.member(&inst, "helper"), child);
+
+    env.ok(&["delete", &child_address]);
+    env.ok(&["delete", &parent_address]);
+    assert!(env.rows(&inst).iter().all(|r| r["kind"] != "member"));
+    env.ok(&["delete", &inst]);
+}
+
+#[test]
 fn deleted_members_cannot_restart_or_receive_work_and_ids_are_never_reused() {
     let env = Env::new();
     let inst = env.create("oncall", "work/a");
@@ -29,8 +70,6 @@ fn deleted_members_cannot_restart_or_receive_work_and_ids_are_never_reused() {
     let published = env.publish(&inst, &json!({"to": lead, "body": "Review the sample."}));
     assert!(published.status.success(), "{}", both(&published));
     let message: Value = serde_json::from_slice(&published.stdout).unwrap();
-    env.ok(&["create", &format!("{inst}/helper")]);
-    let child = env.member(&inst, "helper");
     env.ok(&["stop", &inst]);
     let refused = env.fails(&["delete", &address]);
     assert_eq!(env.member(&inst, "lead"), lead);
@@ -51,6 +90,10 @@ fn deleted_members_cannot_restart_or_receive_work_and_ids_are_never_reused() {
     let replacement = env.member(&inst, "lead");
     assert_ne!(replacement, lead);
     assert_eq!(env.row(&inst, "lead")["unread"], 0);
+    // A child can't be created while its parent role has no member (#73), so
+    // it comes after the replacement.
+    env.ok(&["create", &format!("{inst}/helper")]);
+    let child = env.member(&inst, "helper");
     assert_eq!(env.row(&inst, "helper")["parent"], replacement);
     env.wait_for("replacement idle", || env.state_of(&inst, "lead") == "idle");
     env.ok(&[
@@ -80,6 +123,36 @@ fn deleted_members_cannot_restart_or_receive_work_and_ids_are_never_reused() {
     assert_ne!(next, helper);
     env.ok(&["stop", &inst]);
     env.ok(&["delete", &inst]);
+}
+
+#[test]
+fn members_with_unloadable_teams_and_incomplete_parent_records_cannot_be_deleted() {
+    for missing_record in [false, true] {
+        let env = Env::new();
+        let inst = env.create("oncall", "work/a");
+        let parent = env.member(&inst, "lead");
+        env.ok(&["create", &format!("{inst}/helper")]);
+        let child = env.member(&inst, "helper");
+        env.ok(&["stop", &inst]);
+        let start_file = env.path(&format!("state/{inst}/start.json"));
+        let start = fs::read(&start_file).unwrap();
+        if missing_record {
+            fs::remove_file(&start_file).unwrap();
+        } else {
+            let mut meta: Value = serde_json::from_slice(&start).unwrap();
+            meta["members"].as_object_mut().unwrap().remove(&child);
+            fs::write(&start_file, serde_json::to_vec(&meta).unwrap()).unwrap();
+        }
+        env.write("teams/oncall/team.yaml", "roles: [");
+        env.fails(&["delete", &format!("{inst}/{parent}"), "--force"]);
+        fs::write(&start_file, start).unwrap();
+        env.write("teams/oncall/team.yaml", TEAM);
+        assert_eq!(env.member(&inst, "lead"), parent);
+        assert_eq!(env.member(&inst, "helper"), child);
+        env.ok(&["delete", &format!("{inst}/{child}")]);
+        env.ok(&["delete", &format!("{inst}/{parent}")]);
+        env.ok(&["delete", &inst]);
+    }
 }
 
 #[test]
@@ -543,6 +616,108 @@ fn addresses_name_the_instance_in_full_outside_a_member() {
     let all = stdout(&env.ok(&["status"]));
     assert!(all.contains(&inst) && all.contains(&b), "{all}");
     env.ok(&["stop", &inst]);
+    env.ok(&["stop", &b]);
+}
+
+/// `brg status [<instance>] -w --interval 1`, its output collected as it
+/// comes: one screen per refresh.
+struct Watch {
+    child: std::process::Child,
+    out: std::sync::Arc<std::sync::Mutex<String>>,
+}
+
+impl Watch {
+    fn start(env: &Env, instance: Option<&str>) -> Watch {
+        let mut args = vec!["status"];
+        args.extend(instance);
+        args.extend(["-w", "--interval", "1"]);
+        let mut child = env
+            .cmd(&args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut stdout = child.stdout.take().unwrap();
+        let out = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let sink = out.clone();
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = stdout.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                sink.lock()
+                    .unwrap()
+                    .push_str(&String::from_utf8_lossy(&buf[..n]));
+            }
+        });
+        Watch { child, out }
+    }
+
+    /// Each complete screen so far (one ends where the next begins).
+    fn screens(&self) -> Vec<String> {
+        let out = self.out.lock().unwrap().clone();
+        let mut parts: Vec<String> = out.split("\x1b[2J").skip(1).map(String::from).collect();
+        parts.pop();
+        parts
+    }
+
+    fn running(&mut self) -> bool {
+        self.child.try_wait().unwrap().is_none()
+    }
+
+    fn dump(&self) -> String {
+        self.out.lock().unwrap().clone()
+    }
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[test]
+fn status_w_with_no_instance_follows_every_instance() {
+    let env = Env::new();
+    let mut watch = Watch::start(&env, None);
+    env.wait_for("a screen saying there are none", || {
+        watch
+            .screens()
+            .iter()
+            .any(|s| s.contains("there are no instances"))
+    });
+    let seen = watch.screens().len();
+    env.wait_for("another refresh", || watch.screens().len() > seen);
+    assert!(watch.running(), "{}", watch.dump());
+    let a = env.create("oncall", "work/a");
+    let b = env.create("oncall", "work/b");
+    env.wait_for("a refresh showing both instances", || {
+        watch
+            .screens()
+            .iter()
+            .any(|s| s.contains(&a) && s.contains(&b) && s.contains("lead"))
+    });
+    assert!(watch.running(), "{}", watch.dump());
+    drop(watch);
+    env.ok(&["stop", &a]);
+    env.ok(&["stop", &b]);
+}
+
+#[test]
+fn status_w_with_an_instance_shows_only_that_instance() {
+    let env = Env::new();
+    let a = env.create("oncall", "work/a");
+    let b = env.create("oncall", "work/b");
+    let watch = Watch::start(&env, Some(&a));
+    env.wait_for("two screens", || watch.screens().len() >= 2);
+    for screen in watch.screens() {
+        assert!(screen.contains(&a) && !screen.contains(&b), "{screen}");
+    }
+    drop(watch);
+    env.ok(&["stop", &a]);
     env.ok(&["stop", &b]);
 }
 

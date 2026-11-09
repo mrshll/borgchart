@@ -77,7 +77,8 @@ enum Command {
         /// `<instance>`, or `<instance>/<member>`. A bare role is refused.
         target: String,
         /// Delete even with unread messages (or unreadable message storage).
-        /// Running members and unknown liveness are always refused.
+        /// Running members, unknown liveness and members with kept children
+        /// are always refused.
         #[arg(long)]
         force: bool,
     },
@@ -374,16 +375,13 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
                 None => None,
             };
             if watch || interactive {
-                let Some(inst) = one else {
-                    return fail(format!(
-                        "name the instance to watch: brg status <instance> -w; {}",
-                        address::known()
-                    ));
-                };
                 let result = if interactive {
-                    crate::tui::interactive(&inst)
+                    crate::tui::interactive(one.as_ref())
                 } else {
-                    crate::tui::watch(&inst, std::time::Duration::from_secs(interval.max(1)))
+                    crate::tui::watch(
+                        one.as_ref(),
+                        std::time::Duration::from_secs(interval.max(1)),
+                    )
                 };
                 return match result {
                     Ok(()) => ExitCode::SUCCESS,
@@ -392,14 +390,7 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
             }
             let all: Vec<Instance> = match one {
                 Some(inst) => vec![inst],
-                None => {
-                    let registry = or_fail!(crate::registry::load());
-                    registry
-                        .instances
-                        .keys()
-                        .filter_map(|id| address::instance(id).ok())
-                        .collect()
-                }
+                None => or_fail!(address::every()),
             };
             let mut code = ExitCode::SUCCESS;
             let mut rows = Vec::new();
