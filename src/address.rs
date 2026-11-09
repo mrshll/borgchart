@@ -62,6 +62,17 @@ pub fn known() -> String {
     }
 }
 
+/// Every registered instance, read from the registry now: what a bare
+/// `brg status` shows.
+pub fn every() -> Result<Vec<Instance>, String> {
+    let registry = registry::load()?;
+    Ok(registry
+        .instances
+        .keys()
+        .filter_map(|id| instance(id).ok())
+        .collect())
+}
+
 /// The registered instance `id`. The error says what to write instead when
 /// `id` is a team's name, a member or a path.
 pub fn instance(id: &str) -> Result<Instance, String> {

@@ -413,9 +413,11 @@ fn only_the_latest_parent_start_can_manage_children() {
     env.ok(&["create", &format!("{inst}/helper")]);
     env.ok(&["stop", &inst]);
     env.ok(&["stop", &other]);
-    env.ok(&["delete", &format!("{inst}/{lead}")]);
+    // A parent with kept children can't be deleted (#74): the child goes first.
     let child = env.member(&inst, "helper");
+    env.fails(&["delete", &format!("{inst}/{lead}")]);
     env.ok(&["delete", &format!("{inst}/{child}")]);
+    env.ok(&["delete", &format!("{inst}/{lead}")]);
     env.fails(&["create", &format!("{inst}/helper")]);
 }
 
