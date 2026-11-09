@@ -1663,6 +1663,18 @@ fn check_parent_authority(
     Ok(())
 }
 
+/// Refuse when the instance's start.json exists but can't be read: brg
+/// can't tell which tmux server runs it, so it can't tell that it stopped.
+fn unreadable_start_record(inst: &Instance, consequence: &str) -> Result<(), String> {
+    match state::read_meta(&inst.state) {
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!(
+            "instance `{}`'s start record can't be read ({e}), so brg can't tell that it stopped; {consequence}",
+            inst.id
+        )),
+    }
+}
+
 /// Whether any member or plugin process of the instance has a live window
 /// on the server its start recorded.
 pub fn is_running(inst: &Instance) -> bool {
@@ -1694,6 +1706,8 @@ fn repoint(inst: &mut Instance, team: &Path) -> Result<(), String> {
     }
     let lock = registry::lock()?;
     inst.reload()?;
+    // `is_running` would guess the server from the caller's settings.
+    unreadable_start_record(inst, "its team folder can't be changed")?;
     if is_running(inst) {
         return Err(format!(
             "instance `{}` is running; a new team folder applies only from a full stop: brg stop {}",
@@ -1821,11 +1835,15 @@ pub fn start(
 pub fn liveness_of(inst: &Instance) -> BTreeMap<String, Liveness> {
     let state = &inst.state;
     let session = state.session();
-    let meta = state::read_meta(state).ok().flatten();
+    let read = state::read_meta(state);
+    let unreadable = read.is_err();
+    let meta = read.ok().flatten();
     let rows = meta.as_ref().map(|m| lifecycle::Server::of(m).panes());
     let mut out = BTreeMap::new();
     for (id, _) in inst.record.kept_members() {
         let by_window = match (&meta, &rows) {
+            // The start record can't be read: which server runs it is unknown.
+            (None, _) if unreadable => Liveness::Unknown,
             // Never started a window here.
             (None, _) => Liveness::Gone,
             (Some(_), Some(Ok(rows))) => {
@@ -2031,6 +2049,7 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
 pub fn delete(inst: Instance, force: bool) -> Result<Vec<String>, String> {
     let lock = registry::lock()?;
     let state_lock = lifecycle::lock_state(&inst.state)?;
+    unreadable_start_record(&inst, "it can't be deleted, even with --force")?;
     let live = liveness_of(&inst);
     let alive: Vec<&String> = live
         .iter()

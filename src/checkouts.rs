@@ -44,6 +44,16 @@ pub fn held(_lock: &registry::Lock, except: &str) -> Result<Vec<Held>, String> {
                 continue;
             }
         };
+        if crate::state::read_meta(&inst.state).is_err() {
+            // Its start record can't be read: brg can't tell which server
+            // runs it, so its folder stays held.
+            out.push(Held {
+                instance: id.clone(),
+                folder: inst.record.folder.clone(),
+                why: "its start.json can't be read".into(),
+            });
+            continue;
+        }
         let folder_of = |m: &str| {
             inst.record
                 .members
