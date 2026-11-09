@@ -16,3 +16,5 @@ cargo install --git https://github.com/mrshll/borgchart --locked
 
 This needs Rust 1.89 or newer and tmux 3.2 or newer, plus the `claude` and/or `codex` CLIs. Nothing is published to crates.io yet.
 
+
+For notification-based GitHub intake, see the optional [GitHub plugin](examples/github/README.md).

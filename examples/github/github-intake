@@ -1,0 +1,4 @@
+#!/usr/bin/env -S uv run --no-project --script --python 3.11
+from intake import main
+
+main()

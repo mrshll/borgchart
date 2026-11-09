@@ -1,0 +1,21 @@
+{
+  "gh": ["/absolute/path/to/gh"],
+  "state_home": "/home/example/.local/state/borgchart",
+  "agent": {"id": 101, "login": "example-agent"},
+  "trusted_actor_ids": [102],
+  "owner_policy": {
+    "owner": {"id": 103, "login": "example-owner", "type": "User"},
+    "repository_policy": "include_new",
+    "exclude_repository_ids": [],
+    "exclude_repositories": []
+  },
+  "initial_repositories": {},
+  "app_initiators": [],
+  "trusted_reviewer_ids": [],
+  "issue_mentions_after": "2026-01-01T00:00:00Z",
+  "merge_wakes_after": "2026-01-01T00:00:00Z",
+  "poll_seconds": 300,
+  "max_seconds": 120,
+  "max_pages": 10,
+  "reactions": false
+}
