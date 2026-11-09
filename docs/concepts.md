@@ -105,7 +105,7 @@ Two folders with the same name can both run. Their instances are told apart by t
 
 **Members are always named in full.** Commands that act on a member (`attach`, `prompt`, `stop`), and messages, take its full ID (`lead-q8m3`). A role name there is refused, listing the role's members. There are no shortcuts for now.
 
-**Parents are roles.** `parent: lead` names a role, and a member's parent is the member filling that role. So a parent role must have one member: `validate` refuses a `parent:` that names a role with `max > 1`. The same goes for a plugin's `delivers_to:`.
+**Parents are agent roles.** `parent: lead` names an agent role, and a member's parent is the member filling that role. So a parent role must have one member: `validate` refuses a `parent:` that names a team role or a role with `max > 1`. The same goes for a plugin's `delivers_to:`.
 
 **Recipients.** A message goes to one member, or from a team's root member to `external:NAME`. An instance isn't a recipient: a message naming only an instance (`dev-design-k3f9`) is refused, listing its members. For now a member's messages stay inside its own instance. A team that works as part of another, such as a design panel inside the dev team, is a team role of it (#25): a copy with its own instance and store, whose messages to and from its parent cross stores along that edge once delivery is built. Messages between chosen members of independent instances, such as two teams' leads, are planned after that (#62): a person links a role in one instance with a role in another. The message format leaves room for them, so they need no second format change.
 

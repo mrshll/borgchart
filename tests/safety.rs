@@ -142,7 +142,7 @@ fn start_team_cant_give_a_role_a_cwd_inside_another_instances_folder() {
 }
 
 #[test]
-fn unknown_liveness_keeps_the_reservation_and_blocks_delete() {
+fn killed_server_holds_checkout_until_full_stop_confirms_processes_gone() {
     let env = Env::new();
     let a = env.create("oncall", "work/a");
     // brg can no longer reach the server that ran A.
@@ -152,6 +152,10 @@ fn unknown_liveness_keeps_the_reservation_and_blocks_delete() {
     let err = env.fails(&["delete", &a, "--force"]);
     assert!(err.contains("even with --force"), "{err}");
     assert!(env.path(&format!("state/{a}")).is_dir());
+    env.ok(&["stop", &a]);
+    env.ok(&["delete", &a, "--force"]);
+    let b = env.create("oncall", "work/a");
+    env.ok(&["stop", &b]);
 }
 
 #[test]
