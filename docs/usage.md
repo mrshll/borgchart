@@ -69,3 +69,6 @@ executable implementing the same JSON contract. Its location follows
 contains one executable name or absolute path, without flags or shell syntax;
 an invalid override does not fall back. This is the only reader configuration
 needed for an override. Thresholds and model classes are built-in policy.
+
+If an earlier override used a different `$XDG_CONFIG_HOME`, move `seat-reader`
+beside the actual brg configuration before using this version.

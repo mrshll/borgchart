@@ -312,7 +312,7 @@ def assess(route: JSON, snapshot: JSON, now: datetime) -> JSON:
         for w in windows
         if w["blocked"]
         or w["used_percent"] >= 90
-        or w["key"] in snapshot.get("held_keys", [])
+        or (w["key"] in snapshot.get("held_keys", []) and w["used_percent"] >= 80)
     ]
     blocked = denied_usage or any(
         w["blocked"] or w["used_percent"] >= 100 for w in constraints

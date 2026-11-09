@@ -711,6 +711,7 @@ def test_total_deadline_includes_initialization(
     assert time.monotonic() - start < 1.1
 
 
+@pytest.mark.skipif(not Path("/proc").is_dir(), reason="requires Linux process state")
 def test_descendant_cleanup_when_leader_exits(
     fake_cli: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -845,3 +846,18 @@ def test_explicit_refreshes_are_serialized(isolation: Mock) -> None:
         )
     assert highest == 1
     assert all(result["status"] == "ok" for result in results)
+
+
+def test_same_class_warning_does_not_spill_below_release_threshold() -> None:
+    data = codex()
+    data["rateLimitsByLimitId"] = {
+        "first": {"normalModelSlug": "gpt-6-sol", "primary": {"usedPercent": 95}},
+        "second": {"normalModelSlug": "gpt-6.1-sol", "primary": {"usedPercent": 50}},
+    }
+    current = usage.normalize("codex", data, NOW)
+    result = usage.choose({"kind": "codex", "model": "sol"}, current, NOW)
+    assert result["decision"] == "route"
+    assert [row["used_percent"] for row in result["warnings"]] == [95]
+    data["rateLimitsByLimitId"]["first"]["primary"]["usedPercent"] = 79
+    current = usage.normalize("codex", data, NOW, current)
+    assert not usage.choose({"kind": "codex", "model": "sol"}, current, NOW)["warnings"]

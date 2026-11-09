@@ -12,6 +12,8 @@ from typing import Any
 
 import pytest
 
+sys.dont_write_bytecode = True
+
 ROOT = Path(__file__).resolve().parents[2]
 PLUGIN = ROOT / "borgchart-engineering/teams/dev-team/plugins/seat"
 FAKE = r"""
