@@ -17,5 +17,7 @@ cargo install --git https://github.com/mrshll/borgchart --locked brg-seat
 
 This needs Rust 1.89 or newer and tmux 3.2 or newer, plus the `claude` and/or `codex` CLIs. Nothing is published to crates.io yet.
 
+For tab completion of commands, instances and members, see [completion](docs/cli.md) (`BRG_COMPLETE=fish brg | source`).
+
 
 Seating is an optional Rust workspace plugin, declared only by teams that need subscription quota checks. For a revision-pinned installation containing both binaries and the team catalog, follow [the catalog install recipe](teams/README.md#pinned-installation). `cargo install --path .` installs only core; the plugin is `cargo install --path plugins/seat`.

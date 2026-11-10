@@ -41,7 +41,9 @@ required-features = ["test-support"]
 test-support = []
 
 [dependencies]
-clap = { version = "4.6", features = ["derive"] }
+# `unstable-ext` and `unstable-dynamic` are outside semver; see src/complete.rs.
+clap = { version = "4.6", features = ["derive", "unstable-ext"] }
+clap_complete = { version = "4.6.11", features = ["unstable-dynamic"] }
 crossterm = "0.29"
 ratatui = "0.30"
 regex = "1"
