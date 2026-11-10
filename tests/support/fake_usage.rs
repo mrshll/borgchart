@@ -103,7 +103,7 @@ pub fn run(args: &[String]) -> bool {
     let response = control.get("response").cloned().unwrap_or_else(|| if provider == "codex" {
         json!({"ordinaryUsageAllowed":true,"rateLimits":{"limitId":"codex","primary":{"usedPercent":25,"resetsAt":reset.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),"windowDurationMins":300}}})
     } else {
-        json!({"subscription_type":"max","rate_limits_available":true,"rate_limits":{"seven_day_opus":null,"seven_day_sonnet":null,"five_hour":{"utilization":25,"resets_at":borgchart::bus::time::format_utc(reset)},"seven_day":{"utilization":25,"resets_at":borgchart::bus::time::format_utc(reset)}}})
+        json!({"subscription_type":"max","rate_limits_available":true,"rate_limits":{"seven_day_opus":null,"seven_day_sonnet":null,"five_hour":{"utilization":25,"resets_at":borgchart::bus::time::format_utc(reset)},"seven_day":{"utilization":25,"resets_at":borgchart::bus::time::format_utc(reset)},"limits":[{"kind":"weekly_scoped","scope":{"model":{"display_name":"Fable"}},"percent":25,"resets_at":borgchart::bus::time::format_utc(reset)}]}})
     });
     println!(
         "{}",
