@@ -11,10 +11,18 @@ fn quote(s: &str) -> String {
 #[test]
 #[ignore = "isolated real Codex cold seating check; set BORGCHART_LIVE=1"]
 fn vendor_codex_seating_probe() {
-    if std::env::var("BORGCHART_LIVE").as_deref() != Ok("1") {
+    if rules::mode(
+        std::env::var("BORGCHART_LIVE").ok().as_deref(),
+        std::env::var("BORGCHART_LIVE_DRY").ok().as_deref(),
+    ) != rules::Mode::Live
+    {
+        println!("SKIP cold seating: real live mode not selected");
         return;
     }
-    if std::env::var("BORGCHART_LIVE_VENDORS").is_ok_and(|v| v != "codex") {
+    let (vendors, _) = rules::select(std::env::var("BORGCHART_LIVE_VENDORS").ok().as_deref())
+        .unwrap_or_else(|e| panic!("{e}"));
+    if !vendors.contains(&rules::Who::Codex) {
+        println!("SKIP cold seating: Codex not selected");
         return;
     }
     let mut w = world::World::live();

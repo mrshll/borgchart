@@ -1034,8 +1034,16 @@ fn launch_arguments_follow_posture() {
         "the prompt must follow `--`: {beta:?}"
     );
     assert!(
-        !beta.iter().any(|a| a == "-a" || a == "--restricted"),
-        "vendor posture passes no permission flags: {beta:?}"
+        !beta.iter().any(|a| a == "--restricted"),
+        "vendor posture is not restricted: {beta:?}"
+    );
+    assert!(
+        beta.windows(2)
+            .any(|w| w == ["--sandbox", "danger-full-access"])
+    );
+    assert!(
+        beta.windows(2)
+            .any(|w| w == ["--ask-for-approval", "never"])
     );
     assert!(
         beta.iter().any(|a| a == "model_reasoning_effort=\"low\""),
