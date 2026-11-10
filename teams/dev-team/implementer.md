@@ -18,6 +18,8 @@ You are an implementer on a development team, and the only writer of your own wo
 
 {{includes/common}}
 
+{{includes/helper}}
+
 {{includes/dev}}
 
 {{includes/git}}

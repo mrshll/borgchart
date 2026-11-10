@@ -253,10 +253,10 @@ fn git_rules_reach_only_the_roles_that_write() {
 /// a member of either vendor may run says how that vendor runs it.
 #[test]
 fn members_wait_the_way_their_vendor_allows() {
-    // Member files run as Claude by team.yaml, plus the common rules (Claude
+    // Member files run as Claude by team.yaml, plus the helper rules (Claude
     // helpers use them too) and the designer (one designer is Claude).
     let mut files = vec![
-        shared().join("includes/common.md"),
+        shared().join("includes/helper.md"),
         team_dir("dev-design-team").join("designer.md"),
     ];
     let team = fs::read_to_string(dev_team().join("team.yaml")).unwrap();
@@ -309,7 +309,7 @@ fn members_wait_the_way_their_vendor_allows() {
 
     // A helper waiting for its answer, and a designer waiting for the
     // lead's answers, do it the way their vendor allows.
-    let base = fs::read_to_string(shared().join("includes/common.md")).unwrap();
+    let base = fs::read_to_string(shared().join("includes/helper.md")).unwrap();
     assert!(
         base.contains("**Codex:** run it in the **foreground**"),
         "{base}"
