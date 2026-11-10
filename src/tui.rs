@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, TableState};
 
 use crate::address::{self, Instance};
@@ -19,41 +19,62 @@ const REFRESH: Duration = Duration::from_secs(2);
 /// `brg status -w`: print the table every few seconds until interrupted.
 /// With no instance, every instance, as a bare `brg status` shows them.
 pub fn watch(one: Option<&Instance>, interval: Duration) -> Result<(), String> {
+    use std::io::IsTerminal;
     loop {
-        let text = match one {
-            Some(inst) => runtime::render_status(&runtime::header(inst), &runtime::status(inst)?),
+        let (text, rows) = match one {
+            Some(inst) => {
+                let rows = runtime::status(inst)?;
+                (runtime::render_status(&runtime::header(inst), &rows), rows)
+            }
             None => every_text()?,
         };
-        let mut out = std::io::stdout();
+        let colour = tree::colour_wanted(std::io::stdout().is_terminal());
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
+        let footer = format!("refreshed {} UTC · Ctrl-C to stop", clock(now));
+        let footer = if colour {
+            tree::ink_text(&footer, tree::palette::FADED, false)
+        } else {
+            footer
+        };
+        let mut out = std::io::stdout();
         let _ = write!(
             out,
-            "\x1b[H\x1b[2J{}\nrefreshed at {} (UTC epoch); Ctrl-C to stop\n",
-            text, now
+            "\x1b[H\x1b[2J{text}\n{}\n{footer}\n",
+            runtime::summary(&rows, colour)
         );
         let _ = out.flush();
         std::thread::sleep(interval);
     }
 }
 
-/// Every instance's header and tree, read again now; an instance whose
-/// status fails shows its error in its place.
-fn every_text() -> Result<String, String> {
+/// `HH:MM:SS` of a UTC epoch second.
+fn clock(epoch: u64) -> String {
+    let day = epoch % 86_400;
+    format!("{:02}:{:02}:{:02}", day / 3600, day % 3600 / 60, day % 60)
+}
+
+/// Every instance's header and tree, read again now, and all their rows; an
+/// instance whose status fails shows its error in its place.
+fn every_text() -> Result<(String, Vec<StatusRow>), String> {
     let all = address::every()?;
     if all.is_empty() {
-        return Ok(format!("{}\n", address::known()));
+        return Ok((format!("{}\n", address::known()), Vec::new()));
     }
     let mut text = String::new();
+    let mut every = Vec::new();
     for inst in &all {
         match runtime::status(inst) {
-            Ok(rows) => text.push_str(&runtime::render_status(&runtime::header(inst), &rows)),
+            Ok(rows) => {
+                text.push_str(&runtime::render_status(&runtime::header(inst), &rows));
+                every.extend(rows);
+            }
             Err(e) => text.push_str(&format!("{}: {e}\n", inst.id)),
         }
     }
-    Ok(text)
+    Ok((text, every))
 }
 
 /// One instance on the `-i` screen: its header line and its rows.
@@ -68,7 +89,7 @@ struct Section {
 fn load(one: Option<&Instance>) -> Result<Vec<Section>, String> {
     let section = |inst: Instance, rows: Result<Vec<StatusRow>, String>| match rows {
         Ok(rows) => Section {
-            header: runtime::header(&inst),
+            header: runtime::header_as(&inst, true),
             inst,
             rows: live_first(rows),
         },
@@ -143,6 +164,23 @@ fn state_style(row: &StatusRow) -> Style {
     }
 }
 
+/// The summary line on the screen: grey, with the rows that need a person
+/// in bold red, as `-w` paints it.
+fn summary_line(rows: &[StatusRow]) -> Line<'static> {
+    let faded = Style::default().fg(rgb(tree::palette::FADED));
+    let alert = Style::default()
+        .fg(rgb(tree::palette::ALERT))
+        .add_modifier(Modifier::BOLD);
+    let mut spans = Vec::new();
+    for (i, (text, need)) in runtime::summary_parts(rows).into_iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw("  "));
+        }
+        spans.push(Span::styled(text, if need { alert } else { faded }));
+    }
+    Line::from(spans)
+}
+
 fn draw(
     frame: &mut ratatui::Frame,
     title: &str,
@@ -153,7 +191,7 @@ fn draw(
     note: Option<&str>,
 ) {
     let [top, bottom] =
-        Layout::vertical([Constraint::Min(3), Constraint::Length(2)]).areas(frame.area());
+        Layout::vertical([Constraint::Min(3), Constraint::Length(3)]).areas(frame.area());
     // The same tree and columns as `brg status`, each instance's tree its own.
     let prefixes: Vec<std::collections::BTreeMap<String, String>> = sections
         .iter()
@@ -220,7 +258,14 @@ fn draw(
             let style = r.map_or(Style::default(), state_style);
             let faded = Style::default().fg(rgb(tree::palette::FADED));
             let row = Row::new(vec![
-                Cell::from(name).style(style.remove_modifier(Modifier::BOLD)),
+                Cell::from(name).style({
+                    let name = style.remove_modifier(Modifier::BOLD);
+                    if r.is_some_and(|r| runtime::status_look(r).italic) {
+                        name.add_modifier(Modifier::ITALIC)
+                    } else {
+                        name
+                    }
+                }),
                 Cell::from(vendor),
                 Cell::from(state).style(style),
                 // What a person must do next stays readable.
@@ -272,8 +317,10 @@ fn draw(
     }
     let help =
         Line::from("j/k move · enter attach (detach: tmux prefix, then d) · r refresh · q quit");
+    let every: Vec<StatusRow> = sections.iter().flat_map(|s| s.rows.clone()).collect();
+    let summary = summary_line(&every);
     frame.render_widget(
-        Paragraph::new(vec![Line::from(message.to_string()), help]),
+        Paragraph::new(vec![summary, Line::from(message.to_string()), help]),
         bottom,
     );
 }
@@ -286,7 +333,7 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
     // One instance: the same header line as `brg status` (the instance, its
     // team folder and its working folder) as the title.
     let title = match one {
-        Some(inst) => runtime::header(inst),
+        Some(inst) => runtime::header_as(inst, true),
         None => "instances".to_string(),
     };
     let mut table_state = TableState::default().with_selected(Some(0));
@@ -399,4 +446,14 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
     };
     ratatui::restore();
     result
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn clock_is_utc_time_of_day() {
+        assert_eq!(super::clock(0), "00:00:00");
+        // 2026-11-10 14:02:07 UTC.
+        assert_eq!(super::clock(1_794_319_327), "14:02:07");
+    }
 }

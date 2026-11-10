@@ -1165,14 +1165,39 @@ fn start_members(
 }
 
 /// The first line of an instance's tree: its ID, team folder and working
-/// folder.
+/// folder. On a terminal, only the ID and the working folder, with the home
+/// folder as `~`: the team folder is long and rarely what a person looks
+/// for. Piped text keeps the whole line, so what a script reads never
+/// changes.
 pub fn header(inst: &Instance) -> String {
-    format!(
-        "{}  team {} · folder {}",
-        inst.id,
-        inst.record.team_dir.display(),
-        inst.record.folder.display()
-    )
+    header_as(inst, std::io::stdout().is_terminal())
+}
+
+pub fn header_as(inst: &Instance, short: bool) -> String {
+    if short {
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        format!(
+            "{}  folder {}",
+            inst.id,
+            tilde(&inst.record.folder, home.as_deref())
+        )
+    } else {
+        format!(
+            "{}  team {} · folder {}",
+            inst.id,
+            inst.record.team_dir.display(),
+            inst.record.folder.display()
+        )
+    }
+}
+
+/// `path` with a leading `home` written `~`.
+fn tilde(path: &std::path::Path, home: Option<&std::path::Path>) -> String {
+    match home.and_then(|h| path.strip_prefix(h).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".into(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
 }
 
 /// What `status` and a start show for a role with no member yet.
@@ -1212,6 +1237,7 @@ fn member_nodes(
                 look: tree::Look {
                     mark: None,
                     tone: tree::Tone::Faded,
+                    italic: true,
                 },
             });
         }
@@ -3932,17 +3958,22 @@ pub fn status_look(r: &StatusRow) -> tree::Look {
     let look = |mark, tone| Look {
         mark: Some(mark),
         tone,
+        italic: false,
     };
     let faded = Look {
         mark: None,
         tone: Tone::Faded,
+        italic: false,
     };
     let brand = match r.vendor.as_deref() {
         Some("claude") => Some(tree::palette::CLAUDE),
         _ => None,
     };
     match (r.kind, r.state.as_str()) {
-        ("role", _) => faded,
+        ("role", _) => Look {
+            italic: true,
+            ..faded
+        },
         ("copy", "unreadable") => look('◌', Tone::Odd),
         ("copy", "stopping") => look('◌', Tone::Faded),
         ("copy", _) if r.running.unwrap_or(0) > 0 => look('●', Tone::Plain),
@@ -3965,6 +3996,53 @@ pub fn status_look(r: &StatusRow) -> tree::Look {
         (_, "unknown" | "unreadable") => look('◌', Tone::Odd),
         _ => faded,
     }
+}
+
+/// The `-w` and `-i` summary, in parts: how many members are working and
+/// idle, how many rows need a person (the red ones, flagged `true`), and
+/// unread messages. Counts of zero are left out; with nothing to count, it
+/// says so.
+pub fn summary_parts(rows: &[StatusRow]) -> Vec<(String, bool)> {
+    let members = || rows.iter().filter(|r| r.kind == "member");
+    let working = members().filter(|r| r.state == "working").count();
+    let idle = members().filter(|r| r.state == "idle").count();
+    let need = rows
+        .iter()
+        .filter(|r| status_look(r).tone == tree::Tone::Alert)
+        .count();
+    let unread: usize = members().filter_map(|r| r.unread).sum();
+    let mut parts = Vec::new();
+    if working > 0 {
+        parts.push((format!("● {working} working"), false));
+    }
+    if idle > 0 {
+        parts.push((format!("· {idle} idle"), false));
+    }
+    if need > 0 {
+        parts.push((format!("! {need} need you"), true));
+    }
+    if unread > 0 {
+        parts.push((format!("{unread} unread"), false));
+    }
+    if parts.is_empty() {
+        parts.push(("nothing running".into(), false));
+    }
+    parts
+}
+
+/// [`summary_parts`] as one line, painted when `colour`: grey, with the
+/// rows that need a person in bold red.
+pub fn summary(rows: &[StatusRow], colour: bool) -> String {
+    let paint = |t: &str, alert: bool| match (colour, alert) {
+        (false, _) => t.to_string(),
+        (true, false) => tree::ink_text(t, tree::palette::FADED, false),
+        (true, true) => tree::ink_text(t, tree::palette::ALERT, true),
+    };
+    summary_parts(rows)
+        .iter()
+        .map(|(t, alert)| paint(t, *alert))
+        .collect::<Vec<_>>()
+        .join("  ")
 }
 
 /// Why `send` refused, with its exit code.
@@ -4513,6 +4591,63 @@ mod tests {
         let mut idle = claude.clone();
         idle.state = "idle".into();
         assert_eq!(cells(&idle, true), "§ opus high|idle|2 unread");
+    }
+
+    #[test]
+    fn summary_counts_what_needs_a_glance() {
+        let row = |kind: &'static str, state: &str, unread: Option<usize>| StatusRow {
+            name: "m".into(),
+            kind,
+            instance: "i".into(),
+            team: "t".into(),
+            member: None,
+            start_id: None,
+            role: None,
+            vendor: Some("claude".into()),
+            model: None,
+            parent: None,
+            posture: None,
+            state: state.into(),
+            rule: None,
+            activity: None,
+            detail: None,
+            vendor_version: None,
+            trust_accepted: None,
+            worktree: None,
+            liveness: None,
+            unread,
+            running: None,
+            expected_running: false,
+            start: true,
+        };
+        let rows = vec![
+            row("member", "working", Some(2)),
+            row("member", "working", None),
+            row("member", "idle", Some(1)),
+            row("member", "blocked", None),
+            row("member", "exited", None),
+            row("role", ON_DEMAND, None),
+        ];
+        assert_eq!(
+            summary(&rows, false),
+            "● 2 working  · 1 idle  ! 2 need you  3 unread"
+        );
+        assert_eq!(summary_parts(&rows)[2], ("! 2 need you".to_string(), true));
+        assert_eq!(summary(&rows[5..], false), "nothing running");
+        // A role with no member yet is drawn as a slot: italic.
+        assert!(status_look(&rows[5]).italic);
+        assert!(!status_look(&rows[0]).italic);
+    }
+
+    #[test]
+    fn tilde_shortens_only_the_home_folder() {
+        let home = Some(std::path::Path::new("/home/m"));
+        let t = |p: &str| tilde(std::path::Path::new(p), home);
+        assert_eq!(t("/home/m/workspace/x"), "~/workspace/x");
+        assert_eq!(t("/home/m"), "~");
+        assert_eq!(t("/home/mm/x"), "/home/mm/x");
+        assert_eq!(t("/srv/x"), "/srv/x");
+        assert_eq!(tilde(std::path::Path::new("/home/m/x"), None), "/home/m/x");
     }
 
     #[test]

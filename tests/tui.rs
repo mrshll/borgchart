@@ -106,7 +106,7 @@ fn status_i_attaches_detaches_and_quits() {
 
     wait(
         "the status screen",
-        || screen().contains(" team ") && screen().contains("alpha"),
+        || screen().contains(" folder ") && screen().contains("alpha"),
         dump,
     );
     wait("alpha idle", || screen().contains("idle"), dump);
@@ -297,7 +297,7 @@ fn bare_status_i_shows_every_instance_and_attaches_in_the_selected_one() {
         "both instances on the screen",
         || {
             let s = screen();
-            ids.iter().all(|id| s.contains(&format!("{id}  team ")))
+            ids.iter().all(|id| s.contains(&format!("{id}  folder ")))
                 && s.lines()
                     .filter(|l| l.contains("alpha") && l.contains("idle"))
                     .count()
@@ -307,7 +307,7 @@ fn bare_status_i_shows_every_instance_and_attaches_in_the_selected_one() {
     );
     // The instance whose header comes second.
     let s = screen();
-    let at = |id: &String| s.find(&format!("{id}  team ")).unwrap();
+    let at = |id: &String| s.find(&format!("{id}  folder ")).unwrap();
     let second = ids.iter().max_by_key(|id| at(id)).unwrap().clone();
 
     // Rows: first header, its alpha, second header, its alpha.
@@ -428,7 +428,7 @@ fn bare_status_i_with_no_instances_says_so_until_one_is_created() {
         "the new instance's header at a later refresh",
         || {
             let s = screen();
-            s.contains(&format!("{id}  team ")) && !s.contains("there are no instances")
+            s.contains(&format!("{id}  folder ")) && !s.contains("there are no instances")
         },
         dump,
     );
