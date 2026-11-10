@@ -49,6 +49,10 @@ enum Command {
     /// copy gets its own git worktree from it instead, which brg adds when
     /// issuing it (create, or a full `start` that gives a `start: true` role
     /// a new member), detached at the folder's HEAD or on `--branch`.
+    /// For a member or an instance, it prints the instance's tree as `status`
+    /// lays it out, with a new member's ID on its row; for a copy, one line
+    /// with the copy's ID and its folder (its worktree, for a `worktree: true`
+    /// role).
     Create {
         /// `<team>` (a name, or a path starting with `/`, `./`, `../` or
         /// `~/`), or `<instance>/<role>`.
@@ -103,7 +107,9 @@ enum Command {
     /// Remove a stopped instance, or a stopped member (its ID stays issued).
     /// With a bus, a member caller may manage only its subtree, using its
     /// latest running start. A copy's roots cannot delete their own copy.
-    /// Unread messages need --force; copy history stays in the tree store.
+    /// Unread messages, and a worktree brg added that holds uncommitted or
+    /// untracked changes or commits on no remote, need --force; copy history
+    /// stays in the tree store.
     Delete {
         /// `<instance>`, or `<instance>/<member>`. A bare role is refused.
         #[arg(add = crate::complete::targets())]
@@ -155,6 +161,9 @@ enum Command {
         json: bool,
     },
     /// Show an instance tree, or every top-level instance, with nested copies.
+    /// Each member's row shows its ID, vendor and model, state and any unread
+    /// messages. A role with no member shows only its state; its `--json` row
+    /// also gives its vendor and model.
     Status {
         /// The instance (default: every top-level instance and its copies).
         #[arg(add = crate::complete::instances())]
@@ -207,7 +216,7 @@ enum Command {
         /// Name an outside author; members use their own fenced identity.
         #[arg(long)]
         external: Option<String>,
-        /// Reference an existing record (repeatable).
+        /// Reply to an existing record, by its ID (repeatable).
         #[arg(long)]
         reply_to: Vec<String>,
         /// Print {ok, code, message, id, delivery, reason} as JSON.

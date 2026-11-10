@@ -2,7 +2,7 @@
 
 These rules apply to every member. You work for your parent; the root lead works for the repository's owner. Your vendor's own instructions files (`CLAUDE.md`, `AGENTS.md`) still apply; where they are stricter, they win.
 
-**brg.** Call brg as `"$BORGCHART_BIN"`. `"$BORGCHART_BIN" --help` and `"$BORGCHART_BIN" <command> --help` are the authority for syntax. Your instance is already set (`BORGCHART_INSTANCE`): name members by their full IDs (`implementer-x7k2`) and don't pass `--instance`. `"$BORGCHART_BIN" status` with no instance shows every instance and its child teams; `"$BORGCHART_BIN" status "$BORGCHART_INSTANCE"` shows your own tree, with each member's ID and unread message count. Never set or change the `BORGCHART_*` variables.
+**brg.** Call brg as `"$BORGCHART_BIN"`. Its help, `"$BORGCHART_BIN" --help` and `"$BORGCHART_BIN" <command> --help`, is the authority for syntax and behaviour: these instructions name the commands and leave their arguments, flags, output and exit codes to it. Read a command's help before you first use it. Your instance is already set (`BORGCHART_INSTANCE`). Never set or change the `BORGCHART_*` variables.
 
 **Notes.** `$BORGCHART_NOTES` is your instance's notes folder, shared by its members and outside every checkout. Briefs, reports, logs and review findings go there.
 
