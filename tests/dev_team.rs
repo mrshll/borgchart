@@ -33,10 +33,10 @@ fn dev_team() -> PathBuf {
     team_dir("dev-team")
 }
 
-/// The ```yaml blocks of docs/catalog.md: the configuration a
+/// The ```yaml blocks of CONTRIBUTING.md: the configuration a
 /// reader copies.
 fn readme_configs() -> Vec<String> {
-    let text = fs::read_to_string(catalog().join("../docs/catalog.md")).unwrap();
+    let text = fs::read_to_string(catalog().join("../CONTRIBUTING.md")).unwrap();
     let mut blocks = Vec::new();
     let mut lines = text.lines();
     while let Some(line) = lines.next() {
@@ -51,7 +51,7 @@ fn readme_configs() -> Vec<String> {
 /// The guide's commands that start with `prefix`, as a reader copies them
 /// (each inside backticks).
 fn readme_commands(prefix: &str) -> Vec<String> {
-    let text = fs::read_to_string(catalog().join("../docs/catalog.md")).unwrap();
+    let text = fs::read_to_string(catalog().join("../CONTRIBUTING.md")).unwrap();
     text.split('`')
         .skip(1)
         .step_by(2)
@@ -60,7 +60,7 @@ fn readme_commands(prefix: &str) -> Vec<String> {
         .collect()
 }
 
-/// As docs/catalog.md sets it up: a pinned copy of the complete teams catalog
+/// As CONTRIBUTING.md sets it up: a pinned copy of the complete teams catalog
 /// in `dir/pinned/teams`, where brg resolves names; and its configuration
 /// in `dir/config.yaml`. The instance's folder is
 /// `dir/work`, with its shared checkout in `dir/work/repo`.
