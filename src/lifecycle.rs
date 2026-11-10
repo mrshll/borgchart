@@ -109,6 +109,18 @@ pub fn previous_boot(inc: &Incarnation) -> bool {
     }
 }
 
+/// Whether a member's current start record, as `load_incarnation` read it,
+/// proves nothing of it runs, whatever tmux says: no start was recorded
+/// (one is before its window starts), it ended, or it is from an earlier boot.
+/// An unreadable record proves nothing.
+pub fn no_live_start(read: &Result<Option<Incarnation>, String>) -> bool {
+    match read {
+        Ok(None) => true,
+        Ok(Some(inc)) => inc.ended_at.is_some() || previous_boot(inc),
+        Err(_) => false,
+    }
+}
+
 /// Read a member's current start record, without creating anything.
 pub fn load_incarnation(state: &StateDir, member: &str) -> Result<Option<Incarnation>, String> {
     let path = state.current_incarnation(member);

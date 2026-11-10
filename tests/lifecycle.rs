@@ -1162,6 +1162,32 @@ fn a_previous_boot_stops_without_tmux_even_with_only_deferred_roles() {
 }
 
 #[test]
+fn a_member_with_no_live_start_stops_in_the_same_boot_without_tmux() {
+    for bus in [false, true] {
+        for recorded in [false, true] {
+            let env = Env::new(bus);
+            env.up();
+            env.up_helper();
+            env.ok(&["stop", "helper"]);
+            let file = env.incarnation_file("helper");
+            assert!(read_json(&file)["ended_at"].is_string());
+            if !recorded {
+                // As when the member's first start failed before recording it.
+                fs::remove_file(&file).unwrap();
+            }
+            env.tmux(&["kill-server"]);
+            let out = env.brg(&["stop", "helper"]);
+            assert!(
+                out.status.success(),
+                "bus={bus}, recorded={recorded}: {}",
+                both(&out)
+            );
+            assert!(both(&out).contains("not running"), "{}", both(&out));
+        }
+    }
+}
+
+#[test]
 fn boot_evidence_is_conservative_when_the_server_is_unreachable() {
     for (recorded, current) in [
         (Some("current-boot"), "current-boot"),

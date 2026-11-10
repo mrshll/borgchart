@@ -76,9 +76,9 @@ their state and retry `stop` to finish the cascade. Kept copies, including unrea
 ones, must be deleted before deleting their parent instance. If the recorded tmux socket
 is absent or refuses connections, its windows are gone: members with no recorded
 process, exited processes, or starts recorded under a different machine boot let
-the cascade finish. A single-member stop also succeeds for an old-boot start when
-the recorded server is absent. Each start stores the Linux boot ID or macOS boot-session
-UUID; a missing or unreadable identity remains conservative. Reachable live panes
+the cascade finish. A single-member or `-r` stop also succeeds when the recorded server
+is absent for a member with no recorded start, an ended start or an old-boot start.
+Each start stores the Linux boot ID or macOS boot-session UUID; a missing or unreadable identity remains conservative. Reachable live panes
 still count as alive. A surviving or unconfirmed same-boot process keeps it marked; the refusal names the member and PID to end
 before retrying `brg stop <instance>`. Other server errors keep it marked: fix the
 reported error, then retry `stop`. Stopping a copy separately removes
