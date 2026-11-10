@@ -1162,6 +1162,42 @@ fn a_previous_boot_stops_without_tmux_even_with_only_deferred_roles() {
 }
 
 #[test]
+fn a_member_with_no_live_start_stops_in_the_same_boot_without_tmux() {
+    // An ended start, no start (as when the first one failed before
+    // recording it), and a lost record of a started window, which proves nothing.
+    for bus in [false, true] {
+        for case in ["ended", "never started", "lost"] {
+            let env = Env::new(bus);
+            env.up();
+            env.up_helper();
+            env.ok(&["stop", "helper"]);
+            let file = env.incarnation_file("helper");
+            assert!(read_json(&file)["ended_at"].is_string());
+            if case != "ended" {
+                fs::remove_file(&file).unwrap();
+            }
+            if case == "never started" {
+                let meta_file = env.state_dir().join("start.json");
+                let mut meta = read_json(&meta_file);
+                meta["members"][env.m("helper")]["started"] = false.into();
+                fs::write(&meta_file, serde_json::to_vec(&meta).unwrap()).unwrap();
+            }
+            env.tmux(&["kill-server"]);
+            let out = env.brg(&["stop", "helper"]);
+            assert_eq!(
+                out.status.success(),
+                case != "lost",
+                "bus={bus}, {case}: {}",
+                both(&out)
+            );
+            if case == "lost" {
+                assert!(both(&out).contains("retry: brg stop"), "{}", both(&out));
+            }
+        }
+    }
+}
+
+#[test]
 fn boot_evidence_is_conservative_when_the_server_is_unreachable() {
     for (recorded, current) in [
         (Some("current-boot"), "current-boot"),

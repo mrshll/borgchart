@@ -2034,13 +2034,7 @@ pub fn liveness_of(inst: &Instance) -> BTreeMap<String, Liveness> {
                 }
             }
             (Some(m), _) if m.stopped_at.is_some() || !m.windows_started => Liveness::Gone,
-            (Some(_), Some(Err(_)))
-                if incarnation
-                    .as_ref()
-                    .ok()
-                    .and_then(|i| i.as_ref())
-                    .is_some_and(lifecycle::previous_boot) =>
-            {
+            (Some(m), Some(Err(_))) if lifecycle::no_live_start(m, id, &incarnation) => {
                 Liveness::Gone
             }
             (Some(_), Some(Err(_))) if inst.record.stopping => match &incarnation {
@@ -2966,13 +2960,12 @@ fn stop_one(
         // nothing has started since.
         Err(_) if meta.stopped_at.is_some() || !meta.windows_started => Vec::new(),
         Err(e) => {
-            let old_member = only.is_some_and(|id| {
-                matches!(lifecycle::load_incarnation(state, id),
-                    Ok(Some(inc)) if lifecycle::previous_boot(&inc))
+            let not_running = only.is_some_and(|id| {
+                lifecycle::no_live_start(&meta, id, &lifecycle::load_incarnation(state, id))
             });
-            // Member boot records say nothing about plugin windows. A full
+            // Member start records say nothing about plugin windows. A full
             // stop still needs proof that the recorded server is absent.
-            if (only.is_some() && !old_member) || !server.absent() {
+            if (only.is_some() && !not_running) || !server.absent() {
                 return Err(format!("{e}; fix this error, then retry: brg stop {team}"));
             }
             for (id, _) in inst
