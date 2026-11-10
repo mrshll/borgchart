@@ -131,11 +131,11 @@ Ask the holder to act on what it holds. Check the refs and the tree yourself bef
 
 - **Reviews:** each pull request's dev lead owns its review from start to finish: one fresh review, one fix round, then the owner's review request. Don't pass findings between members.
 - **Merging:** only the root lead may merge: you, when `BORGCHART_PARENT` is unset. If it is set, your team has a parent, and you never merge. As the root lead, merge a pull request only when all of these hold:
-  - the owner has submitted an approving review on its current head;
+  - the owner has submitted an approving review on its current head, or on the head before an integration-only push (below);
   - CI is green;
   - it is mergeable.
 
-  Read the head, the approval and CI again just before merging, and merge only that exact head, with a merge commit (for example `agent-gh gh pr merge --merge --match-head-commit <sha>`). Record the approval and the merge commit in your notes. A push after the approval needs a new approval. brg doesn't check any of this; the rule is yours to keep.
+  Read the head, the approval and CI again just before merging, and merge only that exact head, with a merge commit (for example `agent-gh gh pr merge --merge --match-head-commit <sha>`). Record the approval and the merge commit in your notes. After the owner's approving review, a push that only merges main and resolves its conflicts is an integration-only push. For one, check the interdiff: apart from that merge, the change set must match the approved head. Run the full capped checks, wait for green CI, and post a short integration note on the pull request. You may then merge without a fresh approval. Any other push needs a fresh approval, and any new behaviour needs the owner's review. brg doesn't check any of this; the rule is yours to keep.
 - **After a merge,** tell the copies whose work stacks on it or depends on it.
 
 ## End a workstream
