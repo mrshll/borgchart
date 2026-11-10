@@ -159,6 +159,7 @@ fn drive(
         if written == pending.len() && !interactive {
             stdin.take();
         }
+        let written_before = written;
         if let Some(pipe) = &mut stdin
             && written < pending.len()
         {
@@ -181,7 +182,9 @@ fn drive(
                 Err(e) => return Err(e.into()),
             }
         }
+        let wrote = written > written_before;
         let before = out.len();
+        let err_before = err.len();
         if !out_eof {
             out_eof = drain(&mut stdout, &mut out, limits.stdout_bytes, Stream::Stdout)?;
         }
@@ -220,8 +223,13 @@ fn drive(
                 stderr: err,
             }));
         }
-        std::thread::sleep(
-            Duration::from_millis(2).min(limits.deadline.saturating_duration_since(Instant::now())),
-        );
+        // Drain ready streams without timer pacing. Keep one read per stream
+        // per iteration so neither stream nor deadline checks can be starved.
+        if !wrote && out.len() == before && err.len() == err_before {
+            std::thread::sleep(
+                Duration::from_millis(2)
+                    .min(limits.deadline.saturating_duration_since(Instant::now())),
+            );
+        }
     }
 }

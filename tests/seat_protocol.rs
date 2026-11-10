@@ -12,7 +12,9 @@ static PROCESS_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
 fn protocol_exchange_is_interactive_and_bounded() {
-    let _guard = PROCESS_TEST.lock().unwrap();
+    let _guard = PROCESS_TEST
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let executable = temp.path().join("fake-usage");
     let run = |script: &str, duration| {
@@ -60,7 +62,9 @@ fn protocol_exchange_is_interactive_and_bounded() {
 
 #[test]
 fn completed_dialogue_kills_descendants_that_hold_pipes() {
-    let _guard = PROCESS_TEST.lock().unwrap();
+    let _guard = PROCESS_TEST
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let executable = temp.path().join("fake-usage");
     let marker = temp.path().join("late-marker");
@@ -95,7 +99,9 @@ fn completed_dialogue_kills_descendants_that_hold_pipes() {
 }
 #[test]
 fn a_closed_request_pipe_cannot_authorize_an_unsolicited_reply() {
-    let _guard = PROCESS_TEST.lock().unwrap();
+    let _guard = PROCESS_TEST
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let executable = temp.path().join("fake-usage");
     fs::write(
