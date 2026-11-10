@@ -460,39 +460,7 @@ impl Server {
                 String::from_utf8_lossy(&out.stderr).trim()
             ));
         }
-        let rows: Vec<(PaneRow, crate::tmux::Marks)> = String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .filter_map(|line| {
-                let mut p = line.split('|');
-                let row = PaneRow {
-                    session: p.next()?.to_string(),
-                    window: p.next()?.to_string(),
-                    pane_id: p.next()?.to_string(),
-                    pane_pid: p.next()?.parse().ok()?,
-                    dead: p.next()? == "1",
-                    window_id: p.next()?.to_string(),
-                    own: false,
-                };
-                let own = !p.next().unwrap_or("").is_empty();
-                let sidebar = !p.next().unwrap_or("").is_empty();
-                Some((row, crate::tmux::Marks { own, sidebar }))
-            })
-            .collect();
-        // Each window's own pane, among those beside it.
-        let mut out: Vec<PaneRow> = Vec::with_capacity(rows.len());
-        for (row, _) in &rows {
-            let window: Vec<&(PaneRow, crate::tmux::Marks)> = rows
-                .iter()
-                .filter(|(r, _)| r.window_id == row.window_id)
-                .collect();
-            let marks: Vec<crate::tmux::Marks> = window.iter().map(|(_, m)| *m).collect();
-            let own = crate::tmux::own_pane(&marks).map(|i| &window[i].0.pane_id);
-            out.push(PaneRow {
-                own: own == Some(&row.pane_id),
-                ..row.clone()
-            });
-        }
-        Ok(out)
+        Ok(pane_rows(&String::from_utf8_lossy(&out.stdout)))
     }
 
     /// An absent or refused recorded socket confirms that the server's
@@ -542,13 +510,53 @@ impl Server {
     }
 }
 
+/// The rows of a [`Server::panes`] listing, each marked whether it is its
+/// window's own pane.
+fn pane_rows(text: &str) -> Vec<PaneRow> {
+    let rows: Vec<(PaneRow, crate::tmux::Marks)> = text
+        .lines()
+        .filter_map(|line| {
+            let mut p = line.split('|');
+            let row = PaneRow {
+                session: p.next()?.to_string(),
+                window: p.next()?.to_string(),
+                pane_id: p.next()?.to_string(),
+                // tmux 3.8 prints no PID for a dead pane: the row still counts.
+                pane_pid: p.next()?.parse().ok(),
+                dead: p.next()? == "1",
+                window_id: p.next()?.to_string(),
+                own: false,
+            };
+            let own = !p.next().unwrap_or("").is_empty();
+            let sidebar = !p.next().unwrap_or("").is_empty();
+            Some((row, crate::tmux::Marks { own, sidebar }))
+        })
+        .collect();
+    // Each window's own pane, among those beside it.
+    let mut out: Vec<PaneRow> = Vec::with_capacity(rows.len());
+    for (row, _) in &rows {
+        let window: Vec<&(PaneRow, crate::tmux::Marks)> = rows
+            .iter()
+            .filter(|(r, _)| r.window_id == row.window_id)
+            .collect();
+        let marks: Vec<crate::tmux::Marks> = window.iter().map(|(_, m)| *m).collect();
+        let own = crate::tmux::own_pane(&marks).map(|i| &window[i].0.pane_id);
+        out.push(PaneRow {
+            own: own == Some(&row.pane_id),
+            ..row.clone()
+        });
+    }
+    out
+}
+
 /// One pane, as `list-panes -a` reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaneRow {
     pub session: String,
     pub window: String,
     pub pane_id: String,
-    pub pane_pid: u32,
+    /// None for a dead pane on tmux 3.8, which prints no PID for one.
+    pub pane_pid: Option<u32>,
     pub dead: bool,
     pub window_id: String,
     /// The pane brg started in its window ([`crate::tmux::own_pane`]).
@@ -596,7 +604,7 @@ pub fn pane_identity(
 /// What a successful listing says about one recorded pane.
 fn pane_in(rows: &[PaneRow], pane_id: &str, pane_pid: u32) -> Liveness {
     match rows.iter().find(|r| r.pane_id == pane_id) {
-        Some(r) if r.pane_pid == pane_pid && !r.dead => Liveness::Alive,
+        Some(r) if r.pane_pid == Some(pane_pid) && !r.dead => Liveness::Alive,
         // Absent, dead, or another process in a reused pane ID.
         _ => Liveness::Gone,
     }
@@ -770,12 +778,27 @@ mod tests {
     }
 
     #[test]
+    fn a_dead_pane_listed_without_a_pid_stays_its_windows_own() {
+        // Catches: tmux 3.8 printing an empty `#{pane_pid}` for a dead pane,
+        // and that row dropped, so the live pane beside it was taken for the
+        // window's own (the lone pane left) and the exited member as running.
+        let rows = pane_rows(
+            "brg-x|beta|%3|31483|0|@2|||\n\
+             brg-x|beta|%2||1|@2|1||\n",
+        );
+        let own: Vec<_> = rows.iter().filter(|r| r.own).collect();
+        assert_eq!(own.len(), 1, "{rows:?}");
+        assert_eq!(own[0].pane_id, "%2");
+        assert!(own[0].dead);
+    }
+
+    #[test]
     fn only_a_listing_shows_a_pane_gone() {
         let row = |id: &str, pid: u32, dead: bool| PaneRow {
             session: "brg-x".into(),
             window: "lead".into(),
             pane_id: id.into(),
-            pane_pid: pid,
+            pane_pid: Some(pid),
             dead,
             window_id: "@1".into(),
             own: true,

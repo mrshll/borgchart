@@ -2953,7 +2953,7 @@ fn stop_one(
             Some(_) => target.is_some_and(|t| t.window_id == r.window_id),
             None => true,
         })
-        .map(|r| r.pane_pid)
+        .filter_map(|r| r.pane_pid)
         .collect();
     let procs = if panes.is_empty() {
         Ok(Vec::new())
