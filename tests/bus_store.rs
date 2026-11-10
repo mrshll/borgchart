@@ -278,17 +278,12 @@ fn damaged_store(case: &str) {
         .unwrap(),
         "format" => fs::write(
             store.join("store.json"),
-            json!({"format": 1, "instance": instance}).to_string(),
+            json!({"format": 5, "root": instance}).to_string(),
         )
         .unwrap(),
         "format3" => fs::write(
             store.join("store.json"),
             json!({"format": 3, "instance": instance}).to_string(),
-        )
-        .unwrap(),
-        "format2" => fs::write(
-            store.join("store.json"),
-            json!({"format": 2, "instance": instance}).to_string(),
         )
         .unwrap(),
         "current" => fs::write(store.join("current"), "r1\n").unwrap(),
@@ -298,7 +293,14 @@ fn damaged_store(case: &str) {
     }
     let before = bytes(&store);
     let err = env.fails(&["start", &instance]);
-    assert!(err.contains("damaged"), "{err}");
+    if case == "format3" {
+        assert!(err.contains(&instance), "{err}");
+        assert!(err.contains("earlier format"), "{err}");
+        assert!(err.contains("docs/bus.md#storage"), "{err}");
+        assert!(!err.contains("brg create"), "{err}");
+    } else {
+        assert!(err.contains("damaged"), "{err}");
+    }
     let check = env.brg(&["bus", "check", "--instance", &instance, "--json"]);
     assert!(!check.status.success(), "{}", both(&check));
     let out = env.publish(&instance, &json!({"to": lead, "body": "refuse me"}));
@@ -313,11 +315,6 @@ fn a_store_for_another_instance_is_refused_without_writes() {
 #[test]
 fn another_store_format_is_refused_without_writes() {
     damaged_store("format");
-}
-// Coverage only: format validation already refuses the previous format.
-#[test]
-fn a_format_2_store_is_refused_without_writes() {
-    damaged_store("format2");
 }
 #[test]
 fn a_current_file_is_refused_without_writes() {

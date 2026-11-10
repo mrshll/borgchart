@@ -68,9 +68,14 @@ pub fn open(state: &StateDir) -> Result<Bus, Failure> {
         .map_err(|e| Failure::new(Code::Corrupt, e))?
         .ok_or_else(|| {
             Failure::new(
-                Code::NotConfigured,
+                // A newly created copy shares the store before issuing members.
+                if state.id.contains('/') && record.members.is_empty() {
+                    Code::NotConfigured
+                } else {
+                    Code::Corrupt
+                },
                 format!(
-                    "instance `{}` has not started; start it before sending",
+                    "instance `{}` has no start record; start it before sending",
                     state.id
                 ),
             )
@@ -189,6 +194,9 @@ impl Bus {
                             .is_none() =>
                 {
                     Ok(None)
+                }
+                Actor::External { .. } => {
+                    Err("an outside caller can only publish to members".into())
                 }
                 _ => Err("only the tree's root members may publish to external:NAME".into()),
             },
@@ -727,8 +735,11 @@ pub struct Progress {
 
 pub fn progress(bus: &Bus, snap: &Snapshot) -> BTreeMap<String, Progress> {
     let mut out: BTreeMap<String, Progress> = BTreeMap::new();
+    let mut kept = BTreeMap::new();
     for r in snap.records.values() {
-        if !r.to.starts_with(super::record::EXTERNAL_PREFIX) && bus.member(&r.to).is_err() {
+        if !*kept.entry(r.to.as_str()).or_insert_with(|| {
+            r.to.starts_with(super::record::EXTERNAL_PREFIX) || bus.member(&r.to).is_ok()
+        }) {
             continue;
         }
         let p = out.entry(r.to.clone()).or_default();
@@ -750,18 +761,21 @@ pub struct Inbox {
 }
 
 /// Every unacked message to this recipient, oldest first.
-pub fn list(bus: &Bus, snap: &Snapshot, to: &Recipient) -> Inbox {
+pub fn list(snap: &Snapshot, to: &Recipient) -> Inbox {
     let to = to.to_string();
-    let p = progress(bus, snap).get(&to).copied().unwrap_or_default();
+    let mut total = 0;
+    let records: Vec<_> = snap
+        .records
+        .values()
+        .filter(|r| r.to == to)
+        .inspect(|_| total += 1)
+        .filter(|r| r.ack_required && !snap.is_acked(r.seq))
+        .cloned()
+        .collect();
     Inbox {
-        records: snap
-            .records
-            .values()
-            .filter(|r| r.to == to && r.ack_required && !snap.is_acked(r.seq))
-            .cloned()
-            .collect(),
-        unacked: p.unread,
-        total: p.total,
+        unacked: records.len(),
+        records,
+        total,
     }
 }
 
@@ -951,7 +965,7 @@ pub fn wait(
         if arrived || (old_pending && Instant::now() >= minimum) {
             refresh_acks(bus, &mut snap, &mut next, deadline, &mut check)?;
             check()?;
-            let inbox = list(bus, &snap, to);
+            let inbox = list(&snap, to);
             if (old_pending && Instant::now() >= minimum && !inbox.records.is_empty())
                 || inbox.records.iter().any(|r| r.seq > mark)
             {

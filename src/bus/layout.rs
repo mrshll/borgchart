@@ -74,6 +74,14 @@ impl StorePaths {
             std::fs::read(self.identity()).map_err(|_| damaged("store.json cannot be read"))?;
         let value: serde_json::Value =
             serde_json::from_slice(&bytes).map_err(|_| damaged("store.json cannot be read"))?;
+        if value["format"]
+            .as_u64()
+            .is_some_and(|format| format < u64::from(super::SCHEMA))
+        {
+            return Err(format!(
+                "the tree's message store at `{root}` uses an earlier format; follow the cutover in docs/bus.md#storage (move the old store aside, leave an empty private `messages/` folder, then start the root)"
+            ));
+        }
         if value["format"] != super::SCHEMA {
             return Err(damaged("store.json names another format"));
         }

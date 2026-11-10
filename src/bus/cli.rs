@@ -296,7 +296,7 @@ pub fn inbox(instance: Option<&str>, args: InboxArgs, started: Instant) -> ExitC
                             ));
                         }
                     };
-                let inbox = store::list(&bus, &snap, &t.recipient);
+                let inbox = store::list(&snap, &t.recipient);
                 Ok(inbox_output(&t, &inbox, &snap, args.full))
             })(),
         ),
@@ -338,7 +338,7 @@ pub fn inbox(instance: Option<&str>, args: InboxArgs, started: Instant) -> ExitC
                     .map(Duration::from_millis)
                     .unwrap_or(duration);
                 let snap = store::wait(&bus, &caller, &t.recipient, started, duration)?;
-                let inbox = store::list(&bus, &snap, &t.recipient);
+                let inbox = store::list(&snap, &t.recipient);
                 Ok(inbox_output(&t, &inbox, &snap, full))
             })(),
         ),

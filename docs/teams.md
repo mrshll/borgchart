@@ -184,10 +184,10 @@ roles:
 - **brg versions.** Members call `"$BORGCHART_BIN"`, the brg that started them. If an upgraded brg can't read a team's messages, it says exactly what to do:
 
   ```
-  brg: instance `devteam-k3f9`'s message storage is damaged: store.json names another format; repair it by hand, or create a new instance (`brg create`)
+  brg: the tree's message store at `devteam-k3f9` uses an earlier format; follow the cutover in docs/bus.md#storage (move the old store aside, leave an empty private `messages/` folder, then start the root)
   ```
 
-  brg refuses to start such an instance, and points to `brg create` for a fresh one; its open work has to be sent again.
+  brg refuses to start any instance in that tree, names the root that owns the store, and points to the [cutover steps](bus.md#storage).
 
 - **Configuration changes** take effect at the next full `brg stop` and `brg start`. Starting one member into a running instance with changed files says so, in instance and role terms.
 

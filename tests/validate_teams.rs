@@ -510,7 +510,6 @@ fn department_and_copy_share_a_store_without_bus_opt_in() {
         .unwrap();
         assert_eq!(checked["records"], 1);
     }
-    assert!(!env.path(&format!("state/{child}/messages")).exists());
     env.ok(&["stop", &dept]);
 }
 

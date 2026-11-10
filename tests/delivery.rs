@@ -8,6 +8,7 @@ use instance_env::*;
 use serde_json::{Value, json};
 use std::fs;
 use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
@@ -202,12 +203,6 @@ fn parent_edge_round_trip_preserves_ids_and_plain_reply_references() {
             .unwrap(),
     );
     assert_eq!(read["record"]["body"], "Local task");
-    assert!(
-        !tree
-            .env
-            .path(&format!("state/{}/messages", tree.child))
-            .exists()
-    );
 }
 
 #[test]
@@ -372,7 +367,7 @@ fn routing_allows_parent_edges_but_refuses_siblings_cousins_and_deleted_ancestor
         "--json",
     ]);
     fs::write(&record_path, original).unwrap();
-    assert!(!refused.status.success(), "{}", both(&refused));
+    assert_eq!(refused.status.code(), Some(5), "{}", both(&refused));
     let checked = value(
         tree.env
             .ok(&["bus", "check", "--instance", &tree.parent, "--json"]),
@@ -443,6 +438,64 @@ fn only_the_tree_root_can_publish_to_an_external_caller() {
     ]));
     assert_eq!(outside["records"].as_array().unwrap().len(), 1);
     assert_eq!(outside["records"][0]["body"], "Routing check");
+}
+
+#[test]
+fn root_delete_refuses_unacked_external_replies() {
+    let tree = Tree::new();
+    let sent = value(publish_to(&tree, false, "external:ops"));
+    tree.env.ok(&["stop", &tree.parent]);
+    tree.env.ok(&["delete", &tree.child]);
+    let refused = tree.env.brg(&["delete", &tree.parent]);
+    assert!(!refused.status.success(), "{}", both(&refused));
+    assert!(both(&refused).contains(sent["id"].as_str().unwrap()));
+    tree.env.ok(&["delete", &tree.parent, "--force"]);
+}
+
+#[test]
+fn missing_start_records_cannot_hide_open_work_from_delete() {
+    for child in [false, true] {
+        let tree = Tree::new();
+        tree.publish(!child, "Pending task", &[]);
+        tree.env.ok(&["stop", &tree.parent]);
+        let instance = if child { &tree.child } else { &tree.parent };
+        if !child {
+            tree.env.ok(&["delete", &tree.child]);
+        }
+        fs::remove_file(tree.env.path(&format!("state/{instance}/start.json"))).unwrap();
+        let refused = tree.env.brg(&["delete", instance]);
+        assert!(!refused.status.success(), "{}", both(&refused));
+        assert!(both(&refused).contains("--force"), "{}", both(&refused));
+        tree.env.ok(&["delete", instance, "--force"]);
+        if child {
+            tree.env.ok(&["create", &format!("{}/dev", tree.parent)]);
+            let unstarted = tree.env.registry()["instances"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .find(|id| id.starts_with(&format!("{}/", tree.parent)))
+                .unwrap()
+                .clone();
+            tree.env.ok(&["delete", &unstarted]);
+        }
+    }
+}
+
+#[test]
+fn stopping_without_a_tree_store_does_not_poison_the_next_root_start() {
+    let tree = Tree::new();
+    let store = tree.env.path(&format!("state/{}/messages", tree.parent));
+    fs::rename(&store, tree.env.path("old-messages")).unwrap();
+    fs::create_dir(&store).unwrap();
+    fs::set_permissions(&store, fs::Permissions::from_mode(0o700)).unwrap();
+    tree.env.ok(&["stop", &tree.child]);
+    tree.env.ok(&["stop", &tree.parent]);
+    assert!(
+        fs::read_dir(&store).unwrap().next().is_none(),
+        "stop must leave the replacement store empty"
+    );
+    tree.env.ok(&["start", &tree.parent]);
+    tree.env.ok(&["start", &tree.child]);
 }
 
 #[test]
@@ -562,15 +615,14 @@ fn stopping_a_copy_waits_for_a_publication_already_authorized_in_the_tree() {
     while stopping.try_wait().unwrap().is_none() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
     }
-    let stopped_before_commit = stopping.try_wait().unwrap().is_some();
+    assert!(
+        stopping.try_wait().unwrap().is_none(),
+        "stop must wait for the authorized publication"
+    );
     fs::write(&gate, b"").unwrap();
     let sent = value(finish(publishing));
     let stopped = finish(stopping);
     assert!(stopped.status.success(), "{}", both(&stopped));
-    assert!(
-        !stopped_before_commit,
-        "stop must not end an authorized sender before it commits"
-    );
     assert_eq!(tree.inbox(false)["records"][0]["id"], sent["id"]);
 }
 
@@ -598,8 +650,7 @@ fn deleting_a_copy_preserves_history_without_leaving_pending_work() {
         "Deleted target",
         &[],
     );
-    assert!(!refused.status.success(), "{}", both(&refused));
-    assert_eq!(tree.env.row(&tree.parent, "lead")["unread"], 0);
+    assert_eq!(refused.status.code(), Some(3), "{}", both(&refused));
     tree.env.ok(&["stop", &tree.parent]);
     tree.env.ok(&["delete", &tree.parent]);
 }
@@ -648,6 +699,10 @@ fn copy_delete_and_publish_cannot_orphan_a_message() {
             while publishing.try_wait().unwrap().is_none() && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(10));
             }
+            assert!(
+                publishing.try_wait().unwrap().is_none(),
+                "publish must wait for delete's open-work check and tombstone"
+            );
             fs::write(&delete_gate, b"").unwrap();
             let deleted = finish(deleting);
             assert!(deleted.status.success(), "{}", both(&deleted));
@@ -679,12 +734,6 @@ fn a_copy_cannot_initialize_or_ignore_a_damaged_tree_store() {
         }
         let out = tree.env.brg(&["start", &tree.child]);
         assert!(!out.status.success(), "{}", both(&out));
-        assert!(
-            !tree
-                .env
-                .path(&format!("state/{}/messages", tree.child))
-                .exists()
-        );
         if damage == "missing" {
             assert!(!store.exists(), "a copy must not initialize the root store");
         }

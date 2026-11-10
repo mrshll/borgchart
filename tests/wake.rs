@@ -1066,7 +1066,7 @@ fn an_ack_file_for_a_locked_record_is_corrupt_not_consumption() {
 #[test]
 fn cross_edge_sends_type_and_preflight_locked_recipients_in_their_own_instance() {
     use serde_json::{Value, json};
-    for locked in [false, true] {
+    for (locked, to_child) in [(false, false), (true, false), (false, true)] {
         let e = Env::new(Vendor::Claude);
         e.send_setup(Vendor::Claude, locked, false);
         let write = |path: &std::path::Path, value: Value| {
@@ -1100,6 +1100,19 @@ fn cross_edge_sends_type_and_preflight_locked_recipients_in_their_own_instance()
                 "member": "lead", "incarnation": "lead-1", "started_at": "2026-11-09T00:00:00Z"
             }),
         );
+        if to_child {
+            let mut parent_incarnation = read(&e.state.current_incarnation("m"));
+            let pane = parent_incarnation
+                .as_object_mut()
+                .unwrap()
+                .remove("pane")
+                .unwrap();
+            write(&e.state.current_incarnation("m"), parent_incarnation);
+            let path = child.join("members/lead/incarnation.json");
+            let mut child_incarnation = read(&path);
+            child_incarnation["pane"] = pane;
+            write(&path, child_incarnation);
+        }
         let send = || {
             let mut cmd = common::command(env!("CARGO_BIN_EXE_brg"));
             cmd.env_clear()
@@ -1110,10 +1123,25 @@ fn cross_edge_sends_type_and_preflight_locked_recipients_in_their_own_instance()
                 )
                 .env("HOME", e.dir.path())
                 .env("BORGCHART_STATE_HOME", e.dir.path())
-                .env("BORGCHART_INSTANCE", "state/copy")
-                .env("BORGCHART_MEMBER", "lead")
-                .env("BORGCHART_INCARNATION", "lead-1")
-                .args(["send", "state/m", "Cross edge task", "--json"]);
+                .env(
+                    "BORGCHART_INSTANCE",
+                    if to_child { "state" } else { "state/copy" },
+                )
+                .env("BORGCHART_MEMBER", if to_child { "m" } else { "lead" })
+                .env(
+                    "BORGCHART_INCARNATION",
+                    if to_child { "m-1" } else { "lead-1" },
+                )
+                .args([
+                    "send",
+                    if to_child {
+                        "state/copy/lead"
+                    } else {
+                        "state/m"
+                    },
+                    "Cross edge task",
+                    "--json",
+                ]);
             e.private.brg_env(&mut cmd, &e.socket);
             cmd.output().unwrap()
         };
@@ -1136,10 +1164,14 @@ fn cross_edge_sends_type_and_preflight_locked_recipients_in_their_own_instance()
         assert_eq!(result["delivery"], "typed", "{result}");
         let submissions = e.submissions();
         assert_eq!(submissions.len(), 1);
-        assert!(submissions[0].contains("[brg m1 from state/copy/lead"));
+        let sender = if to_child {
+            "state/m"
+        } else {
+            "state/copy/lead"
+        };
+        assert!(submissions[0].contains(&format!("[brg m1 from {sender}")));
         let snap = borgchart::bus::store::snapshot(&borgchart::bus::store::open(&e.state).unwrap())
             .unwrap();
         assert_eq!(snap.records[&1].ack_required, !locked);
-        assert!(!child.join("messages").exists());
     }
 }

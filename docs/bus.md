@@ -25,7 +25,7 @@ Only format-4 stores are supported. Earlier formats are refused without conversi
 
 1. Settle every inbox and finish work that refers to old message IDs. Write handover notes in each instance's notes folder; message IDs restart at `m1`.
 2. Stop the whole tree from its root, including its root lead.
-3. Move every old store, at the root and in its copies, outside brg's state as archived history, or delete it. Keep notes, working folders and registry records.
+3. Move every old store, at the root and in its copies, outside brg's state as archived history, or delete it. Leave an empty private `messages/` folder (0700) at the tree root, as for a newly created instance. Keep notes, working folders and registry records.
 4. Upgrade brg for the whole tree.
 5. Start the root instance. It creates the format-4 tree store and restores the copies that were running.
 6. Send a new handover to the root lead, which briefs its copies using new IDs.
@@ -137,9 +137,9 @@ brg bus check --instance dev-team-k3f9 --json
 
 ## Damage and status
 
-Only format-4 stores, records and acknowledgements are supported; earlier stores are refused, not migrated. A foreign format/root marker, unexpected layout, gap or unreadable record is damage: publication and acknowledgements refuse, and `bus check --instance <any-instance-in-the-tree>` reports why. Inbox can show readable messages with `store: incomplete`. Damage blocks starts throughout the tree; stop and liveness still work without reading messages.
+Only format-4 stores, records and acknowledgements are supported; earlier stores are refused, not migrated. A foreign format/root marker, unexpected layout, gap or unreadable record is damage: publication and acknowledgements refuse, and `bus check --instance <any-instance-in-the-tree>` reports why. Inbox can show readable messages with `store: incomplete`. Damage blocks starts throughout the tree; stop and liveness still work without reading messages. Checkouts are held only by running members or members whose stop is unknown; a stopped instance holds none. New or empty storage may be initialised at the tree root.
 
-Delete needs `--force` for unacked messages to the instance's kept members or unreadable storage, after every member is positively stopped. Copy deletion checks open work and saves its tombstone under the tree store lock, so a concurrent publication is either counted or refused. Deleting a copy or member preserves its messages as readable history and removes them from pending-work counts. Deleting the root removes the store after all copies have been deleted. Working folders are left alone.
+Delete needs `--force` for unacked messages to the instance's kept members, unacked external replies at the root, or unreadable storage, after every member is positively stopped. Copy deletion checks open work and saves its tombstone under the tree store lock, so a concurrent publication is either counted or refused. Deleting a copy or member preserves its messages as readable history and removes them from pending-work counts. Deleting the root removes the store after all copies have been deleted. Working folders are left alone.
 
 `brg status` and `-i` show positive unread (unacked) counts beside members. All members' counts come from one tree snapshot, including copies; status never writes. `--json` includes zero for readable counts. An unreadable store omits counts throughout the tree and adds a short check note; a busy store asks for a retry. Storage and scan cost grow with the tree's history; there is no index or automatic retention.
 

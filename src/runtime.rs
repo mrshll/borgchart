@@ -2188,7 +2188,7 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
     let _bus_lock = if no_bus {
         None
     } else {
-        Some(lifecycle::lock_bus(&inst.state)?)
+        lifecycle::lock_bus(&inst.state)?
     };
     let work = (|| {
         use crate::bus::{outcome::Code, store};
@@ -2327,7 +2327,7 @@ pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
     // Serialize the open-work check and tombstone with publications anywhere in the tree.
     let paths = StorePaths::new(&inst.state);
     let bus_lock = if paths.identity().exists() {
-        Some(lifecycle::lock_bus(&inst.state)?)
+        lifecycle::lock_bus(&inst.state)?
     } else {
         None
     };
