@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::cleanup::{HARDENED, clean_worktree, git, git_with};
+use crate::cleanup::{HARDENED, clean_worktree, git_with};
 
 /// The folder that holds every worktree brg adds.
 pub fn home() -> PathBuf {
@@ -18,10 +18,12 @@ pub fn home() -> PathBuf {
     state.with_file_name(name)
 }
 
-/// [`home`] with symlinks resolved, when it exists.
-fn home_resolved() -> PathBuf {
+/// Whether `folder` is at or inside [`home`], compared both as written and
+/// with symlinks resolved on each side.
+fn in_home(folder: &Path) -> bool {
     let home = home();
-    home.canonicalize().unwrap_or(home)
+    let resolved = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    folder.starts_with(&home) || resolved(folder).starts_with(resolved(&home))
 }
 
 /// The folder of the top instance of `address`'s tree.
@@ -60,7 +62,7 @@ pub fn add(root: &Path, from: &Path, dir: &Path, branch: Option<&str>) -> Result
         None => args.push("--detach"),
     }
     args.extend([target.as_ref(), base.as_str()]);
-    if root.starts_with(home_resolved()) {
+    if in_home(root) {
         return Err(format!(
             "the tree's folder {} is one of brg's worktrees",
             root.display()
@@ -80,14 +82,16 @@ pub fn add(root: &Path, from: &Path, dir: &Path, branch: Option<&str>) -> Result
 /// from its repository. Never through a worktree's `.git` file, `dir`'s or
 /// a copy's, which members working there can rewrite.
 pub fn admin_dir(root: &Path, dir: &Path) -> Result<PathBuf, String> {
-    if root.starts_with(home_resolved()) {
+    if in_home(root) {
         return Err(format!(
             "the tree's folder {} is one of brg's worktrees, whose `.git` file a member may have rewritten",
             root.display()
         ));
     }
-    let common = git(
+    let hardened: Vec<String> = HARDENED.iter().map(|s| s.to_string()).collect();
+    let common = git_with(
         root,
+        &hardened,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
     )?;
     let worktrees = Path::new(common.trim()).join("worktrees");

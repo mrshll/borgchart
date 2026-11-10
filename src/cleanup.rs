@@ -115,7 +115,7 @@ pub(crate) fn tree_folders(tree: &[Instance], registry: &registry::Registry) -> 
             .chain(copies.into_iter().map(|(id, _)| (id, "copy")))
         {
             worktree(
-                &root_of(registry, inst),
+                root_of(registry, inst),
                 &inst.at(id),
                 &held,
                 &format!("{kind} {}", inst.at(id)),
@@ -144,11 +144,11 @@ fn instance(inst: &Instance, registry: &registry::Registry, held: &[PathBuf], ou
     }
     for (id, _) in &deleted_members {
         let what = format!("deleted member {}", inst.at(id));
-        worktree(&root_of(registry, inst), &inst.at(id), held, &what, out);
+        worktree(root_of(registry, inst), &inst.at(id), held, &what, out);
     }
     for (id, _) in &deleted_copies {
         let what = format!("deleted copy {}", inst.at(id));
-        worktree(&root_of(registry, inst), &inst.at(id), held, &what, out);
+        worktree(root_of(registry, inst), &inst.at(id), held, &what, out);
     }
     for (id, _) in &deleted_members {
         let what = format!("state of deleted member {}", inst.at(id));
@@ -171,13 +171,13 @@ fn instance(inst: &Instance, registry: &registry::Registry, held: &[PathBuf], ou
 }
 
 /// The folder of the top instance of `inst`'s tree, as registered.
-fn root_of(registry: &registry::Registry, inst: &Instance) -> PathBuf {
+/// `None` when it isn't registered: then no worktree in the tree is touched.
+fn root_of<'a>(registry: &'a registry::Registry, inst: &Instance) -> Option<&'a Path> {
     let root = inst.id.split('/').next().unwrap_or_default();
     registry
         .instances
         .get(root)
-        .map(|entry| entry.folder.clone())
-        .unwrap_or_else(|| inst.record.folder.clone())
+        .map(|entry| entry.folder.as_path())
 }
 
 /// The entries of `issued` that `pick` keeps. An ID that isn't one brg
@@ -205,11 +205,17 @@ fn issued<'a>(
 /// Remove the worktree brg added for the member or copy at `address`, in the
 /// tree whose top folder is `root`, if
 /// it is there, clean, and nobody works in it; otherwise say why it stays.
-fn worktree(root: &Path, address: &str, held: &[PathBuf], what: &str, out: &mut Outcome) {
+fn worktree(root: Option<&Path>, address: &str, held: &[PathBuf], what: &str, out: &mut Outcome) {
     let dir = crate::worktree::path(address);
     if dir.symlink_metadata().is_err() {
         return;
     }
+    let Some(root) = root else {
+        return out.error(format!(
+            "can't check git worktree {}, so it was left as it is ({what}): its tree's top instance isn't registered",
+            dir.display()
+        ));
+    };
     let real = resolve_existing_prefix(&dir);
     if held
         .iter()
@@ -331,13 +337,9 @@ pub(crate) const HARDENED: [&str; 4] = [
     "core.hooksPath=/dev/null",
 ];
 
-/// Run git in `dir` with none of the caller's `GIT_*` settings, within
-/// [`GIT_LIMIT`]; its output, or why it failed.
-pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    git_with(dir, &[], args)
-}
-
-/// As [`git`], with git options `pre` before the command.
+/// Run git in `dir`, with git options `pre` before the command and none of
+/// the caller's `GIT_*` settings, within [`GIT_LIMIT`]; its output, or why
+/// it failed.
 pub(crate) fn git_with(dir: &Path, pre: &[String], args: &[&str]) -> Result<String, String> {
     let mut command = std::process::Command::new("git");
     for (key, _) in std::env::vars_os() {
