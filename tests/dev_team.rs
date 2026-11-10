@@ -1,7 +1,7 @@
 //! The sibling definitions under `teams/`: the engineering department,
-//! dev team and design panel: the READMEs' deployments
+//! dev team and design panel: the catalog guide's deployment
 //! validate, the member files expand and stay generic, one message round
-//! works with `fake-agent` members, the dev lead seats its panel, and the
+//! works with `fake-agent` members, the department lead seats a panel, and the
 //! department lead starts a dev copy.
 
 mod common;
@@ -33,10 +33,10 @@ fn dev_team() -> PathBuf {
     team_dir("dev-team")
 }
 
-/// The ```yaml blocks of the dev team's README: the configuration a
+/// The ```yaml blocks of docs/catalog.md: the configuration a
 /// reader copies.
 fn readme_configs() -> Vec<String> {
-    let text = fs::read_to_string(dev_team().join("README.md")).unwrap();
+    let text = fs::read_to_string(catalog().join("../docs/catalog.md")).unwrap();
     let mut blocks = Vec::new();
     let mut lines = text.lines();
     while let Some(line) = lines.next() {
@@ -48,10 +48,10 @@ fn readme_configs() -> Vec<String> {
     blocks
 }
 
-/// The README's commands that start with `prefix`, as a reader copies them
+/// The guide's commands that start with `prefix`, as a reader copies them
 /// (each inside backticks).
 fn readme_commands(prefix: &str) -> Vec<String> {
-    let text = fs::read_to_string(dev_team().join("README.md")).unwrap();
+    let text = fs::read_to_string(catalog().join("../docs/catalog.md")).unwrap();
     text.split('`')
         .skip(1)
         .step_by(2)
@@ -60,8 +60,8 @@ fn readme_commands(prefix: &str) -> Vec<String> {
         .collect()
 }
 
-/// As the README sets it up: a pinned copy of the complete teams catalog
-/// in `dir/pinned/teams`, where brg resolves names; and the README configuration
+/// As docs/catalog.md sets it up: a pinned copy of the complete teams catalog
+/// in `dir/pinned/teams`, where brg resolves names; and its configuration
 /// in `dir/config.yaml`. The instance's folder is
 /// `dir/work`, with its shared checkout in `dir/work/repo`.
 fn setup(dir: &Path, text: &str) -> PathBuf {
@@ -114,8 +114,8 @@ fn validate(dir: &Path, config: &Path, team: &str) -> Output {
         .unwrap()
 }
 
-/// What a reader copies from the README works as written: both teams
-/// validate by the README's catalog paths, with no errors and no warnings.
+/// What a reader copies from the guide works as written: the teams
+/// validate by its catalog paths, with no errors and no warnings.
 #[test]
 fn the_readme_configuration_validates_cleanly() {
     let blocks = readme_configs();
@@ -124,7 +124,7 @@ fn the_readme_configuration_validates_cleanly() {
         .iter()
         .flat_map(|c| c.split(' ').skip(2).map(str::to_string).collect::<Vec<_>>())
         .collect();
-    assert_eq!(teams.len(), 2, "{teams:?}");
+    assert_eq!(teams.len(), 3, "{teams:?}");
     for (i, text) in blocks.iter().enumerate() {
         let dir = tempfile::tempdir().unwrap();
         let config = setup(dir.path(), text);
@@ -146,7 +146,7 @@ fn the_readme_configuration_validates_cleanly() {
         }
     }
 }
-/// The department validates from its folder, with the README's
+/// The department validates from its folder, with the guide's
 /// configuration, cleanly.
 #[test]
 fn the_department_validates_cleanly() {
@@ -253,10 +253,10 @@ fn git_rules_reach_only_the_roles_that_write() {
 /// a member of either vendor may run says how that vendor runs it.
 #[test]
 fn members_wait_the_way_their_vendor_allows() {
-    // Member files run as Claude by team.yaml, plus the common rules (Claude
+    // Member files run as Claude by team.yaml, plus the helper rules (Claude
     // helpers use them too) and the designer (one designer is Claude).
     let mut files = vec![
-        shared().join("includes/common.md"),
+        shared().join("includes/helper.md"),
         team_dir("dev-design-team").join("designer.md"),
     ];
     let team = fs::read_to_string(dev_team().join("team.yaml")).unwrap();
@@ -309,7 +309,7 @@ fn members_wait_the_way_their_vendor_allows() {
 
     // A helper waiting for its answer, and a designer waiting for the
     // lead's answers, do it the way their vendor allows.
-    let base = fs::read_to_string(shared().join("includes/common.md")).unwrap();
+    let base = fs::read_to_string(shared().join("includes/helper.md")).unwrap();
     assert!(
         base.contains("**Codex:** run it in the **foreground**"),
         "{base}"
@@ -599,15 +599,11 @@ mod round {
             self.run_in(role, name, &script);
         }
 
-        /// Create the dev team's instance in `work/` with the README's
-        /// command, run from the pinned copy.
+        /// Create the dev team's instance in `work/`, by name, from the
+        /// pinned copy.
         fn create(&self) -> String {
-            let commands = readme_commands("brg create ");
-            assert_eq!(commands.len(), 1, "{commands:?}");
             let folder = self.path("work").display().to_string();
-            let command = commands[0].replace("<folder>", &folder);
-            let args: Vec<&str> = command.split(' ').skip(1).collect();
-            let out = self.ok(&args);
+            let out = self.ok(&["create", "dev-team", &folder]);
             self.wait_idle("lead");
             out
         }
@@ -751,7 +747,8 @@ mod round {
         );
 
         // Its first tool action is the exact full inbox command in common.md.
-        let inbox = documented(&base, "\"$BORGCHART_BIN\" inbox --full");
+        let helper = fs::read_to_string(shared().join("includes/helper.md")).unwrap();
+        let inbox = documented(&helper, "\"$BORGCHART_BIN\" inbox --full");
         team.documented("implementer", "impl-inbox", &inbox, false);
         let (inbox, code) = team.output("impl-inbox");
         assert_eq!(code, 0, "{inbox}");
@@ -762,7 +759,7 @@ mod round {
                 .unwrap()
                 .contains(&brief.display().to_string())
         );
-        let ack = documented(&base, "\"$BORGCHART_BIN\" msg ack");
+        let ack = documented(&helper, "\"$BORGCHART_BIN\" msg ack");
         team.documented(
             "implementer",
             "take-brief",
@@ -781,7 +778,7 @@ mod round {
             ),
         );
         team.wait_for("the report", || report.exists());
-        let reply = documented(&base, "\"$BORGCHART_BIN\" send")
+        let reply = documented(&helper, "\"$BORGCHART_BIN\" send")
             .replace("<parent>", &lead)
             .replace("<brief-ID>", "m1")
             .replace("<report path>", &report.display().to_string())
@@ -830,8 +827,8 @@ mod round {
         team.ok(&["stop", &team.inst()]);
     }
 
-    /// The lead seats its design panel as a nested copy with the commands
-    /// orchestrator.md gives, from inside the lead: `create` of its
+    /// The department lead seats a design panel as a nested copy with the commands
+    /// lead.md gives, from inside the lead: `create` of its
     /// `design` role makes the copy stopped, the lead prepares `work/` as a
     /// detached worktree at the baseline, checks seating for each designer,
     /// starts the copy, exchanges files in the copy's notes folder, then
@@ -839,7 +836,8 @@ mod round {
     #[test]
     fn the_lead_seats_the_design_panel_as_a_nested_copy() {
         let team = new_team("design");
-        let repo = team.path("work/repo");
+        let repo = team.path("work/lead");
+        fs::create_dir_all(&repo).unwrap();
         let git = |args: &[&str]| {
             let out = crate::common::command("git")
                 .arg("-C")
@@ -865,22 +863,42 @@ mod round {
             "baseline",
         ]);
         let baseline = git(&["rev-parse", "HEAD"]);
-        team.create();
-        let inst = team.inst();
-        let lead = team.m("lead");
-        let rule = member_body(&dev_team().join("orchestrator.md"));
+        team.ok(&[
+            "create",
+            "borgchart-engineering",
+            &team.path("work").display().to_string(),
+        ]);
+        let inst = team
+            .instance_of("borgchart-engineering")
+            .expect("the department's instance");
+        let lead = team.member_in(&inst, "lead");
+        let rule = member_body(&department().join("lead.md"));
+        let lead_idle = || {
+            team.wait_for("lead idle", || {
+                serde_json::from_slice::<Vec<serde_json::Value>>(
+                    &team.brg(&["status", &inst, "--json"]).stdout,
+                )
+                .unwrap_or_default()
+                .iter()
+                .any(|r| r["member"] == lead.as_str() && r["state"] == "idle")
+            });
+        };
 
         // A documented command, run inside the lead: its output and exit code.
         let run = |name: &str, script: &str| {
             let out = team.path(&format!("s/{name}.out"));
-            team.run_in(
-                "lead",
-                name,
-                &format!(
+            let path = team.path(&format!("s/{name}.sh"));
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(
+                &path,
+                format!(
                     "( {script}\n) > {o} 2>&1; echo \"exit $?\" >> {o}\n",
                     o = out.display()
                 ),
-            );
+            )
+            .unwrap();
+            lead_idle();
+            team.run_tool(&lead, &path);
             team.wait_for(&format!("{name} output"), || {
                 fs::read_to_string(&out).is_ok_and(|t| t.contains("exit "))
             });
@@ -927,7 +945,7 @@ mod round {
             "panel-prepare",
             &fill(documented(
                 &rule,
-                "git -C <folder>/repo worktree add --detach <copy folder>",
+                "git -C <folder>/lead worktree add --detach <copy folder>",
             )),
         );
         assert_eq!(code, 0, "{prepared}");
@@ -1074,7 +1092,7 @@ mod round {
             ("panel-delete", "\"$BORGCHART_BIN\" delete <copy ID>"),
             (
                 "panel-unprepare",
-                "git -C <folder>/repo worktree remove <copy folder>",
+                "git -C <folder>/lead worktree remove <copy folder>",
             ),
         ] {
             let (out, code) = run(name, &fill(documented(&rule, prefix)));
@@ -1088,8 +1106,8 @@ mod round {
         assert!(!work.exists());
         let registry = team.read("state/registry.json").unwrap();
         assert!(registry["instances"].get(&panel).is_none(), "{registry}");
-        // The dev team still runs.
-        team.wait_idle("lead");
+        // The department still runs.
+        lead_idle();
         team.ok(&["stop", &inst]);
     }
 
@@ -1397,14 +1415,14 @@ mod round {
     fn fenced_waits_stop_the_loop_for_replaced_or_stopped_members() {
         let rule = fs::read_to_string(dev_team().join("orchestrator.md")).unwrap();
         let wake = rule
-            .split("## Waking yourself")
+            .split("## Watch")
             .nth(1)
             .unwrap()
-            .split("## Talking to the owner")
+            .split("## When your team has a parent")
             .next()
             .unwrap();
         assert!(wake.contains("inbox wait --json --full"), "{wake}");
-        assert!(wake.contains("start no more waits"), "{wake}");
+        assert!(wake.contains("stop waiting"), "{wake}");
 
         let team = new_team("fenced");
         team.create();
