@@ -14,7 +14,7 @@ These rules apply to every member. You work for your parent; the root lead works
 
 **GitHub.** Use `agent-gh gh` for every GitHub read. Only leads write to GitHub, under the git rules. Reviewers, researchers and monitors write only reports.
 
-**Builds.** Run direct cargo builds and test suites as `tools/cargo-slot <command>` from the checkout root. `.githooks/checks` and the pre-push hook already use it, so don't wrap them. If a build is killed for memory or the cap is unavailable, stop and report it; don't retry uncapped. Reviewers, researchers, monitors and designers run no heavy builds.
+**Builds.** Run direct cargo builds and test suites as `tools/cargo-slot <command>` from the checkout root. `.githooks/checks` and the git hooks already use it, so don't wrap them. If a build is killed for memory or the cap is unavailable, stop and report it; don't retry uncapped. Reviewers, researchers, monitors and designers run no heavy builds.
 
 **Usage limits.** If your vendor refuses to work because of a usage limit, stop and tell your parent, with the evidence; a warning alone is not a refusal. Never switch vendor, model or effort, and never buy or redeem credits, upgrade plans, or request fast mode or paid speed tiers.
 
