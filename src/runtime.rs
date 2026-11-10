@@ -2159,6 +2159,33 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
             }
         ));
     }
+    // Peer reads must finish before the local publication lock is taken.
+    let pending_delivery = crate::bus::receipts::pending(&inst.state, Some(&id));
+    let pending_incoming = (|| {
+        use crate::bus::{outcome::Code, store};
+        let bus = match store::open(&inst.state) {
+            Ok(bus) => bus,
+            Err(f) if f.code == Code::NotConfigured => return Ok(0),
+            Err(f) => return Err(f.message),
+        };
+        let snap = store::snapshot(&bus).map_err(|f| f.message)?;
+        if !snap.healthy() {
+            return Err("messages are incomplete".into());
+        }
+        let local = store::progress(&bus, &snap)
+            .get(&id)
+            .copied()
+            .unwrap_or_default()
+            .unread;
+        let unread = store::unread(&bus, &snap)
+            .map_err(|f| f.message)?
+            .remove(&id)
+            .ok_or_else(|| "member's unread messages cannot be counted".to_string())?;
+        unread
+            .count
+            .map(|count| count.saturating_sub(local))
+            .ok_or_else(|| unread.notes.join("; "))
+    })();
     // No bus means no publication lock to create; a stray lock would make
     // an otherwise empty messages folder look damaged on its next start.
     let no_bus = crate::bus::store::open(&inst.state)
@@ -2168,6 +2195,7 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
     } else {
         Some(lifecycle::lock_bus(&inst.state)?)
     };
+    let mut receipt_notes = Vec::new();
     let work = (|| {
         use crate::bus::{outcome::Code, store};
         let bus = match store::open(&inst.state) {
@@ -2179,13 +2207,24 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
         if !snap.healthy() {
             return Err("messages are incomplete".into());
         }
-        Ok(lifecycle::unacked_work(&bus, &snap, Some(&id)))
+        let mut work = lifecycle::unacked_work(&bus, &snap, Some(&id));
+        let pending = pending_delivery?;
+        work.items.extend(pending.items);
+        receipt_notes = pending.notes;
+        work.items.extend(std::iter::repeat_n(
+            format!(
+                "unread incoming message to {} (not yet imported)",
+                inst.at(&id)
+            ),
+            pending_incoming?,
+        ));
+        Ok(work)
     })();
     match work {
         Ok(work) if work.items.is_empty() || force => {}
         Ok(work) => {
             return Err(format!(
-                "member `{}` holds {} unread message{}; settle them, or delete it anyway with --force:\n  {}",
+                "member `{}` holds {} open message{}; settle them, or delete it anyway with --force:\n  {}",
                 inst.at(&id),
                 work.items.len(),
                 if work.items.len() == 1 { "" } else { "s" },
@@ -2229,10 +2268,8 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
     }
     let _ = std::fs::remove_file(inst.state.exec_file(&id));
     let _ = std::fs::remove_file(inst.state.lock_file(&id));
-    Ok(vec![format!(
-        "deleted {}; its ID stays issued",
-        inst.at(&id)
-    )])
+    receipt_notes.push(format!("deleted {}; its ID stays issued", inst.at(&id)));
+    Ok(receipt_notes)
 }
 
 /// `brg delete <instance> [--force]`: remove a stopped instance's state
@@ -2301,7 +2338,14 @@ pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
             inst.id
         ));
     }
-    match lifecycle::open_work(&inst.state) {
+    let mut receipt_notes = Vec::new();
+    let work = lifecycle::open_work(&inst.state).and_then(|mut work| {
+        let pending = crate::bus::receipts::pending(&inst.state, None)?;
+        work.items.extend(pending.items);
+        receipt_notes = pending.notes;
+        Ok(work)
+    });
+    match work {
         Ok(work) if work.items.is_empty() || force => {}
         Ok(work) => {
             return Err(format!(
@@ -2333,11 +2377,12 @@ pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
     drop(state_lock);
     std::fs::remove_dir_all(&inst.state.root)
         .map_err(|e| format!("cannot remove {}: {e}", inst.state.root.display()))?;
-    Ok(vec![format!(
+    receipt_notes.push(format!(
         "deleted {}; its working folder {} was left as it is",
         inst.id,
         inst.record.folder.display()
-    )])
+    ));
+    Ok(receipt_notes)
 }
 
 /// `brg secret <team>`: each secret its plugins need (plugin, name), and
@@ -3185,16 +3230,30 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
     let meta = state::read_meta(state).ok().flatten().unwrap_or_default();
     let (counts, bus_note) = {
         match crate::bus::store::open(state).and_then(|bus| {
-            let snap = crate::bus::store::snapshot(&bus)?;
+            let snap = match crate::bus::store::wait_snapshot(
+                &bus,
+                std::time::Instant::now() + std::time::Duration::from_secs(1),
+            )? {
+                crate::bus::store::WaitSnapshot::Ready(snap) => snap,
+                crate::bus::store::WaitSnapshot::TimedOut => {
+                    return Err(crate::bus::outcome::Failure::new(
+                        crate::bus::outcome::Code::Timeout,
+                        "messages are busy",
+                    ));
+                }
+            };
             if !snap.healthy() {
                 return Err(crate::bus::outcome::Failure::new(
                     crate::bus::outcome::Code::Corrupt,
                     "incomplete messages",
                 ));
             }
-            Ok(crate::bus::store::progress(&bus, &snap))
+            crate::bus::store::unread(&bus, &snap)
         }) {
             Ok(counts) => (Some(counts), None),
+            Err(error) if error.code == crate::bus::outcome::Code::Timeout => {
+                (None, Some("messages busy; try again".to_string()))
+            }
             Err(_) => (
                 None,
                 Some("messages unavailable; brg bus check".to_string()),
@@ -3282,7 +3341,8 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
             state: if ran { STOPPED } else { NOT_STARTED }.into(),
             unread: counts
                 .as_ref()
-                .map(|all| all.get(id).copied().unwrap_or_default().unread),
+                .and_then(|all| all.get(id))
+                .and_then(|unread| unread.count),
             running: None,
             expected_running: false,
             start: member.start,
@@ -3339,6 +3399,15 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
             }
         }
         row.expected_running = team_running && row.state == STOPPED && member.start;
+        if let Some(unread) = counts.as_ref().and_then(|all| all.get(id))
+            && !unread.notes.is_empty()
+        {
+            let notes = unread.notes.join("; ");
+            row.detail = Some(match row.detail.take() {
+                Some(detail) => format!("{detail}; {notes}"),
+                None => notes,
+            });
+        }
         rows.push(row);
     }
     for (name, plugin) in &v.team.plugins {
@@ -3772,7 +3841,14 @@ pub fn send(
             "outside senders must pass --external NAME".into(),
         ));
     }
-    // Nested roots cannot bypass D2 by naming another instance or an external author.
+    if matches!(caller, context::Caller::Member { .. })
+        && let Some(own) = std::env::var(context::ENV_INSTANCE)
+            .ok()
+            .filter(|own| !own.is_empty() && *own != inst.id)
+    {
+        return send_across(&own, inst, recipient, text, from, reply_to, &caller);
+    }
+    // Only a member, across a parent edge, may name another instance.
     context::instance(Some(&inst.id)).map_err(send_failure)?;
     let to = if matches!(Recipient::parse(recipient), Some(Recipient::External(_))) {
         recipient.to_string()
@@ -3957,6 +4033,53 @@ pub fn send(
             }
         }
     }
+}
+
+/// A message across a parent edge is committed only in the sender's own store;
+/// the receiver imports it at its next inbox read, so it is never typed.
+fn send_across(
+    own: &str,
+    inst: &Instance,
+    recipient: &str,
+    text: &str,
+    from: Option<&str>,
+    reply_to: &[String],
+    caller: &context::Caller,
+) -> Result<SendOutcome, SendError> {
+    use crate::bus::{
+        record::{Draft, Recipient},
+        store,
+    };
+    if from.is_some() {
+        return Err(SendError::Refused(
+            "--from applies only within one instance".into(),
+        ));
+    }
+    if matches!(Recipient::parse(recipient), Some(Recipient::External(_))) {
+        return Err(SendError::Refused(format!(
+            "this is a member of instance `{own}`; only the tree's root may send to external:NAME, from its own instance"
+        )));
+    }
+    let to = format!(
+        "{}/{}",
+        inst.id,
+        address::member(inst, recipient).map_err(SendError::NotAlive)?
+    );
+    let sender = address::instance(own).map_err(SendError::NotAlive)?;
+    let bus = store::open(&sender.state).map_err(send_failure)?;
+    let draft = serde_json::to_vec(&Draft {
+        to: to.clone(),
+        body: text.into(),
+        reply_to: reply_to.to_vec(),
+    })
+    .map_err(|e| SendError::Refused(e.to_string()))?;
+    let record = store::publish(&bus, caller, &draft).map_err(send_failure)?;
+    Ok(SendOutcome {
+        message: format!("committed: {} (to {to})", record.id),
+        id: record.id,
+        delivery: "stored",
+        reason: "across a parent edge; imported at the receiver's next inbox read".into(),
+    })
 }
 
 fn send_envelope(

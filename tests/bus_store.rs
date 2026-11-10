@@ -310,6 +310,11 @@ fn damaged_store(case: &str) {
             json!({"format": 1, "instance": instance}).to_string(),
         )
         .unwrap(),
+        "format2" => fs::write(
+            store.join("store.json"),
+            json!({"format": 2, "instance": instance}).to_string(),
+        )
+        .unwrap(),
         "current" => fs::write(store.join("current"), "r1\n").unwrap(),
         "directory" => fs::create_dir(store.join("r1")).unwrap(),
         "records" => fs::create_dir(store.join("records")).unwrap(),
@@ -332,6 +337,11 @@ fn a_store_for_another_instance_is_refused_without_writes() {
 #[test]
 fn another_store_format_is_refused_without_writes() {
     damaged_store("format");
+}
+// Coverage only: format validation already refuses the previous format.
+#[test]
+fn a_format_2_store_is_refused_without_writes() {
+    damaged_store("format2");
 }
 #[test]
 fn a_current_file_is_refused_without_writes() {

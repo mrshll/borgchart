@@ -28,7 +28,7 @@ The dev team still runs on its own, as any team folder does: see [its README](..
 
 ## Run it
 
-These are the cutover steps. They work once nesting (D1) and delivery between a parent team and its child teams (D2) are in, and the live smoke check has passed (#80, "Cutover"). Until then the root lead can't brief a copy's lead, or hear back from it.
+These are the cutover steps. Nesting and delivery between a parent team and its child teams are built; run these only after the live smoke check has passed (#80, "Cutover").
 
 1. **Use a stable brg and a pinned copy of the complete sibling catalog,** installed as `brg-<sha>/teams/` outside any checkout the teams change (see [installation](../README.md)). Every member runs the brg that started it.
 2. **Make the quota reader available:** the bundled [seating plugin](../shared/plugins/seat/README.md) uses `usage-route` on `PATH`, or the executable named by its one local configuration setting. The reader remains external; moving it into this repository is a later step. Missing or unknown usage means wait.
@@ -48,4 +48,4 @@ These are the cutover steps. They work once nesting (D1) and delivery between a 
 
 Before cutover, smoke-test seating, the build wrapper and `agent-gh` from the actual member environment: a GitHub read and an authorized test push whose pre-push checks use the bundled throttle automatically. Normal tool approvals still apply; team instructions do not override vendor approval settings. Arrange how GitHub reviews and comments reach the lead: this definition waits on the brg inbox and does not install a GitHub event watcher.
 
-The root and dev leads are `interactive: true`: sends store messages without typing, even with `--force`. Helpers use guarded typing by default. Messages between instances and nested workstream operation remain gated on D2 and the cutover smoke check above. Do not bypass this boundary with member identity overrides.
+The root and dev leads are `interactive: true`: sends store messages without typing, even with `--force`. Helpers use guarded typing by default. Nested workstream operation remains gated on the cutover smoke check above. Do not bypass this boundary with member identity overrides.

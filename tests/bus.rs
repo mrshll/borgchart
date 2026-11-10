@@ -90,7 +90,7 @@ impl Fixture {
     fn write_store(&self, instance: &str) {
         self.write_private(
             &self.store_dir().join("store.json"),
-            &json!({"format": 3, "instance": instance}),
+            &json!({"format": borgchart::bus::SCHEMA, "instance": instance}),
         );
         let parents = [
             ("lead", None),

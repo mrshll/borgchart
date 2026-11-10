@@ -7,10 +7,12 @@
 
 pub mod cli;
 pub mod context;
+mod delivery;
 pub mod fsx;
 pub mod help;
 pub mod layout;
 pub mod outcome;
+pub(crate) mod receipts;
 pub mod record;
 pub mod store;
 pub mod time;
