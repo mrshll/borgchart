@@ -4,7 +4,7 @@
 //! The file is optional; a missing one means the defaults. Relative paths in
 //! it are relative to its folder, and `~/` is your home.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -42,13 +42,6 @@ struct ConfigRaw {
     teams: Option<Vec<String>>,
     plugins_dir: Option<String>,
     tmux: Option<TmuxRaw>,
-    seat: Option<SeatRaw>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SeatRaw {
-    cache_dir: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,8 +109,6 @@ pub struct Config {
     pub plugins_dir: Option<PathBuf>,
     /// Your own tmux config, loaded on brg's server when you opt in.
     pub tmux_user_config: Option<UserTmuxConfig>,
-    /// Optional owned private seating cache location.
-    pub seat_cache_dir: Option<PathBuf>,
 }
 
 fn home() -> Option<PathBuf> {
@@ -149,7 +140,6 @@ impl Default for Config {
             teams: vec![default_dir().join("teams")],
             plugins_dir: None,
             tmux_user_config: None,
-            seat_cache_dir: None,
         }
     }
 }
@@ -209,20 +199,6 @@ pub fn load_file(file: &Path, report: &mut Report) -> Option<Config> {
         Some(UserConfigRaw::On(true)) => Some(UserTmuxConfig::Default),
         Some(UserConfigRaw::Path(p)) => Some(UserTmuxConfig::Path(expand_home(base, &p))),
     };
-    let seat_cache_dir = raw
-        .seat
-        .and_then(|seat| seat.cache_dir)
-        .map(|p| expand_home(base, &p));
-    if seat_cache_dir.as_ref().is_some_and(|path| {
-        path.components()
-            .any(|component| component == Component::ParentDir)
-    }) {
-        report.error(
-            Some(&file),
-            "`seat.cache_dir` must not contain `..` path components",
-        );
-        return None;
-    }
     Some(Config {
         file: Some(file.clone()),
         auth: raw.auth.unwrap_or_default(),
@@ -230,7 +206,6 @@ pub fn load_file(file: &Path, report: &mut Report) -> Option<Config> {
         teams,
         plugins_dir: raw.plugins_dir.as_deref().map(|p| expand_home(base, p)),
         tmux_user_config,
-        seat_cache_dir,
     })
 }
 

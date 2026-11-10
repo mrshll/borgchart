@@ -12,12 +12,18 @@
 # Every member here uses `vendor` posture. Each member file names both vendors' models, so moving a
 # member to the other vendor is a change to its `vendor:` line here.
 #
-# The lead checks seating with built-in `brg seat route` before each launch.
+# The lead checks seating with the `brg-seat route` plugin action before each launch.
 default: claude
 includes: catalog:shared/includes
 
+plugins:
+  seat:
+    actions:
+      route: brg-seat route <vendor> <model>
+
 roles:
   lead:
+    plugins: {seat: [route]}
     prompt: orchestrator.md
     interactive: true
     vendor: claude      # inbox-only lead; Claude uses a background inbox wait

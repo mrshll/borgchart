@@ -1,6 +1,6 @@
 //! Real pipes and process cleanup belong outside the no-process library tier.
 use borgchart::bounded_process::{Error, Stream};
-use borgchart::seat::{policy::Provider, protocol};
+use brg_seat::{policy::Provider, protocol};
 use serde_json::json;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;

@@ -1,6 +1,6 @@
 //! Vendor protocol only: raw responses are transient and never logged.
 use super::policy::Provider;
-use crate::bounded_process::{self, Action, Error, Limits};
+use borgchart::bounded_process::{self, Action, Error, Limits};
 use serde_json::{Value, json};
 use std::io;
 use std::process::Command;
@@ -151,7 +151,7 @@ pub fn read(
     command
         .env_clear()
         .envs(
-            crate::runtime::base_env()
+            borgchart::runtime::base_env()
                 .into_iter()
                 .filter(|(key, _)| !key.starts_with("BORGCHART_")),
         )

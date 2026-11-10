@@ -13,7 +13,7 @@ pub struct Context {
 }
 impl Context {
     pub fn discover(provider: Provider) -> io::Result<Self> {
-        let executable = crate::paths::find_on_path(provider.name())
+        let executable = borgchart::paths::find_on_path(provider.name())
             .into_iter()
             .next()
             .ok_or(io::ErrorKind::NotFound)?
@@ -46,7 +46,7 @@ impl Context {
         let mut digest = Sha256::new();
         digest.update(self.provider.name());
         digest.update(
-            crate::paths::resolve_existing_prefix(&self.config_dir)
+            borgchart::paths::resolve_existing_prefix(&self.config_dir)
                 .as_os_str()
                 .as_encoded_bytes(),
         );

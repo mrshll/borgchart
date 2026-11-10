@@ -182,6 +182,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "brg-seat"
+version = "0.0.0"
+dependencies = [
+ "borgchart",
+ "clap",
+ "regex",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

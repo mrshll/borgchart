@@ -1,3 +1,8 @@
+[workspace]
+members = [".", "plugins/seat"]
+default-members = [".", "plugins/seat"]
+resolver = "3"
+
 [package]
 name = "borgchart"
 version = "0.0.0"

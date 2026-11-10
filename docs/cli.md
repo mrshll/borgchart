@@ -12,7 +12,6 @@
 
 | Command | What it does |
 | --- | --- |
-| `brg seat route <vendor> <model> [--refresh]` | Check explicit subscription quota: go/0, wait/3, usage/2. See [seating](seating.md) |
 | `brg validate <team> [--json] [--probe]` | Check the team folder and brg's configuration without starting anything; `--probe` also lists each vendor's MCP connectors (this starts your MCP servers) |
 | `brg create <team> <folder>` | Make a new instance of the team working in `<folder>` (required; it must exist), start its `start: true` roles and plugin processes, and print its ID and tree. Run it twice and you have two instances |
 | `brg create <instance>/<role>` | For an agent role, make and start the next member (`<role>-<suffix>`) up to the role's `max` (default 1). For a team role, make a stopped nested copy and its folders; prepare its working folders before `start <instance>/<copy>`. Kept members and copies count, running or stopped. At the limit, list them and refuse; for `max: 1`, point to `start`. A child needs its parent role to have a member |

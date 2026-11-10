@@ -17,7 +17,7 @@ The lead is `interactive: true` (inbox-only); helpers default to `interactive: f
 
 Keep a **pinned installation** with all sibling definitions and shared assets under `brg-<sha>/teams/`, taken at the commit of the brg you run, outside the checkout the team works in. See [catalog installation](../README.md). A running instance's files are frozen: if the team's own work changed them under it, the instance would refuse to create or start members until a full stop.
 
-The root and dev leads check built-in `"$BORGCHART_BIN" seat route <vendor> <model>` before every launch. It uses the installed vendor CLI and subscription login; missing, failed or unknown usage means wait. No seating plugin or external reader is required. See [seating](../../docs/seating.md) for the optional private cache location, authentication limits and live qualification. Put `config.yaml` beside the installed `teams/` folder and set `BORGCHART_CONFIG` to its absolute path:
+The root and dev leads check the granted `brg-seat route <vendor> <model>` before every launch. It uses the installed vendor CLI and subscription login; missing, failed or unknown usage means wait. The team declares the Rust plugin and grants its action to the lead. See [seating](../../docs/seating.md) for the XDG cache location, authentication limits and live qualification. Put `config.yaml` beside the installed `teams/` folder and set `BORGCHART_CONFIG` to its absolute path:
 
 ```yaml
 schema: 1

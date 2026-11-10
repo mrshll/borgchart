@@ -24,11 +24,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Check explicit vendor/model subscription quota before seating.
-    Seat {
-        #[command(subcommand)]
-        command: crate::seat::Command,
-    },
     /// Check a team folder and brg's configuration without starting anything.
     Validate {
         /// The team: its name in the search paths, or a path to its folder
@@ -318,7 +313,6 @@ pub fn main() -> ExitCode {
 
 fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
     match cli.command {
-        Command::Seat { command } => crate::seat::run(command),
         Command::Validate { team, json, probe } => run_validate(&team, json, probe),
         Command::Create { target, folder } => {
             let team_like = crate::team::is_path(&target) || !target.contains('/');

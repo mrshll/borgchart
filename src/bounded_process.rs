@@ -100,7 +100,7 @@ pub fn run(command: &mut Command, input: Option<&[u8]>, limits: Limits) -> Resul
         .ok_or(Error::Io(io::ErrorKind::UnexpectedEof))
 }
 
-pub(crate) enum Action {
+pub enum Action {
     Continue,
     Send(Vec<u8>),
     Complete,
@@ -109,7 +109,7 @@ pub(crate) enum Action {
 /// Exchange bounded protocol messages without closing stdin after each request.
 /// The callback sees new stdout bytes only. Completion kills/reaps the group;
 /// this does not claim that the child exited successfully.
-pub(crate) fn exchange(
+pub fn exchange(
     command: &mut Command,
     initial: &[u8],
     limits: Limits,

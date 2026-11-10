@@ -1,4 +1,4 @@
-//! Built-in quota check. Explicit vendor/model only; never launches a member.
+//! Optional quota plugin. Explicit vendor/model only; never launches a member.
 pub mod cache;
 pub mod context;
 pub mod policy;
@@ -44,15 +44,17 @@ fn parse_model(s: &str) -> Result<String, String> {
     }
     Ok(s.to_owned())
 }
-fn cache_path(config: &crate::config::Config) -> Option<PathBuf> {
-    if let Some(path) = &config.seat_cache_dir {
-        return std::path::absolute(path).ok();
-    }
+fn cache_path() -> Option<PathBuf> {
     let root = match std::env::var_os("XDG_CACHE_HOME") {
         Some(root) => PathBuf::from(root),
         None => PathBuf::from(std::env::var_os("HOME")?).join(".cache"),
     };
-    root.is_absolute().then(|| root.join("borgchart/seat-v2"))
+    let path = root.join("borgchart/seat-v2");
+    (path.is_absolute()
+        && !path
+            .components()
+            .any(|part| part == std::path::Component::ParentDir))
+    .then_some(path)
 }
 fn wait(reason: &str) -> ExitCode {
     println!("wait: {reason}");
@@ -64,15 +66,8 @@ pub fn run(command: Command) -> ExitCode {
         model,
         refresh,
     } = command;
-    let mut report = crate::diag::Report::default();
-    let Some(config) = crate::config::load(&mut report) else {
-        return wait("invalid brg configuration");
-    };
-    if config.auth == crate::config::Auth::ApiKey {
-        return wait("subscription quota cannot authorize API-key spending");
-    }
-    let Some(path) = cache_path(&config) else {
-        return wait(policy::UNAVAILABLE);
+    let Some(path) = cache_path() else {
+        return wait("invalid cache location; use an absolute path without parent components");
     };
     let Ok(context) = context::Context::discover(vendor) else {
         return wait(policy::UNAVAILABLE);

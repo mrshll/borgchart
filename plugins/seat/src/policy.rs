@@ -63,7 +63,7 @@ pub struct Assessment {
     pub retry_at: Option<SystemTime>,
 }
 pub fn stamp(t: SystemTime) -> String {
-    crate::bus::time::format_utc(t)
+    borgchart::bus::time::format_utc(t)
 }
 pub fn time(v: &Value) -> Option<SystemTime> {
     if let Some(n) = v.as_f64() {
@@ -74,7 +74,7 @@ pub fn time(v: &Value) -> Option<SystemTime> {
     }
     let s = v.as_str()?;
     if s.ends_with('Z') {
-        return crate::bus::time::parse_utc(s);
+        return borgchart::bus::time::parse_utc(s);
     }
     let split = s.len().checked_sub(6)?;
     let zone = s.get(split..)?;
@@ -87,14 +87,14 @@ pub fn time(v: &Value) -> Option<SystemTime> {
     if hours > 23 || mins > 59 || !b[1..3].iter().chain(&b[4..6]).all(u8::is_ascii_digit) {
         return None;
     }
-    let local = crate::bus::time::parse_utc(&format!("{}Z", s.get(..split)?))?;
+    let local = borgchart::bus::time::parse_utc(&format!("{}Z", s.get(..split)?))?;
     let offset = Duration::from_secs(hours * 3600 + mins * 60);
     let utc = if b[0] == b'+' {
         local.checked_sub(offset)?
     } else {
         local.checked_add(offset)?
     };
-    crate::bus::time::parse_utc(&stamp(utc))?;
+    borgchart::bus::time::parse_utc(&stamp(utc))?;
     Some(utc)
 }
 pub fn unknown(provider: Provider, now: SystemTime, held_keys: Vec<String>) -> Snapshot {

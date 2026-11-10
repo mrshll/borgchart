@@ -70,6 +70,13 @@ fn setup(dir: &Path, text: &str) -> PathBuf {
     let file = dir.join("pinned/config.yaml");
     fs::write(&file, text).unwrap();
     fs::create_dir_all(dir.join("home")).unwrap();
+    fs::create_dir_all(dir.join("pinned/bin")).unwrap();
+    let plugin = Path::new(env!("CARGO_BIN_EXE_brg")).with_file_name("brg-seat");
+    assert!(
+        plugin.is_file(),
+        "build workspace binaries before department tests"
+    );
+    std::os::unix::fs::symlink(&plugin, dir.join("pinned/bin/brg-seat")).unwrap();
     file
 }
 
@@ -95,7 +102,10 @@ fn validate(dir: &Path, config: &Path, team: &str) -> Output {
     Command::new(env!("CARGO_BIN_EXE_brg"))
         .current_dir(dir.join("pinned"))
         .env_clear()
-        .env("PATH", "/usr/bin:/bin")
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", dir.join("pinned/bin").display()),
+        )
         .env("HOME", dir.join("home"))
         .env("BORGCHART_STATE_HOME", dir.join("state"))
         .env("BORGCHART_CONFIG", config)
@@ -427,7 +437,8 @@ mod round {
                 .env(
                     "PATH",
                     self.tmux.path_with(&format!(
-                        "{}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+                        "{}:{}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+                        self.path("pinned/bin").display(),
                         bin.display()
                     )),
                 )
@@ -930,7 +941,7 @@ mod round {
         assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), baseline);
 
         // Seating: each designer's vendor and model, from the copy's status,
-        // checked through built-in seating and the isolated fake vendor protocols.
+        // checked through the granted seating plugin and the isolated fake vendor protocols.
         let (listed, code) = run(
             "panel-roles",
             &fill(documented(
@@ -947,7 +958,7 @@ mod round {
                 .unwrap_or_else(|| panic!("{listed:?}"));
             let vendor = row["vendor"].as_str().unwrap();
             let model = row["model"].as_str().unwrap().split(' ').next().unwrap();
-            let route = documented(&rule, "\"$BORGCHART_BIN\" seat route <vendor> <model>")
+            let route = documented(&rule, "brg-seat route <vendor> <model>")
                 .replace("<vendor>", vendor)
                 .replace("<model>", model);
             let (answer, code) = run(&format!("seat-{designer}"), &route);
@@ -1242,7 +1253,7 @@ mod round {
             .into_iter()
             .find(|r| r["role"] == "lead")
             .expect("the copy's lead role");
-        let route = documented(&rule, "\"$BORGCHART_BIN\" seat route <vendor> <model>")
+        let route = documented(&rule, "brg-seat route <vendor> <model>")
             .replace("<vendor>", lead_row["vendor"].as_str().unwrap())
             .replace(
                 "<model>",

@@ -12,8 +12,14 @@
 default: claude
 includes: catalog:shared/includes
 
+plugins:
+  seat:
+    actions:
+      route: brg-seat route <vendor> <model>
+
 roles:
   lead:
+    plugins: {seat: [route]}
     prompt: lead.md
     interactive: true
     vendor: claude
