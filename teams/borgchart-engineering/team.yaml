@@ -27,20 +27,20 @@ roles:
     team: dev-team
     parent: lead
     start: false
-    max: 4
+    max: 6
     cwd: dev/{member_id}
   design:
     team: dev-design-team
     parent: lead
     start: false
-    max: 2
+    max: 3
     cwd: design/{member_id}
   researcher:
     prompt: researcher.md
     vendor: codex
     parent: lead
     start: false
-    max: 3
+    max: 6
     cwd: lead
     args: [--search]        # Codex's web search
   monitor:
@@ -48,5 +48,5 @@ roles:
     vendor: claude
     parent: lead
     start: false
-    max: 3
+    max: 6
     cwd: lead

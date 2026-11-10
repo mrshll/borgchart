@@ -32,7 +32,7 @@ roles:
     vendor: codex
     parent: lead
     start: false
-    max: 2
+    max: 4
     cwd: copies/{member_id}
   reviewer:
     prompt: reviewer.md
