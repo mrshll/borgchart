@@ -393,11 +393,23 @@ fn start_members(
     }
     // With `--resume`, the session each member's latest start reported. A
     // member started on its own must have one; a full start starts fresh
-    // whoever has none, and says so.
+    // whoever has none, and says so. A session belongs to the vendor that
+    // reported it: after a role's vendor changes (only across a full stop),
+    // the member starts fresh.
     let mut sessions: BTreeMap<String, String> = BTreeMap::new();
+    let mut vendor_changed: BTreeSet<String> = BTreeSet::new();
     if resume {
+        let last = state::read_meta(state).ok().flatten();
         for id in &member_ids {
+            let last_vendor = last
+                .as_ref()
+                .and_then(|m| m.members.get(id))
+                .map(|m| m.vendor.as_str());
+            let vendor = role_of(id)?.vendor.as_str();
             match recorded_session(state, id) {
+                Some(_) if last_vendor.is_some_and(|v| v != vendor) => {
+                    vendor_changed.insert(id.clone());
+                }
                 Some(s) => {
                     sessions.insert(id.clone(), s);
                 }
@@ -756,10 +768,6 @@ fn start_members(
         }
         let _ = std::fs::remove_file(state.gate_marker(id));
         let _ = std::fs::remove_file(state.member_dir(id).join("trust-accepted"));
-        // A fresh start's session replaces the old one once it reports in.
-        if !sessions.contains_key(id) {
-            let _ = std::fs::remove_file(state.member_session(id));
-        }
 
         let mut env = base.clone();
         let path = format!(
@@ -871,6 +879,9 @@ fn start_members(
             id,
             match (resume, sessions.contains_key(id)) {
                 (true, true) => "resumed".into(),
+                (true, false) if vendor_changed.contains(id) => {
+                    "started fresh: its vendor changed since its session".into()
+                }
                 (true, false) => "started fresh: no recorded session to resume".into(),
                 (false, _) => "started".into(),
             },

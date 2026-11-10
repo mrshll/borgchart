@@ -1815,7 +1815,7 @@ fn a_member_resumes_its_recorded_session() {
 }
 
 #[test]
-fn a_fresh_start_forgets_the_old_session() {
+fn a_fresh_start_replaces_the_old_session() {
     let env = Env::new();
     env.up();
     let old = wait_for_session(&env, "beta");
@@ -1877,4 +1877,42 @@ fn a_whole_instance_resumes() {
     env.wait_for("beta idle", |e| e.state_of("beta") == "idle");
     assert_resumed(&env, "alpha", &alpha);
     assert_resumed(&env, "beta", &beta);
+}
+
+#[test]
+fn a_member_whose_vendor_changed_starts_fresh() {
+    let env = Env::new();
+    env.up();
+    let inst = env.instance().unwrap();
+    let alpha = wait_for_session(&env, "alpha");
+    wait_for_session(&env, "beta");
+    assert!(env.brg(&["stop"]).status.success());
+    // Codex to Claude across a full stop: the Codex session can't be
+    // handed to Claude.
+    let team = fs::read_to_string(env.path("team/team.yaml")).unwrap();
+    env.write(
+        "team/team.yaml",
+        &team.replace("    vendor: codex\n", "    vendor: claude\n"),
+    );
+    env.write(
+        "team/beta.md",
+        "---\nmodels: {claude: haiku}\n---\nYou are beta.\n",
+    );
+    let out = env.brg(&["start", &inst, "--resume"]);
+    assert!(
+        out.status.success(),
+        "{}\n{}",
+        stdout(&out),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout(&out).contains("started fresh: its vendor changed since its session"),
+        "{}",
+        stdout(&out)
+    );
+    env.wait_for("beta idle", |e| e.state_of("beta") == "idle");
+    let beta = latest_argv(&env, "beta");
+    assert!(beta[0].ends_with("claude"), "{beta:?}");
+    assert!(!beta.iter().any(|a| a == "--resume"), "{beta:?}");
+    assert_resumed(&env, "alpha", &alpha);
 }
