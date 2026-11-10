@@ -75,6 +75,12 @@ enum Command {
         /// Point a stopped instance at its team folder's new place.
         #[arg(long)]
         team: Option<PathBuf>,
+        /// Reopen each member's last vendor session instead of starting a new
+        /// conversation. A member started on its own needs a recorded session;
+        /// a whole instance starts fresh whoever has none. Restored copies
+        /// resume too.
+        #[arg(long)]
+        resume: bool,
     },
     /// Stop an instance and all its copies deepest first, or one member.
     /// Every full stop persists `stopping` before the cascade, refusing create/start inside
@@ -394,11 +400,15 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
             };
             print_outcome(or_fail!(result))
         }
-        Command::Start { target, team } => {
+        Command::Start {
+            target,
+            team,
+            resume,
+        } => {
             let result = match or_fail!(address::resolve(&target)) {
-                (inst, Target::Instance) => runtime::start(inst, None, team.as_deref()),
+                (inst, Target::Instance) => runtime::start(inst, None, team.as_deref(), resume),
                 (inst, Target::Member(m) | Target::Role(m)) => {
-                    runtime::start(inst, Some(&m), team.as_deref())
+                    runtime::start(inst, Some(&m), team.as_deref(), resume)
                 }
             };
             print_outcome(or_fail!(result))

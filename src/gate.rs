@@ -127,20 +127,64 @@ struct HookInput {
     tool_input: serde_json::Value,
 }
 
-/// `brg _gate pre|start <state> <member>`.
+#[derive(Deserialize)]
+struct SessionInput {
+    #[serde(default)]
+    session_id: String,
+}
+
+/// Whether `id` can be handed back to the vendor's resume as one argument.
+pub fn usable_session_id(id: &str) -> bool {
+    id.len() <= 128
+        && id.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// Record the session a SessionStart hook reports, for `brg start --resume`.
+fn record_session(state: &StateDir, member: &str) -> Result<(), String> {
+    let mut raw = String::new();
+    std::io::stdin()
+        .take(1024 * 1024)
+        .read_to_string(&mut raw)
+        .map_err(|e| format!("cannot read hook input: {e}"))?;
+    let input: SessionInput =
+        serde_json::from_str(&raw).map_err(|e| format!("bad hook input: {e}"))?;
+    if !usable_session_id(&input.session_id) {
+        return Err("the hook input has no usable session_id".into());
+    }
+    write_private(
+        &state.member_session(member),
+        format!("{}\n", input.session_id).as_bytes(),
+    )
+    .map_err(|e| format!("cannot record session: {e}"))
+}
+
+/// `brg _gate pre|start|session <state> <member>`. `start` is a `locked`
+/// member's SessionStart hook: it marks the gate active and records the
+/// session. `session` is every other member's, and only records the session.
 pub fn hook_main(event: &str, state_root: &Path, member: &str) -> ExitCode {
     let state = StateDir::from_root(state_root);
     match event {
         "start" => {
             let stamp = format!("{}\n", std::process::id());
-            match write_private(&state.gate_marker(member), stamp.as_bytes()) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => {
-                    eprintln!("borgchart gate: cannot record start: {e}");
-                    ExitCode::from(2)
-                }
+            if let Err(e) = write_private(&state.gate_marker(member), stamp.as_bytes()) {
+                eprintln!("borgchart gate: cannot record start: {e}");
+                return ExitCode::from(2);
             }
+            // The gate is active either way; only resuming needs the session.
+            if let Err(e) = record_session(&state, member) {
+                eprintln!("borgchart: {e}; `brg start --resume` can't reopen this session");
+            }
+            ExitCode::SUCCESS
         }
+        "session" => match record_session(&state, member) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                // 1, not 2: never block the session over it.
+                eprintln!("borgchart: {e}; `brg start --resume` can't reopen this session");
+                ExitCode::from(1)
+            }
+        },
         "pre" => {
             let verdict = (|| -> Result<(), String> {
                 let text = std::fs::read_to_string(state.gate_file(member))
@@ -189,6 +233,15 @@ mod tests {
 
     fn bash(cmd: &str) -> Result<(), String> {
         decide(&rules(), "Bash", &json!({ "command": cmd }))
+    }
+
+    #[test]
+    fn session_ids_are_single_plain_arguments() {
+        assert!(usable_session_id("01a1c796-56be-7392-a43a-152e7e335777"));
+        assert!(usable_session_id("a5a64568-a729-488f-b7fd-b3e7674ddd18"));
+        for bad in ["", "-x", "--last", "a b", "a/b", "a;b", &"a".repeat(129)] {
+            assert!(!usable_session_id(bad), "{bad}");
+        }
     }
 
     #[test]

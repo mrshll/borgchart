@@ -143,6 +143,10 @@ impl StateDir {
     pub fn gate_marker(&self, member: &str) -> PathBuf {
         self.member_dir(member).join("gate-active")
     }
+    /// The vendor session the member's latest start reported, for resuming.
+    pub fn member_session(&self, member: &str) -> PathBuf {
+        self.member_dir(member).join("session")
+    }
     pub fn plugin_dir(&self, plugin: &str) -> PathBuf {
         self.root.join("plugins").join(plugin)
     }

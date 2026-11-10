@@ -340,6 +340,7 @@ fn start_members(
     v: &Validated,
     member_ids: Vec<String>,
     full: bool,
+    resume: bool,
 ) -> Result<UpOutcome, String> {
     let only = !full;
     let state = &inst.state;
@@ -389,6 +390,31 @@ fn start_members(
             id.clone(),
             member_cwd(inst, member, id).map_err(|e| format!("{e}; nothing was started"))?,
         );
+    }
+    // With `--resume`, the session each member's latest start reported. A
+    // member started on its own must have one; a full start starts fresh
+    // whoever has none, and says so.
+    let mut sessions: BTreeMap<String, String> = BTreeMap::new();
+    if resume {
+        for id in &member_ids {
+            match recorded_session(state, id) {
+                Some(s) => {
+                    sessions.insert(id.clone(), s);
+                }
+                None if only
+                    && !tmux_for(state)
+                        .window(&session, id)
+                        .is_some_and(|w| !w.dead) =>
+                {
+                    return Err(format!(
+                        "{} has no recorded session to resume; start it fresh: brg start {}. Nothing was started",
+                        inst.at(id),
+                        inst.at(id)
+                    ));
+                }
+                None => {}
+            }
+        }
     }
     let mut pre_notes = Vec::new();
     for (id, cwd) in &cwds {
@@ -712,6 +738,7 @@ fn start_members(
             &settings_path,
             codex_trust.as_deref(),
             &shared,
+            sessions.get(id).map(String::as_str),
         );
         if let Some(rules) = &spec.gate {
             write_private(
@@ -729,6 +756,10 @@ fn start_members(
         }
         let _ = std::fs::remove_file(state.gate_marker(id));
         let _ = std::fs::remove_file(state.member_dir(id).join("trust-accepted"));
+        // A fresh start's session replaces the old one once it reports in.
+        if !sessions.contains_key(id) {
+            let _ = std::fs::remove_file(state.member_session(id));
+        }
 
         let mut env = base.clone();
         let path = format!(
@@ -835,7 +866,15 @@ fn start_members(
             watch_codex_trust: member.vendor == Vendor::Codex && codex_trust.is_none(),
             pane,
         });
-        set(&mut outcomes, id, "started".into());
+        set(
+            &mut outcomes,
+            id,
+            match (resume, sessions.contains_key(id)) {
+                (true, true) => "resumed".into(),
+                (true, false) => "started fresh: no recorded session to resume".into(),
+                (false, _) => "started".into(),
+            },
+        );
         if let Some(dir) = &codex_trust {
             let dir = dir.display().to_string();
             let _ = write_private(
@@ -1424,7 +1463,7 @@ pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
                 created_folders.push((id.clone(), folder));
             }
         }
-        start_members(lock, &inst, &v, ids, true)
+        start_members(lock, &inst, &v, ids, true, false)
     })();
     if result.is_err() {
         unregister_if_never_started(&inst);
@@ -1536,7 +1575,7 @@ pub fn create_member(
         .issue_member(role, |id| v.team.roles.contains_key(id))?;
     let _ = create_worktree(&inst, member, &id, branch)?;
     lock.save_instance(&inst.state, &inst.record)?;
-    start_members(lock, &inst, &v, vec![id], false)
+    start_members(lock, &inst, &v, vec![id], false, false)
 }
 
 /// Pause after the preliminary create check, before taking the registry
@@ -1866,13 +1905,21 @@ fn unreadable_store(inst: &Instance, e: &str) -> String {
     )
 }
 
-/// `brg start <instance>[/<member>] [--team <path>]`.
+/// The session `member`'s latest start reported, if it can be resumed.
+fn recorded_session(state: &StateDir, member: &str) -> Option<String> {
+    let text = std::fs::read_to_string(state.member_session(member)).ok()?;
+    let id = text.trim();
+    crate::gate::usable_session_id(id).then(|| id.to_string())
+}
+
+/// `brg start <instance>[/<member>] [--team <path>] [--resume]`.
 pub fn start(
     inst: Instance,
     member: Option<&str>,
     team: Option<&Path>,
+    resume: bool,
 ) -> Result<UpOutcome, String> {
-    start_instance(inst, member, team, true)
+    start_instance(inst, member, team, true, resume)
 }
 
 fn start_instance(
@@ -1880,6 +1927,7 @@ fn start_instance(
     member: Option<&str>,
     team: Option<&Path>,
     restore_copies: bool,
+    resume: bool,
 ) -> Result<UpOutcome, String> {
     if let Some(dir) = team {
         if member.is_some() {
@@ -1922,7 +1970,7 @@ fn start_instance(
         check_instance_authority(&inst)?;
     }
     match member {
-        Some(id) => start_members(lock, &inst, &v, vec![id], false),
+        Some(id) => start_members(lock, &inst, &v, vec![id], false, resume),
         None => {
             if let Some((parent, _)) = inst.id.rsplit_once('/') {
                 crate::nesting::validate_child(&address::instance(parent)?, &v.team.dir)?;
@@ -1930,7 +1978,7 @@ fn start_instance(
             let mut created_folders = Vec::new();
             let result = (|| {
                 let ids = full_start_members(&lock, &mut inst, &v, &mut created_folders)?;
-                start_members(lock, &inst, &v, ids, true)
+                start_members(lock, &inst, &v, ids, true, resume)
             })();
             if result.is_err() {
                 remove_unkept_worktrees(&inst, created_folders);
@@ -1956,7 +2004,7 @@ fn start_instance(
                 if copy.as_ref().is_ok_and(is_running) {
                     continue;
                 }
-                match copy.and_then(|copy| start_instance(copy, None, None, false)) {
+                match copy.and_then(|copy| start_instance(copy, None, None, false, resume)) {
                     Ok(copy) => {
                         outcome.tree.push_str(&copy.tree);
                         outcome.notes.extend(copy.notes);

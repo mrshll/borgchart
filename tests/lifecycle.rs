@@ -1651,6 +1651,11 @@ fn api_key_child_starts_take_the_key_from_the_caller() {
         env.starts("lead")[0]["env"]["ANTHROPIC_API_KEY"],
         "fake-key-first"
     );
+    // Its session hook writes too; let it finish before comparing files.
+    let session = env
+        .state_dir()
+        .join(format!("members/{}/session", env.m("lead")));
+    env.wait_for("lead session recorded", |_| session.exists());
 
     // The key is not frozen: a member start needs it from the caller...
     let before = env.snapshot();

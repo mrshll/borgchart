@@ -178,6 +178,16 @@ fn hook_command(brg: &Path, event: &str, state: &StateDir, member: &str) -> Stri
     )
 }
 
+/// Claude `--settings` JSON for a member without a gate: it only records
+/// the session.
+pub fn claude_session_settings(brg: &Path, state: &StateDir, member: &str) -> serde_json::Value {
+    serde_json::json!({
+        "hooks": {
+            "SessionStart": [{"matcher": "*", "hooks": [{"type": "command", "command": hook_command(brg, "session", state, member)}]}],
+        }
+    })
+}
+
 /// Claude `--settings` JSON that installs the gate.
 pub fn claude_settings(brg: &Path, state: &StateDir, member: &str) -> serde_json::Value {
     serde_json::json!({
@@ -265,6 +275,28 @@ pub fn codex_hook_config(brg: &Path, state: &StateDir, member: &str) -> String {
     )
 }
 
+/// Codex `-c` values for a member without a gate: a SessionStart hook that
+/// only records the session, trusted for this session alone. Only these
+/// two keys are set, not the whole `hooks` table a `locked` member gets.
+pub fn codex_session_hook_config(brg: &Path, state: &StateDir, member: &str) -> [String; 2] {
+    let start = hook_command(brg, "session", state, member);
+    [
+        format!(
+            "hooks.SessionStart=[{{matcher=\"*\",hooks=[{{type=\"command\",command={}}}]}}]",
+            toml_string(&start)
+        ),
+        format!(
+            "hooks.state={{{}={{trusted_hash={}}}}}",
+            toml_string("/<session-flags>/config.toml:session_start:0:0"),
+            toml_string(&codex_hook_hash("session_start", &start))
+        ),
+    ]
+}
+
+/// What a resumed member is told: its conversation is back, but its last
+/// turn may have been cut off.
+pub const RESUME_NOTE: &str = "brg restarted you after your session ended, and your conversation is restored. Your last turn may have been cut off partway: check the state of what you were doing before you carry on.";
+
 /// What a sandboxed member's plugin commands may write: each granted plugin's
 /// own state directory and its own temp directory. Codex also makes the
 /// session's cwd writable; a start puts a `locked` Codex member without
@@ -301,10 +333,15 @@ pub fn member_launch(
     settings_path: &Path,
     codex_trust: Option<&Path>,
     shared: &[PathBuf],
+    resume: Option<&str>,
 ) -> LaunchSpec {
     let granted = granted(team, member);
     let shim_dir = state.member_bin(member_id);
-    let prompt = opening_prompt(member, &granted, &shim_dir, posture, help);
+    // A resumed member keeps its conversation, so it gets only a note.
+    let prompt = match resume {
+        Some(_) => RESUME_NOTE.to_string(),
+        None => opening_prompt(member, &granted, &shim_dir, posture, help),
+    };
     let mcp_tools = mcp_tool_names(member.vendor, member);
     let extra_args = member.args.clone();
     let mut argv: Vec<String> = Vec::new();
@@ -347,6 +384,9 @@ pub fn member_launch(
                 argv.extend(["--settings".into(), settings_path.display().to_string()]);
                 settings = Some(claude_settings(brg, state, member_id));
                 gate = Some(rules);
+            } else {
+                argv.extend(["--settings".into(), settings_path.display().to_string()]);
+                settings = Some(claude_session_settings(brg, state, member_id));
             }
             // `vendor` posture: the instance's messages and notes, as
             // added folders, unless the role's own args add folders.
@@ -360,11 +400,20 @@ pub fn member_launch(
                 }
             }
             argv.extend(extra_args);
+            if let Some(session) = resume {
+                argv.extend(["--resume".into(), session.to_string()]);
+            }
             argv.push("--".into());
             argv.push(prompt.clone());
         }
         Vendor::Codex => {
             argv.push("codex".into());
+            if resume.is_some() {
+                argv.push("resume".into());
+            }
+            // Session recording and the gate are hooks: turn them on,
+            // whatever the installed Codex's own configuration says.
+            argv.extend(["-c".into(), "features.hooks=true".into()]);
             if let Some(model) = &member.model {
                 argv.extend(["-m".into(), model.name.clone()]);
                 if let Some(effort) = &model.effort {
@@ -416,6 +465,9 @@ pub fn member_launch(
                     "--ask-for-approval".into(),
                     "never".into(),
                 ]);
+                for value in codex_session_hook_config(brg, state, member_id) {
+                    argv.extend(["-c".into(), value]);
+                }
             }
             if let Some(dir) = codex_trust {
                 argv.extend(["-c".into(), codex_trust_config(dir)]);
@@ -423,6 +475,9 @@ pub fn member_launch(
             argv.extend(extra_args);
             // `--` so a prompt that starts with `-` isn't read as an option.
             argv.push("--".into());
+            if let Some(session) = resume {
+                argv.push(session.to_string());
+            }
             argv.push(prompt.clone());
         }
     }
@@ -467,6 +522,25 @@ mod tests {
                 .collect::<String>()
         );
         assert_eq!(h, want);
+    }
+
+    #[test]
+    fn codex_session_hook_sets_single_keys_and_trusts_its_hook() {
+        let state = StateDir::from_root(Path::new("/s/dep-1"));
+        let [hooks, trust] = codex_session_hook_config(Path::new("/bin/brg"), &state, "beta");
+        assert!(
+            hooks.starts_with("hooks.SessionStart=[{matcher=\"*\""),
+            "{hooks}"
+        );
+        assert!(hooks.contains("_gate session /s/dep-1 beta"), "{hooks}");
+        let command = hook_command(Path::new("/bin/brg"), "session", &state, "beta");
+        assert_eq!(
+            trust,
+            format!(
+                "hooks.state={{\"/<session-flags>/config.toml:session_start:0:0\"={{trusted_hash={}}}}}",
+                toml_string(&codex_hook_hash("session_start", &command))
+            )
+        );
     }
 
     #[test]
