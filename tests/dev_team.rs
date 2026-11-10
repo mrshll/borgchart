@@ -1,5 +1,5 @@
 //! The sibling definitions under `teams/`: the engineering department,
-//! dev team and design panel: the catalog README's deployment
+//! dev team and design panel: the catalog guide's deployment
 //! validate, the member files expand and stay generic, one message round
 //! works with `fake-agent` members, the department lead seats a panel, and the
 //! department lead starts a dev copy.
@@ -33,10 +33,10 @@ fn dev_team() -> PathBuf {
     team_dir("dev-team")
 }
 
-/// The ```yaml blocks of the catalog's README: the configuration a
+/// The ```yaml blocks of docs/catalog.md: the configuration a
 /// reader copies.
 fn readme_configs() -> Vec<String> {
-    let text = fs::read_to_string(catalog().join("README.md")).unwrap();
+    let text = fs::read_to_string(catalog().join("../docs/catalog.md")).unwrap();
     let mut blocks = Vec::new();
     let mut lines = text.lines();
     while let Some(line) = lines.next() {
@@ -48,10 +48,10 @@ fn readme_configs() -> Vec<String> {
     blocks
 }
 
-/// The README's commands that start with `prefix`, as a reader copies them
+/// The guide's commands that start with `prefix`, as a reader copies them
 /// (each inside backticks).
 fn readme_commands(prefix: &str) -> Vec<String> {
-    let text = fs::read_to_string(catalog().join("README.md")).unwrap();
+    let text = fs::read_to_string(catalog().join("../docs/catalog.md")).unwrap();
     text.split('`')
         .skip(1)
         .step_by(2)
@@ -60,8 +60,8 @@ fn readme_commands(prefix: &str) -> Vec<String> {
         .collect()
 }
 
-/// As the README sets it up: a pinned copy of the complete teams catalog
-/// in `dir/pinned/teams`, where brg resolves names; and the README configuration
+/// As docs/catalog.md sets it up: a pinned copy of the complete teams catalog
+/// in `dir/pinned/teams`, where brg resolves names; and its configuration
 /// in `dir/config.yaml`. The instance's folder is
 /// `dir/work`, with its shared checkout in `dir/work/repo`.
 fn setup(dir: &Path, text: &str) -> PathBuf {
@@ -114,8 +114,8 @@ fn validate(dir: &Path, config: &Path, team: &str) -> Output {
         .unwrap()
 }
 
-/// What a reader copies from the README works as written: the teams
-/// validate by the README's catalog paths, with no errors and no warnings.
+/// What a reader copies from the guide works as written: the teams
+/// validate by its catalog paths, with no errors and no warnings.
 #[test]
 fn the_readme_configuration_validates_cleanly() {
     let blocks = readme_configs();
@@ -146,7 +146,7 @@ fn the_readme_configuration_validates_cleanly() {
         }
     }
 }
-/// The department validates from its folder, with the README's
+/// The department validates from its folder, with the guide's
 /// configuration, cleanly.
 #[test]
 fn the_department_validates_cleanly() {
