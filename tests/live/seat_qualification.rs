@@ -66,7 +66,7 @@ fn vendor_codex_seating_probe() {
             member: "seatprobe",
             locked: false,
             cwd: &work,
-            auto_trust: false,
+            auto_trust: true,
             args: &[],
             instruction,
             bus: false,
@@ -205,7 +205,7 @@ cat seat-stdout.txt seat-stderr.txt
     fs::write(
         w.evidence.join("seat-global-cache.txt"),
         format!(
-            "valid_observations={valid}\nroute_exit={}\nauto_trust=false\n",
+            "valid_observations={valid}\nroute_exit={}\nauto_trust=true\n",
             exit.trim()
         ),
     )

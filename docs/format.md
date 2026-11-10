@@ -150,7 +150,7 @@ A plugin is a plain script or program, in any language, that members run themsel
 How much a member may do is set per role, in `team.yaml`.
 
 - **`vendor`** (default): the agent uses your settings and MCP connectors, with these permission rules:
-  - **Codex:** brg passes `--sandbox danger-full-access --ask-for-approval never`. Shell commands have full host access and run without tool approvals. This also applies to vendor-posture researchers using `--search`.
+  - **Codex:** brg passes `--sandbox danger-full-access --ask-for-approval never`. Shell commands have full host access and run without tool approvals. This also applies to vendor-posture researchers using `--search`. Folder trust is separate: `auto_trust: true` supplies session-only trust; otherwise an untrusted folder can still stop at its trust dialog.
   - **Claude:** brg leaves the vendor's permission settings unchanged. If it stops at an approval prompt, `brg status` shows it `blocked` and you attach to answer.
   - These launch settings do not authorize work beyond the owner's task or change the team's review and merge rules.
 - **`locked`:** for members that read untrusted input.
