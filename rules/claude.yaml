@@ -2,6 +2,12 @@
 # (Claude Code 2.1.318). Higher priority wins; no match means `unknown`.
 # Each rule needs positive evidence, anchored on the UI's own layout.
 vendor: claude
+# What `status` shows a working member doing: Claude Code titles its terminal
+# with a status glyph and its own short summary of the session's topic
+# (`Claude Code` until it has one).
+activity:
+  title: '^\S (.+)$'
+  none: ['^Claude Code$']
 rules:
   - id: permission-dialog
     state: blocked

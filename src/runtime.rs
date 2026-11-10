@@ -3146,6 +3146,10 @@ pub struct StatusRow {
     pub state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rule: Option<String>,
+    /// What a live member's session is about, in its vendor's own words
+    /// (the terminal title), when its rules can read that.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3304,6 +3308,7 @@ fn status_with_counts(
                 }),
                 state: not_created(member),
                 rule: None,
+                activity: None,
                 detail: None,
                 vendor_version: None,
                 trust_accepted: None,
@@ -3356,6 +3361,7 @@ fn status_with_counts(
             expected_running: false,
             start: member.start,
             rule: None,
+            activity: None,
             detail: None,
             vendor_version: meta.members.get(id).and_then(|m| m.vendor_version.clone()),
             trust_accepted: std::fs::read_to_string(state.member_dir(id).join("trust-accepted"))
@@ -3373,6 +3379,7 @@ fn status_with_counts(
                         let reading = rules.read(&w.title, &screen);
                         row.state = reading.state.as_str().into();
                         row.rule = reading.rule;
+                        row.activity = rules.activity(&w.title);
                     }
                     Err(e) => {
                         row.state = State::Unknown.as_str().into();
@@ -3430,6 +3437,7 @@ fn status_with_counts(
             posture: None,
             state: "stopped".into(),
             rule: None,
+            activity: None,
             detail: None,
             vendor_version: None,
             trust_accepted: None,
@@ -3505,6 +3513,7 @@ fn status_with_counts(
                     "not created (start: false)".into()
                 },
                 rule: None,
+                activity: None,
                 detail: None,
                 vendor_version: None,
                 trust_accepted: None,
@@ -3561,6 +3570,7 @@ fn status_with_counts(
                 }
                 .into(),
                 rule: None,
+                activity: None,
                 detail: error.clone(),
                 vendor_version: None,
                 trust_accepted: None,
@@ -3665,6 +3675,10 @@ pub fn status_cells(r: &StatusRow) -> Vec<String> {
     let mut detail = Vec::new();
     if r.posture.as_deref() == Some("locked") {
         detail.push("locked".to_string());
+    }
+    // A turn's topic leads; an idle member's would be its last one.
+    if matches!(r.state.as_str(), "working" | "blocked") {
+        detail.extend(r.activity.clone());
     }
     detail.extend(r.detail.clone());
     if let Some(unread) = r.unread.filter(|&n| n > 0) {

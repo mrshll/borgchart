@@ -40,7 +40,16 @@ impl State {
 #[serde(deny_unknown_fields)]
 struct RuleFileRaw {
     vendor: Vendor,
+    activity: Option<ActivityRaw>,
     rules: Vec<RuleRaw>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ActivityRaw {
+    title: String,
+    #[serde(default)]
+    none: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -76,7 +85,13 @@ pub struct RuleSet {
     pub vendor: Vendor,
     pub source: String,
     rules: Vec<Rule>,
+    /// Where the terminal title says what the session is about: its first
+    /// capture group, unless that matches one of the second's patterns.
+    activity: Option<(Regex, Vec<Regex>)>,
 }
+
+/// The longest activity `status` shows, in characters.
+const ACTIVITY_MAX: usize = 60;
 
 /// The result of reading one screen.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -123,7 +138,24 @@ pub fn parse(text: &str, source: &str) -> Result<RuleSet, String> {
         });
     }
     rules.sort_by_key(|r| std::cmp::Reverse(r.priority));
+    let activity = raw
+        .activity
+        .map(|a| {
+            let title = compile(&a.title, "activity")?;
+            if title.captures_len() < 2 {
+                return Err("`activity.title` needs a capture group".to_string());
+            }
+            let none = a
+                .none
+                .iter()
+                .map(|p| compile(p, "activity"))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok((title, none))
+        })
+        .transpose()
+        .map_err(|e| format!("{source}: {e}"))?;
     Ok(RuleSet {
+        activity,
         vendor: raw.vendor,
         source: source.to_string(),
         rules,
@@ -156,6 +188,30 @@ pub fn load(vendor: Vendor) -> Result<RuleSet, String> {
 }
 
 impl RuleSet {
+    /// What the vendor's terminal title says the session is about, if its
+    /// rules know where to find that: one line, no control characters, at
+    /// most [`ACTIVITY_MAX`] characters. The agent's own words, so advisory.
+    pub fn activity(&self, title: &str) -> Option<String> {
+        let (pattern, none) = self.activity.as_ref()?;
+        let text: String = pattern
+            .captures(title)?
+            .get(1)?
+            .as_str()
+            .chars()
+            .filter(|c| !c.is_control())
+            .collect();
+        let text = text.trim();
+        if text.is_empty() || none.iter().any(|r| r.is_match(text)) {
+            return None;
+        }
+        Some(if text.chars().count() > ACTIVITY_MAX {
+            let cut: String = text.chars().take(ACTIVITY_MAX - 1).collect();
+            format!("{}…", cut.trim_end())
+        } else {
+            text.to_string()
+        })
+    }
+
     pub fn read(&self, title: &str, screen: &str) -> Reading {
         let lines: Vec<&str> = screen.lines().collect();
         let end = lines
@@ -212,6 +268,33 @@ mod tests {
     }
     fn codex() -> RuleSet {
         parse(CODEX_RULES, "codex").unwrap()
+    }
+
+    #[test]
+    fn activity_comes_from_the_title() {
+        let r = claude();
+        for title in ["✳ Review open GitHub issues", "⠐ Review open GitHub issues"] {
+            assert_eq!(
+                r.activity(title).as_deref(),
+                Some("Review open GitHub issues")
+            );
+        }
+        // No topic yet, no title, or another program's title.
+        for title in ["✳ Claude Code", "", "✳ ", "bash"] {
+            assert_eq!(r.activity(title), None, "{title:?}");
+        }
+        let long = format!("✳ {}", "word ".repeat(40));
+        let cut = r.activity(&long).unwrap();
+        assert_eq!(cut.chars().count(), ACTIVITY_MAX);
+        assert!(cut.ends_with('…'));
+        assert_eq!(r.activity("✳ a\u{1b}[31mb").as_deref(), Some("a[31mb"));
+        // Codex's title names the folder, not the work.
+        assert_eq!(codex().activity("⠸ example"), None);
+        assert!(
+            parse("vendor: claude\nactivity: {title: '^x'}\nrules: []", "t")
+                .unwrap_err()
+                .contains("capture group")
+        );
     }
 
     #[test]
