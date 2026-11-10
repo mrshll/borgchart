@@ -177,8 +177,14 @@ cat seat-stdout.txt seat-stderr.txt
         seat_hash
     );
     drop(t);
-    assert_eq!(w.codex_config_hash(), config_before, "Codex config changed");
+    let config_after = w.codex_config_hash();
     fs::write(w.evidence.join("seat-outcome.txt"), &outcome).unwrap();
+    fs::write(
+        w.evidence.join("seat-config-hashes.txt"),
+        format!("before={config_before}\nafter={config_after}\n"),
+    )
+    .unwrap();
+    assert_eq!(config_after, config_before, "Codex config changed");
     println!("seat diagnostic: {outcome}");
     assert_eq!(outcome, "recorded", "no retry or approval permitted");
     let exit = fs::read_to_string(w.evidence.join("seat-exit.txt")).unwrap();
