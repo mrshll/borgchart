@@ -31,6 +31,9 @@
 
 mod common;
 
+#[path = "live/seat_qualification.rs"]
+mod seat_qualification;
+
 #[path = "live/cases.rs"]
 mod cases;
 #[path = "live/rules.rs"]

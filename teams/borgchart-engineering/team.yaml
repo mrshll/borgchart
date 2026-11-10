@@ -4,8 +4,8 @@
 # design panels are child teams: `create` makes a copy stopped, the lead
 # prepares its folder and checks seating, then starts it. See README.md.
 #
-# The lead is Claude in `vendor` posture: managing copies needs a vendor
-# that lets brg write its state and start members. The inbox-only lead
+# The lead is Claude in `vendor` posture. Codex vendor members also have
+# full host access and no tool approvals. The inbox-only lead
 # uses a background inbox wait. This team's researchers and monitors use the
 # shared researcher/monitor instructions; common and dev-only rules each
 # live once in the catalog shared includes.

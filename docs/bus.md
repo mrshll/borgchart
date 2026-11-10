@@ -8,7 +8,7 @@ This is trusted, same-user operation: callers identify themselves through their 
 
 No bus opt-in is needed. Use `bus: {alert: {plugin: notify, action: alert}}` only to configure a real alert action; automatic alert dispatch is not wired.
 
-brg makes messages and notes writable for `vendor`-posture members; it grants no write access to its own files. Locked recipients get no new bus commands, directories or sandbox grants. Team files and launch settings are frozen while the instance is running. Apply changes with a full stop and start, after every member is positively stopped.
+Codex `vendor` members have full host access and no tool approvals; Claude `vendor` members get messages and notes as added folders. Locked recipients get no new bus commands, directories or sandbox grants. Team files and launch settings are frozen while the instance is running. Apply changes with a full stop and start, after every member is positively stopped.
 
 ## Storage
 
@@ -21,7 +21,7 @@ One store lasts for the instance's whole life; message numbers continue across s
 | `records/<seq>.json` | Immutable messages, numbered from 1 without gaps; filenames use ten decimal digits |
 | `acks/<id>.json` | Recipient acknowledgements, such as `m1.json` |
 
-Empty `.agents`, `.aws`, `.codex` and `.git` directories (Codex's sandbox masks) are ignored; files, symlinks, non-empty directories with those names and other unexpected entries are refused.
+Unexpected entries are refused, including empty `.agents`, `.aws`, `.codex` and `.git` directories left by older Codex sandboxes. Before upgrading an affected instance, stop it fully, inspect its `messages/` directory, and manually remove only empty directories with those four names using `rmdir`. Never remove non-empty directories or symlinks as mask cleanup. Start every vendor Codex member with the new brg together; do not mix old sandboxed launches with the new store validator. An uncleaned store refuses to start or serve messages. brg performs no automatic cleanup.
 
 Start records are in brg's own files outside messages: `members/<member>/incarnation.json`, with history in `members/<member>/incarnations/<id>.json`. Routing uses the member/parent entries in `start.json`. A stopped or replaced start cannot act for the member. Publication and acknowledgement recheck this under the message lock.
 

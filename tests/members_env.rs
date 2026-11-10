@@ -63,7 +63,7 @@ impl Env {
 // --- 14. Writable folders ---
 
 #[test]
-fn vendor_members_get_messages_and_notes_and_never_brgs_own_folders() {
+fn vendor_codex_has_full_access_and_claude_gets_added_folders() {
     let env = Env::new();
     let a = env.create("oncall", "work/a");
     env.ok(&["create", &format!("{a}/helper")]);
@@ -71,24 +71,26 @@ fn vendor_members_get_messages_and_notes_and_never_brgs_own_folders() {
     let messages = state.join("messages").display().to_string();
     let notes = state.join("notes").display().to_string();
 
-    // Codex: sandbox writable roots.
     let helper = env.member(&a, "helper");
     let codex = argv(&env.starts(&helper)[0]);
-    let roots: Vec<&String> = codex
-        .iter()
-        .filter(|a| a.starts_with("sandbox_workspace_write.writable_roots="))
-        .collect();
-    assert_eq!(roots.len(), 1, "{codex:?}");
     assert!(
-        roots[0].contains(&messages) && roots[0].contains(&notes),
-        "{roots:?}"
+        codex
+            .windows(2)
+            .any(|w| w == ["--sandbox", "danger-full-access"]),
+        "{codex:?}"
     );
-    for own in ["members", "secrets", "exec", "plugins", "tmp"] {
-        assert!(
-            !roots[0].contains(&state.join(own).display().to_string()),
-            "{own}: {roots:?}"
-        );
-    }
+    assert!(
+        codex
+            .windows(2)
+            .any(|w| w == ["--ask-for-approval", "never"]),
+        "{codex:?}"
+    );
+    assert!(
+        !codex
+            .iter()
+            .any(|a| a.starts_with("sandbox_workspace_write.") || a.starts_with("hooks=")),
+        "{codex:?}"
+    );
     // Claude: added folders.
     let lead = env.member(&a, "lead");
     let claude = argv(&env.starts(&lead)[0]);
@@ -98,28 +100,6 @@ fn vendor_members_get_messages_and_notes_and_never_brgs_own_folders() {
         .map(|w| &w[1])
         .collect();
     assert_eq!(added, [&messages, &notes], "{claude:?}");
-    env.ok(&["stop", &a]);
-}
-
-#[test]
-fn a_roles_own_writable_roots_replace_brgs() {
-    let env = Env::new();
-    env.role_extra(
-        "helper",
-        "    args: [-c, 'sandbox_workspace_write.writable_roots=[\"/srv/example\"]']\n",
-    );
-    let a = env.create("oncall", "work/a");
-    env.ok(&["create", &format!("{a}/helper")]);
-    let codex = argv(&env.starts(&env.member(&a, "helper"))[0]);
-    let roots: Vec<&String> = codex
-        .iter()
-        .filter(|a| a.starts_with("sandbox_workspace_write.writable_roots="))
-        .collect();
-    assert_eq!(
-        roots,
-        ["sandbox_workspace_write.writable_roots=[\"/srv/example\"]"],
-        "{codex:?}"
-    );
     env.ok(&["stop", &a]);
 }
 
@@ -162,6 +142,15 @@ fn locked_members_keep_their_launch() {
     // it starts in its temp folder.
     let start = &env.starts(&helper)[0];
     let codex = argv(start);
+    assert!(
+        codex.windows(2).any(|w| w == ["-s", "workspace-write"]),
+        "{codex:?}"
+    );
+    assert!(codex.windows(2).any(|w| w == ["-a", "never"]), "{codex:?}");
+    assert!(
+        !codex.iter().any(|a| a == "danger-full-access"),
+        "{codex:?}"
+    );
     assert!(
         !codex.iter().any(|a| a.starts_with("projects=")),
         "{codex:?}"
