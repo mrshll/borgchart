@@ -115,6 +115,7 @@ pub(crate) fn tree_folders(tree: &[Instance], registry: &registry::Registry) -> 
             .chain(copies.into_iter().map(|(id, _)| (id, "copy")))
         {
             worktree(
+                &inst.record.folder,
                 &inst.at(id),
                 &held,
                 &format!("{kind} {}", inst.at(id)),
@@ -143,11 +144,11 @@ fn instance(inst: &Instance, registry: &registry::Registry, held: &[PathBuf], ou
     }
     for (id, _) in &deleted_members {
         let what = format!("deleted member {}", inst.at(id));
-        worktree(&inst.at(id), held, &what, out);
+        worktree(&inst.record.folder, &inst.at(id), held, &what, out);
     }
     for (id, _) in &deleted_copies {
         let what = format!("deleted copy {}", inst.at(id));
-        worktree(&inst.at(id), held, &what, out);
+        worktree(&inst.record.folder, &inst.at(id), held, &what, out);
     }
     for (id, _) in &deleted_members {
         let what = format!("state of deleted member {}", inst.at(id));
@@ -191,9 +192,9 @@ fn issued<'a>(
     found
 }
 
-/// Remove the worktree brg added for the member or copy at `address`, if
+/// Remove the worktree brg added from `from` for the member or copy at `address`, if
 /// it is there, clean, and nobody works in it; otherwise say why it stays.
-fn worktree(address: &str, held: &[PathBuf], what: &str, out: &mut Outcome) {
+fn worktree(from: &Path, address: &str, held: &[PathBuf], what: &str, out: &mut Outcome) {
     let dir = crate::worktree::path(address);
     if dir.symlink_metadata().is_err() {
         return;
@@ -208,8 +209,8 @@ fn worktree(address: &str, held: &[PathBuf], what: &str, out: &mut Outcome) {
             &format!("an instance, kept member or copy works there ({what})"),
         );
     }
-    match clean_worktree(&dir) {
-        Ok(None) => match crate::worktree::remove(&dir) {
+    match crate::worktree::unsaved(from, &dir) {
+        Ok(None) => match crate::worktree::remove(from, &dir) {
             Ok(()) => out.removed(&dir, &format!("clean git worktree of {what}")),
             Err(e) => out.error(format!("cannot remove git worktree {}: {e}", dir.display())),
         },
@@ -231,10 +232,25 @@ fn worktree(address: &str, held: &[PathBuf], what: &str, out: &mut Outcome) {
 ///   is told to skip or assume unchanged;
 /// - no commit that no remote-tracking ref reaches, from its HEAD, its HEAD
 ///   reflog or its own `refs/worktree/` refs.
-pub(crate) fn clean_worktree(dir: &Path) -> Result<Option<String>, String> {
+///
+/// Every check runs against `admin`, the worktree's own folder in the
+/// repository (from [`crate::worktree::admin_dir`]), never through `dir`'s
+/// `.git` file, which whoever works in `dir` can point at a repository whose
+/// configuration runs commands; and with no hooks or file-system monitor.
+pub(crate) fn clean_worktree(admin: &Path, dir: &Path) -> Result<Option<String>, String> {
     if nested_git(dir).map_err(|e| format!("cannot read it: {e}"))? {
         return Ok(Some("another repository or worktree inside it".into()));
     }
+    let trusted: Vec<String> = [
+        "--git-dir".to_string(),
+        admin.display().to_string(),
+        "--work-tree".to_string(),
+        dir.display().to_string(),
+    ]
+    .into_iter()
+    .chain(HARDENED.iter().map(|s| s.to_string()))
+    .collect();
+    let git = |dir: &Path, args: &[&str]| git_with(dir, &trusted, args);
     let top = git(dir, &["rev-parse", "--show-toplevel"])?;
     let same = |a: &Path, b: &Path| a.canonicalize().ok() == b.canonicalize().ok();
     if !same(Path::new(top.trim()), dir) {
@@ -295,16 +311,30 @@ fn nested_git(dir: &Path) -> std::io::Result<bool> {
 /// counts as failed.
 const GIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// git settings that keep a command from running what a repository's
+/// configuration names: no hooks and no file-system monitor.
+pub(crate) const HARDENED: [&str; 4] = [
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.hooksPath=/dev/null",
+];
+
 /// Run git in `dir` with none of the caller's `GIT_*` settings, within
 /// [`GIT_LIMIT`]; its output, or why it failed.
 pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+    git_with(dir, &[], args)
+}
+
+/// As [`git`], with git options `pre` before the command.
+pub(crate) fn git_with(dir: &Path, pre: &[String], args: &[&str]) -> Result<String, String> {
     let mut command = std::process::Command::new("git");
     for (key, _) in std::env::vars_os() {
         if key.to_string_lossy().starts_with("GIT_") {
             command.env_remove(key);
         }
     }
-    command.arg("-C").arg(dir).args(args);
+    command.arg("-C").arg(dir).args(pre).args(args);
     let what = args
         .iter()
         .find(|arg| !arg.starts_with('-'))

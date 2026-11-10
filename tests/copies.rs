@@ -464,3 +464,37 @@ fn start_true_copies_keep_members_when_max_is_lowered() {
     );
     env.ok(&["stop", &inst]);
 }
+
+#[test]
+fn delete_and_cleanup_never_follow_a_rewritten_worktree_git_file() {
+    // Catches: brg running git through a member-writable `.git` file, so a
+    // repository it points at can run a command as the person (here, its
+    // file-system monitor).
+    let env = copies_env(2);
+    let inst = env.create("oncall", "work/a");
+    let id = env.copy(&inst);
+    let folder = env.worktree(&format!("{inst}/{id}"));
+    let hostile = env.path("hostile");
+    git(
+        env.dir.path(),
+        &["init", "-q", &hostile.display().to_string()],
+    );
+    let ran = env.path("ran");
+    git(
+        &hostile,
+        &[
+            "config",
+            "core.fsmonitor",
+            &format!("touch {}", ran.display()),
+        ],
+    );
+    fs::write(
+        folder.join(".git"),
+        format!("gitdir: {}\n", hostile.join(".git").display()),
+    )
+    .unwrap();
+    env.ok(&["stop", &inst]);
+    let _ = env.brg(&["delete", &format!("{inst}/{id}")]);
+    let _ = env.brg(&["cleanup"]);
+    assert!(!ran.exists(), "brg ran the hostile repository's command");
+}

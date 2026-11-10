@@ -272,7 +272,11 @@ fn cleanup_fails_and_keeps_a_worktree_git_cannot_check() {
     let inst = env.create("oncall", "work/a");
     let broken = helper(&env, &inst);
     let leaf = env.worktree(&format!("{inst}/{broken}"));
-    fs::write(leaf.join(".git"), "gitdir: nowhere\n").unwrap();
+    // The repository forgets the worktree, so brg can't find git's own
+    // record of it (and never trusts the worktree's `.git` file instead).
+    for entry in fs::read_dir(env.path("work/a/.git/worktrees")).unwrap() {
+        fs::remove_dir_all(entry.unwrap().path()).unwrap();
+    }
     env.ok(&["stop", &format!("{inst}/{broken}")]);
     let err = env.fails(&["delete", &format!("{inst}/{broken}")]);
     assert!(err.contains("git can't check"), "{err}");

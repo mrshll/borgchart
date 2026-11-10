@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::cleanup::{clean_worktree, git};
+use crate::cleanup::{HARDENED, clean_worktree, git, git_with};
 
 /// The folder that holds every worktree brg adds.
 pub fn home() -> PathBuf {
@@ -43,21 +43,59 @@ pub fn add(from: &Path, dir: &Path, branch: Option<&str>) -> Result<(), String> 
     })
 }
 
-/// Why the worktree at `dir` can't be removed without losing work, or
-/// `None` when it can (or isn't there).
-pub fn unsaved(dir: &Path) -> Result<Option<String>, String> {
+/// The folder git keeps for the worktree at `dir` in the repository `from`
+/// works in: found through that repository's own records of its
+/// worktrees, never through `dir`'s `.git` file, which a member working in
+/// `dir` can rewrite.
+pub fn admin_dir(from: &Path, dir: &Path) -> Result<PathBuf, String> {
+    let common = git(
+        from,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?;
+    let worktrees = Path::new(common.trim()).join("worktrees");
+    let want = dir
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve it: {e}"))?;
+    for entry in std::fs::read_dir(&worktrees)
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let Ok(gitdir) = std::fs::read_to_string(entry.path().join("gitdir")) else {
+            continue;
+        };
+        let top = Path::new(gitdir.trim()).parent().map(Path::canonicalize);
+        if matches!(top, Some(Ok(top)) if top == want) {
+            return Ok(entry.path());
+        }
+    }
+    Err(format!(
+        "git in {} has no record of this worktree",
+        from.display()
+    ))
+}
+
+/// Why the worktree at `dir`, added from `from`, can't be removed without
+/// losing work, or `None` when it can (or isn't there).
+pub fn unsaved(from: &Path, dir: &Path) -> Result<Option<String>, String> {
     if dir.symlink_metadata().is_err() {
         return Ok(None);
     }
-    clean_worktree(dir)
+    clean_worktree(&admin_dir(from, dir)?, dir)
 }
 
-/// Remove the clean worktree at `dir`, if it is there.
-pub fn remove(dir: &Path) -> Result<(), String> {
+/// Remove the worktree at `dir`, added from `from`, if it is there.
+pub fn remove(from: &Path, dir: &Path) -> Result<(), String> {
     if dir.symlink_metadata().is_err() {
         return Ok(());
     }
-    git(dir, &["worktree", "remove", &dir.to_string_lossy()]).map(|_| ())
+    let hardened: Vec<String> = HARDENED.iter().map(|s| s.to_string()).collect();
+    git_with(
+        from,
+        &hardened,
+        &["worktree", "remove", &dir.to_string_lossy()],
+    )
+    .map(|_| ())
 }
 
 #[cfg(test)]

@@ -1601,7 +1601,7 @@ fn remove_unkept_worktrees(inst: &Instance, created: Vec<(String, PathBuf)>) {
         {
             continue;
         }
-        let _ = crate::worktree::remove(&dir);
+        let _ = crate::worktree::remove(&inst.record.folder, &dir);
     }
 }
 
@@ -2178,7 +2178,11 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
         }
     }
     let mut lines = Vec::new();
-    let worktrees = worktrees_to_remove(&[inst.at(&id)], force, &mut lines)?;
+    let worktrees = worktrees_to_remove(
+        &[(inst.record.folder.clone(), inst.at(&id))],
+        force,
+        &mut lines,
+    )?;
     let issued = inst.record.members.get_mut(&id).expect("resolved member");
     issued.deleted = true;
     issued.cwd = None;
@@ -2213,22 +2217,23 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
     Ok(lines)
 }
 
-/// Before a delete, the worktrees brg added for `addresses` that it can
+/// Before a delete, the worktrees brg added for `targets` (each the folder
+/// it was added from, and the member's or copy's address) that it can
 /// remove afterwards. One with work in it (or that git can't check) refuses
 /// the delete, or with `force` stays where it is, which `lines` says.
 fn worktrees_to_remove(
-    addresses: &[String],
+    targets: &[(PathBuf, String)],
     force: bool,
     lines: &mut Vec<String>,
-) -> Result<Vec<PathBuf>, String> {
+) -> Result<Vec<(PathBuf, PathBuf)>, String> {
     let mut remove = Vec::new();
     let mut refused = Vec::new();
-    for address in addresses {
+    for (from, address) in targets {
         let dir = crate::worktree::path(address);
-        let why = match crate::worktree::unsaved(&dir) {
+        let why = match crate::worktree::unsaved(from, &dir) {
             Ok(None) => {
                 if dir.symlink_metadata().is_ok() {
-                    remove.push(dir);
+                    remove.push((from.clone(), dir));
                 }
                 continue;
             }
@@ -2255,9 +2260,9 @@ fn worktrees_to_remove(
 }
 
 /// Remove worktrees [`worktrees_to_remove`] found clean, saying so in `lines`.
-fn remove_worktrees(worktrees: Vec<PathBuf>, lines: &mut Vec<String>) {
-    for dir in worktrees {
-        lines.push(match crate::worktree::remove(&dir) {
+fn remove_worktrees(worktrees: Vec<(PathBuf, PathBuf)>, lines: &mut Vec<String>) {
+    for (from, dir) in worktrees {
+        lines.push(match crate::worktree::remove(&from, &dir) {
             Ok(()) => format!("removed worktree {}", dir.display()),
             Err(e) => format!(
                 "worktree {} could not be removed ({e}); brg cleanup tries again",
@@ -2372,15 +2377,15 @@ pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
         }
     }
     let mut lines = Vec::new();
-    let mut addresses: Vec<String> = inst
+    let mut targets: Vec<(PathBuf, String)> = inst
         .record
         .kept_members()
-        .map(|(id, _)| inst.at(id))
+        .map(|(id, _)| (inst.record.folder.clone(), inst.at(id)))
         .collect();
-    if inst.id.contains('/') {
-        addresses.push(inst.id.clone());
+    if let Some((parent, _)) = inst.id.rsplit_once('/') {
+        targets.push((address::instance(parent)?.record.folder, inst.id.clone()));
     }
-    let worktrees = worktrees_to_remove(&addresses, force, &mut lines)?;
+    let worktrees = worktrees_to_remove(&targets, force, &mut lines)?;
     #[cfg(feature = "test-support")]
     store::mutation_pause("BORGCHART_TEST_DELETE_PAUSE").map_err(|e| e.message)?;
     let mut registry = lock.load()?;
@@ -2402,7 +2407,7 @@ pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
     let own_worktree = crate::worktree::path(&inst.id);
     lines.insert(
         0,
-        if worktrees.contains(&own_worktree) {
+        if worktrees.iter().any(|(_, dir)| dir == &own_worktree) {
             format!("deleted {}", inst.id)
         } else {
             format!(
