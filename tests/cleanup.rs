@@ -201,3 +201,40 @@ fn cleanup_of_an_instance_touches_nothing_outside_it() {
     env.ok(&["stop", &a]);
     env.ok(&["stop", &b]);
 }
+
+#[test]
+fn cleanup_keeps_leaves_another_instance_works_in_or_that_lead_outside() {
+    let env = leaves_env();
+    let a = env.create("oncall", "work/a");
+    let [reused, linked] = std::array::from_fn(|_| helper(&env, &a));
+    delete_member(&env, &a, &reused);
+    delete_member(&env, &a, &linked);
+    // Another instance works in a deleted member's empty folder.
+    let reused_leaf = env.path(&format!("work/a/copies/{reused}"));
+    fs::create_dir(reused_leaf.join("lead")).unwrap();
+    let b = env.create("oncall", &format!("work/a/copies/{reused}"));
+    // A deleted member's folder replaced by a link to empty folders elsewhere.
+    let linked_leaf = env.path(&format!("work/a/copies/{linked}"));
+    fs::remove_dir(&linked_leaf).unwrap();
+    fs::create_dir_all(env.path("outside/linked/empty")).unwrap();
+    std::os::unix::fs::symlink(env.path("outside/linked"), &linked_leaf).unwrap();
+    // An instance whose `copies/` links elsewhere, so its leaves lie outside.
+    let c = env.create("oncall", "work/b");
+    let moved = helper(&env, &c);
+    delete_member(&env, &c, &moved);
+    fs::rename(env.path("work/b/copies"), env.path("outside/copies")).unwrap();
+    std::os::unix::fs::symlink(env.path("outside/copies"), env.path("work/b/copies")).unwrap();
+
+    let out = stdout(&env.ok(&["cleanup"]));
+
+    assert!(reused_leaf.join("lead").is_dir(), "{out}");
+    assert!(env.path("outside/linked/empty").is_dir(), "{out}");
+    assert!(linked_leaf.symlink_metadata().unwrap().is_symlink());
+    assert!(
+        env.path(&format!("outside/copies/{moved}")).is_dir(),
+        "{out}"
+    );
+    for inst in [&b, &a, &c] {
+        env.ok(&["stop", inst]);
+    }
+}
