@@ -102,6 +102,16 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Remove what brg left behind for deleted members and copies: the
+    /// empty `{member_id}` folders it made for them, and their leftover
+    /// state. A folder holding files is listed and kept, and named as a git
+    /// worktree when it holds one. Without an instance, also remove the state
+    /// of instance IDs brg issued that are no longer registered. Work folders,
+    /// kept members' and copies' folders, worktrees and messages are never touched.
+    Cleanup {
+        /// Only this instance and its copies (default: every instance).
+        instance: Option<String>,
+    },
     /// List the secrets a team's plugins need, and whether each is set in
     /// your environment. Prints no values and writes nothing.
     Secret {
@@ -391,6 +401,29 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
                 println!("{m}");
             }
             ExitCode::SUCCESS
+        }
+        Command::Cleanup { instance } => {
+            let only = match &instance {
+                Some(id) => match or_fail!(address::resolve(id)) {
+                    (inst, Target::Instance) => Some(inst),
+                    (inst, _) => {
+                        return fail(format!(
+                            "`cleanup` takes an instance; `{id}` is in instance `{}`",
+                            inst.id
+                        ));
+                    }
+                },
+                None => None,
+            };
+            let outcome = or_fail!(crate::cleanup::cleanup(only.as_ref()));
+            for line in &outcome.lines {
+                println!("{line}");
+            }
+            if outcome.failed {
+                ExitCode::from(1)
+            } else {
+                ExitCode::SUCCESS
+            }
         }
         Command::Secret { team, json } => {
             let secrets = or_fail!(runtime::secrets(&team));

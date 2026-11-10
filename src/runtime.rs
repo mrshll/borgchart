@@ -3199,7 +3199,7 @@ pub fn state_label(row: &StatusRow) -> String {
 }
 
 /// Validate the instance's team folder, as recorded.
-fn validated(inst: &Instance) -> Result<Validated, String> {
+pub(crate) fn validated(inst: &Instance) -> Result<Validated, String> {
     if !inst.record.team_dir.join(crate::team::TEAM_FILE).is_file() {
         return Err(format!(
             "instance `{}`'s team folder {} is gone; if it moved, point the instance at it after a full stop: brg start {} --team <path>",
