@@ -183,7 +183,7 @@ fn draw(
                 runtime::status_look(r).mark.unwrap_or(' '),
                 runtime::status_name(r)
             );
-            let mut cols = runtime::status_cells(r);
+            let mut cols = runtime::status_cells(r, true);
             match r.kind {
                 "member" | "copy" => {}
                 // A role with no kept member shows its creation state.

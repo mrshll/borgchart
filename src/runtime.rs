@@ -3655,7 +3655,11 @@ fn pending(dir: &Path) -> Option<String> {
 /// The columns `status` and `status -i` show after a row's name: a
 /// member's vendor and model, state and details; a role with no member
 /// yet, `not created (start: <setting>)`; a plugin's state and detail.
-pub fn status_cells(r: &StatusRow) -> Vec<String> {
+///
+/// `short` is for a person's terminal: the vendor is its one-cell mark
+/// ([`vendor_mark`]) and an undeclared model says nothing. Piped text keeps
+/// the vendor's name, so what a script reads never changes.
+pub fn status_cells(r: &StatusRow, short: bool) -> Vec<String> {
     match r.kind {
         "member" => {}
         "copy" => {
@@ -3684,35 +3688,41 @@ pub fn status_cells(r: &StatusRow) -> Vec<String> {
     if let Some(unread) = r.unread.filter(|&n| n > 0) {
         detail.push(format!("{unread} unread"));
     }
+    let vendor = r.vendor.as_deref().unwrap_or("-");
     vec![
-        format!(
-            "{} {}",
-            r.vendor.as_deref().unwrap_or("-"),
-            r.model.as_deref().unwrap_or("default")
-        ),
+        match (short.then(|| vendor_mark(vendor)).flatten(), &r.model) {
+            (Some(mark), Some(model)) => format!("{mark} {model}"),
+            (Some(mark), None) => mark.to_string(),
+            (None, model) => format!("{vendor} {}", model.as_deref().unwrap_or("default")),
+        },
         state_label(r),
         detail.join("; "),
     ]
 }
 
+/// A vendor's one-cell mark, after herdr-radar's text logos: ordinary
+/// Unicode that any terminal font draws.
+pub fn vendor_mark(vendor: &str) -> Option<char> {
+    match vendor {
+        "claude" => Some('§'),
+        "codex" => Some('Λ'),
+        _ => None,
+    }
+}
+
 pub fn render_status(header: &str, rows: &[StatusRow]) -> String {
-    let nodes = status_nodes(rows);
+    let short = std::io::stdout().is_terminal();
+    let nodes = status_nodes_as(rows, short);
     let plugins: Vec<(String, Vec<String>, tree::Look)> = rows
         .iter()
         .filter(|r| r.kind == "plugin" && r.parent.is_none())
-        .map(|r| (r.name.clone(), status_cells(r), status_look(r)))
+        .map(|r| (r.name.clone(), status_cells(r, short), status_look(r)))
         .collect();
     let names: BTreeMap<_, _> = rows
         .iter()
         .map(|r| (status_key(r), status_name(r)))
         .collect();
-    tree::render_named(
-        header,
-        &nodes,
-        &plugins,
-        std::io::stdout().is_terminal(),
-        |id| names[id].clone(),
-    )
+    tree::render_named(header, &nodes, &plugins, short, |id| names[id].clone())
 }
 
 /// A row's identity stays unique when local IDs repeat in different copies.
@@ -3735,6 +3745,10 @@ pub fn status_name(row: &StatusRow) -> String {
 
 /// Qualified nodes shared by status ordering and both tree renderers.
 pub fn status_nodes(rows: &[StatusRow]) -> Vec<tree::Node> {
+    status_nodes_as(rows, false)
+}
+
+fn status_nodes_as(rows: &[StatusRow], short: bool) -> Vec<tree::Node> {
     rows.iter()
         .filter(|r| r.kind != "plugin" || r.parent.is_some())
         .map(|r| tree::Node {
@@ -3746,7 +3760,7 @@ pub fn status_nodes(rows: &[StatusRow]) -> Vec<tree::Node> {
                     format!("{}/{p}", r.instance)
                 }
             }),
-            cols: status_cells(r),
+            cols: status_cells(r, short),
             look: status_look(r),
         })
         .collect()
@@ -4298,6 +4312,51 @@ pub fn attach_and_wait(inst: &Instance, name: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_cells_use_the_vendor_mark() {
+        let row = |vendor: &str, model: Option<&str>| StatusRow {
+            name: "m".into(),
+            kind: "member",
+            instance: "i".into(),
+            team: "t".into(),
+            member: None,
+            start_id: None,
+            role: None,
+            vendor: Some(vendor.into()),
+            model: model.map(String::from),
+            parent: None,
+            posture: None,
+            state: "working".into(),
+            rule: None,
+            activity: Some("Review issues".into()),
+            detail: None,
+            vendor_version: None,
+            trust_accepted: None,
+            liveness: None,
+            unread: Some(2),
+            running: None,
+            expected_running: false,
+            start: true,
+        };
+        let cells = |r: &StatusRow, short| status_cells(r, short).join("|");
+        let claude = row("claude", Some("opus high"));
+        assert_eq!(
+            cells(&claude, true),
+            "§ opus high|working|Review issues; 2 unread"
+        );
+        assert_eq!(
+            cells(&claude, false),
+            "claude opus high|working|Review issues; 2 unread"
+        );
+        let codex = row("codex", None);
+        assert!(cells(&codex, true).starts_with("Λ|"));
+        assert!(cells(&codex, false).starts_with("codex default|"));
+        // An idle member's topic is its last one: not shown.
+        let mut idle = claude.clone();
+        idle.state = "idle".into();
+        assert_eq!(cells(&idle, true), "§ opus high|idle|2 unread");
+    }
 
     #[test]
     fn text_checks() {
