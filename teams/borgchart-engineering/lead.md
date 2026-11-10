@@ -64,7 +64,7 @@ A panel is two designers, one per vendor, who each write an independent proposal
    `end=$(( $(date +%s) + <deadline seconds> )); until { [ -e <dir>/questions-designer-claude.md ] && [ -e <dir>/questions-designer-codex.md ]; } || [ "$(date +%s)" -ge "$end" ]; do sleep 30; done; ls <dir>`
 5. **Answer them** in one `answers.md`, by rename: facts and the owner's preferences only, since both designers read it.
 6. **Wait for both proposals** the same way (`proposal-designer-claude.md`, `proposal-designer-codex.md`). At the deadline, go on with what exists and say which is missing.
-7. **File and remove:** copy the panel's files into `$BORGCHART_NOTES/design/<YYYY-MM-DD>-<topic>/`, then stop and delete the copy and remove its worktree.
+7. **File and remove:** copy the panel's files into `$BORGCHART_NOTES/design/<YYYY-MM-DD>-<topic>/`. Then `"$BORGCHART_BIN" stop <copy ID>`, `"$BORGCHART_BIN" delete <copy ID>` and `git -C <folder>/lead worktree remove <copy folder>/work`.
 
 Then write one plan from the proposals: for each material choice, which proposal it came from, what you adopted or rejected, and why. Put the plan to the owner and wait for their approval. Seat the dev team only after it, with the approved plan in its brief; for in-flight work, send the approved plan to the dev lead.
 
