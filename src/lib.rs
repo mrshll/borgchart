@@ -7,6 +7,7 @@ pub mod bounded_process;
 pub mod bus;
 pub mod checkouts;
 pub mod cli;
+pub mod complete;
 pub mod composer;
 pub mod config;
 pub mod config_snapshot;

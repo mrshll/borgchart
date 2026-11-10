@@ -8,6 +8,8 @@
 - **A nested copy** has its full path as its instance ID, for example `oncall-h4k2/dev-a7k2`. Addresses resolve the longest registered instance prefix: `start oncall-h4k2/dev-a7k2` starts the copy, `stop oncall-h4k2/dev-a7k2/lead-c4nd` stops just its lead, and `create oncall-h4k2/dev-a7k2/helper` creates an agent member inside it. Copies can contain further copies. Every address segment must be a valid ID; empty segments, `.`, `..`, absolute paths and trailing `/` are refused before reading the registry.
 - **Bus commands** (`msg`, `inbox`, `bus`) take `--instance ID`. It is required outside a member; inside one, it can only repeat the member's own instance.
 
+**Completion.** `BRG_COMPLETE=<shell> brg` prints the shell's registration (bash, zsh, fish, elvish or powershell). Load it when the shell starts, so it always matches the installed brg: in fish, put `BRG_COMPLETE=fish brg | source` in `~/.config/fish/completions/brg.fish`; in bash, `source <(BRG_COMPLETE=bash brg)` in `~/.bashrc`. On each tab press the shell runs brg with the same variable, and brg prints subcommands, flags, team names, instance IDs and `<instance>/<member>` addresses of kept members. It reads brg's records without a lock, so a tab press writes nothing and starts nothing. It uses `clap_complete`'s dynamic completion, which is outside semver; reload the shell after upgrading brg.
+
 `brg <command> --help` documents each command. The bus pages cover message submission and examples (`send --help`), all unacked messages (`inbox --help`), the one wait and its outcomes (`inbox wait --help`), and store health (`bus check --help`).
 
 | Command | What it does |
