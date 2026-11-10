@@ -615,9 +615,10 @@ mod round {
             )
         }
 
-        /// Execute a role-file command as a tool call; Claude's wait is a
-        /// background job, while other commands finish in the tool call.
-        fn documented(&self, role: &str, name: &str, script: &str, background: bool) {
+        /// Execute a command as one of the member's tool calls; Claude's
+        /// wait is a background job, while other commands finish in the
+        /// tool call.
+        fn tool(&self, role: &str, name: &str, script: &str, background: bool) {
             let out = self.path(&format!("s/{name}.out"));
             let script = format!(
                 "( {script}\n) > {o} 2>&1; echo \"exit $?\" >> {o}\n",
@@ -749,26 +750,27 @@ mod round {
         let brief_tmp = notes.join("change-brief.md.tmp");
         fs::write(&brief_tmp, format!("Task: a fictional change.\nScope: tests only.\nNon-goals: product changes.\nChecks: fake round.\nBranch: example/change.\nCheckout: {}\nReport: {}\nDeadline: 2026-11-09T00:00:00Z\n", copy_folder.display(), report.display())).unwrap();
         fs::rename(brief_tmp, &brief).unwrap();
-        let assign = documented(&lead_body, "\"$BORGCHART_BIN\" send")
-            .replace("<member>", &implementer)
+        // The brief's message is the one the lead's file gives.
+        let message = documented(&lead_body, "Read <brief path>")
             .replace("<brief path>", &brief.display().to_string());
-        team.documented("lead", "brief", &assign, false);
+        let assign = format!(
+            "\"$BORGCHART_BIN\" send {implementer} --json - <<'MESSAGE'\n{message}\nMESSAGE"
+        );
+        team.tool("lead", "brief", &assign, false);
         let (sent, code) = team.output("brief");
         assert_eq!(code, 0, "{sent}");
         assert_eq!(sent["id"], "m1");
 
         // The lead arms its documented wait before the helper replies.
-        let wait = documented(&lead_body, "\"$BORGCHART_BIN\" inbox wait --json");
-        team.documented(
+        let wait = documented(&lead_body, "\"$BORGCHART_BIN\" inbox wait --full");
+        team.tool(
             "lead",
             "reply-wait",
-            &format!("BORGCHART_WAIT_MIN_MS=200 BORGCHART_WAIT_TIMEOUT_MS=5000 {wait}"),
+            &format!("BORGCHART_WAIT_MIN_MS=200 BORGCHART_WAIT_TIMEOUT_MS=5000 {wait} --json"),
             true,
         );
-        let start_command = documented(&lead_body, "\"$BORGCHART_BIN\" start <instance>/<member>")
-            .replace("<instance>", &team.inst())
-            .replace("<member>", &implementer);
-        team.documented("lead", "start-impl", &start_command, false);
+        let start_command = format!("\"$BORGCHART_BIN\" start {}/{implementer}", team.inst());
+        team.tool("lead", "start-impl", &start_command, false);
         team.wait_idle("implementer");
         let log = team.log("implementer");
         let start: serde_json::Value = log
@@ -783,10 +785,10 @@ mod round {
             "{argv}"
         );
 
-        // Its first tool action is the exact full inbox command in common.md.
+        // Its first tool action is a full inbox read.
         let helper = fs::read_to_string(shared().join("includes/helper.md")).unwrap();
-        let inbox = documented(&helper, "\"$BORGCHART_BIN\" inbox --full");
-        team.documented("implementer", "impl-inbox", &inbox, false);
+        let inbox = "\"$BORGCHART_BIN\" inbox --full --json";
+        team.tool("implementer", "impl-inbox", inbox, false);
         let (inbox, code) = team.output("impl-inbox");
         assert_eq!(code, 0, "{inbox}");
         assert_eq!(ids(&inbox), ["m1"]);
@@ -796,8 +798,8 @@ mod round {
                 .unwrap()
                 .contains(&brief.display().to_string())
         );
-        let ack = documented(&helper, "\"$BORGCHART_BIN\" msg ack");
-        team.documented(
+        let ack = "\"$BORGCHART_BIN\" msg ack <id> --json";
+        team.tool(
             "implementer",
             "take-brief",
             &ack.replace("<id>", "m1"),
@@ -815,12 +817,13 @@ mod round {
             ),
         );
         team.wait_for("the report", || report.exists());
-        let reply = documented(&helper, "\"$BORGCHART_BIN\" send")
-            .replace("<parent>", &lead)
-            .replace("<brief-ID>", "m1")
-            .replace("<report path>", &report.display().to_string())
-            .replace("<action-needed line>", "action-needed: none");
-        team.documented("implementer", "report-reply", &reply, false);
+        // The reply's first line is the one helper.md gives.
+        let first = documented(&helper, "Report: <report path>")
+            .replace("<report path>", &report.display().to_string());
+        let reply = format!(
+            "\"$BORGCHART_BIN\" send {lead} --reply-to m1 --json - <<'MESSAGE'\n{first}\naction-needed: none\nMESSAGE"
+        );
+        team.tool("implementer", "report-reply", &reply, false);
         let (sent, code) = team.output("report-reply");
         assert_eq!(code, 0, "{sent}");
         assert_eq!(sent["id"], "m2");
@@ -843,14 +846,16 @@ mod round {
             fs::read_to_string(report).unwrap(),
             "status: complete\naction-needed: none\n"
         );
-        team.documented("lead", "take-report", &ack.replace("<id>", "m2"), false);
+        team.tool("lead", "take-report", &ack.replace("<id>", "m2"), false);
         assert_eq!(team.output("take-report").1, 0);
-        let stop = documented(&lead_body, "\"$BORGCHART_BIN\" stop <instance>/<member>")
-            .replace("<instance>", &team.inst())
-            .replace("<member>", &implementer);
-        team.documented("lead", "stop-impl", &stop, false);
-        let status = documented(&lead_body, "\"$BORGCHART_BIN\" status --json");
-        team.documented("lead", "stopped-status", &status, false);
+        let stop = format!("\"$BORGCHART_BIN\" stop {}/{implementer}", team.inst());
+        team.tool("lead", "stop-impl", &stop, false);
+        team.tool(
+            "lead",
+            "stopped-status",
+            "\"$BORGCHART_BIN\" status --json",
+            false,
+        );
         let (rows, code) = team.output("stopped-status");
         assert_eq!(code, 0, "{rows}");
         let helper = rows
@@ -864,7 +869,7 @@ mod round {
         team.ok(&["stop", &team.inst()]);
     }
 
-    /// The department lead seats a design panel as a nested copy with the commands
+    /// The department lead seats a design panel as a nested copy with the steps
     /// lead.md gives, from inside the lead: `create` of its
     /// `design` role makes the copy stopped in the lead's own checkout, the
     /// lead checks seating for each designer, starts the copy, exchanges
@@ -895,7 +900,7 @@ mod round {
             });
         };
 
-        // A documented command, run inside the lead: its output and exit code.
+        // A command, run inside the lead: its output and exit code.
         let run = |name: &str, script: &str| {
             let out = team.path(&format!("s/{name}.out"));
             let path = team.path(&format!("s/{name}.sh"));
@@ -920,10 +925,7 @@ mod round {
 
         let (up, code) = run(
             "panel-create",
-            &documented(
-                &rule,
-                "\"$BORGCHART_BIN\" create \"$BORGCHART_INSTANCE/design\"",
-            ),
+            "\"$BORGCHART_BIN\" create \"$BORGCHART_INSTANCE/design\"",
         );
         assert_eq!(code, 0, "{up}");
         let panel = up.split_whitespace().next().unwrap().to_string();
@@ -959,10 +961,7 @@ mod round {
         // checked through the granted seating plugin and the isolated fake vendor protocols.
         let (listed, code) = run(
             "panel-roles",
-            &fill(documented(
-                &rule,
-                "\"$BORGCHART_BIN\" status <copy ID> --json",
-            )),
+            &format!("\"$BORGCHART_BIN\" status {panel} --json"),
         );
         assert_eq!(code, 0, "{listed}");
         let listed: Vec<serde_json::Value> = serde_json::from_str(&listed).unwrap();
@@ -988,10 +987,7 @@ mod round {
             );
         }
 
-        let (started, code) = run(
-            "panel-start",
-            &fill(documented(&rule, "\"$BORGCHART_BIN\" start <copy ID>")),
-        );
+        let (started, code) = run("panel-start", &format!("\"$BORGCHART_BIN\" start {panel}"));
         assert_eq!(code, 0, "{started}");
         let work = work.canonicalize().unwrap();
         let mut notes = None;
@@ -1084,11 +1080,8 @@ mod round {
             }
         }
 
-        for (name, prefix) in [
-            ("panel-stop", "\"$BORGCHART_BIN\" stop <copy ID>"),
-            ("panel-delete", "\"$BORGCHART_BIN\" delete <copy ID>"),
-        ] {
-            let (out, code) = run(name, &fill(documented(&rule, prefix)));
+        for (name, command) in [("panel-stop", "stop"), ("panel-delete", "delete")] {
+            let (out, code) = run(name, &format!("\"$BORGCHART_BIN\" {command} {panel}"));
             assert_eq!(code, 0, "{name}: {out}");
             if name == "panel-stop" {
                 for row in rows(&panel) {
@@ -1130,8 +1123,8 @@ mod round {
             .to_string()
     }
 
-    /// The department's own steps, run from inside its lead with the
-    /// commands lead.md gives: `create` of `dev` makes a stopped copy, the
+    /// The department's own steps, run from inside its lead as lead.md
+    /// gives them: `create` of `dev` makes a stopped copy, the
     /// copy gets its own worktree on a new branch, the lead checks seating
     /// and starts it, and the dev lead's parent is the department lead.
     /// Every launched member gets the common rules; only the dev lead gets
@@ -1173,7 +1166,7 @@ mod round {
             });
         };
         let rule = member_body(&department().join("lead.md"));
-        // A documented command, run inside the department lead.
+        // A command, run inside the department lead.
         let run_in = |instance: &str, member: &str, name: &str, script: &str| {
             let out = team.path(&format!("s/{name}.out"));
             let path = team.path(&format!("s/{name}.sh"));
@@ -1200,11 +1193,7 @@ mod round {
 
         let (up, code) = run(
             "dev-create",
-            &documented(
-                &rule,
-                "\"$BORGCHART_BIN\" create \"$BORGCHART_INSTANCE/dev\"",
-            )
-            .replace("<branch>", "example/work"),
+            "\"$BORGCHART_BIN\" create \"$BORGCHART_INSTANCE/dev\" --branch example/work",
         );
         assert_eq!(code, 0, "{up}");
         let copy_id = up.split_whitespace().next().unwrap().to_string();
@@ -1250,10 +1239,7 @@ mod round {
         let (answer, code) = run("dev-seat", &route);
         assert_eq!((code, answer.trim()), (0, "go: included quota available"));
 
-        let (started, code) = run(
-            "dev-start",
-            &fill(documented(&rule, "\"$BORGCHART_BIN\" start <copy ID>")),
-        );
+        let (started, code) = run("dev-start", &format!("\"$BORGCHART_BIN\" start {copy_id}"));
         assert_eq!(code, 0, "{started}");
         let dev_lead = team.member_in(&copy_id, "lead");
         let child_meta = team.read(&format!("state/{copy_id}/start.json")).unwrap();
@@ -1296,14 +1282,10 @@ mod round {
         );
 
         // Researchers and monitors are ordinary members; `create` starts one.
-        let create = documented(
-            &rule,
-            "\"$BORGCHART_BIN\" create \"$BORGCHART_INSTANCE/researcher\"",
-        );
         for role in ["researcher", "monitor"] {
             let (made, code) = run(
                 &format!("{role}-create"),
-                &create.replace("/researcher", &format!("/{role}")),
+                &format!("\"$BORGCHART_BIN\" create \"$BORGCHART_INSTANCE/{role}\""),
             );
             assert_eq!(code, 0, "{made}");
         }
@@ -1379,7 +1361,7 @@ mod round {
             .split("## When your team has a parent")
             .next()
             .unwrap();
-        assert!(wake.contains("inbox wait --json --full"), "{wake}");
+        assert!(wake.contains("inbox wait --full"), "{wake}");
         assert!(wake.contains("stop waiting"), "{wake}");
 
         let team = new_team("fenced");

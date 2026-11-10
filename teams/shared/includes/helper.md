@@ -1,27 +1,19 @@
 ## Your work as a helper
 
-Your parent is the lead recorded as your parent in `"$BORGCHART_BIN" status`; send only to it, even when a brief was relayed by someone else (`external:NAME`). Your work is sent before you are started, so **your first action is to read your inbox in full**: `"$BORGCHART_BIN" inbox --full --json`. The message names a brief file in `$BORGCHART_NOTES`: read it and check its scope, checkout, checks, report path and deadline. Take on one piece of work at a time. If you can't take it on, tell the lead why in a reply.
+Your parent is the lead recorded as your parent in `status`; send only to it, even when a brief was relayed by someone else (`external:NAME`). Your work is sent before you are started, so **your first action is to read your inbox, with message bodies**. The message names a brief file in `$BORGCHART_NOTES`: read it and check its scope, checkout, checks, report path and deadline. Take on one piece of work at a time. If you can't take it on, tell the lead why in a reply.
 
-- **Take it on.** Ack the brief's message: `"$BORGCHART_BIN" msg ack <id> --json`. Ack means you've taken responsibility, not that you've finished. A message can reach you twice, typed into your session and in your inbox: ignore an ID you have already acked.
-- **Ask.** Send the lead a plain message naming what you need and why. For research or design help, say which; the lead decides whom to start. Its answer is a message naming your question with `--reply-to`.
+- **Take it on.** Ack the brief's message. Ack means you've taken responsibility, not that you've finished. A message can reach you twice, typed into your session and in your inbox: ignore an ID you have already acked.
+- **Ask.** Send the lead a plain message naming what you need and why. For research or design help, say which; the lead decides whom to start. Its answer is a reply to your question.
 - **Wait for an answer, in this order:**
   1. Ack everything you have taken on, including any answer you have handled.
   2. Arm one wait the way your vendor allows:
-     - **Codex:** run it in the **foreground**: `"$BORGCHART_BIN" inbox wait --timeout 600 --json --full`. Nothing wakes you from a background command.
-     - **Claude:** run it with your Bash tool in **background** mode: `"$BORGCHART_BIN" inbox wait --json --full`; its exit wakes you.
+     - **Codex:** run it in the **foreground**: `"$BORGCHART_BIN" inbox wait --timeout 600 --full`. Nothing wakes you from a background command.
+     - **Claude:** run it with your Bash tool in **background** mode: `"$BORGCHART_BIN" inbox wait --full`; its exit wakes you.
   3. The wait prints your inbox, with bodies: read it, act and ack before waiting again. On exit 9, wait again. On exit 8 (`fenced`), your session ended or was replaced: tell the lead and stop waiting.
 
   Wait only for your own answer; never sleep or poll for anything else.
-- **Report and reply.** Write the report at the brief's path, then reply to the brief's message with the report path and its `action-needed:` line, as plain text:
-
-```sh
-"$BORGCHART_BIN" send <parent> --reply-to <brief-ID> --json - <<'MESSAGE'
-Report: <report path>
-<action-needed line>
-MESSAGE
-```
-
-- **Changes of direction.** Between steps of long work, glance at `"$BORGCHART_BIN" inbox --full --json`. If the lead asks you to stop, stop writing and stop anything you started in the background, ack the message, then reply with what you stopped, your last commit and what is uncommitted.
+- **Report and reply.** Write the report at the brief's path, then send your parent one reply to the brief's message, in plain text: a line `Report: <report path>`, then the report's `action-needed:` line.
+- **Changes of direction.** Between steps of long work, glance at your inbox. If the lead asks you to stop, stop writing and stop anything you started in the background, ack the message, then reply with what you stopped, your last commit and what is uncommitted.
 - **After your report reply,** finish your turn. The lead reads the report and stops you. A follow-up is a new brief message, read and acked when you start again.
 
 A send that returns 0 is committed: never resend it. Never start, stop or assign members.
