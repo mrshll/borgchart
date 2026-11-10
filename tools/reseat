@@ -1,0 +1,58 @@
+#!/bin/sh
+# Rebuild brg from this checkout, pin it, and restart a team on the pin.
+#
+#   tools/reseat [team]        # default: borgchart-engineering
+#
+# 1. Builds brg, borgchart and brg-seat from HEAD (the tree must be clean)
+#    into a pin, $BRG_PINS/brg-<revision>/ with bin/ and teams/
+#    (BRG_PINS defaults to ~/.local/lib/borgchart). An existing pin is reused.
+# 2. Stops each of the team's top instances, so it is certainly stopped.
+# 3. Points $BRG_PINS/current at the new pin. Link brg, borgchart and
+#    brg-seat on your PATH to current/bin/, and name current/teams in your
+#    brg configuration's `teams:`, so they follow it (once; see CONTRIBUTING.md).
+# 4. Starts each stopped instance again from the pin's team folder, which
+#    keeps its notes and messages; with none, creates one in this checkout.
+#
+# Running members keep the brg that started them until their restart, so old
+# pins are never removed here.
+set -eu
+team=${1:-borgchart-engineering}
+cd "$(git rev-parse --show-toplevel)"
+if [ -n "$(git status --porcelain)" ]; then
+  echo "reseat: the checkout has uncommitted changes; a pin is one revision" >&2
+  exit 1
+fi
+command -v jq >/dev/null || { echo "reseat: needs jq" >&2; exit 127; }
+revision=$(git rev-parse HEAD)
+pins=${BRG_PINS:-$HOME/.local/lib/borgchart}
+prefix="$pins/brg-$revision"
+
+if [ ! -x "$prefix/bin/brg-seat" ]; then
+  tools/cargo-slot cargo build --release --workspace --bins --locked
+  tmp="$prefix.tmp.$$"
+  rm -rf "$tmp"
+  mkdir -p "$tmp/bin"
+  cp target/release/brg target/release/borgchart target/release/brg-seat "$tmp/bin/"
+  cp -R teams "$tmp/teams"
+  echo "$revision" >"$tmp/REVISION"
+  rm -rf "$prefix"
+  mv "$tmp" "$prefix"
+fi
+echo "reseat: pin $prefix"
+
+brg="$prefix/bin/brg"
+PATH="$prefix/bin:$PATH"
+export PATH
+instances=$("$brg" ls --json | jq -r --arg team "$team" \
+  '.[].instances[]?.instance | select(startswith($team + "-") and (contains("/") | not))')
+for instance in $instances; do
+  "$brg" stop "$instance"
+done
+ln -sfn "$prefix" "$pins/current"
+if [ -z "$instances" ]; then
+  "$brg" create "$prefix/teams/$team" .
+else
+  for instance in $instances; do
+    "$brg" start "$instance" --team "$prefix/teams/$team"
+  done
+fi

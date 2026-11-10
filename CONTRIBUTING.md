@@ -90,3 +90,5 @@ export BORGCHART_CONFIG="$prefix/config.yaml"
 ```
 
 Put the `config.yaml` above in `$prefix`. Use a new prefix for each revision, and keep its `bin` first on `PATH` when creating or fully starting an instance.
+
+`tools/reseat [team]` does this for you and restarts the team on the new pin: it builds a clean checkout's `HEAD` into `~/.local/lib/borgchart/brg-<revision>/` (`$BRG_PINS` to move it), stops the team's instances, points `~/.local/lib/borgchart/current` at the pin, and starts them again from it with `--team`, keeping their notes and messages, or creates one in the checkout when there is none. Once, so your shell and configuration follow `current`: link `brg`, `borgchart` and `brg-seat` from `~/.local/lib/borgchart/current/bin/` onto your `PATH`, and set your configuration's `teams:` to `~/.local/lib/borgchart/current/teams`. It needs `jq`.
