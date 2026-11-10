@@ -1,5 +1,5 @@
 //! The coordination bus: durable records members and outside callers
-//! publish to each other, kept for the lifetime of an instance, outside any checkout.
+//! publish to each other, kept for the lifetime of a team tree, outside any checkout.
 //!
 //! This module holds the shared interfaces (configuration, on-disk layout,
 //! caller context, record envelope, outcome codes and the no-replace write
@@ -7,15 +7,13 @@
 
 pub mod cli;
 pub mod context;
-mod delivery;
 pub mod fsx;
 pub mod help;
 pub mod layout;
 pub mod outcome;
-pub(crate) mod receipts;
 pub mod record;
 pub mod store;
 pub mod time;
 
 /// The on-disk schema of records and acknowledgements written by this brg.
-pub const SCHEMA: u32 = 3;
+pub const SCHEMA: u32 = 4;

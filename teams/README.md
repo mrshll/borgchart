@@ -1,6 +1,6 @@
 # Team definitions
 
-`borgchart-engineering/`, `dev-team/` and `dev-design-team/` are sibling definitions. Their `team:` roles refer to configured team names. Runtime instances still form a tree with nested working folders and independent stores.
+`borgchart-engineering/`, `dev-team/` and `dev-design-team/` are sibling definitions. Their `team:` roles refer to configured team names. Runtime instances still form a tree with nested working folders and one shared message store.
 
 `shared/` holds the common instructions once; it has no `team.yaml` and is not a team. Team definitions use `catalog:shared/...` for these assets. Other team files remain confined to their own definition folder.
 

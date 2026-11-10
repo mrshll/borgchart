@@ -544,7 +544,7 @@ fn plugin_actions_preserve_and_fence_the_launch_incarnation() {
             .stdout,
     )
     .unwrap();
-    assert_eq!(record["record"]["from"], lead);
+    assert_eq!(record["record"]["from"], format!("{instance}/{lead}"));
     // End the identity without deleting plugin settings, so the fence itself is tested.
     let path = env.path(&format!("state/{instance}/members/{lead}/incarnation.json"));
     let mut ended: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();

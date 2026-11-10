@@ -478,7 +478,11 @@ fn start_members(
     {
         let paths = StorePaths::new(state);
         if paths.validate(&state.id)? {
-            lifecycle::open_work(state).map_err(|e| unreadable_store(inst, &e))?;
+            let snap =
+                store::snapshot_of(&paths).map_err(|e| unreadable_store(inst, &e.message))?;
+            if !snap.healthy() {
+                return Err(unreadable_store(inst, "incomplete messages"));
+            }
             if let Some(old) = &previous {
                 let bus = store::open(state).map_err(|e| e.message)?;
                 let snap = store::snapshot(&bus).map_err(|e| e.message)?;
@@ -1232,8 +1236,8 @@ fn member_nodes(
     nodes
 }
 
-/// The folders every `vendor`-posture member may write: the instance's
-/// `messages/` and `notes/`, never brg's own files. Each must be a real
+/// The folders every `vendor`-posture member may write: the tree's
+/// `messages/` and the instance's `notes/`, never brg's own files. Each must be a real
 /// folder (not a symlink), yours, and not writable by group or others, and
 /// resolve to exactly its own place in the instance's state folder: anything
 /// else, or any error finding out, refuses the start.
@@ -1264,7 +1268,13 @@ fn shared_folders(state: &StateDir) -> Result<Vec<PathBuf>, String> {
         let real = dir
             .canonicalize()
             .map_err(|e| refuse(&dir, format!("can't be resolved ({e})")))?;
-        let want = root.join(dir.file_name().unwrap_or_default());
+        let mut base = root.clone();
+        if dir == state.messages_dir() {
+            for _ in state.id.split('/').skip(1) {
+                base.pop();
+            }
+        }
+        let want = base.join(dir.file_name().unwrap_or_default());
         if real != want {
             return Err(refuse(&dir, format!("resolves to {}", real.display())));
         }
@@ -2174,33 +2184,6 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
             }
         ));
     }
-    // Peer reads must finish before the local publication lock is taken.
-    let pending_delivery = crate::bus::receipts::pending(&inst.state, Some(&id));
-    let pending_incoming = (|| {
-        use crate::bus::{outcome::Code, store};
-        let bus = match store::open(&inst.state) {
-            Ok(bus) => bus,
-            Err(f) if f.code == Code::NotConfigured => return Ok(0),
-            Err(f) => return Err(f.message),
-        };
-        let snap = store::snapshot(&bus).map_err(|f| f.message)?;
-        if !snap.healthy() {
-            return Err("messages are incomplete".into());
-        }
-        let local = store::progress(&bus, &snap)
-            .get(&id)
-            .copied()
-            .unwrap_or_default()
-            .unread;
-        let unread = store::unread(&bus, &snap)
-            .map_err(|f| f.message)?
-            .remove(&id)
-            .ok_or_else(|| "member's unread messages cannot be counted".to_string())?;
-        unread
-            .count
-            .map(|count| count.saturating_sub(local))
-            .ok_or_else(|| unread.notes.join("; "))
-    })();
     // No bus means no publication lock to create; a stray lock would make
     // an otherwise empty messages folder look damaged on its next start.
     let no_bus = crate::bus::store::open(&inst.state)
@@ -2208,9 +2191,8 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
     let _bus_lock = if no_bus {
         None
     } else {
-        Some(lifecycle::lock_bus(&inst.state)?)
+        lifecycle::lock_bus(&inst.state)?
     };
-    let mut receipt_notes = Vec::new();
     let work = (|| {
         use crate::bus::{outcome::Code, store};
         let bus = match store::open(&inst.state) {
@@ -2222,17 +2204,7 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
         if !snap.healthy() {
             return Err("messages are incomplete".into());
         }
-        let mut work = lifecycle::unacked_work(&bus, &snap, Some(&id));
-        let pending = pending_delivery?;
-        work.items.extend(pending.items);
-        receipt_notes = pending.notes;
-        work.items.extend(std::iter::repeat_n(
-            format!(
-                "unread incoming message to {} (not yet imported)",
-                inst.at(&id)
-            ),
-            pending_incoming?,
-        ));
+        let work = lifecycle::unacked_work(&bus, &snap, Some(&id));
         Ok(work)
     })();
     match work {
@@ -2283,8 +2255,10 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
     }
     let _ = std::fs::remove_file(inst.state.exec_file(&id));
     let _ = std::fs::remove_file(inst.state.lock_file(&id));
-    receipt_notes.push(format!("deleted {}; its ID stays issued", inst.at(&id)));
-    Ok(receipt_notes)
+    Ok(vec![format!(
+        "deleted {}; its ID stays issued",
+        inst.at(&id)
+    )])
 }
 
 /// `brg delete <instance> [--force]`: remove a stopped instance's state
@@ -2353,13 +2327,27 @@ pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
             inst.id
         ));
     }
-    let mut receipt_notes = Vec::new();
-    let work = lifecycle::open_work(&inst.state).and_then(|mut work| {
-        let pending = crate::bus::receipts::pending(&inst.state, None)?;
-        work.items.extend(pending.items);
-        receipt_notes = pending.notes;
-        Ok(work)
-    });
+    // Serialize the open-work check and tombstone with publications anywhere in the tree.
+    let paths = StorePaths::new(&inst.state);
+    let bus_lock = if paths.identity().exists() {
+        lifecycle::lock_bus(&inst.state)?
+    } else {
+        None
+    };
+    let work = (|| {
+        let bus = match store::open(&inst.state) {
+            Ok(bus) => bus,
+            Err(f) if f.code == crate::bus::outcome::Code::NotConfigured => {
+                return Ok(lifecycle::OpenWork::default());
+            }
+            Err(f) => return Err(f.message),
+        };
+        let snap = store::scan(&bus.paths);
+        if !snap.healthy() {
+            return Err("messages are incomplete".into());
+        }
+        Ok(lifecycle::unacked_work(&bus, &snap, None))
+    })();
     match work {
         Ok(work) if work.items.is_empty() || force => {}
         Ok(work) => {
@@ -2377,6 +2365,8 @@ pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
             ));
         }
     }
+    #[cfg(feature = "test-support")]
+    store::mutation_pause("BORGCHART_TEST_DELETE_PAUSE").map_err(|e| e.message)?;
     let mut registry = lock.load()?;
     registry.instances.remove(&inst.id);
     if let Some((parent_id, copy_id)) = inst.id.rsplit_once('/') {
@@ -2389,15 +2379,15 @@ pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
         lock.save_instance(&parent_state, &parent)?;
     }
     lock.save(&registry)?;
+    drop(bus_lock);
     drop(state_lock);
     std::fs::remove_dir_all(&inst.state.root)
         .map_err(|e| format!("cannot remove {}: {e}", inst.state.root.display()))?;
-    receipt_notes.push(format!(
+    Ok(vec![format!(
         "deleted {}; its working folder {} was left as it is",
         inst.id,
         inst.record.folder.display()
-    ));
-    Ok(receipt_notes)
+    )])
 }
 
 /// `brg secret <team>`: each secret its plugins need (plugin, name), and
@@ -3236,14 +3226,8 @@ fn validated(inst: &Instance) -> Result<Validated, String> {
 
 /// One snapshot of the instance.
 pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
-    let v = validated(inst)?;
-    let state = &inst.state;
-    let session = state.session();
-    let tmux = tmux_for(state);
-    let windows = tmux.windows(&session);
-    let meta = state::read_meta(state).ok().flatten().unwrap_or_default();
     let (counts, bus_note) = {
-        match crate::bus::store::open(state).and_then(|bus| {
+        match crate::bus::store::open(&inst.state).and_then(|bus| {
             let snap = match crate::bus::store::wait_snapshot(
                 &bus,
                 std::time::Instant::now() + std::time::Duration::from_secs(1),
@@ -3262,7 +3246,7 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
                     "incomplete messages",
                 ));
             }
-            crate::bus::store::unread(&bus, &snap)
+            Ok(crate::bus::store::progress(&bus, &snap))
         }) {
             Ok(counts) => (Some(counts), None),
             Err(error) if error.code == crate::bus::outcome::Code::Timeout => {
@@ -3274,6 +3258,20 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
             ),
         }
     };
+    status_with_counts(inst, counts.as_ref(), bus_note.as_deref())
+}
+
+fn status_with_counts(
+    inst: &Instance,
+    counts: Option<&std::collections::BTreeMap<String, store::Progress>>,
+    bus_note: Option<&str>,
+) -> Result<Vec<StatusRow>, String> {
+    let v = validated(inst)?;
+    let state = &inst.state;
+    let session = state.session();
+    let tmux = tmux_for(state);
+    let windows = tmux.windows(&session);
+    let meta = state::read_meta(state).ok().flatten().unwrap_or_default();
     let nodes = member_nodes(inst, &v, |_| String::new());
     // The instance runs while any member has a live window; one stopped on
     // purpose expects no one to be running.
@@ -3353,10 +3351,7 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
                 Posture::Locked => "locked".into(),
             }),
             state: if ran { STOPPED } else { NOT_STARTED }.into(),
-            unread: counts
-                .as_ref()
-                .and_then(|all| all.get(id))
-                .and_then(|unread| unread.count),
+            unread: counts.map(|all| all.get(&inst.at(id)).copied().unwrap_or_default().unread),
             running: None,
             expected_running: false,
             start: member.start,
@@ -3413,15 +3408,6 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
             }
         }
         row.expected_running = team_running && row.state == STOPPED && member.start;
-        if let Some(unread) = counts.as_ref().and_then(|all| all.get(id))
-            && !unread.notes.is_empty()
-        {
-            let notes = unread.notes.join("; ");
-            row.detail = Some(match row.detail.take() {
-                Some(detail) => format!("{detail}; {notes}"),
-                None => notes,
-            });
-        }
         rows.push(row);
     }
     for (name, plugin) in &v.team.plugins {
@@ -3483,7 +3469,7 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
     {
         row.detail = Some(match row.detail.take() {
             Some(detail) => format!("{detail}; {note}"),
-            None => note,
+            None => note.to_string(),
         });
     }
     for (role_name, role) in &v.team.team_roles {
@@ -3531,9 +3517,9 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
         }
         for (id, _) in copies {
             let full_id = inst.at(id);
-            let (copy, mut children, error) = match address::instance(&full_id)
-                .and_then(|copy| status(&copy).map(|children| (copy, children)))
-            {
+            let (copy, mut children, error) = match address::instance(&full_id).and_then(|copy| {
+                status_with_counts(&copy, counts, bus_note).map(|children| (copy, children))
+            }) {
                 Ok((copy, children)) => (Some(copy), children, None),
                 Err(error) => (None, Vec::new(), Some(error)),
             };
@@ -3900,21 +3886,38 @@ pub fn send(
             "outside senders must pass --external NAME".into(),
         ));
     }
-    if matches!(caller, context::Caller::Member { .. })
-        && let Some(own) = std::env::var(context::ENV_INSTANCE)
-            .ok()
-            .filter(|own| !own.is_empty() && *own != inst.id)
-    {
-        return send_across(&own, inst, recipient, text, from, reply_to, &caller);
+    let own = context::instance(None)
+        .or_else(|e| {
+            if matches!(caller, context::Caller::External { .. }) {
+                Ok(inst.id.clone())
+            } else {
+                Err(e)
+            }
+        })
+        .map_err(send_failure)?;
+    if own.split('/').next() != inst.id.split('/').next() {
+        return Err(SendError::Refused(
+            "messages cannot cross independent team trees".into(),
+        ));
     }
-    // Only a member, across a parent edge, may name another instance.
-    context::instance(Some(&inst.id)).map_err(send_failure)?;
+    if from.is_some() && own != inst.id {
+        return Err(SendError::Refused(
+            "--from applies only within one instance".into(),
+        ));
+    }
     let to = if matches!(Recipient::parse(recipient), Some(Recipient::External(_))) {
         recipient.to_string()
     } else {
         address::member(inst, recipient).map_err(SendError::NotAlive)?
     };
-    let bus = store::open(&inst.state).map_err(send_failure)?;
+    let sender = address::instance(&own).map_err(SendError::NotAlive)?;
+    let bus = store::open(&sender.state).map_err(send_failure)?;
+    let target_bus = store::open(&inst.state).map_err(send_failure)?;
+    let full_to = if to.starts_with(crate::bus::record::EXTERNAL_PREFIX) {
+        to.clone()
+    } else {
+        inst.at(&to)
+    };
     let from = from
         .map(|id| address::member(inst, id).map_err(SendError::Refused))
         .transpose()?;
@@ -3926,13 +3929,13 @@ pub fn send(
                 "--from must name the calling member".into(),
             ));
         }
-        if bus.meta.members.get(from).and_then(|m| m.parent.as_deref()) != Some(to.as_str()) {
+        if bus.parent(from).as_deref() != Some(full_to.as_str()) {
             return Err(SendError::Refused(format!(
                 "`{from}` may only send to its parent, and `{to}` is not it"
             )));
         }
     }
-    let target_meta = bus.meta.members.get(&to);
+    let target_meta = target_bus.meta.members.get(&to);
     if target_meta.is_none() && !matches!(Recipient::parse(&to), Some(Recipient::External(_))) {
         return Err(SendError::NotAlive(format!(
             "`{to}` has no recorded start; start it before sending"
@@ -3993,7 +3996,7 @@ pub fn send(
         }
     }
     let draft = serde_json::to_vec(&Draft {
-        to: to.clone(),
+        to: full_to,
         body: text.into(),
         reply_to: reply_to.to_vec(),
     })
@@ -4092,53 +4095,6 @@ pub fn send(
             }
         }
     }
-}
-
-/// A message across a parent edge is committed only in the sender's own store;
-/// the receiver imports it at its next inbox read, so it is never typed.
-fn send_across(
-    own: &str,
-    inst: &Instance,
-    recipient: &str,
-    text: &str,
-    from: Option<&str>,
-    reply_to: &[String],
-    caller: &context::Caller,
-) -> Result<SendOutcome, SendError> {
-    use crate::bus::{
-        record::{Draft, Recipient},
-        store,
-    };
-    if from.is_some() {
-        return Err(SendError::Refused(
-            "--from applies only within one instance".into(),
-        ));
-    }
-    if matches!(Recipient::parse(recipient), Some(Recipient::External(_))) {
-        return Err(SendError::Refused(format!(
-            "this is a member of instance `{own}`; only the tree's root may send to external:NAME, from its own instance"
-        )));
-    }
-    let to = format!(
-        "{}/{}",
-        inst.id,
-        address::member(inst, recipient).map_err(SendError::NotAlive)?
-    );
-    let sender = address::instance(own).map_err(SendError::NotAlive)?;
-    let bus = store::open(&sender.state).map_err(send_failure)?;
-    let draft = serde_json::to_vec(&Draft {
-        to: to.clone(),
-        body: text.into(),
-        reply_to: reply_to.to_vec(),
-    })
-    .map_err(|e| SendError::Refused(e.to_string()))?;
-    let record = store::publish(&bus, caller, &draft).map_err(send_failure)?;
-    Ok(SendOutcome {
-        message: format!("committed: {} (to {to})", record.id),
-        id: record.id,
-        delivery: "stored",
-        reason: "across a parent edge; imported at the receiver's next inbox read".into(),
-    })
 }
 
 fn send_envelope(

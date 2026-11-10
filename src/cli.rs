@@ -91,14 +91,12 @@ enum Command {
     /// Remove a stopped instance, or a stopped member (its ID stays issued).
     /// With a bus, a member caller may manage only its subtree, using its
     /// latest running start. A copy's roots cannot delete their own copy.
-    /// Member unread work includes messages waiting in edge stores.
+    /// Unread messages need --force; copy history stays in the tree store.
     Delete {
         /// `<instance>`, or `<instance>/<member>`. A bare role is refused.
         #[arg(add = crate::complete::targets())]
         target: String,
-        /// Delete even with unread or undelivered messages, or unreadable
-        /// message storage, edge stores or delivery receipts. Messages to deleted
-        /// copies have unknown delivery; messages to deleted members need no force.
+        /// Delete even with unread messages or unreadable message storage.
         /// Running members, unknown liveness and members with kept children or copies
         /// are always refused.
         #[arg(long)]
@@ -200,7 +198,7 @@ enum Command {
         #[command(flatten)]
         args: crate::bus::cli::InboxArgs,
     },
-    /// Check the instance's message storage.
+    /// Check the tree's message storage.
     Bus {
         /// The instance (outside a member; inside one, only its own).
         #[arg(long, global = true, add = crate::complete::instances())]

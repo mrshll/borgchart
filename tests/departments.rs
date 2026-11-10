@@ -480,7 +480,7 @@ fn nested_status_screens_keep_healthy_members_visible_when_a_copy_becomes_unread
 }
 
 #[test]
-fn team_copies_keep_separate_stores_and_slots_until_deleted() {
+fn team_copies_share_the_tree_store_and_keep_separate_slots_until_deleted() {
     let env = department();
     let dept = env.create("oncall", "work/a");
     let (first, first_folder) = create_copy(&env, &dept, "dev");
@@ -497,7 +497,7 @@ fn team_copies_keep_separate_stores_and_slots_until_deleted() {
         "only the department lead may have started"
     );
     for copy in [&first, &second] {
-        assert!(env.path(&format!("state/{copy}/messages")).is_dir());
+        assert!(!env.path(&format!("state/{copy}/messages")).exists());
         assert!(env.path(&format!("state/{copy}/notes")).is_dir());
         assert!(env.rows(copy).iter().all(|r| r["member"].is_null()));
     }
@@ -629,7 +629,7 @@ fn depth_three_copies_wait_for_preparation_and_cascade_before_parent_deletion() 
             let state = notes.parent().unwrap().to_path_buf();
             assert_eq!(state, env.path(&format!("state/{instance}")));
             assert!(notes.is_dir());
-            assert!(state.join("messages").is_dir());
+            assert_eq!(state.join("messages").is_dir(), instance == &dept);
             env.ok(&["bus", "check", "--instance", instance]);
             notes
         })

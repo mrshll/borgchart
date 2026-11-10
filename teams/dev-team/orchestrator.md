@@ -104,7 +104,7 @@ Report: <report path>
 MESSAGE
 ```
 
-  `<parent>` is `$BORGCHART_PARENT`, its full address. The message is stored in your store and your parent imports it at its next inbox read; `<brief-ID>` is the brief's ID in your inbox. This nested-workstream procedure requires the README cutover smoke check; do not start a nested workstream before that gate. Do not use identity overrides or direct typing to bypass that boundary.
+  `<parent>` is `$BORGCHART_PARENT`, its full address. The message is stored in the shared tree store; `<brief-ID>` is the same tree-wide ID in both inboxes. Delivery follows your parent's posture, including inbox-only for an interactive parent. This nested-workstream procedure requires the README cutover smoke check; do not start a nested workstream before that gate. Do not use identity overrides or direct typing to bypass that boundary.
 - **Operational questions go up to it** by message (a decision the plan doesn't settle, a blocker, a peer holding something you need), not to GitHub or `external:`.
 - **Pull-request matters stay on GitHub:** questions about a pull request, and your review request to the owner when you hand one off.
 - **Merging:** you still never merge. Only the root lead of the tree may merge one of your pull requests, under its own rule: the owner's approving review on the current head, with CI green.

@@ -102,9 +102,13 @@ impl StateDir {
     pub fn instance_file(&self) -> PathBuf {
         self.root.join("instance.json")
     }
-    /// The message store, shared by the members.
+    /// The message store, shared by every instance in this tree.
     pub fn messages_dir(&self) -> PathBuf {
-        self.root.join("messages")
+        let mut root = self.root.clone();
+        for _ in self.id.split('/').skip(1) {
+            root.pop();
+        }
+        root.join("messages")
     }
     /// Files the members share (`BORGCHART_NOTES`).
     pub fn notes_dir(&self) -> PathBuf {

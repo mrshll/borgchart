@@ -77,7 +77,7 @@ A stopped member keeps its ID. A watch runs until its own deadline, whatever hap
 
 ## Brief and follow
 
-Sends to researchers and monitors in your own instance work directly. A dev copy's lead is addressed in full (`<copy>/<member>`); those messages are stored, never typed, and imported at its next inbox read. Nested workstream operation remains gated on the README cutover smoke check. Do not bypass that boundary with identity overrides or pane input. Your lead is inbox-only (`interactive: true`); keep the wait below armed.
+Sends to researchers and monitors in your own instance work directly. A dev copy's lead is addressed in full (`<copy>/<member>`); those messages use the shared tree store and the same delivery rules. Its interactive lead reads them from its inbox. Nested workstream operation remains gated on the README cutover smoke check. Do not bypass that boundary with identity overrides or pane input. Your lead is inbox-only (`interactive: true`); keep the wait below armed.
 
 - **Brief:** write a brief file in `$BORGCHART_NOTES` by sibling rename. It names the task, scope, non-goals, branch and folder, checks, report path, deadline and who else is involved; for a monitor, the interval and the trigger. Then send one message naming it, using plain text:
 
