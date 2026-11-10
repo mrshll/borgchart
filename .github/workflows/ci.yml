@@ -35,6 +35,8 @@ jobs:
       - run: .githooks/checks fmt
       # The shared checks build/lint/test every Cargo workspace member.
       - run: .githooks/checks clippy
+      # The fast tier's guard: these tests must start no process.
+      - run: .githooks/checks fast
       # The runner has no tmux servers of its own: after the tests, there
       # must be none, and no new file in tmux's default socket directory.
       - name: Before the tests
