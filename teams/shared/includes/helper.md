@@ -13,7 +13,7 @@ Your parent is the lead recorded as your parent in `status`; send only to it, ev
 
   Wait only for your own answer; never sleep or poll for anything else.
 - **Report and reply.** Write the report at the brief's path, then send your parent one reply to the brief's message, in plain text: a line `Report: <report path>`, then the report's `action-needed:` line.
-- **Changes of direction.** Between steps of long work, glance at your inbox. If the lead asks you to stop, stop writing and stop anything you started in the background, ack the message, then reply with what you stopped, your last commit and what is uncommitted.
+- **Changes of direction.** Between steps of long work, glance at your inbox, with message bodies. If the lead asks you to stop, stop writing and stop anything you started in the background, ack the message, then reply with what you stopped, your last commit and what is uncommitted.
 - **After your report reply,** finish your turn. The lead reads the report and stops you. A follow-up is a new brief message, read and acked when you start again.
 
 A send that returns 0 is committed: never resend it. Never start, stop or assign members.

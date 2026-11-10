@@ -961,7 +961,10 @@ mod round {
         // checked through the granted seating plugin and the isolated fake vendor protocols.
         let (listed, code) = run(
             "panel-roles",
-            &format!("\"$BORGCHART_BIN\" status {panel} --json"),
+            &fill(documented(
+                &rule,
+                "\"$BORGCHART_BIN\" status <copy ID> --json",
+            )),
         );
         assert_eq!(code, 0, "{listed}");
         let listed: Vec<serde_json::Value> = serde_json::from_str(&listed).unwrap();

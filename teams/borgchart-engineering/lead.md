@@ -38,7 +38,7 @@ Your instance's folder is a checkout of the repository. You, researchers, monito
 
 ## Seat before every launch
 
-Before each `create` or `start`, list the launches it will cause: a copy's `start: true` roles, the copies and members a full `start` brings back, or the one member. For each, run `brg-seat route <vendor> <model>` with the model's name (without its effort). A copy's `status` shows both for each of its roles.
+Before each `create` or `start`, list the launches it will cause: a copy's `start: true` roles, the copies and members a full `start` brings back, or the one member. For each, run `brg-seat route <vendor> <model>` with the model's name (without its effort). `"$BORGCHART_BIN" status <copy ID> --json` gives both for each of a copy's roles, before they have members.
 - **`go`:** go ahead.
 - **`wait`, an unknown answer or an error:** don't launch, and don't launch on another vendor, model or effort instead. Record why, check again at the time it gives or at your next deadline check, and tell the owner when a workstream has waited long.
 
@@ -87,7 +87,7 @@ Address a dev copy's lead by its full address; it reads your message at its next
 ## Watch
 
 1. **At the start of every turn,** read your inbox, with bodies. Act on the messages, ack each once you've taken it on, then handle every deadline or seating retry that is due.
-2. **End every turn with exactly one wait running,** timed to end no later than the earliest deadline or retry in your record: `"$BORGCHART_BIN" inbox wait --timeout <seconds> --full`, with your Bash tool in **background** mode. Its exit wakes you. If a wait is already running and ends too late, stop it and start a new one.
+2. **End every turn with exactly one wait running,** timed to end no later than the earliest deadline or retry in your record: `"$BORGCHART_BIN" inbox wait --timeout <seconds> --full`, with your Bash tool in **background** mode (`<seconds>` from 60 to 86400: use 86400 for a later deadline and 60 for a sooner one). Its exit wakes you. If a wait is already running and ends too late, stop it and start a new one.
    - **Exit 9:** a deadline is due; handle it, then wait again.
    - **Exit 8 (`fenced`):** your session is no longer current. Stop waiting and tell the owner.
    - **Other errors:** wait at least 60 seconds, run `bus check`, and report the problem.

@@ -49,9 +49,10 @@ enum Command {
     /// copy gets its own git worktree from it instead, which brg adds when
     /// issuing it (create, or a full `start` that gives a `start: true` role
     /// a new member), detached at the folder's HEAD or on `--branch`.
-    /// It prints the tree it made or changed, laid out as `status` lays it
-    /// out: a new copy's ID and folder lead it, and a new member's ID is on
-    /// its row.
+    /// For a member or an instance, it prints the instance's tree as `status`
+    /// lays it out, with a new member's ID on its row; for a copy, one line
+    /// with the copy's ID and its folder (its worktree, for a `worktree: true`
+    /// role).
     Create {
         /// `<team>` (a name, or a path starting with `/`, `./`, `../` or
         /// `~/`), or `<instance>/<role>`.
@@ -154,8 +155,9 @@ enum Command {
         json: bool,
     },
     /// Show an instance tree, or every top-level instance, with nested copies.
-    /// Each member's row shows its ID, vendor and model, state and unread
-    /// messages.
+    /// Each member's row shows its ID, vendor and model, state and any unread
+    /// messages. A role with no member shows only its state; its `--json` row
+    /// also gives its vendor and model.
     Status {
         /// The instance (default: every top-level instance and its copies).
         #[arg(add = crate::complete::instances())]
