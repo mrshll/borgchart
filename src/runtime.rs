@@ -2390,6 +2390,104 @@ pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
     )])
 }
 
+/// `brg reset <root>`: stop the whole tree, then forget it: every
+/// registration and the root's state folder (all copies' state, notes and
+/// the tree's messages), and the empty `{member_id}` folders brg made in
+/// it. No open work refuses it; anything brg can't confirm stopped does.
+/// The working folders, checkouts and worktrees in them stay. `warn` gets
+/// the warning line once the target is accepted, before anything stops.
+pub fn reset(inst: Instance, warn: impl FnOnce(String)) -> Result<Vec<String>, String> {
+    if has_member_context() {
+        return Err(
+            "`reset` stops a whole tree, the member running it included; run it from your own shell"
+                .into(),
+        );
+    }
+    if inst.id.contains('/') {
+        return Err(format!(
+            "`{}` is a copy; reset takes a tree's root. For a copy, use brg stop -r and brg delete",
+            inst.id
+        ));
+    }
+    warn(format!(
+        "resetting {}: this deletes its notes and messages and every copy's; copy anything you need from {} first",
+        inst.id,
+        inst.state.root.display()
+    ));
+    let mut lines = stop(&inst, None)?;
+    let lock = registry::lock()?;
+    let mut root = inst;
+    root.reload()?;
+    let mut tree = Vec::new();
+    for copy in crate::nesting::descendants(&root)? {
+        tree.push(copy.instance.map_err(|e| {
+            format!(
+                "copy `{}` can't be read ({e}); nothing was deleted. Restore it, then: brg reset {}",
+                copy.id, root.id
+            )
+        })?);
+    }
+    tree.push(root.clone());
+    let mut state_locks = Vec::new();
+    for inst in &tree {
+        state_locks.push(lifecycle::lock_state(&inst.state)?);
+        unreadable_start_record(inst, "nothing was deleted")?;
+        let live = liveness_of(inst);
+        let unsure: Vec<&String> = live
+            .iter()
+            .filter(|(_, l)| **l != Liveness::Gone)
+            .map(|(id, _)| id)
+            .collect();
+        if inst.record.stopping || is_running(inst) || !unsure.is_empty() {
+            return Err(format!(
+                "brg can't tell that `{}` stopped{}, so nothing was deleted; stop it again once its tmux server can be reached: brg stop {}",
+                inst.id,
+                if unsure.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " ({})",
+                        unsure
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                },
+                root.id
+            ));
+        }
+    }
+    // Publications anywhere in the tree wait here, then find it gone.
+    let bus_lock = lifecycle::lock_bus(&root.state)?;
+    let mut registry = lock.load()?;
+    lines.extend(crate::cleanup::tree_folders(&tree, &registry).lines);
+    for inst in &tree {
+        registry.instances.remove(&inst.id);
+    }
+    lock.save(&registry)?;
+    std::fs::remove_dir_all(&root.state.root).map_err(|e| {
+        format!(
+            "{} is forgotten, but its state folder {} could not be removed ({e}); remove it with: brg cleanup",
+            root.id,
+            root.state.root.display()
+        )
+    })?;
+    drop(bus_lock);
+    drop(state_locks);
+    lines.push(format!(
+        "reset {}: its registrations, state, notes and messages are deleted; its working folder {} was left as it is",
+        root.id,
+        root.record.folder.display()
+    ));
+    lines.push(format!(
+        "start it fresh: brg create {} {}",
+        root.record.team_dir.display(),
+        root.record.folder.display()
+    ));
+    Ok(lines)
+}
+
 /// `brg secret <team>`: each secret its plugins need (plugin, name), and
 /// whether the caller's environment sets it. No value is read out.
 pub fn secrets(team: &str) -> Result<Vec<(String, String, bool)>, String> {

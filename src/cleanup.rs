@@ -54,7 +54,7 @@ pub fn cleanup(only: Option<&Instance>) -> Result<Outcome, String> {
     let lock = registry::lock()?;
     let registry = lock.load()?;
     let mut out = Outcome::default();
-    let held = held(&registry);
+    let held = held(&registry, |_| true);
     let ids: Vec<&String> = registry
         .instances
         .keys()
@@ -78,11 +78,12 @@ pub fn cleanup(only: Option<&Instance>) -> Result<Outcome, String> {
     Ok(out)
 }
 
-/// Every folder a registered instance works in: its own folder and its kept
-/// members' and copies' folders. No leaf holding one is removed.
-fn held(registry: &registry::Registry) -> Vec<PathBuf> {
+/// Every folder a registered instance (of those `counts`) works in: its own
+/// folder and its kept members' and copies' folders. No leaf holding one is
+/// removed.
+fn held(registry: &registry::Registry, counts: impl Fn(&str) -> bool) -> Vec<PathBuf> {
     let mut held = Vec::new();
-    for (id, entry) in &registry.instances {
+    for (id, entry) in registry.instances.iter().filter(|(id, _)| counts(id)) {
         held.push(entry.folder.clone());
         if let Ok(inst) = address::instance(id) {
             held.extend(
@@ -96,6 +97,54 @@ fn held(registry: &registry::Registry) -> Vec<PathBuf> {
     held
 }
 
+/// `reset`'s folder pass over a tree about to be forgotten, deepest first:
+/// every member's and copy's `{member_id}` folder, kept or deleted, by the
+/// same rules as cleanup. Folders that instances outside the tree work in
+/// stay protected.
+pub(crate) fn tree_folders(tree: &[Instance], registry: &registry::Registry) -> Outcome {
+    let mut out = Outcome::default();
+    let held = held(registry, |id| !tree.iter().any(|inst| inst.id == id));
+    for inst in tree {
+        let v = match runtime::validated(inst) {
+            Ok(v) => v,
+            Err(e) => {
+                out.error(format!(
+                    "can't place the folders of {}'s members and copies: {e}",
+                    inst.id
+                ));
+                continue;
+            }
+        };
+        for (id, member) in issued(inst, &inst.record.members, |_| true, &mut out) {
+            let cwd = v
+                .team
+                .roles
+                .get(&member.role)
+                .and_then(|r| r.cwd.as_deref());
+            leaf(
+                inst,
+                cwd,
+                id,
+                &held,
+                &format!("member {}", inst.at(id)),
+                &mut out,
+            );
+        }
+        for (id, copy) in issued(inst, &inst.record.copies, |_| true, &mut out) {
+            let cwd = v.team.team_roles.get(&copy.role).map(|r| r.cwd.as_str());
+            leaf(
+                inst,
+                cwd,
+                id,
+                &held,
+                &format!("copy {}", inst.at(id)),
+                &mut out,
+            );
+        }
+    }
+    out
+}
+
 /// One registered instance: its deleted members' and copies' folders and
 /// state.
 fn instance(inst: &Instance, registry: &registry::Registry, held: &[PathBuf], out: &mut Outcome) {
@@ -103,11 +152,12 @@ fn instance(inst: &Instance, registry: &registry::Registry, held: &[PathBuf], ou
         Ok(lock) => lock,
         Err(e) => return out.error(format!("skipped {}: {e}", inst.id)),
     };
-    let deleted_members = deleted(inst, &inst.record.members, out);
-    let deleted_copies: Vec<(&String, &IssuedMember)> = deleted(inst, &inst.record.copies, out)
-        .into_iter()
-        .filter(|(id, _)| !registry.instances.contains_key(&inst.at(id)))
-        .collect();
+    let deleted_members = issued(inst, &inst.record.members, |m| m.deleted, out);
+    let deleted_copies: Vec<(&String, &IssuedMember)> =
+        issued(inst, &inst.record.copies, |m| m.deleted, out)
+            .into_iter()
+            .filter(|(id, _)| !registry.instances.contains_key(&inst.at(id)))
+            .collect();
     if deleted_members.is_empty() && deleted_copies.is_empty() {
         return;
     }
@@ -165,15 +215,16 @@ fn instance(inst: &Instance, registry: &registry::Registry, held: &[PathBuf], ou
     }
 }
 
-/// The deleted entries of `issued`. An ID that isn't one brg issues (a
-/// damaged record) is reported and never turned into a path.
-fn deleted<'a>(
+/// The entries of `issued` that `pick` keeps. An ID that isn't one brg
+/// issues (a damaged record) is reported and never turned into a path.
+fn issued<'a>(
     inst: &Instance,
     issued: &'a std::collections::BTreeMap<String, IssuedMember>,
+    pick: impl Fn(&IssuedMember) -> bool,
     out: &mut Outcome,
 ) -> Vec<(&'a String, &'a IssuedMember)> {
     let mut found = Vec::new();
-    for (id, member) in issued.iter().filter(|(_, m)| m.deleted) {
+    for (id, member) in issued.iter().filter(|(_, m)| pick(m)) {
         if crate::names::is_valid_member_id(id) && registry::split_id(id).is_some() {
             found.push((id, member));
         } else {
