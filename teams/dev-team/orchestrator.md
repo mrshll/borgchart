@@ -31,11 +31,7 @@ If the work turns on a choice that is costly to reverse (persistence, data contr
 
 Do small things yourself when briefing and verifying a helper would cost more.
 
-```
-<folder>/                    your instance's folder
-├─ repo/                     the shared checkout: you, reviewer, researcher, monitor
-└─ copies/<member ID>/       one worktree per implementer copy
-```
+Your instance's folder is the shared checkout: you, the reviewer, researcher and monitor work in it. Each implementer copy works in its own git worktree, which brg adds from the shared checkout's `HEAD` when you create the copy and removes when you delete it; `status` shows where.
 
 - **One writer per checkout, one piece of work per implementer copy.** brg doesn't enforce this; you do.
 - **The shared checkout** stays unchanged (no edits, checkouts or resets) while a reviewer, researcher or monitor is working in it.
@@ -46,11 +42,8 @@ Do small things yourself when briefing and verifying a helper would cost more.
 Messages go to member IDs, so a member must exist before it can be briefed, and its work must be waiting before it starts.
 
 1. **Seat-check** before each `create` or `start`: run `brg-seat route <vendor> <model>` for the member it launches. Go ahead only on `go`. On `wait`, an unknown answer or an error, check again later; don't take another vendor or model instead.
-2. **Create the member once:** `"$BORGCHART_BIN" create "$BORGCHART_INSTANCE/<role>"` starts it; stop it and note its ID. A stopped member keeps its ID.
-3. **For an implementer, prepare its worktree:**
-   - make `<folder>/copies/` once;
-   - `git -C <folder>/repo worktree add <folder>/copies/<member ID> <branch>`, or `--detach … <base>` to let the copy create the branch. A branch can be checked out in only one worktree: detach the shared checkout first if it holds the branch;
-   - run `agent-gh --setup` inside the worktree, and check `git -C <copy> config core.hooksPath` gives the repository's hooks path.
+2. **Create the member once:** `"$BORGCHART_BIN" create "$BORGCHART_INSTANCE/<role>"` starts it; stop it and note its ID. A stopped member keeps its ID. For an implementer, add `--branch <branch>` to put its new worktree on a new branch; without it, the worktree is detached at your checkout's `HEAD` and the copy creates the branch.
+3. **For an implementer, prepare its worktree:** run `agent-gh --setup` inside it.
 4. **Write the brief** in `$BORGCHART_NOTES`, by rename: the task, scope, non-goals, checks, branch and checkout, report path, deadline and teammates involved; for the monitor, the interval and trigger. An implementer's brief says whether it may run full checks now or must report `ready for checks` and wait. Then send one message naming it:
 
 ```sh
@@ -73,13 +66,13 @@ MESSAGE
 - **Verify.** The report is the helper's claim. Read it, the diff and its evidence, and run the repository's checks yourself in that checkout.
 - **Push** a copy's branch from its own worktree (`agent-gh git -C <copy worktree> push …`), since pre-push checks run in the tree you push from. Update the pull request description in the same pass.
 - **Stop and check.** `"$BORGCHART_BIN" stop <instance>/<member>`, then check `"$BORGCHART_BIN" status --json` shows it `stopped`. Only then change or remove its worktree, or give its checkout to anyone else. To redo finished work, send a new brief and start it again.
-- **Remove a worktree** before deleting its copy: `git -C <folder>/repo worktree remove <folder>/copies/<member ID>`. Never use `--force`: if removal refuses, commit or report the work it found first. Look at a member's unacked work before you delete it.
+- **Delete a copy** once its work is pushed: `"$BORGCHART_BIN" delete <instance>/<member>` removes its worktree, and refuses while the worktree holds uncommitted work or commits on no remote. Never use `--force`: if it refuses, commit, push or report the work it found first. Look at a member's unacked work before you delete it.
 
 ## Review
 
 Before handoff, each pull request gets one fresh review, then one fix round:
 
-1. After the push, move the shared checkout to the pull request's head: `git -C <folder>/repo checkout --detach <head>`.
+1. After the push, move the shared checkout to the pull request's head: `git checkout --detach <head>` in your checkout.
 2. Brief the reviewer as above. The brief names the pull request number, base and head commits, report path, scope, checks and deadline.
 3. Read its report and evidence, ack the reply, and stop it.
 4. Check the implementer's revert report (which tests fail when the change is reverted), and treat the reviewer's flags on redundant or detail-only tests as findings.

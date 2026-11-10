@@ -14,17 +14,17 @@ fn department() -> Env {
     let env = Env::new();
     env.write(
         "teams/oncall/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: lead}\n  helper: {prompt: helper.md, parent: lead, start: false, cwd: lead}\n  scout: {prompt: scout.md, start: false, cwd: lead}\n  dev: {team: dev, parent: lead, start: false, max: 4, cwd: 'dev/{member_id}'}\n",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead, start: false}\n  scout: {prompt: scout.md, start: false}\n  dev: {team: dev, parent: lead, start: false, max: 4}\n",
     );
     env.team("teams/dev");
     env.write(
         "teams/dev/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: repo}\n  helper: {prompt: helper.md, parent: lead, start: false, cwd: repo}\n  design: {team: design, parent: lead, start: false, cwd: 'design/{member_id}'}\n",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead, start: false}\n  design: {team: design, parent: lead, start: false}\n",
     );
     env.team("teams/design");
     env.write(
         "teams/design/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: work}\n  scout: {prompt: scout.md, cwd: work}\n",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  scout: {prompt: scout.md}\n",
     );
     fs::create_dir(env.path("work/a/lead")).unwrap();
     fs::create_dir(env.path("work/b/lead")).unwrap();
@@ -166,10 +166,9 @@ fn team_role_creation_refuses_non_ancestors() {
     env.ok(&["stop", &dept]);
 }
 
-fn prepared_copy(env: &Env, parent: &str, role: &str, cwd: &str) -> String {
+fn prepared_copy(env: &Env, parent: &str, role: &str) -> String {
     let out = env.ok(&["create", &format!("{parent}/{role}")]);
-    let (id, folder) = copy_from_output(env, &out);
-    fs::create_dir(folder.join(cwd)).unwrap();
+    let (id, _) = copy_from_output(env, &out);
     id
 }
 
@@ -177,12 +176,12 @@ fn prepared_copy(env: &Env, parent: &str, role: &str, cwd: &str) -> String {
 fn ancestors_manage_copies_and_members_at_every_depth() {
     let env = department();
     let dept = env.create("oncall", "work/a");
-    let dev = prepared_copy(&env, &dept, "dev", "repo");
+    let dev = prepared_copy(&env, &dept, "dev");
     member_ok(&env, &dept, "lead", &["start", &dev]);
     env.wait_for("dev lead idle", || env.state_of(&dev, "lead") == "idle");
     member_ok(&env, &dept, "lead", &["create", &format!("{dev}/helper")]);
     env.wait_for("dev helper idle", || env.state_of(&dev, "helper") == "idle");
-    let panel = prepared_copy(&env, &dev, "design", "work");
+    let panel = prepared_copy(&env, &dev, "design");
     member_ok(&env, &dept, "lead", &["start", &panel]);
     env.wait_for("panel lead idle", || env.state_of(&panel, "lead") == "idle");
     for (inst, role) in [(&dev, "lead"), (&dev, "helper"), (&panel, "lead")] {
@@ -216,7 +215,7 @@ fn ancestors_manage_copies_and_members_at_every_depth() {
 fn dev_leads_manage_their_helpers_and_panel() {
     let env = department();
     let dept = env.create("oncall", "work/a");
-    let dev = prepared_copy(&env, &dept, "dev", "repo");
+    let dev = prepared_copy(&env, &dept, "dev");
     env.ok(&["start", &dev]);
     env.wait_for("dev lead idle", || env.state_of(&dev, "lead") == "idle");
     member_ok(&env, &dev, "lead", &["create", &format!("{dev}/helper")]);
@@ -227,8 +226,7 @@ fn dev_leads_manage_their_helpers_and_panel() {
     member_ok(&env, &dev, "lead", &["stop", &helper]);
     member_ok(&env, &dev, "lead", &["delete", &helper]);
     let out = member_ok(&env, &dev, "lead", &["create", &format!("{dev}/design")]);
-    let (panel, folder) = copy_from_output(&env, &out);
-    fs::create_dir(folder.join("work")).unwrap();
+    let (panel, _) = copy_from_output(&env, &out);
     member_ok(&env, &dev, "lead", &["start", &panel]);
     env.wait_for("panel lead idle", || env.state_of(&panel, "lead") == "idle");
     let designer = format!("{panel}/{}", env.member(&panel, "lead"));
@@ -244,15 +242,15 @@ fn dev_leads_manage_their_helpers_and_panel() {
 fn lifecycle_refuses_targets_outside_recorded_subtrees() {
     let env = department();
     let dept = env.create("oncall", "work/a");
-    let first = prepared_copy(&env, &dept, "dev", "repo");
-    let second = prepared_copy(&env, &dept, "dev", "repo");
+    let first = prepared_copy(&env, &dept, "dev");
+    let second = prepared_copy(&env, &dept, "dev");
     for copy in [&first, &second] {
         env.ok(&["start", copy]);
         env.wait_for("copy lead idle", || env.state_of(copy, "lead") == "idle");
     }
     env.ok(&["create", &format!("{first}/helper")]);
     env.wait_for("helper idle", || env.state_of(&first, "helper") == "idle");
-    let panel = prepared_copy(&env, &first, "design", "work");
+    let panel = prepared_copy(&env, &first, "design");
     env.ok(&["start", &panel]);
     env.wait_for("panel roots idle", || {
         env.state_of(&panel, "lead") == "idle" && env.state_of(&panel, "scout") == "idle"
@@ -311,7 +309,7 @@ fn lifecycle_refuses_targets_outside_recorded_subtrees() {
 fn stopped_replaced_and_partial_starts_cannot_manage_subtrees() {
     let env = department();
     let dept = env.create("oncall", "work/a");
-    let dev = prepared_copy(&env, &dept, "dev", "repo");
+    let dev = prepared_copy(&env, &dept, "dev");
     let lead = env.member(&dept, "lead");
     let lead_address = format!("{dept}/{lead}");
     env.ok(&["stop", &lead_address]);
@@ -391,7 +389,7 @@ fn recorded_copy_parents_survive_live_team_edits() {
     let dept = env.create("oncall", "work/a");
     env.ok(&["create", &format!("{dept}/scout")]);
     env.wait_for("scout idle", || env.state_of(&dept, "scout") == "idle");
-    let dev = prepared_copy(&env, &dept, "dev", "repo");
+    let dev = prepared_copy(&env, &dept, "dev");
     env.ok(&["start", &dev]);
     env.wait_for("dev lead idle", || env.state_of(&dev, "lead") == "idle");
     let team = env.path("teams/oncall/team.yaml");
@@ -419,9 +417,7 @@ fn ancestors_manage_grandchildren_within_one_instance() {
     let original = fs::read_to_string(&team).unwrap();
     fs::write(
         &team,
-        format!(
-            "{original}  aide: {{prompt: helper.md, parent: helper, start: false, cwd: lead}}\n"
-        ),
+        format!("{original}  aide: {{prompt: helper.md, parent: helper, start: false}}\n"),
     )
     .unwrap();
     let dept = env.create("oncall", "work/a");

@@ -14,30 +14,30 @@ fn department() -> Env {
     let env = Env::new();
     env.write(
         "teams/oncall/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: lead}\n  dev: {team: dev, parent: lead, start: false, max: 4, cwd: 'dev/{member_id}'}\n",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  dev: {team: dev, parent: lead, start: false, max: 4, worktree: true}\n",
     );
     env.team("teams/dev");
     env.write(
         "teams/dev/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: repo}\n  helper: {prompt: helper.md, parent: lead, start: false, cwd: repo}\n  scout: {prompt: scout.md, start: false, cwd: repo}\n  design: {team: design, parent: lead, start: false, max: 2, cwd: 'design/{member_id}'}\n",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead, start: false}\n  scout: {prompt: scout.md, start: false}\n  design: {team: design, parent: lead, start: false, max: 2}\n",
     );
     env.team("teams/design");
     env.write(
         "teams/design/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: work}\n  helper: {prompt: helper.md, parent: lead, start: false, cwd: work}\n",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead, start: false}\n",
     );
-    fs::create_dir(env.path("work/a/lead")).unwrap();
+    fs::remove_dir(env.path("work/a")).unwrap();
+    env.checkout("work/a");
     env
 }
 
-fn prepared_copy(env: &Env, parent: &str, role: &str, cwd: &str) -> (String, PathBuf) {
+fn prepared_copy(env: &Env, parent: &str, role: &str) -> (String, PathBuf) {
     let out = env.ok(&["create", &format!("{parent}/{role}")]);
     let id = stdout(&out).split_whitespace().next().unwrap().to_string();
     let record: serde_json::Value =
         serde_json::from_slice(&fs::read(env.path(&format!("state/{id}/instance.json"))).unwrap())
             .unwrap();
     let folder = PathBuf::from(record["folder"].as_str().unwrap());
-    fs::create_dir(folder.join(cwd)).unwrap();
     (id, folder)
 }
 
@@ -98,12 +98,12 @@ fn declaring_team_roles_fences_first_copy_creation_during_stop() {
 fn stopping_department_refuses_child_create_and_start() {
     let env = department();
     let dept = env.create("oncall", "work/a");
-    let (dev, _) = prepared_copy(&env, &dept, "dev", "repo");
+    let (dev, _) = prepared_copy(&env, &dept, "dev");
     start(&env, &dev);
     env.ok(&["create", &format!("{dev}/helper")]);
     let helper = format!("{dev}/{}", env.member(&dev, "helper"));
     env.ok(&["stop", &helper]);
-    let (panel, _) = prepared_copy(&env, &dev, "design", "work");
+    let (panel, _) = prepared_copy(&env, &dev, "design");
     let gate = env.path("stop-gate");
     let stop = env
         .cmd(&["stop", &dept])
@@ -146,7 +146,7 @@ fn stopping_department_refuses_child_create_and_start() {
 fn interrupted_cascade_holds_folders_and_resumes_before_start() {
     let env = department();
     let dept = env.create("oncall", "work/a");
-    let (dev, folder) = prepared_copy(&env, &dept, "dev", "repo");
+    let (dev, folder) = prepared_copy(&env, &dept, "dev");
     start(&env, &dev);
     let gate = env.path("stop-gate");
     let mut stop = env
@@ -171,11 +171,11 @@ fn interrupted_cascade_holds_folders_and_resumes_before_start() {
         let refused = env.fails(&["start", instance]);
         assert!(refused.contains(&format!("brg stop {dept}")), "{refused}");
     }
-    fs::create_dir(folder.join("repo/lead")).unwrap();
+    fs::create_dir(folder.join("sub")).unwrap();
     let refused = env.fails(&[
         "create",
         "oncall",
-        &folder.join("repo").display().to_string(),
+        &folder.join("sub").display().to_string(),
     ]);
     assert!(refused.contains(&dept), "{refused}");
     env.ok(&["stop", &dept]);
@@ -191,7 +191,7 @@ fn interrupted_cascade_holds_folders_and_resumes_before_start() {
 fn unknown_liveness_keeps_cascade_stopping_until_stop_can_confirm_it() {
     let env = department();
     let dept = env.create("oncall", "work/a");
-    let (dev, folder) = prepared_copy(&env, &dept, "dev", "repo");
+    let (dev, folder) = prepared_copy(&env, &dept, "dev");
     start(&env, &dev);
     let lead = env.member(&dev, "lead");
     let incarnation = env.path(&format!("state/{dev}/members/{lead}/incarnation.json"));
@@ -203,11 +203,11 @@ fn unknown_liveness_keeps_cascade_stopping_until_stop_can_confirm_it() {
         let refused = env.fails(&["start", instance]);
         assert!(refused.contains(&format!("brg stop {dept}")), "{refused}");
     }
-    fs::create_dir(folder.join("repo/lead")).unwrap();
+    fs::create_dir(folder.join("sub")).unwrap();
     let refused = env.fails(&[
         "create",
         "oncall",
-        &folder.join("repo").display().to_string(),
+        &folder.join("sub").display().to_string(),
     ]);
     assert!(refused.contains(&dept), "{refused}");
     env.fails(&["delete", &dev, "--force"]);
@@ -225,7 +225,7 @@ fn unknown_liveness_keeps_cascade_stopping_until_stop_can_confirm_it() {
 fn unreachable_server_with_exited_processes_clears_stop_marks() {
     let env = department();
     let dept = env.create("oncall", "work/a");
-    let (dev, _) = prepared_copy(&env, &dept, "dev", "repo");
+    let (dev, _) = prepared_copy(&env, &dept, "dev");
     start(&env, &dev);
     env.tmux(&["kill-server"]);
     env.ok(&["stop", &dept]);
@@ -302,7 +302,7 @@ fn surviving_process_blocks_stop(nested: bool) {
     let env = if nested { department() } else { Env::new() };
     let dept = env.create("oncall", "work/a");
     let dev = if nested {
-        let (dev, _) = prepared_copy(&env, &dept, "dev", "repo");
+        let (dev, _) = prepared_copy(&env, &dept, "dev");
         start(&env, &dev);
         dev
     } else {
@@ -336,11 +336,11 @@ fn surviving_process_blocks_stop(nested: bool) {
 fn full_start_does_not_revive_independently_stopped_copy_or_descendants() {
     let env = department();
     let dept = env.create("oncall", "work/a");
-    let (dev, _) = prepared_copy(&env, &dept, "dev", "repo");
+    let (dev, _) = prepared_copy(&env, &dept, "dev");
     start(&env, &dev);
-    let (panel, _) = prepared_copy(&env, &dev, "design", "work");
+    let (panel, _) = prepared_copy(&env, &dev, "design");
     start(&env, &panel);
-    let (peer, _) = prepared_copy(&env, &dept, "dev", "repo");
+    let (peer, _) = prepared_copy(&env, &dept, "dev");
     start(&env, &peer);
     env.ok(&["stop", &dept]);
     start(&env, &dept);
@@ -362,7 +362,7 @@ fn full_start_does_not_revive_independently_stopped_copy_or_descendants() {
 fn full_start_skips_running_copy_validation_but_checks_stopped_restores() {
     let env = department();
     let dept = env.create("oncall", "work/a");
-    let (dev, folder) = prepared_copy(&env, &dept, "dev", "repo");
+    let (dev, folder) = prepared_copy(&env, &dept, "dev");
     start(&env, &dev);
     env.ok(&["stop", &dept]);
     start(&env, &dept);
@@ -382,7 +382,7 @@ fn full_start_skips_running_copy_validation_but_checks_stopped_restores() {
     // The restore list stays useful for later full starts, and stopped
     // copies still go through their normal folder and configuration checks.
     env.ok(&["stop", &dept]);
-    fs::remove_dir(folder.join("repo")).unwrap();
+    fs::remove_dir_all(&folder).unwrap();
     let refused = env.fails(&["start", &dept]);
     assert!(refused.contains(&dev), "{refused}");
     assert_eq!(env.state_of(&dept, "lead"), "idle");
@@ -394,11 +394,11 @@ fn unreadable_copy_does_not_hide_status_or_block_stopping_readable_instances() {
     for damage in ["record", "missing-record", "state"] {
         let env = department();
         let dept = env.create("oncall", "work/a");
-        let (dev, _) = prepared_copy(&env, &dept, "dev", "repo");
+        let (dev, _) = prepared_copy(&env, &dept, "dev");
         start(&env, &dev);
-        let (peer, _) = prepared_copy(&env, &dept, "dev", "repo");
+        let (peer, _) = prepared_copy(&env, &dept, "dev");
         start(&env, &peer);
-        let (panel, _) = prepared_copy(&env, &dev, "design", "work");
+        let (panel, _) = prepared_copy(&env, &dev, "design");
         let path = match damage {
             "record" | "missing-record" => env.path(&format!("state/{panel}/instance.json")),
             "state" => env.path(&format!("state/{panel}")),
@@ -451,7 +451,7 @@ fn unreadable_copy_does_not_hide_status_or_block_stopping_readable_instances() {
 fn failed_copy_delete_preserves_registered_state() {
     let env = department();
     let dept = env.create("oncall", "work/a");
-    let (dev, _) = prepared_copy(&env, &dept, "dev", "repo");
+    let (dev, _) = prepared_copy(&env, &dept, "dev");
     env.ok(&["stop", &dept]);
     let parent = env.path(&format!("state/{dept}/instance.json"));
     let original = fs::read(&parent).unwrap();
@@ -469,9 +469,9 @@ fn failed_copy_delete_preserves_registered_state() {
 fn full_start_restores_only_previously_running_copies_at_depth_three() {
     let env = department();
     let dept = env.create("oncall", "work/a");
-    let (dev, _) = prepared_copy(&env, &dept, "dev", "repo");
-    let (stopped, _) = prepared_copy(&env, &dept, "dev", "repo");
-    let (never_started, _) = prepared_copy(&env, &dept, "dev", "repo");
+    let (dev, _) = prepared_copy(&env, &dept, "dev");
+    let (stopped, _) = prepared_copy(&env, &dept, "dev");
+    let (never_started, _) = prepared_copy(&env, &dept, "dev");
     for instance in [&dev, &stopped] {
         start(&env, instance);
     }
@@ -480,7 +480,7 @@ fn full_start_restores_only_previously_running_copies_at_depth_three() {
     env.ok(&["create", &format!("{dev}/scout")]);
     let scout = format!("{dev}/{}", env.member(&dev, "scout"));
     env.ok(&["stop", &scout]);
-    let (panel, _) = prepared_copy(&env, &dev, "design", "work");
+    let (panel, _) = prepared_copy(&env, &dev, "design");
     start(&env, &panel);
     env.ok(&["create", &format!("{panel}/helper")]);
     env.ok(&["stop", &dept]);
@@ -506,9 +506,9 @@ fn full_start_restores_only_previously_running_copies_at_depth_three() {
 fn running_panel_is_restored_without_starting_its_stopped_enclosing_copy() {
     let env = department();
     let dept = env.create("oncall", "work/a");
-    let (dev, _) = prepared_copy(&env, &dept, "dev", "repo");
+    let (dev, _) = prepared_copy(&env, &dept, "dev");
     start(&env, &dev);
-    let (panel, _) = prepared_copy(&env, &dev, "design", "work");
+    let (panel, _) = prepared_copy(&env, &dev, "design");
     env.ok(&["stop", &dev]);
     start(&env, &panel);
     env.ok(&["stop", &dept]);
@@ -524,13 +524,13 @@ fn running_panel_is_restored_without_starting_its_stopped_enclosing_copy() {
 fn copy_start_failure_does_not_hide_successful_siblings() {
     let env = department();
     let dept = env.create("oncall", "work/a");
-    let (broken, broken_folder) = prepared_copy(&env, &dept, "dev", "repo");
-    let (healthy, _) = prepared_copy(&env, &dept, "dev", "repo");
+    let (broken, broken_folder) = prepared_copy(&env, &dept, "dev");
+    let (healthy, _) = prepared_copy(&env, &dept, "dev");
     for instance in [&broken, &healthy] {
         start(&env, instance);
     }
     env.ok(&["stop", &dept]);
-    fs::remove_dir(broken_folder.join("repo")).unwrap();
+    fs::remove_dir_all(&broken_folder).unwrap();
     let out = env.brg(&["start", &dept]);
     assert!(!out.status.success(), "{}", both(&out));
     assert!(both(&out).contains(&broken), "{}", both(&out));
@@ -546,7 +546,7 @@ fn copy_start_failure_does_not_hide_successful_siblings() {
 fn member_delete_preserves_kept_copies_even_with_force() {
     let env = department();
     let dept = env.create("oncall", "work/a");
-    let (dev, folder) = prepared_copy(&env, &dept, "dev", "repo");
+    let (dev, folder) = prepared_copy(&env, &dept, "dev");
     env.ok(&["stop", &dept]);
     let lead = format!("{dept}/{}", env.member(&dept, "lead"));
     for target in [&dept, &lead] {
@@ -564,16 +564,16 @@ fn member_delete_preserves_kept_copies_even_with_force() {
     env.ok(&["delete", &dev]);
     env.ok(&["delete", &lead]);
     env.ok(&["delete", &dept]);
-    assert!(folder.is_dir());
+    assert!(!folder.exists(), "delete leaves the copy's clean worktree");
 }
 
 #[test]
 fn recursive_member_stop_reuses_nested_copy_cascades() {
     let env = department();
     let dept = env.create("oncall", "work/a");
-    let (dev, _) = prepared_copy(&env, &dept, "dev", "repo");
+    let (dev, _) = prepared_copy(&env, &dept, "dev");
     start(&env, &dev);
-    let (panel, _) = prepared_copy(&env, &dev, "design", "work");
+    let (panel, _) = prepared_copy(&env, &dev, "design");
     start(&env, &panel);
     let lead = env.member(&dept, "lead");
     let mut stop = env
@@ -621,10 +621,10 @@ fn recursive_stop_checks_copy_sockets_before_stopping_any_member() {
     let env = department();
     let team = env.path("teams/oncall/team.yaml");
     let mut text = fs::read_to_string(&team).unwrap();
-    text.push_str("  helper: {prompt: helper.md, parent: lead, cwd: lead}\n");
+    text.push_str("  helper: {prompt: helper.md, parent: lead}\n");
     fs::write(team, text).unwrap();
     let dept = env.create("oncall", "work/a");
-    let (dev, _) = prepared_copy(&env, &dept, "dev", "repo");
+    let (dev, _) = prepared_copy(&env, &dept, "dev");
     start(&env, &dev);
     let path = env.path(&format!("state/{dev}/start.json"));
     let original = fs::read(&path).unwrap();
@@ -652,10 +652,10 @@ fn a_failed_member_stop_does_not_fence_a_copy_the_walk_has_not_reached() {
     let env = department();
     let team = env.path("teams/oncall/team.yaml");
     let mut text = fs::read_to_string(&team).unwrap();
-    text.push_str("  helper: {prompt: helper.md, parent: lead, cwd: lead}\n");
+    text.push_str("  helper: {prompt: helper.md, parent: lead}\n");
     fs::write(team, text).unwrap();
     let dept = env.create("oncall", "work/a");
-    let (dev, _) = prepared_copy(&env, &dept, "dev", "repo");
+    let (dev, _) = prepared_copy(&env, &dept, "dev");
     start(&env, &dev);
     let helper = own_row(&env, &dept, "helper")["member"]
         .as_str()

@@ -111,37 +111,6 @@ fn symlinks_and_ancestors_alias_a_held_folder() {
 }
 
 #[test]
-fn start_team_cant_give_a_role_a_cwd_inside_another_instances_folder() {
-    let env = Env::new();
-    fs::create_dir_all(env.path("work/a")).unwrap();
-    fs::create_dir_all(env.path("work/b/a/sub")).unwrap();
-    env.write(
-        "teams/oncall/team.yaml",
-        &TEAM.replace(
-            "  lead:\n    prompt: lead.md\n",
-            "  lead:\n    prompt: lead.md\n    cwd: a\n",
-        ),
-    );
-    let a = env.create("oncall", "work");
-    let b = env.create("oncall", "work/b");
-    env.ok(&["stop", &a]);
-    // The team moves, and its copy points the lead into B's folder.
-    fs::rename(env.path("teams/oncall"), env.path("moved")).unwrap();
-    fs::create_dir_all(env.path("elsewhere")).unwrap();
-    fs::rename(env.path("moved"), env.path("elsewhere/oncall")).unwrap();
-    env.write(
-        "elsewhere/oncall/team.yaml",
-        &TEAM.replace(
-            "  lead:\n    prompt: lead.md\n",
-            "  lead:\n    prompt: lead.md\n    cwd: b/a/sub\n",
-        ),
-    );
-    let err = env.fails(&["start", &a, "--team", &env.folder("elsewhere/oncall")]);
-    assert!(err.contains(&b), "{err}");
-    env.ok(&["stop", &b]);
-}
-
-#[test]
 fn killed_server_holds_checkout_until_full_stop_confirms_processes_gone() {
     let env = Env::new();
     let a = env.create("oncall", "work/a");

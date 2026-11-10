@@ -25,7 +25,7 @@ impl Tree {
         let env = Env::new();
         env.write(
             "teams/oncall/team.yaml",
-            "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: lead}\n  dev: {team: dev, parent: lead, start: false, max: 2, cwd: 'dev/{member_id}'}\n",
+            "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  dev: {team: dev, parent: lead, start: false, max: 2}\n",
         );
         env.team("teams/dev");
         fs::create_dir(env.path("work/a/lead")).unwrap();
@@ -250,19 +250,14 @@ fn routing_allows_parent_edges_but_refuses_siblings_cousins_and_deleted_ancestor
     let config = fs::read_to_string(&team).unwrap();
     fs::write(
         team,
-        format!("{config}  helper: {{prompt: helper.md, parent: lead, start: false, cwd: lead}}\n"),
+        format!("{config}  helper: {{prompt: helper.md, parent: lead, start: false}}\n"),
     )
     .unwrap();
     tree.env.write(
         "teams/dev/team.yaml",
-        "roles:\n  lead: {prompt: lead.md, cwd: repo}\n  leaf: {team: leaf, parent: lead, start: false, cwd: 'leaf/{member_id}'}\n",
+        "roles:\n  lead: {prompt: lead.md}\n  leaf: {team: leaf, parent: lead, start: false}\n",
     );
     tree.env.team("teams/leaf");
-    let child_folder = tree.env.registry()["instances"][&tree.child]["folder"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    fs::create_dir(std::path::Path::new(&child_folder).join("repo")).unwrap();
     tree.env.ok(&["start", &tree.parent]);
     tree.env.ok(&["create", &format!("{}/helper", tree.parent)]);
     let helper = tree.env.member(&tree.parent, "helper");
@@ -309,11 +304,6 @@ fn routing_allows_parent_edges_but_refuses_siblings_cousins_and_deleted_ancestor
         .find(|id| id.starts_with(&format!("{}/", tree.parent)) && **id != tree.child)
         .unwrap()
         .clone();
-    let sibling_folder = tree.env.registry()["instances"][&sibling]["folder"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    fs::create_dir(std::path::Path::new(&sibling_folder).join("repo")).unwrap();
     tree.env.ok(&["start", &sibling]);
     let mut leaves = Vec::new();
     for instance in [&tree.child, &sibling] {

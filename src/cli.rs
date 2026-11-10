@@ -39,23 +39,29 @@ enum Command {
         probe: bool,
     },
     /// Make something new: an instance of a team working in a folder
-    /// (`create <team> <folder>`), or a member of a role
-    /// (`create <instance>/<role>`, up to its max of kept members).
-    /// Team-role copies are created stopped; prepare their folders, then start them.
+    /// (`create <team> [folder]`, the current folder by default), or a member
+    /// of a role (`create <instance>/<role>`, up to its max of kept members).
+    /// Team-role copies are created stopped; start them with `brg start`.
     /// Agent members and top-level instances are started. With a bus, a child role's parent role must have a member.
     /// For a role target with a bus, a member caller must be an ancestor,
     /// using its latest running start in its own instance.
-    /// When `cwd` ends in `{member_id}`, brg makes the empty leaf when issuing
-    /// a new member (create, or a full `start` that gives a `start: true` role
-    /// a new member), for any max. An agent member's parent folder must already exist.
+    /// Members work in the team's folder. A `worktree: true` role's member or
+    /// copy gets its own git worktree from it instead, which brg adds when
+    /// issuing it (create, or a full `start` that gives a `start: true` role
+    /// a new member), detached at the folder's HEAD or on `--branch`.
     Create {
         /// `<team>` (a name, or a path starting with `/`, `./`, `../` or
         /// `~/`), or `<instance>/<role>`.
         #[arg(add = crate::complete::teams())]
         target: String,
-        /// The instance's working folder (required for a team; it must exist).
+        /// The instance's working folder, for a team: usually the repository
+        /// it works on. It must exist. Default: the current folder.
         #[arg(value_hint = clap::ValueHint::DirPath)]
         folder: Option<String>,
+        /// For a `worktree: true` role: put the new worktree on this new branch
+        /// instead of a detached HEAD.
+        #[arg(long)]
+        branch: Option<String>,
     },
     /// Bring an instance to what should be running, or start one member.
     /// Restore copies that ran at the last full stop, recursively. Finish
@@ -96,30 +102,31 @@ enum Command {
         /// `<instance>`, or `<instance>/<member>`. A bare role is refused.
         #[arg(add = crate::complete::targets())]
         target: String,
-        /// Delete even with unread messages or unreadable message storage.
-        /// Running members, unknown liveness and members with kept children or copies
-        /// are always refused.
+        /// Delete even with unread messages, unreadable message storage, or
+        /// worktrees with work in them (those are left as they are; a clean
+        /// worktree brg added is always removed). Running members, unknown
+        /// liveness and members with kept children or copies are always refused.
         #[arg(long)]
         force: bool,
     },
     /// Stop a whole tree and forget it, so `brg create` can start it fresh.
     /// Deletes every registration, the root's state folder (all copies'
-    /// state, the notes and the tree's messages) and the empty folders brg
-    /// made for members and copies; copy any notes you need first. Open work
+    /// state, the notes and the tree's messages) and the clean worktrees brg
+    /// added for members and copies; copy any notes you need first. Open work
     /// never refuses it, and there is no prompt; anything brg can't confirm
-    /// stopped does. Working folders, checkouts and worktrees are left as they
-    /// are. Run it from your own shell, never inside a member.
+    /// stopped does. Working folders, checkouts and other worktrees are left
+    /// as they are. Run it from your own shell, never inside a member.
     Reset {
         /// The tree's root instance (a copy is refused).
         #[arg(add = crate::complete::roots())]
         instance: String,
     },
     /// Remove what brg left behind for deleted members and copies: the
-    /// empty `{member_id}` folders it made for them, and their leftover
-    /// state. A folder holding files is listed and kept, and named as a git
-    /// worktree when it holds one. Without an instance, also remove the state
-    /// of instance IDs brg issued that are no longer registered. Work folders,
-    /// kept members' and copies' folders, worktrees and messages are never touched.
+    /// clean git worktrees it added for them, and their leftover state. A
+    /// worktree with work in it is listed and kept. Without an instance, also
+    /// remove the state of instance IDs brg issued that are no longer
+    /// registered. Work folders, kept members' and copies' worktrees, other
+    /// worktrees and messages are never touched.
     Cleanup {
         /// Only this instance and its copies (default: every instance).
         #[arg(add = crate::complete::instances())]
@@ -353,21 +360,27 @@ pub fn main() -> ExitCode {
 fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
     match cli.command {
         Command::Validate { team, json, probe } => run_validate(&team, json, probe),
-        Command::Create { target, folder } => {
+        Command::Create {
+            target,
+            folder,
+            branch,
+        } => {
             let team_like = crate::team::is_path(&target) || !target.contains('/');
             let result = if team_like {
-                match folder {
-                    Some(folder) => runtime::create(&target, &folder),
-                    None => Err(format!(
-                        "give the instance's working folder: brg create {target} <folder>"
-                    )),
+                match branch {
+                    Some(_) => Err(
+                        "`--branch` is for a role's new worktree: brg create <instance>/<role> --branch <name>".to_string(),
+                    ),
+                    None => runtime::create(&target, folder.as_deref().unwrap_or(".")),
                 }
             } else {
                 match address::resolve(&target) {
                     Ok(_) if folder.is_some() => Err(format!(
                         "`{target}` names a role, which takes no folder: its member works in the instance's folder"
                     )),
-                    Ok((inst, Target::Role(role))) => runtime::create_member(inst, &role),
+                    Ok((inst, Target::Role(role))) => {
+                        runtime::create_member(inst, &role, branch.as_deref())
+                    }
                     Ok((inst, Target::Member(m))) => Err(format!(
                         "`create` takes a role, not a member; `{m}` exists already: brg start {}",
                         inst.at(&m)

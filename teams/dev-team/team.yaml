@@ -1,11 +1,10 @@
-# A development team: a lead and four helper roles it starts on demand. In the instance's folder, `repo/` is the
-# shared checkout (a git worktree) where the lead, reviewer, researcher and
-# monitor work. Each implementer copy gets a folder brg creates empty under
-# `copies/`, beside `repo/`; the lead makes `copies/` once and prepares a
-# worktree there before each brief. It runs standalone
-# (`brg create ./teams/dev-team <folder>`, with the
-# worktree at `<folder>/repo`) or as a child team, the `dev` role of
-# borgchart-engineering, where its lead's parent is the root lead.
+# A development team: a lead and four helper roles it starts on demand. The
+# lead, reviewer, researcher and monitor work in the instance's folder, a
+# checkout of the repository. Each implementer copy works in its own git
+# worktree, which brg adds from that checkout when it creates the copy. It
+# runs standalone (`brg create ./teams/dev-team` in a checkout) or as a child
+# team, the `dev` role of borgchart-engineering, where its folder is the
+# copy's worktree and its lead's parent is the root lead.
 #
 # Every member here uses `vendor` posture. Each member file names both vendors' models, so moving a
 # member to the other vendor is a change to its `vendor:` line here.
@@ -26,30 +25,26 @@ roles:
     interactive: true
     vendor: claude      # inbox-only lead; Claude uses a background inbox wait
     start: true
-    cwd: repo
   implementer:
     prompt: implementer.md
     vendor: codex
     parent: lead
     start: false
     max: 4
-    cwd: copies/{member_id}
+    worktree: true
   reviewer:
     prompt: reviewer.md
     vendor: claude
     parent: lead
     start: false
-    cwd: repo
   researcher:
     prompt: researcher.md
     vendor: codex
     parent: lead
     start: false
-    cwd: repo
     args: [--search]    # Codex's web search
   monitor:
     prompt: monitor.md
     vendor: claude
     parent: lead
     start: false
-    cwd: repo

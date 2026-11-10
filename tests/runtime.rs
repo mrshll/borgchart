@@ -1277,8 +1277,6 @@ fn codex_trust_screen_is_left_for_a_person_unless_auto_trust_covers_the_folder()
     // `projects` setting.
     for (config, beta) in [
         ("auto_trust: false\n", ""),
-        ("", "    posture: locked\n    cwd: sub\n"),
-        ("auto_trust: true\n", "    posture: locked\n    cwd: sub\n"),
         ("auto_trust: true\n", "    args: [-c, 'projects={}']\n"),
     ] {
         let deploy = format!("{config}{beta}");

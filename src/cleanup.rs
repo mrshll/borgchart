@@ -3,33 +3,31 @@
 //!
 //! brg removes only what it can find from its own records, never anything
 //! matched by name alone:
-//! - **Folders it made**: the `{member_id}` leaf of each deleted member and
-//!   copy (its role's `cwd` in the instance's folder). A leaf is removed only
-//!   when it holds nothing but folders, and when no registered instance, kept
-//!   member or copy works at or inside it. A git worktree in it (a `.git`
-//!   file) is removed with `git worktree remove` when it is clean: nothing
-//!   modified, staged or untracked, and no commit that no remote-tracking ref
-//!   reaches. A worktree with work in it, a repository (a `.git` folder) and
-//!   other files are listed and kept; a worktree git can't check fails the
-//!   run. Leaves are placed through the instance's current team file.
+//! - **Worktrees it added**: the git worktree of each deleted member and
+//!   copy of a `worktree: true` role, at its fixed place beside brg's state
+//!   folder ([`crate::worktree::path`]). It is removed with `git worktree
+//!   remove` when it is clean: nothing modified, staged or untracked, and no
+//!   commit that no remote-tracking ref reaches, and when no registered
+//!   instance, kept member or copy works at or inside it. A worktree with work
+//!   in it is listed and kept; a worktree git can't check fails the run.
 //! - **State of deleted members and copies** inside a registered instance's
 //!   state folder, as an interrupted `delete` leaves it.
 //! - **Unregistered instance state** in brg's state folder: a folder named
 //!   for an instance ID brg issued, with no registered instance (without an
 //!   instance argument only).
 //!
-//! Work folders, kept members' and copies' folders, repositories, worktrees
-//! outside those leaves and messages are never touched. `brg reset` applies
+//! Work folders, kept members' and copies' folders, repositories, other
+//! worktrees and messages are never touched. `brg reset` applies
 //! the same folder rules to every member and copy of the tree it forgets
 //! ([`tree_folders`]).
 
 use std::path::{Path, PathBuf};
 
 use crate::address::{self, Instance};
+use crate::lifecycle;
 use crate::paths::resolve_existing_prefix;
 use crate::registry::{self, IssuedMember};
 use crate::state::{self, StateDir};
-use crate::{lifecycle, runtime};
 
 /// What one cleanup did, line by line, and whether anything failed.
 #[derive(Debug, Default)]
@@ -103,53 +101,25 @@ fn held(registry: &registry::Registry, counts: impl Fn(&str) -> bool) -> Vec<Pat
 }
 
 /// `reset`'s folder pass over a tree about to be forgotten, deepest first:
-/// every member's and copy's `{member_id}` folder, kept or deleted, by the
-/// same rules as cleanup. A kept one is found where its latest start (or a
-/// copy's creation) recorded it, else through the team file. Folders that
-/// instances outside the tree work in stay protected.
+/// every member's and copy's worktree, kept or deleted, by the same rules as
+/// cleanup. Folders that instances outside the tree work in stay protected.
 pub(crate) fn tree_folders(tree: &[Instance], registry: &registry::Registry) -> Outcome {
     let mut out = Outcome::default();
     let held = held(registry, |id| !tree.iter().any(|inst| inst.id == id));
     for inst in tree {
-        let team = runtime::validated(inst);
-        let mut unplaced = false;
-        let entries = issued(inst, &inst.record.members, |_| true, &mut out)
+        let members = issued(inst, &inst.record.members, |_| true, &mut out);
+        let copies = issued(inst, &inst.record.copies, |_| true, &mut out);
+        for (id, kind) in members
             .into_iter()
-            .map(|(id, m)| (id, m, "member"))
-            .chain(
-                issued(inst, &inst.record.copies, |_| true, &mut out)
-                    .into_iter()
-                    .map(|(id, c)| (id, c, "copy")),
-            )
-            .collect::<Vec<_>>();
-        for (id, issued, kind) in entries {
-            let what = format!("{kind} {}", inst.at(id));
-            let recorded = issued
-                .cwd
-                .as_ref()
-                .filter(|cwd| cwd.file_name().is_some_and(|name| name == id.as_str()));
-            match (recorded, &team) {
-                (Some(dir), _) => leaf_at(inst, dir, &held, &what, &mut out),
-                (None, Ok(v)) => {
-                    let cwd = if kind == "member" {
-                        v.team
-                            .roles
-                            .get(&issued.role)
-                            .and_then(|r| r.cwd.as_deref())
-                    } else {
-                        v.team.team_roles.get(&issued.role).map(|r| r.cwd.as_str())
-                    };
-                    leaf(inst, cwd, id, &held, &what, &mut out);
-                }
-                (None, Err(_)) => unplaced = true,
-            }
-        }
-        if unplaced && let Err(e) = &team {
-            out.error(format!(
-                "can't place some folders brg made for {}'s members and copies, because its team can't be loaded ({}); remove any left empty by hand",
-                inst.id,
-                e.split(';').next().unwrap_or(e)
-            ));
+            .map(|(id, _)| (id, "member"))
+            .chain(copies.into_iter().map(|(id, _)| (id, "copy")))
+        {
+            worktree(
+                &inst.at(id),
+                &held,
+                &format!("{kind} {}", inst.at(id)),
+                &mut out,
+            );
         }
     }
     out
@@ -171,39 +141,13 @@ fn instance(inst: &Instance, registry: &registry::Registry, held: &[PathBuf], ou
     if deleted_members.is_empty() && deleted_copies.is_empty() {
         return;
     }
-    match runtime::validated(inst) {
-        Ok(v) => {
-            for (id, member) in &deleted_members {
-                let cwd = v
-                    .team
-                    .roles
-                    .get(&member.role)
-                    .and_then(|r| r.cwd.as_deref());
-                leaf(
-                    inst,
-                    cwd,
-                    id,
-                    held,
-                    &format!("deleted member {}", inst.at(id)),
-                    out,
-                );
-            }
-            for (id, copy) in &deleted_copies {
-                let cwd = v.team.team_roles.get(&copy.role).map(|r| r.cwd.as_str());
-                leaf(
-                    inst,
-                    cwd,
-                    id,
-                    held,
-                    &format!("deleted copy {}", inst.at(id)),
-                    out,
-                );
-            }
-        }
-        Err(e) => out.error(format!(
-            "can't place the folders of {}'s deleted members and copies: {e}",
-            inst.id
-        )),
+    for (id, _) in &deleted_members {
+        let what = format!("deleted member {}", inst.at(id));
+        worktree(&inst.at(id), held, &what, out);
+    }
+    for (id, _) in &deleted_copies {
+        let what = format!("deleted copy {}", inst.at(id));
+        worktree(&inst.at(id), held, &what, out);
     }
     for (id, _) in &deleted_members {
         let what = format!("state of deleted member {}", inst.at(id));
@@ -247,39 +191,12 @@ fn issued<'a>(
     found
 }
 
-/// The `{member_id}` leaf brg made for `id`, if its role's `cwd` has one.
-fn leaf(
-    inst: &Instance,
-    cwd: Option<&str>,
-    id: &str,
-    held: &[PathBuf],
-    what: &str,
-    out: &mut Outcome,
-) {
-    let Some(cwd) = cwd.filter(|c| {
-        Path::new(c)
-            .file_name()
-            .is_some_and(|name| name == "{member_id}")
-    }) else {
+/// Remove the worktree brg added for the member or copy at `address`, if
+/// it is there, clean, and nobody works in it; otherwise say why it stays.
+fn worktree(address: &str, held: &[PathBuf], what: &str, out: &mut Outcome) {
+    let dir = crate::worktree::path(address);
+    if dir.symlink_metadata().is_err() {
         return;
-    };
-    let dir = inst.record.folder.join(cwd.replace("{member_id}", id));
-    leaf_at(inst, &dir, held, what, out);
-}
-
-/// Remove the folder `dir` brg made, if it holds nothing but folders and
-/// nobody works in it; otherwise say why it stays.
-fn leaf_at(inst: &Instance, dir: &Path, held: &[PathBuf], what: &str, out: &mut Outcome) {
-    let dir = dir.to_path_buf();
-    let Ok(meta) = dir.symlink_metadata() else {
-        return;
-    };
-    let folder = resolve_existing_prefix(&inst.record.folder);
-    if !meta.is_dir() {
-        return out.kept(&dir, &format!("not a folder ({what})"));
-    }
-    if !resolve_existing_prefix(&dir).starts_with(&folder) || dir == folder {
-        return out.kept(&dir, &format!("outside the instance's folder ({what})"));
     }
     let real = resolve_existing_prefix(&dir);
     if held
@@ -291,92 +208,20 @@ fn leaf_at(inst: &Instance, dir: &Path, held: &[PathBuf], what: &str, out: &mut 
             &format!("an instance, kept member or copy works there ({what})"),
         );
     }
-    let mut found = contents(&dir);
-    if let Ok(Contents::Worktrees(worktrees)) = &found {
-        for worktree in worktrees {
-            match clean_worktree(worktree) {
-                Ok(None) => match git(
-                    worktree,
-                    &["worktree", "remove", &worktree.to_string_lossy()],
-                ) {
-                    Ok(_) => out.removed(
-                        worktree,
-                        &format!("clean git worktree in the folder of {what}"),
-                    ),
-                    Err(e) => out.error(format!(
-                        "cannot remove git worktree {}: {e}",
-                        worktree.display()
-                    )),
-                },
-                Ok(Some(why)) => out.kept(
-                    worktree,
-                    &format!("git worktree with {why} ({what}); left as it is"),
-                ),
-                Err(e) => out.error(format!(
-                    "can't check git worktree {}, so it was left as it is ({what}): {e}",
-                    worktree.display()
-                )),
-            }
-        }
-        // A worktree at the folder's top took the folder with it.
-        if dir.symlink_metadata().is_err() {
-            return;
-        }
-        found = contents(&dir);
-    }
-    match found {
-        Ok(Contents::Folders) => match remove_folders(&dir) {
-            Ok(()) => out.removed(&dir, &format!("folder of {what}")),
-            Err(e) => out.error(format!("cannot remove {}: {e}", dir.display())),
+    match clean_worktree(&dir) {
+        Ok(None) => match crate::worktree::remove(&dir) {
+            Ok(()) => out.removed(&dir, &format!("clean git worktree of {what}")),
+            Err(e) => out.error(format!("cannot remove git worktree {}: {e}", dir.display())),
         },
-        // Each worktree left was already reported above.
-        Ok(Contents::Worktrees(_)) => {}
-        Ok(Contents::Repository) => out.kept(&dir, &format!("holds a git repository ({what})")),
-        Ok(Contents::Files) => out.kept(&dir, &format!("holds files ({what})")),
-        Err(e) => out.error(format!("cannot read {}: {e}", dir.display())),
+        Ok(Some(why)) => out.kept(
+            &dir,
+            &format!("git worktree with {why} ({what}); left as it is"),
+        ),
+        Err(e) => out.error(format!(
+            "can't check git worktree {}, so it was left as it is ({what}): {e}",
+            dir.display()
+        )),
     }
-}
-
-enum Contents {
-    Folders,
-    Files,
-    /// A `.git` folder somewhere inside: a clone, never removed.
-    Repository,
-    /// Git worktrees (a `.git` file at their top), by folder.
-    Worktrees(Vec<PathBuf>),
-}
-
-/// What `dir` holds, never following a symlink. Worktrees aren't entered.
-fn contents(dir: &Path) -> std::io::Result<Contents> {
-    let mut files = false;
-    let mut worktrees = Vec::new();
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(next) = stack.pop() {
-        let git = next.join(".git");
-        match git.symlink_metadata() {
-            Ok(meta) if meta.is_dir() => return Ok(Contents::Repository),
-            Ok(meta) if meta.is_file() => {
-                worktrees.push(next);
-                continue;
-            }
-            _ => {}
-        }
-        for entry in std::fs::read_dir(&next)? {
-            let entry = entry?;
-            if entry.file_type()?.is_dir() {
-                stack.push(entry.path());
-            } else {
-                files = true;
-            }
-        }
-    }
-    Ok(if !worktrees.is_empty() {
-        Contents::Worktrees(worktrees)
-    } else if files {
-        Contents::Files
-    } else {
-        Contents::Folders
-    })
 }
 
 /// Why the git worktree at `dir` isn't clean, or `None` when it is:
@@ -386,7 +231,7 @@ fn contents(dir: &Path) -> std::io::Result<Contents> {
 ///   is told to skip or assume unchanged;
 /// - no commit that no remote-tracking ref reaches, from its HEAD, its HEAD
 ///   reflog or its own `refs/worktree/` refs.
-fn clean_worktree(dir: &Path) -> Result<Option<String>, String> {
+pub(crate) fn clean_worktree(dir: &Path) -> Result<Option<String>, String> {
     if nested_git(dir).map_err(|e| format!("cannot read it: {e}"))? {
         return Ok(Some("another repository or worktree inside it".into()));
     }
@@ -452,7 +297,7 @@ const GIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Run git in `dir` with none of the caller's `GIT_*` settings, within
 /// [`GIT_LIMIT`]; its output, or why it failed.
-fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     let mut command = std::process::Command::new("git");
     for (key, _) in std::env::vars_os() {
         if key.to_string_lossy().starts_with("GIT_") {
@@ -486,18 +331,6 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         ));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
-/// Remove a tree of empty folders bottom-up. Never recursive removal: a
-/// file that appears meanwhile makes this fail and stay.
-fn remove_folders(dir: &Path) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            remove_folders(&entry.path())?;
-        }
-    }
-    std::fs::remove_dir(dir)
 }
 
 /// Remove a state folder brg owns, if it is there.

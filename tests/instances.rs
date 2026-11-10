@@ -909,22 +909,21 @@ fn plain_plugin_values_come_from_the_team() {
 }
 
 #[test]
-fn a_roles_args_and_cwd_come_from_the_team() {
+fn a_roles_args_come_from_the_team_and_members_work_in_its_folder() {
     let env = Env::new();
     env.write(
         "teams/oncall/team.yaml",
         &TEAM.replace(
             "  lead:\n    prompt: lead.md\n",
-            "  lead:\n    prompt: lead.md\n    cwd: sub\n    args: [--example-flag]\n",
+            "  lead:\n    prompt: lead.md\n    args: [--example-flag]\n",
         ),
     );
-    fs::create_dir_all(env.path("work/a/sub")).unwrap();
     let inst = env.create("oncall", "work/a");
     let lead = env.member(&inst, "lead");
     let start = &env.starts(&lead)[0];
     assert_eq!(
         start["cwd"].as_str().unwrap(),
-        env.path("work/a/sub")
+        env.path("work/a")
             .canonicalize()
             .unwrap()
             .display()
@@ -939,14 +938,14 @@ fn a_roles_args_and_cwd_come_from_the_team() {
         "{start}"
     );
     env.ok(&["stop", &inst]);
-    // A `cwd` outside the folder is refused by validation.
+    // `cwd` is gone: members work in the instance's folder or a worktree.
     env.write(
         "teams/oncall/team.yaml",
         &TEAM.replace(
             "  lead:\n    prompt: lead.md\n",
-            "  lead:\n    prompt: lead.md\n    cwd: ../x\n",
+            "  lead:\n    prompt: lead.md\n    cwd: sub\n",
         ),
     );
     let err = env.fails(&["validate", "oncall"]);
-    assert!(err.contains("inside the instance's folder"), "{err}");
+    assert!(err.contains("unknown field `cwd`"), "{err}");
 }

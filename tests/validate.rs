@@ -68,7 +68,7 @@ fn nested_team() -> Fixture {
     let f = Fixture::new();
     f.write(
         "team.yaml",
-        "roles:\n  lead: {prompt: lead.md}\n  dev: {team: dev, parent: lead, cwd: 'dev/{member_id}'}\n",
+        "roles:\n  lead: {prompt: lead.md}\n  dev: {team: dev, parent: lead}\n",
     );
     f.write("teams/dev/team.yaml", "roles: {}\n");
     f.write(
@@ -102,7 +102,7 @@ fn team_parent_refuses_team_roles() {
     f.edit(
         "team.yaml",
         "  dev:",
-        "  panel: {team: dev, parent: dev, cwd: 'panel/{member_id}'}\n  dev:",
+        "  panel: {team: dev, parent: dev}\n  dev:",
     );
     expect_error(&f, "parent `dev` is a team role; name an agent role");
 }
@@ -134,7 +134,7 @@ fn team_roles_refuse_indirect_cycles() {
     let name = borgchart::team::team_name(f.dir.path());
     f.write(
         "teams/dev/team.yaml",
-        &format!("roles: {{back: {{team: {name}, cwd: 'back/{{member_id}}'}}}}\n"),
+        &format!("roles: {{back: {{team: {name}}}}}\n"),
     );
     expect_error(&f, "team cycle:");
 }
@@ -145,7 +145,7 @@ fn reused_team_folders_are_not_cycles() {
     f.edit(
         "team.yaml",
         "  dev:",
-        "  peer: {team: dev, parent: lead, cwd: 'peer/{member_id}'}\n  dev:",
+        "  peer: {team: dev, parent: lead}\n  dev:",
     );
     let (report, validated) = f.run();
     assert!(validated.is_some(), "{}", errors(&report));
@@ -161,26 +161,28 @@ fn team_roles_refuse_paths_and_shared_references() {
 }
 
 #[test]
-fn team_roles_require_cwd_ending_in_one_member_id_folder() {
-    for cwd in [
-        None,
-        Some("dev"),
-        Some("dev/{member_id}/repo"),
-        Some("dev/prefix-{member_id}"),
-        Some("{member_id}/{member_id}"),
-    ] {
-        let f = nested_team();
-        let replacement = cwd.map(|c| format!(", cwd: '{c}'")).unwrap_or_default();
-        f.edit("team.yaml", ", cwd: 'dev/{member_id}'", &replacement);
-        expect_error(
-            &f,
-            if cwd.is_none() {
-                "a team role needs `cwd`"
-            } else {
-                "a team role's cwd must end in `{member_id}`"
-            },
-        );
-    }
+fn team_roles_take_worktree_and_no_cwd() {
+    let f = nested_team();
+    let (report, validated) = f.run();
+    assert!(
+        !validated.unwrap().team.team_roles["dev"].worktree,
+        "{}",
+        errors(&report)
+    );
+    f.edit("team.yaml", "team: dev,", "team: dev, worktree: true,");
+    let (report, validated) = f.run();
+    assert!(
+        validated.unwrap().team.team_roles["dev"].worktree,
+        "{}",
+        errors(&report)
+    );
+    let f = nested_team();
+    f.edit(
+        "team.yaml",
+        "team: dev,",
+        "team: dev, cwd: 'dev/{member_id}',",
+    );
+    expect_error(&f, "unknown field `cwd`");
 }
 
 #[test]
@@ -237,10 +239,7 @@ fn team_roles_refuse_agent_fields_including_empty_and_false_values() {
 fn nested_teams_need_no_bus_opt_in_at_any_depth() {
     let f = nested_team();
     assert!(f.run().1.is_some());
-    f.write(
-        "teams/dev/team.yaml",
-        "roles: {panel: {team: panel, cwd: 'panel/{member_id}'}}\n",
-    );
+    f.write("teams/dev/team.yaml", "roles: {panel: {team: panel}}\n");
     f.write("teams/panel/team.yaml", "roles: {}\n");
     let (report, validated) = f.run();
     assert!(validated.is_some(), "{}", errors(&report));
@@ -262,37 +261,31 @@ fn validate_reports_subteam_errors_at_the_subteam_file() {
 }
 
 #[test]
-fn copy_limits_refuse_zero_and_require_member_as_the_last_folder() {
-    for (max, cwd, accepted) in [
-        (-1, Some("copies/{member_id}"), false),
-        (0, Some("copies/{member_id}"), false),
-        (1, None, true),
-        (1, Some("shared"), true),
-        (1, Some("copies/{member_id}/src"), false),
-        (2, None, true),
-        (2, Some("copies/{member_id}"), true),
-        (2, Some("copies/{member_id}/src"), false),
-        (2, Some("copies/{member_id}/{member_id}"), false),
-        (2, Some("shared"), true),
-        (2, Some("copies/prefix-{member_id}"), false),
-        (2, Some("copies/{member_id}-suffix"), false),
-        (2, Some("copies/{member_id}/../shared"), false),
+fn copy_limits_refuse_zero() {
+    for (max, worktree, accepted) in [
+        (-1, true, false),
+        (0, true, false),
+        (1, false, true),
+        (1, true, true),
+        (2, false, true),
+        (2, true, true),
     ] {
         let f = Fixture::new();
         // Use a new leaf so neither parent nor plugin delivery is ambiguous.
         let path = f.path("team.yaml");
         let text = fs::read_to_string(&path).unwrap();
-        let cwd_line = cwd.map(|c| format!("    cwd: '{c}'\n")).unwrap_or_default();
         fs::write(
             path,
-            format!("{text}\n  helper:\n    prompt: lead.md\n    max: {max}\n{cwd_line}"),
+            format!(
+                "{text}\n  helper:\n    prompt: lead.md\n    max: {max}\n    worktree: {worktree}\n"
+            ),
         )
         .unwrap();
         let (report, validated) = f.run();
         assert_eq!(
             validated.is_some(),
             accepted,
-            "max={max}, cwd={cwd:?}: {}",
+            "max={max}, worktree={worktree}: {}",
             errors(&report)
         );
     }
@@ -305,7 +298,7 @@ fn parents_and_plugin_delivery_cannot_choose_between_copies() {
         f.edit(
             "team.yaml",
             &format!("    prompt: {target}.md\n"),
-            &format!("    prompt: {target}.md\n    max: 2\n    cwd: copies/{{member_id}}\n"),
+            &format!("    prompt: {target}.md\n    max: 2\n    worktree: true\n"),
         );
         let (report, validated) = f.run();
         assert!(
@@ -990,27 +983,23 @@ fn snapshot_describes_what_was_validated() {
 }
 
 #[test]
-fn a_role_cwd_must_stay_inside_the_folder() {
-    for (cwd, ok) in [
-        ("copies/{member}", false),
-        ("sub", true),
-        ("copies/{member_id}", true),
-        ("../x", false),
-        ("/abs", false),
-        ("~/x", false),
-        ("{instance}", false),
-    ] {
-        let f = Fixture::new();
-        f.edit(
-            "team.yaml",
-            "    prompt: lead.md\n",
-            &format!("    prompt: lead.md\n    cwd: '{cwd}'\n    args: [--x]\n"),
-        );
-        let (report, validated) = f.run();
-        assert_eq!(validated.is_some(), ok, "{cwd}: {}", errors(&report));
-        if let Some(v) = validated {
-            assert_eq!(v.team.roles["lead"].args, ["--x"]);
-            assert_eq!(v.team.roles["lead"].cwd.as_deref(), Some(cwd));
-        }
-    }
+fn a_role_takes_worktree_and_no_cwd() {
+    let f = Fixture::new();
+    f.edit(
+        "team.yaml",
+        "    prompt: lead.md\n",
+        "    prompt: lead.md\n    worktree: true\n    args: [--x]\n",
+    );
+    let (report, validated) = f.run();
+    let v = validated.unwrap_or_else(|| panic!("{}", errors(&report)));
+    assert_eq!(v.team.roles["lead"].args, ["--x"]);
+    assert!(v.team.roles["lead"].worktree);
+    assert!(!v.team.roles["triager"].worktree);
+    let f = Fixture::new();
+    f.edit(
+        "team.yaml",
+        "    prompt: lead.md\n",
+        "    prompt: lead.md\n    cwd: sub\n",
+    );
+    expect_error(&f, "unknown field `cwd`");
 }

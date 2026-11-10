@@ -135,7 +135,8 @@ struct RoleRaw {
     connectors: Option<ConnectorsRaw>,
     #[serde(default)]
     args: Vec<String>,
-    cwd: Option<String>,
+    #[serde(default)]
+    worktree: bool,
 }
 
 /// Preserve field presence when checking team roles: even an empty grant
@@ -337,9 +338,9 @@ pub struct Role {
     pub instruction: String,
     /// Extra arguments for the vendor CLI.
     pub args: Vec<String>,
-    /// Where its members start, relative to the instance's folder; may hold
-    /// `{member_id}`.
-    pub cwd: Option<String>,
+    /// Each member works in its own git worktree, which brg adds when it
+    /// issues the member; otherwise members work in the team's folder.
+    pub worktree: bool,
 }
 
 /// A role whose copies are nested instances, prepared before their first start.
@@ -349,7 +350,9 @@ pub struct TeamRole {
     pub dir: PathBuf,
     pub parent: Option<String>,
     pub max: usize,
-    pub cwd: String,
+    /// Each copy works in its own git worktree, which brg adds when it
+    /// creates the copy; otherwise copies work in this team's folder.
+    pub worktree: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -540,10 +543,10 @@ pub(crate) fn load_with(
                 continue;
             }
             for field in fields.roles[id].keys() {
-                if !["team", "parent", "start", "max", "cwd"].contains(&field.as_str()) {
+                if !["team", "parent", "start", "max", "worktree"].contains(&field.as_str()) {
                     report.error(
                         Some(&team_file),
-                        format!("role `{id}`: remove `{field}`; a team role takes only `team`, `parent`, `start`, `max` and `cwd`"),
+                        format!("role `{id}`: remove `{field}`; a team role takes only `team`, `parent`, `start`, `max` and `worktree`"),
                     );
                 }
             }
@@ -866,17 +869,6 @@ fn load_team_role(
         }
         let dir = find(path, search)
             .or_else(|error| frozen.and_then(|paths| paths.get(id)).cloned().ok_or(error))?;
-        let cwd = role.cwd.as_deref().ok_or("a team role needs `cwd`")?;
-        check_cwd(cwd)?;
-        if Path::new(cwd)
-            .file_name()
-            .is_none_or(|name| name != "{member_id}")
-            || cwd.matches("{member_id}").count() != 1
-        {
-            return Err(
-                "a team role's cwd must end in `{member_id}`, for example `dev/{member_id}`".into(),
-            );
-        }
         if role.max == Some(0) {
             return Err("`max` must be at least 1".into());
         }
@@ -885,7 +877,7 @@ fn load_team_role(
             dir,
             parent: role.parent.clone(),
             max: role.max.unwrap_or(1),
-            cwd: cwd.to_string(),
+            worktree: role.worktree,
         })
     };
     match load() {
@@ -1007,26 +999,6 @@ fn load_role(
     if max == 0 {
         report.error(Some(team_file), at("`max` must be at least 1".into()));
     }
-    if m.cwd.as_ref().is_some_and(|cwd| {
-        cwd.contains("{member_id}")
-            && (Path::new(cwd)
-                .file_name()
-                .is_none_or(|c| c != "{member_id}")
-                || cwd.matches("{member_id}").count() != 1)
-    }) {
-        report.error(
-            Some(team_file),
-            at(
-                "`{member_id}` must be cwd's last folder name, for example `copies/{member_id}`"
-                    .into(),
-            ),
-        );
-    }
-    if let Some(cwd) = &m.cwd
-        && let Err(e) = check_cwd(cwd)
-    {
-        report.error(Some(team_file), at(e));
-    }
 
     // Role file.
     let Some(prompt) = m.prompt.as_deref() else {
@@ -1090,36 +1062,8 @@ fn load_role(
         prompt_sha256,
         instruction,
         args: m.args.clone(),
-        cwd: m.cwd.clone(),
+        worktree: m.worktree,
     })
-}
-
-/// A role's `cwd`: relative, inside the instance's folder, with `{member_id}`
-/// as its only placeholder.
-fn check_cwd(cwd: &str) -> Result<(), String> {
-    let path = Path::new(cwd);
-    if cwd.is_empty() {
-        return Err("`cwd` is empty".into());
-    }
-    if path.is_absolute() || cwd.starts_with('~') {
-        return Err(format!(
-            "`cwd: {cwd}` must be relative: it is a folder inside the instance's folder"
-        ));
-    }
-    if path
-        .components()
-        .any(|c| matches!(c, std::path::Component::ParentDir))
-    {
-        return Err(format!(
-            "`cwd: {cwd}` must stay inside the instance's folder (no `..`)"
-        ));
-    }
-    if cwd.replace("{member_id}", "").contains(['{', '}']) {
-        return Err(format!(
-            "`cwd: {cwd}`: the only placeholder is `{{member_id}}`"
-        ));
-    }
-    Ok(())
 }
 
 fn read_role_file(

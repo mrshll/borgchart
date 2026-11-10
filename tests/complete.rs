@@ -73,22 +73,18 @@ bus: {}
 roles:
   lead:
     prompt: lead.md
-    cwd: lead
   helper:
     prompt: helper.md
     vendor: codex
     parent: lead
     start: false
-    cwd: lead
   scout:
     prompt: scout.md
     start: false
-    cwd: lead
   dev:
     team: dev
     parent: lead
     start: false
-    cwd: "dev/{member_id}"
 "#;
 
 #[test]
@@ -98,7 +94,7 @@ fn completion_offers_instances_kept_members_and_teams() {
     env.team("teams/dev");
     env.write(
         "teams/dev/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: repo}\n",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n",
     );
     std::fs::create_dir(env.path("work/a/lead")).unwrap();
     let inst = env.create("oncall", "work/a");
@@ -111,11 +107,6 @@ fn completion_offers_instances_kept_members_and_teams() {
     env.ok(&["delete", &format!("{inst}/{scout}")]);
     let out = env.ok(&["create", &format!("{inst}/dev")]);
     let copy = stdout(&out).split_whitespace().next().unwrap().to_string();
-    std::fs::create_dir(env.path(&format!(
-        "work/a/dev/{}/repo",
-        copy.rsplit('/').next().unwrap()
-    )))
-    .unwrap();
     env.ok(&["start", &copy]);
     env.wait_for("copy lead", || !env.member(&copy, "lead").is_empty());
     let copy_lead = env.member(&copy, "lead");

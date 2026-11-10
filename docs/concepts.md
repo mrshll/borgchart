@@ -25,9 +25,9 @@ under its parent instance, independently of where its team definition is stored.
 - **The team folder** holds its definition; sibling teams may use one catalog `shared/` folder for common includes and plugins:
   - the roles and their role files, includes and plugins;
   - whether the team uses the message bus, and its alert action (`bus:`);
-  - each role's `posture`, its extra launch arguments (`args`, such as the researcher's `--search`), and optionally a `cwd` inside the instance's folder;
+  - each role's `posture`, its extra launch arguments (`args`, such as the researcher's `--search`), and whether each member works in its own git worktree (`worktree: true`);
   - plain plugin values, such as a channel ID.
-- **The instance's working folder** is given at `create` and recorded on the instance for its whole life. Members start there, or in their role's `cwd` inside it. The folder is required: there's no default for now. It can't be the same as, inside or around brg's state folder, and neither can a role's `cwd`, so a member's own folder never exposes brg's files.
+- **The instance's working folder** is given at `create` (the current folder by default) and recorded on the instance for its whole life: usually the repository the team works on. Members start there, or in their own worktree for a `worktree: true` role. It can't be the same as, inside or around brg's state folder, so a member's own folder never exposes brg's files; brg's worktrees live beside the state folder, never in it.
 - **The instance's state folder,** `~/.local/state/borgchart/<instance>/`, holds:
   - `messages/` at the tree root only, shared by all copies;
   - `notes/`, for members' reports and other files the members share (`$BORGCHART_NOTES`);
@@ -39,7 +39,7 @@ under its parent instance, independently of where its team definition is stored.
   - their gate;
   - no automatic trust for Codex;
   - writes limited to their granted plugins' data and their temp folder;
-  - for Codex, a start in the temp folder unless the role sets a `cwd`.
+  - for Codex, a start in the temp folder unless the role sets `worktree: true`.
 
   A team with `bus:` still can't have `locked` members.
 - **brg's global configuration,** `~/.config/borgchart/config.yaml`, holds what belongs to you rather than to a team:
@@ -124,7 +124,7 @@ Two folders with the same name can both run. Their instances are told apart by t
 - **Its working folder** is fixed at `create`. If it's gone, `start` refuses; create a new instance.
 - **Message store:** one per team tree, in the root instance's state folder. Message numbers continue across stops, starts and copy deletion. Earlier formats require the [manual cutover](bus.md#storage).
 - **Frozen configuration:** the team's files, with includes expanded, and the global settings that reach members (`auth`, `auto_trust`, and where `plugins_dir` puts each shared plugin) are frozen from a start to the next full stop. `start` applies changes only after a full `stop`, once every member is positively stopped.
-- **Checkouts:** every operation that starts a member (`create`, `start`, `start --team`) checks its resolved working folder. It refuses if that folder is the same as, inside, or around a folder that another instance's member holds while running or while brg cannot tell it stopped. Members of one instance may share a folder. `{member_id}` in `cwd` is optional: without it, copies share the role's folder. If used, it must be the last folder name, with no `..`. When `cwd` ends in `{member_id}`, brg makes only the missing empty leaf when issuing a new member (`create`, or a full `start` that gives a `start: true` role a new member), for any `max`; ancestors must exist, and an existing leaf is used as is. The parent puts a worktree there before briefing the copy. Kept copies of a `{member_id}` role have separate folders, including through symlinks and while stopped. Starting an existing member never creates its folder, and `delete` leaves working folders alone. The checks, creation and reservation happen under one registry lock, so concurrent creates can't claim overlapping folders.
+- **Checkouts:** every operation that starts a member (`create`, `start`, `start --team`) checks its resolved working folder. It refuses if that folder is the same as, inside, or around a folder that another instance's member holds while running or while brg cannot tell it stopped. Members of one tree (an instance and its copies) may share a folder: a copy without `worktree: true` works in its parent's. Members work in the instance's folder unless their role sets `worktree: true`: then each member or copy gets its own git worktree from the team's folder, which brg adds when it issues it (`create`, or a full `start` that gives a `start: true` role a new member), detached at the folder's `HEAD` or on `create --branch <name>`. It lives beside brg's state folder, at `~/.local/state/borgchart-worktrees/<address>` (with `/` written as `.`), and `status` shows it. `delete` removes it when it is clean, refuses while it holds uncommitted work or commits on no remote, and with `--force` leaves it as it is. Starting an existing member never adds its worktree; one that is gone refuses the start. The checks, creation and reservation happen under one registry lock.
 - **A new message format:** brg refuses to start any instance whose tree store uses an earlier format, names the root that owns it, and points to the [cutover steps](bus.md#storage). `stop` and liveness never parse messages, so they still work on the old instance. A stopped instance holds no checkout; `delete` of unreadable messages needs `--force` ("its contents can't be inspected"). No storage generations are needed.
 - **Durability:** brg refuses a state folder under `/tmp` or any other path cleaned by age. Reads scan the store; there is no index or archiving.
 

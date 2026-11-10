@@ -6,7 +6,6 @@ mod instance_env;
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::os::unix::fs::symlink;
 use std::process::Output;
 
 use instance_env::*;
@@ -73,16 +72,14 @@ impl Env {
 
 fn copies_env(max: usize) -> Env {
     let env = Env::new();
-    env.role_extra(
-        "helper",
-        &format!("    max: {max}\n    cwd: copies/{{member_id}}\n"),
-    );
-    fs::create_dir(env.path("work/a/copies")).unwrap();
+    env.role_extra("helper", &format!("    max: {max}\n    worktree: true\n"));
+    fs::remove_dir(env.path("work/a")).unwrap();
+    env.checkout("work/a");
     env
 }
 
 #[test]
-fn copies_create_empty_folders_and_keep_slots_without_filling_max() {
+fn copies_get_their_own_worktrees_and_keep_slots_without_filling_max() {
     let env = copies_env(2);
     let inst = env.create("oncall", "work/a");
     assert!(env.copies(&inst).is_empty());
@@ -96,17 +93,22 @@ fn copies_create_empty_folders_and_keep_slots_without_filling_max() {
         .into_iter()
         .find(|id| id != &first)
         .unwrap();
+    let head = git(&env.path("work/a"), &["rev-parse", "HEAD"]);
     for id in [&first, &second] {
-        let folder = env.path(&format!("work/a/copies/{id}"));
-        assert!(folder.is_dir());
-        assert!(fs::read_dir(&folder).unwrap().next().is_none());
+        let folder = env.worktree(&format!("{inst}/{id}"));
+        assert!(folder.join(".git").is_file(), "{}", folder.display());
+        assert_eq!(git(&folder, &["rev-parse", "HEAD"]), head);
         env.wait_for("copy idle", || !env.starts(id).is_empty());
         assert_eq!(
             env.starts(id)[0]["cwd"],
-            env.path(&format!("work/a/copies/{id}"))
-                .display()
-                .to_string()
+            folder.canonicalize().unwrap().display().to_string()
         );
+        let row = env
+            .rows(&inst)
+            .into_iter()
+            .find(|r| r["member"] == **id)
+            .unwrap();
+        assert_eq!(row["worktree"], folder.display().to_string());
     }
     env.ok(&["stop", &format!("{inst}/{first}")]);
     let out = env
@@ -131,7 +133,7 @@ fn copies_create_empty_folders_and_keep_slots_without_filling_max() {
     assert_eq!(env.starts(&first).len(), 2);
     env.ok(&["stop", &format!("{inst}/{first}")]);
     env.ok(&["delete", &format!("{inst}/{first}")]);
-    assert!(env.path(&format!("work/a/copies/{first}")).is_dir());
+    assert!(!env.worktree(&format!("{inst}/{first}")).exists());
     let next = env.copy(&inst);
     assert_ne!(next, first);
     assert_eq!(env.copies(&inst).len(), 2);
@@ -144,54 +146,77 @@ fn copies_create_empty_folders_and_keep_slots_without_filling_max() {
 }
 
 #[test]
-fn copies_without_member_cwd_share_the_roles_folder() {
-    for cwd in [None, Some("shared")] {
-        let env = Env::new();
-        env.role_extra("helper", "    max: 2\n");
-        if let Some(cwd) = cwd {
-            env.role_extra("helper", &format!("    cwd: {cwd}\n"));
-            fs::create_dir(env.path(&format!("work/a/{cwd}"))).unwrap();
-        }
-        env.ok(&["validate", "oncall"]);
-        let inst = env.create("oncall", "work/a");
-        let first = env.copy(&inst);
-        let second = env.copy(&inst);
-        let folder = env
-            .path("work/a")
-            .join(cwd.unwrap_or(""))
-            .canonicalize()
-            .unwrap();
-        for id in [&first, &second] {
-            env.wait_for("copy started", || !env.starts(id).is_empty());
-            assert_eq!(env.starts(id)[0]["cwd"], folder.display().to_string());
-        }
-        env.ok(&["stop", &inst]);
-        env.ok(&["start", &inst]);
-        for id in [&first, &second] {
-            assert_eq!(env.starts(id).len(), 2);
-        }
-        env.ok(&["stop", &inst]);
+fn copies_without_a_worktree_share_the_instance_folder() {
+    let env = Env::new();
+    env.role_extra("helper", "    max: 2\n");
+    env.ok(&["validate", "oncall"]);
+    let inst = env.create("oncall", "work/a");
+    let first = env.copy(&inst);
+    let second = env.copy(&inst);
+    let folder = env.path("work/a").canonicalize().unwrap();
+    for id in [&first, &second] {
+        env.wait_for("copy started", || !env.starts(id).is_empty());
+        assert_eq!(env.starts(id)[0]["cwd"], folder.display().to_string());
     }
+    env.ok(&["stop", &inst]);
+    env.ok(&["start", &inst]);
+    for id in [&first, &second] {
+        assert_eq!(env.starts(id).len(), 2);
+    }
+    env.ok(&["stop", &inst]);
 }
 
 #[test]
-fn creating_a_copy_requires_existing_ancestors_and_stays_inside_the_instance() {
-    for escape in [false, true] {
-        let env = copies_env(2);
-        fs::remove_dir(env.path("work/a/copies")).unwrap();
-        if escape {
-            symlink(env.path("work/b"), env.path("work/a/copies")).unwrap();
-        }
-        let inst = env.create("oncall", "work/a");
-        env.fails(&["create", &format!("{inst}/helper")]);
-        assert!(env.copies(&inst).is_empty());
-        if escape {
-            assert!(fs::read_dir(env.path("work/b")).unwrap().next().is_none());
-        } else {
-            assert!(!env.path("work/a/copies").exists());
-        }
-        env.ok(&["stop", &inst]);
-    }
+fn a_worktree_copy_needs_a_git_repository() {
+    let env = Env::new();
+    env.role_extra("helper", "    max: 2\n    worktree: true\n");
+    let inst = env.create("oncall", "work/a");
+    let err = env.fails(&["create", &format!("{inst}/helper")]);
+    assert!(err.contains("needs its own worktree"), "{err}");
+    assert!(env.copies(&inst).is_empty());
+    assert!(
+        fs::read_dir(env.path("state-worktrees"))
+            .map(|mut d| d.next().is_none())
+            .unwrap_or(true)
+    );
+    let err = env.fails(&["create", &format!("{inst}/scout"), "--branch", "topic"]);
+    assert!(err.contains("no `worktree: true`"), "{err}");
+    env.ok(&["stop", &inst]);
+}
+
+#[test]
+fn branch_puts_a_new_worktree_on_a_new_branch() {
+    let env = copies_env(2);
+    let inst = env.create("oncall", "work/a");
+    env.ok(&["create", &format!("{inst}/helper"), "--branch", "topic"]);
+    let id = env.copies(&inst)[0].clone();
+    let folder = env.worktree(&format!("{inst}/{id}"));
+    assert_eq!(git(&folder, &["branch", "--show-current"]).trim(), "topic");
+    env.ok(&["stop", &inst]);
+}
+
+#[test]
+fn delete_keeps_a_worktree_with_work_in_it() {
+    let env = copies_env(2);
+    let inst = env.create("oncall", "work/a");
+    let id = env.copy(&inst);
+    let folder = env.worktree(&format!("{inst}/{id}"));
+    fs::write(folder.join("draft.txt"), "unsaved").unwrap();
+    env.ok(&["stop", &inst]);
+    let err = env.fails(&["delete", &format!("{inst}/{id}")]);
+    assert!(err.contains("uncommitted or untracked changes"), "{err}");
+    assert!(env.copies(&inst).contains(&id));
+    fs::remove_file(folder.join("draft.txt")).unwrap();
+    git(
+        &folder,
+        &["commit", "-q", "--allow-empty", "-m", "local only"],
+    );
+    let err = env.fails(&["delete", &format!("{inst}/{id}")]);
+    assert!(err.contains("on no remote"), "{err}");
+    let out = stdout(&env.ok(&["delete", &format!("{inst}/{id}"), "--force"]));
+    assert!(out.contains("left") && out.contains("as it is"), "{out}");
+    assert!(folder.join(".git").is_file());
+    assert!(env.copies(&inst).is_empty());
 }
 
 #[test]
@@ -212,14 +237,14 @@ fn concurrent_creates_cannot_take_the_same_last_slot() {
 }
 
 #[test]
-fn creating_a_copy_ignores_a_missing_kept_folder() {
+fn a_copy_whose_worktree_is_gone_does_not_start() {
     let env = copies_env(2);
     let inst = env.create("oncall", "work/a");
     let first = env.copy(&inst);
     env.ok(&["stop", &format!("{inst}/{first}")]);
-    fs::remove_dir(env.path(&format!("work/a/copies/{first}"))).unwrap();
-    env.fails(&["start", &format!("{inst}/{first}")]);
-    assert!(!env.path(&format!("work/a/copies/{first}")).exists());
+    fs::remove_dir_all(env.worktree(&format!("{inst}/{first}"))).unwrap();
+    let err = env.fails(&["start", &format!("{inst}/{first}")]);
+    assert!(err.contains("is gone"), "{err}");
     let second = env.copy(&inst);
     assert_ne!(first, second);
     env.wait_for("second copy idle", || !env.starts(&second).is_empty());
@@ -239,21 +264,21 @@ fn refused_replacement_starts_do_not_leave_unkept_copy_folders() {
         ),
     )
     .unwrap();
+    env.role_extra("lead", "    worktree: true\n");
     let inst = env.create("oncall", "work/a");
     let first = env.member(&inst, "helper");
     env.ok(&["stop", &inst]);
     env.ok(&["delete", &format!("{inst}/{first}")]);
-    fs::remove_dir(env.path(&format!("work/a/copies/{first}"))).unwrap();
-    env.role_extra("lead", "    cwd: missing\n");
+    // The lead's worktree is gone, so the start is refused before it saves.
+    fs::remove_dir_all(env.worktree(&format!("{inst}/{}", env.member(&inst, "lead")))).unwrap();
 
     env.fails(&["start", &inst]);
     assert!(env.copies(&inst).is_empty());
-    assert!(
-        fs::read_dir(env.path("work/a/copies"))
-            .unwrap()
-            .next()
-            .is_none()
-    );
+    let left: Vec<String> = fs::read_dir(env.path("state-worktrees"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(left.iter().all(|name| !name.contains("helper")), "{left:?}");
 }
 
 #[test]
@@ -272,7 +297,6 @@ fn refused_starts_keep_folders_for_members_saved_before_launch() {
     let first = env.member(&inst, "helper");
     env.ok(&["stop", &inst]);
     env.ok(&["delete", &format!("{inst}/{first}")]);
-    fs::remove_dir(env.path(&format!("work/a/copies/{first}"))).unwrap();
     let tmp = env.path(&format!("state/{inst}/tmp"));
     fs::remove_dir_all(&tmp).unwrap();
     fs::write(&tmp, "obstruct startup").unwrap();
@@ -281,58 +305,14 @@ fn refused_starts_keep_folders_for_members_saved_before_launch() {
     let replacement = env.member(&inst, "helper");
     assert!(!replacement.is_empty());
     assert_ne!(replacement, first);
-    assert!(env.path(&format!("work/a/copies/{replacement}")).is_dir());
+    assert!(
+        env.worktree(&format!("{inst}/{replacement}"))
+            .join(".git")
+            .is_file()
+    );
     fs::remove_file(&tmp).unwrap();
     env.ok(&["start", &format!("{inst}/{replacement}")]);
     env.ok(&["stop", &inst]);
-}
-
-#[test]
-fn restarting_copies_refuses_changed_folder_aliases() {
-    for full in [false, true] {
-        let env = copies_env(2);
-        let path = env.path("teams/oncall/team.yaml");
-        let text = fs::read_to_string(&path)
-            .unwrap()
-            .replace("    start: false", "    start: true");
-        fs::write(&path, text).unwrap();
-        let out = env
-            .cmd(&[
-                "create",
-                "oncall",
-                &env.path("work/a").display().to_string(),
-            ])
-            .env("BORGCHART_SUFFIX_SEED", "7")
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "{}", both(&out));
-        let inst = stdout(&out).split_whitespace().next().unwrap().to_string();
-        let first = env.copies(&inst)[0].clone();
-        let second = env.copy(&inst);
-        env.ok(&["stop", &inst]);
-        if full {
-            fs::write(
-                &path,
-                fs::read_to_string(&path)
-                    .unwrap()
-                    .replace("max: 2", "max: 1"),
-            )
-            .unwrap();
-        }
-        let folder = env.path(&format!("work/a/copies/{first}"));
-        let alias = env.path(&format!("work/a/copies/{second}"));
-        fs::remove_dir(&alias).unwrap();
-        symlink(folder, alias).unwrap();
-        let target = if full {
-            inst.clone()
-        } else {
-            format!("{inst}/{second}")
-        };
-        let out = env.brg(&["start", &target]);
-        assert!(!out.status.success(), "full={full}: {}", both(&out));
-        assert_eq!(env.starts(&second).len(), 1);
-        env.ok(&["stop", &inst]);
-    }
 }
 
 #[test]
@@ -426,65 +406,6 @@ fn only_the_latest_parent_start_can_manage_children() {
 }
 
 #[test]
-fn copies_refuse_aliases_and_nested_folders_even_concurrently() {
-    for nested in [false, true] {
-        let env = copies_env(3);
-        let inst = env.create("oncall", "work/a");
-        let first = env.copy(&inst);
-        let folder = env.path(&format!("work/a/copies/{first}"));
-        for suffix in ["v4s4", "7gb5", "tqv5", "8vcw", "at6v"] {
-            let alias = env.path(&format!("work/a/copies/helper-{suffix}"));
-            if alias == folder {
-                continue;
-            }
-            let target = if nested {
-                folder.join("sub")
-            } else {
-                folder.clone()
-            };
-            fs::create_dir_all(&target).unwrap();
-            symlink(target, alias).unwrap();
-        }
-        // A stopped copy still owns its folder until deleted.
-        env.ok(&["stop", &format!("{inst}/{first}")]);
-        for out in env.race_copies(&inst) {
-            assert!(!out.status.success(), "{}", both(&out));
-        }
-        assert_eq!(env.copies(&inst), [first]);
-        env.ok(&["stop", &inst]);
-    }
-}
-
-#[test]
-fn concurrent_copies_cannot_claim_overlapping_folders() {
-    for nested in [false, true] {
-        let env = copies_env(2);
-        let folder = env.path("work/a/shared");
-        fs::create_dir_all(folder.join("sub")).unwrap();
-        for suffix in ["v4s4", "7gb5", "tqv5", "8vcw", "at6v"] {
-            let alias = env.path(&format!("work/a/copies/helper-{suffix}"));
-            let target = if nested && suffix != "v4s4" {
-                folder.join("sub")
-            } else {
-                folder.clone()
-            };
-            symlink(target, alias).unwrap();
-        }
-        let inst = env.create("oncall", "work/a");
-        let [a, b] = env.race_copies(&inst);
-        assert_ne!(
-            a.status.success(),
-            b.status.success(),
-            "{}{}",
-            both(&a),
-            both(&b)
-        );
-        assert_eq!(env.copies(&inst).len(), 1);
-        env.ok(&["stop", &inst]);
-    }
-}
-
-#[test]
 fn start_true_copies_keep_members_when_max_is_lowered() {
     let env = copies_env(3);
     let path = env.path("teams/oncall/team.yaml");
@@ -532,36 +453,14 @@ fn start_true_copies_keep_members_when_max_is_lowered() {
     let replacement = env.copies(&inst);
     assert_eq!(replacement.len(), 1);
     assert!(!kept.contains(&replacement[0]));
-    let folder = env.path(&format!("work/a/copies/{}", replacement[0]));
-    assert!(folder.is_dir());
-    assert!(fs::read_dir(&folder).unwrap().next().is_none());
+    let folder = env.worktree(&format!("{inst}/{}", replacement[0]));
+    assert!(folder.join(".git").is_file());
     env.wait_for("replacement started", || {
         !env.starts(&replacement[0]).is_empty()
     });
     assert_eq!(
         env.starts(&replacement[0])[0]["cwd"],
-        folder.display().to_string()
-    );
-    env.ok(&["stop", &inst]);
-}
-
-#[test]
-fn different_roles_can_still_share_a_working_folder() {
-    let env = copies_env(2);
-    fs::create_dir(env.path("work/a/copies/helper-v4s4")).unwrap();
-    env.write(
-        "work/a/copies/helper-v4s4/checkout.txt",
-        "existing checkout",
-    );
-    env.role_extra("lead", "    cwd: copies/helper-v4s4\n");
-    let inst = env.create("oncall", "work/a");
-    let helper = env.copy(&inst);
-    let lead = env.member(&inst, "lead");
-    env.wait_for("helper idle", || !env.starts(&helper).is_empty());
-    assert_eq!(env.starts(&lead)[0]["cwd"], env.starts(&helper)[0]["cwd"]);
-    assert_eq!(
-        fs::read_to_string(env.path("work/a/copies/helper-v4s4/checkout.txt")).unwrap(),
-        "existing checkout"
+        folder.canonicalize().unwrap().display().to_string()
     );
     env.ok(&["stop", &inst]);
 }

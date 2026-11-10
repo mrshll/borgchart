@@ -254,3 +254,49 @@ pub fn stdout(out: &Output) -> String {
 pub fn script(path: &Path, text: &str) {
     common::write_executable(path, text);
 }
+
+/// Run git in `dir`, away from the caller's repository and settings.
+pub fn git(dir: &Path, args: &[&str]) -> String {
+    let out = common::command("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
+        .args(args)
+        .env("HOME", dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+impl Env {
+    /// Make `rel` a clone of a local remote with one pushed commit, so a
+    /// worktree brg adds from it starts clean.
+    pub fn checkout(&self, rel: &str) -> PathBuf {
+        let origin = self.path(&format!("{}.git", rel.replace('/', "-")));
+        let origin = origin.display().to_string();
+        git(
+            self.dir.path(),
+            &["init", "-q", "--bare", "-b", "main", &origin],
+        );
+        let dir = self.path(rel);
+        git(
+            self.dir.path(),
+            &["clone", "-q", &origin, &dir.display().to_string()],
+        );
+        fs::write(dir.join("README"), "first\n").unwrap();
+        git(&dir, &["add", "README"]);
+        git(&dir, &["commit", "-q", "-m", "first"]);
+        git(&dir, &["push", "-q", "origin", "main"]);
+        dir
+    }
+
+    /// Where brg puts the worktree of the member or copy at `address`.
+    pub fn worktree(&self, address: &str) -> PathBuf {
+        self.path("state-worktrees").join(address.replace('/', "."))
+    }
+}

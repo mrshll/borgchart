@@ -31,19 +31,10 @@ A role's `max` is capacity, not a target: keep as few copies and helpers active 
 
 ## Folders
 
-```
-<folder>/                    your team's working folder
-├─ lead/                     a checkout of the repository: you, researchers, monitors
-├─ dev/<copy>/               one dev team copy per workstream
-│  ├─ repo/                  its worktree; the copy's lead prepares the rest
-│  └─ …
-└─ design/<copy>/            a design panel
-   └─ work/                  its detached worktree
-```
+Your instance's folder is a checkout of the repository. You, researchers, monitors and design panels work in it. Each dev copy works in its own git worktree, which brg adds when you create the copy and removes when you delete it; `status` shows where.
 
-- **One writer per checkout.** `lead/` is yours and read-only to researchers and monitors. Leave it unchanged (no edits, checkouts or resets) while one of them is using it. A dev copy writes only in its own folder.
+- **One writer per checkout.** Your checkout is yours, and read-only to researchers, monitors and designers. Leave it unchanged (no edits, checkouts or resets) while one of them is using it. A dev copy writes only in its own worktree.
 - **Parallel work gets its own copy.** A branch can be checked out in only one worktree.
-- **Hooks.** After adding a worktree, check `git -C <worktree> config core.hooksPath` gives the repository's hooks path, and set it if not.
 
 ## Seat before every launch
 
@@ -57,21 +48,21 @@ Seat a design panel before a dev team when new work needs architectural design: 
 
 A panel is two designers, one per vendor, who each write an independent proposal from the same brief without seeing the other's. You exchange files with them in the panel's notes folder, `"$(dirname "$BORGCHART_NOTES")/<copy>/notes"`, where `<copy>` is the last part of the copy's ID (`design-k3f9`).
 
-1. **Create and prepare:** `"$BORGCHART_BIN" create "$BORGCHART_INSTANCE/design"` prints the copy's ID and folder and starts nothing. Add its worktree: `git -C <folder>/lead worktree add --detach <copy folder>/work <baseline>`.
+1. **Create it:** `"$BORGCHART_BIN" create "$BORGCHART_INSTANCE/design"` prints the copy's ID and starts nothing. Its designers read your checkout, so keep it at the baseline until both proposals are in.
 2. **Seat-check, then start it:** `"$BORGCHART_BIN" start <copy ID>`. Both designers start and wait for a brief.
 3. **Write `brief.md`** in the panel's notes folder, by rename: goals, the owner's preferences and constraints, facts, unknowns, the exact baseline commit, a file allowlist and the deadline. Leave out any candidate design, yours or the requester's, so the proposals stay independent.
 4. **Wait for both question files** (`questions-designer-claude.md`, `questions-designer-codex.md`) with your Bash tool in **background** mode:
    `end=$(( $(date +%s) + <deadline seconds> )); until { [ -e <dir>/questions-designer-claude.md ] && [ -e <dir>/questions-designer-codex.md ]; } || [ "$(date +%s)" -ge "$end" ]; do sleep 30; done; ls <dir>`
 5. **Answer them** in one `answers.md`, by rename: facts and the owner's preferences only, since both designers read it.
 6. **Wait for both proposals** the same way (`proposal-designer-claude.md`, `proposal-designer-codex.md`). At the deadline, go on with what exists and say which is missing.
-7. **File and remove:** copy the panel's files into `$BORGCHART_NOTES/design/<YYYY-MM-DD>-<topic>/`. Then `"$BORGCHART_BIN" stop <copy ID>`, `"$BORGCHART_BIN" delete <copy ID>` and `git -C <folder>/lead worktree remove <copy folder>/work`.
+7. **File and remove:** copy the panel's files into `$BORGCHART_NOTES/design/<YYYY-MM-DD>-<topic>/`. Then `"$BORGCHART_BIN" stop <copy ID>` and `"$BORGCHART_BIN" delete <copy ID>`.
 
 Then write one plan from the proposals: for each material choice, which proposal it came from, what you adopted or rejected, and why. Put the plan to the owner and wait for their approval. Seat the dev team only after it, with the approved plan in its brief; for in-flight work, send the approved plan to the dev lead.
 
 ## Start a workstream
 
-1. **Create the copy:** `"$BORGCHART_BIN" create "$BORGCHART_INSTANCE/dev"`. It prints the copy's full instance ID (`<your instance>/dev-…`) and the folder to prepare, and starts nothing.
-2. **Prepare it:** `git -C <folder>/lead worktree add <copy folder>/repo <branch>`, or `--detach <base>` for a new branch the copy creates. Check hooks and run `agent-gh --setup` inside the new worktree.
+1. **Create the copy:** `"$BORGCHART_BIN" create "$BORGCHART_INSTANCE/dev" --branch <branch>`. brg adds its worktree from your checkout's `HEAD` on that new branch (or detached, without `--branch`, for a branch the copy creates). It prints the copy's full instance ID (`<your instance>/dev-…`) and its worktree, and starts nothing.
+2. **Prepare it:** run `agent-gh --setup` inside the new worktree.
 3. **Seat-check, then start it:** `"$BORGCHART_BIN" start <copy ID>`. Check `status` shows its lead started; if it's `blocked`, tell the owner, and don't create a replacement.
 4. **Brief its lead** (see "Brief and follow"). Its full address is in `status`.
 
@@ -142,8 +133,7 @@ When its work is merged, or the owner ends it:
 2. **Keep the evidence.** Copy the reports, decisions and review history you'd need later from the copy's notes into a dated folder in `$BORGCHART_NOTES`: deleting a copy deletes its notes.
 3. **Check the refs:** every branch it used is pushed, and nothing is uncommitted. If something is, have the copy's lead deal with it before you go on.
 4. **Stop the copy,** and check `status` shows everything in it stopped.
-5. **Remove its worktrees, deepest first,** ending with `git -C <folder>/lead worktree remove <copy folder>/repo`. Never use `--force`; if removal refuses, stop and report.
-6. **Delete its kept children,** then the copy.
+5. **Delete its kept children,** then the copy. `delete` removes each worktree brg added, and refuses while one holds uncommitted work or commits on no remote. Never use `--force`; if it refuses, stop and report.
 
 If a member hits a usage limit or its vendor refuses to start, stop that member, tell the owner and wait.
 

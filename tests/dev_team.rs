@@ -62,10 +62,28 @@ fn readme_commands(prefix: &str) -> Vec<String> {
 
 /// As CONTRIBUTING.md sets it up: a pinned copy of the complete teams catalog
 /// in `dir/pinned/teams`, where brg resolves names; and its configuration
-/// in `dir/config.yaml`. The instance's folder is
-/// `dir/work`, with its shared checkout in `dir/work/repo`.
+/// in `dir/config.yaml`. The instance's folder is `dir/work`, a checkout
+/// with one baseline commit pushed to a local remote.
 fn setup(dir: &Path, text: &str) -> PathBuf {
-    fs::create_dir_all(dir.join("work/repo")).unwrap();
+    let origin = dir.join("origin.git").display().to_string();
+    let work = dir.join("work");
+    git_in(dir, &["init", "-q", "--bare", &origin]);
+    git_in(dir, &["clone", "-q", &origin, &work.display().to_string()]);
+    git_in(
+        &work,
+        &[
+            "-c",
+            "user.name=Fictional Dev",
+            "-c",
+            "user.email=dev@example.com",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "baseline",
+        ],
+    );
+    git_in(&work, &["push", "-q", "origin", "HEAD"]);
     copy_dir(&catalog(), &dir.join("pinned/teams"));
     let file = dir.join("pinned/config.yaml");
     fs::write(&file, text).unwrap();
@@ -78,6 +96,20 @@ fn setup(dir: &Path, text: &str) -> PathBuf {
     );
     std::os::unix::fs::symlink(&plugin, dir.join("pinned/bin/brg-seat")).unwrap();
     file
+}
+
+/// Run git in `dir` with no user or system configuration; its output.
+fn git_in(dir: &Path, args: &[&str]) -> String {
+    let out = common::command("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git {args:?}: {out:?}");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
 fn copy_dir(from: &Path, to: &Path) {
@@ -655,10 +687,7 @@ mod round {
     fn one_round_with_fake_agents() {
         let team = new_team("round");
         // Resolved, as brg records paths (macOS: /var is /private/var).
-        let repo = team.path("work/repo").canonicalize().unwrap();
-        let copies = team.path("work/copies");
-        fs::create_dir(&copies).unwrap();
-        let copies = copies.canonicalize().unwrap();
+        let repo = team.path("work").canonicalize().unwrap();
 
         let up = team.create();
         let lead = team.m("lead");
@@ -704,8 +733,16 @@ mod round {
         team.ok(&["create", &format!("{}/implementer", team.inst())]);
         team.wait_idle("implementer");
         let implementer = team.m("implementer");
-        let copy_folder = copies.join(&implementer);
-        assert!(copy_folder.is_dir(), "{}", copy_folder.display());
+        let copy_folder = team
+            .path("state-worktrees")
+            .join(format!("{}.{implementer}", team.inst()))
+            .canonicalize()
+            .unwrap();
+        assert!(
+            copy_folder.join(".git").is_file(),
+            "{}",
+            copy_folder.display()
+        );
         team.ok(&["stop", &team.at("implementer")]);
         let brief = notes.join("change-brief.md");
         let report = notes.join("change-report.md");
@@ -829,40 +866,14 @@ mod round {
 
     /// The department lead seats a design panel as a nested copy with the commands
     /// lead.md gives, from inside the lead: `create` of its
-    /// `design` role makes the copy stopped, the lead prepares `work/` as a
-    /// detached worktree at the baseline, checks seating for each designer,
-    /// starts the copy, exchanges files in the copy's notes folder, then
-    /// stops and deletes the copy and removes the worktree.
+    /// `design` role makes the copy stopped in the lead's own checkout, the
+    /// lead checks seating for each designer, starts the copy, exchanges
+    /// files in the copy's notes folder, then stops and deletes the copy.
     #[test]
     fn the_lead_seats_the_design_panel_as_a_nested_copy() {
         let team = new_team("design");
-        let repo = team.path("work/lead");
-        fs::create_dir_all(&repo).unwrap();
-        let git = |args: &[&str]| {
-            let out = crate::common::command("git")
-                .arg("-C")
-                .arg(&repo)
-                .args(args)
-                .env("GIT_CONFIG_GLOBAL", "/dev/null")
-                .env("GIT_CONFIG_NOSYSTEM", "1")
-                .output()
-                .unwrap();
-            assert!(out.status.success(), "git {args:?}: {out:?}");
-            String::from_utf8_lossy(&out.stdout).trim().to_string()
-        };
-        git(&["init", "-q"]);
-        git(&[
-            "-c",
-            "user.name=Fictional Dev",
-            "-c",
-            "user.email=dev@example.com",
-            "commit",
-            "-q",
-            "--allow-empty",
-            "-m",
-            "baseline",
-        ]);
-        let baseline = git(&["rev-parse", "HEAD"]);
+        let repo = team.path("work");
+        let baseline = git_in(&repo, &["rev-parse", "HEAD"]);
         team.ok(&[
             "create",
             "borgchart-engineering",
@@ -921,9 +932,9 @@ mod round {
             .unwrap_or_else(|| panic!("{up}"))
             .to_string();
         assert!(copy.starts_with("design-"), "{up}");
-        let folder = team.path("work/design").join(&copy);
+        // The panel reads the lead's checkout: no folder of its own.
+        let folder = repo.canonicalize().unwrap();
         assert!(up.contains(&folder.display().to_string()), "{up}");
-        assert!(folder.is_dir() && !folder.join("work").exists());
         let rows = |instance: &str| -> Vec<serde_json::Value> {
             serde_json::from_slice(&team.brg(&["status", instance, "--json"]).stdout)
                 .unwrap_or_default()
@@ -941,22 +952,8 @@ mod round {
                 .replace("<copy>", &copy)
                 .replace("<baseline>", &baseline)
         };
-        let (prepared, code) = run(
-            "panel-prepare",
-            &fill(documented(
-                &rule,
-                "git -C <folder>/lead worktree add --detach <copy folder>",
-            )),
-        );
-        assert_eq!(code, 0, "{prepared}");
-        let work = folder.join("work");
-        let head = crate::common::command("git")
-            .arg("-C")
-            .arg(&work)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .unwrap();
-        assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), baseline);
+        let work = folder.clone();
+        assert_eq!(git_in(&work, &["rev-parse", "HEAD"]), baseline);
 
         // Seating: each designer's vendor and model, from the copy's status,
         // checked through the granted seating plugin and the isolated fake vendor protocols.
@@ -1090,10 +1087,6 @@ mod round {
         for (name, prefix) in [
             ("panel-stop", "\"$BORGCHART_BIN\" stop <copy ID>"),
             ("panel-delete", "\"$BORGCHART_BIN\" delete <copy ID>"),
-            (
-                "panel-unprepare",
-                "git -C <folder>/lead worktree remove <copy folder>",
-            ),
         ] {
             let (out, code) = run(name, &fill(documented(&rule, prefix)));
             assert_eq!(code, 0, "{name}: {out}");
@@ -1103,7 +1096,7 @@ mod round {
                 }
             }
         }
-        assert!(!work.exists());
+        assert!(work.join(".git").is_dir(), "the lead's checkout stays");
         let registry = team.read("state/registry.json").unwrap();
         assert!(registry["instances"].get(&panel).is_none(), "{registry}");
         // The department still runs.
@@ -1139,39 +1132,14 @@ mod round {
 
     /// The department's own steps, run from inside its lead with the
     /// commands lead.md gives: `create` of `dev` makes a stopped copy, the
-    /// lead adds the copy's `repo/` worktree from `lead/`, checks seating
+    /// copy gets its own worktree on a new branch, the lead checks seating
     /// and starts it, and the dev lead's parent is the department lead.
     /// Every launched member gets the common rules; only the dev lead gets
     /// the dev-only ones.
     #[test]
     fn the_department_lead_starts_a_dev_copy_with_its_documented_steps() {
         let team = new_team("dept");
-        let checkout = team.path("work/lead");
-        fs::create_dir_all(&checkout).unwrap();
-        let git = |args: &[&str]| {
-            let out = crate::common::command("git")
-                .arg("-C")
-                .arg(&checkout)
-                .args(args)
-                .env("GIT_CONFIG_GLOBAL", "/dev/null")
-                .env("GIT_CONFIG_NOSYSTEM", "1")
-                .output()
-                .unwrap();
-            assert!(out.status.success(), "git {args:?}: {out:?}");
-        };
-        git(&["init", "-q"]);
-        git(&[
-            "-c",
-            "user.name=Fictional Dev",
-            "-c",
-            "user.email=dev@example.com",
-            "commit",
-            "-q",
-            "--allow-empty",
-            "-m",
-            "baseline",
-        ]);
-        git(&["branch", "example/work"]);
+        let checkout = team.path("work");
 
         team.ok(&[
             "create",
@@ -1235,7 +1203,8 @@ mod round {
             &documented(
                 &rule,
                 "\"$BORGCHART_BIN\" create \"$BORGCHART_INSTANCE/dev\"",
-            ),
+            )
+            .replace("<branch>", "example/work"),
         );
         assert_eq!(code, 0, "{up}");
         let copy_id = up.split_whitespace().next().unwrap().to_string();
@@ -1244,8 +1213,12 @@ mod round {
             .unwrap_or_else(|| panic!("{up}"))
             .to_string();
         assert!(copy.starts_with("dev-"), "{up}");
-        let folder = team.path("work/dev").join(&copy);
-        assert!(folder.is_dir() && !folder.join("repo").exists(), "{up}");
+        let folder = team.path("state-worktrees").join(copy_id.replace('/', "."));
+        assert!(up.contains(&folder.display().to_string()), "{up}");
+        assert_eq!(
+            git_in(&folder, &["branch", "--show-current"]),
+            "example/work"
+        );
         assert!(
             rows(&copy_id).iter().all(|r| r["member"].is_null()),
             "nothing starts at create"
@@ -1259,16 +1232,6 @@ mod round {
                 .replace("<copy>", &copy)
                 .replace("<branch>", "example/work")
         };
-        let (prepared, code) = run(
-            "dev-prepare",
-            &fill(documented(
-                &rule,
-                "git -C <folder>/lead worktree add <copy folder>/repo",
-            )),
-        );
-        assert_eq!(code, 0, "{prepared}");
-        assert!(folder.join("repo/.git").exists());
-
         let lead_row = rows(&copy_id)
             .into_iter()
             .find(|r| r["role"] == "lead")
@@ -1311,12 +1274,7 @@ mod round {
         let start = first_start(&team, "the dev lead", &log);
         assert_eq!(
             start["cwd"],
-            folder
-                .join("repo")
-                .canonicalize()
-                .unwrap()
-                .display()
-                .to_string()
+            folder.canonicalize().unwrap().display().to_string()
         );
         assert_eq!(
             start["env"]["BORGCHART_PARENT"],

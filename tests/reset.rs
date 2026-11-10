@@ -14,27 +14,26 @@ use std::fs;
 use instance_env::*;
 use serde_json::{Value, json};
 
-/// The test team with `helper` working in `copies/{member_id}` and `dev`,
-/// a team role whose copies run the `dev` team in `dev/{member_id}`.
+/// The test team with `helper` and `dev`, a team role whose copies run the
+/// `dev` team, each in its own worktree.
 const TREE: &str = r#"
 bus: {}
 roles:
   lead:
     prompt: lead.md
-    cwd: lead
   helper:
     prompt: helper.md
     vendor: codex
     parent: lead
     start: false
     max: 2
-    cwd: "copies/{member_id}"
+    worktree: true
   dev:
     team: dev
     parent: lead
     start: false
     max: 2
-    cwd: "dev/{member_id}"
+    worktree: true
 "#;
 
 fn tree_env() -> Env {
@@ -43,10 +42,10 @@ fn tree_env() -> Env {
     env.team("teams/dev");
     env.write(
         "teams/dev/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: repo}\n",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n",
     );
-    fs::create_dir_all(env.path("work/a/lead")).unwrap();
-    fs::create_dir_all(env.path("work/a/copies")).unwrap();
+    fs::remove_dir(env.path("work/a")).unwrap();
+    env.checkout("work/a");
     env
 }
 
@@ -54,8 +53,7 @@ fn tree_env() -> Env {
 fn started_copy(env: &Env, root: &str) -> (String, std::path::PathBuf) {
     let out = env.ok(&["create", &format!("{root}/dev")]);
     let copy = stdout(&out).split_whitespace().next().unwrap().to_string();
-    let folder = env.path(&format!("work/a/dev/{}", copy.rsplit('/').next().unwrap()));
-    fs::create_dir(folder.join("repo")).unwrap();
+    let folder = env.worktree(&copy);
     env.ok(&["start", &copy]);
     env.wait_for("copy lead", || !env.member(&copy, "lead").is_empty());
     (copy, folder)
@@ -83,17 +81,17 @@ fn reset_stops_and_forgets_a_tree_so_create_starts_it_fresh() {
     // Open work that `delete` would refuse without --force.
     let sent = env.publish(&root, &json!({"to": lead, "body": "unread"}));
     assert!(sent.status.success(), "{}", both(&sent));
-    fs::write(env.path("work/a/lead/kept.txt"), "kept").unwrap();
-    fs::write(copy_folder.join("repo/kept.txt"), "kept").unwrap();
-    // Another tree working in an empty folder brg made for this tree.
+    fs::write(env.path("work/a/kept.txt"), "kept").unwrap();
+    fs::write(copy_folder.join("kept.txt"), "kept").unwrap();
+    // Another tree working in a worktree brg made for this tree.
     let out = env.ok(&["create", &format!("{root}/dev")]);
     let spare = stdout(&out).split_whitespace().next().unwrap().to_string();
-    let spare_folder = env.path(&format!("work/a/dev/{}", spare.rsplit('/').next().unwrap()));
-    fs::create_dir(spare_folder.join("lead")).unwrap();
-    let other = env.create(
-        "oncall",
-        &format!("work/a/dev/{}", spare.rsplit('/').next().unwrap()),
-    );
+    let spare_folder = env.worktree(&spare);
+    let other = stdout(&env.ok(&["create", "oncall", &spare_folder.display().to_string()]))
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_string();
 
     let out = env.ok(&["reset", &root]);
     let text = stdout(&out);
@@ -104,22 +102,25 @@ fn reset_stops_and_forgets_a_tree_so_create_starts_it_fresh() {
     let sessions = env.tmux(&["list-sessions", "-F", "#{session_name}"]);
     assert!(!sessions.contains(&root), "still running: {sessions}");
     assert_eq!(
-        fs::read_to_string(env.path("work/a/lead/kept.txt")).unwrap(),
+        fs::read_to_string(env.path("work/a/kept.txt")).unwrap(),
         "kept"
     );
     assert_eq!(
-        fs::read_to_string(copy_folder.join("repo/kept.txt")).unwrap(),
+        fs::read_to_string(copy_folder.join("kept.txt")).unwrap(),
         "kept"
     );
     assert!(
-        !env.path(&format!("work/a/copies/{helper}")).exists(),
+        !env.worktree(&format!("{root}/{helper}")).exists(),
         "{text}"
     );
     assert!(
-        text.contains(&format!("left {}: holds files", copy_folder.display())),
+        text.contains(&format!(
+            "left {}: git worktree with uncommitted",
+            copy_folder.display()
+        )),
         "{text}"
     );
-    assert!(spare_folder.join("lead").is_dir(), "{text}");
+    assert!(spare_folder.join(".git").is_file(), "{text}");
     assert!(
         text.contains(&format!("left {}: an instance", spare_folder.display())),
         "{text}"
@@ -191,94 +192,16 @@ fn reset_refuses_members_copies_and_trees_it_cannot_confirm_stopped() {
 }
 
 #[test]
-fn reset_says_and_fails_when_it_cannot_place_folders_brg_made() {
-    let env = tree_env();
-    let root = env.create("oncall", "work/a");
-    env.ok(&["create", &format!("{root}/helper")]);
-    let helper = env.member(&root, "helper");
-    env.ok(&["stop", &format!("{root}/{helper}")]);
-    env.ok(&["delete", &format!("{root}/{helper}")]);
-    // A kept member's folder is found where its start recorded it.
-    env.ok(&["create", &format!("{root}/helper")]);
-    let started = env.member(&root, "helper");
-    fs::rename(env.path("teams/oncall"), env.path("teams-moved")).unwrap();
-
-    let out = env.brg(&["reset", &root]);
-    let text = both(&out);
-
-    assert!(!out.status.success(), "{text}");
-    assert!(text.contains("remove any left empty by hand"), "{text}");
-    assert!(
-        !text.contains("brg start"),
-        "advice that can't work: {text}"
-    );
-    assert!(registered(&env).is_empty(), "{text}");
-    assert!(env.path(&format!("work/a/copies/{helper}")).is_dir());
-    assert!(
-        !env.path(&format!("work/a/copies/{started}")).exists(),
-        "{text}"
-    );
-}
-
-/// Run git in `dir`, away from the caller's repository and settings.
-fn git(dir: &std::path::Path, args: &[&str]) -> String {
-    let out = common::command("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
-        .args(args)
-        .env("HOME", dir)
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout).into_owned()
-}
-
-#[test]
 fn reset_removes_clean_worktrees_in_the_tree_and_keeps_the_root_checkout() {
     let env = tree_env();
-    // The root's checkout: a clone of a local remote with one pushed commit.
-    let origin = env.path("origin.git").display().to_string();
-    let lead = env.path("work/a/lead");
-    git(
-        env.dir.path(),
-        &["init", "-q", "--bare", "-b", "main", &origin],
-    );
-    git(
-        env.dir.path(),
-        &["clone", "-q", &origin, &lead.display().to_string()],
-    );
-    fs::write(lead.join("README"), "hello\n").unwrap();
-    git(&lead, &["add", "README"]);
-    git(&lead, &["commit", "-q", "-m", "first"]);
-    git(&lead, &["push", "-q", "origin", "main"]);
+    let lead = env.path("work/a");
     let root = env.create("oncall", "work/a");
-    // A copy whose shared checkout is a clean worktree of the root's clone.
-    let out = env.ok(&["create", &format!("{root}/dev")]);
-    let copy = stdout(&out).split_whitespace().next().unwrap().to_string();
-    let copy_folder = env.path(&format!("work/a/dev/{}", copy.rsplit('/').next().unwrap()));
-    let repo = copy_folder.join("repo").display().to_string();
-    git(&lead, &["worktree", "add", "-q", "--detach", &repo, "main"]);
-    env.ok(&["start", &copy]);
+    // A copy whose worktree is clean.
+    let (_, copy_folder) = started_copy(&env, &root);
     // A helper whose worktree holds untracked work.
     env.ok(&["create", &format!("{root}/helper")]);
     let helper = env.member(&root, "helper");
-    let busy = env.path(&format!("work/a/copies/{helper}"));
-    git(
-        &lead,
-        &[
-            "worktree",
-            "add",
-            "-q",
-            "--detach",
-            &busy.display().to_string(),
-            "main",
-        ],
-    );
+    let busy = env.worktree(&format!("{root}/{helper}"));
     fs::write(busy.join("draft.txt"), "work").unwrap();
 
     let text = stdout(&env.ok(&["reset", &root]));
@@ -293,7 +216,10 @@ fn reset_removes_clean_worktrees_in_the_tree_and_keeps_the_root_checkout() {
         "{text}"
     );
     let worktrees = git(&lead, &["worktree", "list"]);
-    assert!(!worktrees.contains(&repo), "{worktrees}");
+    assert!(
+        !worktrees.contains(&copy_folder.display().to_string()),
+        "{worktrees}"
+    );
     assert!(lead.join(".git").is_dir());
-    assert_eq!(fs::read_to_string(lead.join("README")).unwrap(), "hello\n");
+    assert_eq!(fs::read_to_string(lead.join("README")).unwrap(), "first\n");
 }
