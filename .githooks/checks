@@ -3,6 +3,7 @@
 #
 #   .githooks/checks              # all four: fmt clippy test py
 #   .githooks/checks fast         # the fast tier: tests that start no process
+#   .githooks/checks harness      # the test harness's own (slow) tests
 #   .githooks/checks fmt clippy   # any subset, in the order given
 #
 # Checks use the shared, memory-capped build slots by default. CHECKS_WRAP
@@ -37,6 +38,36 @@ sweep() {
     tmux -S "$sock" kill-server >/dev/null 2>&1 || true
   done
   rm -rf "$test_root"
+}
+
+# Run "$@" (a test command) with the test run's tmux root, then fail if it
+# left tmux behind.
+tmux_tests() {
+  name=$1
+  shift
+  test_root=$(mktemp -d /tmp/brgrun.XXXXXX)
+  trap 'sweep >&2' EXIT
+  trap 'sweep >&2; exit 130' INT
+  trap 'sweep >&2; exit 143' TERM
+  # shellcheck disable=SC2086
+  run "$name" env \
+    BRG_TEST_TMPDIR_ROOT="$test_root" \
+    $nowhere \
+    "$@"
+  left=$(sweep)
+  test_root=
+  if [ -n "$left" ]; then
+    printf 'checks: the tests left tmux behind (now stopped):\n%s\n' "$left" >&2
+    echo "checks: $name failed" >&2
+    exit 1
+  fi
+}
+
+# The default tier runs on cargo-nextest when it is installed: it runs the
+# tests of every target at once (cargo test runs one target at a time), each
+# in its own process. CHECKS_RUNNER=cargo forces cargo test.
+nextest() {
+  [ "${CHECKS_RUNNER:-}" != cargo ] && cargo nextest --version >/dev/null 2>&1
 }
 
 [ "$#" -gt 0 ] || set -- fmt clippy test py
@@ -78,26 +109,24 @@ for check in "$@"; do
     test)
       # Integration tests exercise sibling plugin binaries through real shims.
       run build cargo build --workspace --bins --all-features --locked
-      test_root=$(mktemp -d /tmp/brgrun.XXXXXX)
-      trap 'sweep >&2' EXIT
-      trap 'sweep >&2; exit 130' INT
-      trap 'sweep >&2; exit 143' TERM
-      # shellcheck disable=SC2086
-      run test env \
-        BRG_TEST_TMPDIR_ROOT="$test_root" \
-        $nowhere \
-        cargo test --workspace --all-features --locked
-      left=$(sweep)
-      test_root=
-      if [ -n "$left" ]; then
-        printf 'checks: the tests left tmux behind (now stopped):\n%s\n' "$left" >&2
-        echo "checks: test failed" >&2
-        exit 1
+      if nextest; then
+        tmux_tests test cargo nextest run --workspace --all-features --locked
+      else
+        tmux_tests test cargo test --workspace --all-features --locked
       fi
+      ;;
+    # Tests of the test harness itself, kept out of the default tier: the
+    # tmux watchdog and the live tier's dry run.
+    harness)
+      run build cargo build --workspace --bins --all-features --locked
+      tmux_tests harness cargo test -p borgchart --all-features --locked \
+        --test tmux_watchdog -- --ignored
+      tmux_tests harness cargo test -p borgchart --all-features --locked \
+        --test live -- --ignored --exact dry_run_reaches_every_expected_result
       ;;
     py) run py uv run --no-project --with pytest==8.3.5 pytest -p no:cacheprovider examples/slack-devops/plugins/slackbot/tests tools/tests ;;
     *)
-      echo "checks: unknown check '$check' (use fmt, clippy, fast, test or py)" >&2
+      echo "checks: unknown check '$check' (use fmt, clippy, fast, test, harness or py)" >&2
       exit 2
       ;;
   esac

@@ -489,10 +489,13 @@ fn live_matrix() {
     );
 }
 
-/// The dry run, in the default tier: every case and every false-positive
-/// control reaches its expected result against the owned fakes, the matrix
-/// is stamped DRY and kept, and no server outlives the run.
+/// The dry run: every case and every false-positive control reaches its
+/// expected result against the owned fakes, the matrix is stamped DRY and
+/// kept, and no server outlives the run. It tests the live tier's harness,
+/// not brg, and takes most of a minute, so it is outside the default tier:
+/// `.githooks/checks harness` runs it (CI does, once, on Linux).
 #[test]
+#[ignore = "harness self-test; run with `.githooks/checks harness`"]
 fn dry_run_reaches_every_expected_result() {
     let keep = tempfile::tempdir().unwrap();
     let evidence = keep.path().join("run");

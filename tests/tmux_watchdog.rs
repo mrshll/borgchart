@@ -4,6 +4,10 @@
 //! every path given to `also_remove` go; nothing outside them is touched.
 //! A leaked server would keep its agents running (for real agents,
 //! spending quota).
+//!
+//! These test the test harness, not brg, and take several seconds of
+//! waiting, so they are outside the default tier: `.githooks/checks harness`
+//! runs them (CI does, once, on Linux).
 #![cfg(feature = "test-support")]
 
 mod common;
@@ -116,6 +120,7 @@ fn outside(root: &Path) {
 }
 
 #[test]
+#[ignore = "harness self-test; run with `.githooks/checks harness`"]
 fn a_killed_test_process_leaves_no_server_and_no_registered_path() {
     // Catches: cleanup that only runs in Drop, so a test killed mid-run
     // leaves its servers (and their agents) and its scratch files behind.
@@ -182,6 +187,7 @@ fn watched_helper() {
 }
 
 #[test]
+#[ignore = "harness self-test; run with `.githooks/checks harness`"]
 fn the_time_limit_stops_the_servers_while_the_test_still_runs() {
     // Catches: a hung test that keeps its servers running for ever.
     let root = root();
@@ -194,6 +200,7 @@ fn the_time_limit_stops_the_servers_while_the_test_still_runs() {
 }
 
 #[test]
+#[ignore = "harness self-test; run with `.githooks/checks harness`"]
 fn a_socket_linked_from_elsewhere_is_not_followed() {
     // Catches: the cleanup stopping a server outside the private
     // directory through a symbolic link planted in it.
@@ -242,6 +249,7 @@ impl Drop for Resume {
 }
 
 #[test]
+#[ignore = "harness self-test; run with `.githooks/checks harness`"]
 fn a_server_that_stops_answering_is_still_stopped() {
     // Catches: one stopped or hung server blocking the cleanup for ever,
     // keeping its agents and every registered path.
@@ -269,6 +277,7 @@ fn a_server_that_stops_answering_is_still_stopped() {
 }
 
 #[test]
+#[ignore = "harness self-test; run with `.githooks/checks harness`"]
 fn dropping_it_cleans_up_and_stops_the_watchdog() {
     // Catches: registered paths removed only by the watchdog, a removal
     // that follows a link out of the scratch directory, or a watchdog left

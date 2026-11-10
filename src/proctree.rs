@@ -116,7 +116,7 @@ pub fn end(procs: &[Proc]) -> Result<Vec<u32>, String> {
     for p in &left {
         signal(p, Signal::TERM);
     }
-    let deadline = Instant::now() + GRACE;
+    let deadline = Instant::now() + crate::test_waits::wait(GRACE);
     while !left.is_empty() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
         left = still_running(&left)?;

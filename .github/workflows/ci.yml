@@ -32,6 +32,12 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - name: Toolchain
         run: rustup show active-toolchain
+      # Caches ~/.cargo and target/ per OS and lockfile.
+      - uses: Swatinem/rust-cache@v2
+      # `.githooks/checks test` runs on nextest when it is installed.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
       - run: .githooks/checks fmt
       # The shared checks build/lint/test every Cargo workspace member.
       - run: .githooks/checks clippy
@@ -58,6 +64,21 @@ jobs:
           procs=$(pgrep -x tmux || true)
           [ -z "$procs" ] || { echo "tmux servers still running:"; ps -o pid,args -p $(echo $procs | tr ' ' ',') || true; fail=1; }
           exit $fail
+
+  # The test harness's own tests (the tmux watchdog and the live tier's dry
+  # run): slow, and about the harness rather than brg, so once, on Linux.
+  harness:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: Toolchain
+        run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - run: .githooks/checks harness
+        env:
+          TMPDIR: ${{ runner.temp }}
 
   slackbot-plugin:
     runs-on: ubuntu-24.04

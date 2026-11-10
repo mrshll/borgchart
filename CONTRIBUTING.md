@@ -8,6 +8,7 @@ Four checks must pass before a change merges. CI runs the Rust checks on Linux a
 .githooks/checks              # all four: fmt, clippy, test, py
 .githooks/checks fmt clippy   # a subset
 .githooks/checks fast         # the fast tier (below)
+.githooks/checks harness      # the test harness's own tests (below)
 ```
 
 The tests need `tmux`, and `py` needs `uv`. Before running only the department integration target, build its sibling plugin binary with `tools/cargo-slot cargo build --workspace --bins --all-features --locked`; `.githooks/checks test` does this automatically.
@@ -17,12 +18,15 @@ The tests need `tmux`, and `py` needs `uv`. Before running only the department i
 | Tier | Command | What it runs | When |
 | --- | --- | --- | --- |
 | Fast | `.githooks/checks fast` | Every workspace member’s library tests (`cargo test --workspace --all-features --lib`) and core validation tests (`cargo test -p borgchart --features test-support --test validate`), which start no tmux and no other process. They run with recording stand-ins for `tmux`, `ps`, `sh`, `sleep`, `claude` and `codex` first on `PATH`, and the tier fails if any was started. | In CI. |
-| Default | `.githooks/checks test` | Prebuilds workspace binaries, then runs all workspace tests with all features: real private tmux servers, with stand-ins for the vendor CLIs. | In CI. |
+| Default | `.githooks/checks test` | Prebuilds workspace binaries, then runs all workspace tests with all features: real private tmux servers, with stand-ins for the vendor CLIs. Runs on [cargo-nextest](https://nexte.st) when it is installed (`cargo install cargo-nextest --locked`), which runs every target's tests at once; otherwise, and with `CHECKS_RUNNER=cargo`, on `cargo test`. | In CI. |
+| Harness | `.githooks/checks harness` | The test harness's own tests, `#[ignore]`d in the default tier: the tmux watchdog (`tests/tmux_watchdog.rs`) and the live tier's dry run. Slow, and about the harness rather than brg. | In CI, on Linux. After changing `tests/common` or `tests/live`. |
 | Live | `BORGCHART_LIVE=1 cargo test --locked --test live -- --ignored --nocapture --test-threads=1` | `tests/live.rs`: the real Claude Code and Codex CLIs, started by real `brg create`, locally only (below). | Before rebuilding a stable brg, and after updating Claude Code or Codex. |
 
-The live tier uses your own login and configuration in place: nothing is copied, and brg writes no trust to it (Codex trust is session-only, and every Claude case's configuration sets `auto_trust: false`). Run it from a checkout inside a folder Claude already trusts. It costs a few small real turns per vendor, and never answers a tool approval: one ends its case BLOCKED. Each case ends PASS, FAIL, SKIP (with its reason) or BLOCKED, and the matrix goes to `target/live/<run>/matrix.md`. Only a complete run with every case listed in `tests/live/rules.rs` PASS qualifies a stable rebuild; `BORGCHART_LIVE_VENDORS=claude` (or `codex`) or `BORGCHART_LIVE_SUBMIT=0` makes a partial run. `BORGCHART_LIVE_DRY=1` runs the harness against owned fake CLIs instead; the default tier runs that dry run too.
+The live tier uses your own login and configuration in place: nothing is copied, and brg writes no trust to it (Codex trust is session-only, and every Claude case's configuration sets `auto_trust: false`). Run it from a checkout inside a folder Claude already trusts. It costs a few small real turns per vendor, and never answers a tool approval: one ends its case BLOCKED. Each case ends PASS, FAIL, SKIP (with its reason) or BLOCKED, and the matrix goes to `target/live/<run>/matrix.md`. Only a complete run with every case listed in `tests/live/rules.rs` PASS qualifies a stable rebuild; `BORGCHART_LIVE_VENDORS=claude` (or `codex`) or `BORGCHART_LIVE_SUBMIT=0` makes a partial run. `BORGCHART_LIVE_DRY=1` runs the harness against owned fake CLIs instead; the harness tier runs that dry run too.
 
 The separate cold seating probe runs a real Codex `gpt-6-astra medium` turn and a `brg-seat route` quota/app-server call. It requires that model and an existing `$HOME/.local/state`, where it creates and removes a private temporary cache. Its evidence is outside `matrix.md` and does not qualify the matrix.
+
+Some of brg's waits are fixed periods (the wake's and `brg send`'s paste and submit waits, the grace before KILL) that a test of the path past them would sit out in full. In a `test-support` build, `BORGCHART_TEST_WAIT_CAP_MS` caps them (`src/test_waits.rs`); `common::command` and `PrivateTmux::brg_env` set it to `common::WAIT_CAP`, and a test that clears the environment without `brg_env` can add it back with `common::cap_waits`.
 
 A test that starts a process (tmux, `brg`, a child) belongs in a default-tier target, not in `src/` or `tests/validate.rs`. A program run by absolute path gets past the fast tier's stand-ins, so check moved tests by hand.
 

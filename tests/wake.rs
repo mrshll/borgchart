@@ -417,6 +417,7 @@ fn qualified(vendor: Vendor) -> LaunchFacts {
 impl Env {
     /// Start the fake composer for `vendor` in session `s`, window `m`.
     fn new(vendor: Vendor) -> Env {
+        borgchart::test_waits::cap_for_tests(common::WAIT_CAP);
         let dir = tempfile::tempdir().unwrap();
         let private = common::PrivateTmux::new();
         let socket = private.socket("brg-wake");
@@ -853,6 +854,7 @@ impl Env {
     fn send_message(&self, text: &str, extra: &[&str]) -> (i32, serde_json::Value) {
         let mut cmd = common::command(env!("CARGO_BIN_EXE_brg"));
         cmd.env_clear()
+            .env(common::WAIT_CAP_VAR.0, common::WAIT_CAP_VAR.1)
             .env(
                 "PATH",
                 self.private
@@ -1116,6 +1118,7 @@ fn cross_edge_sends_type_and_preflight_locked_recipients_in_their_own_instance()
         let send = || {
             let mut cmd = common::command(env!("CARGO_BIN_EXE_brg"));
             cmd.env_clear()
+                .env(common::WAIT_CAP_VAR.0, common::WAIT_CAP_VAR.1)
                 .env(
                     "PATH",
                     e.private

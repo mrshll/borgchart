@@ -43,10 +43,24 @@ fn points_at_a_team(key: &OsStr) -> bool {
         || matches!(&*key, "TMUX" | "TMUX_PANE" | "TMUX_TMPDIR")
 }
 
-/// `program`, scrubbed.
+/// The cap on brg's fixed waits (`borgchart::test_waits`) in the tests:
+/// long enough for the fake agents and composers, short enough that a test
+/// of the path past a wait doesn't sit it out in full.
+pub const WAIT_CAP: Duration = Duration::from_millis(1000);
+/// [`WAIT_CAP`] as the variable a `brg` takes it from.
+pub const WAIT_CAP_VAR: (&str, &str) = ("BORGCHART_TEST_WAIT_CAP_MS", "1000");
+
+/// Give `cmd` the test cap on brg's fixed waits ([`WAIT_CAP`]).
+pub fn cap_waits(cmd: &mut Command) -> &mut Command {
+    cmd.env(WAIT_CAP_VAR.0, WAIT_CAP_VAR.1)
+}
+
+/// `program`, scrubbed, with the test cap on brg's fixed waits (a later
+/// `env_clear` drops it; [`PrivateTmux::brg_env`] sets it again).
 pub fn command(program: impl AsRef<OsStr>) -> Command {
     let mut cmd = Command::new(program);
     scrub(&mut cmd);
+    cap_waits(&mut cmd);
     cmd
 }
 
@@ -295,7 +309,8 @@ rm -rf -- "$dir"
     /// Point brg (and the members and plugins it starts) at `socket` in the
     /// directory.
     pub fn brg_env<'a>(&self, cmd: &'a mut Command, socket: &str) -> &'a mut Command {
-        cmd.env("BORGCHART_TMUX_TMPDIR", &self.path)
+        cap_waits(cmd)
+            .env("BORGCHART_TMUX_TMPDIR", &self.path)
             .env("BORGCHART_TMUX_SOCKET", socket)
     }
 

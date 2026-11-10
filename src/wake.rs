@@ -498,7 +498,9 @@ fn take_lock(state: &StateDir, member: &str) -> Result<File, WakeResult> {
     loop {
         match file.try_lock() {
             Ok(()) => return Ok(file),
-            Err(std::fs::TryLockError::WouldBlock) if start.elapsed() < LOCK_WAIT => {
+            Err(std::fs::TryLockError::WouldBlock)
+                if start.elapsed() < crate::test_waits::wait(LOCK_WAIT) =>
+            {
                 std::thread::sleep(POLL)
             }
             Err(std::fs::TryLockError::WouldBlock) => {
@@ -604,7 +606,7 @@ pub fn attempt(
                 Some(why) => why,
             },
         };
-        if start.elapsed() >= RENDER_WAIT {
+        if start.elapsed() >= crate::test_waits::wait(RENDER_WAIT) {
             return WakeResult::HumanRequired(why);
         }
     }
@@ -621,7 +623,9 @@ pub fn attempt(
                 drop(lock);
                 return WakeResult::Submitted;
             }
-            Err(why) if start.elapsed() >= SUBMIT_WAIT => return WakeResult::HumanRequired(why),
+            Err(why) if start.elapsed() >= crate::test_waits::wait(SUBMIT_WAIT) => {
+                return WakeResult::HumanRequired(why);
+            }
             Err(_) => {}
         }
     }

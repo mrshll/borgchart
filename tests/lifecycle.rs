@@ -1573,7 +1573,7 @@ fn a_stale_gate_waiter_leaves_a_replacement_alone() {
     let started = Instant::now();
     let first = env
         .brg_cmd(&["start"])
-        .env("BORGCHART_GATE_WAIT_MS", "4000")
+        .env("BORGCHART_GATE_WAIT_MS", "3000")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -1600,7 +1600,7 @@ fn a_stale_gate_waiter_leaves_a_replacement_alone() {
     env.ok(&["stop"]);
     let second = env
         .brg_cmd(&["start"])
-        .env("BORGCHART_GATE_WAIT_MS", "10000")
+        .env("BORGCHART_GATE_WAIT_MS", "7000")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -1609,7 +1609,7 @@ fn a_stale_gate_waiter_leaves_a_replacement_alone() {
     let target = format!("=brg-{}:={}", env.inst(), env.m("lead"));
     let pane = || env.tmux(&["list-panes", "-t", &target, "-F", "#{pane_id} #{pane_pid}"]);
     let replacement = pane();
-    while started.elapsed() < Duration::from_millis(4500) {
+    while started.elapsed() < Duration::from_millis(3500) {
         std::thread::sleep(Duration::from_millis(100));
     }
     Command::new("kill")

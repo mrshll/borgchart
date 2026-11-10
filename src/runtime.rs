@@ -4370,7 +4370,7 @@ fn paste_send(
     }
     // After paste, Unknown alone is expected when a vendor hides its idle footer.
     // The exact composer check below and dialog/copy/pane checks still apply.
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + crate::test_waits::wait(Duration::from_secs(3));
     loop {
         let after = send_snapshot(tmux, state, member, pane, vendor, true, locked)
             .map_err(|e| SendError::Uncertain(e.message().into()))?;
@@ -4388,7 +4388,7 @@ fn paste_send(
     }
     tmux.ok(&["send-keys", "-t", &pane.pane_id, "Enter"])
         .map_err(SendError::Uncertain)?;
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + crate::test_waits::wait(Duration::from_secs(3));
     loop {
         let after = send_snapshot(tmux, state, member, pane, vendor, true, locked)
             .map_err(|e| SendError::Uncertain(e.message().into()))?;

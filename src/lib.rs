@@ -28,6 +28,7 @@ pub mod rules;
 pub mod runtime;
 pub mod state;
 pub mod team;
+pub mod test_waits;
 pub mod tmux;
 pub mod tree;
 pub mod tui;
