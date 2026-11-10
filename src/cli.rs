@@ -102,6 +102,18 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Stop a whole tree and forget it, so `brg create` can start it fresh.
+    /// Deletes every registration, the root's state folder (all copies'
+    /// state, the notes and the tree's messages) and the empty folders brg
+    /// made for members and copies; copy any notes you need first. Open work
+    /// never refuses it, and there is no prompt; anything brg can't confirm
+    /// stopped does. Working folders, checkouts and worktrees are left as they
+    /// are. Run it from your own shell, never inside a member.
+    Reset {
+        /// The tree's root instance (a copy is refused).
+        #[arg(add = crate::complete::roots())]
+        instance: String,
+    },
     /// Remove what brg left behind for deleted members and copies: the
     /// empty `{member_id}` folders it made for them, and their leftover
     /// state. A folder holding files is listed and kept, and named as a git
@@ -402,6 +414,26 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
                 println!("{m}");
             }
             ExitCode::SUCCESS
+        }
+        Command::Reset { instance } => {
+            let inst = match or_fail!(address::resolve(&instance)) {
+                (inst, Target::Instance) => inst,
+                (inst, _) => {
+                    return fail(format!(
+                        "`reset` takes a tree's root instance; `{instance}` is in instance `{}`",
+                        inst.id
+                    ));
+                }
+            };
+            let outcome = or_fail!(runtime::reset(inst, |warning| println!("{warning}")));
+            for line in &outcome.lines {
+                println!("{line}");
+            }
+            if outcome.failed {
+                ExitCode::from(1)
+            } else {
+                ExitCode::SUCCESS
+            }
         }
         Command::Cleanup { instance } => {
             let only = match &instance {

@@ -16,7 +16,8 @@
 //!   instance argument only).
 //!
 //! Work folders, kept members' and copies' folders, git worktrees and
-//! messages are never touched.
+//! messages are never touched. `brg reset` applies the same folder rules to
+//! every member and copy of the tree it forgets ([`tree_folders`]).
 
 use std::path::{Path, PathBuf};
 
@@ -54,7 +55,7 @@ pub fn cleanup(only: Option<&Instance>) -> Result<Outcome, String> {
     let lock = registry::lock()?;
     let registry = lock.load()?;
     let mut out = Outcome::default();
-    let held = held(&registry);
+    let held = held(&registry, |_| true);
     let ids: Vec<&String> = registry
         .instances
         .keys()
@@ -78,11 +79,12 @@ pub fn cleanup(only: Option<&Instance>) -> Result<Outcome, String> {
     Ok(out)
 }
 
-/// Every folder a registered instance works in: its own folder and its kept
-/// members' and copies' folders. No leaf holding one is removed.
-fn held(registry: &registry::Registry) -> Vec<PathBuf> {
+/// Every folder a registered instance (of those `counts`) works in: its own
+/// folder and its kept members' and copies' folders. No leaf holding one is
+/// removed.
+fn held(registry: &registry::Registry, counts: impl Fn(&str) -> bool) -> Vec<PathBuf> {
     let mut held = Vec::new();
-    for (id, entry) in &registry.instances {
+    for (id, entry) in registry.instances.iter().filter(|(id, _)| counts(id)) {
         held.push(entry.folder.clone());
         if let Ok(inst) = address::instance(id) {
             held.extend(
@@ -96,6 +98,59 @@ fn held(registry: &registry::Registry) -> Vec<PathBuf> {
     held
 }
 
+/// `reset`'s folder pass over a tree about to be forgotten, deepest first:
+/// every member's and copy's `{member_id}` folder, kept or deleted, by the
+/// same rules as cleanup. A kept one is found where its latest start (or a
+/// copy's creation) recorded it, else through the team file. Folders that
+/// instances outside the tree work in stay protected.
+pub(crate) fn tree_folders(tree: &[Instance], registry: &registry::Registry) -> Outcome {
+    let mut out = Outcome::default();
+    let held = held(registry, |id| !tree.iter().any(|inst| inst.id == id));
+    for inst in tree {
+        let team = runtime::validated(inst);
+        let mut unplaced = false;
+        let entries = issued(inst, &inst.record.members, |_| true, &mut out)
+            .into_iter()
+            .map(|(id, m)| (id, m, "member"))
+            .chain(
+                issued(inst, &inst.record.copies, |_| true, &mut out)
+                    .into_iter()
+                    .map(|(id, c)| (id, c, "copy")),
+            )
+            .collect::<Vec<_>>();
+        for (id, issued, kind) in entries {
+            let what = format!("{kind} {}", inst.at(id));
+            let recorded = issued
+                .cwd
+                .as_ref()
+                .filter(|cwd| cwd.file_name().is_some_and(|name| name == id.as_str()));
+            match (recorded, &team) {
+                (Some(dir), _) => leaf_at(inst, dir, &held, &what, &mut out),
+                (None, Ok(v)) => {
+                    let cwd = if kind == "member" {
+                        v.team
+                            .roles
+                            .get(&issued.role)
+                            .and_then(|r| r.cwd.as_deref())
+                    } else {
+                        v.team.team_roles.get(&issued.role).map(|r| r.cwd.as_str())
+                    };
+                    leaf(inst, cwd, id, &held, &what, &mut out);
+                }
+                (None, Err(_)) => unplaced = true,
+            }
+        }
+        if unplaced && let Err(e) = &team {
+            out.error(format!(
+                "can't place some folders brg made for {}'s members and copies, because its team can't be loaded ({}); remove any left empty by hand",
+                inst.id,
+                e.split(';').next().unwrap_or(e)
+            ));
+        }
+    }
+    out
+}
+
 /// One registered instance: its deleted members' and copies' folders and
 /// state.
 fn instance(inst: &Instance, registry: &registry::Registry, held: &[PathBuf], out: &mut Outcome) {
@@ -103,11 +158,12 @@ fn instance(inst: &Instance, registry: &registry::Registry, held: &[PathBuf], ou
         Ok(lock) => lock,
         Err(e) => return out.error(format!("skipped {}: {e}", inst.id)),
     };
-    let deleted_members = deleted(inst, &inst.record.members, out);
-    let deleted_copies: Vec<(&String, &IssuedMember)> = deleted(inst, &inst.record.copies, out)
-        .into_iter()
-        .filter(|(id, _)| !registry.instances.contains_key(&inst.at(id)))
-        .collect();
+    let deleted_members = issued(inst, &inst.record.members, |m| m.deleted, out);
+    let deleted_copies: Vec<(&String, &IssuedMember)> =
+        issued(inst, &inst.record.copies, |m| m.deleted, out)
+            .into_iter()
+            .filter(|(id, _)| !registry.instances.contains_key(&inst.at(id)))
+            .collect();
     if deleted_members.is_empty() && deleted_copies.is_empty() {
         return;
     }
@@ -165,15 +221,16 @@ fn instance(inst: &Instance, registry: &registry::Registry, held: &[PathBuf], ou
     }
 }
 
-/// The deleted entries of `issued`. An ID that isn't one brg issues (a
-/// damaged record) is reported and never turned into a path.
-fn deleted<'a>(
+/// The entries of `issued` that `pick` keeps. An ID that isn't one brg
+/// issues (a damaged record) is reported and never turned into a path.
+fn issued<'a>(
     inst: &Instance,
     issued: &'a std::collections::BTreeMap<String, IssuedMember>,
+    pick: impl Fn(&IssuedMember) -> bool,
     out: &mut Outcome,
 ) -> Vec<(&'a String, &'a IssuedMember)> {
     let mut found = Vec::new();
-    for (id, member) in issued.iter().filter(|(_, m)| m.deleted) {
+    for (id, member) in issued.iter().filter(|(_, m)| pick(m)) {
         if crate::names::is_valid_member_id(id) && registry::split_id(id).is_some() {
             found.push((id, member));
         } else {
@@ -203,6 +260,13 @@ fn leaf(
         return;
     };
     let dir = inst.record.folder.join(cwd.replace("{member_id}", id));
+    leaf_at(inst, &dir, held, what, out);
+}
+
+/// Remove the folder `dir` brg made, if it holds nothing but folders and
+/// nobody works in it; otherwise say why it stays.
+fn leaf_at(inst: &Instance, dir: &Path, held: &[PathBuf], what: &str, out: &mut Outcome) {
+    let dir = dir.to_path_buf();
     let Ok(meta) = dir.symlink_metadata() else {
         return;
     };
@@ -230,9 +294,7 @@ fn leaf(
         },
         Ok(Contents::Git { worktree: true }) => out.kept(
             &dir,
-            &format!(
-                "holds a git worktree ({what}); its lead removes it with `git worktree remove`"
-            ),
+            &format!("holds a git worktree ({what}); remove it with `git worktree remove`"),
         ),
         Ok(Contents::Git { worktree: false }) => {
             out.kept(&dir, &format!("holds a git repository ({what})"))
