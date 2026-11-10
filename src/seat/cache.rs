@@ -116,9 +116,17 @@ impl Directory {
         Ok(file)
     }
     fn lock(&self, key: &str, deadline: Instant) -> io::Result<File> {
-        let file = self
-            .file(&format!("{key}.lock"), OFlags::CREATE | OFlags::RDWR)
-            .inspect_err(|error| diagnostic("lock create-open", error))?;
+        let name = format!("{key}.lock");
+        // Concurrent non-exclusive openat(O_CREAT) can return spurious ENOENT
+        // on macOS. Exclusive creation followed by an existing-file open on
+        // EEXIST preserves the descriptor-relative checks without retrying.
+        let file = match self.file(&name, OFlags::CREATE | OFlags::EXCL | OFlags::RDWR) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                self.file(&name, OFlags::RDWR)?
+            }
+            Err(error) => return Err(error),
+        };
         loop {
             if Instant::now() >= deadline {
                 return Err(io::ErrorKind::TimedOut.into());
