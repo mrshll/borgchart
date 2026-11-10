@@ -139,6 +139,42 @@ fn live_first(rows: Vec<StatusRow>) -> Vec<StatusRow> {
     out
 }
 
+/// A screen line by what it shows: its instance and, unless it is the
+/// header line, its row's key.
+fn line_key(sections: &[Section], (s, r): (usize, Option<usize>)) -> (String, Option<String>) {
+    let section = &sections[s];
+    (
+        section.inst.id.clone(),
+        r.map(|r| runtime::status_key(&section.rows[r])),
+    )
+}
+
+/// Read the screen again, with the selection on the line it was on, if
+/// that line is still drawn: `a` and a refresh add and remove lines above it.
+fn reload(
+    one: Option<&Instance>,
+    roles: bool,
+    headers: bool,
+    sections: &mut Vec<Section>,
+    table_state: &mut TableState,
+) {
+    let Ok(new) = load(one, roles) else {
+        return;
+    };
+    let selected = table_state
+        .selected()
+        .and_then(|i| entries(sections, headers).get(i).copied())
+        .map(|line| line_key(sections, line));
+    *sections = new;
+    if let Some(at) = selected.and_then(|key| {
+        entries(sections, headers)
+            .into_iter()
+            .position(|line| line_key(sections, line) == key)
+    }) {
+        table_state.select(Some(at));
+    }
+}
+
 /// The screen's lines: (section, row), where no row is the section's
 /// header line. One instance has no header lines: its header is the title.
 fn entries(sections: &[Section], headers: bool) -> Vec<(usize, Option<usize>)> {
@@ -374,9 +410,7 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
         match polled {
             Err(e) => break Err(e),
             Ok(false) => {
-                if let Ok(s) = load(one, roles) {
-                    sections = s;
-                }
+                reload(one, roles, headers, &mut sections, &mut table_state);
                 last = Instant::now();
                 continue;
             }
@@ -402,15 +436,11 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
             }
             KeyCode::Char('a') => {
                 roles = !roles;
-                if let Ok(s) = load(one, roles) {
-                    sections = s;
-                }
+                reload(one, roles, headers, &mut sections, &mut table_state);
                 message.clear();
             }
             KeyCode::Char('r') => {
-                if let Ok(s) = load(one, roles) {
-                    sections = s;
-                }
+                reload(one, roles, headers, &mut sections, &mut table_state);
                 message.clear();
             }
             KeyCode::Enter => {
@@ -452,9 +482,7 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
                     Ok(()) => format!("back from {name}"),
                     Err(e) => e,
                 };
-                if let Ok(s) = load(one, roles) {
-                    sections = s;
-                }
+                reload(one, roles, headers, &mut sections, &mut table_state);
                 last = Instant::now();
             }
             _ => {}

@@ -1193,7 +1193,11 @@ pub fn header_as(inst: &Instance, short: bool) -> String {
 
 /// `path` with a leading `home` written `~`.
 fn tilde(path: &std::path::Path, home: Option<&std::path::Path>) -> String {
-    match home.and_then(|h| path.strip_prefix(h).ok()) {
+    // A home of `/`, or an empty one, would shorten every path.
+    match home
+        .filter(|h| h.parent().is_some())
+        .and_then(|h| path.strip_prefix(h).ok())
+    {
         Some(rest) if rest.as_os_str().is_empty() => "~".into(),
         Some(rest) => format!("~/{}", rest.display()),
         None => path.display().to_string(),
@@ -3973,8 +3977,9 @@ fn parent_key(r: &StatusRow) -> Option<String> {
 /// shape. A `start: true` role with no member stays: it should have one.
 /// Piped text and `--json` keep every row.
 pub fn hide_empty_roles(rows: Vec<StatusRow>) -> Vec<StatusRow> {
-    let empty =
-        |r: &StatusRow| r.kind == "role" && (r.state == ON_DEMAND || r.state == NOT_STARTING);
+    let empty = |r: &StatusRow| {
+        r.kind == "role" && !r.start && (r.state == ON_DEMAND || r.state == NOT_STARTING)
+    };
     let by_key: BTreeMap<String, &StatusRow> = rows.iter().map(|r| (status_key(r), r)).collect();
     let mut keep = BTreeSet::new();
     for row in rows.iter().filter(|r| !empty(r)) {
@@ -4676,7 +4681,10 @@ mod tests {
             summary(&rows, false),
             "● 2 working  · 1 idle  ! 2 need you  3 unread"
         );
-        assert_eq!(summary_parts(&rows)[2], ("! 2 need you".to_string(), true));
+        // Only what needs a person is bold red.
+        let painted = summary(&rows, true);
+        assert!(painted.contains(&tree::ink_text("! 2 need you", tree::palette::ALERT, true)));
+        assert!(painted.contains(&tree::ink_text("· 1 idle", tree::palette::FADED, false)));
         assert_eq!(summary(&rows[5..], false), "nothing running");
         // A role with no member yet is drawn as a slot: italic.
         assert!(status_look(&rows[5]).italic);
@@ -4725,9 +4733,16 @@ mod tests {
                 "not created (start: true)",
                 Some("lead"),
             ),
+            // So does a `start: true` role that allows copies and has none.
+            StatusRow {
+                start: true,
+                ..row("role", "i", "pool", ON_DEMAND, Some("lead"))
+            },
             // A member-less role with a member beneath it keeps its row.
             row("role", "i", "boss", NOT_STARTING, None),
             row("member", "i", "orphan", "idle", Some("boss")),
+            row("role", "i", "spare", NOT_STARTING, None),
+            row("copy", "i/sub", "sub", "0 running", Some("i/spare")),
             row("plugin", "i", "watch", "alive", None),
             row("copy", "i/dev", "dev", "1 running", Some("i/lead")),
             row("member", "i/dev", "devlead", "working", Some("i/dev")),
@@ -4740,7 +4755,8 @@ mod tests {
         assert_eq!(
             names,
             [
-                "lead", "keeper", "boss", "orphan", "watch", "dev", "devlead"
+                "lead", "keeper", "pool", "boss", "orphan", "spare", "sub", "watch", "dev",
+                "devlead"
             ]
         );
         let terminal = render_status_as("i", &rows, true);
@@ -4761,6 +4777,10 @@ mod tests {
         assert_eq!(t("/home/mm/x"), "/home/mm/x");
         assert_eq!(t("/srv/x"), "/srv/x");
         assert_eq!(tilde(std::path::Path::new("/home/m/x"), None), "/home/m/x");
+        for odd in ["/", ""] {
+            let odd = Some(std::path::Path::new(odd));
+            assert_eq!(tilde(std::path::Path::new("/srv/x"), odd), "/srv/x");
+        }
     }
 
     #[test]

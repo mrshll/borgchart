@@ -405,7 +405,8 @@ fn nested_status_screens_keep_healthy_members_visible_when_a_copy_becomes_unread
             "{text}"
         );
         assert!(
-            !text.contains(&format!("{copy}  team ")),
+            !text.contains(&format!("{copy}  team "))
+                && !text.contains(&format!("{copy}  folder ")),
             "nested copy must not have a top-level header: {text}"
         );
         assert!(

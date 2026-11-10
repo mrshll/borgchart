@@ -206,6 +206,21 @@ fn status_i_attaches_detaches_and_quits() {
     // across a refresh.
     assert!(!screen().contains("scout"), "{}", dump());
     assert!(screen().contains("a roles"), "{}", dump());
+    // Select the plugin's row, below where scout appears: the selection
+    // stays on it as rows come and go.
+    tmux(&private, &outer, &["send-keys", "-t", "=o:", "j"]);
+    let selected = || {
+        screen()
+            .lines()
+            .find(|l| l.contains("> "))
+            .unwrap_or_default()
+            .to_string()
+    };
+    wait(
+        "the plugin's row selected",
+        || selected().contains("watcher"),
+        dump,
+    );
     tmux(&private, &outer, &["send-keys", "-t", "=o:", "a"]);
     wait(
         "scout shown",
@@ -220,12 +235,14 @@ fn status_i_attaches_detaches_and_quits() {
     // The 2 s refresh keeps it.
     std::thread::sleep(Duration::from_millis(2500));
     assert!(screen().contains("scout"), "{}", dump());
+    assert!(selected().contains("watcher"), "{}", dump());
     tmux(&private, &outer, &["send-keys", "-t", "=o:", "a"]);
     wait(
         "scout hidden again",
         || !screen().contains("scout") && screen().contains("└─ ? beta"),
         dump,
     );
+    assert!(selected().contains("watcher"), "{}", dump());
 
     tmux(&private, &outer, &["send-keys", "-t", "=o:", "q"]);
     wait(
