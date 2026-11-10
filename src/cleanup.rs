@@ -19,8 +19,9 @@
 //!   instance argument only).
 //!
 //! Work folders, kept members' and copies' folders, repositories, worktrees
-//! outside those leaves and messages are never touched. `brg reset` applies the same folder rules to
-//! every member and copy of the tree it forgets ([`tree_folders`]).
+//! outside those leaves and messages are never touched. `brg reset` applies
+//! the same folder rules to every member and copy of the tree it forgets
+//! ([`tree_folders`]).
 
 use std::path::{Path, PathBuf};
 
@@ -378,30 +379,79 @@ fn contents(dir: &Path) -> std::io::Result<Contents> {
     })
 }
 
-/// Why the git worktree at `dir` isn't clean, or `None` when it is: no
-/// modified, staged or untracked (non-ignored) files, and no commit that
-/// no remote-tracking ref reaches.
+/// Why the git worktree at `dir` isn't clean, or `None` when it is:
+/// - no other repository or worktree inside it, even in ignored folders
+///   (`git worktree remove` would delete it with the rest);
+/// - no modified, staged or untracked (non-ignored) files, and no file git
+///   is told to skip or assume unchanged;
+/// - no commit that no remote-tracking ref reaches, from its HEAD, its HEAD
+///   reflog or its own `refs/worktree/` refs.
 fn clean_worktree(dir: &Path) -> Result<Option<String>, String> {
+    if nested_git(dir).map_err(|e| format!("cannot read it: {e}"))? {
+        return Ok(Some("another repository or worktree inside it".into()));
+    }
     let top = git(dir, &["rev-parse", "--show-toplevel"])?;
     let same = |a: &Path, b: &Path| a.canonicalize().ok() == b.canonicalize().ok();
     if !same(Path::new(top.trim()), dir) {
         return Err(format!("git places its top at {}", top.trim()));
     }
-    if !git(dir, &["status", "--porcelain", "--untracked-files=normal"])?
-        .trim()
-        .is_empty()
-    {
+    let status = git(
+        dir,
+        &[
+            "--no-optional-locks",
+            "status",
+            "--porcelain",
+            "--untracked-files=normal",
+        ],
+    )?;
+    if !status.trim().is_empty() {
         return Ok(Some("uncommitted or untracked changes".into()));
     }
-    let unpushed = git(dir, &["rev-list", "--count", "HEAD", "--not", "--remotes"])?;
+    let tagged = git(dir, &["ls-files", "-v"])?;
+    if tagged.lines().any(|line| !line.starts_with("H ")) {
+        return Ok(Some("files git is told to skip or assume unchanged".into()));
+    }
+    let mut tips = git(dir, &["rev-parse", "HEAD"])?;
+    tips.push_str(&git(dir, &["log", "-g", "--format=%H", "HEAD"])?);
+    tips.push_str(&git(
+        dir,
+        &["for-each-ref", "--format=%(objectname)", "refs/worktree/"],
+    )?);
+    let tips: std::collections::BTreeSet<&str> = tips.split_whitespace().collect();
+    let mut args = vec!["rev-list", "--count"];
+    args.extend(tips);
+    args.extend(["--not", "--remotes"]);
+    let unpushed = git(dir, &args)?;
     match unpushed.trim() {
         "0" => Ok(None),
         n => Ok(Some(format!("{n} commit(s) on no remote"))),
     }
 }
 
-/// Run git in `dir` with none of the caller's `GIT_*` settings; its output,
-/// or why it failed.
+/// Whether a `.git` (file or folder) sits anywhere below `dir`'s top,
+/// never following a symlink.
+fn nested_git(dir: &Path) -> std::io::Result<bool> {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(next) = stack.pop() {
+        for entry in std::fs::read_dir(&next)? {
+            let entry = entry?;
+            if next != dir && entry.file_name() == ".git" {
+                return Ok(true);
+            }
+            if entry.file_type()?.is_dir() && !(next == dir && entry.file_name() == ".git") {
+                stack.push(entry.path());
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// How long one git command may take before it is stopped and its check
+/// counts as failed.
+const GIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Run git in `dir` with none of the caller's `GIT_*` settings, within
+/// [`GIT_LIMIT`]; its output, or why it failed.
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     let mut command = std::process::Command::new("git");
     for (key, _) in std::env::vars_os() {
@@ -409,17 +459,29 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
             command.env_remove(key);
         }
     }
-    let output = command
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|e| format!("cannot run git: {e}"))?;
+    command.arg("-C").arg(dir).args(args);
+    let what = args
+        .iter()
+        .find(|arg| !arg.starts_with('-'))
+        .copied()
+        .unwrap_or_default();
+    let limits = crate::bounded_process::Limits {
+        deadline: std::time::Instant::now() + GIT_LIMIT,
+        stdout_bytes: 64 << 20,
+        stderr_bytes: 64 << 10,
+    };
+    let output = crate::bounded_process::run(&mut command, None, limits).map_err(|e| match e {
+        crate::bounded_process::Error::Deadline => {
+            format!(
+                "git {what} did not finish within {} seconds",
+                GIT_LIMIT.as_secs()
+            )
+        }
+        e => format!("cannot run git {what}: {e:?}"),
+    })?;
     if !output.status.success() {
         return Err(format!(
-            "git {} failed: {}",
-            args.first().copied().unwrap_or_default(),
+            "git {what} failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }

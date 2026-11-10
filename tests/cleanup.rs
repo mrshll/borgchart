@@ -25,7 +25,7 @@ roles:
     vendor: codex
     parent: lead
     start: false
-    max: 4
+    max: 8
     cwd: "copies/{member_id}"
   scout:
     prompt: scout.md
@@ -294,9 +294,13 @@ fn cleanup_removes_clean_worktrees_and_keeps_any_with_work() {
     let env = leaves_env();
     let lead = root_checkout(&env);
     let inst = env.create("oncall", "work/a");
-    let [clean, untracked, modified, unpushed] = std::array::from_fn(|_| helper(&env, &inst));
+    let [clean, untracked, modified, unpushed, moved, skipped, nested] =
+        std::array::from_fn(|_| helper(&env, &inst));
     let leaf = |id: &str| env.path(&format!("work/a/copies/{id}"));
-    for id in [&clean, &untracked, &modified, &unpushed] {
+    let all = [
+        &clean, &untracked, &modified, &unpushed, &moved, &skipped, &nested,
+    ];
+    for id in all {
         git(
             &lead,
             &[
@@ -313,11 +317,40 @@ fn cleanup_removes_clean_worktrees_and_keeps_any_with_work() {
     fs::write(leaf(&modified).join("README"), "changed\n").unwrap();
     fs::write(leaf(&unpushed).join("README"), "committed\n").unwrap();
     git(&leaf(&unpushed), &["commit", "-q", "-am", "local only"]);
-    for id in [&clean, &untracked, &modified, &unpushed] {
+    // A commit only the worktree's HEAD reflog still reaches.
+    fs::write(leaf(&moved).join("README"), "moved away\n").unwrap();
+    git(&leaf(&moved), &["commit", "-q", "-am", "moved away from"]);
+    git(
+        &leaf(&moved),
+        &["checkout", "-q", "--detach", "origin/main"],
+    );
+    // An edit git is told not to look at.
+    git(
+        &leaf(&skipped),
+        &["update-index", "--skip-worktree", "README"],
+    );
+    fs::write(leaf(&skipped).join("README"), "hidden edit\n").unwrap();
+    // A clone with local work in an ignored folder of a clean worktree.
+    fs::write(lead.join(".git/info/exclude"), "scratch/\n").unwrap();
+    let inner = leaf(&nested).join("scratch/clone");
+    fs::create_dir_all(&inner).unwrap();
+    git(&inner, &["init", "-q"]);
+    fs::write(inner.join("work.txt"), "work").unwrap();
+    git(&inner, &["add", "work.txt"]);
+    git(&inner, &["commit", "-q", "-m", "inner"]);
+    for id in all {
         delete_member(&env, &inst, id);
     }
 
-    let out = stdout(&env.ok(&["cleanup"]));
+    // The caller's git settings, pointing at the root's checkout, are ignored.
+    let out = env
+        .cmd(&["cleanup"])
+        .env("GIT_DIR", lead.join(".git"))
+        .env("GIT_WORK_TREE", &lead)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", both(&out));
+    let out = stdout(&out);
 
     assert!(!leaf(&clean).exists(), "{out}");
     assert!(!git(&lead, &["worktree", "list"]).contains(&clean), "{out}");
@@ -325,6 +358,9 @@ fn cleanup_removes_clean_worktrees_and_keeps_any_with_work() {
         (&untracked, "uncommitted or untracked changes"),
         (&modified, "uncommitted or untracked changes"),
         (&unpushed, "1 commit(s) on no remote"),
+        (&moved, "1 commit(s) on no remote"),
+        (&skipped, "files git is told to skip or assume unchanged"),
+        (&nested, "another repository or worktree inside it"),
     ] {
         assert!(leaf(id).join(".git").is_file(), "{id} went: {out}");
         assert!(
@@ -339,6 +375,7 @@ fn cleanup_removes_clean_worktrees_and_keeps_any_with_work() {
         fs::read_to_string(leaf(&untracked).join("new.txt")).unwrap(),
         "work"
     );
+    assert!(inner.join("work.txt").is_file());
     // The root's own checkout is never touched.
     assert!(lead.join(".git").is_dir());
     assert_eq!(fs::read_to_string(lead.join("README")).unwrap(), "hello\n");
