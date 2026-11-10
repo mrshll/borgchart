@@ -37,18 +37,11 @@ fn department() -> Env {
     let env = Env::new();
     env.write(
         "teams/oncall/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: lead}\n  dev: {team: dev, parent: lead, start: false, max: 2, cwd: 'dev/{member_id}'}\n",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  dev: {team: dev, parent: lead, start: false, max: 2, worktree: true}\n",
     );
     env.team("teams/dev");
-    let team = env.path("teams/dev/team.yaml");
-    fs::write(
-        &team,
-        fs::read_to_string(&team)
-            .unwrap()
-            .replace("prompt: lead.md", "prompt: lead.md\n    cwd: repo"),
-    )
-    .unwrap();
-    fs::create_dir(env.path("work/a/lead")).unwrap();
+    fs::remove_dir(env.path("work/a")).unwrap();
+    env.checkout("work/a");
     env
 }
 
@@ -57,14 +50,13 @@ fn nested_addresses_start_and_stop_only_the_named_copy_or_member() {
     let env = department();
     env.write(
         "teams/dev/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md, cwd: repo}\n  helper: {prompt: helper.md, parent: lead, start: false, cwd: repo}\n  design: {team: design, parent: lead, start: false, cwd: 'design/{member_id}'}\n",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead, start: false}\n  design: {team: design, parent: lead, start: false}\n",
     );
     env.team("teams/design");
     let dept = env.create("oncall", "work/a");
     let (first, folder) = create_copy(&env, &dept, "dev");
     let (peer, peer_folder) = create_copy(&env, &dept, "dev");
-    for (copy, folder) in [(&first, &folder), (&peer, &peer_folder)] {
-        fs::create_dir(folder.join("repo")).unwrap();
+    for (copy, _) in [(&first, &folder), (&peer, &peer_folder)] {
         env.ok(&["start", copy]);
     }
     let (panel, _) = create_copy(&env, &first, "design");
@@ -218,10 +210,17 @@ fn missing_nested_copy_reports_kept_alternatives() {
 fn status_nests_copies_once_with_full_paths_and_states() {
     let env = department();
     let dev_team = env.path("teams/dev/team.yaml");
-    fs::write(&dev_team, format!("{}  design: {{team: design, parent: lead, start: false, cwd: 'design/{{member_id}}'}}\n", fs::read_to_string(&dev_team).unwrap())).unwrap();
+    fs::write(
+        &dev_team,
+        format!(
+            "{}  design: {{team: design, parent: lead, start: false}}\n",
+            fs::read_to_string(&dev_team).unwrap()
+        ),
+    )
+    .unwrap();
     env.team("teams/design");
     let team = env.path("teams/oncall/team.yaml");
-    fs::write(&team, format!("{}  review: {{team: dev, parent: lead, start: false, cwd: 'review/{{member_id}}'}}\n  research: {{team: dev, parent: lead, start: false, max: 2, cwd: 'research/{{member_id}}'}}\n", fs::read_to_string(&team).unwrap())).unwrap();
+    fs::write(&team, format!("{}  review: {{team: dev, parent: lead, start: false}}\n  research: {{team: dev, parent: lead, start: false, max: 2}}\n", fs::read_to_string(&team).unwrap())).unwrap();
     let dept = env.create("oncall", "work/a");
     let dept_lead = env.member(&dept, "lead");
     let rows = env.rows(&dept);
@@ -235,8 +234,7 @@ fn status_nests_copies_once_with_full_paths_and_states() {
     );
     let (first, first_folder) = create_copy(&env, &dept, "dev");
     let (second, second_folder) = create_copy(&env, &dept, "dev");
-    for (copy, folder) in [(&first, &first_folder), (&second, &second_folder)] {
-        fs::create_dir(folder.join("repo")).unwrap();
+    for (copy, _) in [(&first, &first_folder), (&second, &second_folder)] {
         let out = env
             .cmd(&["start", copy])
             .env("BORGCHART_SUFFIX_SEED", "73")
@@ -326,8 +324,7 @@ fn nested_status_screens_keep_healthy_members_visible_when_a_copy_becomes_unread
     let dept = env.create("oncall", "work/a");
     let (copy, folder) = create_copy(&env, &dept, "dev");
     let (peer, peer_folder) = create_copy(&env, &dept, "dev");
-    for (id, folder) in [(&copy, &folder), (&peer, &peer_folder)] {
-        fs::create_dir(folder.join("repo")).unwrap();
+    for (id, _) in [(&copy, &folder), (&peer, &peer_folder)] {
         let out = env
             .cmd(&["start", id])
             .env("BORGCHART_SUFFIX_SEED", "73")
@@ -506,8 +503,6 @@ fn team_copies_share_the_tree_store_and_keep_separate_slots_until_deleted() {
         refused.contains(&first) && refused.contains(&second),
         "{refused}"
     );
-    fs::create_dir(first_folder.join("repo")).unwrap();
-    fs::create_dir(second_folder.join("repo")).unwrap();
     for copy in [&first, &second] {
         env.ok(&["start", copy]);
         env.wait_for("copy lead idle", || env.state_of(copy, "lead") == "idle");
@@ -532,7 +527,10 @@ fn team_copies_share_the_tree_store_and_keep_separate_slots_until_deleted() {
             .filter(|start| start["env"]["BORGCHART_INSTANCE"] == *copy)
             .collect();
         assert_eq!(starts.len(), 1);
-        assert_eq!(starts[0]["cwd"], folder.join("repo").display().to_string());
+        assert_eq!(
+            starts[0]["cwd"],
+            folder.canonicalize().unwrap().display().to_string()
+        );
         assert_eq!(starts[0]["env"]["BORGCHART_INSTANCE"], *copy);
         assert_eq!(
             starts[0]["env"]["BORGCHART_NOTES"],
@@ -557,11 +555,11 @@ fn depth_three_copies_wait_for_preparation_and_cascade_before_parent_deletion() 
     let env = Env::new();
     env.write(
         "teams/oncall/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md, start: true, cwd: lead}\n  dev: {team: dev, parent: lead, start: false, max: 2, cwd: 'dev/{member_id}'}\n",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md, start: true}\n  dev: {team: dev, parent: lead, start: false, max: 2, worktree: true}\n",
     );
     env.write(
         "teams/dev/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md, start: true, cwd: repo}\n  design: {team: design, parent: lead, start: false, cwd: 'design/{member_id}'}\n",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md, start: true}\n  design: {team: design, parent: lead, start: false}\n",
     );
     env.write(
         "teams/dev/lead.md",
@@ -569,7 +567,7 @@ fn depth_three_copies_wait_for_preparation_and_cascade_before_parent_deletion() 
     );
     env.write(
         "teams/design/team.yaml",
-        "bus: {}\nroles:\n  amber: {prompt: amber.md, start: true, cwd: work}\n  violet: {prompt: violet.md, start: true, cwd: work}\n",
+        "bus: {}\nroles:\n  amber: {prompt: amber.md, start: true}\n  violet: {prompt: violet.md, start: true}\n",
     );
     for role in ["amber", "violet"] {
         env.write(
@@ -577,7 +575,8 @@ fn depth_three_copies_wait_for_preparation_and_cascade_before_parent_deletion() 
             "---\nmodels: {claude: opus high}\n---\nReview the fictional design.\n",
         );
     }
-    fs::create_dir(env.path("work/a/lead")).unwrap();
+    fs::remove_dir(env.path("work/a")).unwrap();
+    env.checkout("work/a");
     let dept = env.create("oncall", "work/a");
     let dept_lead = env.member(&dept, "lead");
     assert!(!env.path("work/a/dev").exists());
@@ -585,14 +584,16 @@ fn depth_three_copies_wait_for_preparation_and_cascade_before_parent_deletion() 
     let (dev, dev_folder) = create_copy(&env, &dept, "dev");
     let dev_id = dev.rsplit('/').next().unwrap();
     assert!(well_formed(dev_id, "dev"));
-    assert_eq!(dev_folder, env.path(&format!("work/a/dev/{dev_id}")));
-    assert!(!dev_folder.join("repo").exists());
-    fs::create_dir(dev_folder.join("repo")).unwrap();
+    assert_eq!(dev_folder, env.worktree(&dev));
+    assert!(dev_folder.join(".git").is_file());
     env.ok(&["start", &dev]);
     env.wait_for("dev lead idle", || env.state_of(&dev, "lead") == "idle");
     let dev_lead = env.member(&dev, "lead");
     let start = &env.starts(&dev_lead)[0];
-    assert_eq!(start["cwd"], dev_folder.join("repo").display().to_string());
+    assert_eq!(
+        start["cwd"],
+        dev_folder.canonicalize().unwrap().display().to_string()
+    );
     assert_eq!(start["env"]["BORGCHART_INSTANCE"], dev);
     assert_eq!(
         start["env"]["BORGCHART_PARENT"],
@@ -602,9 +603,10 @@ fn depth_three_copies_wait_for_preparation_and_cascade_before_parent_deletion() 
     let (panel, panel_folder) = create_copy(&env, &dev, "design");
     let panel_id = panel.rsplit('/').next().unwrap();
     assert!(well_formed(panel_id, "design"));
-    assert_eq!(panel_folder, dev_folder.join("design").join(panel_id));
-    assert!(!panel_folder.join("work").exists());
-    fs::create_dir(panel_folder.join("work")).unwrap();
+    assert_eq!(
+        panel_folder, dev_folder,
+        "a panel without a worktree shares its parent's"
+    );
     env.ok(&["start", &panel]);
     for role in ["amber", "violet"] {
         env.wait_for("designer idle", || env.state_of(&panel, role) == "idle");
@@ -612,7 +614,7 @@ fn depth_three_copies_wait_for_preparation_and_cascade_before_parent_deletion() 
         let start = &env.starts(&member)[0];
         assert_eq!(
             start["cwd"],
-            panel_folder.join("work").display().to_string()
+            panel_folder.canonicalize().unwrap().display().to_string()
         );
         assert_eq!(
             start["env"]["BORGCHART_PARENT"],
@@ -663,5 +665,47 @@ fn depth_three_copies_wait_for_preparation_and_cascade_before_parent_deletion() 
     env.ok(&["delete", &dept]);
     let remaining = stdout(&env.ok(&["ls", "--json"]));
     assert!(!remaining.contains(&dept));
-    assert!(dev_folder.is_dir() && panel_folder.is_dir());
+    // The dev copy's clean worktree goes with it; the root checkout stays.
+    assert!(!dev_folder.exists());
+    assert!(env.path("work/a/.git").is_dir());
+}
+
+#[test]
+fn worktrees_in_a_copy_never_follow_the_copys_rewritten_git_file() {
+    // Catches: brg running git through a copy's member-writable `.git`
+    // file when it adds or removes worktrees inside that copy.
+    let env = department();
+    env.write(
+        "teams/dev/team.yaml",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead, start: false, worktree: true}\n",
+    );
+    let dept = env.create("oncall", "work/a");
+    let (copy, folder) = create_copy(&env, &dept, "dev");
+    let hostile = env.path("hostile");
+    git(
+        env.dir.path(),
+        &["init", "-q", &hostile.display().to_string()],
+    );
+    let ran = env.path("ran");
+    git(
+        &hostile,
+        &[
+            "config",
+            "core.fsmonitor",
+            &format!("touch {}", ran.display()),
+        ],
+    );
+    fs::write(
+        folder.join(".git"),
+        format!("gitdir: {}\n", hostile.join(".git").display()),
+    )
+    .unwrap();
+    env.ok(&["start", &copy]);
+    env.ok(&["create", &format!("{copy}/helper")]);
+    let helper = env.member(&copy, "helper");
+    env.ok(&["stop", &dept]);
+    let _ = env.brg(&["delete", &format!("{copy}/{helper}")]);
+    let _ = env.brg(&["cleanup"]);
+    assert!(!ran.exists(), "brg ran the hostile repository's command");
+    env.ok(&["stop", &dept]);
 }

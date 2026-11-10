@@ -70,7 +70,7 @@ devteam-k3f9  team ~/.config/borgchart/teams/devteam · folder ~/work/project
 ```
 
 - **`create`** makes a new instance in that folder, with a suffixed ID; run it twice and you have two. Every team has durable messages.
-- **Per role** in `team.yaml`: `posture`, extra vendor `args` and an optional `cwd` inside the instance's folder. Standing rules go in the team's own files; context for one piece of work goes to the lead in a message.
+- **Per role** in `team.yaml`: `posture`, extra vendor `args` and `worktree: true` for members that each need their own checkout. Standing rules go in the team's own files; context for one piece of work goes to the lead in a message.
 - **Secrets:** brg stores none. They come from your environment by name when you run `brg create` or `brg start`; `brg secret devteam` lists which are set.
 
 ## Commands
@@ -127,10 +127,10 @@ roles:
     parent: lead
     start: false
     max: 3                             # up to three kept copies, running or stopped
-    cwd: copies/{member_id}            # optional; brg creates the empty leaf; copies/ must exist
+    worktree: true                     # optional; each copy gets its own git worktree
 ```
 
-- **Starting a copy.** Each `brg create <instance>/implementer` starts one new copy, with its own suffixed ID. Past `max` it's refused, listing all kept copies, stopped ones included. For `max: 1`, the refusal points to `start`. Each copy gets the same role file and its own name; its folder follows `cwd`.
+- **Starting a copy.** Each `brg create <instance>/implementer` starts one new copy, with its own suffixed ID. Past `max` it's refused, listing all kept copies, stopped ones included. For `max: 1`, the refusal points to `start`. Each copy gets the same role file and its own name; with `worktree: true`, its own worktree too.
 - **The tree** shows every kept copy with its state and unread count. A `max > 1` role with no kept members gets one dim line:
 
   ```
@@ -151,7 +151,7 @@ roles:
 
 - **Capacity and restarts.** `max` is optional, defaults to 1 and must be at least 1. `start: true` with `max > 1` makes one member at instance creation. `start` reuses kept members and never fills to `max`; a `start: true` role with none left gets one new member. Lowering `max` after a full stop keeps every member and refuses creation until enough are deleted. Deleted suffixes are never reused.
 - **Parents.** `parent:` and a plugin's `delivers_to:` require a `max: 1` agent role. A person may manage anything; a member at its latest running start may create, start, stop or delete anything below it along recorded parent edges, including members and copies at every depth. The caller's start is checked in its own instance under the registry lock. Members cannot manage themselves, ancestors, siblings or independent instances, and a copy's roots cannot manage their own copy or each other. Stopped, replaced and incomplete starts are refused. Creating a child requires a kept parent member.
-- **Folders.** `{member_id}` in `cwd` is optional. Without it, copies share the role's folder. If used, it must be the last folder name, with no `..`. When `cwd` ends in `{member_id}`, brg makes only the missing empty leaf when issuing a new member (`create`, or a full `start` that gives a `start: true` role a new member), for any `max`; every ancestor must already exist, and an existing leaf is used as is. The parent puts a worktree in it before briefing the copy. Starting an existing member never creates its folder, and `delete` leaves them alone. Copies of a `{member_id}` role may not use equal, nested or symlinked aliases of each other's folders, even while stopped. Creation and every start check folders under the registry lock. Different roles may share a folder; the team's instructions still enforce one writer per checkout.
+- **Folders.** Members work in the instance's folder, usually the repository. With `worktree: true`, brg adds each new member or copy its own git worktree from that folder when it issues it (`create`, or a full `start` that gives a `start: true` role a new member), detached at the folder's `HEAD`, or on a new branch with `brg create <instance>/<role> --branch <name>`. Worktrees live beside brg's state folder, at `~/.local/state/borgchart-worktrees/<address>` (with `/` written as `.`), and `status` shows them. `delete` removes a clean one, refuses one with uncommitted work or commits on no remote, and with `--force` leaves it as it is. Members without a worktree share the folder; the team's instructions still enforce one writer per checkout.
 - **Taking work and attention** remain team rules. The lead chooses a member, gives it one brief, tracks its reply and checks its deadline. An ended copy remains addressable with unread counts until deleted; the lead can restart it with `brg start <instance>/<member>`.
 
 ## Teams as members
@@ -161,15 +161,15 @@ A role can be a whole team, so teams form a tree: a team's roles can be teams, a
 ```yaml
 # borgchart-engineering/team.yaml, shortened
 roles:
-  lead:   {prompt: lead.md, start: true, interactive: true, cwd: lead}
-  dev:    {team: dev-team, parent: lead, start: false, max: 4, cwd: "dev/{member_id}"}
-  design: {team: dev-design-team, parent: lead, start: false, max: 2, cwd: "design/{member_id}"}
+  lead:   {prompt: lead.md, start: true, interactive: true}
+  dev:    {team: dev-team, parent: lead, start: false, max: 4, worktree: true}
+  design: {team: dev-design-team, parent: lead, start: false, max: 2}
 ```
 
-- **A team role's member is a copy:** a nested instance of the sub-team, with its own members, notes, state and frozen configuration, working in its own folder inside its parent's. The copy freezes its team folder's files at its first start, and picks up changes at its own next full stop and start.
-- **`team:` names another definition:** `team: dev-team` resolves through the configured team directories, exactly like `brg create dev-team`. Missing or ambiguous names fail validation. There is no same-installation restriction or nested-path compatibility. Definitions can be siblings while runtime working folders and addresses still nest. A definition also runs independently with `brg create dev-team <folder>`.
+- **A team role's member is a copy:** a nested instance of the sub-team, with its own members, notes, state and frozen configuration, working in its own worktree (`worktree: true`) or in its parent's folder. The copy freezes its team folder's files at its first start, and picks up changes at its own next full stop and start.
+- **`team:` names another definition:** `team: dev-team` resolves through the configured team directories, exactly like `brg create dev-team`. Missing or ambiguous names fail validation. There is no same-installation restriction or nested-path compatibility. Definitions can be siblings while runtime working folders and addresses still nest. A definition also runs independently with `brg create dev-team` in a checkout.
 - **Resolution is frozen while running.** Child definition directories belong to the parent start snapshot; a changed catalog cannot silently redirect a later copy. Apply changed resolution at a full stop/start. Existing copies retain their own recorded source folders and freeze their contents independently. Missing referenced definitions remain tolerable for observing/stopping running instances, but validation, copy creation and a fresh full start refuse them.
-- **Copies are created stopped.** `brg create <instance>/dev` makes the copy and its folder, prints its ID and the folders to prepare, and starts nothing. The parent prepares them (a dev copy's `repo/` worktree), then runs `brg start <instance>/<copy>`, which starts the copy's `start: true` roles. Work folders don't overlap at any level, so the checkout check between instances needs no exception.
+- **Copies are created stopped.** `brg create <instance>/dev` makes the copy and, for `worktree: true`, its worktree; it prints its ID and folder and starts nothing. `brg start <instance>/<copy>` starts the copy's `start: true` roles. A tree's instances may share folders, so the checkout check is between trees.
 - **Addresses nest:** `<instance>/<copy>/<member>`, for example `borgchart-engineering-h4k2/dev-a7k2/lead-c4nd`. A copy's instance ID is its full path. A target resolves by the longest registered instance prefix, then a member, a role or nothing. A copy's top members (those with no parent role) get their parent's full address in `BORGCHART_PARENT`.
 - **Escalation follows `parent:` one level at a time.** A copy's top members hang under the member of the team role's `parent`. Only the root writes to `external:NAME`; a child team's lead writes to its parent. Siblings don't message each other: their parent carries what one needs from another.
 - **Authority is the whole subtree.** A member, at its latest running start, may create, start, stop or delete anything below it along recorded parent edges, at any depth: its child members, the copies under it, and their members and copies. Never itself, its ancestors, its siblings or their subtrees, so a copy's top member can't stop or delete its own copy. A person may act on anything.

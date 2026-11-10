@@ -3,8 +3,9 @@
 //!
 //! A folder is held by another instance's member while that member runs,
 //! or while brg can't tell that it stopped (`unknown` liveness).
-//! Members of one instance may share a folder; the check is across
-//! instances only. Folders are compared with symlinks resolved: the same,
+//! Members of one tree (an instance and its copies) may share a folder, as
+//! a copy without `worktree: true` shares its parent's; the check is across
+//! trees only. Folders are compared with symlinks resolved: the same,
 //! inside, or around counts. The caller holds the registry lock from the
 //! check until its members' windows run, so two starts can't both win.
 
@@ -23,13 +24,14 @@ pub struct Held {
     pub why: String,
 }
 
-/// Every folder held by an instance other than `except`. Called with the
-/// registry lock held.
+/// Every folder held by an instance outside `except`'s tree. Called with
+/// the registry lock held.
 pub fn held(_lock: &registry::Lock, except: &str) -> Result<Vec<Held>, String> {
     let registry = registry::load()?;
+    let root = |id: &str| id.split('/').next().unwrap_or_default().to_string();
     let mut out = Vec::new();
     for (id, entry) in &registry.instances {
-        if id == except {
+        if !except.is_empty() && root(id) == root(except) {
             continue;
         }
         let inst = match address::instance(id) {

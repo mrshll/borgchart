@@ -72,7 +72,7 @@ teams: [./teams]
 
 set `BORGCHART_CONFIG` to that file's absolute path, put `brg-seat` on `PATH`, and validate: `brg validate borgchart-engineering`, `brg validate dev-team`, `brg validate dev-design-team`. If another configured directory provides one of these names, validation refuses the ambiguity.
 
-Then create an instance: `brg create borgchart-engineering <folder>`, where `<folder>/lead` is a checkout of the repository, or `brg create dev-team <folder>`, where `<folder>/repo` is.
+Then create an instance from a checkout of the repository: `cd <checkout>; brg create borgchart-engineering`, or `brg create dev-team`. Its lead works in the checkout, and brg adds a git worktree for each dev copy and implementer as it creates them.
 
 ### Pinned installation
 

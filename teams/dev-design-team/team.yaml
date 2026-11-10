@@ -1,8 +1,8 @@
 # The design panel: two designers, one per vendor, each writing an
 # independent proposal from the same blind brief. It is a child team:
-# borgchart-engineering's `design` role. Its parent creates a copy stopped, puts a detached worktree
-# at the baseline in the copy's `work/`, starts it, and deletes it after;
-# see ../borgchart-engineering/lead.md. Designers exchange files with the lead (the
+# borgchart-engineering's `design` role. Its parent creates a copy stopped,
+# starts it, and deletes it after; the designers read the code in the
+# parent's checkout and change none of it. See ../borgchart-engineering/lead.md. Designers exchange files with the lead (the
 # brief, questions, answers, proposals) in the copy's notes folder. The
 # runtime tree shares one message store.
 
@@ -11,9 +11,7 @@ roles:
     prompt: designer.md
     vendor: claude
     start: true
-    cwd: work
   designer-codex:
     prompt: designer.md
     vendor: codex
     start: true
-    cwd: work

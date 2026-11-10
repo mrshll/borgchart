@@ -20,7 +20,7 @@ use crate::exec::{ExecSpec, PluginEnv, identity_env};
 use crate::launch;
 use crate::lifecycle;
 use crate::lifecycle::{Incarnation, Liveness, PaneIdentity};
-use crate::paths::{overlaps, resolve_existing_prefix};
+use crate::paths::overlaps;
 use crate::proctree;
 use crate::registry;
 use crate::rules::{self, State};
@@ -301,31 +301,25 @@ fn api_keys(
     Ok(keys)
 }
 
-/// Where a member starts: its role's `cwd` inside the instance's folder
-/// (with `{member_id}` expanded), else the folder. The folder must exist, and a
-/// role's `cwd` must stay inside it once symlinks are resolved.
-fn member_cwd(folder: &Path, cwd: Option<&str>, member: &str) -> Result<PathBuf, String> {
-    let folder = folder.canonicalize().map_err(|_| {
+/// Where a member starts: its own worktree for a `worktree: true` role,
+/// else the instance's folder. Either must exist.
+fn member_cwd(inst: &Instance, role: &crate::team::Role, member: &str) -> Result<PathBuf, String> {
+    let folder = &inst.record.folder;
+    if role.worktree {
+        let dir = crate::worktree::path(&inst.at(member));
+        return dir.canonicalize().map_err(|_| {
+            format!(
+                "`{member}`'s worktree {} is gone; delete the member and create another",
+                dir.display()
+            )
+        });
+    }
+    folder.canonicalize().map_err(|_| {
         format!(
             "the instance's working folder {} is gone; create a new instance for another folder",
             folder.display()
         )
-    })?;
-    let Some(cwd) = cwd else {
-        return Ok(folder);
-    };
-    let rel = cwd.replace("{member_id}", member);
-    let dir = folder.join(&rel);
-    let real = dir
-        .canonicalize()
-        .map_err(|_| format!("`{member}`'s cwd {} does not exist", dir.display()))?;
-    if !real.starts_with(&folder) {
-        return Err(format!(
-            "`{member}`'s cwd `{rel}` resolves outside the instance's folder {} (through a symlink)",
-            folder.display()
-        ));
-    }
-    Ok(real)
+    })
 }
 
 /// Start `member_ids` of the instance, from validated files `v`. `full` is a
@@ -382,7 +376,6 @@ fn start_members(
     // Checks that need nothing written.
     for id in &member_ids {
         let member = role_of(id)?;
-        check_copy_folder(inst, member, id)?;
         let granted = launch::granted(&v.team, member);
         if let Some((plugin, command)) = launch::shim_commands(&granted)
             .into_iter()
@@ -394,8 +387,7 @@ fn start_members(
         }
         cwds.insert(
             id.clone(),
-            member_cwd(&record.folder, member.cwd.as_deref(), id)
-                .map_err(|e| format!("{e}; nothing was started"))?,
+            member_cwd(inst, member, id).map_err(|e| format!("{e}; nothing was started"))?,
         );
     }
     let mut pre_notes = Vec::new();
@@ -681,11 +673,10 @@ fn start_members(
         }
 
         let auto_trust = v.config.auto_trust;
-        // Codex's sandbox can write its cwd, so a `locked` Codex member whose
-        // role sets none starts in its own temp dir rather than the folder.
+        // Codex's sandbox can write its cwd, so a `locked` Codex member
+        // without its own worktree starts in its temp dir, not the folder.
         let cwd =
-            if member.cwd.is_none() && posture == Posture::Locked && member.vendor == Vendor::Codex
-            {
+            if !member.worktree && posture == Posture::Locked && member.vendor == Vendor::Codex {
                 state.member_tmp(id)
             } else {
                 cwds[id].clone()
@@ -1429,7 +1420,7 @@ pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
     let result = (|| {
         for id in &ids {
             let role = &v.team.roles[inst.record.role_of(id).expect("issued role")];
-            if let Some(folder) = create_copy_folder(&inst, role, id)? {
+            if let Some(folder) = create_worktree(&inst, role, id, None)? {
                 created_folders.push((id.clone(), folder));
             }
         }
@@ -1437,7 +1428,7 @@ pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
     })();
     if result.is_err() {
         unregister_if_never_started(&inst);
-        remove_unkept_copy_folders(&inst, created_folders);
+        remove_unkept_worktrees(&inst, created_folders);
     }
     result
 }
@@ -1486,12 +1477,29 @@ fn rollback_pause() {
 fn rollback_pause() {}
 
 /// `brg create <instance>/<role>`: a new member of the role, started.
-pub fn create_member(mut inst: Instance, role: &str) -> Result<UpOutcome, String> {
+pub fn create_member(
+    mut inst: Instance,
+    role: &str,
+    branch: Option<&str>,
+) -> Result<UpOutcome, String> {
     let v = validated(&inst)?;
+    let worktree = v
+        .team
+        .team_roles
+        .get(role)
+        .map(|r| r.worktree)
+        .or_else(|| v.team.roles.get(role).map(|r| r.worktree));
+    if let Some(branch) = branch
+        && worktree == Some(false)
+    {
+        return Err(format!(
+            "`--branch {branch}` names a branch for a new worktree, but role `{role}` works in the team's folder (no `worktree: true`)"
+        ));
+    }
     if let Some(team_role) = v.team.team_roles.get(role) {
         check_parent_authority(&inst, role, Some(&v), None)?;
         create_authority_pause();
-        return crate::nesting::create(inst, &v, role, team_role);
+        return crate::nesting::create(inst, &v, role, team_role, branch);
     }
     let Some(member) = v.team.roles.get(role) else {
         return Err(format!(
@@ -1526,7 +1534,7 @@ pub fn create_member(mut inst: Instance, role: &str) -> Result<UpOutcome, String
     let id = inst
         .record
         .issue_member(role, |id| v.team.roles.contains_key(id))?;
-    let _ = create_copy_folder(&inst, member, &id)?;
+    let _ = create_worktree(&inst, member, &id, branch)?;
     lock.save_instance(&inst.state, &inst.record)?;
     start_members(lock, &inst, &v, vec![id], false)
 }
@@ -1549,48 +1557,30 @@ fn create_authority_pause() {
 #[cfg(not(feature = "test-support"))]
 fn create_authority_pause() {}
 
-/// Create only a new member's missing `{member_id}` leaf, after checking its
-/// unresolved path. Ancestors must exist; an existing leaf is kept as is.
-/// The caller holds the registry lock across the checks and creation.
-/// Returns the new leaf so an unkept member's failed start can remove it.
-fn create_copy_folder(
+/// Add a new member's worktree, for a `worktree: true` role, from the
+/// instance's folder at its `HEAD` (detached, or on a new `branch`); an
+/// existing one is kept as is. The caller holds the registry lock. Returns
+/// the new worktree so an unkept member's failed start can remove it.
+fn create_worktree(
     inst: &Instance,
     role: &crate::team::Role,
     id: &str,
+    branch: Option<&str>,
 ) -> Result<Option<PathBuf>, String> {
-    check_copy_folder(inst, role, id)?;
-    let Some(cwd) = role.cwd.as_deref().filter(|c| {
-        Path::new(c)
-            .file_name()
-            .is_some_and(|name| name == "{member_id}")
-    }) else {
+    if !role.worktree {
         return Ok(None);
-    };
-    let folder = member_cwd(&inst.record.folder, None, id)?;
-    let rel = cwd.replace("{member_id}", id);
-    let dir = folder.join(&rel);
-    if !resolve_existing_prefix(&dir).starts_with(&folder) {
-        return Err(format!(
-            "`{id}`'s cwd `{rel}` resolves outside the instance's folder {} (through a symlink)",
-            folder.display()
-        ));
     }
-    match std::fs::create_dir(&dir) {
-        Ok(()) => Ok(Some(dir)),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && dir.is_dir() => Ok(None),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(format!(
-            "`{id}`'s cwd {} exists but isn't a folder; remove it or change `cwd`",
-            dir.display()
-        )),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(format!(
-            "cannot create `{id}`'s cwd {}: {e}; its parent folder must already exist",
-            dir.display()
-        )),
-        Err(e) => Err(format!("cannot create `{id}`'s cwd {}: {e}", dir.display())),
+    let dir = crate::worktree::path(&inst.at(id));
+    if dir.is_dir() {
+        return Ok(None);
     }
+    let root = crate::worktree::root_folder(&inst.id)?;
+    crate::worktree::add(&root, &inst.record.folder, &dir, branch)
+        .map_err(|e| format!("`{id}` needs its own worktree: {e}"))?;
+    Ok(Some(dir))
 }
 
-fn remove_unkept_copy_folders(inst: &Instance, created_folders: Vec<(String, PathBuf)>) {
+fn remove_unkept_worktrees(inst: &Instance, created: Vec<(String, PathBuf)>) {
     // A failed start may already have saved members or launched them.
     let registered = match registry::load() {
         Ok(registry) => registry.instances.contains_key(&inst.id),
@@ -1605,53 +1595,17 @@ fn remove_unkept_copy_folders(inst: &Instance, created_folders: Vec<(String, Pat
     } else {
         None
     };
-    for (id, folder) in created_folders {
+    for (id, dir) in created {
         if saved
             .as_ref()
             .is_some_and(|record| record.role_of(&id).is_some())
         {
             continue;
         }
-        let _ = std::fs::remove_dir(folder);
-    }
-}
-
-/// Same-role copies with `{member_id}` keep separate folders until deleted,
-/// even while stopped. Resolve existing prefixes and check recorded folders
-/// so a missing folder or a moved symlink cannot hide an overlap.
-fn check_copy_folder(inst: &Instance, role: &crate::team::Role, id: &str) -> Result<(), String> {
-    let Some(cwd) = role.cwd.as_deref().filter(|c| c.contains("{member_id}")) else {
-        return Ok(());
-    };
-    let others: Vec<String> = inst
-        .record
-        .members_of(&role.id)
-        .into_iter()
-        .filter(|m| m != id)
-        .collect();
-    if others.is_empty() {
-        return Ok(());
-    }
-    let cwd = inst.record.folder.join(cwd.replace("{member_id}", id));
-    for other in others {
-        let issued = &inst.record.members[&other];
-        let other_cwd = inst.record.folder.join(
-            role.cwd
-                .as_deref()
-                .unwrap_or("")
-                .replace("{member_id}", &other),
-        );
-        if overlaps(&cwd, &other_cwd) || issued.cwd.as_ref().is_some_and(|old| overlaps(&cwd, old))
-        {
-            return Err(format!(
-                "`{id}`'s folder {} overlaps kept member `{other}`'s folder {}; give copies of `{}` separate folders before creating or starting another",
-                cwd.display(),
-                other_cwd.display(),
-                role.id
-            ));
+        if let Ok(root) = crate::worktree::root_folder(&inst.id) {
+            let _ = crate::worktree::remove(&root, &dir);
         }
     }
-    Ok(())
 }
 
 /// Member authority follows recorded parent edges, at any depth. Creation
@@ -1875,7 +1829,7 @@ fn full_start_members(
             let id = inst
                 .record
                 .issue_member(&role.id, |id| v.team.roles.contains_key(id))?;
-            if let Some(folder) = create_copy_folder(inst, role, &id)? {
+            if let Some(folder) = create_worktree(inst, role, &id, None)? {
                 created_folders.push((id.clone(), folder));
             }
             ids.insert(id);
@@ -1979,7 +1933,7 @@ fn start_instance(
                 start_members(lock, &inst, &v, ids, true)
             })();
             if result.is_err() {
-                remove_unkept_copy_folders(&inst, created_folders);
+                remove_unkept_worktrees(&inst, created_folders);
             }
             let mut outcome = result?;
             if !restore_copies {
@@ -2226,6 +2180,12 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
             ));
         }
     }
+    let mut lines = Vec::new();
+    let worktrees = worktrees_to_remove(
+        &[(crate::worktree::root_folder(&inst.id)?, inst.at(&id))],
+        force,
+        &mut lines,
+    )?;
     let issued = inst.record.members.get_mut(&id).expect("resolved member");
     issued.deleted = true;
     issued.cwd = None;
@@ -2255,10 +2215,64 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
     }
     let _ = std::fs::remove_file(inst.state.exec_file(&id));
     let _ = std::fs::remove_file(inst.state.lock_file(&id));
-    Ok(vec![format!(
-        "deleted {}; its ID stays issued",
-        inst.at(&id)
-    )])
+    lines.insert(0, format!("deleted {}; its ID stays issued", inst.at(&id)));
+    remove_worktrees(worktrees, &mut lines);
+    Ok(lines)
+}
+
+/// Before a delete, the worktrees brg added for `targets` (each its tree's
+/// top folder, and the member's or copy's address) that it can
+/// remove afterwards. One with work in it (or that git can't check) refuses
+/// the delete, or with `force` stays where it is, which `lines` says.
+fn worktrees_to_remove(
+    targets: &[(PathBuf, String)],
+    force: bool,
+    lines: &mut Vec<String>,
+) -> Result<Vec<(PathBuf, PathBuf)>, String> {
+    let mut remove = Vec::new();
+    let mut refused = Vec::new();
+    for (from, address) in targets {
+        let dir = crate::worktree::path(address);
+        let why = match crate::worktree::unsaved(from, &dir) {
+            Ok(None) => {
+                if dir.symlink_metadata().is_ok() {
+                    remove.push((from.clone(), dir));
+                }
+                continue;
+            }
+            Ok(Some(why)) => why,
+            Err(e) => format!("a state git can't check ({e})"),
+        };
+        if force {
+            lines.push(format!(
+                "left {address}'s worktree {} as it is: it has {why}",
+                dir.display()
+            ));
+        } else {
+            refused.push(format!("{address}'s worktree {} has {why}", dir.display()));
+        }
+    }
+    if refused.is_empty() {
+        Ok(remove)
+    } else {
+        Err(format!(
+            "work would be lost, so nothing was deleted; push or remove it, or delete anyway with --force, which leaves these worktrees as they are:\n  {}",
+            refused.join("\n  ")
+        ))
+    }
+}
+
+/// Remove worktrees [`worktrees_to_remove`] found clean, saying so in `lines`.
+fn remove_worktrees(worktrees: Vec<(PathBuf, PathBuf)>, lines: &mut Vec<String>) {
+    for (from, dir) in worktrees {
+        lines.push(match crate::worktree::remove(&from, &dir) {
+            Ok(()) => format!("removed worktree {}", dir.display()),
+            Err(e) => format!(
+                "worktree {} could not be removed ({e}); brg cleanup tries again",
+                dir.display()
+            ),
+        });
+    }
 }
 
 /// `brg delete <instance> [--force]`: remove a stopped instance's state
@@ -2365,6 +2379,17 @@ pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
             ));
         }
     }
+    let mut lines = Vec::new();
+    let root = crate::worktree::root_folder(&inst.id)?;
+    let mut targets: Vec<(PathBuf, String)> = inst
+        .record
+        .kept_members()
+        .map(|(id, _)| (root.clone(), inst.at(id)))
+        .collect();
+    if inst.id.contains('/') {
+        targets.push((root, inst.id.clone()));
+    }
+    let worktrees = worktrees_to_remove(&targets, force, &mut lines)?;
     #[cfg(feature = "test-support")]
     store::mutation_pause("BORGCHART_TEST_DELETE_PAUSE").map_err(|e| e.message)?;
     let mut registry = lock.load()?;
@@ -2383,18 +2408,28 @@ pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
     drop(state_lock);
     std::fs::remove_dir_all(&inst.state.root)
         .map_err(|e| format!("cannot remove {}: {e}", inst.state.root.display()))?;
-    Ok(vec![format!(
-        "deleted {}; its working folder {} was left as it is",
-        inst.id,
-        inst.record.folder.display()
-    )])
+    let own_worktree = crate::worktree::path(&inst.id);
+    lines.insert(
+        0,
+        if worktrees.iter().any(|(_, dir)| dir == &own_worktree) {
+            format!("deleted {}", inst.id)
+        } else {
+            format!(
+                "deleted {}; its working folder {} was left as it is",
+                inst.id,
+                inst.record.folder.display()
+            )
+        },
+    );
+    remove_worktrees(worktrees, &mut lines);
+    Ok(lines)
 }
 
 /// `brg reset <root>`: stop the whole tree, then forget it: every
 /// registration and the root's state folder (all copies' state, notes and
-/// the tree's messages), and the empty `{member_id}` folders brg made in
-/// it. No open work refuses it; anything brg can't confirm stopped does.
-/// The working folders, checkouts and worktrees in them stay. `warn` gets
+/// the tree's messages), and the clean worktrees brg added for it. No open
+/// work refuses it; anything brg can't confirm stopped does. The working
+/// folders, checkouts and other worktrees stay. `warn` gets
 /// the warning line once the target is accepted, before anything stops.
 /// The tree is forgotten even when some folders couldn't be checked or
 /// removed; the outcome then says so and fails.
@@ -3258,6 +3293,9 @@ pub struct StatusRow {
     /// The folder a start accepted Claude's trust dialog for, if it did.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trust_accepted: Option<String>,
+    /// The git worktree brg added for a `worktree: true` member or copy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<String>,
     /// Whether the member's current incarnation may still be
     /// running (`alive`, `gone` or `unknown`).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3413,6 +3451,7 @@ fn status_with_counts(
                 detail: None,
                 vendor_version: None,
                 trust_accepted: None,
+                worktree: None,
                 liveness: None,
                 unread: None,
                 running: None,
@@ -3468,6 +3507,9 @@ fn status_with_counts(
             trust_accepted: std::fs::read_to_string(state.member_dir(id).join("trust-accepted"))
                 .ok()
                 .map(|s| s.trim().to_string()),
+            worktree: member
+                .worktree
+                .then(|| crate::worktree::path(&inst.at(id)).display().to_string()),
         };
         if let Some(w) = windows.iter().find(|w| &w.name == id) {
             if w.dead {
@@ -3542,6 +3584,7 @@ fn status_with_counts(
             detail: None,
             vendor_version: None,
             trust_accepted: None,
+            worktree: None,
             unread: None,
             running: None,
             expected_running: false,
@@ -3618,6 +3661,7 @@ fn status_with_counts(
                 detail: None,
                 vendor_version: None,
                 trust_accepted: None,
+                worktree: None,
                 liveness: None,
                 unread: None,
                 running: None,
@@ -3675,6 +3719,9 @@ fn status_with_counts(
                 detail: error.clone(),
                 vendor_version: None,
                 trust_accepted: None,
+                worktree: role
+                    .worktree
+                    .then(|| crate::worktree::path(&full_id).display().to_string()),
                 liveness: None,
                 unread: None,
                 running: error.is_none().then_some(running),
@@ -3771,7 +3818,12 @@ pub fn status_cells(r: &StatusRow, short: bool) -> Vec<String> {
                 } else {
                     format!("{} running", r.running.unwrap_or(0))
                 },
-                r.detail.clone().unwrap_or_default(),
+                r.detail
+                    .iter()
+                    .cloned()
+                    .chain(r.worktree.as_ref().map(|w| format!("worktree {w}")))
+                    .collect::<Vec<_>>()
+                    .join("; "),
             ];
         }
         "role" => return vec![r.state.clone()],
@@ -3788,6 +3840,9 @@ pub fn status_cells(r: &StatusRow, short: bool) -> Vec<String> {
     detail.extend(r.detail.clone());
     if let Some(unread) = r.unread.filter(|&n| n > 0) {
         detail.push(format!("{unread} unread"));
+    }
+    if let Some(worktree) = &r.worktree {
+        detail.push(format!("worktree {worktree}"));
     }
     let vendor = r.vendor.as_deref().unwrap_or("-");
     vec![
@@ -4434,6 +4489,7 @@ mod tests {
             detail: None,
             vendor_version: None,
             trust_accepted: None,
+            worktree: None,
             liveness: None,
             unread: Some(2),
             running: None,
@@ -4488,36 +4544,6 @@ mod tests {
             None
         );
         assert_eq!(trust_dialog_path("no dialog here\n"), None);
-    }
-
-    #[test]
-    fn member_cwds_stay_inside_the_folder() {
-        let dir = tempfile::tempdir().unwrap();
-        let folder = dir.path().join("work");
-        std::fs::create_dir_all(folder.join("copies/lead-2a3b")).unwrap();
-        std::fs::create_dir_all(dir.path().join("elsewhere")).unwrap();
-        std::os::unix::fs::symlink(dir.path().join("elsewhere"), folder.join("out")).unwrap();
-        let real = folder.canonicalize().unwrap();
-        assert_eq!(member_cwd(&folder, None, "lead-2a3b").unwrap(), real);
-        assert_eq!(
-            member_cwd(&folder, Some("copies/{member_id}"), "lead-2a3b").unwrap(),
-            real.join("copies/lead-2a3b")
-        );
-        assert!(
-            member_cwd(&folder, Some("out"), "lead-2a3b")
-                .unwrap_err()
-                .contains("outside")
-        );
-        assert!(
-            member_cwd(&folder, Some("missing"), "lead-2a3b")
-                .unwrap_err()
-                .contains("does not exist")
-        );
-        assert!(
-            member_cwd(&dir.path().join("gone"), None, "lead-2a3b")
-                .unwrap_err()
-                .contains("is gone")
-        );
     }
 
     #[test]

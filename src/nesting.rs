@@ -1,9 +1,9 @@
-//! Team-role copies: stopped nested instances with their own working folders.
+//! Team-role copies: stopped nested instances, each working in its own git
+//! worktree (`worktree: true`) or in its parent's folder.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::address::{self, Instance};
-use crate::paths::{overlaps, resolve_existing_prefix};
 use crate::registry;
 use crate::runtime::UpOutcome;
 use crate::state;
@@ -59,12 +59,15 @@ pub fn check_not_stopping(inst: &Instance) -> Result<(), String> {
     Ok(())
 }
 
-/// Make a copy's folders and registration, without starting any member.
+/// Make a copy's registration, and its worktree for a `worktree: true` role
+/// (detached at the instance folder's `HEAD`, or on a new `branch`), without
+/// starting any member.
 pub fn create(
     mut inst: Instance,
     v: &Validated,
     role_name: &str,
     role: &TeamRole,
+    branch: Option<&str>,
 ) -> Result<UpOutcome, String> {
     let lock = registry::lock()?;
     inst.reload()?;
@@ -103,9 +106,14 @@ pub fn create(
     }
     crate::team::find(&role.name, &v.config.teams)?;
     let id = inst.record.issue_copy(role_name)?;
-    let folder = copy_folder(&inst, role, &id)?;
-    crate::checkouts::check_folder(&lock, &folder)?;
-    let child = validate_child(&inst, &role.dir)?;
+    let full_id = inst.at(&id);
+    let folder = if role.worktree {
+        crate::worktree::path(&full_id)
+    } else {
+        inst.record.folder.clone()
+    };
+    crate::checkouts::reserve(&lock, &inst.id, &[("the copy".into(), folder.clone())])?;
+    validate_child(&inst, &role.dir)?;
     // Reserve the ID before touching disk: a failed creation cannot reuse it.
     inst.record
         .copies
@@ -113,39 +121,19 @@ pub fn create(
         .expect("issued copy")
         .deleted = true;
     lock.save_instance(&inst.state, &inst.record)?;
-    std::fs::create_dir_all(&folder)
-        .map_err(|e| format!("cannot create copy folder {}: {e}", folder.display()))?;
-    let full_id = inst.at(&id);
+    if role.worktree {
+        let root = crate::worktree::root_folder(&inst.id)?;
+        crate::worktree::add(&root, &inst.record.folder, &folder, branch)
+            .map_err(|e| format!("copy `{full_id}` needs its own worktree: {e}"))?;
+    }
     registry::create_copy(&lock, &full_id, &role.dir, &folder, parent)?;
     let issued = inst.record.copies.get_mut(&id).expect("issued copy");
     issued.deleted = false;
     issued.cwd = Some(folder.clone());
     lock.save_instance(&inst.state, &inst.record)?;
-    let mut prepare: Vec<PathBuf> = child
-        .team
-        .roles
-        .values()
-        .filter(|role| role.start)
-        .filter_map(|role| role.cwd.as_deref())
-        .filter(|cwd| !cwd.contains("{member_id}"))
-        .map(|cwd| folder.join(cwd))
-        .collect();
-    prepare.sort();
-    prepare.dedup();
     Ok(UpOutcome {
         tree: format!("{full_id}  folder {} · stopped\n", folder.display()),
-        notes: vec![format!(
-            "prepare {} before starting: brg start {full_id}",
-            if prepare.is_empty() {
-                folder.display().to_string()
-            } else {
-                prepare
-                    .iter()
-                    .map(|path| path.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            }
-        )],
+        notes: vec![format!("start it: brg start {full_id}")],
         failed: false,
     })
 }
@@ -176,32 +164,4 @@ pub fn validate_child(parent: &Instance, dir: &Path) -> Result<Validated, String
             .collect::<Vec<_>>()
             .join("\n")
     })
-}
-
-fn copy_folder(inst: &Instance, role: &TeamRole, id: &str) -> Result<PathBuf, String> {
-    let cwd = Path::new(&role.cwd);
-    if cwd.file_name().is_none_or(|name| name != "{member_id}")
-        || role.cwd.matches("{member_id}").count() != 1
-    {
-        return Err(
-            "a team role's cwd must end in `{member_id}`, for example `dev/{member_id}`".into(),
-        );
-    }
-    let folder =
-        resolve_existing_prefix(&inst.record.folder.join(role.cwd.replace("{member_id}", id)));
-    if !folder.starts_with(&inst.record.folder) {
-        return Err(format!(
-            "copy `{id}`'s folder leaves its instance; change its `cwd`"
-        ));
-    }
-    for (other, copy) in inst.record.copies.iter().filter(|(_, copy)| !copy.deleted) {
-        if let Some(held) = &copy.cwd
-            && overlaps(&folder, held)
-        {
-            return Err(format!(
-                "copy `{id}`'s folder overlaps kept copy `{other}`; give copies separate folders"
-            ));
-        }
-    }
-    Ok(folder)
 }

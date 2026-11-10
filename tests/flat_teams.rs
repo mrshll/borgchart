@@ -33,7 +33,7 @@ fn parent(root: &Path, name: &str) {
     write(
         root,
         "parent/team.yaml",
-        &format!("bus: {{}}\nroles: {{child: {{team: '{name}', cwd: 'copies/{{member_id}}'}}}}\n"),
+        &format!("bus: {{}}\nroles: {{child: {{team: '{name}'}}}}\n"),
     );
 }
 
@@ -92,7 +92,7 @@ fn canonical_identity_refuses_cycles_but_allows_reuse() {
     write(
         root.path(),
         "child/team.yaml",
-        "bus: {}\nroles: {back: {team: parent, cwd: 'copies/{member_id}'}}\n",
+        "bus: {}\nroles: {back: {team: parent}}\n",
     );
     assert!(
         check(&root.path().join("parent"), &[root.path()])
@@ -103,7 +103,7 @@ fn canonical_identity_refuses_cycles_but_allows_reuse() {
     write(
         root.path(),
         "parent/team.yaml",
-        "bus: {}\nroles:\n  first: {team: child, cwd: 'copies/{member_id}'}\n  second: {team: child, cwd: 'copies/{member_id}'}\n",
+        "bus: {}\nroles:\n  first: {team: child}\n  second: {team: child}\n",
     );
     symlink(root.path().join("child"), root.path().join("alias")).unwrap();
     assert!(check(&root.path().join("parent"), &[root.path()]).is_ok());

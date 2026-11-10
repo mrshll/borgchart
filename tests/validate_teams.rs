@@ -11,9 +11,12 @@ use instance_env::*;
 
 fn department() -> (Env, String) {
     let env = Env::new();
-    env.write("teams/oncall/team.yaml", "roles:\n  lead: {prompt: lead.md, cwd: lead}\n  dev: {team: dev, parent: lead, max: 3, cwd: 'dev/{member_id}'}\n");
+    env.write(
+        "teams/oncall/team.yaml",
+        "roles:\n  lead: {prompt: lead.md}\n  dev: {team: dev, parent: lead, max: 3}\n",
+    );
     env.team("teams/dev");
-    env.write("teams/dev/team.yaml", "roles:\n  lead: {prompt: lead.md, cwd: repo}\n  helper: {prompt: helper.md, parent: lead, start: false, cwd: repo}\n");
+    env.write("teams/dev/team.yaml", "roles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead, start: false}\n");
     fs::create_dir(env.path("work/a/lead")).unwrap();
     let dept = env.create("oncall", "work/a");
     (env, dept)
@@ -32,7 +35,6 @@ fn copy(env: &Env, dept: &str) -> (String, PathBuf) {
         })
         .unwrap();
     let folder = PathBuf::from(entry["folder"].as_str().unwrap());
-    fs::create_dir(folder.join("repo")).unwrap();
     (id.clone(), folder)
 }
 
@@ -58,9 +60,7 @@ fn broken_subteam_during_department_command(command: &str) {
     let original = fs::read_to_string(&team).unwrap();
     fs::write(
         &team,
-        format!(
-            "{original}  helper: {{prompt: helper.md, parent: lead, start: false, cwd: lead}}\n"
-        ),
+        format!("{original}  helper: {{prompt: helper.md, parent: lead, start: false}}\n"),
     )
     .unwrap();
     env.ok(&["start", &dept]);
@@ -140,9 +140,7 @@ fn missing_subteam_during_department_commands(remove_folder: bool) {
     let original = fs::read_to_string(&team).unwrap();
     fs::write(
         &team,
-        format!(
-            "{original}  helper: {{prompt: helper.md, parent: lead, start: false, cwd: lead}}\n"
-        ),
+        format!("{original}  helper: {{prompt: helper.md, parent: lead, start: false}}\n"),
     )
     .unwrap();
     env.ok(&["start", &dept]);
@@ -189,12 +187,12 @@ fn missing_subteam_yaml_does_not_block_department_commands() {
 
 fn missing_running_subteam_during_status_and_stop(remove_folder: bool) {
     let env = Env::new();
-    env.write("teams/oncall/team.yaml", "roles:\n  lead: {prompt: lead.md, cwd: lead}\n  helper: {prompt: helper.md, parent: lead, cwd: lead}\n  dev: {team: dev, parent: lead, start: false, max: 3, cwd: 'dev/{member_id}'}\n  ops: {team: ops, parent: lead, start: false, max: 3, cwd: 'ops/{member_id}'}\n");
+    env.write("teams/oncall/team.yaml", "roles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead}\n  dev: {team: dev, parent: lead, start: false, max: 3}\n  ops: {team: ops, parent: lead, start: false, max: 3}\n");
     for role in ["dev", "ops"] {
         env.team(&format!("teams/{role}"));
         env.write(
             &format!("teams/{role}/team.yaml"),
-            "roles: {lead: {prompt: lead.md, cwd: repo}}\n",
+            "roles: {lead: {prompt: lead.md}}\n",
         );
     }
     fs::create_dir(env.path("work/a/lead")).unwrap();
@@ -203,8 +201,6 @@ fn missing_running_subteam_during_status_and_stop(remove_folder: bool) {
     for role in ["dev", "ops"] {
         let out = env.ok(&["create", &format!("{dept}/{role}")]);
         let id = stdout(&out).split_whitespace().next().unwrap().to_string();
-        let folder = PathBuf::from(env.registry()["instances"][&id]["folder"].as_str().unwrap());
-        fs::create_dir(folder.join("repo")).unwrap();
         env.ok(&["start", &id]);
         env.wait_for("copy lead idle", || env.state_of(&id, "lead") == "idle");
         copies.push(id);
@@ -380,7 +376,7 @@ fn changed_team_path_resolution_requires_the_declaring_instance_to_restart() {
     env.team("redirect/dev");
     env.write(
         "redirect/dev/team.yaml",
-        "roles: {lead: {prompt: lead.md, cwd: repo}}\n",
+        "roles: {lead: {prompt: lead.md}}\n",
     );
     env.write(
         "redirect/dev/lead.md",
@@ -427,7 +423,7 @@ fn move_ancestor_within_copy(env: &Env, dept: &str) {
     );
     env.write(
         "relocated/oncall/team.yaml",
-        "roles: {lead: {prompt: lead.md, cwd: lead}}\n",
+        "roles: {lead: {prompt: lead.md}}\n",
     );
     env.ok(&[
         "start",
@@ -435,7 +431,10 @@ fn move_ancestor_within_copy(env: &Env, dept: &str) {
         "--team",
         &env.path("relocated/oncall").display().to_string(),
     ]);
-    env.write("teams/dev/team.yaml", "roles:\n  lead: {prompt: lead.md, cwd: repo}\n  panel: {team: oncall, cwd: 'panel/{member_id}'}\n");
+    env.write(
+        "teams/dev/team.yaml",
+        "roles:\n  lead: {prompt: lead.md}\n  panel: {team: oncall}\n",
+    );
 }
 
 #[test]
@@ -572,9 +571,7 @@ fn unstarted_copy_keeps_missing_member_creation_hint() {
     let original = fs::read_to_string(&team).unwrap();
     fs::write(
         &team,
-        format!(
-            "{original}  design: {{team: design, parent: lead, cwd: 'design/{{member_id}}'}}\n"
-        ),
+        format!("{original}  design: {{team: design, parent: lead}}\n"),
     )
     .unwrap();
     let (child, _) = copy(&env, &dept);
