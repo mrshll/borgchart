@@ -37,6 +37,16 @@ pub fn instances() -> ArgValueCandidates {
     ArgValueCandidates::new(|| instance_candidates(false))
 }
 
+/// Every registered root instance (a tree's top, not a copy).
+pub fn roots() -> ArgValueCandidates {
+    ArgValueCandidates::new(|| {
+        instance_candidates(false)
+            .into_iter()
+            .filter(|c| !c.get_value().to_string_lossy().contains('/'))
+            .collect()
+    })
+}
+
 /// Every instance and every kept member, as `<instance>/<member>`.
 pub fn targets() -> ArgValueCandidates {
     ArgValueCandidates::new(|| instance_candidates(true))

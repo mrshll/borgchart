@@ -111,7 +111,7 @@ enum Command {
     /// are. Run it from your own shell, never inside a member.
     Reset {
         /// The tree's root instance (a copy is refused).
-        #[arg(add = crate::complete::instances())]
+        #[arg(add = crate::complete::roots())]
         instance: String,
     },
     /// Remove what brg left behind for deleted members and copies: the
@@ -425,10 +425,15 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
                     ));
                 }
             };
-            for line in or_fail!(runtime::reset(inst, |warning| println!("{warning}"))) {
+            let outcome = or_fail!(runtime::reset(inst, |warning| println!("{warning}")));
+            for line in &outcome.lines {
                 println!("{line}");
             }
-            ExitCode::SUCCESS
+            if outcome.failed {
+                ExitCode::from(1)
+            } else {
+                ExitCode::SUCCESS
+            }
         }
         Command::Cleanup { instance } => {
             let only = match &instance {

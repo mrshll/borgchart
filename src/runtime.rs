@@ -2396,7 +2396,9 @@ pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
 /// it. No open work refuses it; anything brg can't confirm stopped does.
 /// The working folders, checkouts and worktrees in them stay. `warn` gets
 /// the warning line once the target is accepted, before anything stops.
-pub fn reset(inst: Instance, warn: impl FnOnce(String)) -> Result<Vec<String>, String> {
+/// The tree is forgotten even when some folders couldn't be checked or
+/// removed; the outcome then says so and fails.
+pub fn reset(inst: Instance, warn: impl FnOnce(String)) -> Result<crate::cleanup::Outcome, String> {
     if has_member_context() {
         return Err(
             "`reset` stops a whole tree, the member running it included; run it from your own shell"
@@ -2414,7 +2416,7 @@ pub fn reset(inst: Instance, warn: impl FnOnce(String)) -> Result<Vec<String>, S
         inst.id,
         inst.state.root.display()
     ));
-    let mut lines = stop(&inst, None)?;
+    let stopped = stop(&inst, None)?;
     let lock = registry::lock()?;
     let mut root = inst;
     root.reload()?;
@@ -2461,7 +2463,8 @@ pub fn reset(inst: Instance, warn: impl FnOnce(String)) -> Result<Vec<String>, S
     // Publications anywhere in the tree wait here, then find it gone.
     let bus_lock = lifecycle::lock_bus(&root.state)?;
     let mut registry = lock.load()?;
-    lines.extend(crate::cleanup::tree_folders(&tree, &registry).lines);
+    let mut out = crate::cleanup::tree_folders(&tree, &registry);
+    out.lines.splice(0..0, stopped);
     for inst in &tree {
         registry.instances.remove(&inst.id);
     }
@@ -2475,17 +2478,17 @@ pub fn reset(inst: Instance, warn: impl FnOnce(String)) -> Result<Vec<String>, S
     })?;
     drop(bus_lock);
     drop(state_locks);
-    lines.push(format!(
+    out.lines.push(format!(
         "reset {}: its registrations, state, notes and messages are deleted; its working folder {} was left as it is",
         root.id,
         root.record.folder.display()
     ));
-    lines.push(format!(
+    out.lines.push(format!(
         "start it fresh: brg create {} {}",
-        root.record.team_dir.display(),
-        root.record.folder.display()
+        state::shell_quote(&root.record.team_dir.to_string_lossy()),
+        state::shell_quote(&root.record.folder.to_string_lossy())
     ));
-    Ok(lines)
+    Ok(out)
 }
 
 /// `brg secret <team>`: each secret its plugins need (plugin, name), and

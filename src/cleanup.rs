@@ -16,7 +16,8 @@
 //!   instance argument only).
 //!
 //! Work folders, kept members' and copies' folders, git worktrees and
-//! messages are never touched.
+//! messages are never touched. `brg reset` applies the same folder rules to
+//! every member and copy of the tree it forgets ([`tree_folders`]).
 
 use std::path::{Path, PathBuf};
 
@@ -99,47 +100,52 @@ fn held(registry: &registry::Registry, counts: impl Fn(&str) -> bool) -> Vec<Pat
 
 /// `reset`'s folder pass over a tree about to be forgotten, deepest first:
 /// every member's and copy's `{member_id}` folder, kept or deleted, by the
-/// same rules as cleanup. Folders that instances outside the tree work in
-/// stay protected.
+/// same rules as cleanup. A kept one is found where its latest start (or a
+/// copy's creation) recorded it, else through the team file. Folders that
+/// instances outside the tree work in stay protected.
 pub(crate) fn tree_folders(tree: &[Instance], registry: &registry::Registry) -> Outcome {
     let mut out = Outcome::default();
     let held = held(registry, |id| !tree.iter().any(|inst| inst.id == id));
     for inst in tree {
-        let v = match runtime::validated(inst) {
-            Ok(v) => v,
-            Err(e) => {
-                out.error(format!(
-                    "can't place the folders of {}'s members and copies: {e}",
-                    inst.id
-                ));
-                continue;
+        let team = runtime::validated(inst);
+        let mut unplaced = false;
+        let entries = issued(inst, &inst.record.members, |_| true, &mut out)
+            .into_iter()
+            .map(|(id, m)| (id, m, "member"))
+            .chain(
+                issued(inst, &inst.record.copies, |_| true, &mut out)
+                    .into_iter()
+                    .map(|(id, c)| (id, c, "copy")),
+            )
+            .collect::<Vec<_>>();
+        for (id, issued, kind) in entries {
+            let what = format!("{kind} {}", inst.at(id));
+            let recorded = issued
+                .cwd
+                .as_ref()
+                .filter(|cwd| cwd.file_name().is_some_and(|name| name == id.as_str()));
+            match (recorded, &team) {
+                (Some(dir), _) => leaf_at(inst, dir, &held, &what, &mut out),
+                (None, Ok(v)) => {
+                    let cwd = if kind == "member" {
+                        v.team
+                            .roles
+                            .get(&issued.role)
+                            .and_then(|r| r.cwd.as_deref())
+                    } else {
+                        v.team.team_roles.get(&issued.role).map(|r| r.cwd.as_str())
+                    };
+                    leaf(inst, cwd, id, &held, &what, &mut out);
+                }
+                (None, Err(_)) => unplaced = true,
             }
-        };
-        for (id, member) in issued(inst, &inst.record.members, |_| true, &mut out) {
-            let cwd = v
-                .team
-                .roles
-                .get(&member.role)
-                .and_then(|r| r.cwd.as_deref());
-            leaf(
-                inst,
-                cwd,
-                id,
-                &held,
-                &format!("member {}", inst.at(id)),
-                &mut out,
-            );
         }
-        for (id, copy) in issued(inst, &inst.record.copies, |_| true, &mut out) {
-            let cwd = v.team.team_roles.get(&copy.role).map(|r| r.cwd.as_str());
-            leaf(
-                inst,
-                cwd,
-                id,
-                &held,
-                &format!("copy {}", inst.at(id)),
-                &mut out,
-            );
+        if unplaced && let Err(e) = &team {
+            out.error(format!(
+                "can't place some folders brg made for {}'s members and copies, because its team can't be loaded ({}); remove any left empty by hand",
+                inst.id,
+                e.split(';').next().unwrap_or(e)
+            ));
         }
     }
     out
@@ -254,6 +260,13 @@ fn leaf(
         return;
     };
     let dir = inst.record.folder.join(cwd.replace("{member_id}", id));
+    leaf_at(inst, &dir, held, what, out);
+}
+
+/// Remove the folder `dir` brg made, if it holds nothing but folders and
+/// nobody works in it; otherwise say why it stays.
+fn leaf_at(inst: &Instance, dir: &Path, held: &[PathBuf], what: &str, out: &mut Outcome) {
+    let dir = dir.to_path_buf();
     let Ok(meta) = dir.symlink_metadata() else {
         return;
     };
@@ -281,9 +294,7 @@ fn leaf(
         },
         Ok(Contents::Git { worktree: true }) => out.kept(
             &dir,
-            &format!(
-                "holds a git worktree ({what}); its lead removes it with `git worktree remove`"
-            ),
+            &format!("holds a git worktree ({what}); remove it with `git worktree remove`"),
         ),
         Ok(Contents::Git { worktree: false }) => {
             out.kept(&dir, &format!("holds a git repository ({what})"))

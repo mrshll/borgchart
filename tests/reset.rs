@@ -27,11 +27,13 @@ roles:
     vendor: codex
     parent: lead
     start: false
+    max: 2
     cwd: "copies/{member_id}"
   dev:
     team: dev
     parent: lead
     start: false
+    max: 2
     cwd: "dev/{member_id}"
 "#;
 
@@ -83,12 +85,21 @@ fn reset_stops_and_forgets_a_tree_so_create_starts_it_fresh() {
     assert!(sent.status.success(), "{}", both(&sent));
     fs::write(env.path("work/a/lead/kept.txt"), "kept").unwrap();
     fs::write(copy_folder.join("repo/kept.txt"), "kept").unwrap();
+    // Another tree working in an empty folder brg made for this tree.
+    let out = env.ok(&["create", &format!("{root}/dev")]);
+    let spare = stdout(&out).split_whitespace().next().unwrap().to_string();
+    let spare_folder = env.path(&format!("work/a/dev/{}", spare.rsplit('/').next().unwrap()));
+    fs::create_dir(spare_folder.join("lead")).unwrap();
+    let other = env.create(
+        "oncall",
+        &format!("work/a/dev/{}", spare.rsplit('/').next().unwrap()),
+    );
 
     let out = env.ok(&["reset", &root]);
     let text = stdout(&out);
 
     assert!(text.starts_with(&format!("resetting {root}:")), "{text}");
-    assert!(registered(&env).is_empty(), "{text}");
+    assert_eq!(registered(&env), std::slice::from_ref(&other), "{text}");
     assert!(!env.path(&format!("state/{root}")).exists(), "{text}");
     let sessions = env.tmux(&["list-sessions", "-F", "#{session_name}"]);
     assert!(!sessions.contains(&root), "still running: {sessions}");
@@ -108,9 +119,26 @@ fn reset_stops_and_forgets_a_tree_so_create_starts_it_fresh() {
         text.contains(&format!("left {}: holds files", copy_folder.display())),
         "{text}"
     );
+    assert!(spare_folder.join("lead").is_dir(), "{text}");
+    assert!(
+        text.contains(&format!("left {}: an instance", spare_folder.display())),
+        "{text}"
+    );
 
-    let fresh = env.create("oncall", "work/a");
-    assert_ne!(fresh, root);
+    // The printed command starts the tree again, under a new ID.
+    env.ok(&["stop", &other]);
+    let create = text
+        .lines()
+        .last()
+        .and_then(|line| line.strip_prefix("start it fresh: brg "))
+        .unwrap_or_else(|| panic!("no create line: {text}"));
+    let created = env.ok(&create.split_whitespace().collect::<Vec<_>>());
+    let fresh = stdout(&created)
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_string();
+    assert!(well_formed(&fresh, "oncall") && fresh != root, "{fresh}");
     assert!(!registered(&env).contains(&copy));
     env.ok(&["stop", &fresh]);
 }
@@ -151,11 +179,43 @@ fn reset_refuses_members_copies_and_trees_it_cannot_confirm_stopped() {
     let original = fs::read(&incarnation).unwrap();
     fs::write(&incarnation, "unreadable start record").unwrap();
     env.tmux(&["new-session", "-d", "-s", "sentinel", "sleep", "60"]);
-    env.fails(&["reset", &root]);
+    // Reset's stop is what refuses here, naming the member it can't confirm.
+    let refused = env.fails(&["reset", &root]);
+    assert!(refused.contains(&copy_lead), "{refused}");
 
     assert_eq!(registered(&env), before);
     assert!(env.path(&format!("state/{root}/instance.json")).is_file());
     fs::write(incarnation, original).unwrap();
     env.ok(&["stop", &root]);
     env.tmux(&["kill-session", "-t", "=sentinel"]);
+}
+
+#[test]
+fn reset_says_and_fails_when_it_cannot_place_folders_brg_made() {
+    let env = tree_env();
+    let root = env.create("oncall", "work/a");
+    env.ok(&["create", &format!("{root}/helper")]);
+    let helper = env.member(&root, "helper");
+    env.ok(&["stop", &format!("{root}/{helper}")]);
+    env.ok(&["delete", &format!("{root}/{helper}")]);
+    // A kept member's folder is found where its start recorded it.
+    env.ok(&["create", &format!("{root}/helper")]);
+    let started = env.member(&root, "helper");
+    fs::rename(env.path("teams/oncall"), env.path("teams-moved")).unwrap();
+
+    let out = env.brg(&["reset", &root]);
+    let text = both(&out);
+
+    assert!(!out.status.success(), "{text}");
+    assert!(text.contains("remove any left empty by hand"), "{text}");
+    assert!(
+        !text.contains("brg start"),
+        "advice that can't work: {text}"
+    );
+    assert!(registered(&env).is_empty(), "{text}");
+    assert!(env.path(&format!("work/a/copies/{helper}")).is_dir());
+    assert!(
+        !env.path(&format!("work/a/copies/{started}")).exists(),
+        "{text}"
+    );
 }
