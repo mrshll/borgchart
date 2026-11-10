@@ -6,6 +6,7 @@ pub mod address;
 pub mod bounded_process;
 pub mod bus;
 pub mod checkouts;
+pub mod cleanup;
 pub mod cli;
 pub mod complete;
 pub mod composer;
