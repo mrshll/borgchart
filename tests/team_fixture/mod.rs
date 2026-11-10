@@ -64,8 +64,10 @@ roles:
         f
     }
 
+    /// A path in the team, with the temp folder's symlinks resolved (macOS:
+    /// /var -> /private/var), so it matches the canonical paths brg reports.
     pub fn path(&self, rel: &str) -> PathBuf {
-        self.dir.path().join(rel)
+        self.dir.path().canonicalize().unwrap().join(rel)
     }
 
     pub fn write(&self, rel: &str, text: &str) {
