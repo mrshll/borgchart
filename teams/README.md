@@ -19,7 +19,7 @@ export PATH="$prefix/bin:$PATH"
 export BORGCHART_CONFIG="$prefix/config.yaml"
 ```
 
-Choose a new, unused prefix for each revision. Keep that `bin` directory first on PATH whenever creating or fully starting an instance: no-path plugins resolve through the launch PATH frozen by brg. Merely invoking an absolute brg does not pair it with the sibling plugin. This recipe does not start or migrate any instance.
+Choose a new, unused prefix for each revision. Keep that `bin` directory first on the operator’s PATH when creating or fully starting an instance: no-path plugins resolve through the launch PATH frozen by brg. Merely invoking an absolute brg does not pair it with the sibling plugin. This recipe does not start or migrate any instance.
 
 Copy this entire `teams/` directory into `brg-<sha>/teams/`, alongside the stable brg built from that revision. Do not copy only the department folder. Put `config.yaml` in `brg-<sha>/` with:
 

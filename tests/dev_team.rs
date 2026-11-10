@@ -1188,7 +1188,7 @@ mod round {
         };
         let rule = member_body(&department().join("lead.md"));
         // A documented command, run inside the department lead.
-        let run = |name: &str, script: &str| {
+        let run_in = |instance: &str, member: &str, name: &str, script: &str| {
             let out = team.path(&format!("s/{name}.out"));
             let path = team.path(&format!("s/{name}.sh"));
             fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -1200,8 +1200,8 @@ mod round {
                 ),
             )
             .unwrap();
-            idle(&dept, &dept_lead);
-            team.run_tool(&dept_lead, &path);
+            idle(instance, member);
+            team.run_tool(member, &path);
             team.wait_for(&format!("{name} output"), || {
                 fs::read_to_string(&out).is_ok_and(|t| t.contains("exit "))
             });
@@ -1209,6 +1209,8 @@ mod round {
             let (text, code) = text.rsplit_once("exit ").unwrap();
             (text.to_string(), code.trim().parse::<i32>().unwrap())
         };
+
+        let run = |name: &str, script: &str| run_in(&dept, &dept_lead, name, script);
 
         let (up, code) = run(
             "dev-create",
@@ -1273,6 +1275,20 @@ mod round {
         );
         assert_eq!(code, 0, "{started}");
         let dev_lead = team.member_in(&copy_id, "lead");
+        let child_meta = team.read(&format!("state/{copy_id}/start.json")).unwrap();
+        let parent_shim = team.path(&format!("state/{dept}/members/{dept_lead}/bin"));
+        assert!(
+            std::env::split_paths(child_meta["base_env"]["PATH"].as_str().unwrap())
+                .all(|entry| entry != parent_shim),
+            "child captured its parent's identity-fenced plugin shims"
+        );
+        let dev_rule = member_body(&dev_team().join("orchestrator.md"));
+        let nested_route = documented(&dev_rule, "brg-seat route <vendor> <model>")
+            .replace("<vendor>", "codex")
+            .replace("<model>", "astra");
+        let (answer, code) = run_in(&copy_id, &dev_lead, "nested-dev-seat", &nested_route);
+        assert_eq!((code, answer.trim()), (0, "go: included quota available"));
+
         let log = team.path(&format!("home/fake-agent/{dev_lead}.jsonl"));
         let start = first_start(&team, "the dev lead", &log);
         assert_eq!(

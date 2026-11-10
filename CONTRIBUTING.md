@@ -10,14 +10,14 @@ Four checks must pass before a change merges. CI runs the Rust checks on Linux a
 .githooks/checks fast         # the fast tier (below)
 ```
 
-The tests need `tmux`, and `py` needs `uv`.
+The tests need `tmux`, and `py` needs `uv`. Before running only the department integration target, build its sibling plugin binary with `tools/cargo-slot cargo build --workspace --bins --all-features --locked`; `.githooks/checks test` does this automatically.
 
 ## Test tiers
 
 | Tier | Command | What it runs | When |
 | --- | --- | --- | --- |
-| Fast | `.githooks/checks fast` | The library and validation tests (`cargo test --lib --test validate`), which start no tmux and no other process. They run with recording stand-ins for `tmux`, `ps`, `sh`, `sleep`, `claude` and `codex` first on `PATH`, and the tier fails if any was started. | At every commit (pre-commit). |
-| Default | `.githooks/checks test` | Every test: real private tmux servers, with stand-ins for the vendor CLIs. | Before every push (pre-push) and in CI. |
+| Fast | `.githooks/checks fast` | Every workspace member’s library tests (`cargo test --workspace --all-features --lib`) and core validation tests (`cargo test -p borgchart --features test-support --test validate`), which start no tmux and no other process. They run with recording stand-ins for `tmux`, `ps`, `sh`, `sleep`, `claude` and `codex` first on `PATH`, and the tier fails if any was started. | At every commit (pre-commit). |
+| Default | `.githooks/checks test` | Prebuilds workspace binaries, then runs all workspace tests with all features: real private tmux servers, with stand-ins for the vendor CLIs. | Before every push (pre-push) and in CI. |
 | Live | `BORGCHART_LIVE=1 cargo test --locked --test live -- --ignored --nocapture --test-threads=1` | `tests/live.rs`: the real Claude Code and Codex CLIs, started by real `brg create`, locally only (below). | Before rebuilding a stable brg, and after updating Claude Code or Codex. |
 
 The live tier uses your own login and configuration in place: nothing is copied, and brg writes no trust to it (Codex trust is session-only, and every Claude case's configuration sets `auto_trust: false`). Run it from a checkout inside a folder Claude already trusts. It costs a few small real turns per vendor, and never answers a tool approval: one ends its case BLOCKED. Each case ends PASS, FAIL, SKIP (with its reason) or BLOCKED, and the matrix goes to `target/live/<run>/matrix.md`. Only a complete run with every case listed in `tests/live/rules.rs` PASS qualifies a stable rebuild; `BORGCHART_LIVE_VENDORS=claude` (or `codex`) or `BORGCHART_LIVE_SUBMIT=0` makes a partial run. `BORGCHART_LIVE_DRY=1` runs the harness against owned fake CLIs instead; the default tier runs that dry run too.
