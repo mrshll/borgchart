@@ -144,6 +144,11 @@ fn completion_offers_instances_kept_members_and_teams() {
 
     let instances = complete(&env, &["inbox", "--instance", ""]);
     assert!(instances.contains(&inst), "{instances:?}");
+    let cleanup = complete(&env, &["cleanup", ""]);
+    assert!(
+        cleanup.contains(&inst) && cleanup.contains(&copy),
+        "{cleanup:?}"
+    );
     assert!(
         !instances.iter().any(|i| i.contains(&lead)),
         "a member offered as an instance: {instances:?}"

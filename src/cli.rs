@@ -110,6 +110,7 @@ enum Command {
     /// kept members' and copies' folders, worktrees and messages are never touched.
     Cleanup {
         /// Only this instance and its copies (default: every instance).
+        #[arg(add = crate::complete::instances())]
         instance: Option<String>,
     },
     /// List the secrets a team's plugins need, and whether each is set in
