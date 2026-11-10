@@ -883,6 +883,148 @@ fn sender_delete_waits_for_import_but_not_the_receivers_ack() {
 }
 
 #[test]
+fn completed_round_trip_survives_copy_deletion() {
+    for member_only in [false, true] {
+        let tree = Tree::new();
+        // Ensure the child's receipt ID differs from the parent's original ID.
+        value(tree.env.publish(
+            &tree.child,
+            &json!({"to": tree.child_member, "body": "Local task"}),
+        ));
+        let sent = tree.publish(false, "Task completed by child", &[]);
+        let inbox = tree.inbox(true);
+        for record in inbox["records"].as_array().unwrap() {
+            value(
+                tree.member_cmd(
+                    true,
+                    &["msg", "ack", record["id"].as_str().unwrap(), "--json"],
+                )
+                .output()
+                .unwrap(),
+            );
+        }
+        let imported = inbox["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|record| record["origin"]["id"] == sent["id"])
+            .unwrap();
+        assert_ne!(imported["id"], sent["id"]);
+        tree.publish(true, "Task done", &[imported["id"].as_str().unwrap()]);
+        let reply = tree.inbox(false);
+        for record in reply["records"].as_array().unwrap() {
+            value(
+                tree.member_cmd(
+                    false,
+                    &["msg", "ack", record["id"].as_str().unwrap(), "--json"],
+                )
+                .output()
+                .unwrap(),
+            );
+        }
+        tree.env.ok(&["stop", &tree.child]);
+        tree.env.ok(&["delete", &tree.child]);
+        let sender = if member_only {
+            format!("{}/{}", tree.parent, tree.parent_member)
+        } else {
+            tree.parent.clone()
+        };
+        tree.env.ok(&["stop", &sender]);
+        let deleted = tree.env.brg(&["delete", &sender]);
+        assert!(
+            deleted.status.success(),
+            "completed {} must not block: {}",
+            sent["id"],
+            both(&deleted)
+        );
+    }
+}
+
+#[test]
+fn forced_copy_deletion_preserves_only_completed_receipts() {
+    let tree = Tree::new();
+    let completed = tree.publish(false, "Completed task", &[]);
+    let inbox = tree.inbox(true);
+    value(
+        tree.member_cmd(
+            true,
+            &[
+                "msg",
+                "ack",
+                inbox["records"][0]["id"].as_str().unwrap(),
+                "--json",
+            ],
+        )
+        .output()
+        .unwrap(),
+    );
+    let unread = tree.publish(false, "Imported but unacked", &[]);
+    tree.inbox(true);
+    tree.env.ok(&["stop", &tree.child]);
+    let undelivered = tree.publish(false, "Never imported", &[]);
+    tree.env.fails(&["delete", &tree.child]);
+    tree.env.ok(&["delete", &tree.child, "--force"]);
+    tree.env.ok(&["stop", &tree.parent]);
+    let refused = tree.env.fails(&["delete", &tree.parent]);
+    for record in [unread, undelivered] {
+        assert!(
+            refused.contains(&format!(
+                "{} to a deleted copy",
+                record["id"].as_str().unwrap()
+            )),
+            "{refused}"
+        );
+    }
+    assert!(
+        !refused.contains(&format!(
+            "{} to a deleted copy",
+            completed["id"].as_str().unwrap()
+        )),
+        "{refused}"
+    );
+}
+
+#[test]
+fn forced_copy_deletion_does_not_settle_corrupt_receipts() {
+    let tree = Tree::new();
+    let sent = tree.publish(false, "Acked but corrupt evidence", &[]);
+    let inbox = tree.inbox(true);
+    let id = inbox["records"][0]["id"].as_str().unwrap();
+    value(
+        tree.member_cmd(true, &["msg", "ack", id, "--json"])
+            .output()
+            .unwrap(),
+    );
+    // Keep the completed import and its ack readable: damage elsewhere in
+    // the store must still prevent settlement from a partial snapshot.
+    let unrelated = value(tree.env.publish(
+        &tree.child,
+        &json!({"to": tree.child_member, "body": "Unrelated task"}),
+    ));
+    tree.env.ok(&["stop", &tree.child]);
+    let seq: u64 = unrelated["id"].as_str().unwrap()[1..].parse().unwrap();
+    fs::write(
+        tree.env.path(&format!(
+            "state/{}/messages/records/{seq:010}.json",
+            tree.child
+        )),
+        b"corrupt",
+    )
+    .unwrap();
+    tree.env.fails(&["delete", &tree.child]);
+    tree.env.ok(&["delete", &tree.child, "--force"]);
+    tree.env.ok(&["stop", &tree.parent]);
+    let refused = tree.env.fails(&["delete", &tree.parent]);
+    assert!(
+        refused.contains(&format!(
+            "{} to a deleted copy",
+            sent["id"].as_str().unwrap()
+        )),
+        "{refused}"
+    );
+}
+
+#[test]
 fn sender_delete_lists_messages_to_a_deleted_copy() {
     for member_only in [true, false] {
         let tree = Tree::new();
@@ -1124,4 +1266,18 @@ fn mutual_imports_release_peer_locks_before_appending() {
         assert_eq!(inbox["records"].as_array().unwrap().len(), 1);
         assert_eq!(inbox["records"][0]["body"], body);
     }
+}
+
+#[test]
+fn never_started_copy_deletion_needs_no_receipts() {
+    let tree = Tree::new();
+    tree.env.ok(&["create", &format!("{}/dev", tree.parent)]);
+    let registry = tree.env.registry();
+    let copy = registry["instances"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .find(|id| id.starts_with(&format!("{}/", tree.parent)) && **id != tree.child)
+        .unwrap();
+    tree.env.ok(&["delete", copy]);
 }

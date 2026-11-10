@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use super::outcome::Code;
-use super::store::{self, WaitSnapshot};
+use super::store::{self, Bus, Snapshot, WaitSnapshot};
 use crate::state::StateDir;
 
 /// Blocking outgoing work and informational notes about deleted recipients.
@@ -39,11 +39,14 @@ pub(crate) fn pending(state: &StateDir, only: Option<&str>) -> Result<Pending, S
         let Some((receiver, member)) = record.to.rsplit_once('/') else {
             continue;
         };
-        if receiver
+        if let Some(copy) = receiver
             .strip_prefix(&format!("{}/", bus.instance))
             .and_then(|copy| bus.record.copies.get(copy))
-            .is_some_and(|copy| copy.deleted)
+            .filter(|copy| copy.deleted)
         {
+            if copy.settled.contains(&record.id) {
+                continue;
+            }
             pending.items.push(format!(
                 "{} to a deleted copy (delivery unknown): {}",
                 record.id, record.to
@@ -75,9 +78,9 @@ struct Receipt {
     deleted: BTreeSet<String>,
 }
 
-fn delivered(sender: &str, receiver: &str) -> Result<Receipt, String> {
-    let bus = store::open(&StateDir::new(receiver)).map_err(|f| f.message)?;
-    let snap = match store::wait_snapshot(&bus, Instant::now() + Duration::from_millis(50))
+fn receipt_snapshot(bus: &Bus) -> Result<Snapshot, String> {
+    let receiver = &bus.instance;
+    let snap = match store::wait_snapshot(bus, Instant::now() + Duration::from_millis(50))
         .map_err(|f| f.message)?
     {
         WaitSnapshot::Ready(snap) => snap,
@@ -92,6 +95,31 @@ fn delivered(sender: &str, receiver: &str) -> Result<Receipt, String> {
             "instance `{receiver}`'s messages are incomplete; tell your parent or the owner to run `brg bus check --instance {receiver}` outside a member, then try deleting again"
         )
     })?;
+    Ok(snap)
+}
+
+/// Preserve completion evidence before a copy's receipt store is removed.
+/// A forced delete must not settle unacknowledged or unreadable work.
+pub(crate) fn settled(sender: &str, receiver: &StateDir) -> Result<BTreeSet<String>, String> {
+    let bus = match store::open(receiver) {
+        Ok(bus) => bus,
+        Err(f) if f.code == Code::NotConfigured => return Ok(BTreeSet::new()),
+        Err(f) => return Err(f.message),
+    };
+    let snap = receipt_snapshot(&bus)?;
+    Ok(snap
+        .records
+        .values()
+        .filter(|record| !record.ack_required || snap.is_acked(record.seq))
+        .filter_map(|record| record.origin.as_ref())
+        .filter(|origin| origin.instance == sender)
+        .map(|origin| origin.id.clone())
+        .collect())
+}
+
+fn delivered(sender: &str, receiver: &str) -> Result<Receipt, String> {
+    let bus = store::open(&StateDir::new(receiver)).map_err(|f| f.message)?;
+    let snap = receipt_snapshot(&bus)?;
     let delivered = snap
         .records
         .into_values()

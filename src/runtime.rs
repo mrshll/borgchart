@@ -2386,6 +2386,11 @@ pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
         let parent_state = StateDir::new(parent_id);
         let mut parent = registry::read_instance(&parent_state)?;
         if let Some(copy) = parent.copies.get_mut(copy_id) {
+            copy.settled = match crate::bus::receipts::settled(parent_id, &inst.state) {
+                Ok(settled) => settled,
+                Err(_) if force => Default::default(),
+                Err(error) => return Err(error),
+            };
             copy.deleted = true;
             copy.cwd = None;
         }

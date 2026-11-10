@@ -160,6 +160,9 @@ pub struct InstanceRecord {
 #[serde(deny_unknown_fields)]
 pub struct IssuedMember {
     pub role: String,
+    /// Completed parent-message IDs retained only on deleted copy records.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub settled: BTreeSet<String>,
     /// Deleted members reserve their suffix but have no live state.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub deleted: bool,
@@ -204,6 +207,7 @@ impl InstanceRecord {
             IssuedMember {
                 role: role.to_string(),
                 deleted: false,
+                settled: BTreeSet::new(),
                 cwd: None,
             },
         );
@@ -230,6 +234,7 @@ impl InstanceRecord {
             IssuedMember {
                 role: role.to_string(),
                 deleted: false,
+                settled: BTreeSet::new(),
                 cwd: None,
             },
         );

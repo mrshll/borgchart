@@ -92,7 +92,8 @@ enum Command {
         target: String,
         /// Delete even with unread or undelivered messages, or unreadable
         /// message storage, edge stores or delivery receipts. Messages to deleted
-        /// copies have unknown delivery; messages to deleted members need no force.
+        /// copies need force unless completion was saved before copy deletion;
+        /// messages to deleted members need no force.
         /// Running members, unknown liveness and members with kept children or copies
         /// are always refused.
         #[arg(long)]
