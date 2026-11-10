@@ -115,10 +115,15 @@ fn recursive_stop_in_the_same_boot_without_tmux_passes_members_with_no_live_star
     let leaf = env.member(&inst, "leaf");
     let target = format!("{inst}/{helper}");
     env.ok(&["stop", "-r", &target]);
-    // The helper's start has ended; the leaf's was never recorded, as when
-    // its first start failed before recording it.
+    // The helper's start has ended; the leaf never started, as when its
+    // first start failed before recording it.
     std::fs::remove_file(env.path(&format!("state/{inst}/members/{leaf}/incarnation.json")))
         .unwrap();
+    let meta_file = env.path(&format!("state/{inst}/start.json"));
+    let mut meta: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&meta_file).unwrap()).unwrap();
+    meta["members"][&leaf]["started"] = false.into();
+    std::fs::write(&meta_file, serde_json::to_vec(&meta).unwrap()).unwrap();
     env.tmux(&["kill-server"]);
     // The walk requires each stopped member to read gone.
     env.ok(&["stop", "-r", &target]);

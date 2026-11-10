@@ -2034,7 +2034,9 @@ pub fn liveness_of(inst: &Instance) -> BTreeMap<String, Liveness> {
                 }
             }
             (Some(m), _) if m.stopped_at.is_some() || !m.windows_started => Liveness::Gone,
-            (Some(_), Some(Err(_))) if lifecycle::no_live_start(&incarnation) => Liveness::Gone,
+            (Some(m), Some(Err(_))) if lifecycle::no_live_start(m, id, &incarnation) => {
+                Liveness::Gone
+            }
             (Some(_), Some(Err(_))) if inst.record.stopping => match &incarnation {
                 Ok(Some(inc)) => inc
                     .pane
@@ -2959,7 +2961,7 @@ fn stop_one(
         Err(_) if meta.stopped_at.is_some() || !meta.windows_started => Vec::new(),
         Err(e) => {
             let not_running = only.is_some_and(|id| {
-                lifecycle::no_live_start(&lifecycle::load_incarnation(state, id))
+                lifecycle::no_live_start(&meta, id, &lifecycle::load_incarnation(state, id))
             });
             // Member start records say nothing about plugin windows. A full
             // stop still needs proof that the recorded server is absent.

@@ -110,12 +110,17 @@ pub fn previous_boot(inc: &Incarnation) -> bool {
 }
 
 /// Whether a member's current start record, as `load_incarnation` read it,
-/// proves nothing of it runs, whatever tmux says: no start was recorded
-/// (one is before its window starts), it ended, or it is from an earlier boot.
-/// An unreadable record proves nothing.
-pub fn no_live_start(read: &Result<Option<Incarnation>, String>) -> bool {
+/// proves nothing of it runs, whatever tmux says: it ended, it is from an
+/// earlier boot, or none was recorded (one is recorded before its window
+/// starts) and `meta` says no window of it started. A lost record of a
+/// started member, or an unreadable one, proves nothing.
+pub fn no_live_start(
+    meta: &Meta,
+    member: &str,
+    read: &Result<Option<Incarnation>, String>,
+) -> bool {
     match read {
-        Ok(None) => true,
+        Ok(None) => !meta.members.get(member).is_some_and(|m| m.started),
         Ok(Some(inc)) => inc.ended_at.is_some() || previous_boot(inc),
         Err(_) => false,
     }
