@@ -163,13 +163,13 @@ fn one_store_keeps_ids_references_and_acks_across_a_restart() {
     let store = env.path(&format!("state/{instance}/messages"));
     let identity: Value =
         serde_json::from_slice(&fs::read(store.join("store.json")).unwrap()).unwrap();
-    assert_eq!(identity, json!({"format": 3, "instance": instance}));
+    assert_eq!(identity, json!({"format": 4, "root": instance}));
     let record: Value =
         serde_json::from_slice(&fs::read(store.join("records/0000000001.json")).unwrap()).unwrap();
     let ack: Value =
         serde_json::from_slice(&fs::read(store.join("acks/m1.json")).unwrap()).unwrap();
-    assert_eq!(record["schema"], 3);
-    assert_eq!(ack["schema"], 3);
+    assert_eq!(record["schema"], 4);
+    assert_eq!(ack["schema"], 4);
     assert!(record.get("run").is_none() && ack.get("run").is_none());
     assert!(!store.join("current").exists());
     env.ok(&["stop", &instance]);
@@ -220,7 +220,7 @@ fn changed_roles_keep_the_store_and_replies_to_removed_members() {
             .stdout,
     )
     .unwrap();
-    assert_eq!(old["record"]["to"], scout);
+    assert_eq!(old["record"]["to"], format!("{instance}/{scout}"));
     env.ok(&["stop", &instance]);
 }
 
@@ -273,12 +273,17 @@ fn damaged_store(case: &str) {
     match case {
         "foreign" => fs::write(
             store.join("store.json"),
-            json!({"format": 3, "instance": "other-2345"}).to_string(),
+            json!({"format": 4, "root": "other-2345"}).to_string(),
         )
         .unwrap(),
         "format" => fs::write(
             store.join("store.json"),
             json!({"format": 1, "instance": instance}).to_string(),
+        )
+        .unwrap(),
+        "format3" => fs::write(
+            store.join("store.json"),
+            json!({"format": 3, "instance": instance}).to_string(),
         )
         .unwrap(),
         "format2" => fs::write(
@@ -377,4 +382,9 @@ fn vendor_to_locked_requires_settling_ordinary_messages() {
     .unwrap();
     assert_eq!(meta["members"][&lead]["posture"], "locked");
     env.ok(&["stop", &instance]);
+}
+
+#[test]
+fn a_format_3_store_is_refused_without_writes() {
+    damaged_store("format3");
 }

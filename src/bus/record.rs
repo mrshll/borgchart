@@ -63,19 +63,9 @@ pub struct Record {
     pub at: String,
     pub from: String,
     pub to: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub origin: Option<Origin>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reply_to: Vec<String>,
     pub body: String,
-}
-
-/// The immutable identity of a message in the store that published it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Origin {
-    pub instance: String,
-    pub id: String,
 }
 
 pub fn record_id(seq: u64) -> String {

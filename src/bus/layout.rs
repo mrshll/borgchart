@@ -1,4 +1,4 @@
-//! One message store for the lifetime of an instance.
+//! One message store for the lifetime of a team tree.
 
 use super::fsx;
 use crate::state::StateDir;
@@ -14,7 +14,7 @@ pub struct StorePaths {
 #[serde(deny_unknown_fields)]
 struct StoreIdentity {
     format: u32,
-    instance: String,
+    root: String,
 }
 
 impl StorePaths {
@@ -35,6 +35,7 @@ impl StorePaths {
     /// Recognise the store before reading any messages. An absent or empty
     /// directory is new; every other layout needs our exact identity.
     pub fn validate(&self, instance: &str) -> Result<bool, String> {
+        let root = instance.split('/').next().expect("instance ID");
         let damaged = |detail: &str| {
             format!(
                 "instance `{instance}`'s message storage is damaged: {detail}; repair it by hand, or create a new instance (`brg create`)"
@@ -71,29 +72,36 @@ impl StorePaths {
         }
         let bytes =
             std::fs::read(self.identity()).map_err(|_| damaged("store.json cannot be read"))?;
-        let identity: StoreIdentity =
+        let value: serde_json::Value =
             serde_json::from_slice(&bytes).map_err(|_| damaged("store.json cannot be read"))?;
-        if identity.format != super::SCHEMA {
+        if value["format"] != super::SCHEMA {
             return Err(damaged("store.json names another format"));
         }
-        if identity.instance != instance {
-            return Err(damaged("store.json names another instance"));
+        let identity: StoreIdentity =
+            serde_json::from_value(value).map_err(|_| damaged("store.json cannot be read"))?;
+        if identity.root != root {
+            return Err(damaged("store.json names another tree root"));
         }
         Ok(true)
     }
 
-    /// Called under the instance's lifecycle lock, after every start check.
+    /// Called under the root instance's lifecycle lock, after every start check.
     /// An absent or empty directory may be initialised; other unrecognised
     /// layouts are refused.
     pub fn initialize(&self, state: &StateDir) -> Result<(), String> {
         if self.validate(&state.id)? {
             return Ok(());
         }
+        if state.id.contains('/') {
+            return Err(
+                "the tree's message store is missing; start the root instance first".into(),
+            );
+        }
         fsx::ensure_private_tree(&state.root, &self.root)
             .map_err(|e| format!("cannot create message storage: {e}"))?;
         let identity = StoreIdentity {
             format: super::SCHEMA,
-            instance: state.id.clone(),
+            root: state.id.clone(),
         };
         let bytes = serde_json::to_vec(&identity).map_err(|e| e.to_string())?;
         fsx::write_new(&self.identity(), &bytes)

@@ -1,13 +1,13 @@
 # Concepts
 
-**Status: partly built.** Teams, instances, `roles:`, suffixed member IDs, copies up to `max`, member deletion and member status work today. Bus members may manage only their declared children, using their latest start ID. Teams as members (team roles whose members are child teams, #25) are being built: nesting in #83, delivery between stores after it. The remaining command renames are planned.
+**Status: partly built.** Teams, instances, `roles:`, suffixed member IDs, copies up to `max`, member deletion and member status work today. Bus members may manage only their declared children, using their latest start ID. Teams as members (team roles whose members are child teams, #25) share one message store per runtime tree. The remaining command renames are planned.
 
 ## Definitions and what runs from them
 
 Each definition noun has an active noun, created from it by `brg create`.
 
 Definition folders and runtime working folders serve different purposes. A child
-copy keeps its own instance and message store, with its working folder nested
+copy keeps its own instance and shares the tree's message store, with its working folder nested
 under its parent instance, independently of where its team definition is stored.
 
 | Definition | Active | Created by | Examples |
@@ -29,11 +29,11 @@ under its parent instance, independently of where its team definition is stored.
   - plain plugin values, such as a channel ID.
 - **The instance's working folder** is given at `create` and recorded on the instance for its whole life. Members start there, or in their role's `cwd` inside it. The folder is required: there's no default for now. It can't be the same as, inside or around brg's state folder, and neither can a role's `cwd`, so a member's own folder never exposes brg's files.
 - **The instance's state folder,** `~/.local/state/borgchart/<instance>/`, holds:
-  - `messages/`, its one message store;
+  - `messages/` at the tree root only, shared by all copies;
   - `notes/`, for members' reports and other files the members share (`$BORGCHART_NOTES`);
   - brg's own files.
 
-  Codex `vendor` members run with full host access and no tool approvals, including access to brg's state files. Claude `vendor` members get `messages/` and `notes/` as added folders. Locked members retain their gate and restricted launch settings.
+  Codex `vendor` members run with full host access and no tool approvals, including access to brg's state files. Claude `vendor` members get the tree's `messages/` and their instance's `notes/` as added folders. Locked members retain their gate and restricted launch settings.
 
   `locked` members keep today's launch unchanged:
   - their gate;
@@ -72,7 +72,7 @@ There's no `up`. There are four verbs. `create` always makes something new; `sta
 | `brg create` | `create <team> <folder>` makes a new instance working in that folder (required), starts it, and prints its ID and tree. `<team>` is a team's name or a path to its folder. Run it twice and you have two instances. | `create <instance>/<role>` makes a new member of that role and starts it. `create` takes only a team or a role, never a member. It's refused past `max`; for a `max: 1` role whose member already exists, it points to `start`. |
 | `brg start` | Brings the instance to what should be running. That's the `start: true` roles and the members that were running when it was last stopped. A `start: true` role whose member was deleted gets a fresh member. Members already running are left alone. Changed files are applied only when the instance was fully stopped. It takes no folder. | Starts that member with a new start. If it's already running, it says so and changes nothing. A deleted ID is refused. |
 | `brg stop` | Stops every member. On a stopped instance, it says so and changes nothing. | Stops that member; the same on a stopped one. |
-| `brg delete` | Removes a stopped instance: its messages, notes, state and registration. It's refused while anything runs. Unacked messages, or messages it cannot read, are listed and need `--force`. | Removes a stopped member. Unacked messages are listed with a count and require `--force`; running or unknown liveness is always refused. Kept children, running or stopped, also prevent deletion, even with `--force`: their full addresses are listed; delete them first. Its ID stays issued. Immutable messages remain as history; unread ones to a deleted member stop counting as open work. |
+| `brg delete` | Removes a stopped instance: its notes, state and registration. Copy messages stay as history in the tree store; root deletion removes that store. It's refused while anything runs. Unacked messages, or messages it cannot read, are listed and need `--force`. | Removes a stopped member. Unacked messages are listed with a count and require `--force`; running or unknown liveness is always refused. Kept children, running or stopped, also prevent deletion, even with `--force`: their full addresses are listed; delete them first. Its ID stays issued. Immutable messages remain as history; unread ones to a deleted member stop counting as open work. |
 
 **Restarting** is `stop` then `start`. That's also how changed files are applied.
 
@@ -96,7 +96,7 @@ There's no `up`. There are four verbs. `create` always makes something new; `sta
 | Start | A unique ID for one start of a member (an incarnation), as today | `implementer-x7k2.20261108000000000.ab12` |
 | Member address | `[instance/]member` | `dev-team-k3f9/implementer-x7k2` |
 | Role address | `[instance/]<role>`, the bare role name. Only `create` takes it. Members always carry a suffix, so a bare name is never a member's ID. There's no role queue: messages go to members. | `dev-team-k3f9/implementer` |
-| Message | `[instance/]m<seq>` | `dev-team-k3f9/m42` |
+| Message | `m<seq>`, unique within the tree | `m42` |
 
 **Finding a team by name.** brg looks in every folder under `teams:`. A team is a subfolder holding a `team.yaml`.
 - One match: that's the team.
@@ -111,9 +111,9 @@ Two folders with the same name can both run. Their instances are told apart by t
 
 **Parents are agent roles.** `parent: lead` names an agent role, and a member's parent is the member filling that role. So a parent role must have one member: `validate` refuses a `parent:` that names a team role or a role with `max > 1`. The same goes for a plugin's `delivers_to:`.
 
-**Recipients.** A message goes to one member, or from a team's root member to `external:NAME`. An instance isn't a recipient: a message naming only an instance (`dev-design-k3f9`) is refused, listing its members. For now a member's messages stay inside its own instance. A team that works as part of another, such as a design panel inside the dev team, is a team role of it (#25): a copy with its own instance and store, whose messages to and from its parent cross stores along that edge once delivery is built. Messages between chosen members of independent instances, such as two teams' leads, are planned after that (#62): a person links a role in one instance with a role in another. The message format leaves room for them, so they need no second format change.
+**Recipients.** A message goes to one kept, started member along a parent/child edge, or from a root member of the tree's root instance to `external:NAME`. An instance isn't a recipient: name a member in it. Across a copy edge, use its full member address. Siblings, cousins and independent roots cannot exchange messages. Every record carries full member addresses and a tree-wide message ID; replies reference plain IDs such as `m1`.
 
-**Teams as members (#25).** A role can be a team, referenced by name through the configured team directories (`team: dev-team`). Its members are copies (`dev-a7k2`): nested instances, each with its own members, message store, notes, state and frozen configuration, and a working folder inside its parent's. Teams form a tree: the member with no parent is the root. Addresses nest (`borgchart-engineering-h4k2/dev-a7k2/lead-c4nd`), and a copy's instance ID is its full path. Copies are created stopped, prepared by their parent and then started. A member may act on its whole subtree, and `stop` cascades deepest first. [teams.md](teams.md#teams-as-members) has the rules, and [`borgchart-engineering/`](../teams/borgchart-engineering/) defines the runtime tree from sibling definitions under `teams/`.
+**Teams as members (#25).** A role can be a team, referenced by name through the configured team directories (`team: dev-team`). Its members are copies (`dev-a7k2`): nested instances, each with its own members, notes, state and frozen configuration, and a working folder inside its parent's. Teams form a tree: the member with no parent is the root. Addresses nest (`borgchart-engineering-h4k2/dev-a7k2/lead-c4nd`), and a copy's instance ID is its full path. Copies are created stopped, prepared by their parent and then started. A member may act on its whole subtree, and `stop` cascades deepest first. [teams.md](teams.md#teams-as-members) has the rules, and [`borgchart-engineering/`](../teams/borgchart-engineering/) defines the runtime tree from sibling definitions under `teams/`.
 
 ## Lifetimes
 
@@ -122,7 +122,7 @@ Two folders with the same name can both run. Their instances are told apart by t
 - **Members are kept:** a member exists from `create` until `delete`, running or stopped. `max` counts those members. A stopped member stays addressable and can be started again.
 - **Its team folder:** the instance records the folder's path, not its name, so a same-named team elsewhere never takes its place. If the folder moves, `start` refuses, and `start <instance> --team <new path>` points it there. That's a change of files like any other: it applies only from a full stop, once every member is positively stopped.
 - **Its working folder** is fixed at `create`. If it's gone, `start` refuses; create a new instance.
-- **Message store:** one per instance for its whole life, in its state folder, so message numbers never restart.
+- **Message store:** one per team tree, in the root instance's state folder. Message numbers continue across stops, starts and copy deletion. Earlier formats require the [manual cutover](bus.md#storage).
 - **Frozen configuration:** the team's files, with includes expanded, and the global settings that reach members (`auth`, `auto_trust`, and where `plugins_dir` puts each shared plugin) are frozen from a start to the next full stop. `start` applies changes only after a full `stop`, once every member is positively stopped.
 - **Checkouts:** every operation that starts a member (`create`, `start`, `start --team`) checks its resolved working folder. It refuses if that folder is the same as, inside, or around a folder that another instance's member holds while running or while brg cannot tell it stopped. Members of one instance may share a folder. `{member_id}` in `cwd` is optional: without it, copies share the role's folder. If used, it must be the last folder name, with no `..`. When `cwd` ends in `{member_id}`, brg makes only the missing empty leaf when issuing a new member (`create`, or a full `start` that gives a `start: true` role a new member), for any `max`; ancestors must exist, and an existing leaf is used as is. The parent puts a worktree there before briefing the copy. Kept copies of a `{member_id}` role have separate folders, including through symlinks and while stopped. Starting an existing member never creates its folder, and `delete` leaves working folders alone. The checks, creation and reservation happen under one registry lock, so concurrent creates can't claim overlapping folders.
 - **A new message format:** brg refuses to start an instance whose messages it can't read, and points to `brg create` for a fresh instance (its open work has to be sent again). `stop` and liveness never parse messages, so they still work on the old instance. A stopped instance holds no checkout; `delete` of unreadable messages needs `--force` ("its contents can't be inspected"). No storage generations are needed.

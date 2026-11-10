@@ -490,18 +490,27 @@ fn interactive_is_not_an_option_on_nested_team_roles() {
 }
 
 #[test]
-fn department_and_copy_get_stores_without_bus_opt_in() {
+fn department_and_copy_share_a_store_without_bus_opt_in() {
     let (env, dept) = department();
     let (child, _) = copy(&env, &dept);
     env.ok(&["start", &child]);
+    let lead = env.member(&child, "lead");
+    env.ok(&[
+        "send",
+        &format!("{child}/{lead}"),
+        "Copy task",
+        "--external",
+        "ops",
+    ]);
     for instance in [&dept, &child] {
-        let identity: serde_json::Value = serde_json::from_slice(
-            &fs::read(env.path(&format!("state/{instance}/messages/store.json"))).unwrap(),
+        let checked: serde_json::Value = serde_json::from_slice(
+            &env.ok(&["bus", "check", "--instance", instance, "--json"])
+                .stdout,
         )
         .unwrap();
-        assert_eq!(identity["format"], 3);
-        assert_eq!(identity["instance"], instance.as_str());
+        assert_eq!(checked["records"], 1);
     }
+    assert!(!env.path(&format!("state/{child}/messages")).exists());
     env.ok(&["stop", &dept]);
 }
 

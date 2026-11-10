@@ -48,32 +48,48 @@ fn progress_counts_every_recipient_and_keeps_sequence_extrema_after_acks() {
         assert!(out.status.success(), "{}", both(&out));
     };
     ack(&lead, "m1");
+    let lead_address = format!("{instance}/{lead}");
+    let helper_address = format!("{instance}/{helper}");
     let p = read();
     assert_eq!(
-        (p[&lead].unread, p[&lead].newest, p[&lead].lowest_unacked),
+        (
+            p[&lead_address].unread,
+            p[&lead_address].newest,
+            p[&lead_address].lowest_unacked
+        ),
         (1, 3, Some(3))
     );
     assert_eq!(
         (
-            p[&helper].unread,
-            p[&helper].newest,
-            p[&helper].lowest_unacked
+            p[&helper_address].unread,
+            p[&helper_address].newest,
+            p[&helper_address].lowest_unacked
         ),
         (1, 2, Some(2))
     );
-    assert_eq!(p[&scout].unread, 0);
+    assert_eq!(
+        p.get(&format!("{instance}/{scout}"))
+            .copied()
+            .unwrap_or_default()
+            .unread,
+        0
+    );
     ack(&lead, "m3");
     ack(&helper, "m2");
     let p = read();
     assert_eq!(
-        (p[&lead].unread, p[&lead].newest, p[&lead].lowest_unacked),
+        (
+            p[&lead_address].unread,
+            p[&lead_address].newest,
+            p[&lead_address].lowest_unacked
+        ),
         (0, 3, None)
     );
     assert_eq!(
         (
-            p[&helper].unread,
-            p[&helper].newest,
-            p[&helper].lowest_unacked
+            p[&helper_address].unread,
+            p[&helper_address].newest,
+            p[&helper_address].lowest_unacked
         ),
         (0, 2, None)
     );

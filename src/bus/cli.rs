@@ -113,9 +113,6 @@ pub(crate) fn finish(json: bool, result: Result<Output, Failure>) -> ExitCode {
                 println!("{}", f.to_json());
             } else {
                 eprintln!("brg: {}", f.message);
-                for note in &f.notes {
-                    eprintln!("note: {note}");
-                }
             }
             ExitCode::from(f.code.exit())
         }
@@ -185,14 +182,9 @@ struct Target {
 
 fn target(bus: &Bus, who: &Who) -> Result<Target, Failure> {
     if let Some(m) = &who.member {
-        if !bus.meta.members.contains_key(m) {
-            return Err(Failure::new(
-                Code::Invalid,
-                store::not_a_member(&bus.meta, m),
-            ));
-        }
+        let (instance, member) = bus.member(m).map_err(|e| Failure::new(Code::Invalid, e))?;
         return Ok(Target {
-            recipient: Recipient::Member(m.clone()),
+            recipient: Recipient::Member(format!("{}/{member}", instance.instance)),
         });
     }
     match context::caller(who.external.as_deref())? {
@@ -228,9 +220,6 @@ fn inbox_output(t: &Target, page: &Inbox, snap: &store::Snapshot, full: bool) ->
         })
         .collect();
     let mut text = String::new();
-    for note in &snap.notes {
-        text.push_str(&format!("note: {note}\n"));
-    }
     if !snap.healthy() {
         text.push_str("warning: the store is incomplete; `brg bus check` lists the problems\n");
     }
@@ -250,7 +239,6 @@ fn inbox_output(t: &Target, page: &Inbox, snap: &store::Snapshot, full: bool) ->
                 "unacked": page.unacked,
                 "total": page.total,
                 "store": if snap.healthy() { "ok" } else { "incomplete" },
-                "notes": snap.notes,
             }),
         ),
         text,
@@ -295,8 +283,19 @@ pub fn inbox(instance: Option<&str>, args: InboxArgs, started: Instant) -> ExitC
                 } else {
                     context::caller(args.who.external.as_deref())?
                 };
-                let deadline = Instant::now() + Duration::from_secs(1);
-                let snap = store::import(&bus, &caller, &t.recipient, deadline)?;
+                if matches!(caller, Caller::Member { .. }) {
+                    store::actor_for(&bus, &caller)?;
+                }
+                let snap =
+                    match store::wait_snapshot(&bus, Instant::now() + Duration::from_secs(1))? {
+                        store::WaitSnapshot::Ready(snap) => snap,
+                        store::WaitSnapshot::TimedOut => {
+                            return Err(Failure::new(
+                                Code::Timeout,
+                                "message store is busy; try the inbox again",
+                            ));
+                        }
+                    };
                 let inbox = store::list(&bus, &snap, &t.recipient);
                 Ok(inbox_output(&t, &inbox, &snap, args.full))
             })(),

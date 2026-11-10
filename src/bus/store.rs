@@ -48,6 +48,7 @@ pub struct Bus {
 
 /// Open read-only; never initialise an unrecognised store.
 pub fn open(state: &StateDir) -> Result<Bus, Failure> {
+    check_kept_instance(state).map_err(|e| Failure::new(Code::Invalid, e))?;
     let record =
         crate::registry::read_instance(state).map_err(|e| Failure::new(Code::NotFound, e))?;
     let paths = StorePaths::new(state);
@@ -67,8 +68,11 @@ pub fn open(state: &StateDir) -> Result<Bus, Failure> {
         .map_err(|e| Failure::new(Code::Corrupt, e))?
         .ok_or_else(|| {
             Failure::new(
-                Code::Corrupt,
-                format!("instance `{}`'s start record cannot be read", state.id),
+                Code::NotConfigured,
+                format!(
+                    "instance `{}` has not started; start it before sending",
+                    state.id
+                ),
             )
         })?;
     meta.members
@@ -80,6 +84,29 @@ pub fn open(state: &StateDir) -> Result<Bus, Failure> {
         meta,
         record,
     })
+}
+
+/// Copy tombstones remain in their parents even after copy state is removed.
+fn check_kept_instance(state: &StateDir) -> Result<(), String> {
+    let mut state = state.clone();
+    while let Some((parent, copy)) = state.id.rsplit_once('/') {
+        let parent = StateDir {
+            id: parent.to_string(),
+            root: state.root.parent().expect("copy parent").to_path_buf(),
+        };
+        if crate::registry::read_instance(&parent)?
+            .copies
+            .get(copy)
+            .is_none_or(|copy| copy.deleted)
+        {
+            return Err(format!(
+                "instance `{}` was deleted; it cannot receive messages",
+                state.id
+            ));
+        }
+        state = parent;
+    }
+    Ok(())
 }
 
 /// The reason in a "<path> is unreadable: …" or "cannot read <path>: …"
@@ -107,34 +134,79 @@ fn hide_paths(text: &str, store_root: &Path, team_dir: Option<&Path>) -> String 
 }
 
 impl Bus {
-    /// Refuse deleted recipients and name the concrete create command for roles.
-    fn check_route(&self, actor: &Actor, to: &str) -> Result<(), String> {
-        if to.contains('/') {
-            return super::delivery::check_route(self, actor, to);
+    /// Resolve a bare or full member address in this tree, refusing tombstones.
+    pub fn member(&self, name: &str) -> Result<(Bus, String), String> {
+        if !name.split('/').all(crate::names::is_valid_member_id) {
+            return Err(format!("`{name}` is not a member address"));
         }
-        if self.record.members.get(to).is_some_and(|m| m.deleted) {
+        let (instance, member) = name.rsplit_once('/').unwrap_or((&self.instance, name));
+        if instance.split('/').next() != self.instance.split('/').next() {
+            return Err("messages cannot cross independent team trees".into());
+        }
+        let target = if instance == self.instance {
+            self.clone()
+        } else {
+            open(&StateDir::new(instance)).map_err(|e| e.message)?
+        };
+        let inst = crate::address::Instance {
+            id: target.instance.clone(),
+            state: target.state.clone(),
+            record: target.record.clone(),
+        };
+        crate::address::member(&inst, member)?;
+        if !target.meta.members.contains_key(member) {
             return Err(format!(
-                "member `{to}` was deleted; it cannot receive messages"
+                "`{name}` has no recorded start; start it before sending"
             ));
         }
-        check_route(&self.meta, actor, to).map_err(|e| {
-            let mut report = crate::diag::Report::default();
-            if crate::team::load_with(
-                &self.record.team_dir,
-                &[],
-                Some(&self.meta.config.team_dirs),
-                &mut report,
-            )
-            .is_some_and(|team| team.roles.contains_key(to))
-            {
-                e.replace(
-                    "brg create <instance>/<role>",
-                    &format!("brg create {}/{to}", self.instance),
-                )
-            } else {
-                e
+        Ok((target, member.to_string()))
+    }
+
+    /// The recorded parent, qualified within the member's own instance.
+    pub fn parent(&self, member: &str) -> Option<String> {
+        self.meta
+            .members
+            .get(member)?
+            .parent
+            .as_ref()
+            .map(|parent| {
+                if parent.contains('/') {
+                    parent.clone()
+                } else {
+                    format!("{}/{parent}", self.instance)
+                }
+            })
+    }
+
+    /// One rule for all parent edges, including edges into copies.
+    fn check_route(&self, actor: &Actor, to: &str) -> Result<Option<state::MemberMeta>, String> {
+        match Recipient::parse(to).ok_or_else(|| format!("`{to}` is not a recipient"))? {
+            Recipient::External(_) => match actor {
+                Actor::Member { member, .. }
+                    if !self.instance.contains('/')
+                        && self
+                            .parent(member.rsplit('/').next().expect("member"))
+                            .is_none() =>
+                {
+                    Ok(None)
+                }
+                _ => Err("only the tree's root members may publish to external:NAME".into()),
+            },
+            Recipient::Member(_) => {
+                let (recipient, member) = self.member(to)?;
+                if let Actor::Member { member: sender, .. } = actor {
+                    let local = sender.rsplit('/').next().expect("member");
+                    if self.parent(local).as_deref() != Some(to)
+                        && recipient.parent(&member).as_deref() != Some(sender)
+                    {
+                        return Err(format!(
+                            "`{sender}` can publish only to its parent or children, not `{to}`"
+                        ));
+                    }
+                }
+                Ok(recipient.meta.members.get(&member).cloned())
             }
-        })
+        }
     }
 
     /// `text` without this instance's internal storage paths.
@@ -160,7 +232,7 @@ pub fn actor_for(bus: &Bus, caller: &Caller) -> Result<Actor, Failure> {
         } => {
             fence_member(bus, member, incarnation)?;
             Ok(Actor::Member {
-                member: member.clone(),
+                member: format!("{}/{member}", bus.instance),
                 incarnation: incarnation.clone(),
             })
         }
@@ -203,23 +275,13 @@ fn fence_member(bus: &Bus, member: &str, incarnation: &str) -> Result<(), Failur
 /// Take the publication lock and refresh the routing under it. A store must
 /// already be recognised; mutations never create storage over damaged data.
 pub(super) fn lock_for_mutation(bus: &Bus) -> Result<(Bus, fs::File), Failure> {
-    lock_for_write(bus, None)?.ok_or_else(|| Failure::new(Code::Error, "cannot lock messages/lock"))
+    lock_for_write(bus)
 }
 
-/// Imports share the publication lock, but cannot outlive the read's deadline.
-pub(super) fn lock_for_import(
-    bus: &Bus,
-    deadline: Instant,
-) -> Result<Option<(Bus, fs::File)>, Failure> {
-    lock_for_write(bus, Some(deadline))
-}
-
-fn lock_for_write(
-    bus: &Bus,
-    deadline: Option<Instant>,
-) -> Result<Option<(Bus, fs::File)>, Failure> {
+fn lock_for_write(bus: &Bus) -> Result<(Bus, fs::File), Failure> {
     let fresh = open(&bus.state)?;
-    fsx::ensure_private_tree(&fresh.state.root, &fresh.paths.root).map_err(|e| {
+    let root = fresh.paths.root.parent().expect("tree root");
+    fsx::ensure_private_tree(root, &fresh.paths.root).map_err(|e| {
         Failure::new(
             Code::Error,
             format!(
@@ -231,27 +293,9 @@ fn lock_for_write(
     })?;
     let lock = state::open_lock(&fresh.paths.bus_lock())
         .map_err(|e| Failure::io("cannot open messages/lock", e))?;
-    if let Some(deadline) = deadline {
-        loop {
-            match lock.try_lock() {
-                Ok(()) => break,
-                Err(fs::TryLockError::WouldBlock) => {
-                    let now = Instant::now();
-                    if now >= deadline {
-                        return Ok(None);
-                    }
-                    std::thread::sleep(Duration::from_millis(20).min(deadline - now));
-                }
-                Err(fs::TryLockError::Error(e)) => {
-                    return Err(Failure::io("cannot lock messages/lock", e));
-                }
-            }
-        }
-    } else {
-        lock.lock()
-            .map_err(|e| Failure::io("cannot lock messages/lock", e))?;
-    }
-    Ok(Some((open(&bus.state)?, lock)))
+    lock.lock()
+        .map_err(|e| Failure::io("cannot lock messages/lock", e))?;
+    Ok((open(&bus.state)?, lock))
 }
 
 /// The authoritative caller check, made while holding `messages/lock`:
@@ -332,49 +376,6 @@ pub fn wait_snapshot(bus: &Bus, deadline: Instant) -> Result<WaitSnapshot, Failu
     Ok(WaitSnapshot::Ready(scan(&bus.paths)))
 }
 
-/// Edge reads must actually hold the sender's read-only shared lock. A missing
-/// lock cannot be taken as an empty store when the sender may have published.
-/// After the initial snapshot, read only records at or above the peer cursor.
-pub(super) fn peer_snapshot(
-    bus: &Bus,
-    deadline: Instant,
-    next: Option<u64>,
-) -> Result<WaitSnapshot, Failure> {
-    #[cfg(feature = "test-support")]
-    peer_read_log(&next.map_or_else(|| "full".to_string(), |seq| format!("next:{seq}")))?;
-    let _lock = match read_lock_until(&bus.paths, Some(deadline))? {
-        ReadLock::TimedOut => return Ok(WaitSnapshot::TimedOut),
-        ReadLock::NoStore => return Err(Failure::new(Code::Error, "messages/lock is missing")),
-        ReadLock::Held(lock) => lock,
-    };
-    let Some(mut next) = next else {
-        return Ok(WaitSnapshot::Ready(scan(&bus.paths)));
-    };
-    let mut snap = Snapshot::default();
-    while let Some(record) = next_record(&bus.paths, next)? {
-        snap.records.insert(next, record);
-        next += 1;
-        if Instant::now() >= deadline {
-            break;
-        }
-    }
-    Ok(WaitSnapshot::Ready(snap))
-}
-
-#[cfg(feature = "test-support")]
-fn peer_read_log(read: &str) -> Result<(), Failure> {
-    use std::io::Write;
-    if let Some(path) = std::env::var_os("BORGCHART_TEST_PEER_READ_LOG") {
-        let mut log = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .map_err(|e| Failure::io("cannot open the test peer read log", e))?;
-        writeln!(log, "{read}").map_err(|e| Failure::io("cannot log the test peer read", e))?;
-    }
-    Ok(())
-}
-
 /// A consistent read of the whole store, under `messages/lock` shared.
 pub fn snapshot(bus: &Bus) -> Result<Snapshot, Failure> {
     snapshot_of(&bus.paths)
@@ -408,8 +409,6 @@ pub struct Snapshot {
     pub problems: Vec<String>,
     /// Stray temporary files left by a crash (harmless).
     pub strays: Vec<PathBuf>,
-    /// Edge failures from the latest import poll, independent of local health.
-    pub notes: Vec<String>,
 }
 
 impl Snapshot {
@@ -568,14 +567,7 @@ pub fn actor_label(actor: &Actor) -> String {
 }
 
 fn is_recipient(actor: &Actor, record: &Record) -> bool {
-    let label = actor_label(actor);
-    label == record.to
-        || (record.origin.is_some()
-            && matches!(actor, Actor::Member { .. })
-            && record
-                .to
-                .rsplit_once('/')
-                .is_some_and(|(_, member)| member == label))
+    actor_label(actor) == record.to
 }
 
 fn scan_acks(
@@ -638,93 +630,33 @@ pub fn parse_draft(bytes: &[u8]) -> Result<Draft, Failure> {
     Ok(draft)
 }
 
-/// Who may address whom, from the latest start record.
-pub fn check_route(meta: &state::Meta, actor: &Actor, to: &str) -> Result<(), String> {
-    let to = Recipient::parse(to).ok_or_else(|| format!("`to`: `{to}` is not a recipient"))?;
-    match (actor, &to) {
-        (_, Recipient::Member(m)) if !meta.members.contains_key(m) => Err(not_a_member(meta, m)),
-        (Actor::External { .. }, Recipient::Member(_)) => Ok(()),
-        (Actor::External { .. }, Recipient::External(_)) => {
-            Err("an outside caller can only publish to members".into())
-        }
-        (Actor::Member { member, .. }, Recipient::Member(m)) => {
-            let parent_of = |x: &str| meta.members.get(x).and_then(|mm| mm.parent.clone());
-            if parent_of(member).as_deref() == Some(m.as_str())
-                || parent_of(m).as_deref() == Some(member.as_str())
-            {
-                Ok(())
-            } else {
-                Err(format!(
-                    "`{member}` can publish only to its parent or its children, not `{m}`"
-                ))
-            }
-        }
-        (Actor::Member { member, .. }, Recipient::External(_)) => {
-            match meta.members.get(member).and_then(|m| m.parent.as_ref()) {
-                None => Ok(()),
-                Some(parent) => Err(format!(
-                    "only the team's root may publish outside the instance; `{member}` reports to `{parent}`"
-                )),
-            }
-        }
-    }
-}
-
-/// Why `m` can't receive messages: an instance, a role, or no one.
-pub(crate) fn not_a_member(meta: &state::Meta, m: &str) -> String {
-    let members: Vec<&str> = meta.members.keys().map(String::as_str).collect();
-    let all = if members.is_empty() {
-        "it has no members".to_string()
-    } else {
-        format!("its members: {}", members.join(", "))
-    };
-    let of_role: Vec<&str> = meta
-        .members
-        .iter()
-        .filter(|(_, entry)| entry.role == m)
-        .map(|(id, _)| id.as_str())
-        .collect();
-    if !of_role.is_empty() {
-        return format!(
-            "`{m}` is a role; send to its member in full: {}",
-            of_role.join(", ")
-        );
-    }
-    format!("`{m}` is not a member ({all}); create a member with `brg create <instance>/<role>`")
-}
-
 /// Every successful publish commits a new immutable message.
 pub fn publish(bus: &Bus, caller: &Caller, draft_bytes: &[u8]) -> Result<Record, Failure> {
     let mut draft = parse_draft(draft_bytes)?;
-    if let Some(local) = draft.to.strip_prefix(&format!("{}/", bus.instance))
-        && !local.contains('/')
-    {
-        draft.to = local.to_string();
+    if !draft.to.contains('/') && !draft.to.starts_with(super::record::EXTERNAL_PREFIX) {
+        draft.to = format!("{}/{}", bus.instance, draft.to);
     }
     let actor = actor_for(bus, caller)?;
-    bus.check_route(&actor, &draft.to)
-        .map_err(|e| Failure::new(Code::Invalid, e))?;
     let expected = bus
-        .meta
-        .members
-        .get(&draft.to)
-        .map(|m| (m.posture.clone(), m.interactive));
+        .check_route(&actor, &draft.to)
+        .map_err(|e| Failure::new(Code::Invalid, e))?;
+    #[cfg(feature = "test-support")]
+    mutation_pause("BORGCHART_TEST_PUBLISH_PAUSE")?;
     let (bus, _lock) = lock_for_mutation(bus)?;
-    if bus
-        .meta
-        .members
-        .get(&draft.to)
-        .map(|m| (m.posture.clone(), m.interactive))
-        != expected
+    recheck_authority(&bus, caller)?;
+    #[cfg(feature = "test-support")]
+    mutation_pause("BORGCHART_TEST_PUBLISH_COMMIT_PAUSE")?;
+    let recipient = bus
+        .check_route(&actor, &draft.to)
+        .map_err(|e| Failure::new(Code::Invalid, e))?;
+    if recipient.as_ref().map(|m| (&m.posture, m.interactive))
+        != expected.as_ref().map(|m| (&m.posture, m.interactive))
     {
         return Err(Failure::new(
             Code::Refused,
             "recipient posture changed before commit; retry",
         ));
     }
-    recheck_authority(&bus, caller)?;
-    bus.check_route(&actor, &draft.to)
-        .map_err(|e| Failure::new(Code::Invalid, e))?;
     let snap = scan(&bus.paths);
     snap.require_healthy()?;
     if let Some(missing) = draft.reply_to.iter().find(|id| snap.get(id).is_none()) {
@@ -734,52 +666,23 @@ pub fn publish(bus: &Bus, caller: &Caller, draft_bytes: &[u8]) -> Result<Record,
         ));
     }
     let seq = snap.records.len() as u64 + 1;
-    let remote = draft.to.contains('/');
-    let reply_to = if remote {
-        draft
-            .reply_to
-            .iter()
-            .map(|id| {
-                let referenced = snap.get(id).expect("checked reference");
-                match &referenced.origin {
-                    Some(origin) => format!("{}/{}", origin.instance, origin.id),
-                    None => format!("{}/{id}", bus.instance),
-                }
-            })
-            .collect()
-    } else {
-        draft.reply_to
-    };
     let rec = Record {
-        ack_required: !bus
-            .meta
-            .members
-            .get(&draft.to)
-            .is_some_and(|m| m.posture == "locked"),
+        ack_required: !recipient.is_some_and(|m| m.posture == "locked"),
         schema: super::SCHEMA,
         id: record_id(seq),
         seq,
         at: time::utc_now(),
-        from: if remote {
-            format!("{}/{}", bus.instance, actor_label(&actor))
-        } else {
-            actor_label(&actor)
-        },
+        from: actor_label(&actor),
         to: draft.to,
-        origin: None,
-        reply_to,
+        reply_to: draft.reply_to,
         body: draft.body,
     };
     let bytes =
         serde_json::to_vec_pretty(&rec).map_err(|e| Failure::new(Code::Error, e.to_string()))?;
-    if bytes.len() > MAX_RECORD_BYTES
-        || (remote && super::delivery::import_size(&bus, &rec)? > MAX_RECORD_BYTES)
-    {
+    if bytes.len() > MAX_RECORD_BYTES {
         return Err(Failure::new(
             Code::Invalid,
-            format!(
-                "the record would be over {MAX_RECORD_BYTES} bytes including delivery; shorten the message"
-            ),
+            format!("the record would be over {MAX_RECORD_BYTES} bytes; shorten the message"),
         ));
     }
     match fsx::write_new(&bus.paths.record(seq), &bytes)
@@ -793,6 +696,24 @@ pub fn publish(bus: &Bus, caller: &Caller, draft_bytes: &[u8]) -> Result<Record,
     }
 }
 
+/// Deterministic interleavings at the publication and deletion boundaries.
+#[cfg(feature = "test-support")]
+pub(crate) fn mutation_pause(variable: &str) -> Result<(), Failure> {
+    let Some(path) = std::env::var_os(variable).map(PathBuf::from) else {
+        return Ok(());
+    };
+    fs::write(path.with_extension("waiting"), b"")
+        .map_err(|e| Failure::io("cannot signal the test mutation", e))?;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !path.exists() {
+        if Instant::now() >= deadline {
+            return Err(Failure::new(Code::Timeout, "test mutation pause timed out"));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    Ok(())
+}
+
 // --- listing ---
 
 /// A recipient's progress, computed in one pass over the readable messages.
@@ -804,29 +725,13 @@ pub struct Progress {
     pub total: usize,
 }
 
-/// Status includes undelivered edge messages, or a note if that count is unknown.
-pub struct Unread {
-    pub count: Option<usize>,
-    pub notes: Vec<String>,
-}
-
-pub fn unread(bus: &Bus, snap: &Snapshot) -> Result<BTreeMap<String, Unread>, Failure> {
-    super::delivery::unread(bus, snap)
-}
-
 pub fn progress(bus: &Bus, snap: &Snapshot) -> BTreeMap<String, Progress> {
-    let mut out: BTreeMap<String, Progress> = bus
-        .meta
-        .members
-        .keys()
-        .map(|id| (id.clone(), Progress::default()))
-        .collect();
+    let mut out: BTreeMap<String, Progress> = BTreeMap::new();
     for r in snap.records.values() {
-        let to = local_recipient(bus, &r.to);
-        if bus.record.members.get(to).is_some_and(|m| m.deleted) {
+        if !r.to.starts_with(super::record::EXTERNAL_PREFIX) && bus.member(&r.to).is_err() {
             continue;
         }
-        let p = out.entry(to.to_string()).or_default();
+        let p = out.entry(r.to.clone()).or_default();
         p.total += 1;
         p.newest = r.seq;
         if r.ack_required && !snap.is_acked(r.seq) {
@@ -852,44 +757,12 @@ pub fn list(bus: &Bus, snap: &Snapshot, to: &Recipient) -> Inbox {
         records: snap
             .records
             .values()
-            .filter(|r| {
-                local_recipient(bus, &r.to) == to && r.ack_required && !snap.is_acked(r.seq)
-            })
+            .filter(|r| r.to == to && r.ack_required && !snap.is_acked(r.seq))
             .cloned()
             .collect(),
         unacked: p.unread,
         total: p.total,
     }
-}
-
-/// Cross-edge records keep full addresses on disk; local inbox selection
-/// continues to use this instance's member IDs.
-fn local_recipient<'a>(bus: &Bus, to: &'a str) -> &'a str {
-    to.strip_prefix(&format!("{}/", bus.instance)).unwrap_or(to)
-}
-
-/// Read the local inbox and pull missing edge messages, checking a member's
-/// current start again under the local append lock.
-pub fn import(
-    bus: &Bus,
-    caller: &Caller,
-    to: &Recipient,
-    deadline: Instant,
-) -> Result<Snapshot, Failure> {
-    if matches!(caller, Caller::Member { .. }) {
-        actor_for(bus, caller)?;
-    }
-    let mut snap = match wait_snapshot(bus, deadline)? {
-        WaitSnapshot::Ready(snap) => snap,
-        WaitSnapshot::TimedOut => {
-            return Err(Failure::new(
-                Code::Timeout,
-                "message store is busy; try the inbox again",
-            ));
-        }
-    };
-    super::delivery::Imports::default().import(bus, caller, to, &mut snap, deadline)?;
-    Ok(snap)
 }
 
 /// A stored record as shown to callers.
@@ -1052,25 +925,23 @@ pub fn wait(
         }
     };
     snap.require_healthy()?;
-    let mut imports = super::delivery::Imports::default();
-    imports.import(bus, caller, to, &mut snap, deadline)?;
     let mark = snap.records.last_key_value().map_or(0, |(&seq, _)| seq);
     let mut next = mark + 1;
     let recipient = to.to_string();
-    let mut old_pending = snap.records.values().any(|r| {
-        local_recipient(bus, &r.to) == recipient && r.ack_required && !snap.is_acked(r.seq)
-    });
+    let mut old_pending = snap
+        .records
+        .values()
+        .any(|r| r.to == recipient && r.ack_required && !snap.is_acked(r.seq));
     #[cfg(feature = "test-support")]
     if let Some(path) = std::env::var_os("BORGCHART_TEST_WAIT_READY") {
         fs::write(path, b"").map_err(|e| Failure::io("cannot signal the test wait", e))?;
     }
     loop {
-        check().map_err(|error| error.with_notes(snap.notes.clone()))?;
-        imports.import(bus, caller, to, &mut snap, deadline)?;
+        check()?;
         let mut arrived = false;
         while let Some(record) = next_record(&bus.paths, next)? {
-            check().map_err(|error| error.with_notes(snap.notes.clone()))?;
-            arrived |= local_recipient(bus, &record.to) == recipient && record.ack_required;
+            check()?;
+            arrived |= record.to == recipient && record.ack_required;
             snap.records.insert(next, record);
             next += 1;
             if Instant::now() >= deadline {
@@ -1078,9 +949,8 @@ pub fn wait(
             }
         }
         if arrived || (old_pending && Instant::now() >= minimum) {
-            refresh_acks(bus, &mut snap, &mut next, deadline, &mut check)
-                .map_err(|error| error.with_notes(snap.notes.clone()))?;
-            check().map_err(|error| error.with_notes(snap.notes.clone()))?;
+            refresh_acks(bus, &mut snap, &mut next, deadline, &mut check)?;
+            check()?;
             let inbox = list(bus, &snap, to);
             if (old_pending && Instant::now() >= minimum && !inbox.records.is_empty())
                 || inbox.records.iter().any(|r| r.seq > mark)
@@ -1095,7 +965,7 @@ pub fn wait(
         }
         let now = Instant::now();
         if now >= deadline {
-            return Err(timeout().with_notes(snap.notes));
+            return Err(timeout());
         }
         let next_check = if old_pending && minimum > now {
             deadline.min(minimum)
@@ -1225,47 +1095,6 @@ pub fn check(bus: &Bus) -> Result<CheckReport, Failure> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn routing(edges: &[(&str, Option<&str>)]) -> state::Meta {
-        state::Meta {
-            members: edges
-                .iter()
-                .map(|(m, p)| {
-                    (
-                        (*m).into(),
-                        state::MemberMeta {
-                            vendor: "claude".into(),
-                            parent: p.map(str::to_string),
-                            ..state::MemberMeta::default()
-                        },
-                    )
-                })
-                .collect(),
-            ..state::Meta::default()
-        }
-    }
-
-    fn member(m: &str) -> Actor {
-        Actor::Member {
-            member: m.into(),
-            incarnation: format!("{m}-1"),
-        }
-    }
-
-    #[test]
-    fn routes_follow_parent_edges() {
-        let m = routing(&[("lead", None), ("a", Some("lead")), ("b", Some("lead"))]);
-        assert!(check_route(&m, &member("a"), "lead").is_ok());
-        assert!(check_route(&m, &member("lead"), "b").is_ok());
-        assert!(check_route(&m, &member("a"), "b").is_err(), "siblings");
-        assert!(check_route(&m, &member("a"), "a").is_err(), "self");
-        assert!(check_route(&m, &member("lead"), "nobody").is_err());
-        assert!(check_route(&m, &member("lead"), "external:ops").is_ok());
-        assert!(check_route(&m, &member("a"), "external:ops").is_err());
-        let ext = Actor::External { name: "ops".into() };
-        assert!(check_route(&m, &ext, "b").is_ok());
-        assert!(check_route(&m, &ext, "external:other").is_err());
-    }
-
     #[test]
     fn scan_finds_gaps_and_garbage() {
         let dir = tempfile::tempdir().unwrap();
@@ -1279,7 +1108,6 @@ mod tests {
             at: "2026-11-05T19:00:00.000Z".into(),
             from: "a".into(),
             to: "lead".into(),
-            origin: None,
             reply_to: vec![],
             body: String::new(),
         };

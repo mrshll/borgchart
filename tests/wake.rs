@@ -932,7 +932,7 @@ fn unified_send_rechecks_dialogs_after_paste_and_reports_locked_uncertainty() {
         let snap = borgchart::bus::store::snapshot(&bus).unwrap();
         assert_eq!(snap.records[&1].ack_required, !locked);
         assert_eq!(
-            borgchart::bus::store::progress(&bus, &snap)["m"].unread,
+            borgchart::bus::store::progress(&bus, &snap)["state/m"].unread,
             usize::from(!locked)
         );
         if locked {
@@ -986,7 +986,10 @@ fn locked_delivery_has_no_ack_hint_and_stays_no_ack_after_posture_change() {
     let bus = borgchart::bus::store::open(&e.state).unwrap();
     let snap = borgchart::bus::store::snapshot(&bus).unwrap();
     assert!(!snap.records[&1].ack_required);
-    assert_eq!(borgchart::bus::store::progress(&bus, &snap)["m"].unread, 0);
+    assert_eq!(
+        borgchart::bus::store::progress(&bus, &snap)["state/m"].unread,
+        0
+    );
     let wrong_actor = borgchart::bus::context::Caller::External {
         name: "test".into(),
     };
@@ -1044,8 +1047,8 @@ fn an_ack_file_for_a_locked_record_is_corrupt_not_consumption() {
     borgchart::state::write_private(
         &bus.paths.ack("m1"),
         &serde_json::to_vec(&serde_json::json!({
-            "schema":3,"id":"m1","at":"2026-11-09T00:00:00Z",
-            "by":{"type":"member","member":"m","incarnation":"m-1"}
+            "schema":4,"id":"m1","at":"2026-11-09T00:00:00Z",
+            "by":{"type":"member","member":"state/m","incarnation":"m-1"}
         }))
         .unwrap(),
     )
@@ -1058,4 +1061,85 @@ fn an_ack_file_for_a_locked_record_is_corrupt_not_consumption() {
             .any(|p| p.contains("does not require acknowledgement"))
     );
     assert!(!snap.is_acked(1));
+}
+
+#[test]
+fn cross_edge_sends_type_and_preflight_locked_recipients_in_their_own_instance() {
+    use serde_json::{Value, json};
+    for locked in [false, true] {
+        let e = Env::new(Vendor::Claude);
+        e.send_setup(Vendor::Claude, locked, false);
+        let write = |path: &std::path::Path, value: Value| {
+            borgchart::state::write_private(path, &serde_json::to_vec(&value).unwrap()).unwrap();
+        };
+        let read = |path: &std::path::Path| -> Value {
+            serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
+        };
+        let registry_path = e.dir.path().join("registry.json");
+        let mut registry = read(&registry_path);
+        registry["instances"]["state/copy"] = registry["instances"]["state"].clone();
+        write(&registry_path, registry);
+        let mut root = read(&e.state.instance_file());
+        root["copies"] = json!({"copy": {"role": "dev"}});
+        write(&e.state.instance_file(), root.clone());
+        let child = e.state.root.join("copy");
+        root["id"] = json!("state/copy");
+        root["parent"] = json!("state/m");
+        root["members"] = json!({"lead": {"role": "lead"}});
+        root["copies"] = json!({});
+        write(&child.join("instance.json"), root);
+        let mut meta = read(&e.state.meta_file());
+        let mut member = meta["members"]["m"].clone();
+        member["parent"] = json!("state/m");
+        member["posture"] = json!("vendor");
+        meta["members"] = json!({"lead": member});
+        write(&child.join("start.json"), meta);
+        write(
+            &child.join("members/lead/incarnation.json"),
+            json!({
+                "member": "lead", "incarnation": "lead-1", "started_at": "2026-11-09T00:00:00Z"
+            }),
+        );
+        let send = || {
+            let mut cmd = common::command(env!("CARGO_BIN_EXE_brg"));
+            cmd.env_clear()
+                .env(
+                    "PATH",
+                    e.private
+                        .path_with(&std::env::var("PATH").unwrap_or_default()),
+                )
+                .env("HOME", e.dir.path())
+                .env("BORGCHART_STATE_HOME", e.dir.path())
+                .env("BORGCHART_INSTANCE", "state/copy")
+                .env("BORGCHART_MEMBER", "lead")
+                .env("BORGCHART_INCARNATION", "lead-1")
+                .args(["send", "state/m", "Cross edge task", "--json"]);
+            e.private.brg_env(&mut cmd, &e.socket);
+            cmd.output().unwrap()
+        };
+        if locked {
+            e.keys(&["draft"]);
+            let refused = send();
+            assert_eq!(refused.status.code(), Some(5), "{refused:?}");
+            let snap =
+                borgchart::bus::store::snapshot(&borgchart::bus::store::open(&e.state).unwrap())
+                    .unwrap();
+            assert!(
+                snap.records.is_empty(),
+                "locked preflight must precede publication"
+            );
+            e.keys(&["C-u"]);
+        }
+        let out = send();
+        let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert!(out.status.success(), "{result}");
+        assert_eq!(result["delivery"], "typed", "{result}");
+        let submissions = e.submissions();
+        assert_eq!(submissions.len(), 1);
+        assert!(submissions[0].contains("[brg m1 from state/copy/lead"));
+        let snap = borgchart::bus::store::snapshot(&borgchart::bus::store::open(&e.state).unwrap())
+            .unwrap();
+        assert_eq!(snap.records[&1].ack_required, !locked);
+        assert!(!child.join("messages").exists());
+    }
 }

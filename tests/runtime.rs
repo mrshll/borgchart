@@ -346,9 +346,12 @@ fn record_for(env: &Env, role: &str, body: &str) -> serde_json::Value {
         .filter_map(|entry| {
             serde_json::from_slice::<serde_json::Value>(&fs::read(entry.path()).ok()?).ok()
         })
-        .find(|record| record["to"] == env.m(role) && record["body"] == body)
+        .find(|record| {
+            record["to"] == format!("{}/{}", env.instance().unwrap(), env.m(role))
+                && record["body"] == body
+        })
         .unwrap_or_else(|| panic!("missing stored body {body:?} for {role}"));
-    assert_eq!(record["schema"], 3);
+    assert_eq!(record["schema"], 4);
     assert_eq!(record["from"], "external:runtime-test");
     record
 }
