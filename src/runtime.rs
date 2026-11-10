@@ -1153,9 +1153,9 @@ fn start_members(
     }
 
     let nodes = member_nodes(inst, v, |id| outcomes.get(id).cloned().unwrap_or_default());
-    let plugins: Vec<(String, Vec<String>)> = plugin_outcomes
+    let plugins: Vec<(String, Vec<String>, tree::Look)> = plugin_outcomes
         .into_iter()
-        .map(|(name, o)| (name, vec![o]))
+        .map(|(name, o)| (name, vec![o], tree::Look::default()))
         .collect();
     Ok(UpOutcome {
         tree: tree::render(
@@ -1214,7 +1214,10 @@ fn member_nodes(
                 id: role_name.clone(),
                 parent: parent_of(role),
                 cols: vec![not_created(role)],
-                dim: role.max > 1,
+                look: tree::Look {
+                    mark: None,
+                    tone: tree::Tone::Faded,
+                },
             });
         }
         for id in ids {
@@ -1222,7 +1225,7 @@ fn member_nodes(
                 cols: vec![tree::vendor_model(role), outcome(&id)],
                 id,
                 parent: parent_of(role),
-                dim: false,
+                look: tree::Look::default(),
             });
         }
     }
@@ -3694,10 +3697,10 @@ pub fn status_cells(r: &StatusRow) -> Vec<String> {
 
 pub fn render_status(header: &str, rows: &[StatusRow]) -> String {
     let nodes = status_nodes(rows);
-    let plugins: Vec<(String, Vec<String>)> = rows
+    let plugins: Vec<(String, Vec<String>, tree::Look)> = rows
         .iter()
         .filter(|r| r.kind == "plugin" && r.parent.is_none())
-        .map(|r| (r.name.clone(), status_cells(r)))
+        .map(|r| (r.name.clone(), status_cells(r), status_look(r)))
         .collect();
     let names: BTreeMap<_, _> = rows
         .iter()
@@ -3744,9 +3747,54 @@ pub fn status_nodes(rows: &[StatusRow]) -> Vec<tree::Node> {
                 }
             }),
             cols: status_cells(r),
-            dim: r.kind == "role" && r.state == ON_DEMAND,
+            look: status_look(r),
         })
         .collect()
+}
+
+/// How a row is drawn on a terminal: its state mark and tone.
+///
+/// Live rows get a mark; rows that are not running get none and recede, so a
+/// glance at the tree finds what is running. Red is kept for the rows that
+/// need a person: blocked, ended when it should run, or taking no input.
+pub fn status_look(r: &StatusRow) -> tree::Look {
+    use tree::{Look, Tone};
+    let look = |mark, tone| Look {
+        mark: Some(mark),
+        tone,
+    };
+    let faded = Look {
+        mark: None,
+        tone: Tone::Faded,
+    };
+    let brand = match r.vendor.as_deref() {
+        Some("claude") => Some(tree::palette::CLAUDE),
+        _ => None,
+    };
+    match (r.kind, r.state.as_str()) {
+        ("role", _) => faded,
+        ("copy", "unreadable") => look('◌', Tone::Odd),
+        ("copy", "stopping") => look('◌', Tone::Faded),
+        ("copy", _) if r.running.unwrap_or(0) > 0 => look('●', Tone::Plain),
+        ("copy", _) => faded,
+        ("plugin", "alive")
+            if r.detail
+                .as_deref()
+                .is_some_and(|d| d.starts_with("error") || d.starts_with("stale")) =>
+        {
+            look('!', Tone::Alert)
+        }
+        ("plugin", "alive") => look('●', Tone::Plain),
+        (_, "working") => look('●', Tone::Busy(brand)),
+        (_, "idle") => look('·', Tone::Plain),
+        (_, "blocked") => look('?', Tone::Alert),
+        (_, "gate-inactive") => look('!', Tone::Alert),
+        (_, "exited") => look('✗', Tone::Alert),
+        (_, STOPPED) if r.expected_running => look('!', Tone::Alert),
+        (_, "stopping") => look('◌', Tone::Faded),
+        (_, "unknown" | "unreadable") => look('◌', Tone::Odd),
+        _ => faded,
+    }
 }
 
 /// Why `send` refused, with its exit code.
