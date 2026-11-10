@@ -103,7 +103,7 @@ A small top level for people. `brg --help` and `brg <command> --help` give the f
 
 ## How members talk
 
-- **`send`** writes a durable message, then may type its tagged envelope, including mid-turn. Members send to their parent or children; only roots also send to outside callers. Outside callers must pass `--external NAME`. Across a copy's parent edge, members use full `instance/member` addresses; those messages are stored only in the sender's store and imported at the receiver's next `inbox` or wait, never typed. Other cross-instance sends, including between sibling copies, are refused.
+- **`send`** writes a durable message, then may type its tagged envelope, including mid-turn. Members send to their parent or children; only root members of the tree's root instance also send to outside callers. Outside callers must pass `--external NAME`. Across a copy's parent edge, members use full `instance/member` addresses; the tree shares one store and message IDs, with the same typed and locked delivery rules across edges. Other cross-instance sends, including between sibling copies, are refused.
 - **`interactive: true`** roles are inbox-only even with `--force`; false is the default. The setting is frozen per start and invalid on locked or nested team roles. Ordinary recipients explicitly ack when taking responsibility; typing does not ack. Treat a duplicate ID from typed delivery and inbox wait as the same work. Locked records require no ack and give no new permissions or inbox recovery.
 - **Stored success is success.** An ordinary send returns 0 once committed, even when input is suppressed or uncertain. Never republish it automatically. Locked postcommit typing failure returns nonzero with its ID; retries may duplicate history and input.
 - **Work is prose.** The lead writes a brief file, sends a message naming it and starts the helper. The helper reads `inbox --full`, acks once it takes responsibility, writes its report atomically and replies naming it with `reply_to` the brief message. The lead verifies the report, diff and checks itself, stops the helper, then checks status shows it stopped before reusing the checkout. One writer per checkout and one piece of work per helper are team rules. Progress and delegation live in pull request descriptions and comments.
@@ -166,7 +166,7 @@ roles:
   design: {team: dev-design-team, parent: lead, start: false, max: 2, cwd: "design/{member_id}"}
 ```
 
-- **A team role's member is a copy:** a nested instance of the sub-team, with its own members, message store, notes, state and frozen configuration, working in its own folder inside its parent's. The copy freezes its team folder's files at its first start, and picks up changes at its own next full stop and start.
+- **A team role's member is a copy:** a nested instance of the sub-team, with its own members, notes, state and frozen configuration, working in its own folder inside its parent's. The copy freezes its team folder's files at its first start, and picks up changes at its own next full stop and start.
 - **`team:` names another definition:** `team: dev-team` resolves through the configured team directories, exactly like `brg create dev-team`. Missing or ambiguous names fail validation. There is no same-installation restriction or nested-path compatibility. Definitions can be siblings while runtime working folders and addresses still nest. A definition also runs independently with `brg create dev-team <folder>`.
 - **Resolution is frozen while running.** Child definition directories belong to the parent start snapshot; a changed catalog cannot silently redirect a later copy. Apply changed resolution at a full stop/start. Existing copies retain their own recorded source folders and freeze their contents independently. Missing referenced definitions remain tolerable for observing/stopping running instances, but validation, copy creation and a fresh full start refuse them.
 - **Copies are created stopped.** `brg create <instance>/dev` makes the copy and its folder, prints its ID and the folders to prepare, and starts nothing. The parent prepares them (a dev copy's `repo/` worktree), then runs `brg start <instance>/<copy>`, which starts the copy's `start: true` roles. Work folders don't overlap at any level, so the checkout check between instances needs no exception.
@@ -174,20 +174,20 @@ roles:
 - **Escalation follows `parent:` one level at a time.** A copy's top members hang under the member of the team role's `parent`. Only the root writes to `external:NAME`; a child team's lead writes to its parent. Siblings don't message each other: their parent carries what one needs from another.
 - **Authority is the whole subtree.** A member, at its latest running start, may create, start, stop or delete anything below it along recorded parent edges, at any depth: its child members, the copies under it, and their members and copies. Never itself, its ancestors, its siblings or their subtrees, so a copy's top member can't stop or delete its own copy. A person may act on anything.
 - **Stopping cascades.** `stop` of a copy or of the root's instance stops members deepest first, marking the copy `stopping` so nothing new is created or started inside it meanwhile; a later `stop` finishes an interrupted one. `start` brings back the copies that were running. `delete` of an instance with kept copies is refused, listing them.
-- **Cycles are refused,** a team containing itself directly or not, at `validate` and again at `create` and a full restart. There's no depth limit. Every team and sub-team has a message store; no bus opt-in is needed.
+- **Cycles are refused,** a team containing itself directly or not, at `validate` and again at `create` and a full restart. There's no depth limit. Every runtime tree shares one message store; no bus opt-in is needed.
 - **Check seating before each launch.** The lead lists the launches caused by each `create` or `start` and runs `brg-seat route <vendor> <model>` for each. The [seating plugin](../plugins/seat/README.md) answers `go` or `wait` from subscription quota. Unknown or failed usage is wait, never another vendor or model. The launch commands do not run this check automatically.
-- **Delivery between stores:** a message crosses a store only along a parent edge, addressed in full. The sender's brg writes only its own store; the receiver's brg imports it at its next `inbox` or wait, and the sender's `delete` counts it as pending until the receiver holds it.
+- **One tree store:** messages across copy edges use full member addresses and plain tree-wide reply IDs. Copy deletion preserves history and checks unacked messages to its members under the tree lock; deleted recipients no longer count as pending work.
 
 ## What you never see
 
-- **Storage.** One message store per instance for its whole life, with continuous numbering across stops, starts and team-file changes. Reads scan it; there is no index or archiving.
+- **Storage.** One message store per team tree at its root, with continuous numbering across stops, starts and team-file changes. Reads scan it; there is no index or archiving.
 - **brg versions.** Members call `"$BORGCHART_BIN"`, the brg that started them. If an upgraded brg can't read a team's messages, it says exactly what to do:
 
   ```
-  brg: instance `devteam-k3f9`'s message storage is damaged: store.json names another format; repair it by hand, or create a new instance (`brg create`)
+  brg: the tree's message store at `devteam-k3f9` uses an earlier format; follow the cutover in docs/bus.md#storage (move the old store aside, leave an empty private `messages/` folder, then start the root)
   ```
 
-  brg refuses to start such an instance, and points to `brg create` for a fresh one; its open work has to be sent again.
+  brg refuses to start any instance in that tree, names the root that owns the store, and points to the [cutover steps](bus.md#storage).
 
 - **Configuration changes** take effect at the next full `brg stop` and `brg start`. Starting one member into a running instance with changed files says so, in instance and role terms.
 

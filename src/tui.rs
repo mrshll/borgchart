@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, TableState};
 
@@ -70,7 +70,7 @@ fn load(one: Option<&Instance>) -> Result<Vec<Section>, String> {
         Ok(rows) => Section {
             header: runtime::header(&inst),
             inst,
-            rows,
+            rows: live_first(rows),
         },
         Err(e) => Section {
             header: format!("{}: {e}", inst.id),
@@ -90,6 +90,28 @@ fn load(one: Option<&Instance>) -> Result<Vec<Section>, String> {
     }
 }
 
+/// The rows in the order the screen draws them: as `brg status` on a
+/// terminal, siblings that are not running after the ones that are.
+fn live_first(rows: Vec<StatusRow>) -> Vec<StatusRow> {
+    let nodes = runtime::status_nodes(&rows);
+    let mut slots: Vec<Option<StatusRow>> = rows.into_iter().map(Some).collect();
+    let mut keyed: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for (i, row) in slots.iter().enumerate() {
+        if let Some(row) = row {
+            keyed.insert(runtime::status_key(row), i);
+        }
+    }
+    let mut out: Vec<StatusRow> = tree::order_live_first(&nodes)
+        .into_iter()
+        .filter_map(|(i, _)| keyed.get(&nodes[i].id).and_then(|&r| slots[r].take()))
+        .collect();
+    // Top-level plugins have no node: running ones first, as `brg status`.
+    let mut rest: Vec<StatusRow> = slots.into_iter().flatten().collect();
+    rest.sort_by_key(|r| runtime::status_look(r).tone == tree::Tone::Faded);
+    out.extend(rest);
+    out
+}
+
 /// The screen's lines: (section, row), where no row is the section's
 /// header line. One instance has no header lines: its header is the title.
 fn entries(sections: &[Section], headers: bool) -> Vec<(usize, Option<usize>)> {
@@ -103,17 +125,21 @@ fn entries(sections: &[Section], headers: bool) -> Vec<(usize, Option<usize>)> {
     out
 }
 
+fn rgb((r, g, b): tree::Rgb) -> Color {
+    Color::Rgb(r, g, b)
+}
+
+/// The same tones as `brg status` paints: the state cell in the row's tone,
+/// and a row that is not running faded as a whole.
 fn state_style(row: &StatusRow) -> Style {
-    let alert = Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED);
-    match row.state.as_str() {
-        "blocked" | "exited" => alert,
-        // A `start: true` member that ended.
-        runtime::STOPPED if row.expected_running => alert,
-        "working" => Style::default().add_modifier(Modifier::BOLD),
-        runtime::STOPPED | runtime::NOT_STARTED | runtime::ON_DEMAND => {
-            Style::default().add_modifier(Modifier::DIM)
-        }
-        _ => Style::default(),
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    match runtime::status_look(row).tone {
+        tree::Tone::Plain => Style::default(),
+        tree::Tone::Busy(Some(c)) => bold.fg(rgb(c)),
+        tree::Tone::Busy(None) => bold,
+        tree::Tone::Alert => bold.fg(rgb(tree::palette::ALERT)),
+        tree::Tone::Odd => Style::default().fg(rgb(tree::palette::ODD)),
+        tree::Tone::Faded => Style::default().fg(rgb(tree::palette::FADED)),
     }
 }
 
@@ -133,7 +159,7 @@ fn draw(
         .iter()
         .map(|section| {
             let nodes = runtime::status_nodes(&section.rows);
-            tree::order(&nodes)
+            tree::order_live_first(&nodes)
                 .into_iter()
                 .map(|(i, p)| (nodes[i].id.clone(), p))
                 .collect()
@@ -149,11 +175,12 @@ fn draw(
             };
             let r = &sections[s].rows[r];
             let name = format!(
-                "{}{}",
+                "{}{} {}",
                 prefixes[s]
                     .get(&runtime::status_key(r))
                     .cloned()
                     .unwrap_or_default(),
+                runtime::status_look(r).mark.unwrap_or(' '),
                 runtime::status_name(r)
             );
             let mut cols = runtime::status_cells(r);
@@ -191,14 +218,22 @@ fn draw(
         .map(|([name, vendor, state, detail], &(s, r))| {
             let r = r.map(|r| &sections[s].rows[r]);
             let style = r.map_or(Style::default(), state_style);
+            let faded = Style::default().fg(rgb(tree::palette::FADED));
             let row = Row::new(vec![
-                Cell::from(name),
+                Cell::from(name).style(style.remove_modifier(Modifier::BOLD)),
                 Cell::from(vendor),
                 Cell::from(state).style(style),
-                Cell::from(detail),
+                // What a person must do next stays readable.
+                Cell::from(detail).style(
+                    if r.is_some_and(|r| runtime::status_look(r).tone == tree::Tone::Alert) {
+                        Style::default()
+                    } else {
+                        faded
+                    },
+                ),
             ]);
-            if r.is_some_and(|r| r.kind == "role" && r.state == runtime::ON_DEMAND) {
-                row.style(Style::default().add_modifier(Modifier::DIM))
+            if r.is_some_and(|r| runtime::status_look(r).tone == tree::Tone::Faded) {
+                row.style(faded)
             } else {
                 row
             }

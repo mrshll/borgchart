@@ -28,6 +28,7 @@ enum Command {
     Validate {
         /// The team: its name in the search paths, or a path to its folder
         /// (starting with `/`, `./`, `../` or `~/`).
+        #[arg(add = crate::complete::teams())]
         team: String,
         /// Print the report as JSON.
         #[arg(long)]
@@ -50,8 +51,10 @@ enum Command {
     Create {
         /// `<team>` (a name, or a path starting with `/`, `./`, `../` or
         /// `~/`), or `<instance>/<role>`.
+        #[arg(add = crate::complete::teams())]
         target: String,
         /// The instance's working folder (required for a team; it must exist).
+        #[arg(value_hint = clap::ValueHint::DirPath)]
         folder: Option<String>,
     },
     /// Bring an instance to what should be running, or start one member.
@@ -61,6 +64,7 @@ enum Command {
     /// caller may manage only its subtree, using its latest running start.
     Start {
         /// `<instance>`, or `<instance>/<member>`.
+        #[arg(add = crate::complete::targets())]
         target: String,
         /// Point a stopped instance at its team folder's new place.
         #[arg(long)]
@@ -76,6 +80,7 @@ enum Command {
     /// latest running start. A copy's roots cannot stop their own copy.
     Stop {
         /// `<instance>`, or `<instance>/<member>`.
+        #[arg(add = crate::complete::targets())]
         target: String,
         /// Stop the member's subtree deepest first, including copies. Members
         /// may target descendants, never themselves. Other lifecycle changes
@@ -86,13 +91,12 @@ enum Command {
     /// Remove a stopped instance, or a stopped member (its ID stays issued).
     /// With a bus, a member caller may manage only its subtree, using its
     /// latest running start. A copy's roots cannot delete their own copy.
-    /// Member unread work includes messages waiting in edge stores.
+    /// Unread messages need --force; copy history stays in the tree store.
     Delete {
         /// `<instance>`, or `<instance>/<member>`. A bare role is refused.
+        #[arg(add = crate::complete::targets())]
         target: String,
-        /// Delete even with unread or undelivered messages, or unreadable
-        /// message storage, edge stores or delivery receipts. Messages to deleted
-        /// copies have unknown delivery; messages to deleted members need no force.
+        /// Delete even with unread messages or unreadable message storage.
         /// Running members, unknown liveness and members with kept children or copies
         /// are always refused.
         #[arg(long)]
@@ -102,6 +106,7 @@ enum Command {
     /// your environment. Prints no values and writes nothing.
     Secret {
         /// The team: its name in the search paths, or a path to its folder.
+        #[arg(add = crate::complete::teams())]
         team: String,
         /// Print {secrets: [{plugin, name, set}]} as JSON.
         #[arg(long)]
@@ -116,6 +121,7 @@ enum Command {
     /// Show an instance tree, or every top-level instance, with nested copies.
     Status {
         /// The instance (default: every top-level instance and its copies).
+        #[arg(add = crate::complete::instances())]
         instance: Option<String>,
         /// Print the rows as JSON.
         #[arg(long, conflicts_with_all = ["watch", "interactive"])]
@@ -133,12 +139,14 @@ enum Command {
     /// Open a member's live session (detach with your tmux prefix, then d).
     Attach {
         /// The member: `<instance>/<member>`.
+        #[arg(add = crate::complete::members())]
         member: String,
     },
     /// Show a member's or plugin's recent output.
     Logs {
         /// The member (`<instance>/<member>`), or a plugin process
         /// (`<instance>/_<plugin>`).
+        #[arg(add = crate::complete::members())]
         member: String,
         /// How many lines of history.
         #[arg(short = 'n', long, default_value_t = 200)]
@@ -148,6 +156,7 @@ enum Command {
     #[command(after_long_help = crate::bus::help::send())]
     Send {
         /// The member to type into: `<instance>/<member>`.
+        #[arg(add = crate::complete::members())]
         member: String,
         /// The text (several words are joined with spaces).
         #[arg(required = true, num_args = 1..)]
@@ -172,7 +181,7 @@ enum Command {
     /// Read and acknowledge bus records.
     Msg {
         /// The instance (outside a member; inside one, only its own).
-        #[arg(long, global = true)]
+        #[arg(long, global = true, add = crate::complete::instances())]
         instance: Option<String>,
         #[command(subcommand)]
         command: crate::bus::cli::MsgCommand,
@@ -184,15 +193,15 @@ enum Command {
     )]
     Inbox {
         /// The instance (outside a member; inside one, only its own).
-        #[arg(long, global = true)]
+        #[arg(long, global = true, add = crate::complete::instances())]
         instance: Option<String>,
         #[command(flatten)]
         args: crate::bus::cli::InboxArgs,
     },
-    /// Check the instance's message storage.
+    /// Check the tree's message storage.
     Bus {
         /// The instance (outside a member; inside one, only its own).
-        #[arg(long, global = true)]
+        #[arg(long, global = true, add = crate::complete::instances())]
         instance: Option<String>,
         #[command(subcommand)]
         command: crate::bus::cli::BusCommand,
@@ -284,6 +293,8 @@ fn print_outcome(outcome: runtime::UpOutcome) -> ExitCode {
 }
 
 pub fn main() -> ExitCode {
+    // First: a completion request must exit before the wait back-off below.
+    crate::complete::complete(<Cli as clap::CommandFactory>::command);
     let started = std::time::Instant::now();
     let args: Vec<_> = std::env::args_os().collect();
     // Recognize the wait even when clap rejects its flags. Usage errors

@@ -179,8 +179,14 @@ pub fn lock_state(state: &StateDir) -> Result<File, String> {
 }
 
 /// The publication lock, taken after the instance's lifecycle lock.
-pub(crate) fn lock_bus(state: &StateDir) -> Result<File, String> {
-    lock_file(&StorePaths::new(state).bus_lock())
+/// Without a store identity there are no publications to fence; leave it empty.
+pub(crate) fn lock_bus(state: &StateDir) -> Result<Option<File>, String> {
+    let paths = StorePaths::new(state);
+    if !paths.identity().try_exists().map_err(|e| e.to_string())? {
+        return Ok(None);
+    }
+    lock_file(&paths.bus_lock())
+        .map(Some)
         .map_err(|e| format!("cannot lock the team's messages: {e}"))
 }
 
@@ -319,13 +325,19 @@ pub(crate) fn unacked_work(
         .values()
         .filter(|r| r.ack_required && !snap.is_acked(r.seq))
     {
-        let recipient =
-            r.to.strip_prefix(&format!("{}/", bus.instance))
-                .unwrap_or(&r.to);
-        // Originals sent across an edge use delivery receipts, not local acks.
-        if recipient.contains('/')
-            || only.is_some_and(|member| recipient != member)
-            || bus.record.members.get(recipient).is_some_and(|m| m.deleted)
+        if only.is_none() && !bus.instance.contains('/') && r.to.starts_with("external:") {
+            work.items.push(format!("unread {} to {}", r.id, r.to));
+            continue;
+        }
+        let Some(recipient) = r.to.strip_prefix(&format!("{}/", bus.instance)) else {
+            continue;
+        };
+        if only.is_some_and(|member| recipient != member)
+            || !bus
+                .record
+                .members
+                .get(recipient)
+                .is_some_and(|m| !m.deleted)
         {
             continue;
         }

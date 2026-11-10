@@ -20,8 +20,8 @@ pub fn inbox() -> String {
 bodies. --member ID reads another member's inbox; --external NAME reads that
 outside recipient's inbox. Outside a member, pass --instance ID.
 
-Inbox imports messages from the stores across this member's parent edges.
-An unavailable peer adds a note naming the instance; local messages stay visible.
+The tree shares one store and one set of message IDs. --member accepts a full
+address anywhere in the tree, or a bare ID in your own or --instance instance.
 Reading never acknowledges. Use `msg read ID` for an older message and
 `msg ack ID...` once you have taken messages on, then `inbox wait`.
 Progress and reports belong in your notes and GitHub.
@@ -44,10 +44,8 @@ The first readable scan marks the newest message. A new unacked message to
 you returns at once. Messages already present return after 60 seconds only if
 still unacked; if all were acked meanwhile, waiting continues. A new message
 can return sooner. Ack everything you have taken on before waiting.
-Each later poll reads the next local message, polls the stores across your
-parent edges (including copies created or first started during the wait), and
-checks your current session. Peer failures add notes without ending the wait;
-peer reads and the local import lock are bounded by its timeout.
+Each later poll reads the next message in the tree store and checks your
+current session. Store lock attempts are bounded by the timeout.
 Errors, including usage errors, wait at least 60 seconds too; fenced, explicit
 help and signals may end immediately.
 
@@ -63,12 +61,12 @@ not-found (10) and error (1).
 pub fn send() -> String {
     format!(
         "Outside callers must name --external NAME. Members use their launch identity
-and may send along parent/child routes in their own instance. Across a copy's
-parent edge, name the full instance/member address (a copy's roots find their
-parent's in BORGCHART_PARENT): that message is stored only in the sender's
-store and imported at the receiver's next inbox read, never typed; locked
-recipients and --from are refused there. Only the tree's root may address
-external:NAME. --from asserts the sender's parent route, not authorship.
+and may send only to their parent or children. Across a copy's parent edge,
+name the full instance/member address (a copy's roots find their parent's in
+BORGCHART_PARENT). The tree shares one store and message IDs; typed and locked
+delivery work across edges too. Only root members of the tree's root instance
+may address external:NAME. --from asserts a parent route within one instance,
+not authorship. --reply-to takes plain existing IDs such as m1.
 
 Ordinary messages commit before optional typing. Exit 0 means committed even
 when delivery is stored or uncertain; never automatically republish. Interactive

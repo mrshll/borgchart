@@ -3,8 +3,8 @@
 # borgchart-engineering's `design` role. Its parent creates a copy stopped, puts a detached worktree
 # at the baseline in the copy's `work/`, starts it, and deletes it after;
 # see ../borgchart-engineering/lead.md. Designers exchange files with the lead (the
-# brief, questions, answers, proposals) in the copy's notes folder. Every
-# team has a message store.
+# brief, questions, answers, proposals) in the copy's notes folder. The
+# runtime tree shares one message store.
 
 roles:
   designer-claude:

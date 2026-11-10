@@ -117,7 +117,7 @@ fn status_i_attaches_detaches_and_quits() {
         || {
             let s = screen();
             s.lines().any(|l| {
-                l.contains("└─ beta")
+                l.contains("└─ ? beta")
                     && l.contains("codex example-model low")
                     && l.contains("blocked (folder trust)")
                     // `brg attach <instance>/<beta's member>`

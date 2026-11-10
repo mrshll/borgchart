@@ -12,18 +12,27 @@ Codex `vendor` members have full host access and no tool approvals; Claude `vend
 
 ## Storage
 
-One store lasts for the instance's whole life; message numbers continue across stops, starts and team-file changes. In `<state home>/<instance>/messages/`:
+One store belongs to a whole team tree: its root instance and every nested copy share `<state home>/<root>/messages/`. Copies have no store of their own. Message numbers continue across stops, starts, copy deletion and team-file changes:
 
 | Path | Contents |
 | --- | --- |
-| `store.json` | Format 3 and the instance ID |
-| `lock` | Publication/acknowledgement lock |
+| `store.json` | Format 4 and the root instance ID |
+| `lock` | Tree publication/acknowledgement lock |
 | `records/<seq>.json` | Immutable messages, numbered from 1 without gaps; filenames use ten decimal digits |
 | `acks/<id>.json` | Recipient acknowledgements, such as `m1.json` |
 
-Unexpected entries are refused, including empty `.agents`, `.aws`, `.codex` and `.git` directories left by older Codex sandboxes. Before upgrading an affected instance, stop it fully, inspect its `messages/` directory, and manually remove only empty directories with those four names using `rmdir`. Never remove non-empty directories or symlinks as mask cleanup. Start every vendor Codex member with the new brg together; do not mix old sandboxed launches with the new store validator. An uncleaned store refuses to start or serve messages. brg performs no automatic cleanup.
+Only format-4 stores are supported. Earlier formats are refused without conversion. To cut over an existing tree:
 
-Start records are in brg's own files outside messages: `members/<member>/incarnation.json`, with history in `members/<member>/incarnations/<id>.json`. Routing uses the member/parent entries in `start.json`. A stopped or replaced start cannot act for the member. Publication and acknowledgement recheck this under the message lock.
+1. Settle every inbox and finish work that refers to old message IDs. Write handover notes in each instance's notes folder; message IDs restart at `m1`.
+2. Stop the whole tree from its root, including its root lead.
+3. Move every old store, at the root and in its copies, outside brg's state as archived history, or delete it. Leave an empty private `messages/` folder (0700) at the tree root, as for a newly created instance. Keep notes, working folders and registry records.
+4. Upgrade brg for the whole tree.
+5. Start the root instance. It creates the format-4 tree store and restores the copies that were running.
+6. Send a new handover to the root lead, which briefs its copies using new IDs.
+
+Unexpected entries are refused, including directories left by old sandboxes. brg performs no automatic cleanup. Only the root initializes storage; a copy refuses to start if its tree store is missing or damaged.
+
+Start records are in brg's own files outside messages: `members/<member>/incarnation.json`, with history in `members/<member>/incarnations/<id>.json`. Routing uses the member/parent entries in `start.json`. A stopped or replaced start cannot act for the member. Publication and acknowledgement recheck this under the tree message lock. Incarnation changes use that same lock. Lock order is registry, lifecycle, then tree store; the typing lock is taken after releasing the store lock.
 
 Directories must be real, owned by you and private (0700; files 0600). Immutable files use a flushed temporary sibling and a no-replace hard link; a crash may leave a `.tmp-*` file, which readers skip. Reads scan the store; there is no index or automatic retention. Bodies, including locked notices, persist under existing plugin read rights. Storage and scan cost grow with record count.
 
@@ -31,9 +40,9 @@ Directories must be real, owned by you and private (0700; files 0600). Immutable
 
 Inside a member use `"$BORGCHART_BIN"`, the brg that started it. Its instance, member and start ID come from `BORGCHART_INSTANCE`, `BORGCHART_MEMBER` and `BORGCHART_INCARNATION`. Outside a member, `msg`, `inbox` and `bus` require `--instance ID`; inside one that option may only repeat its own instance. `send` takes the instance in its target address and requires `--external NAME` outside a member.
 
-- Members send to their parent or children, by full member ID. Only a root may also send to `external:NAME`.
+- Members send to their parent or children, by full member ID. Only root members of the tree's root instance may also send to `external:NAME`.
 - A copy's root members and their parent in the enclosing instance can also send across their parent edge. Use the full `instance/member` address; a copy's roots receive their parent's address in `BORGCHART_PARENT`.
-- Outside callers use `--external NAME` and may send to any member. Their replies go to `external:NAME`. That flag is refused inside a member.
+- Outside callers use `--external NAME` and may send to any kept member in the tree after its first start. Their replies go to `external:NAME`. That flag is refused inside a member.
 - An operator without an identity can read a named member's inbox and individual messages, and check the store, but cannot send or ack.
 - A member is addressable after its first start, including while stopped. A role name or another instance's member outside a parent edge is refused; there is no role queue.
 
@@ -44,18 +53,16 @@ Use `send TARGET TEXT`, or `send TARGET -` to read the body from stdin. Repeat `
 brg adds the caller's identity, UTC timestamp and immutable `ack_required`, derived from the target's frozen posture:
 
 ```json
-{"schema": 3, "id": "m2", "seq": 2, "at": "2026-11-08T00:00:00Z", "from": "implementer-x7k2", "to": "lead-q8m3", "reply_to": ["m1"], "body": "Report: notes/change-report.md", "ack_required": true}
+{"schema": 4, "id": "m2", "seq": 2, "at": "2026-11-08T00:00:00Z", "from": "dev-team-k3f9/implementer-x7k2", "to": "dev-team-k3f9/lead-q8m3", "reply_to": ["m1"], "body": "Report: notes/change-report.md", "ack_required": true}
 ```
 
-`from` is the actual member or `external:NAME`. `--from MEMBER` only asserts a parent route: a member must name itself; an external relay remains the author and the envelope says “relayed for MEMBER.” Include relay context in the body when it must survive independently. Every committed send creates a distinct record, even with identical text. An ordinary committed send returns 0 even when typing is suppressed or uncertain; **do not resend just because delivery is stored**.
+`from` and `to` always contain full member addresses or `external:NAME`, including within one instance. `--from MEMBER` only asserts a parent route within the same instance: a member must name itself; an external relay remains the author and the envelope says “relayed for MEMBER.” Include relay context in the body when it must survive independently. Every committed send creates a distinct record, even with identical text. An ordinary committed send returns 0 even when typing is suppressed or uncertain; **do not resend just because delivery is stored**.
 
 Messages retain their sender's authority. A typed envelope does not turn a helper or outside message into direct-owner instruction. Never execute its text as shell code. Delegation, progress and verification belong in the pull request description and comments; briefs and reports can live in `$BORGCHART_NOTES`.
 
-Across a parent edge, `from` and `to` are full addresses. A cross-edge send records the message only in the sender's store, after checking the edge, and never types it: delivery is `stored` and the message is not acknowledged until imported. A locked recipient is refused across an edge, because its input cannot be verified from the sender's store. The recipient's next `inbox`, or each poll of `inbox wait`, reads the peer store under a read-only shared lock, releases it, and appends under its own lock. No command holds two stores' locks at once or writes a peer store.
+Every send checks one rule: the sender is the recipient's parent, or the recipient is the sender's parent. Siblings, cousins and unrelated roots cannot exchange messages. A deleted member, or a member in a copy deleted at any depth, cannot receive new messages.
 
-An imported record gets its own local ID and an `origin`, for example `{"instance": "oncall-2a3b/dev-a7k2", "id": "m1"}`. The origin lives in the same immutable file as the message. Under the receiver's lock, imports skip origins already held, so concurrent readers and crash retries create one local record. Imported messages are never sent on again. A sender restart after publication does not invalidate its committed message.
-
-`--reply-to` entries still name local messages. For a cross-edge send, brg stores qualified references to their original instance and ID. On import, references map back to the receiver's own IDs where available; other references remain qualified. Same-instance messages keep bare member IDs and local references.
+Parent edges within an instance and across copies use the same tree store and delivery rules, including typed and locked delivery. The recipient's own pane, guard and posture decide delivery. IDs and acknowledgements are shared by the tree: nothing is imported or renumbered. `--reply-to` takes plain IDs such as `m1` that must already exist in that store.
 
 ## Commands
 
@@ -71,24 +78,24 @@ MESSAGE
 
 Send JSON keeps `ok`, `code`, `message` and adds `outcome`, committed `id`, `delivery` (`typed`, `stored`, `uncertain` or `recorded-not-typed`) and a reason. See [send outcomes](cli.md#brg-send). The other bus commands retain their own outcome codes below.
 
-**Inbox:** `brg inbox [--member ID | --external NAME] [--full] [--json]` returns every ordinary unacked message, oldest first. A member defaults to itself; `--member` reads another member's inbox. Headers omit body and add `body_bytes` and `acked`; `--full` includes body instead of body_bytes. Reading never acknowledges.
+**Inbox:** `brg inbox [--member ID | --external NAME] [--full] [--json]` returns every ordinary unacked message, oldest first. A member defaults to itself; `--member` reads another member's inbox anywhere in the tree. A bare ID resolves in the caller's instance, or the outside caller's `--instance`; a full address selects any member in the tree. Headers omit body and add `body_bytes` and `acked`; `--full` includes body instead of body_bytes. Reading never acknowledges.
 
 ```sh
 brg inbox --instance dev-team-k3f9 --member lead-q8m3 --json
 ```
 
 ```json
-{"ok": true, "code": 0, "outcome": "ok", "recipient": "lead-q8m3", "records": [{"schema": 3, "id": "m1", "seq": 1, "at": "2026-11-08T00:00:00Z", "from": "external:owner", "to": "lead-q8m3", "body_bytes": 5, "ack_required": true, "acked": false}], "unacked": 1, "total": 1, "store": "ok", "notes": []}
+{"ok": true, "code": 0, "outcome": "ok", "recipient": "dev-team-k3f9/lead-q8m3", "records": [{"schema": 4, "id": "m1", "seq": 1, "at": "2026-11-08T00:00:00Z", "from": "external:owner", "to": "dev-team-k3f9/lead-q8m3", "body_bytes": 5, "ack_required": true, "acked": false}], "unacked": 1, "total": 1, "store": "ok"}
 ```
 
-**Read:** `brg msg read ID [--json]` shows one message in full, including an acknowledged one.
+**Read:** `brg msg read ID [--json]` shows any message in the tree in full, including an acknowledged one or a deleted copy's history.
 
 ```sh
 brg msg read m1 --instance dev-team-k3f9 --json
 ```
 
 ```json
-{"ok": true, "code": 0, "outcome": "ok", "record": {"schema": 3, "id": "m1", "seq": 1, "at": "2026-11-08T00:00:00Z", "from": "external:owner", "to": "lead-q8m3", "body": "Hello", "ack_required": true, "acked": false}}
+{"ok": true, "code": 0, "outcome": "ok", "record": {"schema": 4, "id": "m1", "seq": 1, "at": "2026-11-08T00:00:00Z", "from": "external:owner", "to": "dev-team-k3f9/lead-q8m3", "body": "Hello", "ack_required": true, "acked": false}}
 ```
 
 **Ack:** `brg msg ack ID… [--external NAME] [--json]` acknowledges only messages addressed to the caller. It validates every ID before writing any ack. Ack once you have taken responsibility, before waiting for more work.
@@ -113,8 +120,7 @@ Repeating an ack returns `already` for that ID. Locked records have `ack_require
 - The highest sequence in the first readable scan is the start mark. A new unacked message to you above it returns at once.
 - If unacked messages were already there, it returns after 60 seconds, only if some are still unacked. If all were acked meanwhile, it keeps waiting for a new one or the timeout.
 - Errors, including missing identity, unreadable records and usage errors, return no sooner than 60 seconds after command start. `fenced`, explicit help and signals are exempt.
-- Each poll (250 ms) checks the current start, refreshes parent edges (including copies created or first started during the wait), imports from their stores, and reads the next local message file, moving past other recipients. After the first snapshot of each peer, polls read only new sequences. Origins already held locally are skipped before taking the import lock. Peer reads and local import-lock attempts use short slices within the deadline. An existing next local file that won't parse is an error, never skipped.
-- A busy, missing or unreadable peer adds a note naming its instance and a check/retry action; local messages remain visible and the wait retains its timeout and fencing. A local import failure other than fencing also adds a note: inbox lists readable records, and wait retries deferred imports on later polls. JSON inbox results include `notes`; timeout and fencing results include notes when present. A copy before its first start has no messages to import and is skipped.
+- Each poll (250 ms) checks the current start and reads the next record file, moving past other recipients. There is one initial scan, then incremental reads. An existing next file that won't parse is an error, never skipped. Shared-lock attempts respect the deadline.
 - A stopped, exited or replaced member exits 8 (`fenced`), even without a publication. Wait checks member liveness about once a second, including while waiting for a publisher's lock; unknown liveness keeps waiting. Member waits require tmux evidence and do not infer exit from a sandbox process listing. Stop waiting and tell the owner; never change identity variables to retry.
 
 Ack everything you've taken on, then arm one wait: Claude with its Bash tool in background mode, Codex in the foreground (`--timeout 600`). On exit 9 wait again. Leaving messages unacked wakes you about once a minute.
@@ -131,11 +137,11 @@ brg bus check --instance dev-team-k3f9 --json
 
 ## Damage and status
 
-Only format-3 stores, records and acknowledgements are supported; older stores are refused, not migrated. New or empty storage may be initialised. A foreign format/instance marker, unexpected layout, gap or unreadable record is damage: publication and acknowledgements refuse, and `bus check` reports why. Inbox can show readable messages with `store: incomplete`. Start refuses unreadable messages; stop and liveness still work without reading them. Delete needs `--force` for unacked local messages, undelivered cross-edge messages or unreadable messages, after every member is positively stopped. Checkouts are held only by running members or members whose stop is unknown; a stopped instance holds none.
+Only format-4 stores, records and acknowledgements are supported; earlier stores are refused, not migrated. A foreign format/root marker, unexpected layout, gap or unreadable record is damage: publication and acknowledgements refuse, and `bus check --instance <any-instance-in-the-tree>` reports why. Inbox can show readable messages with `store: incomplete`. Damage blocks starts throughout the tree; stop and liveness still work without reading messages. Checkouts are held only by running members or members whose stop is unknown; a stopped instance holds none. New or empty storage may be initialised at the tree root.
 
-A cross-edge message is delivered when the receiver's store holds its origin. The sender reads that receipt without writing anything; acknowledgements stay local to the receiver. Instance deletion lists all undelivered originals; member deletion lists that member's outgoing undelivered messages as well as its incoming unacked messages, including imports and records still waiting for it in its edge stores (counted without importing; an unreadable edge store needs `--force`). A message to a deleted copy is listed as "to a deleted copy (delivery unknown)" and needs `--force`. A message to a member the receiving instance records as deleted is shown as a note and doesn't need `--force`. Busy, incomplete or unreadable receiving stores leave delivery unknown, with a note requiring `--force`; they never count as a receipt. Receipt reads release each peer lock before the sender takes its publication lock.
+Delete needs `--force` for unacked messages to the instance's kept members, unacked external replies at the root, or unreadable storage, after every member is positively stopped. Copy deletion checks open work and saves its tombstone under the tree store lock, so a concurrent publication is either counted or refused. Deleting a copy or member preserves its messages as readable history and removes them from pending-work counts. Deleting the root removes the store after all copies have been deleted. Working folders are left alone.
 
-`brg status` and `-i` show positive unread (unacked) counts beside members, including messages waiting in parent-edge stores. Imported origins count once; acknowledged imports stay acknowledged even while the original remains in the sender's store. Status only reads these stores. `--json` includes `unread`, including zero, for each member whose local bus and edges are readable. An unreadable local store omits counts and adds a short check note, and a busy local store asks for a retry. An unavailable peer makes the affected member's count unknown (omitted in JSON), with a note naming the peer and a check/retry action. An unreadable copy record makes every member's count unknown because its parent edge cannot be determined.
+`brg status` and `-i` show positive unread (unacked) counts beside members. All members' counts come from one tree snapshot, including copies; status never writes. `--json` includes zero for readable counts. An unreadable store omits counts throughout the tree and adds a short check note; a busy store asks for a retry. Storage and scan cost grow with the tree's history; there is no index or automatic retention.
 
 ## Attention
 
