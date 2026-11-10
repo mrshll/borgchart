@@ -1736,6 +1736,58 @@ fn beside_panes(env: &Env) -> Vec<(String, String)> {
     .collect()
 }
 
+/// What brg can see of `role`'s panes, for a failed assertion: every pane
+/// (as the test's client and as brg lists them, from a bare environment by
+/// the recorded socket), the member's recorded start and `status --json`.
+fn pane_report(env: &Env, role: &str) -> String {
+    let format = "#{session_name}|#{window_name}|#{pane_id}|#{pane_pid}|#{pane_dead}|#{pane_dead_status}|#{pane_active}|#{@brg-own-pane}|#{@brg-sidebar}|#{pane_start_command}";
+    let mut out = format!(
+        "--- {}--- panes (test client):\n{}",
+        env.tmux(&["display", "-p", "#{version}"]),
+        env.tmux(&["list-panes", "-a", "-F", format])
+    );
+    let inst = env.instance().unwrap_or_default();
+    let read = |rel: String| fs::read_to_string(env.path(&rel)).unwrap_or_else(|e| format!("{e}"));
+    let start = read(format!("state/{inst}/start.json"));
+    let meta = serde_json::from_str::<serde_json::Value>(&start).unwrap_or_default();
+    out.push_str(&format!(
+        "--- start.json: socket_path {} windows_started {} stopped_at {}\n",
+        meta["socket_path"], meta["windows_started"], meta["stopped_at"]
+    ));
+    let incarnation = env
+        .member_id(role)
+        .map(|id| read(format!("state/{inst}/members/{id}/incarnation.json")))
+        .unwrap_or_default();
+    out.push_str(&format!("--- {role} incarnation.json:\n{incarnation}\n"));
+    let sockets: Vec<String> = [&start, &incarnation]
+        .iter()
+        .filter_map(|t| serde_json::from_str::<serde_json::Value>(t).ok())
+        .flat_map(|v| [v["socket_path"].clone(), v["pane"]["socket"].clone()])
+        .filter_map(|s| s.as_str().map(str::to_string))
+        .collect();
+    for socket in sockets {
+        let listed = Command::new("tmux")
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .args(["-S", &socket, "list-panes", "-a", "-F", format])
+            .output()
+            .unwrap();
+        out.push_str(&format!(
+            "--- panes (bare environment, -S {socket}): {}\n{}{}",
+            listed.status,
+            String::from_utf8_lossy(&listed.stdout),
+            String::from_utf8_lossy(&listed.stderr)
+        ));
+    }
+    let status = env.brg(&["status", "--json"]);
+    out.push_str(&format!(
+        "--- status --json:\n{}{}",
+        String::from_utf8_lossy(&status.stdout),
+        String::from_utf8_lossy(&status.stderr)
+    ));
+    out
+}
+
 #[test]
 fn a_focused_pane_beside_a_member_is_never_read_typed_into_or_stopped_for_it() {
     // Catches: brg reading a member's screen, title or exit, answering its
@@ -1799,17 +1851,31 @@ fn a_focused_pane_beside_a_member_is_never_read_typed_into_or_stopped_for_it() {
     env.wait_for("beta exited", |e| e.state_of("beta") == "exited");
     let inst = env.instance().unwrap();
     let out = env.brg(&["delete", "--force", &format!("{inst}/{beta}")]);
-    assert!(out.status.success(), "{out:?}");
+    assert!(
+        out.status.success(),
+        "{out:?}\n{}",
+        pane_report(&env, "beta")
+    );
 
     // `stop` stops alpha itself, not just the pane beside it.
     let out = env.brg(&["stop", "alpha"]);
-    assert!(out.status.success(), "{out:?}");
+    assert!(
+        out.status.success(),
+        "{out:?}\n{}",
+        pane_report(&env, "alpha")
+    );
     assert!(
         !stdout(&out).contains("may still be running"),
-        "{}",
-        stdout(&out)
+        "{}\n{}",
+        stdout(&out),
+        pane_report(&env, "alpha")
     );
-    assert_eq!(env.state_of("alpha"), "stopped");
+    assert_eq!(
+        env.state_of("alpha"),
+        "stopped",
+        "{}",
+        pane_report(&env, "alpha")
+    );
 }
 
 #[test]
