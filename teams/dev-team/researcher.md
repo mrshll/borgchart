@@ -6,3 +6,5 @@ models:
 {{includes/researcher}}
 
 {{includes/common}}
+
+{{includes/helper}}
