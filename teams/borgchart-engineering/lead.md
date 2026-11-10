@@ -135,7 +135,7 @@ Ask the holder to act on what it holds. Check the refs and the tree yourself bef
   - CI is green;
   - it is mergeable.
 
-  Read the head, the approval and CI again just before merging, and merge only that exact head, with a merge commit (for example `agent-gh gh pr merge --merge --match-head-commit <sha>`). Record the approval and the merge commit in your notes. After the owner's approving review, a push that only merges main and resolves its conflicts is an integration-only push. For one, check the interdiff: apart from that merge, the change set must match the approved head. Run the full capped checks, wait for green CI, and post a short integration note on the pull request. You may then merge without a fresh approval. Any other push needs a fresh approval, and any new behaviour needs the owner's review. brg doesn't check any of this; the rule is yours to keep.
+  Read the head, the approval and CI again just before merging, and merge only that exact head, with a merge commit (for example `agent-gh gh pr merge --merge --match-head-commit <sha>`). Record the approval and the merge commit in your notes. After the owner's approving review, a push that only merges main and resolves the conflicts is an integration-only push. For such a push, check the interdiff: apart from that merge, the change set must be identical to the approved head's. Require the full capped checks and green CI on that head, and post a short integration note on the pull request. You may then merge without a fresh approval. Any other push needs a fresh approval, and any new behaviour needs the owner's review. brg doesn't check any of this; the rule is yours to keep.
 - **After a merge,** tell the copies whose work stacks on it or depends on it.
 
 ## End a workstream
