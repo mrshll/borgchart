@@ -409,23 +409,12 @@ pub fn member_launch(
                 ]);
                 gate = Some(gate_rules(&granted, &shim_dir, mcp_tools));
             }
-            // `vendor` posture: the instance's messages and notes are
-            // writable in the sandbox, unless the role's own args set the
-            // writable roots.
-            if posture == Posture::Vendor
-                && !shared.is_empty()
-                && !codex_args_set(&extra_args, "sandbox_workspace_write.writable_roots")
-            {
+            if posture == Posture::Vendor {
                 argv.extend([
-                    "-c".into(),
-                    format!(
-                        "sandbox_workspace_write.writable_roots=[{}]",
-                        shared
-                            .iter()
-                            .map(|p| toml_string(&p.display().to_string()))
-                            .collect::<Vec<_>>()
-                            .join(",")
-                    ),
+                    "--sandbox".into(),
+                    "danger-full-access".into(),
+                    "--ask-for-approval".into(),
+                    "never".into(),
                 ]);
             }
             if let Some(dir) = codex_trust {

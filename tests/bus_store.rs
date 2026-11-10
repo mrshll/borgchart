@@ -54,43 +54,9 @@ fn member_command(env: &Env, instance: &str, member: &str, args: &[&str]) -> std
 }
 
 #[test]
-fn empty_codex_masks_do_not_block_message_round_trips() {
+fn a_store_containing_only_empty_codex_masks_refuses_start() {
     let env = Env::new();
     let instance = env.create("oncall", "work/a");
-    env.ok(&["create", &format!("{instance}/helper")]);
-    let helper = env.member(&instance, "helper");
-    let store = env.path(&format!("state/{instance}/messages"));
-    for name in [".agents", ".aws", ".codex", ".git"] {
-        fs::create_dir(store.join(name)).unwrap();
-    }
-    let inbox = || {
-        let out = member_command(&env, &instance, &helper, &["inbox", "--full", "--json"]);
-        assert_eq!(out.status.code(), Some(0), "{}", both(&out));
-        serde_json::from_slice::<Value>(&out.stdout).unwrap()
-    };
-    assert_eq!(inbox()["unacked"], 0);
-    let message = publish(
-        &env,
-        &instance,
-        json!({"to": helper, "body": "Review the sample."}),
-    );
-    assert_eq!(inbox()["records"][0]["body"], "Review the sample.");
-    let ack = member_command(
-        &env,
-        &instance,
-        &helper,
-        &["msg", "ack", message["id"].as_str().unwrap(), "--json"],
-    );
-    assert_eq!(ack.status.code(), Some(0), "{}", both(&ack));
-    assert_eq!(inbox()["unacked"], 0);
-    env.ok(&["stop", &instance]);
-}
-
-#[test]
-fn a_store_containing_only_empty_codex_masks_is_initialized_at_start() {
-    let env = Env::new();
-    let instance = env.create("oncall", "work/a");
-    let lead = env.member(&instance, "lead");
     env.ok(&["stop", &instance]);
     let store = env.path(&format!("state/{instance}/messages"));
     fs::remove_dir_all(&store).unwrap();
@@ -99,21 +65,23 @@ fn a_store_containing_only_empty_codex_masks_is_initialized_at_start() {
     for name in [".agents", ".aws", ".codex", ".git"] {
         fs::create_dir(store.join(name)).unwrap();
     }
-    env.ok(&["start", &instance]);
-    assert_eq!(
-        publish(
-            &env,
-            &instance,
-            json!({"to": lead, "body": "A fresh message."})
-        )["id"],
-        "m1"
-    );
-    env.ok(&["stop", &instance]);
+    let error = env.fails(&["start", &instance]);
+    assert!(error.contains("unexpected entry"), "{error}");
+    assert!(!store.join("store.json").exists());
 }
 
 #[test]
 fn unexpected_entries_are_not_accepted_as_codex_masks() {
-    for case in ["nonempty", "file", "symlink", "unknown"] {
+    for case in [
+        "empty-agents",
+        "empty-aws",
+        "empty-codex",
+        "empty-git",
+        "nonempty",
+        "file",
+        "symlink",
+        "unknown",
+    ] {
         let env = Env::new();
         let instance = env.create("oncall", "work/a");
         let lead = env.member(&instance, "lead");
@@ -124,6 +92,9 @@ fn unexpected_entries_are_not_accepted_as_codex_masks() {
         );
         let store = env.path(&format!("state/{instance}/messages"));
         match case {
+            case if case.starts_with("empty-") => {
+                fs::create_dir(store.join(format!(".{}", &case[6..]))).unwrap();
+            }
             "nonempty" => {
                 fs::create_dir(store.join(".git")).unwrap();
                 fs::write(store.join(".git/contents"), "keep this file").unwrap();

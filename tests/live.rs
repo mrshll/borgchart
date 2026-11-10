@@ -24,12 +24,20 @@
 //! under the system temp directory. No tool approval is ever answered: one
 //! that appears ends its case BLOCKED.
 //!
+//! The separate cold seating probe uses Codex `gpt-6-astra medium` and a
+//! real `brg-seat route` quota/app-server call. It requires that model and
+//! an existing `$HOME/.local/state`, where it creates and removes a private
+//! temporary cache. Its evidence is separate from the matrix.
+//!
 //! The matrix (UTC time, brg revision, vendor versions) is written as cases
 //! finish to `target/live/<run>/matrix.md`, with screens in `screens/`
 //! beside it (they show your real screen). Only a complete live run with
 //! every case in [`rules::REQUIRED`] PASS qualifies a stable rebuild.
 
 mod common;
+
+#[path = "live/seat_qualification.rs"]
+mod seat_qualification;
 
 #[path = "live/cases.rs"]
 mod cases;

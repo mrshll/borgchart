@@ -795,6 +795,10 @@ impl Run {
             // `auto_trust` passes it: nothing is written to your config.
             Vendor::Codex => vec![
                 "codex".into(),
+                "--sandbox".into(),
+                "danger-full-access".into(),
+                "--ask-for-approval".into(),
+                "never".into(),
                 "-c".into(),
                 "check_for_update_on_startup=false".into(),
                 "-c".into(),

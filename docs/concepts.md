@@ -33,7 +33,7 @@ under its parent instance, independently of where its team definition is stored.
   - `notes/`, for members' reports and other files the members share (`$BORGCHART_NOTES`);
   - brg's own files.
 
-  brg makes `messages/` and `notes/` writable for every `vendor`-posture member (Codex's sandbox writable roots, Claude's added folders). It never does that for its own files: gate rules, shims, launch files and secrets.
+  Codex `vendor` members run with full host access and no tool approvals, including access to brg's state files. Claude `vendor` members get `messages/` and `notes/` as added folders. Locked members retain their gate and restricted launch settings.
 
   `locked` members keep today's launch unchanged:
   - their gate;
