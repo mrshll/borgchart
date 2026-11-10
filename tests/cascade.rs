@@ -675,3 +675,32 @@ fn a_failed_member_stop_does_not_fence_a_copy_the_walk_has_not_reached() {
     env.ok(&["stop", "-r", &target]);
     env.ok(&["stop", &dept]);
 }
+
+#[test]
+fn a_full_resume_resumes_restored_copies() {
+    let env = department();
+    let dept = env.create("oncall", "work/a");
+    let (dev, _) = prepared_copy(&env, &dept, "dev");
+    start(&env, &dev);
+    let lead = env.member(&dev, "lead");
+    let session = env.path(&format!("state/{dev}/members/{lead}/session"));
+    env.wait_for("copy lead's session recorded", || session.exists());
+    let id = fs::read_to_string(&session).unwrap().trim().to_string();
+    env.ok(&["stop", &dept]);
+    env.ok(&["start", &dept, "--resume"]);
+    env.wait_for("copy lead restored", || {
+        env.state_of(&dev, "lead") == "idle"
+    });
+    let starts = env.starts(&lead);
+    let argv: Vec<&str> = starts.last().unwrap()["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a.as_str().unwrap())
+        .collect();
+    assert!(
+        argv.windows(2).any(|w| w == ["--resume", id.as_str()]),
+        "{argv:?}"
+    );
+    env.ok(&["stop", &dept]);
+}

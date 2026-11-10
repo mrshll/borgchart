@@ -81,7 +81,8 @@ fn run_hook(command: &str, input: &serde_json::Value) -> (i32, String) {
     }
 }
 
-/// Hook commands brg installed: from Claude's `--settings` file or Codex's `-c hooks=…`.
+/// Hook commands brg installed: from Claude's `--settings` file or Codex's
+/// `-c hooks=…` and `-c hooks.SessionStart=…`.
 fn hooks(vendor: Vendor, args: &[String]) -> (Vec<String>, Vec<String>) {
     let mut pre = Vec::new();
     let mut start = Vec::new();
@@ -106,7 +107,10 @@ fn hooks(vendor: Vendor, args: &[String]) -> (Vec<String>, Vec<String>) {
             }
         }
         Vendor::Codex => {
-            for arg in args.iter().filter(|a| a.starts_with("hooks=")) {
+            for arg in args
+                .iter()
+                .filter(|a| a.starts_with("hooks=") || a.starts_with("hooks.SessionStart="))
+            {
                 for (event, out) in [("PreToolUse", &mut pre), ("SessionStart", &mut start)] {
                     let pattern = format!(
                         r#"{event}=\[\{{matcher="\*",hooks=\[\{{type="command",command=("(?:[^"\\]|\\.)*")"#
@@ -390,11 +394,32 @@ impl Agent {
     }
 }
 
+/// This run's session, as the real CLIs report it to SessionStart hooks:
+/// the one it resumes, or a new one.
+static SESSION: std::sync::OnceLock<(String, &'static str)> = std::sync::OnceLock::new();
+
+/// The session `args` resume: Claude's `--resume <id>`, or Codex's
+/// `resume [options] -- <id> [prompt]`.
+fn resumed_session(vendor: Vendor, args: &[String]) -> Option<String> {
+    match vendor {
+        Vendor::Claude => {
+            let i = args.iter().position(|a| a == "--resume")?;
+            args.get(i + 1).cloned()
+        }
+        Vendor::Codex if args.first().is_some_and(|a| a == "resume") => {
+            let i = args.iter().position(|a| a == "--")?;
+            args.get(i + 1).cloned()
+        }
+        Vendor::Codex => None,
+    }
+}
+
 fn run_start_hooks(log: &PathBuf, hooks: &[String]) {
+    let (session, source) = SESSION.get().cloned().unwrap_or_default();
     for hook in hooks {
         let (code, _) = run_hook(
             hook,
-            &serde_json::json!({"hook_event_name": "SessionStart", "source": "startup"}),
+            &serde_json::json!({"hook_event_name": "SessionStart", "source": source, "session_id": session}),
         );
         log_event(
             log,
@@ -459,6 +484,23 @@ fn main() {
     );
 
     let (pre_hooks, start_hooks) = hooks(vendor, args);
+    let _ = SESSION.set(match resumed_session(vendor, args) {
+        Some(id) => (id, "resume"),
+        None => {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or_default();
+            (
+                format!(
+                    "00000000-0000-4000-8000-{:04x}{:08x}",
+                    std::process::id() & 0xffff,
+                    nanos
+                ),
+                "startup",
+            )
+        }
+    });
     let skip_hooks = PathBuf::from(&home)
         .join("fake-agent")
         .join("no-hooks")

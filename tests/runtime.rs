@@ -1712,3 +1712,207 @@ fn long_ordinary_body_is_stored_without_composer_submission() {
     assert_eq!(record["ack_required"], true);
     assert!(submissions(&env, "beta").is_empty());
 }
+
+/// The session `member`'s latest start recorded, if any.
+fn recorded_session(env: &Env, role: &str) -> Option<String> {
+    let inst = env.instance().unwrap();
+    fs::read_to_string(env.path(&format!("state/{inst}/members/{}/session", env.m(role))))
+        .ok()
+        .map(|s| s.trim().to_string())
+}
+
+/// The argv of `role`'s latest start.
+fn latest_argv(env: &Env, role: &str) -> Vec<String> {
+    env.events(role)
+        .into_iter()
+        .rfind(|e| e["event"] == "start")
+        .unwrap()["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect()
+}
+
+fn starts_of(env: &Env, role: &str) -> usize {
+    env.events(role)
+        .iter()
+        .filter(|e| e["event"] == "start")
+        .count()
+}
+
+fn wait_for_session(env: &Env, role: &str) -> String {
+    env.wait_for(&format!("{role}'s session"), |e| {
+        recorded_session(e, role).is_some()
+    });
+    recorded_session(env, role).unwrap()
+}
+
+fn assert_resumed(env: &Env, role: &str, session: &str) {
+    let argv = latest_argv(env, role);
+    if argv[0].ends_with("codex") {
+        assert_eq!(argv[1], "resume", "{argv:?}");
+        let dash = argv.iter().position(|a| a == "--").unwrap();
+        assert_eq!(argv[dash + 1], session, "{argv:?}");
+        assert!(argv[dash + 2].contains("brg restarted you"), "{argv:?}");
+        assert_eq!(argv.len(), dash + 3, "{argv:?}");
+    } else {
+        assert!(
+            argv.windows(2).any(|w| w == ["--resume", session]),
+            "{argv:?}"
+        );
+        assert!(
+            argv.last().unwrap().contains("brg restarted you"),
+            "{argv:?}"
+        );
+        assert!(
+            !argv.iter().any(|a| a.contains("## Commands you can run")),
+            "a resumed member keeps its conversation, not a new opening prompt: {argv:?}"
+        );
+    }
+    // The resumed session reports itself again.
+    assert_eq!(recorded_session(env, role).as_deref(), Some(session));
+}
+
+#[test]
+fn every_member_records_its_session() {
+    let env = Env::new();
+    env.up();
+    // `locked` Claude through its gate's start hook, `vendor` Codex
+    // through a session-only hook.
+    let alpha = wait_for_session(&env, "alpha");
+    let beta = wait_for_session(&env, "beta");
+    assert_ne!(alpha, beta);
+    let beta_argv = latest_argv(&env, "beta");
+    assert!(
+        beta_argv
+            .windows(2)
+            .any(|w| w[0] == "-c" && w[1] == "features.hooks=true"),
+        "a vanilla Codex must run the hook whatever its own configuration says: {beta_argv:?}"
+    );
+}
+
+#[test]
+fn a_member_resumes_its_recorded_session() {
+    let env = Env::new();
+    env.up();
+    let inst = env.instance().unwrap();
+    for role in ["alpha", "beta"] {
+        let session = wait_for_session(&env, role);
+        let at = format!("{inst}/{}", env.m(role));
+        assert!(env.brg(&["stop", role]).status.success());
+        let out = env.brg(&["start", &at, "--resume"]);
+        assert!(
+            out.status.success(),
+            "{}\n{}",
+            stdout(&out),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(stdout(&out).contains("resumed"), "{}", stdout(&out));
+        env.wait_for(&format!("{role} idle"), |e| e.state_of(role) == "idle");
+        assert_resumed(&env, role, &session);
+    }
+}
+
+#[test]
+fn a_fresh_start_replaces_the_old_session() {
+    let env = Env::new();
+    env.up();
+    let old = wait_for_session(&env, "beta");
+    assert!(env.brg(&["stop", "beta"]).status.success());
+    assert!(env.brg(&["start", "beta"]).status.success());
+    env.wait_for("a new session", |e| {
+        recorded_session(e, "beta").is_some_and(|s| s != old)
+    });
+    assert!(!latest_argv(&env, "beta").iter().any(|a| a == "resume"));
+}
+
+#[test]
+fn resume_refuses_a_member_without_a_recorded_session() {
+    let env = Env::new();
+    env.up();
+    let inst = env.instance().unwrap();
+    wait_for_session(&env, "beta");
+    let at = format!("{inst}/{}", env.m("beta"));
+    assert!(env.brg(&["stop", "beta"]).status.success());
+    fs::remove_file(env.path(&format!("state/{inst}/members/{}/session", env.m("beta")))).unwrap();
+    let before = starts_of(&env, "beta");
+    let out = env.brg(&["start", &at, "--resume"]);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("no recorded session"), "{err}");
+    assert!(err.contains(&format!("brg start {at}")), "{err}");
+    assert_eq!(starts_of(&env, "beta"), before, "nothing was started");
+}
+
+#[test]
+fn resume_refuses_a_running_member() {
+    let env = Env::new();
+    env.up();
+    let inst = env.instance().unwrap();
+    wait_for_session(&env, "beta");
+    let at = format!("{inst}/{}", env.m("beta"));
+    let before = starts_of(&env, "beta");
+    let out = env.brg(&["start", &at, "--resume"]);
+    assert!(stdout(&out).contains("already running"), "{}", stdout(&out));
+    assert_eq!(starts_of(&env, "beta"), before);
+}
+
+#[test]
+fn a_whole_instance_resumes() {
+    let env = Env::new();
+    env.up();
+    let inst = env.instance().unwrap();
+    let alpha = wait_for_session(&env, "alpha");
+    let beta = wait_for_session(&env, "beta");
+    assert!(env.brg(&["stop"]).status.success());
+    let out = env.brg(&["start", &inst, "--resume"]);
+    assert!(
+        out.status.success(),
+        "{}\n{}",
+        stdout(&out),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    env.wait_for("alpha idle", |e| e.state_of("alpha") == "idle");
+    env.wait_for("beta idle", |e| e.state_of("beta") == "idle");
+    assert_resumed(&env, "alpha", &alpha);
+    assert_resumed(&env, "beta", &beta);
+}
+
+#[test]
+fn a_member_whose_vendor_changed_starts_fresh() {
+    let env = Env::new();
+    env.up();
+    let inst = env.instance().unwrap();
+    let alpha = wait_for_session(&env, "alpha");
+    wait_for_session(&env, "beta");
+    assert!(env.brg(&["stop"]).status.success());
+    // Codex to Claude across a full stop: the Codex session can't be
+    // handed to Claude.
+    let team = fs::read_to_string(env.path("team/team.yaml")).unwrap();
+    env.write(
+        "team/team.yaml",
+        &team.replace("    vendor: codex\n", "    vendor: claude\n"),
+    );
+    env.write(
+        "team/beta.md",
+        "---\nmodels: {claude: haiku}\n---\nYou are beta.\n",
+    );
+    let out = env.brg(&["start", &inst, "--resume"]);
+    assert!(
+        out.status.success(),
+        "{}\n{}",
+        stdout(&out),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout(&out).contains("started fresh: its vendor changed since its session"),
+        "{}",
+        stdout(&out)
+    );
+    env.wait_for("beta idle", |e| e.state_of("beta") == "idle");
+    let beta = latest_argv(&env, "beta");
+    assert!(beta[0].ends_with("claude"), "{beta:?}");
+    assert!(!beta.iter().any(|a| a == "--resume"), "{beta:?}");
+    assert_resumed(&env, "alpha", &alpha);
+}
