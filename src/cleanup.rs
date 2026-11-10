@@ -6,17 +6,20 @@
 //! - **Folders it made**: the `{member_id}` leaf of each deleted member and
 //!   copy (its role's `cwd` in the instance's folder). A leaf is removed only
 //!   when it holds nothing but folders, and when no registered instance, kept
-//!   member or copy works at or inside it. One holding files is listed and
-//!   kept, and named as a git worktree or repository when it holds a `.git`.
-//!   Leaves are placed through the instance's current team file.
+//!   member or copy works at or inside it. A git worktree in it (a `.git`
+//!   file) is removed with `git worktree remove` when it is clean: nothing
+//!   modified, staged or untracked, and no commit that no remote-tracking ref
+//!   reaches. A worktree with work in it, a repository (a `.git` folder) and
+//!   other files are listed and kept; a worktree git can't check fails the
+//!   run. Leaves are placed through the instance's current team file.
 //! - **State of deleted members and copies** inside a registered instance's
 //!   state folder, as an interrupted `delete` leaves it.
 //! - **Unregistered instance state** in brg's state folder: a folder named
 //!   for an instance ID brg issued, with no registered instance (without an
 //!   instance argument only).
 //!
-//! Work folders, kept members' and copies' folders, git worktrees and
-//! messages are never touched. `brg reset` applies the same folder rules to
+//! Work folders, kept members' and copies' folders, repositories, worktrees
+//! outside those leaves and messages are never touched. `brg reset` applies the same folder rules to
 //! every member and copy of the tree it forgets ([`tree_folders`]).
 
 use std::path::{Path, PathBuf};
@@ -287,18 +290,47 @@ fn leaf_at(inst: &Instance, dir: &Path, held: &[PathBuf], what: &str, out: &mut 
             &format!("an instance, kept member or copy works there ({what})"),
         );
     }
-    match contents(&dir) {
+    let mut found = contents(&dir);
+    if let Ok(Contents::Worktrees(worktrees)) = &found {
+        for worktree in worktrees {
+            match clean_worktree(worktree) {
+                Ok(None) => match git(
+                    worktree,
+                    &["worktree", "remove", &worktree.to_string_lossy()],
+                ) {
+                    Ok(_) => out.removed(
+                        worktree,
+                        &format!("clean git worktree in the folder of {what}"),
+                    ),
+                    Err(e) => out.error(format!(
+                        "cannot remove git worktree {}: {e}",
+                        worktree.display()
+                    )),
+                },
+                Ok(Some(why)) => out.kept(
+                    worktree,
+                    &format!("git worktree with {why} ({what}); left as it is"),
+                ),
+                Err(e) => out.error(format!(
+                    "can't check git worktree {}, so it was left as it is ({what}): {e}",
+                    worktree.display()
+                )),
+            }
+        }
+        // A worktree at the folder's top took the folder with it.
+        if dir.symlink_metadata().is_err() {
+            return;
+        }
+        found = contents(&dir);
+    }
+    match found {
         Ok(Contents::Folders) => match remove_folders(&dir) {
             Ok(()) => out.removed(&dir, &format!("folder of {what}")),
             Err(e) => out.error(format!("cannot remove {}: {e}", dir.display())),
         },
-        Ok(Contents::Git { worktree: true }) => out.kept(
-            &dir,
-            &format!("holds a git worktree ({what}); remove it with `git worktree remove`"),
-        ),
-        Ok(Contents::Git { worktree: false }) => {
-            out.kept(&dir, &format!("holds a git repository ({what})"))
-        }
+        // Each worktree left was already reported above.
+        Ok(Contents::Worktrees(_)) => {}
+        Ok(Contents::Repository) => out.kept(&dir, &format!("holds a git repository ({what})")),
         Ok(Contents::Files) => out.kept(&dir, &format!("holds files ({what})")),
         Err(e) => out.error(format!("cannot read {}: {e}", dir.display())),
     }
@@ -307,24 +339,29 @@ fn leaf_at(inst: &Instance, dir: &Path, held: &[PathBuf], what: &str, out: &mut 
 enum Contents {
     Folders,
     Files,
-    /// A `.git` somewhere inside: a file in a worktree, a folder in a clone.
-    Git {
-        worktree: bool,
-    },
+    /// A `.git` folder somewhere inside: a clone, never removed.
+    Repository,
+    /// Git worktrees (a `.git` file at their top), by folder.
+    Worktrees(Vec<PathBuf>),
 }
 
-/// What `dir` holds, never following a symlink.
+/// What `dir` holds, never following a symlink. Worktrees aren't entered.
 fn contents(dir: &Path) -> std::io::Result<Contents> {
     let mut files = false;
+    let mut worktrees = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(next) = stack.pop() {
+        let git = next.join(".git");
+        match git.symlink_metadata() {
+            Ok(meta) if meta.is_dir() => return Ok(Contents::Repository),
+            Ok(meta) if meta.is_file() => {
+                worktrees.push(next);
+                continue;
+            }
+            _ => {}
+        }
         for entry in std::fs::read_dir(&next)? {
             let entry = entry?;
-            if entry.file_name() == ".git" {
-                return Ok(Contents::Git {
-                    worktree: !entry.file_type()?.is_dir(),
-                });
-            }
             if entry.file_type()?.is_dir() {
                 stack.push(entry.path());
             } else {
@@ -332,11 +369,61 @@ fn contents(dir: &Path) -> std::io::Result<Contents> {
             }
         }
     }
-    Ok(if files {
+    Ok(if !worktrees.is_empty() {
+        Contents::Worktrees(worktrees)
+    } else if files {
         Contents::Files
     } else {
         Contents::Folders
     })
+}
+
+/// Why the git worktree at `dir` isn't clean, or `None` when it is: no
+/// modified, staged or untracked (non-ignored) files, and no commit that
+/// no remote-tracking ref reaches.
+fn clean_worktree(dir: &Path) -> Result<Option<String>, String> {
+    let top = git(dir, &["rev-parse", "--show-toplevel"])?;
+    let same = |a: &Path, b: &Path| a.canonicalize().ok() == b.canonicalize().ok();
+    if !same(Path::new(top.trim()), dir) {
+        return Err(format!("git places its top at {}", top.trim()));
+    }
+    if !git(dir, &["status", "--porcelain", "--untracked-files=normal"])?
+        .trim()
+        .is_empty()
+    {
+        return Ok(Some("uncommitted or untracked changes".into()));
+    }
+    let unpushed = git(dir, &["rev-list", "--count", "HEAD", "--not", "--remotes"])?;
+    match unpushed.trim() {
+        "0" => Ok(None),
+        n => Ok(Some(format!("{n} commit(s) on no remote"))),
+    }
+}
+
+/// Run git in `dir` with none of the caller's `GIT_*` settings; its output,
+/// or why it failed.
+fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+    let mut command = std::process::Command::new("git");
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("GIT_") {
+            command.env_remove(key);
+        }
+    }
+    let output = command
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("cannot run git: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "git {} failed: {}",
+            args.first().copied().unwrap_or_default(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// Remove a tree of empty folders bottom-up. Never recursive removal: a

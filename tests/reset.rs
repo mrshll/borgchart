@@ -219,3 +219,81 @@ fn reset_says_and_fails_when_it_cannot_place_folders_brg_made() {
         "{text}"
     );
 }
+
+/// Run git in `dir`, away from the caller's repository and settings.
+fn git(dir: &std::path::Path, args: &[&str]) -> String {
+    let out = common::command("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
+        .args(args)
+        .env("HOME", dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn reset_removes_clean_worktrees_in_the_tree_and_keeps_the_root_checkout() {
+    let env = tree_env();
+    // The root's checkout: a clone of a local remote with one pushed commit.
+    let origin = env.path("origin.git").display().to_string();
+    let lead = env.path("work/a/lead");
+    git(
+        env.dir.path(),
+        &["init", "-q", "--bare", "-b", "main", &origin],
+    );
+    git(
+        env.dir.path(),
+        &["clone", "-q", &origin, &lead.display().to_string()],
+    );
+    fs::write(lead.join("README"), "hello\n").unwrap();
+    git(&lead, &["add", "README"]);
+    git(&lead, &["commit", "-q", "-m", "first"]);
+    git(&lead, &["push", "-q", "origin", "main"]);
+    let root = env.create("oncall", "work/a");
+    // A copy whose shared checkout is a clean worktree of the root's clone.
+    let out = env.ok(&["create", &format!("{root}/dev")]);
+    let copy = stdout(&out).split_whitespace().next().unwrap().to_string();
+    let copy_folder = env.path(&format!("work/a/dev/{}", copy.rsplit('/').next().unwrap()));
+    let repo = copy_folder.join("repo").display().to_string();
+    git(&lead, &["worktree", "add", "-q", "--detach", &repo, "main"]);
+    env.ok(&["start", &copy]);
+    // A helper whose worktree holds untracked work.
+    env.ok(&["create", &format!("{root}/helper")]);
+    let helper = env.member(&root, "helper");
+    let busy = env.path(&format!("work/a/copies/{helper}"));
+    git(
+        &lead,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            &busy.display().to_string(),
+            "main",
+        ],
+    );
+    fs::write(busy.join("draft.txt"), "work").unwrap();
+
+    let text = stdout(&env.ok(&["reset", &root]));
+
+    assert!(!copy_folder.exists(), "{text}");
+    assert!(busy.join("draft.txt").is_file(), "{text}");
+    assert!(
+        text.contains(&format!(
+            "left {}: git worktree with uncommitted",
+            busy.display()
+        )),
+        "{text}"
+    );
+    let worktrees = git(&lead, &["worktree", "list"]);
+    assert!(!worktrees.contains(&repo), "{worktrees}");
+    assert!(lead.join(".git").is_dir());
+    assert_eq!(fs::read_to_string(lead.join("README")).unwrap(), "hello\n");
+}

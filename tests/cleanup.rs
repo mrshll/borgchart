@@ -93,13 +93,13 @@ fn deleted_copy(env: &Env, inst: &str, folder: &str) -> (String, std::path::Path
 fn cleanup_removes_empty_folders_of_deleted_members_and_copies_and_lists_the_rest() {
     let env = leaves_env();
     let inst = env.create("oncall", "work/a");
-    let [empty, with_file, with_worktree, kept] = std::array::from_fn(|_| helper(&env, &inst));
+    let [empty, with_file, with_repository, kept] = std::array::from_fn(|_| helper(&env, &inst));
     let leaf = |id: &str| env.path(&format!("work/a/copies/{id}"));
     fs::create_dir_all(leaf(&empty).join("nested/empty")).unwrap();
     fs::create_dir_all(leaf(&with_file).join("nested")).unwrap();
     fs::write(leaf(&with_file).join("nested/notes.txt"), "keep me").unwrap();
-    fs::write(leaf(&with_worktree).join(".git"), "gitdir: elsewhere\n").unwrap();
-    for id in [&empty, &with_file, &with_worktree] {
+    fs::create_dir(leaf(&with_repository).join(".git")).unwrap();
+    for id in [&empty, &with_file, &with_repository] {
         delete_member(&env, &inst, id);
     }
     // The case that prompted cleanup: a deleted copy whose lead made an
@@ -120,11 +120,11 @@ fn cleanup_removes_empty_folders_of_deleted_members_and_copies_and_lists_the_res
         out.contains(&format!("left {}: holds files", leaf(&with_file).display())),
         "{out}"
     );
-    assert!(leaf(&with_worktree).join(".git").is_file());
+    assert!(leaf(&with_repository).join(".git").is_dir());
     assert!(
         out.contains(&format!(
-            "left {}: holds a git worktree",
-            leaf(&with_worktree).display()
+            "left {}: holds a git repository",
+            leaf(&with_repository).display()
         )),
         "{out}"
     );
@@ -237,4 +237,131 @@ fn cleanup_keeps_leaves_another_instance_works_in_or_that_lead_outside() {
     for inst in [&b, &a, &c] {
         env.ok(&["stop", inst]);
     }
+}
+
+/// Run git in `dir`, away from the caller's repository and settings.
+fn git(dir: &std::path::Path, args: &[&str]) -> String {
+    let out = common::command("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
+        .args(args)
+        .env("HOME", dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// `work/a/lead` as the root's checkout: a clone of a local remote with
+/// one pushed commit.
+fn root_checkout(env: &Env) -> std::path::PathBuf {
+    let origin = env.path("origin.git");
+    git(
+        env.dir.path(),
+        &[
+            "init",
+            "-q",
+            "--bare",
+            "-b",
+            "main",
+            &origin.display().to_string(),
+        ],
+    );
+    let lead = env.path("work/a/lead");
+    git(
+        env.dir.path(),
+        &[
+            "clone",
+            "-q",
+            &origin.display().to_string(),
+            &lead.display().to_string(),
+        ],
+    );
+    fs::write(lead.join("README"), "hello\n").unwrap();
+    git(&lead, &["add", "README"]);
+    git(&lead, &["commit", "-q", "-m", "first"]);
+    git(&lead, &["push", "-q", "origin", "main"]);
+    lead
+}
+
+#[test]
+fn cleanup_removes_clean_worktrees_and_keeps_any_with_work() {
+    let env = leaves_env();
+    let lead = root_checkout(&env);
+    let inst = env.create("oncall", "work/a");
+    let [clean, untracked, modified, unpushed] = std::array::from_fn(|_| helper(&env, &inst));
+    let leaf = |id: &str| env.path(&format!("work/a/copies/{id}"));
+    for id in [&clean, &untracked, &modified, &unpushed] {
+        git(
+            &lead,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                &leaf(id).display().to_string(),
+                "main",
+            ],
+        );
+    }
+    fs::write(leaf(&untracked).join("new.txt"), "work").unwrap();
+    fs::write(leaf(&modified).join("README"), "changed\n").unwrap();
+    fs::write(leaf(&unpushed).join("README"), "committed\n").unwrap();
+    git(&leaf(&unpushed), &["commit", "-q", "-am", "local only"]);
+    for id in [&clean, &untracked, &modified, &unpushed] {
+        delete_member(&env, &inst, id);
+    }
+
+    let out = stdout(&env.ok(&["cleanup"]));
+
+    assert!(!leaf(&clean).exists(), "{out}");
+    assert!(!git(&lead, &["worktree", "list"]).contains(&clean), "{out}");
+    for (id, why) in [
+        (&untracked, "uncommitted or untracked changes"),
+        (&modified, "uncommitted or untracked changes"),
+        (&unpushed, "1 commit(s) on no remote"),
+    ] {
+        assert!(leaf(id).join(".git").is_file(), "{id} went: {out}");
+        assert!(
+            out.contains(&format!(
+                "left {}: git worktree with {why}",
+                leaf(id).display()
+            )),
+            "{out}"
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(leaf(&untracked).join("new.txt")).unwrap(),
+        "work"
+    );
+    // The root's own checkout is never touched.
+    assert!(lead.join(".git").is_dir());
+    assert_eq!(fs::read_to_string(lead.join("README")).unwrap(), "hello\n");
+    env.ok(&["stop", &inst]);
+}
+
+#[test]
+fn cleanup_fails_and_keeps_a_worktree_git_cannot_check() {
+    let env = leaves_env();
+    let inst = env.create("oncall", "work/a");
+    let broken = helper(&env, &inst);
+    let leaf = env.path(&format!("work/a/copies/{broken}"));
+    fs::write(leaf.join(".git"), "gitdir: nowhere\n").unwrap();
+    delete_member(&env, &inst, &broken);
+
+    let out = env.brg(&["cleanup"]);
+
+    assert!(!out.status.success(), "{}", both(&out));
+    assert!(
+        both(&out).contains("can't check git worktree"),
+        "{}",
+        both(&out)
+    );
+    assert!(leaf.join(".git").is_file());
+    env.ok(&["stop", &inst]);
 }
