@@ -96,19 +96,19 @@ A small top level for people. `brg --help` and `brg <command> --help` give the f
 | `brg inbox [--member ID \| --external NAME] [--full] [--json]` | List every unacked message, oldest first; --full includes bodies |
 | `brg msg read ID [--json]` | Read one message, including an acknowledged one |
 | `brg msg ack ID… [--external NAME] [--json]` | Acknowledge messages addressed to you |
-| `brg inbox wait [--external NAME] [--timeout SECONDS] [--full] [--json]` | Wait for your inbox: new messages at once, existing ones after 60 seconds if still unacked; timeout 60–86400, default 86400. The 60 s floor matches the loop guard on every nonzero exit, including timeout |
+| `brg inbox wait [--external NAME] [--timeout SECONDS] [--full] [--json]` | Wait for your inbox: new messages at once, existing ones after 60 seconds if still unacked; timeout 60–86400, default 86400. The 60 s floor matches the loop guard on every nonzero exit except fenced, including timeout |
 | `brg bus check [--json]` | Report gaps and unreadable files without writing |
 
 **Addressing.** `devteam-k3f9/lead-q8m3`. Inside a member, a bare member ID means its own instance; everywhere else the instance is named in full ([concepts](concepts.md#names-and-ids)). Only `create` takes a role name. Member commands and messages refuse a role name, listing its kept members or naming `brg create <instance>/<role>` when it has none. Bus commands take `--instance ID` outside a member. An outside caller, for example a person's script or a coordinating agent, adds `--external NAME` (refused inside a member) and is answered at `external:NAME`.
 
 ## How members talk
 
-- **`send`** writes a durable message, then may type its tagged envelope, including mid-turn. Members send to their parent or children; only roots also send to outside callers. Outside callers must pass `--external NAME`. Cross-instance member sends remain refused, including between nested copies.
+- **`send`** writes a durable message, then may type its tagged envelope, including mid-turn. Members send to their parent or children; only roots also send to outside callers. Outside callers must pass `--external NAME`. Across a copy's parent edge, members use full `instance/member` addresses; those messages are stored only in the sender's store and imported at the receiver's next `inbox` or wait, never typed. Other cross-instance sends, including between sibling copies, are refused.
 - **`interactive: true`** roles are inbox-only even with `--force`; false is the default. The setting is frozen per start and invalid on locked or nested team roles. Ordinary recipients explicitly ack when taking responsibility; typing does not ack. Treat a duplicate ID from typed delivery and inbox wait as the same work. Locked records require no ack and give no new permissions or inbox recovery.
 - **Stored success is success.** An ordinary send returns 0 once committed, even when input is suppressed or uncertain. Never republish it automatically. Locked postcommit typing failure returns nonzero with its ID; retries may duplicate history and input.
 - **Work is prose.** The lead writes a brief file, sends a message naming it and starts the helper. The helper reads `inbox --full`, acks once it takes responsibility, writes its report atomically and replies naming it with `reply_to` the brief message. The lead verifies the report, diff and checks itself, stops the helper, then checks status shows it stopped before reusing the checkout. One writer per checkout and one piece of work per helper are team rules. Progress and delegation live in pull request descriptions and comments.
 
-**Getting a member's attention.** Ack everything you have taken on, then arm one `inbox wait`: Claude with its Bash tool in background mode, Codex in the foreground with `--timeout 600`. New unacked messages return at once; messages already there wait 60 seconds and return only if still unacked. Errors wait at least 60 seconds too, except explicit help and signals. On exit 9 wait again; on exit 8 (`fenced`) stop waiting and tell the owner. A message left unacked wakes a member about once a minute.
+**Getting a member's attention.** Ack everything you have taken on, then arm one `inbox wait`: Claude with its Bash tool in background mode, Codex in the foreground with `--timeout 600`. New unacked messages return at once; messages already there wait 60 seconds and return only if still unacked. Errors wait at least 60 seconds too, except fenced, explicit help and signals. On exit 9 wait again; on exit 8 (`fenced`) stop waiting and tell the owner. A message left unacked wakes a member about once a minute.
 
 By each brief's existing deadline, check ordinary untyped records' ack/status. Start a stopped recipient; if idle and unacked, send one follow-up referencing the original ID with `--reply-to`; otherwise escalate. Do not busy-poll, republish stored successes or routinely force-delete pending work. See [the bus](bus.md#attention).
 
@@ -156,7 +156,7 @@ roles:
 
 ## Teams as members
 
-A role can be a whole team, so teams form a tree: a team's roles can be teams, and every member has a parent (except the root), children and a subtree. The member with no parent is the **root**; the lead at the top of a tree is its **root lead**. [`borgchart-engineering/`](../teams/borgchart-engineering/) is the real tree: its root lead runs dev teams, design panels, researchers and monitors for this repository's engineering. Nesting comes with #83 (D1); messages between a copy and its parent, which cross stores, come with the delivery change that follows it (D2).
+A role can be a whole team, so teams form a tree: a team's roles can be teams, and every member has a parent (except the root), children and a subtree. The member with no parent is the **root**; the lead at the top of a tree is its **root lead**. [`borgchart-engineering/`](../teams/borgchart-engineering/) is the real tree: its root lead runs dev teams, design panels, researchers and monitors for this repository's engineering.
 
 ```yaml
 # borgchart-engineering/team.yaml, shortened
@@ -176,7 +176,7 @@ roles:
 - **Stopping cascades.** `stop` of a copy or of the root's instance stops members deepest first, marking the copy `stopping` so nothing new is created or started inside it meanwhile; a later `stop` finishes an interrupted one. `start` brings back the copies that were running. `delete` of an instance with kept copies is refused, listing them.
 - **Cycles are refused,** a team containing itself directly or not, at `validate` and again at `create` and a full restart. There's no depth limit. Every team and sub-team has a message store; no bus opt-in is needed.
 - **Check seating before each launch.** The lead lists the launches caused by each `create` or `start` and runs `brg-seat route <vendor> <model>` for each. The [seating plugin](seating.md) answers `go` or `wait` from subscription quota. Unknown or failed usage is wait, never another vendor or model. The launch commands do not run this check automatically.
-- **Delivery between stores (D2, not built yet):** a message crosses a store only along a parent edge; the receiver's brg imports it from the sender's store at its next `inbox` or wait.
+- **Delivery between stores:** a message crosses a store only along a parent edge, addressed in full. The sender's brg writes only its own store; the receiver's brg imports it at its next `inbox` or wait, and the sender's `delete` counts it as pending until the receiver holds it.
 
 ## What you never see
 

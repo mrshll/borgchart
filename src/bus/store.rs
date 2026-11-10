@@ -109,6 +109,9 @@ fn hide_paths(text: &str, store_root: &Path, team_dir: Option<&Path>) -> String 
 impl Bus {
     /// Refuse deleted recipients and name the concrete create command for roles.
     fn check_route(&self, actor: &Actor, to: &str) -> Result<(), String> {
+        if to.contains('/') {
+            return super::delivery::check_route(self, actor, to);
+        }
         if self.record.members.get(to).is_some_and(|m| m.deleted) {
             return Err(format!(
                 "member `{to}` was deleted; it cannot receive messages"
@@ -199,7 +202,22 @@ fn fence_member(bus: &Bus, member: &str, incarnation: &str) -> Result<(), Failur
 
 /// Take the publication lock and refresh the routing under it. A store must
 /// already be recognised; mutations never create storage over damaged data.
-fn lock_for_mutation(bus: &Bus) -> Result<(Bus, fs::File), Failure> {
+pub(super) fn lock_for_mutation(bus: &Bus) -> Result<(Bus, fs::File), Failure> {
+    lock_for_write(bus, None)?.ok_or_else(|| Failure::new(Code::Error, "cannot lock messages/lock"))
+}
+
+/// Imports share the publication lock, but cannot outlive the read's deadline.
+pub(super) fn lock_for_import(
+    bus: &Bus,
+    deadline: Instant,
+) -> Result<Option<(Bus, fs::File)>, Failure> {
+    lock_for_write(bus, Some(deadline))
+}
+
+fn lock_for_write(
+    bus: &Bus,
+    deadline: Option<Instant>,
+) -> Result<Option<(Bus, fs::File)>, Failure> {
     let fresh = open(&bus.state)?;
     fsx::ensure_private_tree(&fresh.state.root, &fresh.paths.root).map_err(|e| {
         Failure::new(
@@ -213,9 +231,27 @@ fn lock_for_mutation(bus: &Bus) -> Result<(Bus, fs::File), Failure> {
     })?;
     let lock = state::open_lock(&fresh.paths.bus_lock())
         .map_err(|e| Failure::io("cannot open messages/lock", e))?;
-    lock.lock()
-        .map_err(|e| Failure::io("cannot lock messages/lock", e))?;
-    Ok((open(&bus.state)?, lock))
+    if let Some(deadline) = deadline {
+        loop {
+            match lock.try_lock() {
+                Ok(()) => break,
+                Err(fs::TryLockError::WouldBlock) => {
+                    let now = Instant::now();
+                    if now >= deadline {
+                        return Ok(None);
+                    }
+                    std::thread::sleep(Duration::from_millis(20).min(deadline - now));
+                }
+                Err(fs::TryLockError::Error(e)) => {
+                    return Err(Failure::io("cannot lock messages/lock", e));
+                }
+            }
+        }
+    } else {
+        lock.lock()
+            .map_err(|e| Failure::io("cannot lock messages/lock", e))?;
+    }
+    Ok(Some((open(&bus.state)?, lock)))
 }
 
 /// The authoritative caller check, made while holding `messages/lock`:
@@ -296,6 +332,49 @@ pub fn wait_snapshot(bus: &Bus, deadline: Instant) -> Result<WaitSnapshot, Failu
     Ok(WaitSnapshot::Ready(scan(&bus.paths)))
 }
 
+/// Edge reads must actually hold the sender's read-only shared lock. A missing
+/// lock cannot be taken as an empty store when the sender may have published.
+/// After the initial snapshot, read only records at or above the peer cursor.
+pub(super) fn peer_snapshot(
+    bus: &Bus,
+    deadline: Instant,
+    next: Option<u64>,
+) -> Result<WaitSnapshot, Failure> {
+    #[cfg(feature = "test-support")]
+    peer_read_log(&next.map_or_else(|| "full".to_string(), |seq| format!("next:{seq}")))?;
+    let _lock = match read_lock_until(&bus.paths, Some(deadline))? {
+        ReadLock::TimedOut => return Ok(WaitSnapshot::TimedOut),
+        ReadLock::NoStore => return Err(Failure::new(Code::Error, "messages/lock is missing")),
+        ReadLock::Held(lock) => lock,
+    };
+    let Some(mut next) = next else {
+        return Ok(WaitSnapshot::Ready(scan(&bus.paths)));
+    };
+    let mut snap = Snapshot::default();
+    while let Some(record) = next_record(&bus.paths, next)? {
+        snap.records.insert(next, record);
+        next += 1;
+        if Instant::now() >= deadline {
+            break;
+        }
+    }
+    Ok(WaitSnapshot::Ready(snap))
+}
+
+#[cfg(feature = "test-support")]
+fn peer_read_log(read: &str) -> Result<(), Failure> {
+    use std::io::Write;
+    if let Some(path) = std::env::var_os("BORGCHART_TEST_PEER_READ_LOG") {
+        let mut log = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map_err(|e| Failure::io("cannot open the test peer read log", e))?;
+        writeln!(log, "{read}").map_err(|e| Failure::io("cannot log the test peer read", e))?;
+    }
+    Ok(())
+}
+
 /// A consistent read of the whole store, under `messages/lock` shared.
 pub fn snapshot(bus: &Bus) -> Result<Snapshot, Failure> {
     snapshot_of(&bus.paths)
@@ -329,6 +408,8 @@ pub struct Snapshot {
     pub problems: Vec<String>,
     /// Stray temporary files left by a crash (harmless).
     pub strays: Vec<PathBuf>,
+    /// Edge failures from the latest import poll, independent of local health.
+    pub notes: Vec<String>,
 }
 
 impl Snapshot {
@@ -487,7 +568,14 @@ pub fn actor_label(actor: &Actor) -> String {
 }
 
 fn is_recipient(actor: &Actor, record: &Record) -> bool {
-    actor_label(actor) == record.to
+    let label = actor_label(actor);
+    label == record.to
+        || (record.origin.is_some()
+            && matches!(actor, Actor::Member { .. })
+            && record
+                .to
+                .rsplit_once('/')
+                .is_some_and(|(_, member)| member == label))
 }
 
 fn scan_acks(
@@ -607,7 +695,12 @@ pub(crate) fn not_a_member(meta: &state::Meta, m: &str) -> String {
 
 /// Every successful publish commits a new immutable message.
 pub fn publish(bus: &Bus, caller: &Caller, draft_bytes: &[u8]) -> Result<Record, Failure> {
-    let draft = parse_draft(draft_bytes)?;
+    let mut draft = parse_draft(draft_bytes)?;
+    if let Some(local) = draft.to.strip_prefix(&format!("{}/", bus.instance))
+        && !local.contains('/')
+    {
+        draft.to = local.to_string();
+    }
     let actor = actor_for(bus, caller)?;
     bus.check_route(&actor, &draft.to)
         .map_err(|e| Failure::new(Code::Invalid, e))?;
@@ -641,6 +734,22 @@ pub fn publish(bus: &Bus, caller: &Caller, draft_bytes: &[u8]) -> Result<Record,
         ));
     }
     let seq = snap.records.len() as u64 + 1;
+    let remote = draft.to.contains('/');
+    let reply_to = if remote {
+        draft
+            .reply_to
+            .iter()
+            .map(|id| {
+                let referenced = snap.get(id).expect("checked reference");
+                match &referenced.origin {
+                    Some(origin) => format!("{}/{}", origin.instance, origin.id),
+                    None => format!("{}/{id}", bus.instance),
+                }
+            })
+            .collect()
+    } else {
+        draft.reply_to
+    };
     let rec = Record {
         ack_required: !bus
             .meta
@@ -651,17 +760,26 @@ pub fn publish(bus: &Bus, caller: &Caller, draft_bytes: &[u8]) -> Result<Record,
         id: record_id(seq),
         seq,
         at: time::utc_now(),
-        from: actor_label(&actor),
+        from: if remote {
+            format!("{}/{}", bus.instance, actor_label(&actor))
+        } else {
+            actor_label(&actor)
+        },
         to: draft.to,
-        reply_to: draft.reply_to,
+        origin: None,
+        reply_to,
         body: draft.body,
     };
     let bytes =
         serde_json::to_vec_pretty(&rec).map_err(|e| Failure::new(Code::Error, e.to_string()))?;
-    if bytes.len() > MAX_RECORD_BYTES {
+    if bytes.len() > MAX_RECORD_BYTES
+        || (remote && super::delivery::import_size(&bus, &rec)? > MAX_RECORD_BYTES)
+    {
         return Err(Failure::new(
             Code::Invalid,
-            format!("the record would be over {MAX_RECORD_BYTES} bytes"),
+            format!(
+                "the record would be over {MAX_RECORD_BYTES} bytes including delivery; shorten the message"
+            ),
         ));
     }
     match fsx::write_new(&bus.paths.record(seq), &bytes)
@@ -686,6 +804,16 @@ pub struct Progress {
     pub total: usize,
 }
 
+/// Status includes undelivered edge messages, or a note if that count is unknown.
+pub struct Unread {
+    pub count: Option<usize>,
+    pub notes: Vec<String>,
+}
+
+pub fn unread(bus: &Bus, snap: &Snapshot) -> Result<BTreeMap<String, Unread>, Failure> {
+    super::delivery::unread(bus, snap)
+}
+
 pub fn progress(bus: &Bus, snap: &Snapshot) -> BTreeMap<String, Progress> {
     let mut out: BTreeMap<String, Progress> = bus
         .meta
@@ -694,10 +822,11 @@ pub fn progress(bus: &Bus, snap: &Snapshot) -> BTreeMap<String, Progress> {
         .map(|id| (id.clone(), Progress::default()))
         .collect();
     for r in snap.records.values() {
-        if bus.record.members.get(&r.to).is_some_and(|m| m.deleted) {
+        let to = local_recipient(bus, &r.to);
+        if bus.record.members.get(to).is_some_and(|m| m.deleted) {
             continue;
         }
-        let p = out.entry(r.to.clone()).or_default();
+        let p = out.entry(to.to_string()).or_default();
         p.total += 1;
         p.newest = r.seq;
         if r.ack_required && !snap.is_acked(r.seq) {
@@ -723,12 +852,44 @@ pub fn list(bus: &Bus, snap: &Snapshot, to: &Recipient) -> Inbox {
         records: snap
             .records
             .values()
-            .filter(|r| r.to == to && r.ack_required && !snap.is_acked(r.seq))
+            .filter(|r| {
+                local_recipient(bus, &r.to) == to && r.ack_required && !snap.is_acked(r.seq)
+            })
             .cloned()
             .collect(),
         unacked: p.unread,
         total: p.total,
     }
+}
+
+/// Cross-edge records keep full addresses on disk; local inbox selection
+/// continues to use this instance's member IDs.
+fn local_recipient<'a>(bus: &Bus, to: &'a str) -> &'a str {
+    to.strip_prefix(&format!("{}/", bus.instance)).unwrap_or(to)
+}
+
+/// Read the local inbox and pull missing edge messages, checking a member's
+/// current start again under the local append lock.
+pub fn import(
+    bus: &Bus,
+    caller: &Caller,
+    to: &Recipient,
+    deadline: Instant,
+) -> Result<Snapshot, Failure> {
+    if matches!(caller, Caller::Member { .. }) {
+        actor_for(bus, caller)?;
+    }
+    let mut snap = match wait_snapshot(bus, deadline)? {
+        WaitSnapshot::Ready(snap) => snap,
+        WaitSnapshot::TimedOut => {
+            return Err(Failure::new(
+                Code::Timeout,
+                "message store is busy; try the inbox again",
+            ));
+        }
+    };
+    super::delivery::Imports::default().import(bus, caller, to, &mut snap, deadline)?;
+    Ok(snap)
 }
 
 /// A stored record as shown to callers.
@@ -790,6 +951,7 @@ fn refresh_acks(
     snap: &mut Snapshot,
     next: &mut u64,
     deadline: Instant,
+    check: &mut impl FnMut() -> Result<(), Failure>,
 ) -> Result<(), Failure> {
     #[cfg(feature = "test-support")]
     if let Some(gate) = std::env::var_os("BORGCHART_TEST_WAIT_BEFORE_ACK_REFRESH") {
@@ -797,6 +959,7 @@ fn refresh_acks(
         fs::write(gate.join("ready"), b"")
             .map_err(|e| Failure::io("cannot signal the test ack refresh", e))?;
         while !gate.join("proceed").exists() {
+            check()?;
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return Err(Failure::new(Code::Timeout, "test ack refresh timed out"));
@@ -804,16 +967,7 @@ fn refresh_acks(
             std::thread::sleep(POLL.min(remaining));
         }
     }
-    let _lock = match read_lock_until(&bus.paths, Some(deadline))? {
-        ReadLock::TimedOut => {
-            return Err(Failure::new(
-                Code::Timeout,
-                "nothing new before the timeout",
-            ));
-        }
-        ReadLock::NoStore => None,
-        ReadLock::Held(lock) => Some(lock),
-    };
+    let _lock = wait_read_lock(bus, deadline, check)?;
     // A publisher and recipient may have committed both a message and its
     // ack since the last poll. Catch up under the same lock as the ack scan.
     while let Some(record) = next_record(&bus.paths, *next)? {
@@ -835,6 +989,28 @@ fn refresh_acks(
     snap.require_healthy()
 }
 
+/// A publisher must not keep a wait from noticing that its member ended.
+fn wait_read_lock(
+    bus: &Bus,
+    deadline: Instant,
+    check: &mut impl FnMut() -> Result<(), Failure>,
+) -> Result<Option<fs::File>, Failure> {
+    loop {
+        check()?;
+        match read_lock_until(&bus.paths, Some(deadline.min(Instant::now() + POLL)))? {
+            ReadLock::NoStore => return Ok(None),
+            ReadLock::Held(lock) => return Ok(Some(lock)),
+            ReadLock::TimedOut if Instant::now() >= deadline => {
+                return Err(Failure::new(
+                    Code::Timeout,
+                    "nothing new before the timeout",
+                ));
+            }
+            ReadLock::TimedOut => {}
+        }
+    }
+}
+
 /// One scan, then incremental reads. Already-present messages wait for the
 /// minimum; a new unacked message can return sooner. CLI errors back off too.
 pub fn wait(
@@ -847,23 +1023,54 @@ pub fn wait(
     let deadline = started + duration;
     let minimum = started + wait_minimum();
     let timeout = || Failure::new(Code::Timeout, "nothing new before the timeout");
-    let mut snap = match wait_snapshot(bus, deadline)? {
-        WaitSnapshot::Ready(snap) => snap,
-        WaitSnapshot::TimedOut => return Err(timeout()),
+    let mut next_liveness = Instant::now();
+    let mut check = || {
+        actor_for(bus, caller)?;
+        if let Caller::Member {
+            member,
+            incarnation,
+        } = caller
+            && Instant::now() >= next_liveness
+        {
+            let live = lifecycle::wait_liveness(&bus.state, member, incarnation);
+            next_liveness = Instant::now() + Duration::from_secs(1);
+            if live == lifecycle::Liveness::Gone {
+                return Err(Failure::new(
+                    Code::Fenced,
+                    format!("{}/{member}'s start ended; stop waiting", bus.instance),
+                ));
+            }
+        }
+        Ok(())
+    };
+    let mut snap = loop {
+        check()?;
+        match wait_snapshot(bus, deadline.min(Instant::now() + POLL))? {
+            WaitSnapshot::Ready(snap) => break snap,
+            WaitSnapshot::TimedOut if Instant::now() >= deadline => return Err(timeout()),
+            WaitSnapshot::TimedOut => {}
+        }
     };
     snap.require_healthy()?;
+    let mut imports = super::delivery::Imports::default();
+    imports.import(bus, caller, to, &mut snap, deadline)?;
     let mark = snap.records.last_key_value().map_or(0, |(&seq, _)| seq);
     let mut next = mark + 1;
     let recipient = to.to_string();
-    let mut old_pending = snap
-        .records
-        .values()
-        .any(|r| r.to == recipient && r.ack_required && !snap.is_acked(r.seq));
+    let mut old_pending = snap.records.values().any(|r| {
+        local_recipient(bus, &r.to) == recipient && r.ack_required && !snap.is_acked(r.seq)
+    });
+    #[cfg(feature = "test-support")]
+    if let Some(path) = std::env::var_os("BORGCHART_TEST_WAIT_READY") {
+        fs::write(path, b"").map_err(|e| Failure::io("cannot signal the test wait", e))?;
+    }
     loop {
-        actor_for(bus, caller)?;
+        check().map_err(|error| error.with_notes(snap.notes.clone()))?;
+        imports.import(bus, caller, to, &mut snap, deadline)?;
         let mut arrived = false;
         while let Some(record) = next_record(&bus.paths, next)? {
-            arrived |= record.to == recipient && record.ack_required;
+            check().map_err(|error| error.with_notes(snap.notes.clone()))?;
+            arrived |= local_recipient(bus, &record.to) == recipient && record.ack_required;
             snap.records.insert(next, record);
             next += 1;
             if Instant::now() >= deadline {
@@ -871,8 +1078,9 @@ pub fn wait(
             }
         }
         if arrived || (old_pending && Instant::now() >= minimum) {
-            refresh_acks(bus, &mut snap, &mut next, deadline)?;
-            actor_for(bus, caller)?;
+            refresh_acks(bus, &mut snap, &mut next, deadline, &mut check)
+                .map_err(|error| error.with_notes(snap.notes.clone()))?;
+            check().map_err(|error| error.with_notes(snap.notes.clone()))?;
             let inbox = list(bus, &snap, to);
             if (old_pending && Instant::now() >= minimum && !inbox.records.is_empty())
                 || inbox.records.iter().any(|r| r.seq > mark)
@@ -887,7 +1095,7 @@ pub fn wait(
         }
         let now = Instant::now();
         if now >= deadline {
-            return Err(timeout());
+            return Err(timeout().with_notes(snap.notes));
         }
         let next_check = if old_pending && minimum > now {
             deadline.min(minimum)
@@ -1071,6 +1279,7 @@ mod tests {
             at: "2026-11-05T19:00:00.000Z".into(),
             from: "a".into(),
             to: "lead".into(),
+            origin: None,
             reply_to: vec![],
             body: String::new(),
         };

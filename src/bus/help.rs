@@ -20,6 +20,8 @@ pub fn inbox() -> String {
 bodies. --member ID reads another member's inbox; --external NAME reads that
 outside recipient's inbox. Outside a member, pass --instance ID.
 
+Inbox imports messages from the stores across this member's parent edges.
+An unavailable peer adds a note naming the instance; local messages stay visible.
 Reading never acknowledges. Use `msg read ID` for an older message and
 `msg ack ID...` once you have taken messages on, then `inbox wait`.
 Progress and reports belong in your notes and GitHub.
@@ -36,18 +38,22 @@ pub fn wait() -> String {
     "Waits for your own inbox, or external:NAME with --external NAME.
 --timeout is 60-86400 seconds, default 86400. --full includes message bodies;
 --json prints the same inbox object as `brg inbox --json`.
-The 60 s floor matches the loop guard on every nonzero exit, timeout included.
+The 60 s floor applies to nonzero exits except fenced, timeout included.
 
 The first readable scan marks the newest message. A new unacked message to
 you returns at once. Messages already present return after 60 seconds only if
 still unacked; if all were acked meanwhile, waiting continues. A new message
 can return sooner. Ack everything you have taken on before waiting.
-Each later poll reads only the next message and checks your current session.
-Errors, including usage errors, wait at least 60 seconds too; explicit help
-and signals may end immediately.
+Each later poll reads the next local message, polls the stores across your
+parent edges (including copies created or first started during the wait), and
+checks your current session. Peer failures add notes without ending the wait;
+peer reads and the local import lock are bounded by its timeout.
+Errors, including usage errors, wait at least 60 seconds too; fenced, explicit
+help and signals may end immediately.
 
 Outcomes: ok (0) prints the inbox; timeout (9) means nothing new in time.
-fenced (8) means your session ended or was replaced: stop. Other outcomes are
+fenced (8) means your session ended or was replaced: stop. Member liveness is
+checked about once a second; an unknown result keeps waiting. Other outcomes are
 usage (2), not-configured (3), refused (4), invalid (5), corrupt (7),
 not-found (10) and error (1).
 "
@@ -57,8 +63,12 @@ not-found (10) and error (1).
 pub fn send() -> String {
     format!(
         "Outside callers must name --external NAME. Members use their launch identity
-and may send along parent/child routes in their own instance. Only roots may
-address external:NAME. --from asserts the sender's parent route, not authorship.
+and may send along parent/child routes in their own instance. Across a copy's
+parent edge, name the full instance/member address (a copy's roots find their
+parent's in BORGCHART_PARENT): that message is stored only in the sender's
+store and imported at the receiver's next inbox read, never typed; locked
+recipients and --from are refused there. Only the tree's root may address
+external:NAME. --from asserts the sender's parent route, not authorship.
 
 Ordinary messages commit before optional typing. Exit 0 means committed even
 when delivery is stored or uncertain; never automatically republish. Interactive
