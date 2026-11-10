@@ -669,3 +669,43 @@ fn depth_three_copies_wait_for_preparation_and_cascade_before_parent_deletion() 
     assert!(!dev_folder.exists());
     assert!(env.path("work/a/.git").is_dir());
 }
+
+#[test]
+fn worktrees_in_a_copy_never_follow_the_copys_rewritten_git_file() {
+    // Catches: brg running git through a copy's member-writable `.git`
+    // file when it adds or removes worktrees inside that copy.
+    let env = department();
+    env.write(
+        "teams/dev/team.yaml",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead, start: false, worktree: true}\n",
+    );
+    let dept = env.create("oncall", "work/a");
+    let (copy, folder) = create_copy(&env, &dept, "dev");
+    let hostile = env.path("hostile");
+    git(
+        env.dir.path(),
+        &["init", "-q", &hostile.display().to_string()],
+    );
+    let ran = env.path("ran");
+    git(
+        &hostile,
+        &[
+            "config",
+            "core.fsmonitor",
+            &format!("touch {}", ran.display()),
+        ],
+    );
+    fs::write(
+        folder.join(".git"),
+        format!("gitdir: {}\n", hostile.join(".git").display()),
+    )
+    .unwrap();
+    env.ok(&["start", &copy]);
+    env.ok(&["create", &format!("{copy}/helper")]);
+    let helper = env.member(&copy, "helper");
+    env.ok(&["stop", &dept]);
+    let _ = env.brg(&["delete", &format!("{copy}/{helper}")]);
+    let _ = env.brg(&["cleanup"]);
+    assert!(!ran.exists(), "brg ran the hostile repository's command");
+    env.ok(&["stop", &dept]);
+}

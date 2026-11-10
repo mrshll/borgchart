@@ -122,7 +122,8 @@ pub fn create(
         .deleted = true;
     lock.save_instance(&inst.state, &inst.record)?;
     if role.worktree {
-        crate::worktree::add(&inst.record.folder, &folder, branch)
+        let root = crate::worktree::root_folder(&inst.id)?;
+        crate::worktree::add(&root, &inst.record.folder, &folder, branch)
             .map_err(|e| format!("copy `{full_id}` needs its own worktree: {e}"))?;
     }
     registry::create_copy(&lock, &full_id, &role.dir, &folder, parent)?;

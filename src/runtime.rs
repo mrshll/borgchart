@@ -1574,7 +1574,8 @@ fn create_worktree(
     if dir.is_dir() {
         return Ok(None);
     }
-    crate::worktree::add(&inst.record.folder, &dir, branch)
+    let root = crate::worktree::root_folder(&inst.id)?;
+    crate::worktree::add(&root, &inst.record.folder, &dir, branch)
         .map_err(|e| format!("`{id}` needs its own worktree: {e}"))?;
     Ok(Some(dir))
 }
@@ -1601,7 +1602,9 @@ fn remove_unkept_worktrees(inst: &Instance, created: Vec<(String, PathBuf)>) {
         {
             continue;
         }
-        let _ = crate::worktree::remove(&inst.record.folder, &dir);
+        if let Ok(root) = crate::worktree::root_folder(&inst.id) {
+            let _ = crate::worktree::remove(&root, &dir);
+        }
     }
 }
 
@@ -2179,7 +2182,7 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
     }
     let mut lines = Vec::new();
     let worktrees = worktrees_to_remove(
-        &[(inst.record.folder.clone(), inst.at(&id))],
+        &[(crate::worktree::root_folder(&inst.id)?, inst.at(&id))],
         force,
         &mut lines,
     )?;
@@ -2217,8 +2220,8 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
     Ok(lines)
 }
 
-/// Before a delete, the worktrees brg added for `targets` (each the folder
-/// it was added from, and the member's or copy's address) that it can
+/// Before a delete, the worktrees brg added for `targets` (each its tree's
+/// top folder, and the member's or copy's address) that it can
 /// remove afterwards. One with work in it (or that git can't check) refuses
 /// the delete, or with `force` stays where it is, which `lines` says.
 fn worktrees_to_remove(
@@ -2377,13 +2380,14 @@ pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
         }
     }
     let mut lines = Vec::new();
+    let root = crate::worktree::root_folder(&inst.id)?;
     let mut targets: Vec<(PathBuf, String)> = inst
         .record
         .kept_members()
-        .map(|(id, _)| (inst.record.folder.clone(), inst.at(id)))
+        .map(|(id, _)| (root.clone(), inst.at(id)))
         .collect();
-    if let Some((parent, _)) = inst.id.rsplit_once('/') {
-        targets.push((address::instance(parent)?.record.folder, inst.id.clone()));
+    if inst.id.contains('/') {
+        targets.push((root, inst.id.clone()));
     }
     let worktrees = worktrees_to_remove(&targets, force, &mut lines)?;
     #[cfg(feature = "test-support")]

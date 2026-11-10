@@ -115,7 +115,7 @@ pub(crate) fn tree_folders(tree: &[Instance], registry: &registry::Registry) -> 
             .chain(copies.into_iter().map(|(id, _)| (id, "copy")))
         {
             worktree(
-                &inst.record.folder,
+                &root_of(registry, inst),
                 &inst.at(id),
                 &held,
                 &format!("{kind} {}", inst.at(id)),
@@ -144,11 +144,11 @@ fn instance(inst: &Instance, registry: &registry::Registry, held: &[PathBuf], ou
     }
     for (id, _) in &deleted_members {
         let what = format!("deleted member {}", inst.at(id));
-        worktree(&inst.record.folder, &inst.at(id), held, &what, out);
+        worktree(&root_of(registry, inst), &inst.at(id), held, &what, out);
     }
     for (id, _) in &deleted_copies {
         let what = format!("deleted copy {}", inst.at(id));
-        worktree(&inst.record.folder, &inst.at(id), held, &what, out);
+        worktree(&root_of(registry, inst), &inst.at(id), held, &what, out);
     }
     for (id, _) in &deleted_members {
         let what = format!("state of deleted member {}", inst.at(id));
@@ -168,6 +168,16 @@ fn instance(inst: &Instance, registry: &registry::Registry, held: &[PathBuf], ou
         let what = format!("state of deleted copy {}", inst.at(id));
         remove_state(&StateDir::new(&inst.at(id)).root, &what, out);
     }
+}
+
+/// The folder of the top instance of `inst`'s tree, as registered.
+fn root_of(registry: &registry::Registry, inst: &Instance) -> PathBuf {
+    let root = inst.id.split('/').next().unwrap_or_default();
+    registry
+        .instances
+        .get(root)
+        .map(|entry| entry.folder.clone())
+        .unwrap_or_else(|| inst.record.folder.clone())
 }
 
 /// The entries of `issued` that `pick` keeps. An ID that isn't one brg
@@ -192,9 +202,10 @@ fn issued<'a>(
     found
 }
 
-/// Remove the worktree brg added from `from` for the member or copy at `address`, if
+/// Remove the worktree brg added for the member or copy at `address`, in the
+/// tree whose top folder is `root`, if
 /// it is there, clean, and nobody works in it; otherwise say why it stays.
-fn worktree(from: &Path, address: &str, held: &[PathBuf], what: &str, out: &mut Outcome) {
+fn worktree(root: &Path, address: &str, held: &[PathBuf], what: &str, out: &mut Outcome) {
     let dir = crate::worktree::path(address);
     if dir.symlink_metadata().is_err() {
         return;
@@ -209,8 +220,8 @@ fn worktree(from: &Path, address: &str, held: &[PathBuf], what: &str, out: &mut 
             &format!("an instance, kept member or copy works there ({what})"),
         );
     }
-    match crate::worktree::unsaved(from, &dir) {
-        Ok(None) => match crate::worktree::remove(from, &dir) {
+    match crate::worktree::unsaved(root, &dir) {
+        Ok(None) => match crate::worktree::remove(root, &dir) {
             Ok(()) => out.removed(&dir, &format!("clean git worktree of {what}")),
             Err(e) => out.error(format!("cannot remove git worktree {}: {e}", dir.display())),
         },
