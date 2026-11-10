@@ -86,12 +86,18 @@ struct Section {
 
 /// The named instance, or every instance read from the registry now. With
 /// every instance, one whose status fails shows its error as its header.
-fn load(one: Option<&Instance>) -> Result<Vec<Section>, String> {
+/// `roles` keeps the rows of roles with no member that a terminal hides
+/// ([`runtime::hide_empty_roles`]).
+fn load(one: Option<&Instance>, roles: bool) -> Result<Vec<Section>, String> {
     let section = |inst: Instance, rows: Result<Vec<StatusRow>, String>| match rows {
         Ok(rows) => Section {
             header: runtime::header_as(&inst, true),
             inst,
-            rows: live_first(rows),
+            rows: live_first(if roles {
+                rows
+            } else {
+                runtime::hide_empty_roles(rows)
+            }),
         },
         Err(e) => Section {
             header: format!("{}: {e}", inst.id),
@@ -315,8 +321,9 @@ fn draw(
             Rect::new(inner.x, y, inner.width, 1),
         );
     }
-    let help =
-        Line::from("j/k move · enter attach (detach: tmux prefix, then d) · r refresh · q quit");
+    let help = Line::from(
+        "j/k move · enter attach (detach: tmux prefix, then d) · a roles · r refresh · q quit",
+    );
     let every: Vec<StatusRow> = sections.iter().flat_map(|s| s.rows.clone()).collect();
     let summary = summary_line(&every);
     frame.render_widget(
@@ -328,10 +335,12 @@ fn draw(
 /// `brg status -i`. With no instance, every instance, each under its
 /// header line; Enter attaches in the selected member's own instance.
 pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
-    let mut sections = load(one)?;
+    // The `a` key shows and hides roles with no member.
+    let mut roles = false;
+    let mut sections = load(one, roles)?;
     let headers = one.is_none();
-    // One instance: the same header line as `brg status` (the instance, its
-    // team folder and its working folder) as the title.
+    // One instance: the same header line as `brg status` on a terminal (the
+    // instance and its working folder) as the title.
     let title = match one {
         Some(inst) => runtime::header_as(inst, true),
         None => "instances".to_string(),
@@ -365,7 +374,7 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
         match polled {
             Err(e) => break Err(e),
             Ok(false) => {
-                if let Ok(s) = load(one) {
+                if let Ok(s) = load(one, roles) {
                     sections = s;
                 }
                 last = Instant::now();
@@ -391,8 +400,15 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
             KeyCode::Char('k') | KeyCode::Up => {
                 table_state.select(Some(selected.saturating_sub(1)))
             }
+            KeyCode::Char('a') => {
+                roles = !roles;
+                if let Ok(s) = load(one, roles) {
+                    sections = s;
+                }
+                message.clear();
+            }
             KeyCode::Char('r') => {
-                if let Ok(s) = load(one) {
+                if let Ok(s) = load(one, roles) {
                     sections = s;
                 }
                 message.clear();
@@ -436,7 +452,7 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
                     Ok(()) => format!("back from {name}"),
                     Err(e) => e,
                 };
-                if let Ok(s) = load(one) {
+                if let Ok(s) = load(one, roles) {
                     sections = s;
                 }
                 last = Instant::now();

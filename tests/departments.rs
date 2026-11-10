@@ -436,7 +436,17 @@ fn nested_status_screens_keep_healthy_members_visible_when_a_copy_becomes_unread
             });
             env.ok(&["start", &format!("{copy}/{lead}")]);
         } else {
-            let rows = env.rows(&dept);
+            // The screen leaves out member-less roles that are on demand or
+            // `start: false`.
+            let rows: Vec<_> = env
+                .rows(&dept)
+                .into_iter()
+                .filter(|r| {
+                    !(r["kind"] == "role"
+                        && (r["state"] == "on demand (none created)"
+                            || r["state"] == "not created (start: false)"))
+                })
+                .collect();
             let selected = rows
                 .iter()
                 .position(|r| r["instance"] == copy && r["member"] == lead)

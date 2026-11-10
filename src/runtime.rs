@@ -3347,6 +3347,8 @@ pub const NOT_STARTED: &str = "not started";
 pub const STOPPED: &str = "stopped";
 /// A role that allows copies but has no kept member.
 pub const ON_DEMAND: &str = "on demand (none created)";
+/// A `start: false` role with no member.
+pub const NOT_STARTING: &str = "not created (start: false)";
 
 /// What a start and `status` print for a member that has never run.
 pub fn not_started(start: bool) -> String {
@@ -3680,7 +3682,7 @@ fn status_with_counts(
                 state: if role.max > 1 {
                     ON_DEMAND.into()
                 } else {
-                    "not created (start: false)".into()
+                    NOT_STARTING.into()
                 },
                 rule: None,
                 activity: None,
@@ -3893,7 +3895,19 @@ pub fn vendor_mark(vendor: &str) -> Option<char> {
 }
 
 pub fn render_status(header: &str, rows: &[StatusRow]) -> String {
-    let short = std::io::stdout().is_terminal();
+    render_status_as(header, rows, std::io::stdout().is_terminal())
+}
+
+/// [`render_status`] for a person's terminal (`short`) or for a pipe. A
+/// terminal leaves out the roles [`hide_empty_roles`] hides.
+pub fn render_status_as(header: &str, rows: &[StatusRow], short: bool) -> String {
+    let shown;
+    let rows = if short {
+        shown = hide_empty_roles(rows.to_vec());
+        &shown
+    } else {
+        rows
+    };
     let nodes = status_nodes_as(rows, short);
     let plugins: Vec<(String, Vec<String>, tree::Look)> = rows
         .iter()
@@ -3935,16 +3949,46 @@ fn status_nodes_as(rows: &[StatusRow], short: bool) -> Vec<tree::Node> {
         .filter(|r| r.kind != "plugin" || r.parent.is_some())
         .map(|r| tree::Node {
             id: status_key(r),
-            parent: r.parent.as_ref().map(|p| {
-                if p.contains('/') {
-                    p.clone()
-                } else {
-                    format!("{}/{p}", r.instance)
-                }
-            }),
+            parent: parent_key(r),
             cols: status_cells(r, short),
             look: status_look(r),
         })
+        .collect()
+}
+
+/// The [`status_key`] of a row's parent.
+fn parent_key(r: &StatusRow) -> Option<String> {
+    r.parent.as_ref().map(|p| {
+        if p.contains('/') {
+            p.clone()
+        } else {
+            format!("{}/{p}", r.instance)
+        }
+    })
+}
+
+/// The rows a person's terminal shows: every row but a role with no member
+/// that is on demand or `start: false`, which says nothing at a glance. Such
+/// a role stays when a shown row hangs beneath it, so the tree keeps its
+/// shape. A `start: true` role with no member stays: it should have one.
+/// Piped text and `--json` keep every row.
+pub fn hide_empty_roles(rows: Vec<StatusRow>) -> Vec<StatusRow> {
+    let empty =
+        |r: &StatusRow| r.kind == "role" && (r.state == ON_DEMAND || r.state == NOT_STARTING);
+    let by_key: BTreeMap<String, &StatusRow> = rows.iter().map(|r| (status_key(r), r)).collect();
+    let mut keep = BTreeSet::new();
+    for row in rows.iter().filter(|r| !empty(r)) {
+        // The row and every row above it.
+        let mut at = Some(row);
+        while let Some(r) = at {
+            if !keep.insert(status_key(r)) {
+                break;
+            }
+            at = parent_key(r).and_then(|p| by_key.get(&p).copied());
+        }
+    }
+    rows.into_iter()
+        .filter(|r| keep.contains(&status_key(r)))
         .collect()
 }
 
@@ -4637,6 +4681,75 @@ mod tests {
         // A role with no member yet is drawn as a slot: italic.
         assert!(status_look(&rows[5]).italic);
         assert!(!status_look(&rows[0]).italic);
+    }
+
+    #[test]
+    fn a_terminal_hides_roles_that_say_nothing() {
+        let row =
+            |kind: &'static str, instance: &str, name: &str, state: &str, parent: Option<&str>| {
+                StatusRow {
+                    name: name.into(),
+                    kind,
+                    instance: instance.into(),
+                    team: "t".into(),
+                    member: None,
+                    start_id: None,
+                    role: None,
+                    vendor: None,
+                    model: None,
+                    parent: parent.map(Into::into),
+                    posture: None,
+                    state: state.into(),
+                    rule: None,
+                    activity: None,
+                    detail: None,
+                    vendor_version: None,
+                    trust_accepted: None,
+                    worktree: None,
+                    liveness: None,
+                    unread: None,
+                    running: None,
+                    expected_running: false,
+                    start: false,
+                }
+            };
+        let rows = vec![
+            row("member", "i", "lead", "idle", None),
+            row("role", "i", "helper", ON_DEMAND, Some("lead")),
+            row("role", "i", "scout", NOT_STARTING, Some("lead")),
+            // It should have a member and has none: worth a glance.
+            row(
+                "role",
+                "i",
+                "keeper",
+                "not created (start: true)",
+                Some("lead"),
+            ),
+            // A member-less role with a member beneath it keeps its row.
+            row("role", "i", "boss", NOT_STARTING, None),
+            row("member", "i", "orphan", "idle", Some("boss")),
+            row("plugin", "i", "watch", "alive", None),
+            row("copy", "i/dev", "dev", "1 running", Some("i/lead")),
+            row("member", "i/dev", "devlead", "working", Some("i/dev")),
+            row("role", "i/dev", "reviewer", NOT_STARTING, Some("devlead")),
+        ];
+        let names: Vec<String> = hide_empty_roles(rows.clone())
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "lead", "keeper", "boss", "orphan", "watch", "dev", "devlead"
+            ]
+        );
+        let terminal = render_status_as("i", &rows, true);
+        let piped = render_status_as("i", &rows, false);
+        for hidden in ["helper", "scout", "reviewer"] {
+            assert!(!terminal.contains(hidden), "{terminal}");
+            assert!(piped.contains(hidden), "{piped}");
+        }
+        assert!(terminal.contains("orphan") && terminal.contains("keeper"));
     }
 
     #[test]

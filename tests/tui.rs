@@ -36,9 +36,10 @@ fn status_i_attaches_detaches_and_quits() {
     };
     write(
         "team/team.yaml",
-        "bus: {}\nplugins:\n  watcher: {path: plugins/watcher, process: [./run.sh]}\nroles:\n  alpha: {prompt: alpha.md}\n  beta: {prompt: beta.md, vendor: codex, parent: alpha}\n",
+        "bus: {}\nplugins:\n  watcher: {path: plugins/watcher, process: [./run.sh]}\nroles:\n  alpha: {prompt: alpha.md}\n  beta: {prompt: beta.md, vendor: codex, parent: alpha}\n  scout: {prompt: scout.md, parent: alpha, start: false}\n",
     );
     write("team/alpha.md", "---\n---\nYou are alpha.\n");
+    write("team/scout.md", "---\n---\nYou are scout.\n");
     write(
         "team/beta.md",
         "---\nmodels: {codex: example-model low}\n---\nYou are beta.\n",
@@ -197,6 +198,32 @@ fn status_i_attaches_detaches_and_quits() {
     wait(
         "back from beta",
         || clients() == 0 && screen().contains("back from beta"),
+        dump,
+    );
+
+    // scout, a `start: false` role with no member, is hidden (beta above
+    // stays alpha's last row) until `a` shows it, and `a` hides it again,
+    // across a refresh.
+    assert!(!screen().contains("scout"), "{}", dump());
+    assert!(screen().contains("a roles"), "{}", dump());
+    tmux(&private, &outer, &["send-keys", "-t", "=o:", "a"]);
+    wait(
+        "scout shown",
+        || {
+            let s = screen();
+            s.lines().any(|l| l.contains("├─ ? beta"))
+                && s.lines()
+                    .any(|l| l.contains("└─   scout") && l.contains("not created (start: false)"))
+        },
+        dump,
+    );
+    // The 2 s refresh keeps it.
+    std::thread::sleep(Duration::from_millis(2500));
+    assert!(screen().contains("scout"), "{}", dump());
+    tmux(&private, &outer, &["send-keys", "-t", "=o:", "a"]);
+    wait(
+        "scout hidden again",
+        || !screen().contains("scout") && screen().contains("└─ ? beta"),
         dump,
     );
 
