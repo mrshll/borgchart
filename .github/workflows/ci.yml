@@ -33,6 +33,7 @@ jobs:
       - name: Toolchain
         run: rustup show active-toolchain
       - run: .githooks/checks fmt
+      # The shared checks build/lint/test every Cargo workspace member.
       - run: .githooks/checks clippy
       # The runner has no tmux servers of its own: after the tests, there
       # must be none, and no new file in tmux's default socket directory.

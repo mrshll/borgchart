@@ -59,21 +59,25 @@ nowhere="GIT_DIR=/nonexistent/caller-repo/.git
   BORGCHART_TMUX_SOCKET=brg-caller-team
   BORGCHART_TMUX_TMPDIR=/nonexistent/caller-team/tmux"
 # The fast tier: the tests that start no tmux and no other process.
-fast_tests="--lib --test validate"
+fast_tests="--test validate"
 for check in "$@"; do
   case $check in
-    fmt) run fmt cargo fmt --check ;;
-    clippy) run clippy cargo clippy --all-targets --features test-support --locked -- -D warnings ;;
+    fmt) run fmt cargo fmt --all --check ;;
+    clippy) run clippy cargo clippy --workspace --all-targets --all-features --locked -- -D warnings ;;
     # Built first, so the build may run what it likes; then the tests run
     # with stand-ins that record any tmux, ps, sh, sleep, claude or codex.
     fast)
+      run fast cargo test --workspace --all-features --lib --locked --no-run
+      run fast .githooks/no-processes env $nowhere cargo test --workspace --all-features --lib --locked
       # shellcheck disable=SC2086
-      run fast cargo test --features test-support --locked $fast_tests --no-run
+      run fast cargo test -p borgchart --features test-support --locked $fast_tests --no-run
       # shellcheck disable=SC2086
       run fast .githooks/no-processes env $nowhere \
-        cargo test --features test-support --locked $fast_tests
+        cargo test -p borgchart --features test-support --locked $fast_tests
       ;;
     test)
+      # Integration tests exercise sibling plugin binaries through real shims.
+      run build cargo build --workspace --bins --all-features --locked
       test_root=$(mktemp -d /tmp/brgrun.XXXXXX)
       trap 'sweep >&2' EXIT
       trap 'sweep >&2; exit 130' INT
@@ -82,7 +86,7 @@ for check in "$@"; do
       run test env \
         BRG_TEST_TMPDIR_ROOT="$test_root" \
         $nowhere \
-        cargo test --features test-support --locked
+        cargo test --workspace --all-features --locked
       left=$(sweep)
       test_root=
       if [ -n "$left" ]; then

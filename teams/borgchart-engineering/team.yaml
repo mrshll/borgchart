@@ -14,18 +14,17 @@ includes: catalog:shared/includes
 
 plugins:
   seat:
-    path: catalog:shared/plugins/seat
     actions:
-      route: seat route <vendor> <model>
+      route: brg-seat route <vendor> <model>
 
 roles:
   lead:
+    plugins: {seat: [route]}
     prompt: lead.md
     interactive: true
     vendor: claude
     start: true
     cwd: lead               # a checkout of the repository, made before `brg create`
-    plugins: {seat: [route]}
   dev:
     team: dev-team
     parent: lead

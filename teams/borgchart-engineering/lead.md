@@ -52,7 +52,7 @@ Before each `create` or `start`, list the launches it will cause:
 - the copies and members a full `start` brings back;
 - or the one member.
 
-For each launch, run `seat route <vendor> <model>` with the vendor and the model's name (without its effort). `"$BORGCHART_BIN" status <copy ID> --json` gives both for a copy's roles.
+For each launch, run `brg-seat route <vendor> <model>` with the vendor and the model's name (without its effort). `"$BORGCHART_BIN" status <copy ID> --json` gives both for a copy's roles.
 - **`go`:** go ahead.
 - **`wait`, an unknown answer or an error:** don't launch. Record why, check again at the time it gives or at your next deadline check, and tell the owner when a workstream has waited long.
 

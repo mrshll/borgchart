@@ -7,7 +7,6 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -61,26 +60,23 @@ fn readme_commands(prefix: &str) -> Vec<String> {
         .collect()
 }
 
-/// A test-only stand-in for the bundled seating plugin: it records what it was
-/// asked and always answers `go`.
-const FAKE_SEAT: &str =
-    "#!/bin/sh\necho \"$*\" >> \"$(dirname \"$0\")/asked\"\necho 'go: a fictional usage source'\n";
-
 /// As the README sets it up: a pinned copy of the complete teams catalog
-/// in `dir/pinned/teams`, where brg resolves names; the seating
-/// plugin replaced by a fake only in that test copy; and the README configuration
+/// in `dir/pinned/teams`, where brg resolves names; and the README configuration
 /// in `dir/config.yaml`. The instance's folder is
 /// `dir/work`, with its shared checkout in `dir/work/repo`.
 fn setup(dir: &Path, text: &str) -> PathBuf {
     fs::create_dir_all(dir.join("work/repo")).unwrap();
     copy_dir(&catalog(), &dir.join("pinned/teams"));
-    let seat = dir.join("pinned/teams/shared/plugins/seat");
-    fs::create_dir_all(&seat).unwrap();
-    fs::write(seat.join("seat"), FAKE_SEAT).unwrap();
-    fs::set_permissions(seat.join("seat"), fs::Permissions::from_mode(0o755)).unwrap();
     let file = dir.join("pinned/config.yaml");
     fs::write(&file, text).unwrap();
     fs::create_dir_all(dir.join("home")).unwrap();
+    fs::create_dir_all(dir.join("pinned/bin")).unwrap();
+    let plugin = Path::new(env!("CARGO_BIN_EXE_brg")).with_file_name("brg-seat");
+    assert!(
+        plugin.is_file(),
+        "build workspace binaries before department tests"
+    );
+    std::os::unix::fs::symlink(&plugin, dir.join("pinned/bin/brg-seat")).unwrap();
     file
 }
 
@@ -106,7 +102,10 @@ fn validate(dir: &Path, config: &Path, team: &str) -> Output {
     Command::new(env!("CARGO_BIN_EXE_brg"))
         .current_dir(dir.join("pinned"))
         .env_clear()
-        .env("PATH", "/usr/bin:/bin")
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", dir.join("pinned/bin").display()),
+        )
         .env("HOME", dir.join("home"))
         .env("BORGCHART_STATE_HOME", dir.join("state"))
         .env("BORGCHART_CONFIG", config)
@@ -116,8 +115,7 @@ fn validate(dir: &Path, config: &Path, team: &str) -> Output {
 }
 
 /// What a reader copies from the README works as written: both teams
-/// validate by the README's paths, with the seating plugin in
-/// its bundled folder, with no errors and no warnings.
+/// validate by the README's catalog paths, with no errors and no warnings.
 #[test]
 fn the_readme_configuration_validates_cleanly() {
     let blocks = readme_configs();
@@ -149,7 +147,7 @@ fn the_readme_configuration_validates_cleanly() {
     }
 }
 /// The department validates from its folder, with the README's
-/// configuration and bundled seating plugin, cleanly.
+/// configuration, cleanly.
 #[test]
 fn the_department_validates_cleanly() {
     let dir = tempfile::tempdir().unwrap();
@@ -439,7 +437,8 @@ mod round {
                 .env(
                     "PATH",
                     self.tmux.path_with(&format!(
-                        "{}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+                        "{}:{}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+                        self.path("pinned/bin").display(),
                         bin.display()
                     )),
                 )
@@ -942,7 +941,7 @@ mod round {
         assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), baseline);
 
         // Seating: each designer's vendor and model, from the copy's status,
-        // asked of the lead's `seat` plugin.
+        // checked through the granted seating plugin and the isolated fake vendor protocols.
         let (listed, code) = run(
             "panel-roles",
             &fill(documented(
@@ -952,7 +951,6 @@ mod round {
         );
         assert_eq!(code, 0, "{listed}");
         let listed: Vec<serde_json::Value> = serde_json::from_str(&listed).unwrap();
-        let mut asked = Vec::new();
         for designer in ["designer-claude", "designer-codex"] {
             let row = listed
                 .iter()
@@ -960,17 +958,20 @@ mod round {
                 .unwrap_or_else(|| panic!("{listed:?}"));
             let vendor = row["vendor"].as_str().unwrap();
             let model = row["model"].as_str().unwrap().split(' ').next().unwrap();
-            let route = documented(&rule, "seat route <vendor> <model>")
+            let route = documented(&rule, "brg-seat route <vendor> <model>")
                 .replace("<vendor>", vendor)
                 .replace("<model>", model);
             let (answer, code) = run(&format!("seat-{designer}"), &route);
-            assert_eq!((code, answer.trim()), (0, "go: a fictional usage source"));
-            asked.push(format!("route {vendor} {model}"));
+            assert_eq!((code, answer.trim()), (0, "go: included quota available"));
+            let events =
+                fs::read_to_string(team.path(&format!("home/fake-usage/{vendor}.jsonl"))).unwrap();
+            assert!(
+                events
+                    .lines()
+                    .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                    .any(|event| event["event"] == "request")
+            );
         }
-        assert_eq!(
-            fs::read_to_string(team.path("pinned/teams/shared/plugins/seat/asked")).unwrap(),
-            asked.join("\n") + "\n"
-        );
 
         let (started, code) = run(
             "panel-start",
@@ -1187,7 +1188,7 @@ mod round {
         };
         let rule = member_body(&department().join("lead.md"));
         // A documented command, run inside the department lead.
-        let run = |name: &str, script: &str| {
+        let run_in = |instance: &str, member: &str, name: &str, script: &str| {
             let out = team.path(&format!("s/{name}.out"));
             let path = team.path(&format!("s/{name}.sh"));
             fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -1199,8 +1200,8 @@ mod round {
                 ),
             )
             .unwrap();
-            idle(&dept, &dept_lead);
-            team.run_tool(&dept_lead, &path);
+            idle(instance, member);
+            team.run_tool(member, &path);
             team.wait_for(&format!("{name} output"), || {
                 fs::read_to_string(&out).is_ok_and(|t| t.contains("exit "))
             });
@@ -1208,6 +1209,8 @@ mod round {
             let (text, code) = text.rsplit_once("exit ").unwrap();
             (text.to_string(), code.trim().parse::<i32>().unwrap())
         };
+
+        let run = |name: &str, script: &str| run_in(&dept, &dept_lead, name, script);
 
         let (up, code) = run(
             "dev-create",
@@ -1252,7 +1255,7 @@ mod round {
             .into_iter()
             .find(|r| r["role"] == "lead")
             .expect("the copy's lead role");
-        let route = documented(&rule, "seat route <vendor> <model>")
+        let route = documented(&rule, "brg-seat route <vendor> <model>")
             .replace("<vendor>", lead_row["vendor"].as_str().unwrap())
             .replace(
                 "<model>",
@@ -1264,7 +1267,7 @@ mod round {
                     .unwrap(),
             );
         let (answer, code) = run("dev-seat", &route);
-        assert_eq!((code, answer.trim()), (0, "go: a fictional usage source"));
+        assert_eq!((code, answer.trim()), (0, "go: included quota available"));
 
         let (started, code) = run(
             "dev-start",
@@ -1272,6 +1275,20 @@ mod round {
         );
         assert_eq!(code, 0, "{started}");
         let dev_lead = team.member_in(&copy_id, "lead");
+        let child_meta = team.read(&format!("state/{copy_id}/start.json")).unwrap();
+        let parent_shim = team.path(&format!("state/{dept}/members/{dept_lead}/bin"));
+        assert!(
+            std::env::split_paths(child_meta["base_env"]["PATH"].as_str().unwrap())
+                .all(|entry| entry != parent_shim),
+            "child captured its parent's identity-fenced plugin shims"
+        );
+        let dev_rule = member_body(&dev_team().join("orchestrator.md"));
+        let nested_route = documented(&dev_rule, "brg-seat route <vendor> <model>")
+            .replace("<vendor>", "codex")
+            .replace("<model>", "astra");
+        let (answer, code) = run_in(&copy_id, &dev_lead, "nested-dev-seat", &nested_route);
+        assert_eq!((code, answer.trim()), (0, "go: included quota available"));
+
         let log = team.path(&format!("home/fake-agent/{dev_lead}.jsonl"));
         let start = first_start(&team, "the dev lead", &log);
         assert_eq!(

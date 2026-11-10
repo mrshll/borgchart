@@ -72,6 +72,17 @@ pub fn base_env() -> BTreeMap<String, String> {
             env.insert((*name).to_string(), value);
         }
     }
+    // A child instance must not capture its creator's member-only shims:
+    // those commands are fenced to that member, not to the child's members.
+    if let (Some(path), Ok(instance), Ok(member)) = (
+        env.get_mut("PATH"),
+        std::env::var(crate::address::ENV_INSTANCE),
+        std::env::var(crate::bus::context::ENV_MEMBER),
+    ) && instance.split('/').all(crate::names::is_valid_member_id)
+        && crate::names::is_valid_member_id(&member)
+    {
+        *path = without_member_shim(path, &StateDir::new(&instance).member_bin(&member));
+    }
     // Members run in other folders, so the configuration they inherit is
     // named by its absolute path.
     if let Some(value) = env.get_mut(crate::config::ENV_CONFIG)
@@ -81,6 +92,13 @@ pub fn base_env() -> BTreeMap<String, String> {
     }
     env.entry("LANG".into()).or_insert_with(|| "C.UTF-8".into());
     env
+}
+
+fn without_member_shim(path: &str, shim: &Path) -> String {
+    std::env::join_paths(std::env::split_paths(path).filter(|entry| entry != shim))
+        .expect("entries split from PATH can be joined")
+        .into_string()
+        .expect("entries split from a UTF-8 PATH stay UTF-8")
 }
 
 fn brg_path() -> PathBuf {
@@ -4328,6 +4346,24 @@ mod tests {
             member_cwd(&dir.path().join("gone"), None, "lead-2a3b")
                 .unwrap_err()
                 .contains("is gone")
+        );
+    }
+
+    #[test]
+    fn captured_path_removes_only_the_callers_member_shim() {
+        let shim = Path::new("/state/example-a1b2/members/lead-c3d4/bin");
+        let path = format!(
+            "{}:/pinned/bin:{}:/other/member/bin:/usr/bin",
+            shim.display(),
+            shim.display()
+        );
+        assert_eq!(
+            without_member_shim(&path, shim),
+            "/pinned/bin:/other/member/bin:/usr/bin"
+        );
+        assert_eq!(
+            without_member_shim("/pinned/bin:/usr/bin", shim),
+            "/pinned/bin:/usr/bin"
         );
     }
 

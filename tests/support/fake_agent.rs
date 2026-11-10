@@ -426,6 +426,8 @@ fn codex_trusted_by_config(args: &[String]) -> bool {
     })
 }
 
+mod fake_usage;
+
 fn main() {
     let argv: Vec<String> = std::env::args().collect();
     let name = PathBuf::from(&argv[0])
@@ -438,6 +440,9 @@ fn main() {
         Vendor::Claude
     };
     let args = &argv[1..];
+    if fake_usage::run(args) {
+        return;
+    }
     if args.iter().any(|a| a == "--version") {
         println!("fake-agent 0.0.0 ({name})");
         return;
