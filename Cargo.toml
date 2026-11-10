@@ -42,8 +42,9 @@ test-support = []
 
 [dependencies]
 # `unstable-ext` and `unstable-dynamic` are outside semver; see src/complete.rs.
+# clap_complete is pinned exactly so unlocked installs can't pick up an API change.
 clap = { version = "4.6", features = ["derive", "unstable-ext"] }
-clap_complete = { version = "4.6.11", features = ["unstable-dynamic"] }
+clap_complete = { version = "=4.6.11", features = ["unstable-dynamic"] }
 crossterm = "0.29"
 ratatui = "0.30"
 regex = "1"

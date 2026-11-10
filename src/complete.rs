@@ -11,7 +11,11 @@
 //! `unstable-dynamic` feature (and clap's `unstable-ext`): neither is
 //! covered by semver, so check completion by hand after upgrading either.
 
-use clap_complete::engine::{ArgValueCandidates, CompletionCandidate};
+use std::ffi::OsStr;
+
+use clap_complete::engine::{
+    ArgValueCandidates, ArgValueCompleter, CompletionCandidate, PathCompleter, ValueCompleter,
+};
 
 use crate::registry;
 use crate::state::StateDir;
@@ -43,15 +47,21 @@ pub fn members() -> ArgValueCandidates {
     ArgValueCandidates::new(member_candidates)
 }
 
-/// The teams in the configured search paths.
-pub fn teams() -> ArgValueCandidates {
-    ArgValueCandidates::new(|| {
+/// The teams in the configured search paths, or folders once the word
+/// starts like a path (`/`, `.` or `~`, which no team name does).
+pub fn teams() -> ArgValueCompleter {
+    ArgValueCompleter::new(|current: &OsStr| {
+        let typed = current.to_string_lossy();
+        if typed.starts_with(['/', '.', '~']) {
+            return PathCompleter::dir().complete(current);
+        }
         let mut report = crate::diag::Report::default();
         let search = crate::config::load(&mut report)
             .map(|c| c.teams)
             .unwrap_or_default();
         crate::team::list(&search)
             .into_iter()
+            .filter(|(name, _)| name.starts_with(&*typed))
             .map(|(name, _)| CompletionCandidate::new(name))
             .collect()
     })
