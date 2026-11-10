@@ -4,7 +4,7 @@ Teams, instances, roles, copies up to `max` and the four verbs (`create`, `start
 
 ## The files
 
-A real team lives in [`dev-team/`](../teams/dev-team/): the team this repository is developed with, plus [`dev-design-team/`](../teams/dev-design-team/), the design panel its lead seats. They are siblings of [`borgchart-engineering/`](../teams/borgchart-engineering/), whose definition declares roles referring to them by name (see "Teams as members"). The sketch below is a smaller version of it:
+A real team lives in [`dev-team/`](../teams/dev-team/): the team this repository is developed with, plus [`dev-design-team/`](../teams/dev-design-team/), a design panel. They are siblings of [`borgchart-engineering/`](../teams/borgchart-engineering/), whose root lead seats both, through roles referring to them by name (see "Teams as members"). The sketch below is a smaller version of it:
 
 ```
 devteam/
@@ -175,7 +175,7 @@ roles:
 - **Authority is the whole subtree.** A member, at its latest running start, may create, start, stop or delete anything below it along recorded parent edges, at any depth: its child members, the copies under it, and their members and copies. Never itself, its ancestors, its siblings or their subtrees, so a copy's top member can't stop or delete its own copy. A person may act on anything.
 - **Stopping cascades.** `stop` of a copy or of the root's instance stops members deepest first, marking the copy `stopping` so nothing new is created or started inside it meanwhile; a later `stop` finishes an interrupted one. `start` brings back the copies that were running. `delete` of an instance with kept copies is refused, listing them.
 - **Cycles are refused,** a team containing itself directly or not, at `validate` and again at `create` and a full restart. There's no depth limit. Every team and sub-team has a message store; no bus opt-in is needed.
-- **Check seating before each launch.** The lead lists the launches caused by each `create` or `start` and runs `brg-seat route <vendor> <model>` for each. The [seating plugin](seating.md) answers `go` or `wait` from subscription quota. Unknown or failed usage is wait, never another vendor or model. The launch commands do not run this check automatically.
+- **Check seating before each launch.** The lead lists the launches caused by each `create` or `start` and runs `brg-seat route <vendor> <model>` for each. The [seating plugin](../plugins/seat/README.md) answers `go` or `wait` from subscription quota. Unknown or failed usage is wait, never another vendor or model. The launch commands do not run this check automatically.
 - **Delivery between stores:** a message crosses a store only along a parent edge, addressed in full. The sender's brg writes only its own store; the receiver's brg imports it at its next `inbox` or wait, and the sender's `delete` counts it as pending until the receiver holds it.
 
 ## What you never see

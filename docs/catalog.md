@@ -6,7 +6,7 @@ The three aren't self-contained, so they travel together:
 
 - **Child teams resolve by name.** `team: dev-team` is looked up in the `teams:` search paths of brg's configuration.
 - **Shared includes sit beside the teams.** `catalog:shared/...` points at `teams/shared/`, which has no `team.yaml` and is not a team.
-- **The [seating plugin](seating.md), `brg-seat`, is found on `PATH`,** as it was when the instance was created or fully started.
+- **The [seating plugin](../plugins/seat/README.md), `brg-seat`, is found on `PATH`,** as it was when the instance was created or fully started.
 
 ## Setup
 
