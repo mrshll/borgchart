@@ -17,6 +17,8 @@ cargo install --git https://github.com/mrshll/borgchart --locked brg-seat
 
 This needs Rust 1.89 or newer and tmux 3.2 or newer, plus the `claude` and/or `codex` CLIs. Nothing is published to crates.io yet.
 
+From a clean checkout, `make install` installs the binaries and team catalog at the current revision; see [pinned installation](CONTRIBUTING.md#pinned-installation).
+
 For tab completion of commands, instances and members, see [completion](docs/cli.md) (`BRG_COMPLETE=fish brg | source`).
 
 

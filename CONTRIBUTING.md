@@ -81,17 +81,20 @@ Then create an instance from a checkout of the repository: `cd <checkout>; brg c
 
 ### Pinned installation
 
-A team that works on this repository shouldn't run from the checkout it edits: a half-finished change to brg or to a role file would take effect at the next start. Run it from a copy fixed at one revision instead. From a clean checkout at that revision:
+A team that works on this repository shouldn't run from the checkout it edits: a half-finished change to brg or to a role file would take effect at the next start. Install a copy fixed at one revision from a clean checkout:
 
 ```sh
-revision=$(git rev-parse HEAD)
-prefix="$HOME/.local/lib/borgchart/brg-$revision"
-tools/cargo-slot cargo build --release --workspace --bins --locked
-mkdir -p "$prefix/bin"
-cp target/release/brg target/release/borgchart target/release/brg-seat "$prefix/bin/"
-cp -R teams "$prefix/teams"
-export PATH="$prefix/bin:$PATH"
-export BORGCHART_CONFIG="$prefix/config.yaml"
+make install
 ```
 
-Put the `config.yaml` above in `$prefix`. Use a new prefix for each revision, and keep its `bin` first on `PATH` when creating or fully starting an instance.
+This builds the workspace release binaries with `--locked`, installs `bin/`, `teams/` and `REVISION` in `$HOME/.local/share/brg-<full-revision>/`, and atomically points `$HOME/.local/share/brg-current` at it. Older revisions stay in place; repeating an install reuses the revision folder. Linux builds use `tools/cargo-slot` when executable; macOS builds use cargo directly.
+
+`PREFIX` changes the parent of the revision folders (default `$HOME/.local/share`); `BINDIR` changes where the `brg`, `borgchart` and `brg-seat` symlinks go (default `$HOME/.local/bin`). For example, `make install PREFIX="$HOME/apps" BINDIR="$HOME/bin"`. Existing symlinks are replaced; regular files are refused. Keep `BINDIR` on `PATH`. Dirty checkouts are refused unless you set `ALLOW_DIRTY=1`, which creates a fresh `brg-<full-revision>-dirty-<suffix>` folder on every run.
+
+The installer prints the `teams:` line to add to your brg configuration and never edits that file. With the default prefix, use:
+
+```yaml
+teams: [~/.local/share/brg-current/teams]
+```
+
+Running instances keep their recorded team folders, but catalog changes can block later member starts until a full restart, PATH plugins can change on their next call, and binaries can change at a member start or, on macOS with a symlinked brg path, on the next brg call. To move an existing instance to the new team files, fully stop it, then run `brg start <instance> --team "$HOME/.local/share/brg-current/teams/<team>"`; on macOS, start through the resolved revision's `bin/brg` path if you need its later calls to stay pinned.
