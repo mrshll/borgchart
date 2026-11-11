@@ -33,6 +33,9 @@ pub struct Look {
     /// The state mark drawn between the tree furniture and the name.
     pub mark: Option<char>,
     pub tone: Tone,
+    /// The name in italics: a role with no member yet, so it reads as a slot
+    /// rather than an agent.
+    pub italic: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -70,7 +73,15 @@ fn fg((r, g, b): Rgb) -> String {
 }
 
 const BOLD: &str = "\x1b[1m";
+const ITALIC: &str = "\x1b[3m";
 const RESET: &str = "\x1b[0m";
+
+/// `text` in a palette colour, bold or not, for lines drawn outside the
+/// tree (the `-w` summary and footer). Callers decide whether to paint.
+pub fn ink_text(text: &str, rgb: Rgb, bold: bool) -> String {
+    let style = format!("{}{}", if bold { BOLD } else { "" }, fg(rgb));
+    paint(text, &style)
+}
 
 /// Whether to paint: a terminal, and no `NO_COLOR` (no-color.org).
 pub fn colour_wanted(terminal: bool) -> bool {
@@ -216,7 +227,12 @@ fn painted(prefix: &str, row: &[String], look: Look, state: usize) -> String {
     if let Some(first) = cells.next() {
         let rest = &first[prefix.len()..];
         line.push_str(&paint(prefix, &faded));
-        line.push_str(&paint(rest, &tone));
+        let name = if look.italic {
+            format!("{tone}{ITALIC}")
+        } else {
+            tone.clone()
+        };
+        line.push_str(&paint(rest, &name));
     }
     for (i, cell) in cells.enumerate() {
         let i = i + 1;
@@ -433,7 +449,11 @@ mod tests {
 
     #[test]
     fn painting_only_adds_escapes_and_marks() {
-        let look = |mark, tone| Look { mark, tone };
+        let look = |mark, tone| Look {
+            mark,
+            tone,
+            italic: false,
+        };
         let mut nodes = vec![
             node("lead", None, &["claude opus high", "working", ""]),
             node(
@@ -445,7 +465,10 @@ mod tests {
         ];
         nodes[0].look = look(Some('●'), Tone::Busy(Some(palette::CLAUDE)));
         nodes[1].look = look(Some('?'), Tone::Alert);
-        nodes[2].look = look(None, Tone::Faded);
+        nodes[2].look = Look {
+            italic: true,
+            ..look(None, Tone::Faded)
+        };
         let plain = render("team  team /t · folder /w", &nodes, &[], false);
         // NO_COLOR turns painting off.
         if std::env::var_os("NO_COLOR").is_some() {
@@ -464,5 +487,7 @@ mod tests {
         // end to end.
         let absent = painted.lines().last().unwrap();
         assert!(absent.contains(&format!("{} not created", fg(palette::FADED))));
+        // A role with no member yet: its name in italics.
+        assert!(absent.contains(&format!("{}{ITALIC}  absent", fg(palette::FADED))));
     }
 }

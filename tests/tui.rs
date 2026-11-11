@@ -36,9 +36,10 @@ fn status_i_attaches_detaches_and_quits() {
     };
     write(
         "team/team.yaml",
-        "bus: {}\nplugins:\n  watcher: {path: plugins/watcher, process: [./run.sh]}\nroles:\n  alpha: {prompt: alpha.md}\n  beta: {prompt: beta.md, vendor: codex, parent: alpha}\n",
+        "bus: {}\nplugins:\n  watcher: {path: plugins/watcher, process: [./run.sh]}\nroles:\n  alpha: {prompt: alpha.md}\n  beta: {prompt: beta.md, vendor: codex, parent: alpha}\n  scout: {prompt: scout.md, parent: alpha, start: false}\n",
     );
     write("team/alpha.md", "---\n---\nYou are alpha.\n");
+    write("team/scout.md", "---\n---\nYou are scout.\n");
     write(
         "team/beta.md",
         "---\nmodels: {codex: example-model low}\n---\nYou are beta.\n",
@@ -106,7 +107,7 @@ fn status_i_attaches_detaches_and_quits() {
 
     wait(
         "the status screen",
-        || screen().contains(" team ") && screen().contains("alpha"),
+        || screen().contains(" folder ") && screen().contains("alpha"),
         dump,
     );
     wait("alpha idle", || screen().contains("idle"), dump);
@@ -199,6 +200,49 @@ fn status_i_attaches_detaches_and_quits() {
         || clients() == 0 && screen().contains("back from beta"),
         dump,
     );
+
+    // scout, a `start: false` role with no member, is hidden (beta above
+    // stays alpha's last row) until `a` shows it, and `a` hides it again,
+    // across a refresh.
+    assert!(!screen().contains("scout"), "{}", dump());
+    assert!(screen().contains("a roles"), "{}", dump());
+    // Select the plugin's row, below where scout appears: the selection
+    // stays on it as rows come and go.
+    tmux(&private, &outer, &["send-keys", "-t", "=o:", "j"]);
+    let selected = || {
+        screen()
+            .lines()
+            .find(|l| l.contains("> "))
+            .unwrap_or_default()
+            .to_string()
+    };
+    wait(
+        "the plugin's row selected",
+        || selected().contains("watcher"),
+        dump,
+    );
+    tmux(&private, &outer, &["send-keys", "-t", "=o:", "a"]);
+    wait(
+        "scout shown",
+        || {
+            let s = screen();
+            s.lines().any(|l| l.contains("├─ ? beta"))
+                && s.lines()
+                    .any(|l| l.contains("└─   scout") && l.contains("not created (start: false)"))
+        },
+        dump,
+    );
+    // The 2 s refresh keeps it.
+    std::thread::sleep(Duration::from_millis(2500));
+    assert!(screen().contains("scout"), "{}", dump());
+    assert!(selected().contains("watcher"), "{}", dump());
+    tmux(&private, &outer, &["send-keys", "-t", "=o:", "a"]);
+    wait(
+        "scout hidden again",
+        || !screen().contains("scout") && screen().contains("└─ ? beta"),
+        dump,
+    );
+    assert!(selected().contains("watcher"), "{}", dump());
 
     tmux(&private, &outer, &["send-keys", "-t", "=o:", "q"]);
     wait(
@@ -297,7 +341,7 @@ fn bare_status_i_shows_every_instance_and_attaches_in_the_selected_one() {
         "both instances on the screen",
         || {
             let s = screen();
-            ids.iter().all(|id| s.contains(&format!("{id}  team ")))
+            ids.iter().all(|id| s.contains(&format!("{id}  folder ")))
                 && s.lines()
                     .filter(|l| l.contains("alpha") && l.contains("idle"))
                     .count()
@@ -307,7 +351,7 @@ fn bare_status_i_shows_every_instance_and_attaches_in_the_selected_one() {
     );
     // The instance whose header comes second.
     let s = screen();
-    let at = |id: &String| s.find(&format!("{id}  team ")).unwrap();
+    let at = |id: &String| s.find(&format!("{id}  folder ")).unwrap();
     let second = ids.iter().max_by_key(|id| at(id)).unwrap().clone();
 
     // Rows: first header, its alpha, second header, its alpha.
@@ -428,7 +472,7 @@ fn bare_status_i_with_no_instances_says_so_until_one_is_created() {
         "the new instance's header at a later refresh",
         || {
             let s = screen();
-            s.contains(&format!("{id}  team ")) && !s.contains("there are no instances")
+            s.contains(&format!("{id}  folder ")) && !s.contains("there are no instances")
         },
         dump,
     );

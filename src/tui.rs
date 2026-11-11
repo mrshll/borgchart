@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, TableState};
 
 use crate::address::{self, Instance};
@@ -19,41 +19,62 @@ const REFRESH: Duration = Duration::from_secs(2);
 /// `brg status -w`: print the table every few seconds until interrupted.
 /// With no instance, every instance, as a bare `brg status` shows them.
 pub fn watch(one: Option<&Instance>, interval: Duration) -> Result<(), String> {
+    use std::io::IsTerminal;
     loop {
-        let text = match one {
-            Some(inst) => runtime::render_status(&runtime::header(inst), &runtime::status(inst)?),
+        let (text, rows) = match one {
+            Some(inst) => {
+                let rows = runtime::status(inst)?;
+                (runtime::render_status(&runtime::header(inst), &rows), rows)
+            }
             None => every_text()?,
         };
-        let mut out = std::io::stdout();
+        let colour = tree::colour_wanted(std::io::stdout().is_terminal());
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
+        let footer = format!("refreshed {} UTC · Ctrl-C to stop", clock(now));
+        let footer = if colour {
+            tree::ink_text(&footer, tree::palette::FADED, false)
+        } else {
+            footer
+        };
+        let mut out = std::io::stdout();
         let _ = write!(
             out,
-            "\x1b[H\x1b[2J{}\nrefreshed at {} (UTC epoch); Ctrl-C to stop\n",
-            text, now
+            "\x1b[H\x1b[2J{text}\n{}\n{footer}\n",
+            runtime::summary(&rows, colour)
         );
         let _ = out.flush();
         std::thread::sleep(interval);
     }
 }
 
-/// Every instance's header and tree, read again now; an instance whose
-/// status fails shows its error in its place.
-fn every_text() -> Result<String, String> {
+/// `HH:MM:SS` of a UTC epoch second.
+fn clock(epoch: u64) -> String {
+    let day = epoch % 86_400;
+    format!("{:02}:{:02}:{:02}", day / 3600, day % 3600 / 60, day % 60)
+}
+
+/// Every instance's header and tree, read again now, and all their rows; an
+/// instance whose status fails shows its error in its place.
+fn every_text() -> Result<(String, Vec<StatusRow>), String> {
     let all = address::every()?;
     if all.is_empty() {
-        return Ok(format!("{}\n", address::known()));
+        return Ok((format!("{}\n", address::known()), Vec::new()));
     }
     let mut text = String::new();
+    let mut every = Vec::new();
     for inst in &all {
         match runtime::status(inst) {
-            Ok(rows) => text.push_str(&runtime::render_status(&runtime::header(inst), &rows)),
+            Ok(rows) => {
+                text.push_str(&runtime::render_status(&runtime::header(inst), &rows));
+                every.extend(rows);
+            }
             Err(e) => text.push_str(&format!("{}: {e}\n", inst.id)),
         }
     }
-    Ok(text)
+    Ok((text, every))
 }
 
 /// One instance on the `-i` screen: its header line and its rows.
@@ -65,12 +86,18 @@ struct Section {
 
 /// The named instance, or every instance read from the registry now. With
 /// every instance, one whose status fails shows its error as its header.
-fn load(one: Option<&Instance>) -> Result<Vec<Section>, String> {
+/// `roles` keeps the rows of roles with no member that a terminal hides
+/// ([`runtime::hide_empty_roles`]).
+fn load(one: Option<&Instance>, roles: bool) -> Result<Vec<Section>, String> {
     let section = |inst: Instance, rows: Result<Vec<StatusRow>, String>| match rows {
         Ok(rows) => Section {
-            header: runtime::header(&inst),
+            header: runtime::header_as(&inst, true),
             inst,
-            rows: live_first(rows),
+            rows: live_first(if roles {
+                rows
+            } else {
+                runtime::hide_empty_roles(rows)
+            }),
         },
         Err(e) => Section {
             header: format!("{}: {e}", inst.id),
@@ -112,6 +139,42 @@ fn live_first(rows: Vec<StatusRow>) -> Vec<StatusRow> {
     out
 }
 
+/// A screen line by what it shows: its instance and, unless it is the
+/// header line, its row's key.
+fn line_key(sections: &[Section], (s, r): (usize, Option<usize>)) -> (String, Option<String>) {
+    let section = &sections[s];
+    (
+        section.inst.id.clone(),
+        r.map(|r| runtime::status_key(&section.rows[r])),
+    )
+}
+
+/// Read the screen again, with the selection on the line it was on, if
+/// that line is still drawn: `a` and a refresh add and remove lines above it.
+fn reload(
+    one: Option<&Instance>,
+    roles: bool,
+    headers: bool,
+    sections: &mut Vec<Section>,
+    table_state: &mut TableState,
+) {
+    let Ok(new) = load(one, roles) else {
+        return;
+    };
+    let selected = table_state
+        .selected()
+        .and_then(|i| entries(sections, headers).get(i).copied())
+        .map(|line| line_key(sections, line));
+    *sections = new;
+    if let Some(at) = selected.and_then(|key| {
+        entries(sections, headers)
+            .into_iter()
+            .position(|line| line_key(sections, line) == key)
+    }) {
+        table_state.select(Some(at));
+    }
+}
+
 /// The screen's lines: (section, row), where no row is the section's
 /// header line. One instance has no header lines: its header is the title.
 fn entries(sections: &[Section], headers: bool) -> Vec<(usize, Option<usize>)> {
@@ -143,6 +206,23 @@ fn state_style(row: &StatusRow) -> Style {
     }
 }
 
+/// The summary line on the screen: grey, with the rows that need a person
+/// in bold red, as `-w` paints it.
+fn summary_line(rows: &[StatusRow]) -> Line<'static> {
+    let faded = Style::default().fg(rgb(tree::palette::FADED));
+    let alert = Style::default()
+        .fg(rgb(tree::palette::ALERT))
+        .add_modifier(Modifier::BOLD);
+    let mut spans = Vec::new();
+    for (i, (text, need)) in runtime::summary_parts(rows).into_iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw("  "));
+        }
+        spans.push(Span::styled(text, if need { alert } else { faded }));
+    }
+    Line::from(spans)
+}
+
 fn draw(
     frame: &mut ratatui::Frame,
     title: &str,
@@ -153,7 +233,7 @@ fn draw(
     note: Option<&str>,
 ) {
     let [top, bottom] =
-        Layout::vertical([Constraint::Min(3), Constraint::Length(2)]).areas(frame.area());
+        Layout::vertical([Constraint::Min(3), Constraint::Length(3)]).areas(frame.area());
     // The same tree and columns as `brg status`, each instance's tree its own.
     let prefixes: Vec<std::collections::BTreeMap<String, String>> = sections
         .iter()
@@ -220,7 +300,14 @@ fn draw(
             let style = r.map_or(Style::default(), state_style);
             let faded = Style::default().fg(rgb(tree::palette::FADED));
             let row = Row::new(vec![
-                Cell::from(name).style(style.remove_modifier(Modifier::BOLD)),
+                Cell::from(name).style({
+                    let name = style.remove_modifier(Modifier::BOLD);
+                    if r.is_some_and(|r| runtime::status_look(r).italic) {
+                        name.add_modifier(Modifier::ITALIC)
+                    } else {
+                        name
+                    }
+                }),
                 Cell::from(vendor),
                 Cell::from(state).style(style),
                 // What a person must do next stays readable.
@@ -270,10 +357,13 @@ fn draw(
             Rect::new(inner.x, y, inner.width, 1),
         );
     }
-    let help =
-        Line::from("j/k move · enter attach (detach: tmux prefix, then d) · r refresh · q quit");
+    let help = Line::from(
+        "j/k move · enter attach (detach: tmux prefix, then d) · a roles · r refresh · q quit",
+    );
+    let every: Vec<StatusRow> = sections.iter().flat_map(|s| s.rows.clone()).collect();
+    let summary = summary_line(&every);
     frame.render_widget(
-        Paragraph::new(vec![Line::from(message.to_string()), help]),
+        Paragraph::new(vec![summary, Line::from(message.to_string()), help]),
         bottom,
     );
 }
@@ -281,12 +371,14 @@ fn draw(
 /// `brg status -i`. With no instance, every instance, each under its
 /// header line; Enter attaches in the selected member's own instance.
 pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
-    let mut sections = load(one)?;
+    // The `a` key shows and hides roles with no member.
+    let mut roles = false;
+    let mut sections = load(one, roles)?;
     let headers = one.is_none();
-    // One instance: the same header line as `brg status` (the instance, its
-    // team folder and its working folder) as the title.
+    // One instance: the same header line as `brg status` on a terminal (the
+    // instance and its working folder) as the title.
     let title = match one {
-        Some(inst) => runtime::header(inst),
+        Some(inst) => runtime::header_as(inst, true),
         None => "instances".to_string(),
     };
     let mut table_state = TableState::default().with_selected(Some(0));
@@ -318,9 +410,7 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
         match polled {
             Err(e) => break Err(e),
             Ok(false) => {
-                if let Ok(s) = load(one) {
-                    sections = s;
-                }
+                reload(one, roles, headers, &mut sections, &mut table_state);
                 last = Instant::now();
                 continue;
             }
@@ -344,10 +434,13 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
             KeyCode::Char('k') | KeyCode::Up => {
                 table_state.select(Some(selected.saturating_sub(1)))
             }
+            KeyCode::Char('a') => {
+                roles = !roles;
+                reload(one, roles, headers, &mut sections, &mut table_state);
+                message.clear();
+            }
             KeyCode::Char('r') => {
-                if let Ok(s) = load(one) {
-                    sections = s;
-                }
+                reload(one, roles, headers, &mut sections, &mut table_state);
                 message.clear();
             }
             KeyCode::Enter => {
@@ -389,9 +482,7 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
                     Ok(()) => format!("back from {name}"),
                     Err(e) => e,
                 };
-                if let Ok(s) = load(one) {
-                    sections = s;
-                }
+                reload(one, roles, headers, &mut sections, &mut table_state);
                 last = Instant::now();
             }
             _ => {}
@@ -399,4 +490,14 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
     };
     ratatui::restore();
     result
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn clock_is_utc_time_of_day() {
+        assert_eq!(super::clock(0), "00:00:00");
+        // 2026-11-10 14:02:07 UTC.
+        assert_eq!(super::clock(1_794_319_327), "14:02:07");
+    }
 }
