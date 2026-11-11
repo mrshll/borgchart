@@ -38,12 +38,12 @@ Directories must be real, owned by you and private (0700; files 0600). Immutable
 
 ## Callers and recipients
 
-Inside a member use `"$BORGCHART_BIN"`, the brg that started it. Its instance, member and start ID come from `BORGCHART_INSTANCE`, `BORGCHART_MEMBER` and `BORGCHART_INCARNATION`. Outside a member, `msg list`, `msg read`, `msg ack`, `msg wait` and `msg check` require `--instance ID`; inside one that option may only repeat its own instance. `msg send` takes the instance in its target address and requires `--external NAME` outside a member.
+Inside a member use `"$BORGCHART_BIN"`, the brg that started it. Its instance, member and start ID come from `BORGCHART_INSTANCE`, `BORGCHART_MEMBER` and `BORGCHART_INCARNATION`. Outside a member, `msg list`, `msg read`, `msg ack`, `msg wait` and `msg check` require `--instance ID`; inside one that option may only repeat its own instance. `msg send` takes the instance in its target address. Without team context, outside callers default to `external:owner`; `--external NAME` overrides it. Instance-only plugin processes must still name `--external NAME` to send, ack or wait.
 
 - Members send to their parent or children, by full member ID. Only root members of the tree's root instance may also send to `external:NAME`.
 - A copy's root members and their parent in the enclosing instance can also send across their parent edge. Use the full `instance/member` address; a copy's roots receive their parent's address in `BORGCHART_PARENT`.
-- Outside callers use `--external NAME` and may send to any kept member in the tree after its first start. Their replies go to `external:NAME`. That flag is refused inside a member.
-- An operator without an identity can read a named member's inbox and individual messages, and check the store, but cannot send or ack.
+- Outside callers may use `--external NAME` and may send to any kept member in the tree after its first start. Their replies go to `external:NAME` (`external:owner` by default without team context). That flag is refused inside a member.
+- Any caller can read a named member's inbox and individual messages, and check the store. An instance-only plugin without an outside identity cannot send or ack.
 - A member is addressable after its first start, including while stopped. A role name or another instance's member outside a parent edge is refused; there is no role queue.
 
 ## Send and message
@@ -66,10 +66,10 @@ Parent edges within an instance and across copies use the same tree store and de
 
 ## Commands
 
-`brg … --help` is the syntax authority. Inside a member, use `"$BORGCHART_BIN"` and a member ID. Outside, name the full target and your external identity:
+`brg … --help` is the syntax authority. Inside a member, use `"$BORGCHART_BIN"` and a member ID. Outside, name the full target; your external identity defaults to `owner` without team context:
 
 ```sh
-brg msg send --external owner dev-team-k3f9/lead-q8m3 'Tracking issue: #123; brief: notes/brief.md' --json
+brg msg send dev-team-k3f9/lead-q8m3 'Tracking issue: #123; brief: notes/brief.md' --json
 "$BORGCHART_BIN" msg send lead-q8m3 --reply-to m1 - <<'MESSAGE'
 Report: notes/change-report.md
 action-needed: none
@@ -78,7 +78,7 @@ MESSAGE
 
 Send JSON keeps `ok`, `code`, `message` and adds `outcome`, committed `id`, `delivery` (`typed`, `stored`, `uncertain` or `recorded-not-typed`) and a reason. See [send outcomes](cli.md#brg-msg-send). The other bus commands retain their own outcome codes below.
 
-**Inbox:** `brg msg list [--member ID | --external NAME] [--full] [--json]` returns every ordinary unacked message, oldest first. A member defaults to itself; `--member` reads another member's inbox anywhere in the tree. A bare ID resolves in the caller's instance, or the outside caller's `--instance`; a full address selects any member in the tree. Headers omit body and add `body_bytes` and `acked`; `--full` includes body instead of body_bytes. Reading never acknowledges.
+**Inbox:** `brg msg list [--member ID | --external NAME] [--full] [--json]` returns every ordinary unacked message, oldest first. A member defaults to itself; without team context, a caller defaults to `external:owner`. Instance-only plugins must name an inbox. `--member` reads another member's inbox anywhere in the tree. A bare ID resolves in the caller's instance, or the outside caller's `--instance`; a full address selects any member in the tree. Headers omit body and add `body_bytes` and `acked`; `--full` includes body instead of body_bytes. Reading never acknowledges.
 
 ```sh
 brg msg list --instance dev-team-k3f9 --member lead-q8m3 --json

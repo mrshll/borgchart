@@ -4348,7 +4348,7 @@ pub fn send(
     let caller = context::caller(external).map_err(send_failure)?;
     if matches!(caller, context::Caller::Operator) {
         return Err(SendError::Usage(
-            "outside senders must pass --external NAME".into(),
+            "instance-only plugin senders must pass --external NAME".into(),
         ));
     }
     let own = context::instance(None)

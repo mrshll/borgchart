@@ -37,7 +37,8 @@ pub enum MsgCommand {
         /// message): brg checks that the target is that member's parent.
         #[arg(long)]
         from: Option<String>,
-        /// Name an outside author; members use their own fenced identity.
+        /// Name an outside author (default: owner without team context);
+        /// members use their own fenced identity.
         #[arg(long)]
         external: Option<String>,
         /// Reply to an existing record, by its ID (repeatable).
@@ -66,7 +67,7 @@ pub enum MsgCommand {
         /// Record IDs (`m<number>`), all addressed to you.
         #[arg(required = true)]
         ids: Vec<String>,
-        /// Acknowledge as the outside caller with this name.
+        /// Acknowledge as this outside caller (default: owner without team context).
         #[arg(long)]
         external: Option<String>,
         /// Print each ID's outcome (`acked` or `already`) as JSON.
@@ -76,7 +77,7 @@ pub enum MsgCommand {
     /// Wait for new messages, with a minimum delay for messages already present.
     #[command(after_long_help = super::help::wait())]
     Wait {
-        /// Wait as an outside recipient.
+        /// Wait as this outside recipient (default: owner without team context).
         #[arg(long)]
         external: Option<String>,
         /// Seconds until timeout (60-86400; default 86400).
@@ -102,7 +103,7 @@ pub struct Who {
     /// Another member's inbox, read-only.
     #[arg(long, conflicts_with = "external")]
     pub member: Option<String>,
-    /// The inbox of `external:NAME`, as that outside caller.
+    /// The inbox of `external:NAME` (default: owner without team context).
     #[arg(long)]
     pub external: Option<String>,
 }
