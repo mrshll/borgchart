@@ -1,4 +1,4 @@
-//! Reproduce catalog upgrades blocking joins, and check the full-restart escape.
+//! Running trees accept changed catalogs and files; broken inputs fail locally.
 #![cfg(feature = "test-support")]
 
 mod common;
@@ -41,7 +41,7 @@ fn resumed(env: &Env, inst: &str, member: &str, session: &str) {
     );
 }
 
-fn catalog_change_blocks_joins_until_restart(flip_symlink: bool) {
+fn catalog_change_allows_joins(flip_symlink: bool) {
     let env = Env::new();
     for root in ["revision-a", "revision-b"] {
         catalog(&env, root);
@@ -99,9 +99,9 @@ fn catalog_change_blocks_joins_until_restart(flip_symlink: bool) {
     } else {
         env.write("config.yaml", "schema: 1\nteams: [revision-b]\n");
     }
-    // These are characterizations of the failure, not the desired future policy.
+    let next = create_copy(&env, &inst);
+    env.ok(&["start", &next]);
     for args in [
-        vec!["create".into(), format!("{inst}/dev")],
         vec!["create".into(), format!("{inst}/helper")],
         vec!["start".into(), format!("{inst}/{scout}")],
         vec!["start".into(), inst.clone()],
@@ -110,7 +110,7 @@ fn catalog_change_blocks_joins_until_restart(flip_symlink: bool) {
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let out = env.brg(&args);
         println!("{args:?}: exit {:?}\n{}", out.status.code(), both(&out));
-        assert!(!out.status.success(), "{}", both(&out));
+        assert!(out.status.success(), "{}", both(&out));
     }
     // A copy with no team roles still uses its own unchanged source files.
     env.ok(&["start", &copy]);
@@ -125,8 +125,6 @@ fn catalog_change_blocks_joins_until_restart(flip_symlink: bool) {
         "unfinished draft\n"
     );
     env.ok(&["msg", "read", message_id, "--instance", &inst]);
-    let next = create_copy(&env, &inst);
-    env.ok(&["start", &next]);
     env.wait_for("new copy lead started", || {
         env.state_of(&next, "lead") == "idle"
     });
@@ -146,11 +144,102 @@ fn catalog_change_blocks_joins_until_restart(flip_symlink: bool) {
 }
 
 #[test]
-fn identical_catalog_repoint_blocks_running_parent_joins() {
-    catalog_change_blocks_joins_until_restart(false);
+fn identical_catalog_repoint_does_not_block_running_parent_joins() {
+    catalog_change_allows_joins(false);
 }
 
 #[test]
-fn current_symlink_flip_blocks_running_parent_joins() {
-    catalog_change_blocks_joins_until_restart(true);
+fn current_symlink_flip_does_not_block_running_parent_joins() {
+    catalog_change_allows_joins(true);
+}
+
+#[test]
+fn changed_role_and_auth_apply_to_new_starts_without_restarting_siblings() {
+    let env = Env::new();
+    let inst = env.create("oncall", "work/a");
+    let lead = env.member(&inst, "lead");
+    env.write(
+        "teams/oncall/team.yaml",
+        &TEAM.replace("vendor: codex", "vendor: claude"),
+    );
+    env.write(
+        "teams/oncall/helper.md",
+        "---\nmodels: {claude: haiku}\n---\nUse the amber checklist.\n",
+    );
+    env.config("auth: api_key\n");
+    let out = env
+        .cmd(&["create", &format!("{inst}/helper")])
+        .env("ANTHROPIC_API_KEY", "example-key")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", both(&out));
+    let helper = env.member(&inst, "helper");
+    env.wait_for("helper launch", || !env.starts(&helper).is_empty());
+    let starts = env.starts(&helper);
+    assert!(starts[0]["argv"].to_string().contains("amber checklist"));
+    assert_eq!(starts[0]["env"]["ANTHROPIC_API_KEY"], "example-key");
+    assert_eq!(env.starts(&lead).len(), 1);
+    env.ok(&["stop", &format!("{inst}/{helper}")]);
+    env.config("");
+    env.ok(&["start", &format!("{inst}/{helper}"), "--resume"]);
+    env.wait_for("helper restarted", || env.starts(&helper).len() == 2);
+    assert!(
+        env.starts(&helper)[1]["env"]
+            .get("ANTHROPIC_API_KEY")
+            .is_none()
+    );
+    assert_eq!(env.starts(&lead).len(), 1);
+    env.ok(&["stop", &inst]);
+}
+
+#[test]
+fn changed_child_team_is_used_by_new_copies_while_parent_runs() {
+    let env = Env::new();
+    catalog(&env, "teams");
+    let inst = env.create("oncall", "work/a");
+    let first = create_copy(&env, &inst);
+    env.ok(&["start", &first]);
+    let lead = env.member(&first, "lead");
+    env.wait_for("first copy launch", || !env.starts(&lead).is_empty());
+    env.write(
+        "teams/dev/lead.md",
+        "---\nmodels: {claude: haiku}\n---\nUse the blue checklist.\n",
+    );
+    let next = create_copy(&env, &inst);
+    env.ok(&["start", &next]);
+    let next_lead = env.member(&next, "lead");
+    env.wait_for("new copy launch", || !env.starts(&next_lead).is_empty());
+    assert!(
+        env.starts(&next_lead)[0]["argv"]
+            .to_string()
+            .contains("blue checklist")
+    );
+    assert_eq!(env.starts(&lead).len(), 1);
+    env.ok(&["stop", &format!("{first}/{lead}")]);
+    env.ok(&["start", &format!("{first}/{lead}")]);
+    env.wait_for("copy member restarted", || env.starts(&lead).len() == 2);
+    assert!(
+        env.starts(&lead)[1]["argv"]
+            .to_string()
+            .contains("blue checklist")
+    );
+    env.ok(&["stop", &inst]);
+}
+
+#[test]
+fn missing_prompt_and_invalid_yaml_fail_at_the_requested_operation() {
+    let env = Env::new();
+    let inst = env.create("oncall", "work/a");
+    let path = env.path("teams/oncall/helper.md");
+    let prompt = fs::read(&path).unwrap();
+    fs::remove_file(&path).unwrap();
+    let err = env.fails(&["create", &format!("{inst}/helper")]);
+    assert!(err.contains("helper.md"), "{err}");
+    fs::write(path, prompt).unwrap();
+    env.write("teams/oncall/team.yaml", "roles: [\n");
+    let err = env.fails(&["start", &inst]);
+    assert!(err.contains("team.yaml"), "{err}");
+    env.write("teams/oncall/team.yaml", TEAM);
+    env.ok(&["create", &format!("{inst}/helper")]);
+    env.ok(&["stop", &inst]);
 }
