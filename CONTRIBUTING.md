@@ -2,7 +2,7 @@
 
 ## Checks
 
-Four checks must pass before a change merges. CI runs the Rust checks on Linux and macOS, and the Python tests on Linux. They live in one script, so the git hooks and CI run the same commands:
+Four checks must pass before a change merges. CI runs the Rust checks on Linux and macOS, and the Python tests on Linux. `make check` runs the quick checks (`fmt clippy fast`); `make test` runs the full checks. They use the same script as the git hooks and CI:
 
 ```
 .githooks/checks              # all four: fmt, clippy, test, py
@@ -11,6 +11,8 @@ Four checks must pass before a change merges. CI runs the Rust checks on Linux a
 ```
 
 The tests need `tmux`, and `py` needs `uv`. Before running only the department integration target, build its sibling plugin binary with `tools/cargo-slot cargo build --workspace --bins --all-features --locked`; `.githooks/checks test` does this automatically.
+
+`make build` builds the release workspace binaries; `make fmt` formats Rust, `make lint` runs clippy, and `make clean` removes build artifacts. Run `make` for help; [installation](#installing-from-a-checkout) uses `make install`.
 
 ## Test tiers
 
@@ -79,19 +81,22 @@ set `BORGCHART_CONFIG` to that file's absolute path, put `brg-seat` on `PATH`, a
 
 Then create an instance from a checkout of the repository: `cd <checkout>; brg create engineering`, or `brg create dev-team`. Its lead works in the checkout, and brg adds a git worktree for each dev copy and implementer as it creates them.
 
-### Pinned installation
+### Installing from a checkout
 
-A team that works on this repository shouldn't run from the checkout it edits: a half-finished change to brg or to a role file would take effect at the next start. Run it from a copy fixed at one revision instead. From a clean checkout at that revision:
+A team that works on this repository shouldn't run from the checkout it edits: a half-finished change to brg or to a role file would take effect at the next start. Install a separate copy from a checkout:
 
 ```sh
-revision=$(git rev-parse HEAD)
-prefix="$HOME/.local/lib/borgchart/brg-$revision"
-tools/cargo-slot cargo build --release --workspace --bins --locked
-mkdir -p "$prefix/bin"
-cp target/release/brg target/release/borgchart target/release/brg-seat "$prefix/bin/"
-cp -R teams "$prefix/teams"
-export PATH="$prefix/bin:$PATH"
-export BORGCHART_CONFIG="$prefix/config.yaml"
+make install
 ```
 
-Put the `config.yaml` above in `$prefix`. Use a new prefix for each revision, and keep its `bin` first on `PATH` when creating or fully starting an instance.
+This builds the workspace release binaries with `--locked`, copies `brg`, `borgchart` and `brg-seat` into `$HOME/.local/share/brg/bin/`, replaces `teams/` with the checkout's team files, and records `git rev-parse HEAD` in `REVISION`. Each binary is copied to a temporary name beside its destination and renamed into place, so readers see a complete file and running processes keep their old inode. The team files are copied before the old directory is removed and the new one renamed into place; `teams/` is briefly missing. Linux builds use `tools/cargo-slot` when executable; other systems use cargo directly.
+
+`PREFIX` changes the parent of `brg/` (default `$HOME/.local/share`); `BINDIR` changes where the `brg`, `borgchart` and `brg-seat` symlinks go (default `$HOME/.local/bin`). For example, `make install PREFIX="$HOME/apps" BINDIR="$HOME/bin"`. Use absolute paths. The links point directly at `$PREFIX/brg/bin/<name>` and are replaced with `ln -sfn`. Keep `BINDIR` on `PATH`.
+
+The installer prints the `teams:` line to add once to your brg configuration and never edits that file. With the default prefix, use:
+
+```text
+teams: [~/.local/share/brg/teams]
+```
+
+A running tree meets the installed binary and team files at its next brg call or next new member, by design. To move a tree started from an old per-revision directory, use the new binary to run `brg stop <instance>`, then `brg start <instance> --team "$HOME/.local/share/brg/teams/<team>" --resume`. That repoints only the named instance: kept copies retain their recorded team folders and each needs its own full stop and `start --team <new-team-folder> --resume`, working from parent to child; keep the old installation until every copy has moved.
