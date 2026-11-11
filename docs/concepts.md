@@ -1,6 +1,6 @@
 # Concepts
 
-**Status: partly built.** Teams, instances, `roles:`, suffixed member IDs, copies up to `max`, member deletion and member status work today. Bus members may manage only their declared children, using their latest start ID. Teams as members (team roles whose members are child teams, #25) share one message store per runtime tree. The remaining command renames are planned.
+**Status: partly built.** Teams, instances, `roles:`, suffixed member IDs, copies up to `max`, member deletion and member status work today. Bus members may manage only their declared children, using their latest start ID. Teams as members (team roles whose members are child teams) share one message store per runtime tree.
 
 ## Definitions and what runs from them
 
@@ -65,11 +65,11 @@ under its parent instance, independently of where its team definition is stored.
 
 ## Commands
 
-There's no `up`. There are four verbs. `create` always makes something new; `start`, `stop` and `delete` are safe to repeat:
+There's no `up`. `create` always makes something new; `start`, `stop` and `delete` are safe to repeat:
 
 | Command | On an instance | On a member |
 | --- | --- | --- |
-| `brg create` | `create <team> <folder>` makes a new instance working in that folder (required), starts it, and prints its ID and tree. `<team>` is a team's name or a path to its folder. Run it twice and you have two instances. | `create <instance>/<role>` makes a new member of that role and starts it. `create` takes only a team or a role, never a member. It's refused past `max`; for a `max: 1` role whose member already exists, it points to `start`. |
+| `brg create` | `create <team> <folder>` makes a new instance working in that folder (the current folder by default), starts it, and prints its ID and tree. `<team>` is a team's name or a path to its folder. Run it twice and you have two instances. | `create <instance>/<role>` makes a new member of that role and starts it. `create` takes only a team or a role, never a member. It's refused past `max`; for a `max: 1` role whose member already exists, it points to `start`. |
 | `brg start` | Brings the instance to what should be running. That's the `start: true` roles and the members that were running when it was last stopped. A `start: true` role whose member was deleted gets a fresh member. Members already running are left alone. Members that start use current files and configuration. It takes no folder. | Starts that member with a new start. If it's already running, it says so and changes nothing. A deleted ID is refused. |
 | `brg stop` | Stops every member. On a stopped instance, it says so and changes nothing. | Stops that member; the same on a stopped one. |
 | `brg delete` | Removes a stopped instance: its notes, state and registration. Copy messages stay as history in the tree store; root deletion removes that store. It's refused while anything runs. Unacked messages, or messages it cannot read, are listed and need `--force`. | Removes a stopped member. Unacked messages are listed with a count and require `--force`; running or unknown liveness is always refused. Kept children, running or stopped, also prevent deletion, even with `--force`: their full addresses are listed; delete them first. Its ID stays issued. Immutable messages remain as history; unread ones to a deleted member stop counting as open work. |
@@ -81,7 +81,7 @@ There's no `up`. There are four verbs. `create` always makes something new; `sta
 **A team, a path or a role.** A path starts with `/`, `./`, `../` or `~/`. Any other argument to `create` is a team's name when it has no `/`, and `<instance>/<role>` when it has one. So `brg create ./dev-team ~/work/x` runs the folder `./dev-team`, and `brg create teams/dev-team` is refused ("no instance `teams`; for a folder, write `./teams/dev-team`").
 
 **Also:**
-- `attach`, `logs` and `prompt` take a member address.
+- `attach`, `logs` and `send` take a member address.
 - `brg ls` lists the teams in the search paths, each with its instances, running or stopped.
 - `brg status` shows the tree and each member's unread (unacked) count, including in `-i` and `--json`.
 - `brg validate <team>` checks the team folder and the global configuration.
@@ -107,13 +107,13 @@ Two folders with the same name can both run. Their instances are told apart by t
 
 **Leaving the instance out.** Inside a member, an address without an instance means that member's own instance, so a lead writes `implementer-x7k2`. Everywhere else the full instance ID is needed (`dev-team-k3f9/implementer-x7k2`, `brg start dev-team-k3f9`). There are no other shortcuts for now: brg never infers an instance from a team's name or from which instances are running. Message, inbox and bus commands take the instance as `--instance`; inside a member it's always the member's own.
 
-**Members are always named in full.** Commands that act on a member (`attach`, `prompt`, `stop`), and messages, take its full ID (`lead-q8m3`). A role name there is refused, listing the role's members. There are no shortcuts for now.
+**Members are always named in full.** Commands that act on a member (`attach`, `send`, `stop`), and messages, take its full ID (`lead-q8m3`). A role name there is refused, listing the role's members. There are no shortcuts for now.
 
 **Parents are agent roles.** `parent: lead` names an agent role, and a member's parent is the member filling that role. So a parent role must have one member: `validate` refuses a `parent:` that names a team role or a role with `max > 1`. The same goes for a plugin's `delivers_to:`.
 
 **Recipients.** A message goes to one kept, started member along a parent/child edge, or from a root member of the tree's root instance to `external:NAME`. An instance isn't a recipient: name a member in it. Across a copy edge, use its full member address. Siblings, cousins and independent roots cannot exchange messages. Every record carries full member addresses and a tree-wide message ID; replies reference plain IDs such as `m1`.
 
-**Teams as members (#25).** A role can be a team, referenced by name through the configured team directories (`team: dev-team`). Its members are copies (`dev-a7k2`): nested instances, each with its own members, notes and state, and a working folder inside its parent's. Teams form a tree: the member with no parent is the root. Addresses nest (`engineering-h4k2/dev-a7k2/lead-c4nd`), and a copy's instance ID is its full path. Copies are created stopped, prepared by their parent and then started. A member may act on its whole subtree, and `stop` cascades deepest first. [teams.md](teams.md#teams-as-members) has the rules, and [`engineering/`](../teams/engineering/) defines the runtime tree from sibling definitions under `teams/`.
+**Teams as members.** A role can be a team, referenced by name through the configured team directories (`team: dev-team`). Its members are copies (`dev-a7k2`): nested instances, each with its own members, notes and state, and a working folder inside its parent's. Teams form a tree: the member with no parent is the root. Addresses nest (`engineering-h4k2/dev-a7k2/lead-c4nd`), and a copy's instance ID is its full path. Copies are created stopped, prepared by their parent and then started. A member may act on its whole subtree, and `stop` cascades deepest first. [teams.md](teams.md#teams-as-members) has the rules, and [`engineering/`](../teams/engineering/) defines the runtime tree from sibling definitions under `teams/`.
 
 ## Lifetimes
 
