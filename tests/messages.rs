@@ -320,10 +320,25 @@ fn existing_messages_wait_for_the_minimum_and_match_inbox_output() {
 #[test]
 fn wait_errors_and_usage_errors_obey_the_minimum() {
     let env = Env::new();
+    let start = Instant::now();
+    let out = env
+        .cmd(&["msg", "send", "x/y", "wait"])
+        .env("BORGCHART_WAIT_MIN_MS", "5000")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3), "{}", both(&out));
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "failed send waited the wait minimum: {}",
+        both(&out)
+    );
     for args in [
         vec!["msg", "wait", "--timeout", "60"],
         vec!["msg", "wait", "--timeout", "bad"],
         vec!["msg", "wait", "--bogus"],
+        vec!["msg", "--instance", "missing", "wait", "--bogus"],
+        vec!["msg", "--instance=missing", "wait", "--bogus"],
+        vec!["inbox", "wait"],
     ] {
         let start = Instant::now();
         let out = env
@@ -332,11 +347,26 @@ fn wait_errors_and_usage_errors_obey_the_minimum() {
             .output()
             .unwrap();
         assert!(!out.status.success());
+        if args[0] == "inbox" {
+            assert_eq!(out.status.code(), Some(2), "{}", both(&out));
+        }
         assert!(
             start.elapsed() >= Duration::from_millis(700),
             "{}",
             both(&out)
         );
+    }
+}
+
+#[test]
+fn send_refuses_instance_instead_of_ignoring_it() {
+    let env = Env::new();
+    for args in [
+        vec!["msg", "--instance", "other", "send", "x/y", "hello"],
+        vec!["msg", "send", "--instance", "other", "x/y", "hello"],
+    ] {
+        let out = env.cmd(&args).output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", both(&out));
     }
 }
 
@@ -474,15 +504,19 @@ fn a_damaged_store_and_an_unreadable_next_record_wait_before_erroring() {
 #[test]
 fn wait_help_does_not_back_off() {
     let env = Env::new();
-    let start = Instant::now();
-    let out = env
-        .cmd(&["msg", "wait", "--help"])
-        .env("BORGCHART_WAIT_MIN_MS", "5000")
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "{}", both(&out));
-    assert!(
-        start.elapsed() < Duration::from_secs(5),
-        "help waited its minimum"
-    );
+    for (command, code) in [("msg", 0), ("inbox", 2)] {
+        for flag in ["--help", "-h"] {
+            let start = Instant::now();
+            let out = env
+                .cmd(&[command, "wait", flag])
+                .env("BORGCHART_WAIT_MIN_MS", "5000")
+                .output()
+                .unwrap();
+            assert_eq!(out.status.code(), Some(code), "{}", both(&out));
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "help waited its minimum: {command} wait {flag}"
+            );
+        }
+    }
 }

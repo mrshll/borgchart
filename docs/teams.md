@@ -83,7 +83,7 @@ A small top level for people. `brg --help` and `brg <command> --help` give the f
 | `brg validate <team>` | Check everything without starting anything |
 | `brg create <team> <folder>`, `brg create <instance>/<role>` | Make a new instance, or a role's member, and start it. Prints the tree with each member's model and what happened. |
 | `brg start <instance>[/<member>]`, `brg stop <instance>[/<member>]` | Bring it back, or stop it |
-| `brg delete <instance>[/<member>] [--force]` | Remove a stopped instance or member. Unacked messages require `--force`; running or unknown liveness, or a member with kept children, is always refused. A deleted member's ID stays issued. |
+| `brg delete <instance>[/<member>] [--force]` | Remove a stopped instance or member. Unread messages require `--force`; running or unknown liveness, or a member with kept children, is always refused. A deleted member's ID stays issued. |
 | `brg status [instance] [--json \| -w \| -i]` | The live tree: who is idle, working or blocked, with positive unacked message counts. JSON includes `member`, `role`, `parent` (a member ID), `start_id` (the current incarnation, when recorded), and `unacked`, including zero with a readable bus. An unreadable store omits counts and adds a check note. |
 | `brg ls` | Your teams, each with its instances |
 | `brg attach <instance>/<member>`, `brg logs <instance>/<member>` | Watch a member |

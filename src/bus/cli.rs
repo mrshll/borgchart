@@ -166,6 +166,12 @@ pub fn msg(instance: Option<&str>, command: MsgCommand, started: Instant) -> Exi
             json,
         } => {
             let result = (|| {
+                if instance.is_some() {
+                    return Err(runtime::SendError::Usage(
+                        "`msg send` takes no --instance; name the target as <instance>/<member>"
+                            .into(),
+                    ));
+                }
                 let mut text = text.join(" ");
                 if text == "-" {
                     text.clear();

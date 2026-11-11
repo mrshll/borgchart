@@ -120,22 +120,36 @@ fn removed_message_commands_and_force_flag_are_refused() {
 #[test]
 fn shipped_roles_and_examples_do_not_instruct_removed_message_commands() {
     fn check(path: &std::path::Path) {
-        for entry in std::fs::read_dir(path).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                check(&path);
-            } else if let Ok(text) = std::fs::read_to_string(&path) {
-                for removed in ["inbox wait", "bus check", "\"$BORGCHART_BIN\" send"] {
-                    assert!(
-                        !text.contains(removed),
-                        "{} names {removed}",
-                        path.display()
-                    );
-                }
+        if path.is_dir() {
+            for entry in std::fs::read_dir(path).unwrap() {
+                check(&entry.unwrap().path());
+            }
+        } else if let Ok(text) = std::fs::read_to_string(path) {
+            for removed in [
+                "inbox wait",
+                "bus check",
+                "\"$BORGCHART_BIN\" send",
+                "\"$BORGCHART_BIN\" inbox",
+                "brg inbox",
+                "brg send",
+                "brg bus",
+            ] {
+                let word = |c: char| c.is_alphanumeric() || c == '_';
+                let found = text.match_indices(removed).any(|(start, _)| {
+                    !text[..start].chars().next_back().is_some_and(word)
+                        && !text[start + removed.len()..]
+                            .chars()
+                            .next()
+                            .is_some_and(word)
+                });
+                assert!(!found, "{} names {removed}", path.display());
             }
         }
     }
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     check(&root.join("teams"));
     check(&root.join("examples"));
+    check(&root.join("docs"));
+    check(&root.join("README.md"));
+    check(&root.join("rules"));
 }

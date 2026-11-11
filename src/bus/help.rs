@@ -67,6 +67,7 @@ BORGCHART_PARENT). The tree shares one store and message IDs; typed and locked
 delivery work across edges too. Only root members of the tree's root instance
 may address external:NAME. --from asserts a parent route within one instance,
 not authorship. --reply-to takes plain existing IDs such as m1.
+This command takes no --instance; name the target as <instance>/<member>.
 
 Ordinary messages commit before optional typing. Exit 0 means committed even
 when delivery is stored or uncertain; never automatically republish. Interactive

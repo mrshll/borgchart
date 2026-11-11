@@ -179,14 +179,14 @@ enum Command {
     /// A deleted member's ID stays issued. With a bus, a member caller may
     /// manage only its subtree, using its latest running start. A copy's roots
     /// cannot delete their own copy.
-    /// Unacked messages, and a worktree brg added that holds uncommitted or
+    /// Unread messages, and a worktree brg added that holds uncommitted or
     /// untracked changes or commits on no remote, need --force; copy history
     /// stays in the tree store.
     Delete {
         /// `<instance>`, or `<instance>/<member>`. A bare role is refused.
         #[arg(add = crate::complete::targets())]
         target: String,
-        /// Delete even with unacked messages, unreadable message storage, or
+        /// Delete even with unread messages, unreadable message storage, or
         /// worktrees with work in them (those are left as they are; a clean
         /// worktree brg added is always removed). Running members, unknown
         /// liveness and members with kept children or copies are always refused.
@@ -387,9 +387,26 @@ pub fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().collect();
     // Recognize the wait even when clap rejects its flags. Usage errors
     // must back off too, or a broken wait command can spin turns.
-    // Over-matching (e.g. a file named `wait`) only delays an error, which
-    // is harmless. Explicit help and external termination remain immediate.
-    let waiting = args.iter().any(|a| a == "msg") && args.iter().any(|a| a == "wait");
+    // Keep the removed `inbox wait` spelling here so old role text cannot spin.
+    // Explicit help and external termination remain immediate.
+    let mut tokens = args.iter().skip(1);
+    let waiting = if tokens
+        .next()
+        .is_some_and(|arg| arg == "msg" || arg == "inbox")
+    {
+        loop {
+            match tokens.next() {
+                Some(arg) if arg == "--instance" => {
+                    tokens.next();
+                }
+                Some(arg) if arg.to_str().is_some_and(|s| s.starts_with("--instance=")) => {}
+                Some(arg) => break arg == "wait",
+                None => break false,
+            }
+        }
+    } else {
+        false
+    };
     let help = args.iter().any(|a| a == "--help" || a == "-h");
     let back_off = || {
         if waiting && !help {

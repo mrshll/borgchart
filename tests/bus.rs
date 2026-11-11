@@ -1,4 +1,4 @@
-//! Record store tests: `brg msg`, `brg msg list` and `brg bus` against a team's
+//! Record store tests: `brg msg`, `brg msg list` and `brg msg check` against a team's
 //! message storage built from store identity, start metadata and incarnations.
 
 use std::collections::{BTreeMap, BTreeSet};
