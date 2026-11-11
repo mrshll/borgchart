@@ -148,7 +148,7 @@ pub fn check_stopped(state: &StateDir, meta: &Meta, restart: &str) -> Result<(),
             Ok(None) => {}
             _ => {
                 return Err(format!(
-                    "brg can't tell that {}/{member} has stopped; stop it before starting again: {restart}",
+                    "brg can't tell that {}/{member} has stopped, so changed files can't be applied; stop it and start it again: {restart}",
                     state.id
                 ));
             }
