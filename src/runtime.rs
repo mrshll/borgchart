@@ -1930,10 +1930,33 @@ fn check_repoint_members(inst: &Instance, v: &Validated) -> Result<(), String> {
             }
         }
     }
-    for (id, _) in inst.record.copies.iter().filter(|(_, c)| !c.deleted) {
-        let copy = address::instance(&inst.at(id))?;
-        if let Some(parent) = copy.record.parent {
-            parents.push((copy.id, parent));
+    let mut repointed = inst.clone();
+    repointed.record.team_dir = v.team.dir.clone();
+    for descendant in crate::nesting::descendants(inst)? {
+        let copy = match descendant.instance {
+            Ok(copy) => copy,
+            Err(e) => {
+                conflicts.push(format!(
+                    "copy `{}` can't be read ({e}); restore its instance record before retrying",
+                    descendant.id
+                ));
+                continue;
+            }
+        };
+        let (parent_id, _) = copy.id.rsplit_once('/').expect("descendant copy");
+        if parent_id == inst.id
+            && let Some(parent) = &copy.record.parent
+        {
+            parents.push((copy.id.clone(), parent.clone()));
+        }
+        if let Err(e) = address::instance(parent_id).and_then(|parent| {
+            crate::nesting::validate_child_after_repoint(
+                &parent,
+                &copy.record.team_dir,
+                Some(&repointed),
+            )
+        }) {
+            conflicts.push(format!("copy `{}`: {e}", copy.id));
         }
     }
     for (child, parent) in parents {
@@ -1964,7 +1987,7 @@ fn check_repoint_members(inst: &Instance, v: &Validated) -> Result<(), String> {
 }
 
 /// `brg start <instance> --team <path>`: point a stopped instance at its
-/// team folder's new place.
+/// moved or renamed team folder.
 fn repoint(inst: &mut Instance, team: &Path) -> Result<(), String> {
     let dir = team
         .canonicalize()
@@ -1991,7 +2014,14 @@ fn repoint(inst: &mut Instance, team: &Path) -> Result<(), String> {
     let v = if let Some((parent, _)) = inst.id.rsplit_once('/') {
         crate::nesting::validate_child(&address::instance(parent)?, &dir)?
     } else {
-        validate_printing(&dir)?
+        let (report, validated) = validate(&dir);
+        validated.ok_or_else(|| {
+            report
+                .errors()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+        })?
     };
     check_repoint_members(inst, &v)?;
     let mut registry = lock.load()?;

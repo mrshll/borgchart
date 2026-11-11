@@ -127,18 +127,30 @@ fn invalid_repoint_leaves_the_original_team_usable() {
 }
 
 #[test]
-fn repoint_refuses_a_dangling_recorded_parent_before_changing_source() {
+fn repoint_refuses_a_dropped_role_name_parent_before_changing_source() {
     let env = Env::new();
-    let inst = env.create("oncall", "work/a");
-    env.ok(&["create", &format!("{inst}/helper")]);
+    env.write(
+        "teams/oncall/team.yaml",
+        &TEAM
+            .replace("prompt: lead.md", "prompt: lead.md\n    start: false")
+            .replace("    start: false\n  scout:", "    start: true\n  scout:"),
+    );
+    let out = env.ok(&[
+        "create",
+        "oncall",
+        &env.path("work/a").display().to_string(),
+    ]);
+    let inst = stdout(&out).split_whitespace().next().unwrap().to_string();
+    env.wait_for("child idle", || env.state_of(&inst, "helper") == "idle");
     let helper = env.member(&inst, "helper");
     env.ok(&["stop", &inst]);
-    let path = env.path(&format!("state/{inst}/start.json"));
+    let path = env.path(&format!("state/{inst}/instance.json"));
     let original = fs::read(&path).unwrap();
-    let mut meta: Value = serde_json::from_slice(&original).unwrap();
-    meta["members"][&helper]["parent"] = json!("lead-2222");
-    fs::write(&path, serde_json::to_vec(&meta).unwrap()).unwrap();
     env.team("moved/oncall");
+    env.write(
+        "moved/oncall/team.yaml",
+        "bus: {}\nroles:\n  helper: {prompt: helper.md, vendor: codex}\n  scout: {prompt: scout.md, start: false}\n",
+    );
     let refusal = env.fails(&[
         "start",
         &inst,
@@ -146,10 +158,10 @@ fn repoint_refuses_a_dangling_recorded_parent_before_changing_source() {
         &env.path("moved/oncall").display().to_string(),
     ]);
     assert!(
-        refusal.contains(&helper) && refusal.contains("lead-2222"),
+        refusal.contains(&helper) && refusal.contains(&format!("{inst}/lead")),
         "{refusal}"
     );
-    fs::write(path, original).unwrap();
+    assert_eq!(fs::read(path).unwrap(), original);
     env.ok(&["start", &inst]);
     env.ok(&["stop", &inst]);
 }

@@ -39,6 +39,101 @@ fn repoint_refuses_a_kept_copy_whose_team_role_is_missing() {
 }
 
 #[test]
+fn repoint_refuses_a_kept_descendant_that_would_become_its_own_ancestor() {
+    for target in ["workers", "builders"] {
+        let env = Env::new();
+        for (team, child) in [
+            ("oncall", "workers"),
+            ("workers", "builders"),
+            ("builders", "responders"),
+        ] {
+            env.team(&format!("teams/{team}"));
+            env.write(
+                &format!("teams/{team}/team.yaml"),
+                &format!("{TEAM}  dev: {{team: {child}}}\n"),
+            );
+        }
+        env.team("teams/responders");
+        let inst = env.create("oncall", "work/a");
+        let copy = stdout(&env.ok(&["create", &format!("{inst}/dev")]))
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .to_string();
+        env.ok(&["start", &copy]);
+        let clash = if target == "builders" {
+            let nested = stdout(&env.ok(&["create", &format!("{copy}/dev")]))
+                .split_whitespace()
+                .next()
+                .unwrap()
+                .to_string();
+            env.ok(&["start", &nested]);
+            nested
+        } else {
+            copy
+        };
+        env.ok(&["stop", &inst]);
+        let path = env.path(&format!("state/{inst}/instance.json"));
+        let original = fs::read(&path).unwrap();
+        let registry = env.registry();
+        let refusal = env.fails(&[
+            "start",
+            &inst,
+            "--team",
+            &env.path(&format!("teams/{target}")).display().to_string(),
+        ]);
+        println!("descendant clash: {refusal}");
+        assert!(refusal.contains(&clash), "{refusal}");
+        assert_eq!(fs::read(path).unwrap(), original);
+        assert_eq!(env.registry(), registry);
+        env.ok(&["start", &inst]);
+        env.ok(&["stop", &inst]);
+    }
+}
+
+#[test]
+fn repoint_lists_an_unreadable_kept_copy_with_other_conflicts() {
+    let env = Env::new();
+    env.team("teams/workers");
+    env.write(
+        "teams/oncall/team.yaml",
+        &format!("{TEAM}  dev: {{team: workers}}\n"),
+    );
+    let inst = env.create("oncall", "work/a");
+    env.ok(&["create", &format!("{inst}/helper")]);
+    let helper = env.member(&inst, "helper");
+    let copy = stdout(&env.ok(&["create", &format!("{inst}/dev")]))
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_string();
+    env.ok(&["stop", &inst]);
+    let path = env.path(&format!("state/{copy}/instance.json"));
+    let original_copy = fs::read(&path).unwrap();
+    fs::write(&path, "{").unwrap();
+    env.team("moved/oncall");
+    env.write(
+        "moved/oncall/team.yaml",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  dev: {team: workers}\n",
+    );
+    let record = env.path(&format!("state/{inst}/instance.json"));
+    let original = fs::read(&record).unwrap();
+    let refusal = env.fails(&[
+        "start",
+        &inst,
+        "--team",
+        &env.path("moved/oncall").display().to_string(),
+    ]);
+    println!("unreadable copy: {refusal}");
+    assert!(
+        refusal.contains(&copy) && refusal.contains(&helper),
+        "{refusal}"
+    );
+    assert_eq!(fs::read(record).unwrap(), original);
+    fs::write(path, original_copy).unwrap();
+}
+
+#[test]
 fn copies_can_repoint_to_a_renamed_team_without_changing_address() {
     let env = Env::new();
     env.team("teams/workers");

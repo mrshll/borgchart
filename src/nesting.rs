@@ -135,9 +135,21 @@ pub fn create(
 /// Validate a child against its declaring instance and every kept ancestor.
 /// The caller holds the registry lock, so explicit repointing cannot race it.
 pub fn validate_child(parent: &Instance, dir: &Path) -> Result<Validated, String> {
+    validate_child_after_repoint(parent, dir, None)
+}
+
+/// Check a kept copy before saving an ancestor's proposed source folder.
+pub(crate) fn validate_child_after_repoint(
+    parent: &Instance,
+    dir: &Path,
+    repointed: Option<&Instance>,
+) -> Result<Validated, String> {
     let mut ancestors = Vec::new();
     let mut current = parent.clone();
     loop {
+        if let Some(repointed) = repointed.filter(|inst| inst.id == current.id) {
+            current = repointed.clone();
+        }
         let folder = current.record.team_dir.canonicalize().map_err(|_| {
             format!(
                 "`{}`'s team folder is gone; restore it before creating or starting a copy",
