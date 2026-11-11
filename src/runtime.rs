@@ -1485,7 +1485,7 @@ pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
     let (state, mut record) =
         registry::create(&lock, &v.team.name, &v.team.dir, &folder, &utc_now())?;
     for role in &starting {
-        record.issue_member(&role.id, |id| v.team.roles.contains_key(id))?;
+        record.issue_member(&role.id, None, |id| v.team.roles.contains_key(id))?;
     }
     lock.save_instance(&state, &record)?;
     let ids: Vec<String> = record.members.keys().cloned().collect();
@@ -1570,14 +1570,25 @@ fn rollback_pause() {
 #[cfg(not(feature = "test-support"))]
 fn rollback_pause() {}
 
-/// `brg create <instance>/<role>`: a new member of the role, started.
+/// Whether `id` is one of the team's roles, agent or team.
+pub(crate) fn is_role(v: &Validated, id: &str) -> bool {
+    v.team.roles.contains_key(id) || v.team.team_roles.contains_key(id)
+}
+
+/// `brg create <instance>/<role>`: a new member of the role, started; with
+/// `name`, its ID is `<role>-<name>`.
 pub fn create_member(
     mut inst: Instance,
     role: &str,
+    name: Option<&str>,
     branch: Option<&str>,
     repo: Option<&str>,
 ) -> Result<UpOutcome, String> {
     let v = validated(&inst)?;
+    if let Some(name) = name {
+        // Refuse a taken name before any fetch; issuing checks again under the lock.
+        inst.record.named(role, name, |id| is_role(&v, id))?;
+    }
     let worktree = v
         .team
         .team_roles
@@ -1604,7 +1615,7 @@ pub fn create_member(
         let start = repo
             .map(|name| crate::worktree::fetch(&crate::worktree::root_folder(&inst.id)?, name))
             .transpose()?;
-        return crate::nesting::create(inst, &v, role, team_role, branch, start.as_ref());
+        return crate::nesting::create(inst, &v, role, name, team_role, branch, start.as_ref());
     }
     let Some(member) = v.team.roles.get(role) else {
         return Err(format!(
@@ -1639,9 +1650,7 @@ pub fn create_member(
             existing.join(", ")
         ));
     }
-    let id = inst
-        .record
-        .issue_member(role, |id| v.team.roles.contains_key(id))?;
+    let id = inst.record.issue_member(role, name, |id| is_role(&v, id))?;
     let added: Vec<_> = create_worktree(&inst, member, &id, branch, start.as_ref())?
         .map(|dir| (id.clone(), dir))
         .into_iter()
@@ -1955,7 +1964,7 @@ fn full_start_members(
         if members.is_empty() {
             let id = inst
                 .record
-                .issue_member(&role.id, |id| v.team.roles.contains_key(id))?;
+                .issue_member(&role.id, None, |id| v.team.roles.contains_key(id))?;
             if let Some(folder) = create_worktree(inst, role, &id, None, None)? {
                 created_folders.push((id.clone(), folder));
             }

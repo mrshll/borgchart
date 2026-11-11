@@ -190,7 +190,7 @@ fn issued<'a>(
 ) -> Vec<(&'a String, &'a IssuedMember)> {
     let mut found = Vec::new();
     for (id, member) in issued.iter().filter(|(_, m)| pick(m)) {
-        if crate::names::is_valid_member_id(id) && registry::split_id(id).is_some() {
+        if registry::is_id_of(id, &member.role) {
             found.push((id, member));
         } else {
             out.error(format!(

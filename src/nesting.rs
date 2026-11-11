@@ -65,6 +65,7 @@ pub fn create(
     mut inst: Instance,
     v: &Validated,
     role_name: &str,
+    name: Option<&str>,
     role: &TeamRole,
     branch: Option<&str>,
     start: Option<&crate::worktree::Start>,
@@ -95,7 +96,9 @@ pub fn create(
         ));
     }
     crate::team::find(&role.name, &v.config.teams)?;
-    let id = inst.record.issue_copy(role_name)?;
+    let id = inst
+        .record
+        .issue_copy(role_name, name, |id| crate::runtime::is_role(v, id))?;
     let full_id = inst.at(&id);
     let folder = if role.worktree {
         crate::worktree::path(&full_id)
@@ -113,8 +116,14 @@ pub fn create(
     lock.save_instance(&inst.state, &inst.record)?;
     if role.worktree {
         let root = crate::worktree::root_folder(&inst.id)?;
-        crate::worktree::add(&root, &inst.record.folder, &folder, branch, start)
-            .map_err(|e| format!("copy `{full_id}` needs its own worktree: {e}"))?;
+        if let Err(e) = crate::worktree::add(&root, &inst.record.folder, &folder, branch, start) {
+            // A name is the caller's choice: give it back if nothing reached disk.
+            if name.is_some() && !folder.exists() {
+                inst.record.copies.remove(&id);
+                lock.save_instance(&inst.state, &inst.record)?;
+            }
+            return Err(format!("copy `{full_id}` needs its own worktree: {e}"));
+        }
     }
     registry::create_copy(&lock, &full_id, &role.dir, &folder, parent)?;
     let issued = inst.record.copies.get_mut(&id).expect("issued copy");
