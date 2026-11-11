@@ -93,10 +93,11 @@ fn validate_into(
         return (report, None);
     };
     let validated = Validated { team, config };
-    check_team_tree(&validated, ancestors, recursive, &mut report);
+    // Configuration warnings once, first: the team tree is checked per team.
     if let Some(user) = &validated.config.tmux_user_config {
         check_user_tmux_config(user, validated.config.file.as_deref(), &mut report);
     }
+    check_team_tree(&validated, ancestors, recursive, &mut report);
     if report.has_errors() {
         return (report, None);
     }

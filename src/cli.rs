@@ -790,9 +790,14 @@ fn run_validate(team: &str, json: bool, probe: bool) -> ExitCode {
             diag.file = diag
                 .file
                 .map(|path| runtime::tilde(&path, home.as_deref()).into());
+            // Paths inside the message too; a home of `/` would shorten every path.
+            if let Some(h) = home.as_deref().filter(|h| h.parent().is_some()) {
+                let prefix = format!("{}/", h.display().to_string().trim_end_matches('/'));
+                diag.message = diag.message.replace(&prefix, "~/");
+            }
             eprintln!("{diag}");
         }
-        if !report.diags.is_empty() {
+        if !report.diags.is_empty() && validated.is_some() {
             eprintln!();
         }
         if let Some(v) = &validated {

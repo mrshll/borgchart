@@ -93,6 +93,11 @@ fn piped_sources_show_the_includer_hierarchy_and_home_paths_without_ansi() {
     );
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert!(stderr.contains("~/config.yaml"), "{stderr}");
+    let home = f.path("").display().to_string();
+    assert!(
+        !stderr.contains(home.trim_end_matches('/')),
+        "home left in a message: {stderr}"
+    );
     assert!(
         stderr.ends_with("\n\n"),
         "warnings need separation: {stderr:?}"
