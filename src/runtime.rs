@@ -4129,7 +4129,7 @@ pub fn status_look(r: &StatusRow) -> tree::Look {
         },
         ("copy", "unreadable") => look('◌', Tone::Odd),
         ("copy", "stopping") => look('◌', Tone::Faded),
-        ("copy", _) if r.running.unwrap_or(0) > 0 => look('●', Tone::Plain),
+        ("copy", _) if r.running.unwrap_or(0) > 0 => look('◆', Tone::Team),
         ("copy", _) => faded,
         ("plugin", "alive")
             if r.detail

@@ -51,3 +51,34 @@ fn nested_plugin_errors_highlight_the_state_instead_of_the_detail() {
     assert!(plugin.contains("\x1b[7m alive \x1b[0m"), "{plugin:?}");
     assert!(!plugin.contains("\x1b[7m error: cannot reach the feed \x1b[0m"));
 }
+
+#[test]
+fn team_diamonds_identify_running_copies_without_hiding_copy_failures() {
+    let mut rows = [
+        member("lead", None),
+        StatusRow {
+            kind: "copy",
+            instance: "harbor-k3f9/design-j5v3".into(),
+            vendor: None,
+            model: None,
+            state: "running".into(),
+            running: Some(2),
+            ..member("design-j5v3", Some("harbor-k3f9/lead"))
+        },
+    ];
+    let rendered = runtime::render_status_as("harbor", &rows, true, true);
+    assert!(rendered.lines().any(|line| line.contains("◆ design-j5v3")));
+    for (state, running) in [("stopped", 0), ("stopping", 2), ("unreadable", 2)] {
+        rows[1].state = state.into();
+        rows[1].running = Some(running);
+        let rendered = runtime::render_status_as("harbor", &rows, true, true);
+        let copy = rendered
+            .lines()
+            .find(|line| line.contains("design-j5v3"))
+            .unwrap();
+        assert!(!copy.contains('◆'), "{copy}");
+        if state != "stopped" {
+            assert!(copy.contains(state), "{copy}");
+        }
+    }
+}

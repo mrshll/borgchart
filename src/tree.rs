@@ -45,6 +45,8 @@ pub enum Tone {
     Plain,
     /// Busy: one colour for every vendor, far from the alert red.
     Busy,
+    /// A running nested team, rather than one working member.
+    Team,
     /// Waiting on a person, or ended when it should run.
     Alert,
     /// State could not be read.
@@ -63,6 +65,7 @@ pub mod palette {
     use super::Rgb;
     /// Working rows, whatever their vendor.
     pub const BUSY: Rgb = (0x1f, 0x93, 0x9a);
+    pub const TEAM: Rgb = (0xa9, 0x81, 0x2a);
     pub const ALERT: Rgb = (0xc0, 0x4a, 0x4a);
     pub const ODD: Rgb = (0x90, 0x7a, 0xa9);
     /// Furniture, details and rows that are not running.
@@ -99,6 +102,7 @@ fn ink(tone: Tone) -> String {
     match tone {
         Tone::Plain => String::new(),
         Tone::Busy => format!("{BOLD}{}", fg(palette::BUSY)),
+        Tone::Team => format!("{BOLD}{}", fg(palette::TEAM)),
         Tone::Alert => format!("{BOLD}{}", fg(palette::ALERT)),
         Tone::Odd => fg(palette::ODD),
         Tone::Faded => fg(palette::FADED),
@@ -253,6 +257,8 @@ fn painted(prefix: &str, row: &[String], look: Look, state: usize) -> String {
         }
         let style = match look.tone {
             Tone::Faded => faded.clone(),
+            Tone::Team if i == state => String::new(),
+            Tone::Team if i < state => fg(palette::TEAM),
             _ if i == state => tone.clone(),
             _ if i < state => String::new(),
             // Details: what a person must do next stays readable.
@@ -472,7 +478,13 @@ mod tests {
             0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
         };
         let contrast = |a: f64, b: f64| (a.max(b) + 0.05) / (a.min(b) + 0.05);
-        for rgb in [palette::BUSY, palette::ALERT, palette::ODD, palette::FADED] {
+        for rgb in [
+            palette::BUSY,
+            palette::TEAM,
+            palette::ALERT,
+            palette::ODD,
+            palette::FADED,
+        ] {
             let l = luminance(rgb);
             assert!(contrast(l, 1.0) >= 3.0, "{rgb:?} on white");
             assert!(contrast(l, 0.0) >= 3.0, "{rgb:?} on black");
@@ -539,5 +551,11 @@ mod tests {
         assert!(absent.contains(&format!("{}  not created", fg(palette::FADED))));
         // A role with no member yet: its name in italics.
         assert!(absent.contains(&format!("{}{ITALIC}  absent", fg(palette::FADED))));
+        let mut team = node("copy", None, &["dev-team", "2 running", ""]);
+        team.look = look(Some('◆'), Tone::Team);
+        let painted = render("team", &[team], &[], true);
+        assert!(painted.contains(&format!("{BOLD}{}◆ copy{RESET}", fg(palette::TEAM))));
+        assert!(painted.contains(&format!("{} dev-team{RESET}", fg(palette::TEAM))));
+        assert!(painted.contains("   2 running"));
     }
 }

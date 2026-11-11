@@ -206,6 +206,7 @@ fn tone_style(tone: tree::Tone, colour: bool) -> Style {
     match tone {
         tree::Tone::Plain => Style::default(),
         tree::Tone::Busy => bold.fg(rgb(tree::palette::BUSY)),
+        tree::Tone::Team => bold.fg(rgb(tree::palette::TEAM)),
         tree::Tone::Alert => bold.fg(rgb(tree::palette::ALERT)),
         tree::Tone::Odd => Style::default().fg(rgb(tree::palette::ODD)),
         tree::Tone::Faded => Style::default().fg(rgb(tree::palette::FADED)),
@@ -313,20 +314,33 @@ fn draw(
             let faded = tone_style(tree::Tone::Faded, colour);
             let row = Row::new(vec![
                 Cell::from(name).style({
-                    let name = style.remove_modifier(Modifier::BOLD);
+                    let name =
+                        if r.is_some_and(|r| runtime::status_look(r).tone == tree::Tone::Team) {
+                            style
+                        } else {
+                            style.remove_modifier(Modifier::BOLD)
+                        };
                     if r.is_some_and(|r| runtime::status_look(r).italic) {
                         name.add_modifier(Modifier::ITALIC)
                     } else {
                         name
                     }
                 }),
-                Cell::from(vendor),
+                Cell::from(vendor).style(
+                    if r.is_some_and(|r| runtime::status_look(r).tone == tree::Tone::Team) {
+                        style.remove_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    },
+                ),
                 Cell::from(Line::from(Span::styled(
                     state,
                     if colour
                         && r.is_some_and(|r| runtime::status_look(r).tone == tree::Tone::Alert)
                     {
                         style.add_modifier(Modifier::REVERSED)
+                    } else if r.is_some_and(|r| runtime::status_look(r).tone == tree::Tone::Team) {
+                        Style::default()
                     } else {
                         style
                     },
