@@ -52,7 +52,7 @@ The hooks check the working tree, not only what is staged. Each check uses `tool
 
 ## Running the engineering teams
 
-`teams/` holds three team definitions (`borgchart-engineering`, `dev-team` and `dev-design-team`) and a `shared/` folder of includes they all use. Each `team.yaml` and its role files are the only description of that team.
+`teams/` holds three team definitions (`engineering`, `dev-team` and `dev-design-team`) and a `shared/` folder of includes they all use. Each `team.yaml` and its role files are the only description of that team.
 
 The three aren't self-contained, so they travel together:
 
@@ -75,9 +75,9 @@ auth: login
 teams: [./teams]
 ```
 
-set `BORGCHART_CONFIG` to that file's absolute path, put `brg-seat` on `PATH`, and validate: `brg validate borgchart-engineering`, `brg validate dev-team`, `brg validate dev-design-team`. If another configured directory provides one of these names, validation refuses the ambiguity.
+set `BORGCHART_CONFIG` to that file's absolute path, put `brg-seat` on `PATH`, and validate: `brg validate engineering`, `brg validate dev-team`, `brg validate dev-design-team`. If another configured directory provides one of these names, validation refuses the ambiguity.
 
-Then create an instance from a checkout of the repository: `cd <checkout>; brg create borgchart-engineering`, or `brg create dev-team`. Its lead works in the checkout, and brg adds a git worktree for each dev copy and implementer as it creates them.
+Then create an instance from a checkout of the repository: `cd <checkout>; brg create engineering`, or `brg create dev-team`. Its lead works in the checkout, and brg adds a git worktree for each dev copy and implementer as it creates them.
 
 ### Pinned installation
 

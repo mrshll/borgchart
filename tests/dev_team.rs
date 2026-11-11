@@ -22,7 +22,7 @@ fn team_dir(name: &str) -> PathBuf {
 }
 
 fn department() -> PathBuf {
-    team_dir("borgchart-engineering")
+    team_dir("engineering")
 }
 
 fn shared() -> PathBuf {
@@ -184,7 +184,7 @@ fn the_readme_configuration_validates_cleanly() {
 fn the_department_validates_cleanly() {
     let dir = tempfile::tempdir().unwrap();
     let config = setup(dir.path(), &readme_configs()[0]);
-    let out = validate(dir.path(), &config, "borgchart-engineering");
+    let out = validate(dir.path(), &config, "engineering");
     let report: serde_json::Value = serde_json::from_slice(&out.stdout)
         .unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&out.stderr)));
     assert!(out.status.success(), "{report}");
@@ -220,7 +220,7 @@ fn includes_of(file: &Path) -> Vec<String> {
 fn includes_resolve_and_are_shared() {
     let mut files = member_files("dev-team");
     assert_eq!(files.len(), 5, "{files:?}");
-    files.extend(member_files("borgchart-engineering"));
+    files.extend(member_files("engineering"));
     let mut uses: std::collections::BTreeMap<String, usize> = Default::default();
     for file in &files {
         let includes = includes_of(file);
@@ -396,9 +396,18 @@ fn denied_word(text: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Words that belong to this repository's own rules (its build wrapper,
-/// checks and language), which live in its `AGENTS.md`, not in team files.
-const PROJECT_WORDS: [&str; 5] = ["cargo", "cargo-slot", "githooks", "clippy", "rust"];
+/// Words that belong to this repository, not to team files: its name, and
+/// its own rules (its build wrapper, checks and language), which live in its
+/// `AGENTS.md`.
+const PROJECT_WORDS: [&str; 7] = [
+    "borgchart",
+    "borgchart-engineering",
+    "cargo",
+    "cargo-slot",
+    "githooks",
+    "clippy",
+    "rust",
+];
 
 #[test]
 fn the_team_files_stay_generic() {
@@ -892,11 +901,11 @@ mod round {
         let baseline = git_in(&repo, &["rev-parse", "HEAD"]);
         team.ok(&[
             "create",
-            "borgchart-engineering",
+            "engineering",
             &team.path("work").display().to_string(),
         ]);
         let inst = team
-            .instance_of("borgchart-engineering")
+            .instance_of("engineering")
             .expect("the department's instance");
         let lead = team.member_in(&inst, "lead");
         let rule = member_body(&department().join("lead.md"));
@@ -1150,14 +1159,11 @@ mod round {
 
         team.ok(&[
             "create",
-            &team
-                .path("pinned/teams/borgchart-engineering")
-                .display()
-                .to_string(),
+            &team.path("pinned/teams/engineering").display().to_string(),
             &team.path("work").display().to_string(),
         ]);
         let dept = team
-            .instance_of("borgchart-engineering")
+            .instance_of("engineering")
             .expect("the department's instance");
         let dept_lead = team.member_in(&dept, "lead");
         let meta = team.read(&format!("state/{dept}/start.json")).unwrap();
@@ -1432,7 +1438,7 @@ mod round {
 fn pinned_sibling_catalog_validates_without_the_source_checkout() {
     let dir = tempfile::tempdir().unwrap();
     let config = setup(dir.path(), &readme_configs()[0]);
-    for name in ["borgchart-engineering", "dev-team", "dev-design-team"] {
+    for name in ["engineering", "dev-team", "dev-design-team"] {
         let output = validate(dir.path(), &config, name);
         assert!(
             output.status.success(),

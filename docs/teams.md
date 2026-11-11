@@ -4,7 +4,7 @@ Teams, instances, roles, copies up to `max` and the four verbs (`create`, `start
 
 ## The files
 
-A real team lives in [`dev-team/`](../teams/dev-team/): the team this repository is developed with, plus [`dev-design-team/`](../teams/dev-design-team/), a design panel. They are siblings of [`borgchart-engineering/`](../teams/borgchart-engineering/), whose root lead seats both, through roles referring to them by name (see "Teams as members"). The sketch below is a smaller version of it:
+A real team lives in [`dev-team/`](../teams/dev-team/): the team this repository is developed with, plus [`dev-design-team/`](../teams/dev-design-team/), a design panel. They are siblings of [`engineering/`](../teams/engineering/), whose root lead seats both, through roles referring to them by name (see "Teams as members"). The sketch below is a smaller version of it:
 
 ```
 devteam/
@@ -156,10 +156,10 @@ roles:
 
 ## Teams as members
 
-A role can be a whole team, so teams form a tree: a team's roles can be teams, and every member has a parent (except the root), children and a subtree. The member with no parent is the **root**; the lead at the top of a tree is its **root lead**. [`borgchart-engineering/`](../teams/borgchart-engineering/) is the real tree: its root lead runs dev teams, design panels, researchers and monitors for this repository's engineering.
+A role can be a whole team, so teams form a tree: a team's roles can be teams, and every member has a parent (except the root), children and a subtree. The member with no parent is the **root**; the lead at the top of a tree is its **root lead**. [`engineering/`](../teams/engineering/) is the real tree: its root lead runs dev teams, design panels, researchers and monitors for this repository's engineering.
 
 ```yaml
-# borgchart-engineering/team.yaml, shortened
+# engineering/team.yaml, shortened
 roles:
   lead:   {prompt: lead.md, start: true, interactive: true}
   dev:    {team: dev-team, parent: lead, start: false, max: 4, worktree: true}
@@ -170,7 +170,7 @@ roles:
 - **`team:` names another definition:** `team: dev-team` resolves through the configured team directories, exactly like `brg create dev-team`. Missing or ambiguous names fail validation. There is no same-installation restriction or nested-path compatibility. Definitions can be siblings while runtime working folders and addresses still nest. A definition also runs independently with `brg create dev-team` in a checkout.
 - **Resolution is frozen while running.** Child definition directories belong to the parent start snapshot; a changed catalog cannot silently redirect a later copy. Apply changed resolution at a full stop/start. Existing copies retain their own recorded source folders and freeze their contents independently. Missing referenced definitions remain tolerable for observing/stopping running instances, but validation, copy creation and a fresh full start refuse them.
 - **Copies are created stopped.** `brg create <instance>/dev` makes the copy and, for `worktree: true`, its worktree; it prints its ID and folder and starts nothing. `brg start <instance>/<copy>` starts the copy's `start: true` roles. A tree's instances may share folders, so the checkout check is between trees.
-- **Addresses nest:** `<instance>/<copy>/<member>`, for example `borgchart-engineering-h4k2/dev-a7k2/lead-c4nd`. A copy's instance ID is its full path. A target resolves by the longest registered instance prefix, then a member, a role or nothing. A copy's top members (those with no parent role) get their parent's full address in `BORGCHART_PARENT`.
+- **Addresses nest:** `<instance>/<copy>/<member>`, for example `engineering-h4k2/dev-a7k2/lead-c4nd`. A copy's instance ID is its full path. A target resolves by the longest registered instance prefix, then a member, a role or nothing. A copy's top members (those with no parent role) get their parent's full address in `BORGCHART_PARENT`.
 - **Escalation follows `parent:` one level at a time.** A copy's top members hang under the member of the team role's `parent`. Only the root writes to `external:NAME`; a child team's lead writes to its parent. Siblings don't message each other: their parent carries what one needs from another.
 - **Authority is the whole subtree.** A member, at its latest running start, may create, start, stop or delete anything below it along recorded parent edges, at any depth: its child members, the copies under it, and their members and copies. Never itself, its ancestors, its siblings or their subtrees, so a copy's top member can't stop or delete its own copy. A person may act on anything.
 - **Stopping cascades.** `stop` of a copy or of the root's instance stops members deepest first, marking the copy `stopping` so nothing new is created or started inside it meanwhile; a later `stop` finishes an interrupted one. `start` brings back the copies that were running. `delete` of an instance with kept copies is refused, listing them.
