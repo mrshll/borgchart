@@ -4030,7 +4030,7 @@ pub fn render_status_as(
         .iter()
         .map(|r| (status_key(r), status_name(r)))
         .collect();
-    tree::render_named(header, &nodes, &plugins, colour, spin, |id| {
+    tree::render_named(header, &nodes, &plugins, colour, spin, short, |id| {
         names[id].clone()
     })
 }
@@ -4068,6 +4068,13 @@ fn status_nodes_as(rows: &[StatusRow], short: bool) -> Vec<tree::Node> {
                 let mut cols = status_cells(r, short);
                 if short && r.kind == "plugin" {
                     cols.insert(0, String::new());
+                }
+                if short {
+                    match r.kind {
+                        "member" | "copy" | "plugin" => cols.swap(0, 1),
+                        "role" => {}
+                        _ => cols.insert(1, String::new()),
+                    }
                 }
                 cols
             },
@@ -4195,7 +4202,35 @@ pub fn summary_parts(rows: &[StatusRow]) -> Vec<(String, tree::Tone)> {
 /// [`summary_parts`] as one line, with working counts in teal and rows
 /// that need a person in red when painted.
 pub fn summary(rows: &[StatusRow], colour: bool) -> String {
-    summary_parts(rows)
+    paint_summary(&summary_parts(rows), colour)
+}
+
+/// Attention first for the terminal band; pipe summaries retain their order.
+pub fn summary_band_parts(rows: &[StatusRow]) -> Vec<(String, tree::Tone)> {
+    let mut parts = summary_parts(rows);
+    parts.sort_by_key(|(_, tone)| match tone {
+        tree::Tone::Alert => 0,
+        tree::Tone::Busy => 1,
+        _ => 2,
+    });
+    parts
+}
+
+/// One band for the entire terminal view, above all instance headers.
+pub fn summary_band(rows: &[StatusRow], colour: bool) -> String {
+    let brand = if colour {
+        "\x1b[1mborgchart\x1b[0m"
+    } else {
+        "borgchart"
+    };
+    format!(
+        "{brand}    {}",
+        paint_summary(&summary_band_parts(rows), colour)
+    )
+}
+
+fn paint_summary(parts: &[(String, tree::Tone)], colour: bool) -> String {
+    parts
         .iter()
         .map(|(text, tone)| match (colour, tone) {
             (false, _) => text.clone(),

@@ -175,7 +175,8 @@ enum Command {
     /// messages. A role with no member shows only its state; its `--json` row
     /// also gives its vendor and model.
     ///
-    /// On a terminal, a summary counts working and idle members, rows needing
+    /// On a terminal, state precedes vendor/model or team. A summary band above
+    /// the tree counts working and idle members, rows needing
     /// you and unread messages. Painted output uses a filled red state label
     /// for attention and a gold ◆ for running teams. Working marks spin in
     /// --watch and --interactive; NO_COLOR suppresses painting and motion.
@@ -606,13 +607,13 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
             } else if all.is_empty() {
                 println!("{}", address::known());
             } else {
-                print!("{text}");
                 if std::io::stdout().is_terminal() {
                     println!(
-                        "\n{}",
-                        runtime::summary(&rows, crate::tree::colour_wanted(true))
+                        "{}\n",
+                        runtime::summary_band(&rows, crate::tree::colour_wanted(true))
                     );
                 }
+                print!("{text}");
             }
             code
         }

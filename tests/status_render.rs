@@ -82,3 +82,38 @@ fn team_diamonds_identify_running_copies_without_hiding_copy_failures() {
         }
     }
 }
+
+#[test]
+fn terminal_states_stay_visible_at_80_columns_with_long_models() {
+    let rows = [
+        member("lead", None),
+        StatusRow {
+            state: "blocked".into(),
+            model: Some("example-model-with-a-very-long-declared-name-and-extra-effort".into()),
+            ..member("reviewer", Some("lead"))
+        },
+    ];
+    let escapes = regex::Regex::new("\x1b\\[[0-9;]*m").unwrap();
+    for colour in [true, false] {
+        let terminal = runtime::render_status_as("harbor", &rows, true, colour, None);
+        let plain = escapes.replace_all(&terminal, "");
+        let reviewer: String = plain
+            .lines()
+            .find(|line| line.contains("reviewer"))
+            .unwrap()
+            .chars()
+            .take(80)
+            .collect();
+        assert!(reviewer.contains("blocked"), "{reviewer}");
+        if !colour {
+            assert!(!terminal.contains('\x1b'));
+        }
+    }
+    let piped = runtime::render_status_as("harbor", &rows, false, false, None);
+    let reviewer = piped
+        .lines()
+        .find(|line| line.contains("reviewer"))
+        .unwrap();
+    assert!(reviewer.find("example-model").unwrap() < reviewer.find("blocked").unwrap());
+    assert!(!piped.contains('\x1b'));
+}

@@ -93,11 +93,19 @@ fn watch_plain(one: Option<&Instance>, interval: Duration) -> Result<(), String>
         };
         let footer = format!("refreshed {} UTC · Ctrl-C to stop", clock(epoch()));
         let mut out = std::io::stdout();
-        let _ = write!(
-            out,
-            "\x1b[H\x1b[2J{text}\n{}\n{footer}\n",
-            runtime::summary(&rows, false)
-        );
+        if std::io::IsTerminal::is_terminal(&out) {
+            let _ = write!(
+                out,
+                "\x1b[H\x1b[2J{}\n\n{text}\n{footer}\n",
+                runtime::summary_band(&rows, false)
+            );
+        } else {
+            let _ = write!(
+                out,
+                "\x1b[H\x1b[2J{text}\n{}\n{footer}\n",
+                runtime::summary(&rows, false)
+            );
+        }
         let _ = out.flush();
         std::thread::sleep(interval);
     }
@@ -142,8 +150,8 @@ fn watch_frame(sections: &[Section], spin: Option<usize>, refreshed: u64) -> Str
     }
     let rows: Vec<StatusRow> = sections.iter().flat_map(|s| s.rows.clone()).collect();
     format!(
-        "{text}\n{}\n{}\n",
-        runtime::summary(&rows, true),
+        "{}\n\n{text}\n{}\n",
+        runtime::summary_band(&rows, true),
         tree::ink_text(
             &format!("refreshed {} UTC · Ctrl-C to stop", clock(refreshed)),
             tree::palette::FADED,
@@ -317,8 +325,13 @@ fn tone_style(tone: tree::Tone, colour: bool) -> Style {
 
 /// The same toned summary as the text status view.
 fn summary_line(rows: &[StatusRow], colour: bool) -> Line<'static> {
-    let mut spans = Vec::new();
-    for (i, (text, tone)) in runtime::summary_parts(rows).into_iter().enumerate() {
+    let title = if colour {
+        Style::default().add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    let mut spans = vec![Span::styled("borgchart", title), Span::raw("    ")];
+    for (i, (text, tone)) in runtime::summary_band_parts(rows).into_iter().enumerate() {
         if i > 0 {
             spans.push(Span::raw("  "));
         }
@@ -347,8 +360,12 @@ fn draw(
     colour: bool,
     spin: Option<usize>,
 ) {
-    let [top, bottom] =
-        Layout::vertical([Constraint::Min(3), Constraint::Length(3)]).areas(frame.area());
+    let [band, top, bottom] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Min(3),
+        Constraint::Length(2),
+    ])
+    .areas(frame.area());
     // The same tree and columns as `brg status`, each instance's tree its own.
     let prefixes: Vec<std::collections::BTreeMap<String, String>> = sections
         .iter()
@@ -389,8 +406,8 @@ fn draw(
                 _ => cols.insert(0, String::new()),
             }
             let [vendor, state, detail] = <[String; 3]>::try_from(cols).unwrap_or_default();
-            let state = if colour { format!(" {state} ") } else { state };
-            [name, vendor, state, detail]
+            let state = format!(" {state} ");
+            [name, state, vendor, detail]
         })
         .collect();
     // Each column as wide as its widest cell, as `brg status` aligns them.
@@ -411,7 +428,7 @@ fn draw(
     let body: Vec<Row> = cells
         .into_iter()
         .zip(&lines)
-        .map(|([name, vendor, state, detail], &(s, r))| {
+        .map(|([name, state, vendor, detail], &(s, r))| {
             let r = r.map(|r| &sections[s].rows[r]);
             let style = r.map_or(Style::default(), |r| state_style(r, colour));
             let faded = tone_style(tree::Tone::Faded, colour);
@@ -429,13 +446,6 @@ fn draw(
                         name
                     }
                 }),
-                Cell::from(vendor).style(
-                    if r.is_some_and(|r| runtime::status_look(r).tone == tree::Tone::Team) {
-                        style.remove_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default()
-                    },
-                ),
                 Cell::from(Line::from(Span::styled(
                     state,
                     if colour
@@ -448,6 +458,13 @@ fn draw(
                         style
                     },
                 ))),
+                Cell::from(vendor).style(
+                    if r.is_some_and(|r| runtime::status_look(r).tone == tree::Tone::Team) {
+                        style.remove_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    },
+                ),
                 // What a person must do next stays readable.
                 Cell::from(detail).style(
                     if r.is_some_and(|r| runtime::status_look(r).tone == tree::Tone::Alert) {
@@ -509,8 +526,9 @@ fn draw(
     .style(tone_style(tree::Tone::Faded, colour));
     let every: Vec<StatusRow> = sections.iter().flat_map(|s| s.rows.clone()).collect();
     let summary = summary_line(&every, colour);
+    frame.render_widget(Paragraph::new(summary), band);
     frame.render_widget(
-        Paragraph::new(vec![summary, Line::from(message.to_string()), help]),
+        Paragraph::new(vec![Line::from(message.to_string()), help]),
         bottom,
     );
 }
@@ -694,11 +712,11 @@ mod tests {
                 })
                 .unwrap();
             let screen = terminal.backend().buffer();
-            assert_eq!(screen[(0, 0)].symbol(), "╭");
-            assert!(screen[(2, 0)].modifier.contains(Modifier::BOLD));
+            assert_eq!(screen[(0, 2)].symbol(), "╭");
+            assert!(screen[(2, 2)].modifier.contains(Modifier::BOLD));
             if colour {
                 let grey = super::rgb(super::tree::palette::FADED);
-                assert_eq!(screen[(0, 0)].fg, grey);
+                assert_eq!(screen[(0, 2)].fg, grey);
                 assert_eq!(screen[(0, 11)].fg, grey);
             } else {
                 assert!(screen.content.iter().all(|cell| cell.fg == Color::Reset));

@@ -604,6 +604,9 @@ fn terminal_status_summarizes_without_adding_a_summary_to_the_pipe() {
     let summary = borgchart::runtime::summary(&[], false);
     assert!(terminal.contains(&summary), "{terminal:?}");
     assert!(!pipe.contains(&summary), "{pipe:?}");
+    let id = pipe.split_whitespace().next().unwrap();
+    assert!(terminal.find(&summary).unwrap() < terminal.find(id).unwrap());
+    assert_eq!(terminal.matches("borgchart").count(), 1);
 }
 
 #[test]
@@ -797,6 +800,9 @@ fn watch_erases_old_rows_and_uses_synchronized_redraw_when_the_tree_shrinks() {
         raw.contains("\x1b[?2026h") && raw.contains("\x1b[?2026l"),
         "{raw:?}"
     );
+    for frame in raw.split("\x1b[?2026h").skip(1) {
+        assert_eq!(frame.matches("borgchart").count(), 1, "{frame:?}");
+    }
     assert!(
         !raw.contains("\x1b[2J"),
         "redraw must not clear the whole screen: {raw:?}"

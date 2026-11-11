@@ -235,9 +235,15 @@ fn columns(rows: &[Vec<String>]) -> Vec<String> {
 
 /// One painted line. The first cell is `prefix`, `mark`, `name`: furniture
 /// recedes, the mark and name take the row's tone, as does the cell at
-/// `state`. Cells before it (vendor and model) are plain and cells after it
-/// (details) recede, unless the row is faded, when everything does.
-fn painted(prefix: &str, row: &[String], look: Look, state: usize) -> String {
+/// `state`. Metadata stays plain; details recede, unless the row is faded,
+/// when everything does.
+fn painted(
+    prefix: &str,
+    row: &[String],
+    look: Look,
+    state: usize,
+    metadata: Option<usize>,
+) -> String {
     let faded = fg(palette::FADED);
     let tone = ink(look.tone);
     let mut line = String::new();
@@ -267,9 +273,9 @@ fn painted(prefix: &str, row: &[String], look: Look, state: usize) -> String {
         let style = match look.tone {
             Tone::Faded => faded.clone(),
             Tone::Team if i == state => String::new(),
-            Tone::Team if i < state => fg(palette::TEAM),
+            Tone::Team if Some(i) == metadata => fg(palette::TEAM),
             _ if i == state => tone.clone(),
-            _ if i < state => String::new(),
+            _ if Some(i) == metadata => String::new(),
             // Details: what a person must do next stays readable.
             Tone::Alert => String::new(),
             _ => faded.clone(),
@@ -287,26 +293,32 @@ pub fn render(
     plugins: &[(String, Vec<String>, Look)],
     colour: bool,
 ) -> String {
-    render_named(team, nodes, plugins, colour, None, |id| id.to_string())
+    render_named(team, nodes, plugins, colour, None, false, |id| {
+        id.to_string()
+    })
 }
 
 /// Render qualified tree keys with caller-provided display names.
+/// Status terminals project state first; generic create/start trees do not.
 pub fn render_named(
     team: &str,
     nodes: &[Node],
     plugins: &[(String, Vec<String>, Look)],
     colour: bool,
     spin: Option<usize>,
+    state_first: bool,
     name: impl Fn(&str) -> String,
 ) -> String {
-    let ordered = if colour {
+    let spin = if colour { spin } else { None };
+    let terminal = colour || state_first;
+    let ordered = if terminal {
         order_live_first(nodes)
     } else {
         order(nodes)
     };
-    // A mark slot only when some line carries a mark, and only when painting:
+    // A mark slot only when some line carries a mark, on terminal layouts:
     // piped text stays exactly as it was.
-    let marked = colour
+    let marked = terminal
         && (nodes.iter().any(|n| n.look.mark.is_some())
             || plugins.iter().any(|p| p.2.mark.is_some()));
     let mark = |look: &Look| {
@@ -322,8 +334,12 @@ pub fn render_named(
             let n = &nodes[*i];
             let mut row = vec![format!("{prefix}{}{}", mark(&n.look), name(&n.id))];
             row.extend(n.cols.iter().cloned());
-            if colour {
-                let state = if n.cols.len() == 1 { 1 } else { 2 };
+            if terminal {
+                let state = if state_first || n.cols.len() == 1 {
+                    1
+                } else {
+                    2
+                };
                 if let Some(cell) = row.get_mut(state) {
                     *cell = format!(" {cell} ");
                 }
@@ -345,8 +361,13 @@ pub fn render_named(
     if colour {
         for (row, (i, prefix)) in cells(&rows).into_iter().zip(ordered) {
             // A role with no member has one column, its state.
-            let state = if nodes[i].cols.len() == 1 { 1 } else { 2 };
-            out.push_str(&painted(&prefix, &row, nodes[i].look, state));
+            let state = if state_first || nodes[i].cols.len() == 1 {
+                1
+            } else {
+                2
+            };
+            let metadata = (nodes[i].cols.len() > 1).then_some(if state_first { 2 } else { 1 });
+            out.push_str(&painted(&prefix, &row, nodes[i].look, state, metadata));
             out.push('\n');
         }
     } else {
@@ -356,7 +377,7 @@ pub fn render_named(
         }
     }
     let mut plugins: Vec<&(String, Vec<String>, Look)> = plugins.iter().collect();
-    if colour {
+    if terminal {
         // Stable: running plugins first, each group in its given order.
         plugins.sort_by_key(|p| p.2.tone == Tone::Faded);
     }
@@ -365,7 +386,7 @@ pub fn render_named(
         .map(|(name, cols, look)| {
             let mut row = vec![format!("{}plugin {name}", mark(look))];
             row.extend(cols.iter().cloned());
-            if colour && let Some(cell) = row.get_mut(1) {
+            if terminal && let Some(cell) = row.get_mut(1) {
                 *cell = format!(" {cell} ");
             }
             row
@@ -373,7 +394,7 @@ pub fn render_named(
         .collect();
     if colour {
         for (row, (_, _, look)) in cells(&plugin_rows).into_iter().zip(plugins) {
-            out.push_str(&painted("", &row, *look, 1));
+            out.push_str(&painted("", &row, *look, 1, None));
             out.push('\n');
         }
     } else {
@@ -591,12 +612,20 @@ mod tests {
                 italic: false,
             };
         }
-        let frame =
-            |colour, spin| render_named("team", &nodes, &[], colour, spin, |id| id.to_string());
+        let frame = |colour, spin| {
+            render_named("team", &nodes, &[], colour, spin, false, |id| {
+                id.to_string()
+            })
+        };
         let still = frame(true, None);
         assert_eq!(frame(true, Some(0)), still.replace("● worker", "⠋ worker"));
         assert_eq!(frame(true, Some(1)), still.replace("● worker", "⠙ worker"));
         assert_eq!(frame(true, Some(10)), frame(true, Some(0)));
-        assert_eq!(frame(false, Some(0)), frame(false, None));
+        for node in &mut nodes {
+            node.cols.swap(0, 1);
+        }
+        let monochrome =
+            |spin| render_named("team", &nodes, &[], false, spin, true, |id| id.to_string());
+        assert_eq!(monochrome(Some(0)), monochrome(None));
     }
 }
