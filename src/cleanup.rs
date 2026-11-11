@@ -379,6 +379,9 @@ fn run_git(
     pre: &[String],
     args: &[&str],
 ) -> Result<String, String> {
+    // Untranslated messages: callers tell "not a git repository" from other
+    // failures by git's English text.
+    command.env("LC_ALL", "C");
     command.arg("-C").arg(dir).args(pre).args(args);
     let what = args
         .iter()
