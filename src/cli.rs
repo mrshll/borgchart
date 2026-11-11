@@ -190,6 +190,13 @@ enum Command {
         interactive: bool,
     },
     /// Open a member's live session (detach with your tmux prefix, then d).
+    ///
+    /// brg's tmux server runs without your own tmux config unless brg's
+    /// configuration sets `tmux.user_config`, and a change to it applies only
+    /// once every instance on brg's server has stopped and the server starts
+    /// again. To keep your own bindings without a restart, attach from inside
+    /// your own tmux. brg's prefix is then tmux's default, Ctrl-b (press it
+    /// twice if your own prefix is Ctrl-b too).
     Attach {
         /// The member: `<instance>/<member>`.
         #[arg(add = crate::complete::members())]
