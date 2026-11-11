@@ -1108,13 +1108,41 @@ fn a_role_file_reached_from_another_team_cannot_reach_further() {
             && err.contains(&c.path("private/office/lead.md").display().to_string()),
         "{err}"
     );
-    // Nor can an include file use it.
+    // Nor can an include file use it, or a team reach back into itself.
     let c = Catalogs::new();
     c.write(
         "private/office/includes/local.md",
         "{{teams/engineering/lead}}\n",
     );
-    assert!(c.error().contains("one level deep"));
+    let err = c.error();
+    assert!(
+        err.contains(
+            &c.path("private/office/includes/local.md")
+                .display()
+                .to_string()
+        ) && err.contains(&c.path("private/office/lead.md").display().to_string()),
+        "{err}"
+    );
+    let c = Catalogs::new();
+    c.write(
+        "private/office/team.yaml",
+        "roles: {lead: {prompt: lead.md}, helper: {prompt: helper.md, parent: lead}}\n",
+    );
+    c.write(
+        "private/office/helper.md",
+        "---\n---\n{{teams/office/lead}}\n",
+    );
+    assert!(c.error().contains("can't include another"));
+}
+
+#[test]
+fn another_teams_role_file_stays_inside_that_team() {
+    let c = Catalogs::new();
+    c.write("outside.md", "---\n---\nOutside.\n");
+    let lead = c.path("shared/engineering/lead.md");
+    fs::remove_file(&lead).unwrap();
+    std::os::unix::fs::symlink(c.path("outside.md"), &lead).unwrap();
+    assert!(c.error().contains("through a symlink"));
 }
 
 #[test]

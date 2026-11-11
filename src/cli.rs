@@ -771,7 +771,14 @@ fn run_validate(team: &str, json: bool, probe: bool) -> ExitCode {
                 .team
                 .roles
                 .iter()
-                .map(|(id, role)| (id.clone(), serde_json::json!({ "sources": role.sources })))
+                .map(|(id, role)| {
+                    let sources: Vec<String> = role
+                        .sources
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect();
+                    (id.clone(), serde_json::json!({ "sources": sources }))
+                })
                 .collect();
         }
         println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());

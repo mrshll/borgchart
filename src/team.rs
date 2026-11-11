@@ -1281,17 +1281,31 @@ fn resolve_includes(
             continue;
         }
         let rel = format!("{includes_dir}/{stem}.md");
+        // The include as the team names it: a catalog path is under its catalog.
+        let listed = match rel.strip_prefix("catalog:") {
+            Some(rest) => dir.parent().unwrap_or(dir).join(rest),
+            None => dir.join(&rel),
+        };
         match resolve_asset(dir, &rel) {
             Ok(real) => match read_text(&real) {
                 Ok(text) => {
-                    sources.push(real.clone());
+                    sources.push(listed.clone());
                     let text = text.replace("\r\n", "\n");
-                    if text
-                        .lines()
-                        .any(|l| include_stem(l).is_some() || team_role_ref(l).is_some())
-                    {
+                    if let Some(reference) = text.lines().find(|l| team_role_ref(l).is_some()) {
                         report.error(
-                            Some(&dir.join(&rel)),
+                            Some(&listed),
+                            format!(
+                                "`{}`: an include can't take another team's role file; put the line in the role file that includes this one, {}",
+                                reference.trim(),
+                                shown.display()
+                            ),
+                        );
+                        ok = false;
+                        continue;
+                    }
+                    if text.lines().any(|l| include_stem(l).is_some()) {
+                        report.error(
+                            Some(&listed),
                             "includes are one level deep; this include contains another include",
                         );
                         ok = false;
