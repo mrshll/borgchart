@@ -25,15 +25,15 @@ pub const WAITER: &str = "waiter";
 /// Commands the background-wait member may run, as session-only
 /// `--allowedTools` entries in its role's `args`: the wait and the
 /// read of its own inbox. Nothing is saved to settings.
-pub const WAITER_TOOLS: &str = "Bash(brg inbox wait:*),Bash(brg inbox --full:*)";
+pub const WAITER_TOOLS: &str = "Bash(brg msg wait:*),Bash(brg msg list --full:*)";
 
 const READY: &str = "This is an automated test. Reply with the single word READY. Use no tools.";
 
 const WAITER_PROMPT: &str = "This is an automated test of background commands. Follow these steps exactly, and use no other tools.
 
-1. Run this with your Bash tool, with run_in_background set to true: `brg inbox wait --timeout 900`
+1. Run this with your Bash tool, with run_in_background set to true: `brg msg wait --timeout 900`
 2. End your turn right away with the one word ARMED. Don't wait for, poll or check on the background command.
-3. When that background command has finished, run `brg inbox --full` with your Bash tool. One record's body is `nonce <word>`.
+3. When that background command has finished, run `brg msg list --full` with your Bash tool. One record's body is `nonce <word>`.
 4. Reply with one line: REPLY, a space, and that word written backwards, letter by letter. Then stop.";
 
 /// One case's team, started with `brg create`. Dropping it runs `brg stop`.
@@ -689,7 +689,7 @@ fn armed_wait(pane: u32) -> Option<u32> {
                 .first()
                 .and_then(|a| Path::new(a).file_name())
                 .is_some_and(|n| n == "brg")
-                && p.argv.windows(2).any(|w| w == ["inbox", "wait"])
+                && p.argv.windows(2).any(|w| w == ["msg", "wait"])
         })
         .map(|p| p.pid)
 }
@@ -699,7 +699,7 @@ fn still_runs(pid: u32) -> bool {
         c.split(|&byte| byte == 0)
             .collect::<Vec<_>>()
             .windows(2)
-            .any(|words| words == [b"inbox".as_slice(), b"wait".as_slice()])
+            .any(|words| words == [b"msg".as_slice(), b"wait".as_slice()])
     })
 }
 
@@ -783,6 +783,7 @@ pub fn background_wait(w: &World) -> Outcome {
     let body = format!("nonce {nonce}");
     let mut cmd = t.brg_command();
     cmd.args([
+        "msg",
         "send",
         &format!("{}/{}", t.instance(), t.member()),
         "-",

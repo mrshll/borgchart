@@ -774,7 +774,7 @@ mod round {
         let message = documented(&lead_body, "Read <brief path>")
             .replace("<brief path>", &brief.display().to_string());
         let assign = format!(
-            "\"$BORGCHART_BIN\" send {implementer} --json - <<'MESSAGE'\n{message}\nMESSAGE"
+            "\"$BORGCHART_BIN\" msg send {implementer} --json - <<'MESSAGE'\n{message}\nMESSAGE"
         );
         team.tool("lead", "brief", &assign, false);
         let (sent, code) = team.output("brief");
@@ -782,7 +782,7 @@ mod round {
         assert_eq!(sent["id"], "m1");
 
         // The lead arms its documented wait before the helper replies.
-        let wait = documented(&lead_body, "\"$BORGCHART_BIN\" inbox wait --full");
+        let wait = documented(&lead_body, "\"$BORGCHART_BIN\" msg wait --full");
         team.tool(
             "lead",
             "reply-wait",
@@ -807,7 +807,7 @@ mod round {
 
         // Its first tool action is a full inbox read.
         let helper = fs::read_to_string(shared().join("includes/helper.md")).unwrap();
-        let inbox = "\"$BORGCHART_BIN\" inbox --full --json";
+        let inbox = "\"$BORGCHART_BIN\" msg list --full --json";
         team.tool("implementer", "impl-inbox", inbox, false);
         let (inbox, code) = team.output("impl-inbox");
         assert_eq!(code, 0, "{inbox}");
@@ -841,7 +841,7 @@ mod round {
         let first = documented(&helper, "Report: <report path>")
             .replace("<report path>", &report.display().to_string());
         let reply = format!(
-            "\"$BORGCHART_BIN\" send {lead} --reply-to m1 --json - <<'MESSAGE'\n{first}\naction-needed: none\nMESSAGE"
+            "\"$BORGCHART_BIN\" msg send {lead} --reply-to m1 --json - <<'MESSAGE'\n{first}\naction-needed: none\nMESSAGE"
         );
         team.tool("implementer", "report-reply", &reply, false);
         let (sent, code) = team.output("report-reply");
@@ -885,7 +885,7 @@ mod round {
             .find(|r| r["member"] == implementer)
             .unwrap();
         assert_eq!(helper["state"], "stopped", "{rows}");
-        assert_eq!(helper["unread"], 0, "{rows}");
+        assert_eq!(helper["unacked"], 0, "{rows}");
         team.ok(&["stop", &team.inst()]);
     }
 
@@ -1381,7 +1381,7 @@ mod round {
             .split("## When your team has a parent")
             .next()
             .unwrap();
-        assert!(wake.contains("inbox wait --full"), "{wake}");
+        assert!(wake.contains("msg wait --full"), "{wake}");
         assert!(wake.contains("stop waiting"), "{wake}");
 
         let team = new_team("fenced");
@@ -1389,6 +1389,7 @@ mod round {
         let inst = team.inst();
         let lead = team.m("lead");
         team.ok(&[
+            "msg",
             "send",
             "--external",
             "owner",
@@ -1396,7 +1397,7 @@ mod round {
             "Fictional note.",
         ]);
         assert_eq!(
-            json(&as_lead(&team, &["inbox", "--json"])).0["records"][0]["id"],
+            json(&as_lead(&team, &["msg", "list", "--json"])).0["records"][0]["id"],
             "m1"
         );
 
@@ -1405,7 +1406,7 @@ mod round {
             let mut cmd = lead_cmd(&team);
             cmd.env("BORGCHART_WAIT_MIN_MS", "1000")
                 .env("BORGCHART_WAIT_TIMEOUT_MS", "3000");
-            cmd.args(["inbox", "wait", "--timeout", "60", "--json"]);
+            cmd.args(["msg", "wait", "--timeout", "60", "--json"]);
             std::thread::spawn(move || cmd.output().unwrap())
         };
         std::thread::sleep(Duration::from_millis(500));
@@ -1423,7 +1424,7 @@ mod round {
         );
         assert!(!message.contains("list the inbox again"), "{message}");
         // Listing again from that session is fenced the same way.
-        let (relist, code) = json(&as_lead(&team, &["inbox", "--json"]));
+        let (relist, code) = json(&as_lead(&team, &["msg", "list", "--json"]));
         assert_eq!(code, Some(8), "{relist}");
         assert!(
             !relist["message"]

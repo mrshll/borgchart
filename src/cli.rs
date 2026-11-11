@@ -1,6 +1,6 @@
 //! Command-line interface for `brg` (also installed as `borgchart`).
 
-use std::io::{IsTerminal, Read};
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -31,7 +31,7 @@ const GROUPS: &[(&str, &[&str])] = &[
             "create", "start", "stop", "delete", "status", "attach", "logs",
         ],
     ),
-    ("Messages", &["send", "inbox", "msg", "bus"]),
+    ("Messages", &["msg"]),
     ("Cleanup", &["cleanup", "reset"]),
 ];
 
@@ -179,14 +179,14 @@ enum Command {
     /// A deleted member's ID stays issued. With a bus, a member caller may
     /// manage only its subtree, using its latest running start. A copy's roots
     /// cannot delete their own copy.
-    /// Unread messages, and a worktree brg added that holds uncommitted or
+    /// Unacked messages, and a worktree brg added that holds uncommitted or
     /// untracked changes or commits on no remote, need --force; copy history
     /// stays in the tree store.
     Delete {
         /// `<instance>`, or `<instance>/<member>`. A bare role is refused.
         #[arg(add = crate::complete::targets())]
         target: String,
-        /// Delete even with unread messages, unreadable message storage, or
+        /// Delete even with unacked messages, unreadable message storage, or
         /// worktrees with work in them (those are left as they are; a clean
         /// worktree brg added is always removed). Running members, unknown
         /// liveness and members with kept children or copies are always refused.
@@ -237,13 +237,13 @@ enum Command {
     },
     /// Show an instance tree, or every top-level one, with nested copies.
     ///
-    /// Each member's row shows its ID, vendor and model, state and any unread
+    /// Each member's row shows its ID, vendor and model, state and any unacked
     /// messages. A role with no member shows only its state; its `--json` row
     /// also gives its vendor and model.
     ///
     /// On a terminal, state precedes vendor/model or team. A summary band above
     /// the tree counts working and idle members, rows needing
-    /// you and unread messages. Painted output uses a filled red state label
+    /// you and unacked messages. Painted output uses a filled red state label
     /// for attention and a gold ◆ for running teams. Working marks spin in
     /// --watch and --interactive; NO_COLOR suppresses painting and motion.
     Status {
@@ -286,64 +286,13 @@ enum Command {
         #[arg(short = 'n', long, default_value_t = 200)]
         lines: usize,
     },
-    /// Store a message for its recipient, and type it in when safe.
-    ///
-    /// It is typed in only for a non-interactive recipient.
-    #[command(after_long_help = crate::bus::help::send())]
-    Send {
-        /// The member to type into: `<instance>/<member>`.
-        #[arg(add = crate::complete::members())]
-        member: String,
-        /// The text (several words are joined with spaces).
-        #[arg(required = true, num_args = 1..)]
-        text: Vec<String>,
-        /// Send even when the member's state is unknown.
-        #[arg(long)]
-        force: bool,
-        /// The sending member, by ID (for plugins relaying a member's
-        /// message): brg checks that the target is that member's parent.
-        #[arg(long)]
-        from: Option<String>,
-        /// Name an outside author; members use their own fenced identity.
-        #[arg(long)]
-        external: Option<String>,
-        /// Reply to an existing record, by its ID (repeatable).
-        #[arg(long)]
-        reply_to: Vec<String>,
-        /// Print {ok, code, message, id, delivery, reason} as JSON.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Read and acknowledge bus records.
+    /// Send, list, read, acknowledge, wait for and check messages.
     Msg {
         /// The instance (outside a member; inside one, only its own).
         #[arg(long, global = true, add = crate::complete::instances())]
         instance: Option<String>,
         #[command(subcommand)]
         command: crate::bus::cli::MsgCommand,
-    },
-    /// List the unacknowledged messages addressed to you, oldest first.
-    ///
-    /// Or another member's with `--member`, or an outside recipient's with
-    /// `--external`.
-    #[command(
-        args_conflicts_with_subcommands = true,
-        after_long_help = crate::bus::help::inbox()
-    )]
-    Inbox {
-        /// The instance (outside a member; inside one, only its own).
-        #[arg(long, global = true, add = crate::complete::instances())]
-        instance: Option<String>,
-        #[command(flatten)]
-        args: crate::bus::cli::InboxArgs,
-    },
-    /// Check the tree's message storage.
-    Bus {
-        /// The instance (outside a member; inside one, only its own).
-        #[arg(long, global = true, add = crate::complete::instances())]
-        instance: Option<String>,
-        #[command(subcommand)]
-        command: crate::bus::cli::BusCommand,
     },
     #[command(name = "_exec", hide = true)]
     Exec { state: PathBuf, window: String },
@@ -392,7 +341,7 @@ fn instance_and_name(arg: &str) -> Result<(Instance, String), String> {
     }
 }
 
-fn send_target(arg: &str) -> Result<(Instance, String), runtime::SendError> {
+pub(crate) fn send_target(arg: &str) -> Result<(Instance, String), runtime::SendError> {
     use runtime::SendError::{NotAlive, Usage};
     let (instance, name) = arg
         .rsplit_once('/')
@@ -440,7 +389,7 @@ pub fn main() -> ExitCode {
     // must back off too, or a broken wait command can spin turns.
     // Over-matching (e.g. a file named `wait`) only delays an error, which
     // is harmless. Explicit help and external termination remain immediate.
-    let waiting = args.iter().any(|a| a == "inbox") && args.iter().any(|a| a == "wait");
+    let waiting = args.iter().any(|a| a == "msg") && args.iter().any(|a| a == "wait");
     let help = args.iter().any(|a| a == "--help" || a == "-h");
     let back_off = || {
         if waiting && !help {
@@ -716,84 +665,9 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
             print!("{text}");
             ExitCode::SUCCESS
         }
-        Command::Send {
-            member,
-            text,
-            force,
-            from,
-            external,
-            reply_to,
-            json,
-        } => {
-            let result = (|| {
-                let mut text = text.join(" ");
-                if text == "-" {
-                    text.clear();
-                    std::io::stdin()
-                        .take((runtime::MAX_SEND_BYTES + 1) as u64)
-                        .read_to_string(&mut text)
-                        .map_err(|e| {
-                            runtime::SendError::Usage(format!("cannot read stdin: {e}"))
-                        })?;
-                }
-                let (inst, name) = send_target(&member)?;
-                runtime::send(
-                    &inst,
-                    &name,
-                    &text,
-                    force,
-                    from.as_deref(),
-                    external.as_deref(),
-                    &reply_to,
-                )
-            })();
-            match result {
-                Ok(out) => {
-                    if json {
-                        println!(
-                            "{}",
-                            serde_json::json!({"ok": true, "code": 0, "outcome": "committed", "message": out.message, "id": out.id, "delivery": out.delivery, "reason": out.reason})
-                        );
-                    } else {
-                        println!("{}: {} ({})", out.message, out.delivery, out.reason);
-                    }
-                    ExitCode::SUCCESS
-                }
-                Err(error) => {
-                    if json {
-                        let outcome = match error.code() {
-                            2 => "usage",
-                            3 => "not-alive",
-                            4 => "blocked",
-                            _ => "refused",
-                        };
-                        let mut value = serde_json::json!({"ok": false, "code": error.code(), "outcome": outcome, "message": error.message()});
-                        if let runtime::SendError::Committed { id, delivery, .. } = &error {
-                            value["id"] = id.clone().into();
-                            value["delivery"] = (*delivery).into();
-                            value["reason"] = error.message().into();
-                        }
-                        println!("{value}");
-                    } else {
-                        eprintln!(
-                            "brg: {}{}",
-                            error.message(),
-                            match &error {
-                                runtime::SendError::Committed { id, .. } =>
-                                    format!(" (committed {id})"),
-                                _ => String::new(),
-                            }
-                        );
-                    }
-                    ExitCode::from(error.code())
-                }
-            }
+        Command::Msg { instance, command } => {
+            crate::bus::cli::msg(instance.as_deref(), command, started)
         }
-        Command::Msg { instance, command } => crate::bus::cli::msg(instance.as_deref(), command),
-        Command::Inbox { instance, args } => {
-            crate::bus::cli::inbox(instance.as_deref(), args, started)
-        }
-        Command::Bus { instance, command } => crate::bus::cli::bus(instance.as_deref(), command),
         Command::Exec { state, window } => crate::exec::exec_main(&state, &window),
         Command::Run {
             state,

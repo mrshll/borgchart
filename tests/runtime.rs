@@ -127,7 +127,7 @@ roles:
     /// The tests act on the team's one instance, working in `work`, and
     /// name members by role: `start` creates the instance the first time,
     /// `start <role>` creates or starts its member, and `stop`, `status`,
-    /// `logs` and `send` (with `--from`) go to the instance.
+    /// `logs` and `msg send` (with `--from`) go to the instance.
     fn translate(&self, args: &[&str]) -> Vec<String> {
         let inst = self.instance();
         let at = |name: &str| match (&inst, self.member_id(name)) {
@@ -157,8 +157,12 @@ roles:
                 v.extend(own(rest));
                 v
             }
-            [cmd @ ("logs" | "attach" | "send"), rest @ ..] => {
-                let mut v = vec![cmd.to_string()];
+            [cmd @ ("logs" | "attach"), rest @ ..] | ["msg", cmd @ "send", rest @ ..] => {
+                let mut v = if *cmd == "send" {
+                    vec!["msg".to_string(), cmd.to_string()]
+                } else {
+                    vec![cmd.to_string()]
+                };
                 let mut member_done = false;
                 let mut from = false;
                 let mut external = false;
@@ -391,7 +395,14 @@ fn up_status_send_logs_down() {
             .any(|r| r["name"] == "pager" && r["state"] == "alive" && r["detail"] == "ok")
     });
 
-    let out = env.brg(&["send", "--external", "runtime-test", "alpha", "hello there"]);
+    let out = env.brg(&[
+        "msg",
+        "send",
+        "--external",
+        "runtime-test",
+        "alpha",
+        "hello there",
+    ]);
     assert!(
         out.status.success(),
         "{}",
@@ -463,9 +474,16 @@ fn crash_shows_as_exited() {
     let env = Env::new();
     env.up();
     assert!(
-        env.brg(&["send", "--external", "runtime-test", "beta", "crash 3"])
-            .status
-            .success()
+        env.brg(&[
+            "msg",
+            "send",
+            "--external",
+            "runtime-test",
+            "beta",
+            "crash 3"
+        ])
+        .status
+        .success()
     );
     env.wait_for("beta exited", |e| e.state_of("beta") == "exited");
     // tmux occasionally loses a pane's exit status; when it has one, it must be right.
@@ -479,7 +497,15 @@ fn crash_shows_as_exited() {
         "{beta}"
     );
     // Ordinary work survives an exited recipient; it is committed, not typed.
-    let out = env.brg(&["send", "--external", "runtime-test", "--json", "beta", "hi"]);
+    let out = env.brg(&[
+        "msg",
+        "send",
+        "--external",
+        "runtime-test",
+        "--json",
+        "beta",
+        "hi",
+    ]);
     assert!(out.status.success());
     let result: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(result["delivery"], "stored");
@@ -493,15 +519,29 @@ fn send_refusals() {
 
     // Ordinary dialog delivery is stored successfully; nothing answers the dialog.
     assert!(
-        env.brg(&["send", "--external", "runtime-test", "beta", "dialog"])
-            .status
-            .success()
+        env.brg(&[
+            "msg",
+            "send",
+            "--external",
+            "runtime-test",
+            "beta",
+            "dialog"
+        ])
+        .status
+        .success()
     );
     env.wait_for("beta blocked", |e| e.state_of("beta") == "blocked");
     assert_eq!(
-        env.brg(&["send", "--external", "runtime-test", "beta", "yes please"])
-            .status
-            .code(),
+        env.brg(&[
+            "msg",
+            "send",
+            "--external",
+            "runtime-test",
+            "beta",
+            "yes please"
+        ])
+        .status
+        .code(),
         Some(0)
     );
     assert!(
@@ -512,8 +552,9 @@ fn send_refusals() {
 
     assert_eq!(record_for(&env, "beta", "yes please")["ack_required"], true);
 
-    // Force permits unknown state, but never an unverifiable composer.
+    // Allow-unknown permits unknown state, but never an unverifiable composer.
     let muted = env.brg(&[
+        "msg",
         "send",
         "--external",
         "runtime-test",
@@ -527,16 +568,17 @@ fn send_refusals() {
     assert_eq!(result["id"], record_for(&env, "alpha", "mute")["id"]);
     env.wait_for("alpha unknown", |e| e.state_of("alpha") == "unknown");
     assert_eq!(
-        env.brg(&["send", "--external", "runtime-test", "alpha", "hi"])
+        env.brg(&["msg", "send", "--external", "runtime-test", "alpha", "hi"])
             .status
             .code(),
         Some(5)
     );
     let forced = env.brg(&[
+        "msg",
         "send",
         "--external",
         "runtime-test",
-        "--force",
+        "--allow-unknown",
         "--json",
         "alpha",
         "forced",
@@ -556,6 +598,7 @@ fn send_refusals() {
     // Control characters and leading slash: refused with 5.
     assert_eq!(
         env.brg(&[
+            "msg",
             "send",
             "--external",
             "runtime-test",
@@ -567,14 +610,21 @@ fn send_refusals() {
         Some(5)
     );
     assert_eq!(
-        env.brg(&["send", "--external", "runtime-test", "alpha", "/clear"])
-            .status
-            .code(),
+        env.brg(&[
+            "msg",
+            "send",
+            "--external",
+            "runtime-test",
+            "alpha",
+            "/clear"
+        ])
+        .status
+        .code(),
         Some(5)
     );
     // A role with no member yet is unaddressable, 3.
     assert_eq!(
-        env.brg(&["send", "--external", "runtime-test", "gamma", "hi"])
+        env.brg(&["msg", "send", "--external", "runtime-test", "gamma", "hi"])
             .status
             .code(),
         Some(3)
@@ -583,13 +633,14 @@ fn send_refusals() {
     assert!(env.brg(&["start", "gamma"]).status.success());
     assert!(env.brg(&["stop", "gamma"]).status.success());
     assert_eq!(
-        env.brg(&["send", "--external", "runtime-test", "gamma", "hi"])
+        env.brg(&["msg", "send", "--external", "runtime-test", "gamma", "hi"])
             .status
             .code(),
         Some(0)
     );
 
     let json = env.brg(&[
+        "msg",
         "send",
         "--external",
         "runtime-test",
@@ -608,13 +659,20 @@ fn working_members_accept_tagged_input_with_correct_ack_metadata() {
     let env = Env::new();
     env.up();
     assert!(
-        env.brg(&["send", "--external", "runtime-test", "beta", "work 5"])
-            .status
-            .success()
+        env.brg(&[
+            "msg",
+            "send",
+            "--external",
+            "runtime-test",
+            "beta",
+            "work 5"
+        ])
+        .status
+        .success()
     );
     env.wait_for("beta working", |e| e.state_of("beta") == "working");
     assert_eq!(
-        env.brg(&["send", "--external", "runtime-test", "beta", "more"])
+        env.brg(&["msg", "send", "--external", "runtime-test", "beta", "more"])
             .status
             .code(),
         Some(0)
@@ -623,15 +681,29 @@ fn working_members_accept_tagged_input_with_correct_ack_metadata() {
         submissions(e, "beta").contains(&envelope(e, "beta", "more", true))
     });
     assert!(
-        env.brg(&["send", "--external", "runtime-test", "alpha", "work 5"])
-            .status
-            .success()
+        env.brg(&[
+            "msg",
+            "send",
+            "--external",
+            "runtime-test",
+            "alpha",
+            "work 5"
+        ])
+        .status
+        .success()
     );
     env.wait_for("alpha working", |e| e.state_of("alpha") == "working");
     assert!(
-        env.brg(&["send", "--external", "runtime-test", "alpha", "queued"])
-            .status
-            .success()
+        env.brg(&[
+            "msg",
+            "send",
+            "--external",
+            "runtime-test",
+            "alpha",
+            "queued"
+        ])
+        .status
+        .success()
     );
     env.wait_for("queued", |e| {
         submissions(e, "alpha").contains(&envelope(e, "alpha", "queued", false))
@@ -645,11 +717,11 @@ fn concurrent_sends_arrive_as_separate_submissions() {
     let a = "first line A\nsecond line A";
     let b = "first line B\nsecond line B";
     let mut c1 = env
-        .brg_cmd(&["send", "--external", "runtime-test", "alpha", a])
+        .brg_cmd(&["msg", "send", "--external", "runtime-test", "alpha", a])
         .spawn()
         .unwrap();
     let mut c2 = env
-        .brg_cmd(&["send", "--external", "runtime-test", "alpha", b])
+        .brg_cmd(&["msg", "send", "--external", "runtime-test", "alpha", b])
         .spawn()
         .unwrap();
     assert!(c1.wait().unwrap().success());
@@ -695,7 +767,7 @@ fn locked_gate_allows_only_granted_commands() {
     ];
     for (text, _) in &tries {
         assert!(
-            env.brg(&["send", "--external", "runtime-test", "alpha", text])
+            env.brg(&["msg", "send", "--external", "runtime-test", "alpha", text])
                 .status
                 .success()
         );
@@ -1167,10 +1239,11 @@ fn folder_trust_is_left_alone_when_turned_off() {
         // Its gate hasn't reported in, so it gets no input.
         assert_eq!(
             env.brg(&[
+                "msg",
                 "send",
                 "--external",
                 "runtime-test",
-                "--force",
+                "--allow-unknown",
                 "alpha",
                 "hi"
             ])
@@ -1317,10 +1390,11 @@ fn codex_trust_screen_is_left_for_a_person_unless_auto_trust_covers_the_folder()
             // Its gate hasn't reported in, so it gets no input.
             assert_eq!(
                 env.brg(&[
+                    "msg",
                     "send",
                     "--external",
                     "runtime-test",
-                    "--force",
+                    "--allow-unknown",
                     "beta",
                     "hi"
                 ])
@@ -1408,6 +1482,7 @@ fn send_from_must_target_the_senders_parent() {
     env.up();
     assert!(
         env.brg(&[
+            "msg",
             "send",
             "--external",
             "runtime-test",
@@ -1431,6 +1506,7 @@ fn send_from_must_target_the_senders_parent() {
     });
     assert_eq!(
         env.brg(&[
+            "msg",
             "send",
             "--external",
             "runtime-test",
@@ -1446,6 +1522,7 @@ fn send_from_must_target_the_senders_parent() {
     // A role with no member isn't a sender.
     assert_eq!(
         env.brg(&[
+            "msg",
             "send",
             "--external",
             "runtime-test",
@@ -1477,19 +1554,20 @@ fn in_copy_mode(env: &Env, pane: &str) -> bool {
 #[test]
 fn send_refuses_a_pane_in_copy_mode_until_it_leaves() {
     // Catches: in copy mode a paste still reaches the member but Enter goes
-    // to tmux, so `send` said "sent" and left the text unsubmitted.
+    // to tmux, so `msg send` said "sent" and left the text unsubmitted.
     let env = Env::new();
     env.up();
     let pane = pane_of(&env, "beta").unwrap();
     env.tmux(&["copy-mode", "-t", &pane]);
     assert!(in_copy_mode(&env, &pane));
     for args in [
-        &["send", "--external", "runtime-test", "beta", "first"][..],
+        &["msg", "send", "--external", "runtime-test", "beta", "first"][..],
         &[
+            "msg",
             "send",
             "--external",
             "runtime-test",
-            "--force",
+            "--allow-unknown",
             "beta",
             "forced",
         ],
@@ -1512,9 +1590,16 @@ fn send_refuses_a_pane_in_copy_mode_until_it_leaves() {
     env.tmux(&["send-keys", "-X", "-t", &pane, "cancel"]);
     assert!(!in_copy_mode(&env, &pane));
     assert!(
-        env.brg(&["send", "--external", "runtime-test", "beta", "second"])
-            .status
-            .success()
+        env.brg(&[
+            "msg",
+            "send",
+            "--external",
+            "runtime-test",
+            "beta",
+            "second"
+        ])
+        .status
+        .success()
     );
     env.wait_for("second", |e| !submissions(e, "beta").is_empty());
     // Exactly the second envelope: stored copy-mode sends typed nothing.
@@ -1657,7 +1742,7 @@ fn walk(root: &Path) -> Vec<PathBuf> {
 fn send_requires_named_external_author_before_recording() {
     let env = Env::new();
     env.up();
-    let output = env.brg(&["send", "beta", "not attributed"]);
+    let output = env.brg(&["msg", "send", "beta", "not attributed"]);
     assert_eq!(output.status.code(), Some(2));
     assert!(submissions(&env, "beta").is_empty());
     let records = env.path(&format!(
@@ -1668,15 +1753,16 @@ fn send_requires_named_external_author_before_recording() {
 }
 
 #[test]
-fn interactive_recipient_stores_even_with_force() {
+fn interactive_recipient_stores_even_with_allow_unknown() {
     let env = Env::new();
     env.role_extra("beta", "    interactive: true\n");
     env.up();
     let output = env.brg(&[
+        "msg",
         "send",
         "--external",
         "runtime-test",
-        "--force",
+        "--allow-unknown",
         "--json",
         "beta",
         "owner inbox",
@@ -1697,6 +1783,7 @@ fn long_ordinary_body_is_stored_without_composer_submission() {
     // The conservative paste budget is not the record body limit.
     let body = "x".repeat(16 * 1024);
     let output = env.brg(&[
+        "msg",
         "send",
         "--external",
         "runtime-test",

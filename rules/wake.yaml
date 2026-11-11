@@ -1,10 +1,10 @@
-# How the watcher may wake a member that has unread messages, by vendor
+# How the watcher may wake a member that has unacked messages, by vendor
 # and CLI version. A version not listed here gets no wake: it needs a person.
 # Turn on a newly tested CLI by adding it here; no code changes.
 #
 #   version:    an exact version (`0.165.0`), or a prefix ending in `.*`
 #               (`2.1.*` matches 2.1.318, not 2.10.0). The first match wins.
-#   self_wake:  the member can arm its own wait (`brg inbox wait`). An armed
+#   self_wake:  the member can arm its own wait (`brg msg wait`). An armed
 #               wait counts as awake; unknown wait evidence defers.
 #   methods:    in order of preference. The next one is tried only after
 #               the one before was `rejected` or `unavailable`, never after

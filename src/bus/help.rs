@@ -8,14 +8,14 @@ pub fn root() -> String {
 Inside a member:
   Call the brg that started you as \"$BORGCHART_BIN\". Your instance and
   identity come from your environment. Read next:
-    \"$BORGCHART_BIN\" send --help
-    \"$BORGCHART_BIN\" inbox --help
-    \"$BORGCHART_BIN\" inbox wait --help
+    \"$BORGCHART_BIN\" msg send --help
+    \"$BORGCHART_BIN\" msg list --help
+    \"$BORGCHART_BIN\" msg wait --help
 "
     .into()
 }
 
-pub fn inbox() -> String {
+pub fn list() -> String {
     "Lists every unacknowledged message to you, oldest first. --full includes
 bodies. --member ID reads another member's inbox; --external NAME reads that
 outside recipient's inbox. Outside a member, pass --instance ID.
@@ -23,13 +23,13 @@ outside recipient's inbox. Outside a member, pass --instance ID.
 The tree shares one store and one set of message IDs. --member accepts a full
 address anywhere in the tree, or a bare ID in your own or --instance instance.
 Reading never acknowledges. Use `msg read ID` for an older message and
-`msg ack ID...` once you have taken messages on, then `inbox wait`.
+`msg ack ID...` once you have taken messages on, then `msg wait`.
 Progress and reports belong in your notes and GitHub.
 
 A member's loop:
-  \"$BORGCHART_BIN\" inbox --full
+  \"$BORGCHART_BIN\" msg list --full
   \"$BORGCHART_BIN\" msg ack m4 m5
-  \"$BORGCHART_BIN\" inbox wait --timeout 600
+  \"$BORGCHART_BIN\" msg wait --timeout 600
 "
     .into()
 }
@@ -37,7 +37,7 @@ A member's loop:
 pub fn wait() -> String {
     "Waits for your own inbox, or external:NAME with --external NAME.
 --timeout is 60-86400 seconds, default 86400. --full includes message bodies;
---json prints the same inbox object as `brg inbox --json`.
+--json prints the same inbox object as `brg msg list --json`.
 The 60 s floor applies to nonzero exits except fenced, timeout included.
 
 The first readable scan marks the newest message. A new unacked message to
@@ -70,9 +70,9 @@ not authorship. --reply-to takes plain existing IDs such as m1.
 
 Ordinary messages commit before optional typing. Exit 0 means committed even
 when delivery is stored or uncertain; never automatically republish. Interactive
-recipients are inbox-only even with --force. Working recipients may absorb input
-in the current turn. Typing never acknowledges: use `msg ack ID` when taking
-responsibility, and ignore an already-acked duplicate ID from an inbox wait.
+recipients are inbox-only even with --allow-unknown. Working recipients may
+absorb input in the current turn. Typing never acknowledges: use `msg ack ID`
+when taking responsibility, and ignore an already-acked duplicate from `msg wait`.
 
 Locked recipients require a live, guarded, empty composer before committing.
 Their records do not require ack and have no inbox recovery. Failures after

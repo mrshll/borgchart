@@ -76,40 +76,40 @@ devteam-k3f9  team ~/.config/borgchart/teams/devteam · folder ~/work/project
 
 ## Commands
 
-A small top level for people. `brg --help` and `brg <command> --help` give the full syntax; inside a member, the help also covers plain message drafts, acknowledgement and the one inbox wait.
+A small top level for people. `brg --help` and `brg <command> --help` give the full syntax; inside a member, the help also covers plain message drafts, acknowledgement and the one `msg wait`.
 
 | Command | What it does |
 | --- | --- |
 | `brg validate <team>` | Check everything without starting anything |
 | `brg create <team> <folder>`, `brg create <instance>/<role>` | Make a new instance, or a role's member, and start it. Prints the tree with each member's model and what happened. |
 | `brg start <instance>[/<member>]`, `brg stop <instance>[/<member>]` | Bring it back, or stop it |
-| `brg delete <instance>[/<member>] [--force]` | Remove a stopped instance or member. Unread messages require `--force`; running or unknown liveness, or a member with kept children, is always refused. A deleted member's ID stays issued. |
-| `brg status [instance] [--json \| -w \| -i]` | The live tree: who is idle, working or blocked, with positive unread message counts. JSON includes `member`, `role`, `parent` (a member ID), `start_id` (the current incarnation, when recorded), and `unread`, including zero with a readable bus. An unreadable store omits counts and adds a check note. |
+| `brg delete <instance>[/<member>] [--force]` | Remove a stopped instance or member. Unacked messages require `--force`; running or unknown liveness, or a member with kept children, is always refused. A deleted member's ID stays issued. |
+| `brg status [instance] [--json \| -w \| -i]` | The live tree: who is idle, working or blocked, with positive unacked message counts. JSON includes `member`, `role`, `parent` (a member ID), `start_id` (the current incarnation, when recorded), and `unacked`, including zero with a readable bus. An unreadable store omits counts and adds a check note. |
 | `brg ls` | Your teams, each with its instances |
 | `brg attach <instance>/<member>`, `brg logs <instance>/<member>` | Watch a member |
-| `brg send [--external NAME] TARGET TEXT [--reply-to ID]` | Record a message, then optionally type it; outside callers must name an external sender; `-` reads stdin |
-| `brg msg …`, `brg inbox …`, `brg bus check` | Durable messages and store health, below |
+| `brg msg send [--external NAME] TARGET TEXT [--reply-to ID]` | Record a message, then optionally type it; outside callers must name an external sender; `-` reads stdin |
+| `brg msg …` | Durable messages and store health, below |
 
 **Messages**, mostly used by members:
 
 | Command | What it does |
 | --- | --- |
-| `brg inbox [--member ID \| --external NAME] [--full] [--json]` | List every unacked message, oldest first; --full includes bodies |
+| `brg msg list [--member ID \| --external NAME] [--full] [--json]` | List every unacked message, oldest first; --full includes bodies |
 | `brg msg read ID [--json]` | Read one message, including an acknowledged one |
 | `brg msg ack ID… [--external NAME] [--json]` | Acknowledge messages addressed to you |
-| `brg inbox wait [--external NAME] [--timeout SECONDS] [--full] [--json]` | Wait for your inbox: new messages at once, existing ones after 60 seconds if still unacked; timeout 60–86400, default 86400. The 60 s floor matches the loop guard on every nonzero exit except fenced, including timeout |
-| `brg bus check [--json]` | Report gaps and unreadable files without writing |
+| `brg msg wait [--external NAME] [--timeout SECONDS] [--full] [--json]` | Wait for your inbox: new messages at once, existing ones after 60 seconds if still unacked; timeout 60–86400, default 86400. The 60 s floor matches the loop guard on every nonzero exit except fenced, including timeout |
+| `brg msg check [--json]` | Report gaps and unreadable files without writing |
 
 **Addressing.** `devteam-k3f9/lead-q8m3`. Inside a member, a bare member ID means its own instance; everywhere else the instance is named in full ([concepts](concepts.md#names-and-ids)). Only `create` takes a role name. Member commands and messages refuse a role name, listing its kept members or naming `brg create <instance>/<role>` when it has none. Bus commands take `--instance ID` outside a member. An outside caller, for example a person's script or a coordinating agent, adds `--external NAME` (refused inside a member) and is answered at `external:NAME`.
 
 ## How members talk
 
-- **`send`** writes a durable message, then may type its tagged envelope, including mid-turn. Members send to their parent or children; only root members of the tree's root instance also send to outside callers. Outside callers must pass `--external NAME`. Across a copy's parent edge, members use full `instance/member` addresses; the tree shares one store and message IDs, with the same typed and locked delivery rules across edges. Other cross-instance sends, including between sibling copies, are refused.
-- **`interactive: true`** roles are inbox-only even with `--force`; false is the default. The setting is frozen per start and invalid on locked or nested team roles. Ordinary recipients explicitly ack when taking responsibility; typing does not ack. Treat a duplicate ID from typed delivery and inbox wait as the same work. Locked records require no ack and give no new permissions or inbox recovery.
+- **`msg send`** writes a durable message, then may type its tagged envelope, including mid-turn. Members send to their parent or children; only root members of the tree's root instance also send to outside callers. Outside callers must pass `--external NAME`. Across a copy's parent edge, members use full `instance/member` addresses; the tree shares one store and message IDs, with the same typed and locked delivery rules across edges. Other cross-instance sends, including between sibling copies, are refused.
+- **`interactive: true`** roles are inbox-only even with `--allow-unknown`; false is the default. The setting is frozen per start and invalid on locked or nested team roles. Ordinary recipients explicitly ack when taking responsibility; typing does not ack. Treat a duplicate ID from typed delivery and msg wait as the same work. Locked records require no ack and give no new permissions or inbox recovery.
 - **Stored success is success.** An ordinary send returns 0 once committed, even when input is suppressed or uncertain. Never republish it automatically. Locked postcommit typing failure returns nonzero with its ID; retries may duplicate history and input.
-- **Work is prose.** The lead writes a brief file, sends a message naming it and starts the helper. The helper reads `inbox --full`, acks once it takes responsibility, writes its report atomically and replies naming it with `reply_to` the brief message. The lead verifies the report, diff and checks itself, stops the helper, then checks status shows it stopped before reusing the checkout. One writer per checkout and one piece of work per helper are team rules. Progress and delegation live in pull request descriptions and comments.
+- **Work is prose.** The lead writes a brief file, sends a message naming it and starts the helper. The helper reads `msg list --full`, acks once it takes responsibility, writes its report atomically and replies naming it with `reply_to` the brief message. The lead verifies the report, diff and checks itself, stops the helper, then checks status shows it stopped before reusing the checkout. One writer per checkout and one piece of work per helper are team rules. Progress and delegation live in pull request descriptions and comments.
 
-**Getting a member's attention.** Ack everything you have taken on, then arm one `inbox wait`: Claude with its Bash tool in background mode, Codex in the foreground with `--timeout 600`. New unacked messages return at once; messages already there wait 60 seconds and return only if still unacked. Errors wait at least 60 seconds too, except fenced, explicit help and signals. On exit 9 wait again; on exit 8 (`fenced`) stop waiting and tell the owner. A message left unacked wakes a member about once a minute.
+**Getting a member's attention.** Ack everything you have taken on, then arm one `msg wait`: Claude with its Bash tool in background mode, Codex in the foreground with `--timeout 600`. New unacked messages return at once; messages already there wait 60 seconds and return only if still unacked. Errors wait at least 60 seconds too, except fenced, explicit help and signals. On exit 9 wait again; on exit 8 (`fenced`) stop waiting and tell the owner. A message left unacked wakes a member about once a minute.
 
 By each brief's existing deadline, check ordinary untyped records' ack/status. Start a stopped recipient; if idle and unacked, send one follow-up referencing the original ID with `--reply-to`; otherwise escalate. Do not busy-poll, republish stored successes or routinely force-delete pending work. See [the bus](bus.md#attention).
 
@@ -132,7 +132,7 @@ roles:
 ```
 
 - **Starting a copy.** Each `brg create <instance>/implementer` starts one new copy, with its own suffixed ID. Past `max` it's refused, listing all kept copies, stopped ones included. For `max: 1`, the refusal points to `start`. Each copy gets the same role file and its own name; with `worktree: true`, its own worktree too.
-- **The tree** shows every kept copy with its state and unread count. A `max > 1` role with no kept members gets one dim line:
+- **The tree** shows every kept copy with its state and unacked count. A `max > 1` role with no kept members gets one dim line:
 
   ```
   devteam-k3f9
@@ -152,7 +152,7 @@ roles:
 
 - **Parents.** `parent:` and a plugin's `delivers_to:` require a `max: 1` agent role. A person may manage anything; a member at its latest running start may create, start, stop or delete anything below it along recorded parent edges, including members and copies at every depth. The caller's start is checked in its own instance under the registry lock. Members cannot manage themselves, ancestors, siblings or independent instances, and a copy's roots cannot manage their own copy or each other. Stopped, replaced and incomplete starts are refused. Creating a child requires a kept parent member.
 - **Folders.** Members work in the instance's folder, usually the repository. With `worktree: true`, brg adds each new member or copy its own git worktree from that folder when it issues it (`create`, or a full `start` that gives a `start: true` role a new member), detached at the folder's `HEAD`, or on a new branch with `brg create <instance>/<role> --branch <name>`. Worktrees live beside brg's state folder, at `~/.local/state/borgchart-worktrees/<address>` (with `/` written as `.`); the command that adds one names it, and `status --json` gives it as `worktree`. `delete` removes a clean one, refuses one with uncommitted work or commits on no remote, and with `--force` leaves it as it is. Members without a worktree share the folder; the team's instructions still enforce one writer per checkout.
-- **Taking work and attention** remain team rules. The lead chooses a member, gives it one brief, tracks its reply and checks its deadline. An ended copy remains addressable with unread counts until deleted; the lead can restart it with `brg start <instance>/<member>`.
+- **Taking work and attention** remain team rules. The lead chooses a member, gives it one brief, tracks its reply and checks its deadline. An ended copy remains addressable with unacked counts until deleted; the lead can restart it with `brg start <instance>/<member>`.
 
 ## Teams as members
 

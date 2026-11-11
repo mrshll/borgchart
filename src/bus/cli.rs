@@ -1,13 +1,16 @@
-//! `brg msg`, `brg inbox` and `brg bus`: the record commands.
+//! `brg msg`: sending, reading and checking messages.
 //!
-//! Every command prints `{ok, code, outcome, …}` with `--json`, and exits
-//! with the bus outcome codes (`docs/bus.md`).
+//! Commands print `{ok, code, outcome, …}` with `--json`. Sending keeps
+//! its delivery outcome codes; the others use bus outcomes (`docs/bus.md`).
 
+use std::io::Read;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use clap::{Args, Subcommand};
 use serde_json::{Value, json};
+
+use crate::runtime;
 
 use super::context::{self, Actor, Caller};
 use super::outcome::{Code, Failure, ok_json};
@@ -16,6 +19,40 @@ use super::store::{self, Bus, Inbox};
 
 #[derive(Subcommand)]
 pub enum MsgCommand {
+    /// Store a message for its recipient, and type it in when safe.
+    ///
+    /// It is typed in only for a non-interactive recipient.
+    #[command(after_long_help = crate::bus::help::send())]
+    Send {
+        /// The member to type into: `<instance>/<member>`.
+        #[arg(add = crate::complete::members())]
+        member: String,
+        /// The text (several words are joined with spaces).
+        #[arg(required = true, num_args = 1..)]
+        text: Vec<String>,
+        /// Send even when the member's state is unknown.
+        #[arg(long)]
+        allow_unknown: bool,
+        /// The sending member, by ID (for plugins relaying a member's
+        /// message): brg checks that the target is that member's parent.
+        #[arg(long)]
+        from: Option<String>,
+        /// Name an outside author; members use their own fenced identity.
+        #[arg(long)]
+        external: Option<String>,
+        /// Reply to an existing record, by its ID (repeatable).
+        #[arg(long)]
+        reply_to: Vec<String>,
+        /// Print {ok, code, message, id, delivery, reason} as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List unacked messages addressed to you, oldest first.
+    #[command(after_long_help = super::help::list())]
+    List {
+        #[command(flatten)]
+        args: InboxArgs,
+    },
     /// Show one record, with its body. Never acknowledges it.
     Read {
         /// The record ID (`m<number>`).
@@ -36,34 +73,6 @@ pub enum MsgCommand {
         #[arg(long)]
         json: bool,
     },
-}
-
-#[derive(Args, Clone)]
-pub struct Who {
-    /// Another member's inbox, read-only.
-    #[arg(long, conflicts_with = "external")]
-    pub member: Option<String>,
-    /// The inbox of `external:NAME`, as that outside caller.
-    #[arg(long)]
-    pub external: Option<String>,
-}
-
-#[derive(Args, Clone)]
-pub struct InboxArgs {
-    #[command(subcommand)]
-    pub command: Option<InboxCommand>,
-    #[command(flatten)]
-    pub who: Who,
-    /// Include message bodies.
-    #[arg(long)]
-    pub full: bool,
-    /// Print the inbox as JSON.
-    #[arg(long)]
-    pub json: bool,
-}
-
-#[derive(Subcommand, Clone)]
-pub enum InboxCommand {
     /// Wait for new messages, with a minimum delay for messages already present.
     #[command(after_long_help = super::help::wait())]
     Wait {
@@ -80,16 +89,34 @@ pub enum InboxCommand {
         #[arg(long)]
         json: bool,
     },
-}
-
-#[derive(Subcommand)]
-pub enum BusCommand {
     /// Check the instance's message storage. Never writes.
     Check {
         /// Print the report as JSON.
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Args, Clone)]
+pub struct Who {
+    /// Another member's inbox, read-only.
+    #[arg(long, conflicts_with = "external")]
+    pub member: Option<String>,
+    /// The inbox of `external:NAME`, as that outside caller.
+    #[arg(long)]
+    pub external: Option<String>,
+}
+
+#[derive(Args, Clone)]
+pub struct InboxArgs {
+    #[command(flatten)]
+    pub who: Who,
+    /// Include message bodies.
+    #[arg(long)]
+    pub full: bool,
+    /// Print the inbox as JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// What a command produced: JSON for `--json`, text otherwise.
@@ -127,8 +154,89 @@ pub(crate) fn open_bus(instance: Option<&str>) -> Result<Bus, Failure> {
     store::open(&inst.state)
 }
 
-pub fn msg(instance: Option<&str>, command: MsgCommand) -> ExitCode {
+pub fn msg(instance: Option<&str>, command: MsgCommand, started: Instant) -> ExitCode {
     match command {
+        MsgCommand::Send {
+            member,
+            text,
+            allow_unknown,
+            from,
+            external,
+            reply_to,
+            json,
+        } => {
+            let result = (|| {
+                let mut text = text.join(" ");
+                if text == "-" {
+                    text.clear();
+                    std::io::stdin()
+                        .take((runtime::MAX_SEND_BYTES + 1) as u64)
+                        .read_to_string(&mut text)
+                        .map_err(|e| {
+                            runtime::SendError::Usage(format!("cannot read stdin: {e}"))
+                        })?;
+                }
+                let (inst, name) = crate::cli::send_target(&member)?;
+                runtime::send(
+                    &inst,
+                    &name,
+                    &text,
+                    allow_unknown,
+                    from.as_deref(),
+                    external.as_deref(),
+                    &reply_to,
+                )
+            })();
+            match result {
+                Ok(out) => {
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::json!({"ok": true, "code": 0, "outcome": "committed", "message": out.message, "id": out.id, "delivery": out.delivery, "reason": out.reason})
+                        );
+                    } else {
+                        println!("{}: {} ({})", out.message, out.delivery, out.reason);
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    if json {
+                        let outcome = match error.code() {
+                            2 => "usage",
+                            3 => "not-alive",
+                            4 => "blocked",
+                            _ => "refused",
+                        };
+                        let mut value = serde_json::json!({"ok": false, "code": error.code(), "outcome": outcome, "message": error.message()});
+                        if let runtime::SendError::Committed { id, delivery, .. } = &error {
+                            value["id"] = id.clone().into();
+                            value["delivery"] = (*delivery).into();
+                            value["reason"] = error.message().into();
+                        }
+                        println!("{value}");
+                    } else {
+                        eprintln!(
+                            "brg: {}{}",
+                            error.message(),
+                            match &error {
+                                runtime::SendError::Committed { id, .. } =>
+                                    format!(" (committed {id})"),
+                                _ => String::new(),
+                            }
+                        );
+                    }
+                    ExitCode::from(error.code())
+                }
+            }
+        }
+        MsgCommand::List { args } => list(instance, args),
+        MsgCommand::Wait {
+            external,
+            timeout,
+            full,
+            json,
+        } => wait(instance, external, timeout, full, json, started),
+        MsgCommand::Check { json } => check(instance, json),
         MsgCommand::Read { id, json } => finish(
             json,
             (|| {
@@ -221,7 +329,7 @@ fn inbox_output(t: &Target, page: &Inbox, snap: &store::Snapshot, full: bool) ->
         .collect();
     let mut text = String::new();
     if !snap.healthy() {
-        text.push_str("warning: the store is incomplete; `brg bus check` lists the problems\n");
+        text.push_str("warning: the store is incomplete; `brg msg check` lists the problems\n");
     }
     for r in &page.records {
         text.push_str(&render(r, snap.is_acked(r.seq), full));
@@ -271,117 +379,105 @@ fn render(r: &Record, acked: bool, full: bool) -> String {
     out
 }
 
-pub fn inbox(instance: Option<&str>, args: InboxArgs, started: Instant) -> ExitCode {
-    match args.command {
-        None => finish(
-            args.json,
-            (|| {
-                let bus = open_bus(instance)?;
-                let t = target(&bus, &args.who)?;
-                let caller = if args.who.member.is_some() {
-                    Caller::Operator
-                } else {
-                    context::caller(args.who.external.as_deref())?
-                };
-                if matches!(caller, Caller::Member { .. }) {
-                    store::actor_for(&bus, &caller)?;
-                }
-                let snap =
-                    match store::wait_snapshot(&bus, Instant::now() + Duration::from_secs(1))? {
-                        store::WaitSnapshot::Ready(snap) => snap,
-                        store::WaitSnapshot::TimedOut => {
-                            return Err(Failure::new(
-                                Code::Timeout,
-                                "message store is busy; try the inbox again",
-                            ));
-                        }
-                    };
-                let inbox = store::list(&snap, &t.recipient);
-                Ok(inbox_output(&t, &inbox, &snap, args.full))
-            })(),
-        ),
-        Some(InboxCommand::Wait {
-            external,
-            timeout,
-            full,
-            json,
-        }) => finish(
-            json,
-            (|| {
-                if args.who.member.is_some()
-                    || args.who.external.is_some()
-                    || args.full
-                    || args.json
-                {
+fn list(instance: Option<&str>, args: InboxArgs) -> ExitCode {
+    finish(
+        args.json,
+        (|| {
+            let bus = open_bus(instance)?;
+            let t = target(&bus, &args.who)?;
+            let caller = if args.who.member.is_some() {
+                Caller::Operator
+            } else {
+                context::caller(args.who.external.as_deref())?
+            };
+            if matches!(caller, Caller::Member { .. }) {
+                store::actor_for(&bus, &caller)?;
+            }
+            let snap = match store::wait_snapshot(&bus, Instant::now() + Duration::from_secs(1))? {
+                store::WaitSnapshot::Ready(snap) => snap,
+                store::WaitSnapshot::TimedOut => {
                     return Err(Failure::new(
-                        Code::Usage,
-                        "put wait's options after `inbox wait`",
+                        Code::Timeout,
+                        "message store is busy; try the inbox again",
                     ));
                 }
-                if !(store::MIN_WAIT_SECS..=store::MAX_WAIT_SECS).contains(&timeout) {
-                    return Err(Failure::new(Code::Usage, "`--timeout`: 60-86400 seconds"));
-                }
-                let caller = context::caller(external.as_deref())?;
-                let bus = open_bus(instance)?;
-                let t = target(
-                    &bus,
-                    &Who {
-                        member: None,
-                        external,
-                    },
-                )?;
-                let duration = Duration::from_secs(timeout);
-                #[cfg(feature = "test-support")]
-                let duration = std::env::var("BORGCHART_WAIT_TIMEOUT_MS")
-                    .ok()
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .map(Duration::from_millis)
-                    .unwrap_or(duration);
-                let snap = store::wait(&bus, &caller, &t.recipient, started, duration)?;
-                let inbox = store::list(&snap, &t.recipient);
-                Ok(inbox_output(&t, &inbox, &snap, full))
-            })(),
-        ),
-    }
+            };
+            let inbox = store::list(&snap, &t.recipient);
+            Ok(inbox_output(&t, &inbox, &snap, args.full))
+        })(),
+    )
 }
 
-pub fn bus(instance: Option<&str>, command: BusCommand) -> ExitCode {
-    match command {
-        BusCommand::Check { json } => {
-            let result = open_bus(instance).and_then(|bus| store::check(&bus));
-            let report = match result {
-                Ok(r) => r,
-                Err(f) => return finish(json, Err(f)),
-            };
-            let code = if report.corrupt {
-                Code::Corrupt
-            } else if !report.errors.is_empty() {
-                Code::Error
-            } else {
-                Code::Ok
-            };
-            if json {
-                println!(
-                    "{}",
-                    json!({
-                        "ok": code == Code::Ok,
-                        "code": code.exit(),
-                        "outcome": code.as_str(),
-                        "records": report.records,
-                        "errors": report.errors,
-                        "warnings": report.warnings,
-                    })
-                );
-            } else {
-                for e in &report.errors {
-                    eprintln!("error: {e}");
-                }
-                for w in &report.warnings {
-                    eprintln!("warning: {w}");
-                }
-                println!("{}: {} record(s)", code.as_str(), report.records);
+fn wait(
+    instance: Option<&str>,
+    external: Option<String>,
+    timeout: u64,
+    full: bool,
+    json: bool,
+    started: Instant,
+) -> ExitCode {
+    finish(
+        json,
+        (|| {
+            if !(store::MIN_WAIT_SECS..=store::MAX_WAIT_SECS).contains(&timeout) {
+                return Err(Failure::new(Code::Usage, "`--timeout`: 60-86400 seconds"));
             }
-            ExitCode::from(code.exit())
+            let caller = context::caller(external.as_deref())?;
+            let bus = open_bus(instance)?;
+            let t = target(
+                &bus,
+                &Who {
+                    member: None,
+                    external,
+                },
+            )?;
+            let duration = Duration::from_secs(timeout);
+            #[cfg(feature = "test-support")]
+            let duration = std::env::var("BORGCHART_WAIT_TIMEOUT_MS")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+                .map(Duration::from_millis)
+                .unwrap_or(duration);
+            let snap = store::wait(&bus, &caller, &t.recipient, started, duration)?;
+            let inbox = store::list(&snap, &t.recipient);
+            Ok(inbox_output(&t, &inbox, &snap, full))
+        })(),
+    )
+}
+
+fn check(instance: Option<&str>, json: bool) -> ExitCode {
+    let result = open_bus(instance).and_then(|bus| store::check(&bus));
+    let report = match result {
+        Ok(r) => r,
+        Err(f) => return finish(json, Err(f)),
+    };
+    let code = if report.corrupt {
+        Code::Corrupt
+    } else if !report.errors.is_empty() {
+        Code::Error
+    } else {
+        Code::Ok
+    };
+    if json {
+        println!(
+            "{}",
+            json!({
+                "ok": code == Code::Ok,
+                "code": code.exit(),
+                "outcome": code.as_str(),
+                "records": report.records,
+                "errors": report.errors,
+                "warnings": report.warnings,
+            })
+        );
+    } else {
+        for e in &report.errors {
+            eprintln!("error: {e}");
         }
+        for w in &report.warnings {
+            eprintln!("warning: {w}");
+        }
+        println!("{}: {} record(s)", code.as_str(), report.records);
     }
+    ExitCode::from(code.exit())
 }

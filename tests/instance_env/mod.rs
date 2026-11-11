@@ -206,7 +206,7 @@ impl Env {
     /// Publish `record` into `inst` as the outside caller `ops`.
     pub fn publish(&self, inst: &str, record: &Value) -> Output {
         let target = format!("{inst}/{}", record["to"].as_str().unwrap());
-        let mut command = self.cmd(&["send", &target, "-", "--external", "ops", "--json"]);
+        let mut command = self.cmd(&["msg", "send", &target, "-", "--external", "ops", "--json"]);
         if let Some(refs) = record["reply_to"].as_array() {
             for reference in refs {
                 command.args(["--reply-to", reference.as_str().unwrap()]);

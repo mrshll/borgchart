@@ -133,7 +133,7 @@ fn completion_offers_instances_kept_members_and_teams() {
         "an instance offered as a member: {members:?}"
     );
 
-    let instances = complete(&env, &["inbox", "--instance", ""]);
+    let instances = complete(&env, &["msg", "list", "--instance", ""]);
     assert!(instances.contains(&inst), "{instances:?}");
     let cleanup = complete(&env, &["cleanup", ""]);
     assert!(
@@ -162,7 +162,7 @@ fn completion_changes_nothing_and_never_waits() {
     lock.lock().unwrap();
     let before = snapshot(&state);
 
-    assert!(complete(&env, &["inbox", "wait", "--instance", ""]).contains(&inst));
+    assert!(complete(&env, &["msg", "wait", "--instance", ""]).contains(&inst));
     complete(&env, &["stop", ""]);
     complete(&env, &["attach", ""]);
     complete(&env, &["create", ""]);

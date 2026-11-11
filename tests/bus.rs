@@ -1,4 +1,4 @@
-//! Record store tests: `brg msg`, `brg inbox` and `brg bus` against a team's
+//! Record store tests: `brg msg`, `brg msg list` and `brg bus` against a team's
 //! message storage built from store identity, start metadata and incarnations.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -157,7 +157,7 @@ impl Fixture {
             .env("BORGCHART_STATE_HOME", self.root())
             .env("BORGCHART_CONFIG", self.dir.path().join("config.yaml"))
             .args(args);
-        if args.first() != Some(&"send") {
+        if !args.starts_with(&["msg", "send"]) {
             cmd.args(["--instance", TEAM]);
         }
         let (m, inc) = match who {
@@ -194,7 +194,7 @@ impl Fixture {
 
     fn publish(&self, who: &As, draft: &Value) -> Out {
         let target = format!("{TEAM}/{}", draft["to"].as_str().unwrap());
-        let mut args = vec!["send", &target, "-", "--json"];
+        let mut args = vec!["msg", "send", &target, "-", "--json"];
         if let As::Operator = who {
             args.extend(["--external", "ops"]);
         }
@@ -223,7 +223,7 @@ impl Fixture {
     }
 
     fn inbox(&self, who: &As, extra: &[&str]) -> Value {
-        let mut args = vec!["inbox", "--json"];
+        let mut args = vec!["msg", "list", "--json"];
         args.extend(extra);
         let out = self.brg(who, &args, None);
         assert_eq!(out.code, 0, "{:?} {}", out.json, out.stderr);
@@ -364,6 +364,7 @@ fn invalid_drafts_write_nothing() {
     let garbage = f.brg(
         &As::Operator,
         &[
+            "msg",
             "send",
             "oncall-2a3b/lead",
             "-",
@@ -377,6 +378,7 @@ fn invalid_drafts_write_nothing() {
     let huge = f.brg(
         &As::Operator,
         &[
+            "msg",
             "send",
             "oncall-2a3b/lead",
             "-",
@@ -423,7 +425,7 @@ fn concurrent_publishers_get_contiguous_numbers() {
         .map(|r| r["body"].as_str().unwrap().to_string())
         .collect();
     assert_eq!(bodies.len(), writers * per, "no lost or duplicate records");
-    let check = f.brg(&As::Operator, &["bus", "check", "--json"], None);
+    let check = f.brg(&As::Operator, &["msg", "check", "--json"], None);
     assert_eq!(check.code, 0, "{:?}", check.json);
 }
 
@@ -436,7 +438,7 @@ fn crash_leftovers_are_tolerated() {
     let next = f.publish(&As::Operator, &note("lead", "two"));
     assert_eq!(next.json["id"], "m2");
 
-    let check = f.brg(&As::Operator, &["bus", "check", "--json"], None);
+    let check = f.brg(&As::Operator, &["msg", "check", "--json"], None);
     assert_eq!(check.code, 0, "{:?}", check.json);
     let warnings = check.json["warnings"].to_string();
     assert!(warnings.contains(".tmp-999-0-1"), "{warnings}");
@@ -467,7 +469,7 @@ fn corrupt_store_stops_mutations_but_not_reads() {
         let inbox = f.inbox(&As::Operator, &["--member", "lead"]);
         assert_eq!(inbox["store"], "incomplete", "{damage}");
         assert!(ids(&inbox).contains(&"m3".to_string()));
-        let check = f.brg(&As::Operator, &["bus", "check", "--json"], None);
+        let check = f.brg(&As::Operator, &["msg", "check", "--json"], None);
         assert_eq!(check.code, 7, "{damage}: {:?}", check.json);
         assert!(!check.json["errors"].as_array().unwrap().is_empty());
     }
@@ -532,6 +534,7 @@ fn caller_context_is_checked() {
     let out = f.brg(
         &As::Member("lead"),
         &[
+            "msg",
             "send",
             "oncall-2a3b/lead",
             "-",
@@ -544,14 +547,14 @@ fn caller_context_is_checked() {
     assert_eq!(out.code, 5, "{:?}", out.json);
     let out = f.brg(
         &As::Member("lead"),
-        &["inbox", "--external", "ops", "--json"],
+        &["msg", "list", "--external", "ops", "--json"],
         None,
     );
     assert_eq!(out.code, 4);
     // An operator can't publish.
     let out = f.brg(
         &As::Operator,
-        &["send", "oncall-2a3b/lead", "-", "--json"],
+        &["msg", "send", "oncall-2a3b/lead", "-", "--json"],
         Some(b"x"),
     );
     assert_eq!(out.code, 2);
@@ -560,7 +563,10 @@ fn caller_context_is_checked() {
     let out = cmd.env("BORGCHART_MEMBER", "lead").output().unwrap();
     assert_eq!(out.status.code(), Some(4));
     // Operators need to name an inbox.
-    assert_eq!(f.brg(&As::Operator, &["inbox", "--json"], None).code, 2);
+    assert_eq!(
+        f.brg(&As::Operator, &["msg", "list", "--json"], None).code,
+        2
+    );
 
     let fenced = [
         As::MemberWith("helper", "helper-0"),
@@ -570,7 +576,7 @@ fn caller_context_is_checked() {
         let out = f.publish(who, &note("lead", "x"));
         assert_eq!(out.code, 5, "{:?}", out.json);
         assert_eq!(out.json["outcome"], "refused");
-        assert_eq!(f.brg(who, &["inbox", "--json"], None).code, 8);
+        assert_eq!(f.brg(who, &["msg", "list", "--json"], None).code, 8);
         assert_eq!(f.brg(who, &["msg", "ack", "m1", "--json"], None).code, 8);
     }
     f.write_incarnation("helper2", "helper2-1", true);
@@ -584,7 +590,7 @@ fn caller_context_is_checked() {
     // Reading someone's inbox by name needs no live identity.
     let out = f.brg(
         &As::MemberWith("helper", "x"),
-        &["inbox", "--member", "lead", "--json"],
+        &["msg", "list", "--member", "lead", "--json"],
         None,
     );
     assert_eq!(out.code, 0);
@@ -629,15 +635,15 @@ fn another_store_format_refuses_all_commands() {
     let commands: Vec<(As, Vec<&str>)> = vec![
         (
             As::Operator,
-            vec!["send", "oncall-2a3b/lead", "-", "--external", "ops"],
+            vec!["msg", "send", "oncall-2a3b/lead", "-", "--external", "ops"],
         ),
         (As::Member("lead"), vec!["msg", "ack", "m1"]),
-        (As::Member("lead"), vec!["inbox"]),
-        (As::Operator, vec!["inbox", "--member", "lead"]),
-        (As::Member("lead"), vec!["inbox", "wait", "--timeout", "60"]),
+        (As::Member("lead"), vec!["msg", "list"]),
+        (As::Operator, vec!["msg", "list", "--member", "lead"]),
+        (As::Member("lead"), vec!["msg", "wait", "--timeout", "60"]),
         (As::Operator, vec!["msg", "read", "m1"]),
-        (As::Operator, vec!["bus", "check"]),
-        (As::Operator, vec!["bus", "check"]),
+        (As::Operator, vec!["msg", "check"]),
+        (As::Operator, vec!["msg", "check"]),
     ];
     let draft = serde_json::to_vec(&note("lead", "b")).unwrap();
     for (who, args) in &commands {
@@ -646,13 +652,17 @@ fn another_store_format_refuses_all_commands() {
         let out = f.brg(who, &json_args, Some(&draft));
         assert_eq!(
             out.code,
-            if args[0] == "send" { 5 } else { 7 },
+            if args.starts_with(&["msg", "send"]) {
+                5
+            } else {
+                7
+            },
             "{args:?}: {:?}",
             out.json
         );
         assert_eq!(
             out.json["outcome"],
-            if args[0] == "send" {
+            if args.starts_with(&["msg", "send"]) {
                 "refused"
             } else {
                 "corrupt"
@@ -661,7 +671,15 @@ fn another_store_format_refuses_all_commands() {
         );
         assert!(out.json["message"].as_str().unwrap().contains("damaged"));
         let text = f.brg(who, args, Some(&draft));
-        assert_eq!(text.code, if args[0] == "send" { 5 } else { 7 }, "{args:?}");
+        assert_eq!(
+            text.code,
+            if args.starts_with(&["msg", "send"]) {
+                5
+            } else {
+                7
+            },
+            "{args:?}"
+        );
         assert!(text.stderr.contains("damaged"));
     }
     assert_eq!(f.tree(), before, "nothing written");
@@ -673,7 +691,7 @@ fn inbox_wait_rechecks_the_member() {
     let child = spawn(
         &f,
         &As::Member("lead"),
-        &["inbox", "wait", "--timeout", "60", "--json"],
+        &["msg", "wait", "--timeout", "60", "--json"],
         b"",
     );
     std::thread::sleep(Duration::from_millis(200));
@@ -757,7 +775,7 @@ fn background_wait_ends_when_its_fake_agent_exits() {
         // The fake's tool starts an orphanable wait, just as an agent does.
         // Ignore terminal hangup so the test proves brg's own lifetime check.
         send(
-            "tool (trap '' HUP; \"$BORGCHART_BIN\" inbox wait --timeout 60 --json >\"$HOME/wait.json\" 2>\"$HOME/wait.err\" & p=$!; echo $p >\"$HOME/wait.pid.tmp\" && mv \"$HOME/wait.pid.tmp\" \"$HOME/wait.pid\"; wait $p; code=$?; echo $code >\"$HOME/wait.code.tmp\" && mv \"$HOME/wait.code.tmp\" \"$HOME/wait.code\") </dev/null >/dev/null 2>&1 &",
+            "tool (trap '' HUP; \"$BORGCHART_BIN\" msg wait --timeout 60 --json >\"$HOME/wait.json\" 2>\"$HOME/wait.err\" & p=$!; echo $p >\"$HOME/wait.pid.tmp\" && mv \"$HOME/wait.pid.tmp\" \"$HOME/wait.pid\"; wait $p; code=$?; echo $code >\"$HOME/wait.code.tmp\" && mv \"$HOME/wait.code.tmp\" \"$HOME/wait.code\") </dev/null >/dev/null 2>&1 &",
         );
         let until = Instant::now() + Duration::from_secs(5);
         let pid = f.dir.path().join("wait.pid");
@@ -823,12 +841,12 @@ fn inbox_wait_keeps_unknown_members_and_external_callers_waiting() {
     for (who, args) in [
         (
             As::Member("lead"),
-            vec!["inbox", "wait", "--timeout", "60", "--json"],
+            vec!["msg", "wait", "--timeout", "60", "--json"],
         ),
         (
             As::Operator,
             vec![
-                "inbox",
+                "msg",
                 "wait",
                 "--external",
                 "ops",
@@ -854,7 +872,7 @@ fn inbox_wait_is_bounded_while_a_writer_holds_the_lock() {
     let mut child = spawn(
         &f,
         &As::Member("lead"),
-        &["inbox", "wait", "--timeout", "60", "--json"],
+        &["msg", "wait", "--timeout", "60", "--json"],
         b"",
     );
     while child.try_wait().unwrap().is_none() {
@@ -874,10 +892,10 @@ fn damaged_storage_errors_name_the_team_not_paths() {
     // A malformed member session record.
     let f = Fixture::new();
     fs::write(f.incarnation_file("lead"), "{").unwrap();
-    for args in [vec!["inbox", "--json"], vec!["inbox"]] {
+    for args in [vec!["msg", "list", "--json"], vec!["msg", "list"]] {
         let out = f.brg(&As::Member("lead"), &args, None);
         assert_eq!(out.code, 1, "{args:?}: {:?} {}", out.json, out.stderr);
-        let msg = if args.len() == 2 {
+        let msg = if args.last() == Some(&"--json") {
             out.json["message"].as_str().unwrap().to_string()
         } else {
             out.stderr.clone()
@@ -893,14 +911,14 @@ fn damaged_storage_errors_name_the_team_not_paths() {
     let records = g.store_dir().join("records");
     fs::remove_dir_all(&records).unwrap();
     fs::write(&records, "").unwrap();
-    let out = g.brg(&As::Operator, &["bus", "check", "--json"], None);
+    let out = g.brg(&As::Operator, &["msg", "check", "--json"], None);
     assert_eq!(out.code, 7, "{:?}", out.json);
     assert!(
         out.json["message"].as_str().unwrap().contains("damaged"),
         "{:?}",
         out.json
     );
-    let out = g.brg(&As::Operator, &["bus", "check"], None);
+    let out = g.brg(&As::Operator, &["msg", "check"], None);
     assert!(out.stderr.contains("damaged"), "{}", out.stderr);
     // Storage someone else could write to.
     let h = Fixture::new();
@@ -914,7 +932,7 @@ fn damaged_storage_errors_name_the_team_not_paths() {
     );
     let text = h.brg(
         &As::Operator,
-        &["send", "oncall-2a3b/lead", "-", "--external", "ops"],
+        &["msg", "send", "oncall-2a3b/lead", "-", "--external", "ops"],
         Some(&serde_json::to_vec(&note("lead", "a")).unwrap()),
     );
     assert_eq!(text.code, 5);
@@ -933,8 +951,8 @@ fn storage_without_identity_is_damaged_not_new() {
     fs::remove_file(f.store_dir().join("store.json")).unwrap();
     let before = f.tree();
     for args in [
-        vec!["bus", "check", "--json"],
-        vec!["inbox", "--member", "lead", "--json"],
+        vec!["msg", "check", "--json"],
+        vec!["msg", "list", "--member", "lead", "--json"],
     ] {
         let out = f.brg(&As::Operator, &args, None);
         assert_eq!(out.code, 7, "{args:?}: {:?}", out.json);
@@ -958,7 +976,7 @@ fn a_record_in_another_format_is_still_corrupt() {
     r["schema"] = json!(999);
     fs::write(&path, serde_json::to_vec(&r).unwrap()).unwrap();
     assert_eq!(f.publish(&As::Operator, &note("lead", "b")).code, 5);
-    let check = f.brg(&As::Operator, &["bus", "check", "--json"], None);
+    let check = f.brg(&As::Operator, &["msg", "check", "--json"], None);
     assert_eq!(check.code, 7, "{:?}", check.json);
 }
 
@@ -974,6 +992,7 @@ fn a_team_not_started_yet_is_not_configured() {
         (
             As::Operator,
             vec![
+                "msg",
                 "send",
                 "oncall-2a3b/lead",
                 "-",
@@ -983,17 +1002,20 @@ fn a_team_not_started_yet_is_not_configured() {
             ],
         ),
         (As::Member("lead"), vec!["msg", "ack", "m1", "--json"]),
-        (As::Operator, vec!["inbox", "--member", "lead", "--json"]),
+        (
+            As::Operator,
+            vec!["msg", "list", "--member", "lead", "--json"],
+        ),
         (As::Operator, vec!["msg", "read", "m1", "--json"]),
-        (As::Operator, vec!["bus", "check", "--json"]),
-        (As::Operator, vec!["bus", "check", "--json"]),
+        (As::Operator, vec!["msg", "check", "--json"]),
+        (As::Operator, vec!["msg", "check", "--json"]),
     ];
     for (who, args) in &commands {
         let out = f.brg(who, args, Some(&draft));
         assert_eq!(out.code, 3, "{args:?}: {:?}", out.json);
         assert_eq!(
             out.json["outcome"],
-            if args[0] == "send" {
+            if args.starts_with(&["msg", "send"]) {
                 "not-alive"
             } else {
                 "not-configured"
@@ -1007,7 +1029,7 @@ fn a_team_not_started_yet_is_not_configured() {
     assert_eq!(f.tree(), before, "nothing created");
     // Nor when there is no message storage at all.
     fs::remove_dir_all(f.store_dir()).unwrap();
-    let out = f.brg(&As::Operator, &["bus", "check", "--json"], None);
+    let out = f.brg(&As::Operator, &["msg", "check", "--json"], None);
     assert_eq!(out.code, 3, "{:?}", out.json);
     assert!(!f.store_dir().exists());
 }
@@ -1019,7 +1041,7 @@ fn deployment_and_storage_must_match() {
     let out = f.publish(&As::Operator, &note("lead", "x"));
     assert_eq!(out.code, 5, "{:?}", out.json);
     assert_eq!(
-        f.brg(&As::Operator, &["bus", "check", "--json"], None).code,
+        f.brg(&As::Operator, &["msg", "check", "--json"], None).code,
         7
     );
 
@@ -1027,7 +1049,7 @@ fn deployment_and_storage_must_match() {
     assert_eq!(g.publish(&As::Operator, &note("lead", "a")).code, 0);
     fs::remove_file(g.store_dir().join("store.json")).unwrap();
     // Records without store identity are damaged, never new.
-    let out = g.brg(&As::Operator, &["bus", "check", "--json"], None);
+    let out = g.brg(&As::Operator, &["msg", "check", "--json"], None);
     assert_eq!(out.code, 7, "{:?}", out.json);
     assert_eq!(out.json["outcome"], "corrupt");
 }
@@ -1043,16 +1065,19 @@ fn read_only_commands_create_nothing() {
         }
         let before = f.tree();
         let reads: Vec<(As, Vec<&str>)> = vec![
-            (As::Operator, vec!["inbox", "--member", "lead", "--json"]),
-            (As::Member("lead"), vec!["inbox", "--json"]),
-            (As::Operator, vec!["inbox", "--external", "ops"]),
+            (
+                As::Operator,
+                vec!["msg", "list", "--member", "lead", "--json"],
+            ),
+            (As::Member("lead"), vec!["msg", "list", "--json"]),
+            (As::Operator, vec!["msg", "list", "--external", "ops"]),
             (As::Operator, vec!["msg", "read", "m1"]),
-            (As::Operator, vec!["bus", "check", "--json"]),
-            (As::Operator, vec!["bus", "check"]),
-            (As::Operator, vec!["bus", "check"]),
+            (As::Operator, vec!["msg", "check", "--json"]),
+            (As::Operator, vec!["msg", "check"]),
+            (As::Operator, vec!["msg", "check"]),
             (
                 As::Member("lead"),
-                vec!["inbox", "wait", "--timeout", "60", "--json"],
+                vec!["msg", "wait", "--timeout", "60", "--json"],
             ),
         ];
         for (who, args) in &reads {
@@ -1157,7 +1182,7 @@ fn authority_is_checked_again_under_the_locks() {
 
     // A member replaced while its publish waits for lock.
     let bus = hold(&f.store_dir().join("lock"));
-    let args = ["send", "oncall-2a3b/lead", "-", "--json"];
+    let args = ["msg", "send", "oncall-2a3b/lead", "-", "--json"];
     let child = spawn(&f, &As::Member("helper"), &args, &draft);
     std::thread::sleep(Duration::from_millis(500));
     f.write_incarnation("helper", "helper-2", false);
@@ -1172,7 +1197,7 @@ fn reads_wait_for_a_writer() {
     let f = Fixture::new();
     assert_eq!(f.publish(&As::Operator, &note("lead", "a")).code, 0);
     let bus = hold(&f.store_dir().join("lock"));
-    let mut child = spawn(&f, &As::Operator, &["bus", "check", "--json"], b"");
+    let mut child = spawn(&f, &As::Operator, &["msg", "check", "--json"], b"");
     std::thread::sleep(Duration::from_millis(500));
     assert!(child.try_wait().unwrap().is_none(), "check waits for lock");
     drop(bus);
@@ -1188,7 +1213,7 @@ fn a_huge_record_number_is_a_bounded_gap() {
     }
     fs::write(f.store_dir().join("records/9999999999.json"), "{}").unwrap();
     let start = Instant::now();
-    let check = f.brg(&As::Operator, &["bus", "check", "--json"], None);
+    let check = f.brg(&As::Operator, &["msg", "check", "--json"], None);
     assert_eq!(check.code, 7, "{:?} {}", check.json, check.stderr);
     let errors = check.json["errors"].to_string();
     assert!(errors.contains("gap") && errors.contains("m3"), "{errors}");
@@ -1212,7 +1237,7 @@ fn an_ack_with_another_schema_is_corrupt() {
     let mut ack: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     ack["schema"] = json!(999);
     fs::write(&path, serde_json::to_vec(&ack).unwrap()).unwrap();
-    let check = f.brg(&As::Operator, &["bus", "check", "--json"], None);
+    let check = f.brg(&As::Operator, &["msg", "check", "--json"], None);
     assert_eq!(check.code, 7, "{:?}", check.json);
     assert!(check.json["errors"].to_string().contains("schema"));
     assert_eq!(f.publish(&As::Operator, &note("lead", "b")).code, 5);
@@ -1226,13 +1251,13 @@ fn an_ack_with_another_schema_is_corrupt() {
 fn inbox_wait_help_names_the_outcomes_wait_returns() {
     let out = Command::new(env!("CARGO_BIN_EXE_brg"))
         .env_clear()
-        .args(["inbox", "wait", "--help"])
+        .args(["msg", "wait", "--help"])
         .output()
         .unwrap();
     let help = String::from_utf8(out.stdout).unwrap();
     let f = Fixture::new();
     let wait = |extra: &[&str]| {
-        let mut args = vec!["inbox", "wait", "--json"];
+        let mut args = vec!["msg", "wait", "--json"];
         args.extend(extra);
         f.brg(&As::Member("lead"), &args, None)
     };
@@ -1244,7 +1269,7 @@ fn inbox_wait_help_names_the_outcomes_wait_returns() {
     let child = spawn(
         &f,
         &As::Member("lead"),
-        &["inbox", "wait", "--timeout", "60", "--json"],
+        &["msg", "wait", "--timeout", "60", "--json"],
         b"",
     );
     std::thread::sleep(Duration::from_millis(200));
@@ -1260,7 +1285,7 @@ fn inbox_wait_help_names_the_outcomes_wait_returns() {
         let named = format!("{expect} ({})", out.code);
         assert!(
             help.contains(&named),
-            "`{named}` missing from inbox wait --help"
+            "`{named}` missing from msg wait --help"
         );
     }
 }
@@ -1268,12 +1293,18 @@ fn inbox_wait_help_names_the_outcomes_wait_returns() {
 #[test]
 fn send_help_names_the_unified_inputs_and_publish_is_removed() {
     let out = Command::new(env!("CARGO_BIN_EXE_brg"))
-        .args(["send", "--help"])
+        .args(["msg", "send", "--help"])
         .output()
         .unwrap();
     assert!(out.status.success());
     let help = String::from_utf8(out.stdout).unwrap();
-    for flag in ["--external", "--reply-to", "--from", "--force", "--json"] {
+    for flag in [
+        "--external",
+        "--reply-to",
+        "--from",
+        "--allow-unknown",
+        "--json",
+    ] {
         assert!(help.contains(flag), "{help}");
     }
     let out = Command::new(env!("CARGO_BIN_EXE_brg"))
@@ -1319,7 +1350,7 @@ fn send_target_syntax_errors_are_usage_and_missing_start_is_not_alive() {
     ] {
         let out = f.brg(
             &As::Operator,
-            &["send", target, "x", "--external", "ops", "--json"],
+            &["msg", "send", target, "x", "--external", "ops", "--json"],
             None,
         );
         assert_eq!(out.code, 2, "{target}: {:?}", out.json);
@@ -1353,7 +1384,7 @@ fn inbox_wait_does_not_infer_exit_from_a_sandbox_process_view() {
     let out = f
         .command(
             &As::Member("lead"),
-            &["inbox", "wait", "--timeout", "60", "--json"],
+            &["msg", "wait", "--timeout", "60", "--json"],
         )
         .env("PATH", bin)
         .env("BORGCHART_TEST_BOOT_ID", "sandbox-boot")
