@@ -79,22 +79,22 @@ set `BORGCHART_CONFIG` to that file's absolute path, put `brg-seat` on `PATH`, a
 
 Then create an instance from a checkout of the repository: `cd <checkout>; brg create borgchart-engineering`, or `brg create dev-team`. Its lead works in the checkout, and brg adds a git worktree for each dev copy and implementer as it creates them.
 
-### Pinned installation
+### Installing from a checkout
 
-A team that works on this repository shouldn't run from the checkout it edits: a half-finished change to brg or to a role file would take effect at the next start. Install a copy fixed at one revision from a clean checkout:
+A team that works on this repository shouldn't run from the checkout it edits: a half-finished change to brg or to a role file would take effect at the next start. Install a separate copy from a clean checkout:
 
 ```sh
 make install
 ```
 
-This builds the workspace release binaries with `--locked`, installs `bin/`, `teams/` and `REVISION` in `$HOME/.local/share/brg-<full-revision>/`, and atomically points `$HOME/.local/share/brg-current` at it. Clean installs take team files from `HEAD`. Older revisions stay in place; repeating an install reuses the revision folder. Linux builds use `tools/cargo-slot` when executable; macOS builds use cargo directly.
+This builds the workspace release binaries with `--locked` and replaces `bin/`, `teams/` and `REVISION` in the fixed `$HOME/.local/share/brg/` directory on every install. Clean installs take team files from `HEAD`. Each binary is staged on the same filesystem and renamed into place, so a reader sees a complete file and a running process keeps its old inode. The teams directory is swapped with two renames, leaving a brief window where `teams/` is missing. Linux builds use `tools/cargo-slot` when executable; macOS builds use cargo directly.
 
-`PREFIX` changes the parent of the revision folders (default `$HOME/.local/share`); `BINDIR` changes where the `brg`, `borgchart` and `brg-seat` symlinks go (default `$HOME/.local/bin`). For example, `make install PREFIX="$HOME/apps" BINDIR="$HOME/bin"`. Existing symlinks are replaced; regular files are refused. Keep `BINDIR` on `PATH`. Dirty checkouts are refused unless you set `ALLOW_DIRTY=1`, which creates a fresh `brg-<full-revision>-dirty-<suffix>` folder on every run.
+`PREFIX` changes the parent of `brg/` (default `$HOME/.local/share`); `BINDIR` changes where the `brg`, `borgchart` and `brg-seat` symlinks go (default `$HOME/.local/bin`). For example, `make install PREFIX="$HOME/apps" BINDIR="$HOME/bin"`. The links point directly at `$PREFIX/brg/bin/<name>`; matching links are left alone, other symlinks are replaced, and regular files are refused. Keep `BINDIR` on `PATH`. Dirty checkouts are refused unless you set `ALLOW_DIRTY=1`, which installs working team files and marks `REVISION` with `-dirty`.
 
-The installer prints the `teams:` line to add to your brg configuration and never edits that file. With the default prefix, use:
+The installer prints the `teams:` line to add once to your brg configuration and never edits that file. With the default prefix, use:
 
-```yaml
-teams: [~/.local/share/brg-current/teams]
+```text
+teams: [~/.local/share/brg/teams]
 ```
 
-Running instances keep their recorded team folders and `catalog:` includes. After installing a new revision, teams with `team:` roles (including `borgchart-engineering`) refuse later member starts until a full restart, even if the team files are identical: their resolved child folder paths changed. PATH plugins can change on their next call; binaries can change at a member start or, on macOS with a symlinked brg path, on the next brg call. To move an existing instance to the new team files, fully stop it, then run `brg start <instance> --team "$HOME/.local/share/brg-current/teams/<team>"`; on macOS, start through the resolved revision's `bin/brg` path to pin later calls.
+A running tree meets the installed binary and team files at its next brg call or next new member, by design. To move a tree started from an old per-revision directory, use the new binary to run `brg stop <instance>`, then `brg start <instance> --team "$HOME/.local/share/brg/teams/<team>" --resume`. That repoints only the named instance: kept copies retain their recorded team folders and each needs its own full stop and `start --team <new-team-folder> --resume`, working from parent to child; keep the old installation until every copy has moved.
