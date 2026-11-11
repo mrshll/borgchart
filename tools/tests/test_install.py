@@ -48,7 +48,7 @@ def checkout(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         "  printf '#!/bin/sh\\necho installed\\n' > \"$output/$name\"\n"
         '  chmod +x "$output/$name"\n'
         '  if [ "${OMIT_ARTIFACT:-}" != "$name" ]; then\n'
-        '    printf \'{"reason":"compiler-artifact","executable":"%s/%s"}\\n\' "$output" "$name"\n'
+        '    printf \'{"executable": "%s/%s", "reason": "compiler-artifact"}\\n\' "$output" "$name"\n'
         "  fi\n"
         "done\n",
     )

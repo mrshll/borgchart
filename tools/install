@@ -29,10 +29,11 @@ if [ "$platform" = Linux ] && [ -x tools/cargo-slot ]; then
   set -- tools/cargo-slot "$@"
 fi
 "$@" > "$tmp/artifacts"
+sed -n '/^{.*"reason"[[:space:]]*:[[:space:]]*"compiler-artifact"/p' "$tmp/artifacts" > "$tmp/executables"
 mkdir "$tmp/revision" "$tmp/revision/bin"
 for name in brg borgchart brg-seat; do
   # Refuse JSON-escaped paths instead of decoding them incorrectly.
-  artifact=$(sed -n '/^{"reason":"compiler-artifact"/s/.*"executable":"\([^"\\]*\/'"$name"'\)".*/\1/p' "$tmp/artifacts")
+  artifact=$(sed -n 's/.*"executable"[[:space:]]*:[[:space:]]*"\([^"\\]*\/'"$name"'\)".*/\1/p' "$tmp/executables")
   [ -f "$artifact" ] || fail "no single usable artifact for $name; check build targets and use paths without JSON escapes"
   cp "$artifact" "$tmp/revision/bin/$name"
 done
