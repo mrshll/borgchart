@@ -1850,7 +1850,7 @@ fn remote_control_is_named_on_fresh_and_resumed_claude_launches_only() {
 }
 
 #[test]
-fn remote_control_status_follows_live_claude_pid_and_config_directory() {
+fn remote_control_status_finds_recorded_session_when_pane_pid_differs() {
     let env = Env::new();
     env.up();
     let inst = env.instance().unwrap();
@@ -1867,11 +1867,30 @@ fn remote_control_status_follows_live_claude_pid_and_config_directory() {
     };
     // Discover the address even when Remote Control was enabled by hand.
     let alpha_pid = pane_pid("alpha");
-    assert!(alpha_pid.parse::<u32>().is_ok(), "{alpha_pid:?}");
-    let session = r#"{"bridgeSessionId":"session_Example42"}"#;
-    env.write(&format!("home/.claude/sessions/{alpha_pid}.json"), session);
     let beta_pid = pane_pid("beta");
-    env.write(&format!("home/.claude/sessions/{beta_pid}.json"), session);
+    let file_pid = alpha_pid
+        .parse::<u32>()
+        .unwrap()
+        .max(beta_pid.parse::<u32>().unwrap())
+        + 1;
+    let session = serde_json::json!({
+        "sessionId": wait_for_session(&env, "alpha"),
+        "pid": file_pid,
+        "bridgeSessionId": "session_Example42",
+    })
+    .to_string();
+    let session_path = format!("sessions/{file_pid}.json");
+    env.write(&format!("home/.claude/{session_path}"), &session);
+    let beta_session = serde_json::json!({
+        "sessionId": wait_for_session(&env, "beta"),
+        "pid": beta_pid.parse::<u32>().unwrap(),
+        "bridgeSessionId": "session_Example42",
+    })
+    .to_string();
+    env.write(
+        &format!("home/.claude/sessions/{beta_pid}.json"),
+        &beta_session,
+    );
     let url = "https://claude.ai/code/session_Example42";
     assert_eq!(status_of(&env, "alpha")["remote_control_url"], url);
     assert!(status_of(&env, "beta")["remote_control_url"].is_null());
@@ -1892,11 +1911,26 @@ fn remote_control_status_follows_live_claude_pid_and_config_directory() {
             .unwrap()
     };
     assert!(custom_status()["remote_control_url"].is_null());
-    env.write(&format!("claude-config/sessions/{alpha_pid}.json"), session);
+    env.write("claude-config/sessions/ignored.txt", &session);
+    env.write(
+        "claude-config/sessions/oversized.json",
+        &format!("{session}{}", " ".repeat(64 * 1024)),
+    );
+    env.write("claude-config/sessions/broken.json", "{");
+    env.write("claude-config/sessions/other.json", &beta_session);
+    assert!(custom_status()["remote_control_url"].is_null());
+    env.write(&format!("claude-config/{session_path}"), &session);
     assert_eq!(custom_status()["remote_control_url"], url);
-    fs::remove_file(env.path(&format!("home/.claude/sessions/{alpha_pid}.json"))).unwrap();
+    fs::remove_file(env.path(&format!("home/.claude/{session_path}"))).unwrap();
+    fs::remove_file(env.path(&format!("home/.claude/sessions/{beta_pid}.json"))).unwrap();
     assert!(status_of(&env, "alpha")["remote_control_url"].is_null());
     assert_eq!(stdout(&env.brg(&["status"])), piped);
+    let recorded = env.path(&format!("state/{inst}/members/{}/session", env.m("alpha")));
+    let recorded_id = fs::read_to_string(&recorded).unwrap();
+    fs::remove_file(&recorded).unwrap();
+    assert!(custom_status()["remote_control_url"].is_null());
+    fs::write(recorded, recorded_id).unwrap();
+    assert_eq!(custom_status()["remote_control_url"], url);
     assert!(env.brg(&["stop", "alpha"]).status.success());
     assert!(custom_status()["remote_control_url"].is_null());
 }

@@ -3566,13 +3566,41 @@ fn remote_control_url(text: &str) -> Option<String> {
     Some(format!("https://claude.ai/code/{id}"))
 }
 
-fn claude_remote_control_url(pid: u32) -> Option<String> {
+fn remote_control_url_for_session(text: &str, session_id: &str) -> Option<String> {
+    let session: serde_json::Value = serde_json::from_str(text).ok()?;
+    if session.get("sessionId")?.as_str()? != session_id {
+        return None;
+    }
+    remote_control_url(text)
+}
+
+fn claude_remote_control_url(session_id: &str) -> Option<String> {
+    use std::io::Read;
+
+    const MAX_SESSION_BYTES: u64 = 64 * 1024;
     let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude")))?;
-    let text =
-        std::fs::read_to_string(config_dir.join("sessions").join(format!("{pid}.json"))).ok()?;
-    remote_control_url(&text)
+    std::fs::read_dir(config_dir.join("sessions"))
+        .ok()?
+        .find_map(|entry| {
+            let entry = entry.ok()?;
+            if entry.path().extension()? != "json" || !entry.file_type().ok()?.is_file() {
+                return None;
+            }
+            let file = std::fs::File::open(entry.path()).ok()?;
+            if file.metadata().ok()?.len() > MAX_SESSION_BYTES {
+                return None;
+            }
+            let mut text = String::new();
+            file.take(MAX_SESSION_BYTES + 1)
+                .read_to_string(&mut text)
+                .ok()?;
+            if text.len() as u64 > MAX_SESSION_BYTES {
+                return None;
+            }
+            remote_control_url_for_session(&text, session_id)
+        })
 }
 
 fn status_with_counts(
@@ -3690,7 +3718,9 @@ fn status_with_counts(
                 row.detail = w.dead_status.map(|s| format!("status {s}"));
             } else {
                 if member.vendor == Vendor::Claude {
-                    row.remote_control_url = w.pid.and_then(claude_remote_control_url);
+                    row.remote_control_url = recorded_session(state, id)
+                        .as_deref()
+                        .and_then(claude_remote_control_url);
                 }
                 let screen = tmux.capture(&session, id);
                 match rules::load(member.vendor) {
@@ -4812,6 +4842,26 @@ mod tests {
             r#"{"bridgeSessionId":42}"#,
         ] {
             assert_eq!(remote_control_url(text), None, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn remote_control_parser_rejects_another_sessions_address() {
+        let text = r#"{"sessionId":"example-session","bridgeSessionId":"session_Example42"}"#;
+        assert_eq!(remote_control_url_for_session(text, "other-session"), None);
+        assert_eq!(
+            remote_control_url_for_session(text, "example-session").as_deref(),
+            Some("https://claude.ai/code/session_Example42")
+        );
+        for text in [
+            r#"{"bridgeSessionId":"session_Example42"}"#,
+            r#"{"sessionId":null,"bridgeSessionId":"session_Example42"}"#,
+            r#"{"sessionId":42,"bridgeSessionId":"session_Example42"}"#,
+        ] {
+            assert_eq!(
+                remote_control_url_for_session(text, "example-session"),
+                None
+            );
         }
     }
 
