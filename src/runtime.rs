@@ -1500,7 +1500,7 @@ pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
     let result = (|| {
         for id in &ids {
             let role = &v.team.roles[inst.record.role_of(id).expect("issued role")];
-            if let Some(folder) = create_worktree(&inst, role, id, None)? {
+            if let Some(folder) = create_worktree(&inst, role, id, None, None)? {
                 created_folders.push((id.clone(), folder));
             }
         }
@@ -1577,6 +1577,7 @@ pub fn create_member(
     mut inst: Instance,
     role: &str,
     branch: Option<&str>,
+    repo: Option<&str>,
 ) -> Result<UpOutcome, String> {
     let v = validated(&inst)?;
     let worktree = v
@@ -1592,10 +1593,20 @@ pub fn create_member(
             "`--branch {branch}` names a branch for a new worktree, but role `{role}` works in the team's folder (no `worktree: true`)"
         ));
     }
+    if let Some(repo) = repo
+        && worktree == Some(false)
+    {
+        return Err(format!(
+            "`--repo {repo}` names a clone for a new worktree, but role `{role}` works in the team's folder (no `worktree: true`)"
+        ));
+    }
     if let Some(team_role) = v.team.team_roles.get(role) {
         check_parent_authority(&inst, role, Some(&v), None)?;
         create_authority_pause();
-        return crate::nesting::create(inst, &v, role, team_role, branch);
+        let start = repo
+            .map(|name| crate::worktree::fetch(&crate::worktree::root_folder(&inst.id)?, name))
+            .transpose()?;
+        return crate::nesting::create(inst, &v, role, team_role, branch, start.as_ref());
     }
     let Some(member) = v.team.roles.get(role) else {
         return Err(format!(
@@ -1607,6 +1618,9 @@ pub fn create_member(
     precheck(&v, &[member], !is_running(&inst))?;
     check_parent_authority(&inst, role, Some(&v), None)?;
     create_authority_pause();
+    let start = repo
+        .map(|name| crate::worktree::fetch(&crate::worktree::root_folder(&inst.id)?, name))
+        .transpose()?;
     let lock = registry::lock()?;
     inst.reload()?;
     crate::nesting::check_not_stopping(&inst)?;
@@ -1630,12 +1644,26 @@ pub fn create_member(
     let id = inst
         .record
         .issue_member(role, |id| v.team.roles.contains_key(id))?;
-    let added: Vec<_> = create_worktree(&inst, member, &id, branch)?
+    let added: Vec<_> = create_worktree(&inst, member, &id, branch, start.as_ref())?
         .map(|dir| (id.clone(), dir))
         .into_iter()
         .collect();
     lock.save_instance(&inst.state, &inst.record)?;
-    let outcome = start_members(lock, &inst, &v, vec![id], false, false)?;
+    let mut outcome = start_members(lock, &inst, &v, vec![id.clone()], false, false)?;
+    if let Some(start) = start {
+        outcome.tree = outcome
+            .tree
+            .lines()
+            .enumerate()
+            .map(|(index, line)| {
+                if index > 0 && line.contains(&id) {
+                    format!("{line}{}\n", start.detail())
+                } else {
+                    format!("{line}\n")
+                }
+            })
+            .collect();
+    }
     Ok(name_worktrees(&inst, &added, outcome))
 }
 
@@ -1666,6 +1694,7 @@ fn create_worktree(
     role: &crate::team::Role,
     id: &str,
     branch: Option<&str>,
+    start: Option<&crate::worktree::Start>,
 ) -> Result<Option<PathBuf>, String> {
     if !role.worktree {
         return Ok(None);
@@ -1675,7 +1704,7 @@ fn create_worktree(
         return Ok(None);
     }
     let root = crate::worktree::root_folder(&inst.id)?;
-    crate::worktree::add(&root, &inst.record.folder, &dir, branch)
+    crate::worktree::add(&root, &inst.record.folder, &dir, branch, start)
         .map_err(|e| format!("`{id}` needs its own worktree: {e}"))?;
     Ok(Some(dir))
 }
@@ -1929,7 +1958,7 @@ fn full_start_members(
             let id = inst
                 .record
                 .issue_member(&role.id, |id| v.team.roles.contains_key(id))?;
-            if let Some(folder) = create_worktree(inst, role, &id, None)? {
+            if let Some(folder) = create_worktree(inst, role, &id, None, None)? {
                 created_folders.push((id.clone(), folder));
             }
             ids.insert(id);

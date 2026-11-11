@@ -49,6 +49,10 @@ enum Command {
     /// copy gets its own git worktree from it instead, which brg adds when
     /// issuing it (create, or a full `start` that gives a `start: true` role
     /// a new member), detached at the folder's HEAD or on `--branch`.
+    /// With `--repo`, name a clone directly in the tree's folder instead:
+    /// fetch origin's default branch and start at its tip. The clone's
+    /// checkout stays as it is. Use one dev copy per repository; the root
+    /// lead sequences copies.
     /// For a member or an instance, it prints the instance's tree as `status`
     /// lays it out, with a new member's ID on its row, then a line with the
     /// address and folder of each worktree it added; for a copy, one line
@@ -67,6 +71,10 @@ enum Command {
         /// instead of a detached HEAD.
         #[arg(long)]
         branch: Option<String>,
+        /// For a `worktree: true` role: select a real child clone in the
+        /// tree's folder and fetch origin's default branch before creating.
+        #[arg(long)]
+        repo: Option<String>,
     },
     /// Bring an instance to what should be running, or start one member.
     /// Restore copies that ran at the last full stop, recursively. Finish
@@ -184,6 +192,13 @@ enum Command {
         interactive: bool,
     },
     /// Open a member's live session (detach with your tmux prefix, then d).
+    ///
+    /// brg's tmux server runs without your own tmux config unless brg's
+    /// configuration sets `tmux.user_config`, and a change to it applies only
+    /// once every instance on brg's server has stopped and the server starts
+    /// again. To keep your own bindings without a restart, attach from inside
+    /// your own tmux. brg's prefix is then tmux's default, Ctrl-b (press it
+    /// twice if your own prefix is Ctrl-b too).
     Attach {
         /// The member: `<instance>/<member>`.
         #[arg(add = crate::complete::members())]
@@ -381,13 +396,18 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
             target,
             folder,
             branch,
+            repo,
         } => {
             let team_like = crate::team::is_path(&target) || !target.contains('/');
             let result = if team_like {
-                match branch {
-                    Some(_) => Err(
-                        "`--branch` is for a role's new worktree: brg create <instance>/<role> --branch <name>".to_string(),
-                    ),
+                match branch
+                    .as_ref()
+                    .map(|_| "--branch")
+                    .or(repo.as_ref().map(|_| "--repo"))
+                {
+                    Some(flag) => Err(format!(
+                        "`{flag}` is for a role's new worktree: brg create <instance>/<role> {flag} <name>"
+                    )),
                     None => runtime::create(&target, folder.as_deref().unwrap_or(".")),
                 }
             } else {
@@ -396,7 +416,7 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
                         "`{target}` names a role, which takes no folder: its member works in the instance's folder"
                     )),
                     Ok((inst, Target::Role(role))) => {
-                        runtime::create_member(inst, &role, branch.as_deref())
+                        runtime::create_member(inst, &role, branch.as_deref(), repo.as_deref())
                     }
                     Ok((inst, Target::Member(m))) => Err(format!(
                         "`create` takes a role, not a member; `{m}` exists already: brg start {}",
