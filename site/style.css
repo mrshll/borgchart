@@ -56,7 +56,7 @@ b, .b { font-weight: bold; }
 /* Reverse video: the alert label is filled with its colour. */
 .chip { background: var(--alert); color: var(--bg); }
 
-code { font: inherit; }
+code { font: inherit; white-space: nowrap; }
 a { color: inherit; text-underline-offset: 0.2em; }
 
 pre {
@@ -81,6 +81,7 @@ pre {
   gap: 2ch;
 }
 
+.group { font-weight: bold; margin-bottom: 0.3em; }
 .commands {
   display: grid;
   grid-template-columns: 10ch 1fr;
