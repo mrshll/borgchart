@@ -415,7 +415,7 @@ fn move_ancestor_within_copy(env: &Env, dept: &str) {
     );
     env.write(
         "relocated/oncall/team.yaml",
-        "roles: {lead: {prompt: lead.md}}\n",
+        "roles:\n  lead: {prompt: lead.md}\n  dev: {team: dev, parent: lead, max: 3}\n",
     );
     env.ok(&[
         "start",
