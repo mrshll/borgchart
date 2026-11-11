@@ -621,11 +621,7 @@ fn start_members(
     let mut added = fresh;
     for (id, _) in record.kept_members() {
         if !meta.members.contains_key(id)
-            && let Some(m) = previous
-                .as_ref()
-                .and_then(|old| old.members.get(id))
-                .cloned()
-                .or_else(|| member_meta(id, &meta.base_env))
+            && let Some(m) = member_meta(id, &meta.base_env)
         {
             meta.members.insert(id.clone(), m);
             added = true;
