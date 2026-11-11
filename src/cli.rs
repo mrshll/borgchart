@@ -50,9 +50,10 @@ enum Command {
     /// issuing it (create, or a full `start` that gives a `start: true` role
     /// a new member), detached at the folder's HEAD or on `--branch`.
     /// For a member or an instance, it prints the instance's tree as `status`
-    /// lays it out, with a new member's ID on its row; for a copy, one line
-    /// with the copy's ID and its folder (its worktree, for a `worktree: true`
-    /// role).
+    /// lays it out, with a new member's ID on its row, then, for a
+    /// `worktree: true` role, a line with its address and worktree; for a
+    /// copy, one line with the copy's ID and its folder (its worktree, for a
+    /// `worktree: true` role).
     Create {
         /// `<team>` (a name, or a path starting with `/`, `./`, `../` or
         /// `~/`), or `<instance>/<role>`.

@@ -84,9 +84,13 @@ fn copies_get_their_own_worktrees_and_keep_slots_without_filling_max() {
     let inst = env.create("oncall", "work/a");
     assert!(env.copies(&inst).is_empty());
     assert_eq!(env.state_of(&inst, "helper"), "on demand (none created)");
-    env.ok(&["create", &format!("{inst}/helper")]);
+    let created = stdout(&env.ok(&["create", &format!("{inst}/helper")]));
     let first = env.copies(&inst)[0].clone();
     assert_eq!(env.copies(&inst), std::slice::from_ref(&first));
+    // `create` names the new worktree; the status tree leaves it to --json.
+    let folder = env.worktree(&format!("{inst}/{first}"));
+    let named = format!("{inst}/{first}  folder {}", folder.display());
+    assert!(created.lines().any(|l| l == named), "{created}");
     env.ok(&["create", &format!("{inst}/helper")]);
     let second = env
         .copies(&inst)
@@ -129,6 +133,7 @@ fn copies_get_their_own_worktrees_and_keep_slots_without_filling_max() {
     );
     let tree = stdout(&env.ok(&["status", &inst]));
     assert!(tree.contains(&first) && tree.contains(&second));
+    assert!(!tree.contains(&folder.display().to_string()), "{tree}");
     env.ok(&["start", &format!("{inst}/{first}")]);
     assert_eq!(env.starts(&first).len(), 2);
     env.ok(&["stop", &format!("{inst}/{first}")]);

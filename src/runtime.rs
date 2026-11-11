@@ -1616,7 +1616,17 @@ pub fn create_member(
         .issue_member(role, |id| v.team.roles.contains_key(id))?;
     let _ = create_worktree(&inst, member, &id, branch)?;
     lock.save_instance(&inst.state, &inst.record)?;
-    start_members(lock, &inst, &v, vec![id], false, false)
+    let address = inst.at(&id);
+    let mut outcome = start_members(lock, &inst, &v, vec![id], false, false)?;
+    // The tree leaves worktrees to `--json`; a new one is named here, unless
+    // a failed start took it away again.
+    let dir = crate::worktree::path(&address);
+    if member.worktree && dir.is_dir() {
+        outcome
+            .notes
+            .push(format!("{address}  folder {}", dir.display()));
+    }
+    Ok(outcome)
 }
 
 /// Pause after the preliminary create check, before taking the registry
@@ -3909,12 +3919,7 @@ pub fn status_cells(r: &StatusRow, short: bool) -> Vec<String> {
                 } else {
                     format!("{} running", r.running.unwrap_or(0))
                 },
-                r.detail
-                    .iter()
-                    .cloned()
-                    .chain(r.worktree.as_ref().map(|w| format!("worktree {w}")))
-                    .collect::<Vec<_>>()
-                    .join("; "),
+                r.detail.clone().unwrap_or_default(),
             ];
         }
         "role" => return vec![r.state.clone()],
@@ -3931,9 +3936,6 @@ pub fn status_cells(r: &StatusRow, short: bool) -> Vec<String> {
     detail.extend(r.detail.clone());
     if let Some(unread) = r.unread.filter(|&n| n > 0) {
         detail.push(format!("{unread} unread"));
-    }
-    if let Some(worktree) = &r.worktree {
-        detail.push(format!("worktree {worktree}"));
     }
     let vendor = r.vendor.as_deref().unwrap_or("-");
     vec![
@@ -4698,6 +4700,45 @@ mod tests {
         let mut idle = claude.clone();
         idle.state = "idle".into();
         assert_eq!(cells(&idle, true), "§ opus high|idle|2 unread");
+    }
+
+    #[test]
+    fn the_tree_leaves_the_worktree_to_json() {
+        let member = StatusRow {
+            name: "m".into(),
+            kind: "member",
+            instance: "i".into(),
+            team: "t".into(),
+            member: None,
+            start_id: None,
+            role: None,
+            vendor: Some("claude".into()),
+            model: None,
+            parent: None,
+            posture: None,
+            state: "idle".into(),
+            rule: None,
+            activity: None,
+            detail: None,
+            vendor_version: None,
+            trust_accepted: None,
+            worktree: Some("/srv/example/worktrees/team.m".into()),
+            liveness: None,
+            unread: Some(1),
+            running: None,
+            expected_running: false,
+            start: true,
+        };
+        let copy = StatusRow {
+            kind: "copy",
+            detail: Some("note".into()),
+            running: Some(2),
+            ..member.clone()
+        };
+        for short in [true, false] {
+            assert_eq!(status_cells(&member, short)[2], "1 unread");
+            assert_eq!(status_cells(&copy, short)[1..], ["2 running", "note"]);
+        }
     }
 
     #[test]
