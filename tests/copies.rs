@@ -554,7 +554,227 @@ fn repo_copy(env: &Env, inst: &str, repo: &str, branch: Option<&str>) -> String 
         args.extend(["--branch".into(), branch.into()]);
     }
     let out = env.ok(&args.iter().map(String::as_str).collect::<Vec<_>>());
-    stdout(&out).split_whitespace().next().unwrap().to_string()
+    let copy = stdout(&out).split_whitespace().next().unwrap().to_string();
+    let head = git(&env.worktree(&copy), &["rev-parse", "HEAD"]);
+    assert!(
+        stdout(&out).contains(&format!("· {repo} at {}", &head[..7])),
+        "{}",
+        both(&out)
+    );
+    copy
+}
+
+#[test]
+fn repo_default_branch_options_are_refused_without_running_them_or_issuing_anything() {
+    let env = repositories_env("main");
+    let widgets = env.path("work/a/widgets");
+    let origin = git(&widgets, &["remote", "get-url", "origin"]);
+    let origin = std::path::Path::new(origin.trim());
+    let marker = widgets.join("option-ran");
+    let branch = "--upload-pack=touch${IFS}option-ran";
+    let reference = format!("refs/heads/{branch}");
+    git(origin, &["update-ref", &reference, "HEAD"]);
+    git(origin, &["symbolic-ref", "HEAD", &reference]);
+    let inst = env.create("oncall", "work/a");
+    let record = env.path(&format!("state/{inst}/instance.json"));
+    let before = fs::read(&record).unwrap();
+    let out = env.brg(&["create", &format!("{inst}/helper"), "--repo", "widgets"]);
+    assert!(!marker.exists(), "origin's branch ran as a fetch option");
+    assert!(!out.status.success(), "{}", both(&out));
+    assert!(both(&out).contains("widgets"), "{}", both(&out));
+    assert_eq!(fs::read(&record).unwrap(), before, "issued an ID");
+    env.ok(&["stop", &inst]);
+}
+
+#[test]
+fn repo_creation_in_a_managed_root_refuses_before_contacting_origin() {
+    let env = repositories_env("main");
+    let root = env.path("state-worktrees/root");
+    fs::create_dir_all(root.parent().unwrap()).unwrap();
+    fs::rename(env.path("work/a"), &root).unwrap();
+    let widgets = root.join("widgets");
+    git(
+        &widgets,
+        &[
+            "config",
+            "remote.origin.uploadpack",
+            "touch network-ran; git-upload-pack",
+        ],
+    );
+    let inst = env.create("oncall", "state-worktrees/root");
+    let record = env.path(&format!("state/{inst}/instance.json"));
+    let before = fs::read(&record).unwrap();
+    env.fails(&["create", &format!("{inst}/helper"), "--repo", "widgets"]);
+    assert!(
+        !widgets.join("network-ran").exists(),
+        "origin was contacted"
+    );
+    assert_eq!(fs::read(&record).unwrap(), before, "issued an ID");
+    env.ok(&["stop", &inst]);
+}
+
+#[test]
+fn repo_network_failures_identify_the_clone_and_preserve_the_transport_cause() {
+    for stage in ["ls-remote", "targeted", "fallback", "no-default"] {
+        let env = repositories_env("main");
+        let inst = env.create("oncall", "work/a");
+        let widgets = env.path("work/a/widgets");
+        let real_git = common::command("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .unwrap();
+        let real_git = String::from_utf8_lossy(&real_git.stdout);
+        if stage == "no-default" {
+            let origin = git(&widgets, &["remote", "get-url", "origin"]);
+            git(
+                std::path::Path::new(origin.trim()),
+                &["symbolic-ref", "HEAD", "refs/heads/missing"],
+            );
+        } else {
+            git(&widgets, &["update-ref", "-d", "refs/remotes/origin/main"]);
+            script(
+                &env.path("bin/git"),
+                &format!(
+                    r#"#!/bin/sh
+stage=
+for arg do
+    case "$arg" in
+        ls-remote) stage=ls-remote ;;
+        fetch) stage=fallback ;;
+        main|refs/heads/main) test "$stage" != fallback || stage=targeted ;;
+    esac
+done
+if test "$stage" = '{stage}'; then
+    echo 'fixture transport unavailable' >&2
+    exit 1
+fi
+if test "$stage" = targeted; then
+    exec '{git}' "$@" --refmap=
+fi
+exec '{git}' "$@"
+"#,
+                    git = real_git.trim()
+                ),
+            );
+        }
+        let record = env.path(&format!("state/{inst}/instance.json"));
+        let before = fs::read(&record).unwrap();
+        let err = env.fails(&["create", &format!("{inst}/helper"), "--repo", "widgets"]);
+        assert!(err.contains("widgets"), "{stage}: {err}");
+        if stage != "no-default" {
+            assert!(err.contains("fixture transport unavailable"), "{err}");
+        }
+        assert_eq!(fs::read(&record).unwrap(), before, "{stage} issued an ID");
+        env.ok(&["stop", &inst]);
+    }
+}
+
+#[test]
+fn repo_worktree_branch_conflicts_identify_the_selected_clone_without_recommending_repo() {
+    let env = repositories_env("main");
+    let inst = env.create("oncall", "work/a");
+    repo_copy(&env, &inst, "widgets", Some("topic"));
+    let err = env.fails(&[
+        "create",
+        &format!("{inst}/helper"),
+        "--repo",
+        "widgets",
+        "--branch",
+        "topic",
+    ]);
+    assert!(
+        err.contains(&env.path("work/a/widgets").display().to_string()),
+        "{err}"
+    );
+    assert!(!err.contains("--repo"), "{err}");
+    env.ok(&["reset", &inst]);
+}
+
+fn remote_advance_during_fetch(fallback: bool) {
+    let env = repositories_env("main");
+    let inst = env.create("oncall", "work/a");
+    let widgets = env.path("work/a/widgets");
+    let gadgets = env.path("work/a/gadgets");
+    let fetched = git(&widgets, &["rev-parse", "HEAD"]);
+    git(
+        &gadgets,
+        &["commit", "-q", "--allow-empty", "-m", "remote advance"],
+    );
+    let advanced = git(&gadgets, &["rev-parse", "HEAD"]);
+    if fallback {
+        git(&widgets, &["update-ref", "-d", "refs/remotes/origin/main"]);
+    }
+    let real_git = common::command("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .unwrap();
+    // Once the direct fetch has a reachable tracking ref, origin becomes
+    // unavailable: creation must not require another network operation.
+    script(
+        &env.path("bin/git"),
+        &format!(
+            r#"#!/bin/sh
+fetch=false
+for arg do
+    test "$arg" != fetch || fetch=true
+    last=$arg
+done
+if "$fetch"; then
+    case "$last" in main|refs/heads/main)
+        '{git}' "$@" {refmap} || exit $?
+        '{git}' -C '{gadgets}' push -q origin main || exit $?
+        if {advance_tracking}; then
+            '{git}' -C '{widgets}' fetch --no-write-fetch-head origin || exit $?
+        fi
+        exit 0
+        ;;
+    esac
+    if {advance_tracking}; then
+        echo 'fixture origin is now unavailable' >&2
+        exit 1
+    fi
+fi
+exec '{git}' "$@"
+"#,
+            git = String::from_utf8_lossy(&real_git.stdout).trim(),
+            gadgets = gadgets.display(),
+            widgets = widgets.display(),
+            refmap = if fallback { "--refmap=" } else { "" },
+            advance_tracking = !fallback,
+        ),
+    );
+    let copy = repo_copy(&env, &inst, "widgets", None);
+    assert_eq!(git(&env.worktree(&copy), &["rev-parse", "HEAD"]), fetched);
+    assert_eq!(git(&widgets, &["rev-parse", "origin/main"]), advanced);
+    env.ok(&["delete", &copy]);
+    assert!(!env.worktree(&copy).exists());
+    env.ok(&["stop", &inst]);
+}
+
+#[test]
+fn repo_fetch_accepts_a_default_ancestor_of_the_tracking_branch() {
+    remote_advance_during_fetch(false);
+}
+
+#[test]
+fn repo_fallback_fetch_accepts_a_default_ancestor_of_the_tracking_branch() {
+    remote_advance_during_fetch(true);
+}
+
+#[test]
+fn worktree_deletion_preserves_root_repository_git_errors() {
+    let env = copies_env(2);
+    let inst = env.create("oncall", "work/a");
+    let copy = env.copy(&inst);
+    env.ok(&["stop", &inst]);
+    let config = env.path("work/a/.git/config");
+    let before = fs::read(&config).unwrap();
+    fs::write(&config, "[invalid config\n").unwrap();
+    let err = env.fails(&["delete", &format!("{inst}/{copy}")]);
+    assert!(err.contains("bad config"), "{err}");
+    assert!(env.worktree(&format!("{inst}/{copy}")).exists());
+    fs::write(&config, before).unwrap();
+    env.ok(&["delete", &format!("{inst}/{copy}")]);
 }
 
 #[test]
@@ -671,7 +891,8 @@ fn derived_members_inherit_the_copy_commit_even_after_the_remote_moves() {
     );
     env.ok(&["stop", &inst]);
     env.ok(&["delete", &format!("{copy}/{member}"), "--force"]);
-    env.fails(&["delete", &copy]);
+    let err = env.fails(&["delete", &copy]);
+    assert!(err.contains("commit(s) on no remote"), "{err}");
     assert!(folder.exists());
     env.ok(&["delete", &other]);
 }
@@ -793,7 +1014,7 @@ fn repo_members_can_select_a_clone_at_any_depth_but_shared_roles_cannot() {
     let inst = env.create("oncall", "work/a");
     let copy = repo_copy(&env, &inst, "widgets", None);
     env.ok(&["start", &copy]);
-    env.ok(&[
+    let out = env.ok(&[
         "create",
         &format!("{copy}/helper"),
         "--repo",
@@ -803,6 +1024,12 @@ fn repo_members_can_select_a_clone_at_any_depth_but_shared_roles_cannot() {
     ]);
     let member = env.member(&copy, "helper");
     let folder = env.worktree(&format!("{copy}/{member}"));
+    let head = git(&folder, &["rev-parse", "HEAD"]);
+    assert!(
+        stdout(&out).contains(&format!("· gadgets at {}", &head[..7])),
+        "{}",
+        both(&out)
+    );
     assert_eq!(
         git(&folder, &["rev-parse", "--git-common-dir"]).trim(),
         env.path("work/a/gadgets/.git").display().to_string()
@@ -869,7 +1096,7 @@ if "$network"; then
 fi
 # An explicit fetch with an empty refmap leaves only FETCH_HEAD. The
 # fallback fetch must populate the tracking ref so deletion is safe.
-if "$fetch" && test "$last" = main; then
+if "$fetch" && test "$last" = refs/heads/main; then
     exec '{git}' "$@" --refmap=
 fi
 exec '{git}' "$@"

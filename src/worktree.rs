@@ -43,6 +43,12 @@ fn clone(dir: &Path) -> bool {
 /// Select only a real child clone; network failures happen before issuance
 /// or the registry lock. The checkout, its index and branch stay untouched.
 pub fn fetch(root: &Path, name: &str) -> Result<Start, String> {
+    if in_home(root) {
+        return Err(format!(
+            "the tree's folder {} is one of brg's worktrees",
+            root.display()
+        ));
+    }
     let path = Path::new(name);
     if path.file_name() != Some(path.as_os_str()) || !clone(&root.join(path)) {
         return Err(format!(
@@ -51,7 +57,14 @@ pub fn fetch(root: &Path, name: &str) -> Result<Start, String> {
         ));
     }
     let repository = root.join(path);
-    let remote = git_network(&repository, &["ls-remote", "--symref", "origin", "HEAD"])?;
+    let network = |args: &[&str]| {
+        git_network(&repository, args).map_err(|e| {
+            format!(
+                "cannot fetch origin's default branch in `{name}` ({e}); give it an `origin` remote you can reach with your credentials, then try again"
+            )
+        })
+    };
+    let remote = network(&["ls-remote", "--symref", "origin", "HEAD"])?;
     let branch = remote
         .lines()
         .find_map(|line| {
@@ -59,27 +72,34 @@ pub fn fetch(root: &Path, name: &str) -> Result<Start, String> {
                 .strip_suffix("\tHEAD")
         })
         .ok_or_else(|| {
-            "origin has no default branch; set its HEAD to a branch before creating a worktree"
-                .to_string()
+            format!(
+                "origin in `{name}` has no default branch; set its HEAD to a branch before creating a worktree"
+            )
         })?;
-    git_network(&repository, &["fetch", "origin", branch])?;
     let hardened = HARDENED.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    git_with(&repository, &hardened, &["check-ref-format", "--branch", branch]).map_err(|e| {
+        format!(
+            "origin's default branch in `{name}` is invalid ({e}); set origin's HEAD to a valid branch and try again"
+        )
+    })?;
+    network(&["fetch", "origin", &format!("refs/heads/{branch}")])?;
     let fetched = git_with(
         &repository,
         &hardened,
         &["rev-parse", "--verify", "FETCH_HEAD^{commit}"],
     )?;
-    let tracking = format!("refs/remotes/origin/{branch}^{{commit}}");
+    let tracking = format!("refs/remotes/origin/{branch}");
     let tracked = || {
         git_with(
             &repository,
             &hardened,
-            &["rev-parse", "--verify", &tracking],
+            &["merge-base", "--is-ancestor", fetched.trim(), &tracking],
         )
+        .is_ok()
     };
-    if tracked().ok().as_deref() != Some(fetched.as_str()) {
-        git_network(&repository, &["fetch", "origin"])?;
-        if tracked().ok().as_deref() != Some(fetched.as_str()) {
+    if !tracked() {
+        network(&["fetch", "origin"])?;
+        if !tracked() {
             return Err(format!(
                 "origin/{branch} did not reach the fetched default; include that branch in remote.origin.fetch and try again"
             ));
@@ -103,12 +123,14 @@ pub fn repositories(root: &Path) -> Result<Vec<(PathBuf, PathBuf)>, String> {
     }
     let hardened = HARDENED.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     let mut repositories = Vec::new();
-    if let Ok(common) = git_with(
+    match git_with(
         root,
         &hardened,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
     ) {
-        repositories.push((root.to_path_buf(), PathBuf::from(common.trim())));
+        Ok(common) => repositories.push((root.to_path_buf(), PathBuf::from(common.trim()))),
+        Err(e) if e.starts_with("git rev-parse failed: fatal: not a git repository") => {}
+        Err(e) => return Err(e),
     }
     for entry in
         std::fs::read_dir(root).map_err(|e| format!("cannot read {}: {e}", root.display()))?
@@ -189,10 +211,14 @@ pub fn add(
         ));
     }
     git_with(&repository, &hardened, &args).map(|_| ()).map_err(|e| {
-        format!(
-            "cannot add a worktree from {} (it must be in a git repository with a commit, or name a clone in it: --repo <name>): {e}",
-            from.display()
-        )
+        if start.is_some() {
+            format!("cannot add a worktree from {}: {e}", repository.display())
+        } else {
+            format!(
+                "cannot add a worktree from {} (it must be in a git repository with a commit, or name a clone in it: --repo <name>): {e}",
+                from.display()
+            )
+        }
     })
 }
 
