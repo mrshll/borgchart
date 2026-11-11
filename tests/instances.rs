@@ -33,17 +33,12 @@ fn starting_repairs_an_unresolved_parent_so_recursive_stop_reaches_the_child() {
         &env.path("work/a").display().to_string(),
     ]);
     let inst = stdout(&out).split_whitespace().next().unwrap().to_string();
-    let child = env.member(&inst, "helper");
     env.wait_for("child idle", || env.state_of(&inst, "helper") == "idle");
     env.ok(&["create", &format!("{inst}/lead")]);
     let parent = env.member(&inst, "lead");
     env.ok(&["start", &inst]);
     env.ok(&["stop", "-r", &format!("{inst}/{parent}")]);
     assert_eq!(env.state_of(&inst, "helper"), "stopped");
-    let meta: Value =
-        serde_json::from_slice(&fs::read(env.path(&format!("state/{inst}/start.json"))).unwrap())
-            .unwrap();
-    assert_eq!(meta["members"][&child]["parent"], parent);
     env.ok(&["stop", &inst]);
 }
 

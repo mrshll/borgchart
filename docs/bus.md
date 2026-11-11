@@ -8,7 +8,7 @@ This is trusted, same-user operation: callers identify themselves through their 
 
 No bus opt-in is needed. Use `bus: {alert: {plugin: notify, action: alert}}` only to configure a real alert action; automatic alert dispatch is not wired.
 
-Codex `vendor` members have full host access and no tool approvals; Claude `vendor` members get messages and notes as added folders. Locked recipients get no new bus commands, directories or sandbox grants. Each member's launch settings, including posture and interactivity, are recorded at its start. A new member start reads current files without stopping its siblings. Settle a member's unacknowledged messages before restarting it in locked posture.
+Codex `vendor` members have full host access and no tool approvals; Claude `vendor` members get messages and notes as added folders. Locked recipients get no new bus commands, directories or sandbox grants.
 
 ## Storage
 
@@ -50,7 +50,7 @@ Inside a member use `"$BORGCHART_BIN"`, the brg that started it. Its instance, m
 
 Use `send TARGET TEXT`, or `send TARGET -` to read the body from stdin. Repeat `--reply-to ID` to reference existing records (up to 32). The body is at most 16 KiB; newline and tab are allowed, other control characters and a leading `/` or `!` are refused. The bounded delivery envelope is additional to the body limit.
 
-brg adds the caller's identity, UTC timestamp and immutable `ack_required`, derived from the target's recorded posture:
+brg adds the caller's identity, UTC timestamp and immutable `ack_required`, derived from the target's frozen posture:
 
 ```json
 {"schema": 4, "id": "m2", "seq": 2, "at": "2026-11-08T00:00:00Z", "from": "dev-team-k3f9/implementer-x7k2", "to": "dev-team-k3f9/lead-q8m3", "reply_to": ["m1"], "body": "Report: notes/change-report.md", "ack_required": true}

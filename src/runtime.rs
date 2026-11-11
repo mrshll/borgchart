@@ -626,14 +626,14 @@ fn start_members(
             meta.members.insert(id.clone(), m);
             added = true;
         }
-        if let Some(member) = record.role_of(id).and_then(|role| v.team.roles.get(role))
-            && member.parent.is_some()
-            && let Some(m) = meta.members.get_mut(id)
-            && m.parent == member.parent
+        if let Some(entry) = meta.members.get_mut(id)
+            && let Some(role) = record.role_of(id).and_then(|r| v.team.roles.get(r))
+            && role.parent.is_some()
+            && entry.parent == role.parent
         {
-            let parent = parent_member(member);
-            if m.parent != parent {
-                m.parent = parent;
+            let parent = parent_member(role);
+            if entry.parent != parent {
+                entry.parent = parent;
                 added = true;
             }
         }

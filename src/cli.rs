@@ -81,13 +81,8 @@ enum Command {
     /// an interrupted cascade with `stop` first. Reuse kept members; never
     /// fill a role to max. A worktree it adds for a new member is named after
     /// the tree. With a bus, a member caller may manage only its subtree,
-    /// using its latest running start.
-    /// New member starts use current files and configuration; already-running
-    /// members keep their launch settings. A new install does not require
-    /// stopping the tree. Joins keep recorded plugin locations, values and
-    /// secrets; a full stop/start refreshes them from configuration and the
-    /// caller's environment. Any start resolves a child's missing parent
-    /// member; other parent changes apply when the child restarts.
+    /// using its latest running start. Members that start use current files
+    /// and configuration.
     Start {
         /// `<instance>`, or `<instance>/<member>`.
         #[arg(add = crate::complete::targets())]
