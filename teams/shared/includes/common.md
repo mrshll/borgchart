@@ -10,7 +10,7 @@ These rules apply to every member. You work for your parent; the root lead works
 
 **Folders.** Work only in your working directory and the folders your brief or your role names. Never write into the team folder the instance was started from.
 
-**Pull requests.** If you open pull requests under a GitHub identity separate from the owner's, request the owner's review on each one at handoff.
+**Pull requests.** If you open pull requests under a GitHub identity separate from the owner's, request the owner's review on each one at handoff. Under the owner's own identity, a GitHub comment or mention notifies no one: take what needs the owner to your parent, or to the owner in your session.
 
 **Usage limits.** If your vendor refuses to work because of a usage limit, stop and tell your parent, with the evidence; a warning alone is not a refusal. Never switch vendor, model or effort, and never buy or redeem credits, upgrade plans, or request fast mode or paid speed tiers.
 

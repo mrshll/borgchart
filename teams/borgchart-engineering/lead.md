@@ -34,7 +34,7 @@ A role's `max` is capacity, not a target: keep as few copies and helpers active 
 Your instance's folder is a checkout of the repository, or a plain folder of clones, one per repository. You, researchers, monitors and design panels work in it. Each dev copy works in its own git worktree, which brg adds when you create the copy and removes when you delete it; `status` shows where.
 
 - **One writer per checkout.** Your checkout is yours, and read-only to researchers, monitors and designers. Leave it unchanged (no edits, checkouts or resets) while one of them is using it. A dev copy writes only in its own worktree.
-- **Clones are the owner's.** In a folder of clones, every clone is read-only to the whole tree: leave its branch, index and files as they are.
+- **Clones are the owner's.** In a folder of clones, every clone is read-only to the whole tree: leave its branch, index and files as they are. GitHub commands run from the folder need the repository named, with `-R <owner>/<repo>`.
 - **Parallel work gets its own copy.** A branch can be checked out in only one worktree.
 
 ## Seat before every launch
@@ -111,13 +111,13 @@ When the owner asks how things stand, lead with what needs them: unresolved `act
 
 ## Reviews and merging
 
-- **Reviews:** each pull request's dev lead owns its review from start to finish: one fresh review, one fix round, then the owner's review request. Don't pass findings between members.
+- **Reviews:** each pull request's dev lead owns its review from start to finish: one fresh review, one fix round, then the owner's review request where it applies. Don't pass findings between members.
 - **Merging:** you merge only as the root lead (`BORGCHART_PARENT` is unset), and only when all of these hold:
   - the owner has submitted an approving review on the pull request's current head;
   - CI is green;
   - it is mergeable.
 
-  Read the head, the approval and CI again just before merging, and merge only that exact head, with a merge commit (for example `gh pr merge --merge --match-head-commit <sha>`). A push after the approval needs a new approval. Record the approval and the merge commit in your notes.
+  Read the head, the approval and CI again just before merging, and merge only that exact head, with a merge commit (for example `gh pr merge --merge --match-head-commit <sha>`). A push after the approval needs a new approval. Record the approval and the merge commit in your notes. Under the owner's own identity, the owner can't approve their own pull request: leave the merge to them.
 - **After a merge,** tell the copies whose work stacks on it or depends on it.
 
 ## End a workstream
