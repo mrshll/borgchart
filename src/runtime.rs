@@ -4073,10 +4073,6 @@ pub fn status_look(r: &StatusRow) -> tree::Look {
         tone: Tone::Faded,
         italic: false,
     };
-    let brand = match r.vendor.as_deref() {
-        Some("claude") => Some(tree::palette::CLAUDE),
-        _ => None,
-    };
     match (r.kind, r.state.as_str()) {
         ("role", _) => Look {
             italic: true,
@@ -4094,7 +4090,7 @@ pub fn status_look(r: &StatusRow) -> tree::Look {
             look('!', Tone::Alert)
         }
         ("plugin", "alive") => look('●', Tone::Plain),
-        (_, "working") => look('●', Tone::Busy(brand)),
+        (_, "working") => look('●', Tone::Busy),
         (_, "idle") => look('·', Tone::Plain),
         (_, "blocked") => look('?', Tone::Alert),
         (_, "gate-inactive") => look('!', Tone::Alert),
@@ -4694,6 +4690,9 @@ mod tests {
         );
         let codex = row("codex", None);
         assert!(cells(&codex, true).starts_with("Λ|"));
+        // Working is one colour whatever the vendor: red is only for alerts.
+        assert_eq!(status_look(&claude).tone, tree::Tone::Busy);
+        assert_eq!(status_look(&codex).tone, tree::Tone::Busy);
         assert!(cells(&codex, false).starts_with("codex default|"));
         // An idle member's topic is its last one: not shown.
         let mut idle = claude.clone();

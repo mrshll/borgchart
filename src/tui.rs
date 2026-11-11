@@ -198,8 +198,7 @@ fn state_style(row: &StatusRow) -> Style {
     let bold = Style::default().add_modifier(Modifier::BOLD);
     match runtime::status_look(row).tone {
         tree::Tone::Plain => Style::default(),
-        tree::Tone::Busy(Some(c)) => bold.fg(rgb(c)),
-        tree::Tone::Busy(None) => bold,
+        tree::Tone::Busy => bold.fg(rgb(tree::palette::BUSY)),
         tree::Tone::Alert => bold.fg(rgb(tree::palette::ALERT)),
         tree::Tone::Odd => Style::default().fg(rgb(tree::palette::ODD)),
         tree::Tone::Faded => Style::default().fg(rgb(tree::palette::FADED)),
