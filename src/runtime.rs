@@ -2660,7 +2660,7 @@ pub fn reset(inst: Instance, warn: impl FnOnce(String)) -> Result<crate::cleanup
     drop(bus_lock);
     drop(state_locks);
     out.lines.push(format!(
-        "destroy {}: its registrations, state, notes and messages are deleted; its working folder {} was left as it is",
+        "destroyed {}: its registrations, state, notes and messages are deleted; its working folder {} was left as it is",
         root.id,
         root.record.folder.display()
     ));

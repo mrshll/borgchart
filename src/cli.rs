@@ -193,14 +193,16 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
-    /// Delete a whole tree, notes and messages; does not recreate it.
+    /// Stop a whole tree and delete its records, notes and messages.
     ///
-    /// Deletes every registration, the root's state folder (all copies'
-    /// state, the notes and the tree's messages) and the clean worktrees brg
-    /// added for members and copies; copy any notes you need first. Open work
-    /// never refuses it, and there is no prompt; anything brg can't confirm
-    /// stopped does. Working folders, checkouts and other worktrees are left
-    /// as they are. Run it from your own shell, never inside a member.
+    /// It stops the tree first, then deletes every registration, the root's
+    /// state folder (all copies' state, the notes and the tree's messages) and
+    /// the clean worktrees brg added for members and copies; copy any notes
+    /// you need first. Open work never refuses it, and there is no prompt; it
+    /// refuses if brg can't confirm every member stopped. Working folders,
+    /// checkouts and other worktrees are left as they are, and `brg create`
+    /// can start the tree fresh. Run it from your own shell, never inside a
+    /// member.
     Destroy {
         /// The tree's root instance (a copy is refused).
         #[arg(add = crate::complete::roots())]
@@ -230,6 +232,9 @@ enum Command {
         json: bool,
     },
     /// List available team templates and their instances.
+    ///
+    /// The teams found in the search paths (`teams:` in brg's configuration),
+    /// each with its instances, then instances of teams elsewhere.
     Templates {
         /// Print the list as JSON.
         #[arg(long)]

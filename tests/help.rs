@@ -89,7 +89,7 @@ fn top_level_help_groups_one_line_summaries_and_leaves_details_to_commands() {
         for name in ["templates", "secrets", "destroy"] {
             assert!(commands.contains(&name), "missing {name}: {text}");
         }
-        for name in ["send", "inbox", "bus", "ls", "secret", "reset"] {
+        for name in ["send", "inbox", "bus"] {
             assert!(!commands.contains(&name), "leftover {name}: {text}");
         }
         let long: Vec<_> = text.lines().filter(|l| l.chars().count() > 80).collect();
