@@ -194,11 +194,14 @@ fn rgb((r, g, b): tree::Rgb) -> Color {
 
 /// The same tones as `brg status` paints: the state cell in the row's tone,
 /// and a row that is not running faded as a whole.
-fn state_style(row: &StatusRow) -> Style {
-    tone_style(runtime::status_look(row).tone)
+fn state_style(row: &StatusRow, colour: bool) -> Style {
+    tone_style(runtime::status_look(row).tone, colour)
 }
 
-fn tone_style(tone: tree::Tone) -> Style {
+fn tone_style(tone: tree::Tone, colour: bool) -> Style {
+    if !colour {
+        return Style::default();
+    }
     let bold = Style::default().add_modifier(Modifier::BOLD);
     match tone {
         tree::Tone::Plain => Style::default(),
@@ -210,17 +213,26 @@ fn tone_style(tone: tree::Tone) -> Style {
 }
 
 /// The same toned summary as the text status view.
-fn summary_line(rows: &[StatusRow]) -> Line<'static> {
+fn summary_line(rows: &[StatusRow], colour: bool) -> Line<'static> {
     let mut spans = Vec::new();
     for (i, (text, tone)) in runtime::summary_parts(rows).into_iter().enumerate() {
         if i > 0 {
             spans.push(Span::raw("  "));
         }
-        spans.push(Span::styled(text, tone_style(tone)));
+        let (text, style) = if colour && tone == tree::Tone::Alert {
+            (
+                format!(" {text} "),
+                tone_style(tone, colour).add_modifier(Modifier::REVERSED),
+            )
+        } else {
+            (text, tone_style(tone, colour))
+        };
+        spans.push(Span::styled(text, style));
     }
     Line::from(spans)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw(
     frame: &mut ratatui::Frame,
     title: &str,
@@ -229,6 +241,7 @@ fn draw(
     table_state: &mut TableState,
     message: &str,
     note: Option<&str>,
+    colour: bool,
 ) {
     let [top, bottom] =
         Layout::vertical([Constraint::Min(3), Constraint::Length(3)]).areas(frame.area());
@@ -272,6 +285,7 @@ fn draw(
                 _ => cols.insert(0, String::new()),
             }
             let [vendor, state, detail] = <[String; 3]>::try_from(cols).unwrap_or_default();
+            let state = if colour { format!(" {state} ") } else { state };
             [name, vendor, state, detail]
         })
         .collect();
@@ -295,8 +309,8 @@ fn draw(
         .zip(&lines)
         .map(|([name, vendor, state, detail], &(s, r))| {
             let r = r.map(|r| &sections[s].rows[r]);
-            let style = r.map_or(Style::default(), state_style);
-            let faded = Style::default().fg(rgb(tree::palette::FADED));
+            let style = r.map_or(Style::default(), |r| state_style(r, colour));
+            let faded = tone_style(tree::Tone::Faded, colour);
             let row = Row::new(vec![
                 Cell::from(name).style({
                     let name = style.remove_modifier(Modifier::BOLD);
@@ -307,7 +321,16 @@ fn draw(
                     }
                 }),
                 Cell::from(vendor),
-                Cell::from(state).style(style),
+                Cell::from(Line::from(Span::styled(
+                    state,
+                    if colour
+                        && r.is_some_and(|r| runtime::status_look(r).tone == tree::Tone::Alert)
+                    {
+                        style.add_modifier(Modifier::REVERSED)
+                    } else {
+                        style
+                    },
+                ))),
                 // What a person must do next stays readable.
                 Cell::from(detail).style(
                     if r.is_some_and(|r| runtime::status_look(r).tone == tree::Tone::Alert) {
@@ -359,7 +382,7 @@ fn draw(
         "j/k move · enter attach (detach: tmux prefix, then d) · a roles · r refresh · q quit",
     );
     let every: Vec<StatusRow> = sections.iter().flat_map(|s| s.rows.clone()).collect();
-    let summary = summary_line(&every);
+    let summary = summary_line(&every, colour);
     frame.render_widget(
         Paragraph::new(vec![summary, Line::from(message.to_string()), help]),
         bottom,
@@ -370,6 +393,7 @@ fn draw(
 /// header line; Enter attaches in the selected member's own instance.
 pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
     // The `a` key shows and hides roles with no member.
+    let colour = tree::colour_wanted(true);
     let mut roles = false;
     let mut sections = load(one, roles)?;
     let headers = one.is_none();
@@ -399,6 +423,7 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
                 &mut table_state,
                 &message,
                 note.as_deref(),
+                colour,
             )
         }) {
             break Err(e.to_string());
@@ -527,7 +552,7 @@ mod tests {
                 expected_running: false,
                 start: true,
             };
-            let style = super::state_style(&row);
+            let style = super::state_style(&row, true);
             assert_eq!(style.fg, Some(super::rgb(super::tree::palette::BUSY)));
         }
     }

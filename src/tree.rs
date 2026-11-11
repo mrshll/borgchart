@@ -84,6 +84,11 @@ pub fn ink_text(text: &str, rgb: Rgb, bold: bool) -> String {
     paint(text, &style)
 }
 
+/// An attention label: keep its one-space padding inside reverse video.
+pub fn alert_chip(text: &str) -> String {
+    format!("{}\x1b[7m {text} {RESET}", ink(Tone::Alert))
+}
+
 /// Whether to paint: a terminal, and no `NO_COLOR` (no-color.org).
 pub fn colour_wanted(terminal: bool) -> bool {
     terminal && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
@@ -236,6 +241,16 @@ fn painted(prefix: &str, row: &[String], look: Look, state: usize) -> String {
     }
     for (i, cell) in cells.enumerate() {
         let i = i + 1;
+        if i == state && look.tone == Tone::Alert {
+            let body = cell.trim();
+            // Separators and alignment stay outside the filled label.
+            let before = (cell.len() - cell.trim_start().len()).saturating_sub(1);
+            let after = (cell.len() - cell.trim_end().len()).saturating_sub(1);
+            line.push_str(&" ".repeat(before));
+            line.push_str(&alert_chip(body));
+            line.push_str(&" ".repeat(after));
+            continue;
+        }
         let style = match look.tone {
             Tone::Faded => faded.clone(),
             _ if i == state => tone.clone(),
@@ -291,6 +306,12 @@ pub fn render_named(
             let n = &nodes[*i];
             let mut row = vec![format!("{prefix}{}{}", mark(&n.look), name(&n.id))];
             row.extend(n.cols.iter().cloned());
+            if colour {
+                let state = if n.cols.len() == 1 { 1 } else { 2 };
+                if let Some(cell) = row.get_mut(state) {
+                    *cell = format!(" {cell} ");
+                }
+            }
             row
         })
         .collect();
@@ -328,6 +349,9 @@ pub fn render_named(
         .map(|(name, cols, look)| {
             let mut row = vec![format!("{}plugin {name}", mark(look))];
             row.extend(cols.iter().cloned());
+            if colour && let Some(cell) = row.get_mut(1) {
+                *cell = format!(" {cell} ");
+            }
             row
         })
         .collect();
@@ -493,13 +517,18 @@ mod tests {
         let plain = render("team  team /t · folder /w", &nodes, &[], false);
         let painted = render("team  team /t · folder /w", &nodes, &[], true);
         assert_ne!(painted, plain);
+        assert!(
+            painted.contains("\x1b[7m"),
+            "alert states must have a filled label"
+        );
         assert_eq!(
             strip(&painted),
             "team  team /t · folder /w\n\
-             └─ ● lead      claude opus high            working\n   \
-             ├─ ? helper codex o3                    blocked  brg attach x\n   \
-             └─   absent not created (start: false)\n"
+             └─ ● lead      claude opus high               working\n   \
+             ├─ ? helper codex o3                       blocked   brg attach x\n   \
+             └─   absent  not created (start: false)\n"
         );
+        assert!(painted.contains(&alert_chip("blocked")));
         // A working row is bold in the busy colour, never the alert red.
         let working = painted.lines().nth(1).unwrap();
         assert!(working.contains(&format!("{BOLD}{}", fg(palette::BUSY))));
@@ -507,7 +536,7 @@ mod tests {
         // Live rows lead; the row that is not running is last and grey from
         // end to end.
         let absent = painted.lines().last().unwrap();
-        assert!(absent.contains(&format!("{} not created", fg(palette::FADED))));
+        assert!(absent.contains(&format!("{}  not created", fg(palette::FADED))));
         // A role with no member yet: its name in italics.
         assert!(absent.contains(&format!("{}{ITALIC}  absent", fg(palette::FADED))));
     }

@@ -4056,7 +4056,13 @@ fn status_nodes_as(rows: &[StatusRow], short: bool) -> Vec<tree::Node> {
         .map(|r| tree::Node {
             id: status_key(r),
             parent: parent_key(r),
-            cols: status_cells(r, short),
+            cols: {
+                let mut cols = status_cells(r, short);
+                if short && r.kind == "plugin" {
+                    cols.insert(0, String::new());
+                }
+                cols
+            },
             look: status_look(r),
         })
         .collect()
@@ -4186,7 +4192,7 @@ pub fn summary(rows: &[StatusRow], colour: bool) -> String {
         .map(|(text, tone)| match (colour, tone) {
             (false, _) => text.clone(),
             (true, tree::Tone::Busy) => tree::ink_text(text, tree::palette::BUSY, true),
-            (true, tree::Tone::Alert) => tree::ink_text(text, tree::palette::ALERT, true),
+            (true, tree::Tone::Alert) => tree::alert_chip(text),
             (true, _) => tree::ink_text(text, tree::palette::FADED, false),
         })
         .collect::<Vec<_>>()
@@ -4825,7 +4831,7 @@ mod tests {
         // Only what needs a person is bold red.
         let painted = summary(&rows, true);
         assert!(painted.contains(&tree::ink_text("● 2 working", tree::palette::BUSY, true)));
-        assert!(painted.contains(&tree::ink_text("! 2 need you", tree::palette::ALERT, true)));
+        assert!(painted.contains(&tree::alert_chip("! 2 need you")));
         assert!(painted.contains(&tree::ink_text("· 1 idle", tree::palette::FADED, false)));
         assert_eq!(summary(&rows[5..], false), "nothing running");
         // A role with no member yet is drawn as a slot: italic.

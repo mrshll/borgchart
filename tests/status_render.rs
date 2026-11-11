@@ -1,0 +1,53 @@
+//! Terminal rendering boundaries, using small fictional status trees.
+
+use borgchart::runtime::{self, StatusRow};
+
+fn member(name: &str, parent: Option<&str>) -> StatusRow {
+    StatusRow {
+        name: name.into(),
+        kind: "member",
+        instance: "harbor-k3f9".into(),
+        team: "harbor".into(),
+        member: Some(name.into()),
+        start_id: None,
+        role: None,
+        vendor: Some("codex".into()),
+        model: Some("example-model".into()),
+        parent: parent.map(String::from),
+        posture: Some("vendor".into()),
+        state: "working".into(),
+        rule: None,
+        activity: None,
+        detail: None,
+        vendor_version: None,
+        trust_accepted: None,
+        worktree: None,
+        liveness: None,
+        unread: None,
+        running: None,
+        expected_running: false,
+        start: true,
+    }
+}
+
+#[test]
+fn nested_plugin_errors_highlight_the_state_instead_of_the_detail() {
+    let rows = [
+        member("lead", None),
+        StatusRow {
+            kind: "plugin",
+            vendor: None,
+            model: None,
+            state: "alive".into(),
+            detail: Some("error: cannot reach the feed".into()),
+            ..member("feed", Some("lead"))
+        },
+    ];
+    let text = runtime::render_status_as("harbor", &rows, true, true);
+    let plugin = text
+        .lines()
+        .find(|line| line.contains("plugin feed"))
+        .unwrap();
+    assert!(plugin.contains("\x1b[7m alive \x1b[0m"), "{plugin:?}");
+    assert!(!plugin.contains("\x1b[7m error: cannot reach the feed \x1b[0m"));
+}
