@@ -358,12 +358,6 @@ fn both(out: &Output) -> String {
     )
 }
 
-/// The last line of `bytes` (after any validation warnings), with its newline.
-fn last_line(bytes: &[u8]) -> String {
-    let text = String::from_utf8_lossy(bytes);
-    format!("{}\n", text.lines().last().unwrap_or(""))
-}
-
 fn stdout(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).to_string()
 }
@@ -755,7 +749,7 @@ fn members_run_the_brg_that_started_them() {
 }
 
 #[test]
-fn a_changed_member_file_refuses_a_child_start() {
+fn a_changed_member_file_reaches_its_next_start() {
     let env = Env::new(true);
     env.up();
     env.up_helper();
@@ -764,30 +758,27 @@ fn a_changed_member_file_refuses_a_child_start() {
         "oncall/helper.md",
         &HELPER.replace("You are the helper.", "You are the helper, edited."),
     );
-    let inst = env.inst();
-    let refusal = format!(
-        "brg: {inst}/helper's role file changed since the instance started; stop it fully and start it again to apply it: brg stop {inst} && brg start {inst}\n"
+    env.ok(&["start", "helper"]);
+    env.wait_for("helper restarted", |e| e.starts("helper").len() == 2);
+    assert!(
+        env.starts("helper")[1]["argv"]
+            .to_string()
+            .contains("helper, edited")
     );
-    let before = env.snapshot();
-    let out = env.brg(&["start", "helper"]);
-    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
-    assert_eq!(last_line(&out.stderr), refusal);
-    assert_unchanged(&before, &env.snapshot());
-    assert_eq!(env.starts("helper").len(), 1);
-
-    // A full start of the running instance refuses the same way.
-    let out = env.brg(&["start"]);
-    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
-    assert_eq!(last_line(&out.stderr), refusal);
-    assert_unchanged(&before, &env.snapshot());
-
-    // Starting one member of a stopped instance with changed files is refused.
+    env.ok(&["start"]);
+    assert_eq!(env.starts("lead").len(), 1);
     env.ok(&["stop"]);
-    let before = env.snapshot();
-    let out = env.brg(&["start", "helper"]);
-    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
-    assert_eq!(last_line(&out.stderr), refusal);
-    assert_unchanged(&before, &env.snapshot());
+    env.write(
+        "oncall/helper.md",
+        &HELPER.replace("You are the helper.", "Use the blue checklist."),
+    );
+    env.ok(&["start", "helper"]);
+    env.wait_for("helper restarted alone", |e| e.starts("helper").len() == 3);
+    assert!(
+        env.starts("helper")[2]["argv"]
+            .to_string()
+            .contains("blue checklist")
+    );
 }
 
 #[test]

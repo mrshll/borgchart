@@ -180,6 +180,14 @@ fn changed_role_and_auth_apply_to_new_starts_without_restarting_siblings() {
     assert_eq!(starts[0]["env"]["ANTHROPIC_API_KEY"], "example-key");
     assert_eq!(env.starts(&lead).len(), 1);
     env.ok(&["stop", &format!("{inst}/{helper}")]);
+    let team = fs::read_to_string(env.path("teams/oncall/team.yaml")).unwrap();
+    env.write(
+        "teams/oncall/team.yaml",
+        &team.replace(
+            "    prompt: helper.md\n",
+            "    prompt: helper.md\n    interactive: true\n",
+        ),
+    );
     env.config("");
     env.ok(&["start", &format!("{inst}/{helper}"), "--resume"]);
     env.wait_for("helper restarted", || env.starts(&helper).len() == 2);
@@ -188,6 +196,17 @@ fn changed_role_and_auth_apply_to_new_starts_without_restarting_siblings() {
             .get("ANTHROPIC_API_KEY")
             .is_none()
     );
+    let out = env.ok(&[
+        "send",
+        &format!("{inst}/{helper}"),
+        "Review the checklist",
+        "--external",
+        "ops",
+        "--force",
+        "--json",
+    ]);
+    let sent: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(sent["delivery"], "stored");
     assert_eq!(env.starts(&lead).len(), 1);
     env.ok(&["stop", &inst]);
 }
@@ -241,5 +260,20 @@ fn missing_prompt_and_invalid_yaml_fail_at_the_requested_operation() {
     assert!(err.contains("team.yaml"), "{err}");
     env.write("teams/oncall/team.yaml", TEAM);
     env.ok(&["create", &format!("{inst}/helper")]);
+    env.ok(&["stop", &inst]);
+}
+
+#[test]
+fn damaged_start_record_still_refuses_copy_creation() {
+    let env = Env::new();
+    catalog(&env, "teams");
+    let inst = env.create("oncall", "work/a");
+    let path = env.path(&format!("state/{inst}/start.json"));
+    let recorded = fs::read(&path).unwrap();
+    fs::write(&path, "not json").unwrap();
+    let err = env.fails(&["create", &format!("{inst}/dev")]);
+    assert!(err.contains("start.json"), "{err}");
+    fs::write(path, recorded).unwrap();
+    create_copy(&env, &inst);
     env.ok(&["stop", &inst]);
 }

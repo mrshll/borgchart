@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use crate::bus::fsx;
 use crate::bus::layout::StorePaths;
 use crate::bus::time::utc_now;
-use crate::config_snapshot::{ConfigSnapshot, hex};
+use crate::config_snapshot::hex;
 use crate::state::{self, Meta, StateDir};
 use serde::{Deserialize, Serialize};
 
@@ -138,7 +138,7 @@ pub fn load_incarnation(state: &StateDir, member: &str) -> Result<Option<Incarna
     }
 }
 
-/// Changed files apply only once every previously recorded member has stopped.
+/// Refuse to overwrite starts when an absent session cannot prove them stopped.
 pub fn check_stopped(state: &StateDir, meta: &Meta, restart: &str) -> Result<(), String> {
     for member in meta.members.keys() {
         match load_incarnation(state, member) {
@@ -148,7 +148,7 @@ pub fn check_stopped(state: &StateDir, meta: &Meta, restart: &str) -> Result<(),
             Ok(None) => {}
             _ => {
                 return Err(format!(
-                    "brg can't tell that {}/{member} has stopped, so changed files can't be applied; stop it and start it again: {restart}",
+                    "brg can't tell that {}/{member} has stopped; stop it before starting again: {restart}",
                     state.id
                 ));
             }
@@ -188,93 +188,6 @@ pub(crate) fn lock_bus(state: &StateDir) -> Result<Option<File>, String> {
     lock_file(&paths.bus_lock())
         .map(Some)
         .map_err(|e| format!("cannot lock the team's messages: {e}"))
-}
-
-// --- messages ---
-
-/// What changed between two configuration snapshots, in team and member
-/// terms: "oncall/helper's instruction file changed since the instance started;
-/// stop it fully and start it again: brg stop <instance> && brg start <instance>". `restart` comes from
-/// [`state::restart_hint`].
-pub fn changed_since_start(
-    team: &str,
-    restart: &str,
-    was: &ConfigSnapshot,
-    now: &ConfigSnapshot,
-) -> String {
-    let differs = |k: &String| was.inputs.get(k) != now.inputs.get(k);
-    let keys: Vec<&String> = was
-        .inputs
-        .keys()
-        .chain(now.inputs.keys().filter(|k| !was.inputs.contains_key(*k)))
-        .filter(|k| differs(k))
-        .collect();
-    let mut things: Vec<String> = Vec::new();
-    for (key, what) in [
-        ("config/auth", "`auth`"),
-        ("config/auto_trust", "`auto_trust`"),
-    ] {
-        if keys.iter().any(|k| *k == key) {
-            things.push(format!("{what} in brg's configuration"));
-        }
-    }
-    for k in &keys {
-        if let Some(name) = k.strip_prefix("config/plugins/") {
-            things.push(format!("where `plugins_dir` puts plugin `{name}`"));
-        }
-    }
-    if keys.iter().any(|k| *k == crate::team::TEAM_FILE) {
-        things.push(format!("{team}'s team file ({})", crate::team::TEAM_FILE));
-    }
-    for k in &keys {
-        if let Some(id) = k
-            .strip_prefix("members/")
-            .and_then(|rest| rest.split_once('/'))
-            .map(|(id, _)| id)
-        {
-            let thing = format!("{team}/{id}'s role file");
-            if !things.contains(&thing) {
-                things.push(thing);
-            }
-        }
-    }
-    if things.is_empty() {
-        // Only the digest's version differs: a brg that hashes differently.
-        things.push(format!("{team}'s configuration"));
-    }
-    let list = match things.as_slice() {
-        [one] => one.clone(),
-        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
-        [] => unreachable!(),
-    };
-    format!(
-        "{list} changed since the instance started; stop it fully and start it again to apply it: {restart}"
-    )
-}
-
-// --- child starts into a running instance ---
-
-/// Refuse to start members into a running instance whose configuration changed
-/// since it started (a full start of a running instance too). Nothing has been
-/// written when this fails.
-pub fn check_join(
-    meta: &Meta,
-    snapshot: &ConfigSnapshot,
-    state: &StateDir,
-    team: &str,
-    restart: &str,
-) -> Result<(), String> {
-    if meta.config.digest != snapshot.digest {
-        return Err(changed_since_start(team, restart, &meta.config, snapshot));
-    }
-    for name in meta.plugins.keys() {
-        if !state.plugin_env_file(name).exists() {
-            return Err(format!(
-                "plugin `{name}`'s values from the instance's start are missing; restart it: {restart}"
-            ));
-        }
-    }
-    Ok(())
 }
 
 // --- the instance's message storage ---
@@ -695,8 +608,6 @@ fn liveness_with(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use super::*;
 
     #[test]
@@ -714,61 +625,6 @@ mod tests {
             a.chars()
                 .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "._-".contains(c)),
             "{a}"
-        );
-    }
-
-    fn snapshot(inputs: &[(&str, &str)]) -> ConfigSnapshot {
-        ConfigSnapshot {
-            version: crate::config_snapshot::CONFIG_DIGEST_VERSION,
-            digest: format!("{inputs:?}"),
-            team_dirs: BTreeMap::new(),
-            inputs: inputs
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect::<BTreeMap<_, _>>(),
-        }
-    }
-
-    #[test]
-    fn changes_are_named_in_instance_and_role_terms() {
-        let was = snapshot(&[
-            ("config/auth", "a"),
-            ("team.yaml", "t"),
-            ("members/helper/prompt", "hp"),
-            ("members/helper/instruction", "hi"),
-            ("members/lead/prompt", "lp"),
-            ("members/lead/instruction", "li"),
-        ]);
-        let helper = snapshot(&[
-            ("config/auth", "a"),
-            ("team.yaml", "t"),
-            ("members/helper/prompt", "hp2"),
-            ("members/helper/instruction", "hi2"),
-            ("members/lead/prompt", "lp"),
-            ("members/lead/instruction", "li"),
-        ]);
-        let restart = "brg stop oncall-2a3b && brg start oncall-2a3b";
-        assert_eq!(
-            changed_since_start("oncall-2a3b", restart, &was, &helper),
-            format!(
-                "oncall-2a3b/helper's role file changed since the instance started; stop it fully and start it again to apply it: {restart}"
-            )
-        );
-        let many = snapshot(&[
-            ("config/auth", "a2"),
-            ("config/plugins/pager", "p"),
-            ("team.yaml", "t2"),
-            ("members/helper/prompt", "hp"),
-            ("members/helper/instruction", "hi"),
-            ("members/lead/prompt", "lp"),
-            ("members/lead/instruction", "li2"),
-        ]);
-        let msg = changed_since_start("oncall-2a3b", restart, &was, &many);
-        assert!(
-            msg.starts_with(
-                "`auth` in brg's configuration, where `plugins_dir` puts plugin `pager`, oncall-2a3b's team file (team.yaml) and oncall-2a3b/lead's role file changed since the instance started"
-            ),
-            "{msg}"
         );
     }
 

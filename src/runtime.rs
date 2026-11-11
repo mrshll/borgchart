@@ -328,10 +328,9 @@ fn member_cwd(inst: &Instance, role: &crate::team::Role, member: &str) -> Result
 ///
 /// Everything is checked before anything is written. Starting into a
 /// running instance (its session exists and its start record is there)
-/// reuses the base environment and plugin values it started with, and
-/// refuses a changed configuration. A bus keeps one store; changed files apply
-/// on a full start only once every member is positively stopped. A start of
-/// one member with changed files is refused. The registry and lifecycle locks
+/// reuses its base environment and reads current team files and settings.
+/// Already-running members keep their launch settings. A bus keeps one store.
+/// The registry and lifecycle locks
 /// are held while files are written and windows started, and released before
 /// waiting for gates and folder trust.
 fn start_members(
@@ -394,7 +393,7 @@ fn start_members(
     // With `--resume`, the session each member's latest start reported. A
     // member started on its own must have one; a full start starts fresh
     // whoever has none, and says so. A session belongs to the vendor that
-    // reported it: after a role's vendor changes (only across a full stop),
+    // reported it: after a role's vendor changes,
     // the member starts fresh.
     let mut sessions: BTreeMap<String, String> = BTreeMap::new();
     let mut vendor_changed: BTreeSet<String> = BTreeSet::new();
@@ -460,9 +459,9 @@ fn start_members(
     }
     let wanted: Vec<(String, PathBuf)> = cwds.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     crate::checkouts::reserve(&lock, &inst.id, &wanted)?;
-    let (values, missing) = plugin_values(v);
+    let (mut values, mut missing) = plugin_values(v);
     let keys = api_keys(v, record, &member_ids)?;
-    let missing_error = || {
+    let missing_error = |missing: &[String]| {
         format!(
             "set these secrets in your environment first (brg stores none); nothing was started: {}",
             missing.join(", ")
@@ -471,7 +470,7 @@ fn start_members(
     let probe = tmux_for(state);
     let looks_running = probe.has_session(&session) && state.meta_file().exists();
     if !looks_running && !missing.is_empty() {
-        return Err(missing_error());
+        return Err(missing_error(&missing));
     }
 
     // Serialize lifecycle changes, then decide for real.
@@ -486,24 +485,33 @@ fn start_members(
         .is_some_and(|m| m.stopped_at.is_none() && m.windows_started);
     let existing = previous.clone().filter(|_| probe.has_session(&session));
     let joining = existing.is_some();
-    match &existing {
-        Some(meta) => lifecycle::check_join(meta, &snapshot, state, &team, &restart)?,
-        None if !missing.is_empty() => return Err(missing_error()),
-        None => {}
-    }
     if !joining
         && let Some(meta) = &previous
         && meta.config != snapshot
     {
-        if only {
-            return Err(lifecycle::changed_since_start(
-                &team,
-                &restart,
-                &meta.config,
-                &snapshot,
-            ));
-        }
         lifecycle::check_stopped(state, meta, &restart)?;
+    }
+    // Plugin secrets can be reused by helpers whose environment omits them.
+    // Plain values and program locations follow the current declaration.
+    if joining {
+        for (name, plugin) in &v.team.plugins {
+            let saved: PluginEnv = std::fs::read(state.plugin_env_file(name))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                .unwrap_or_default();
+            for secret in plugin.secrets() {
+                if let Some(value) = saved.env.get(secret) {
+                    values
+                        .entry(name.clone())
+                        .or_default()
+                        .insert(secret.clone(), value.clone());
+                    missing.retain(|entry| entry != &format!("{name}: {secret}"));
+                }
+            }
+        }
+    }
+    if !missing.is_empty() {
+        return Err(missing_error(&missing));
     }
     {
         let paths = StorePaths::new(state);
@@ -517,7 +525,11 @@ fn start_members(
                 let bus = store::open(state).map_err(|e| e.message)?;
                 let snap = store::snapshot(&bus).map_err(|e| e.message)?;
                 for (member, meta) in &old.members {
-                    if meta.posture != "locked"
+                    if member_ids.contains(member)
+                        && probe
+                            .window(&session, member)
+                            .is_none_or(|window| window.dead)
+                        && meta.posture != "locked"
                         && v.posture(&meta.role) == Posture::Locked
                         && !lifecycle::unacked_work(&bus, &snap, Some(member))
                             .items
@@ -593,7 +605,7 @@ fn start_members(
             Tmux::new(&state.tmux_conf(), base.clone())
                 .write_config(user_config.as_deref())
                 .map_err(|e| format!("cannot write tmux config: {e}"))?;
-            let mut meta = Meta {
+            Meta {
                 team_dir: v.team.dir.clone(),
                 folder: record.folder.clone(),
                 brg: brg.clone(),
@@ -602,45 +614,35 @@ fn start_members(
                 base_env: base.clone(),
                 windows_started: may_still_run,
                 ..Meta::default()
-            };
-            // Plugins: their values (secrets included) go to private files for the shims.
-            for (name, plugin) in &v.team.plugins {
-                let body = serde_json::to_vec(&PluginEnv {
-                    env: values.get(name).cloned().unwrap_or_default(),
-                })
-                .map_err(|e| e.to_string())?;
-                write_private(&state.plugin_env_file(name), &body)
-                    .map_err(|e| format!("cannot write plugin settings: {e}"))?;
-                state::ensure_dir(&state.plugin_dir(name)).map_err(|e| e.to_string())?;
-                meta.plugins.insert(
-                    name.clone(),
-                    PluginMeta {
-                        dir: v.plugin_dir(name),
-                        has_process: plugin.process.is_some(),
-                    },
-                );
             }
-            meta
         }
     };
     // Every member of the instance is known to the start record, including
     // ones created since the instance started.
     let mut added = fresh;
+    for (name, plugin) in &v.team.plugins {
+        let body = serde_json::to_vec(&PluginEnv {
+            env: values.get(name).cloned().unwrap_or_default(),
+        })
+        .map_err(|e| e.to_string())?;
+        write_private(&state.plugin_env_file(name), &body)
+            .map_err(|e| format!("cannot write plugin settings: {e}"))?;
+        state::ensure_dir(&state.plugin_dir(name)).map_err(|e| e.to_string())?;
+        meta.plugins.insert(
+            name.clone(),
+            PluginMeta {
+                dir: v.plugin_dir(name),
+                has_process: plugin.process.is_some(),
+            },
+        );
+        added = true;
+    }
     for (id, _) in record.kept_members() {
         if !meta.members.contains_key(id)
             && let Some(m) = member_meta(id, &meta.base_env)
         {
             meta.members.insert(id.clone(), m);
             added = true;
-        }
-        if let Some(entry) = meta.members.get_mut(id)
-            && let Some(role) = record.role_of(id).and_then(|r| v.team.roles.get(r))
-        {
-            let parent = parent_member(role);
-            if entry.parent != parent {
-                entry.parent = parent;
-                added = true;
-            }
         }
         state::open_lock(&state.lock_file(id))
             .map_err(|e| format!("cannot create send lock: {e}"))?;
@@ -688,6 +690,9 @@ fn start_members(
                 continue;
             }
             let _ = tmux.kill_window(&session, id);
+        }
+        if let Some(current) = member_meta(id, &base) {
+            meta.members.insert(id.clone(), current);
         }
         let posture = v.posture(&member.id);
         let granted = launch::granted(&v.team, member);

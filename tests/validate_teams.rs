@@ -1,4 +1,4 @@
-//! Team-copy configuration is frozen independently, with actual ancestry checked.
+//! Copies read current source files, with actual ancestry checked.
 #![cfg(feature = "test-support")]
 
 mod common;
@@ -300,7 +300,7 @@ fn missing_running_subteam_yaml_keeps_status_and_stop_usable() {
 }
 
 #[test]
-fn changed_subteam_reaches_only_the_copy_that_fully_restarts() {
+fn changed_subteam_reaches_only_members_that_restart() {
     let (env, dept) = department();
     let (first, _) = copy(&env, &dept);
     let (peer, _) = copy(&env, &dept);
@@ -320,11 +320,9 @@ fn changed_subteam_reaches_only_the_copy_that_fully_restarts() {
         "teams/dev/lead.md",
         "---\nmodels: {claude: opus}\n---\nRelease blue.\n",
     );
-    env.fails(&["start", &first]);
-    env.ok(&["stop", &format!("{first}/{first_lead}")]);
-    env.fails(&["start", &format!("{first}/{first_lead}")]);
-    env.ok(&["stop", &first]);
     env.ok(&["start", &first]);
+    env.ok(&["stop", &format!("{first}/{first_lead}")]);
+    env.ok(&["start", &format!("{first}/{first_lead}")]);
     env.wait_for("restarted copy's agent", || {
         env.starts(&first_lead)
             .iter()
@@ -367,7 +365,7 @@ fn moved_copy_team_folder_errors_without_rebinding_to_a_same_named_team() {
 }
 
 #[test]
-fn changed_team_path_resolution_requires_the_declaring_instance_to_restart() {
+fn changed_team_path_resolution_reaches_new_copies_without_restart() {
     let (env, dept) = department();
     env.ok(&["stop", &dept]);
     env.ok(&["start", &dept]);
@@ -386,12 +384,10 @@ fn changed_team_path_resolution_requires_the_declaring_instance_to_restart() {
         "config.yaml",
         &format!("schema: 1\nteams: [{}]\n", env.path("redirect").display()),
     );
-    let before = env.registry();
-    assert!(
-        env.fails(&["create", &format!("{dept}/dev")])
-            .contains("changed since the instance started")
-    );
-    assert_eq!(env.registry(), before);
+    let (fresh, _) = copy(&env, &dept);
+    env.ok(&["start", &fresh]);
+    let lead = env.member(&fresh, "lead");
+    assert!(latest_prompt(&env, &fresh, &lead).contains("Alternative team."));
     // A kept copy keeps its recorded source, independently of the role's
     // current catalog target and of a later department restart.
     env.ok(&["stop", &kept]);
@@ -402,10 +398,6 @@ fn changed_team_path_resolution_requires_the_declaring_instance_to_restart() {
     );
     env.ok(&["stop", &dept]);
     env.ok(&["start", &dept]);
-    let (fresh, _) = copy(&env, &dept);
-    env.ok(&["start", &fresh]);
-    let lead = env.member(&fresh, "lead");
-    assert!(latest_prompt(&env, &fresh, &lead).contains("Alternative team."));
     env.ok(&["stop", &dept]);
 }
 

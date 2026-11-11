@@ -761,14 +761,17 @@ fn auth_comes_from_the_configuration_and_a_missing_file_means_login() {
     env.wait_for("lead idle", || env.state_of(&b, "lead") == "idle");
     let lead_b = env.member(&b, "lead");
     assert_eq!(env.starts(&lead_b)[0]["env"]["ANTHROPIC_API_KEY"], sentinel);
-    // A changed `auth` refuses a member start into the running instance,
-    // and applies after a full stop.
+    // A changed auth setting applies to a new member while its siblings run.
     env.config("");
-    let err = env.fails(&["create", &format!("{b}/scout")]);
+    env.ok(&["create", &format!("{b}/scout")]);
+    let scout = env.member(&b, "scout");
+    env.wait_for("scout started", || !env.starts(&scout).is_empty());
     assert!(
-        err.contains("`auth`") && err.contains(&format!("brg stop {b}")),
-        "{err}"
+        env.starts(&scout)[0]["env"]
+            .get("ANTHROPIC_API_KEY")
+            .is_none()
     );
+    assert_eq!(env.starts(&lead_b).len(), 1);
     env.ok(&["stop", &b]);
     env.ok(&["start", &b]);
     env.wait_for("lead idle", || env.state_of(&b, "lead") == "idle");
@@ -848,7 +851,7 @@ fn tmux_user_config_comes_from_the_configuration_and_a_change_is_reported() {
 }
 
 #[test]
-fn plain_plugin_values_come_from_the_team() {
+fn plain_plugin_values_refresh_when_a_member_starts() {
     let env = Env::new();
     env.write(
         "teams/oncall/team.yaml",
@@ -886,7 +889,8 @@ fn plain_plugin_values_come_from_the_team() {
     env.wait_for("lead idle", || env.state_of(&inst, "lead") == "idle");
     let lead = env.member(&inst, "lead");
     let shim = env.path(&format!("state/{inst}/members/{lead}/bin/pager"));
-    let run = Command::new(&shim)
+    let mut command = Command::new(&shim);
+    command
         .args(["read", "1"])
         .env_clear()
         .envs(
@@ -895,9 +899,8 @@ fn plain_plugin_values_come_from_the_team() {
             )
             .unwrap(),
         )
-        .env("PATH", "/usr/bin:/bin")
-        .output()
-        .unwrap();
+        .env("PATH", "/usr/bin:/bin");
+    let run = command.output().unwrap();
     assert!(run.status.success(), "{}", both(&run));
     let log =
         fs::read_to_string(env.path(&format!("state/{inst}/plugins/pager/calls.log"))).unwrap();
@@ -905,6 +908,32 @@ fn plain_plugin_values_come_from_the_team() {
         log.trim(),
         format!("room=R0000EXAMPLE token_len=12 instance={inst}")
     );
+    let team = fs::read_to_string(env.path("teams/oncall/team.yaml")).unwrap();
+    env.write(
+        "teams/oncall/team.yaml",
+        &team
+            .replace("R0000EXAMPLE", "R0001EXAMPLE")
+            .replace("path: plugins/pager", "path: plugins/pager-next"),
+    );
+    fs::create_dir_all(env.path("teams/oncall/plugins/pager-next")).unwrap();
+    script(
+        &env.path("teams/oncall/plugins/pager-next/pager"),
+        "#!/bin/sh\necho \"source=next room=$PAGER_ROOM token_len=${#PAGER_TOKEN}\" >> \"$BORGCHART_STATE_DIR/calls.log\"\n",
+    );
+    // The caller has no plugin token; the running instance keeps its secret.
+    env.ok(&["create", &format!("{inst}/scout")]);
+    let run = command.output().unwrap();
+    assert!(run.status.success(), "{}", both(&run));
+    let log =
+        fs::read_to_string(env.path(&format!("state/{inst}/plugins/pager/calls.log"))).unwrap();
+    assert_eq!(
+        log.lines().last().unwrap(),
+        "source=next room=R0001EXAMPLE token_len=12"
+    );
+    // A missing cached secret fails at the start, naming the missing input.
+    fs::remove_file(env.path(&format!("state/{inst}/secrets/pager.json"))).unwrap();
+    let err = env.fails(&["start", &inst]);
+    assert!(err.contains("PAGER_TOKEN"), "{err}");
     env.ok(&["stop", &inst]);
 }
 
