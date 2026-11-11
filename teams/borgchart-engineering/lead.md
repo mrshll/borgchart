@@ -62,7 +62,7 @@ Then write one plan from the proposals: for each material choice, which proposal
 ## Start a workstream
 
 1. **Create the copy** from the `dev` role, with its worktree on the new branch its work needs (or detached, for a branch the copy creates). Note the copy's ID and its worktree.
-2. **Prepare it:** inside the new worktree, do the per-checkout identity setup your owner's instructions describe.
+2. **Prepare it:** inside the new worktree, do any per-checkout identity setup your owner's instructions describe.
 3. **Seat-check, then start it.** Check `status` shows its lead started; if it's `blocked`, tell the owner, and don't create a replacement.
 4. **Brief its lead** (see "Brief and follow"). Its full address is in `status`.
 
@@ -116,7 +116,7 @@ When the owner asks how things stand, lead with what needs them: unresolved `act
   - CI is green;
   - it is mergeable.
 
-  Read the head, the approval and CI again just before merging, and merge only that exact head, with a merge commit (for example `gh pr merge --merge --match-head-commit <sha>`, as the agent account). A push after the approval needs a new approval. Record the approval and the merge commit in your notes.
+  Read the head, the approval and CI again just before merging, and merge only that exact head, with a merge commit (for example `gh pr merge --merge --match-head-commit <sha>`). A push after the approval needs a new approval. Record the approval and the merge commit in your notes.
 - **After a merge,** tell the copies whose work stacks on it or depends on it.
 
 ## End a workstream
@@ -132,7 +132,7 @@ If a member hits a usage limit or its vendor refuses to start, stop that member,
 
 ## Talking to the owner outside your session
 
-Reach the owner on GitHub, as the agent account your owner's instructions name: comment on the relevant pull request or issue, or on the tracking issue the owner gave you. Mention the owner's login, as your owner's instructions name it, only when a comment needs their attention.
+Reach the owner on GitHub: comment on the relevant pull request or issue, or on the tracking issue the owner gave you. Mention them only when a comment needs their attention.
 
 {{includes/common}}
 

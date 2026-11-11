@@ -43,7 +43,7 @@ Messages go to member IDs, so a member must exist before it can be briefed, and 
 
 1. **Seat-check** before each `create` or `start`: run `brg-seat route <vendor> <model>` for the member it launches. Go ahead only on `go`. On `wait`, an unknown answer or an error, check again later; don't take another vendor or model instead.
 2. **Create the member once** from its role, with `create`; an implementer's worktree goes on the new branch its work needs, or stays detached for the copy to create the branch. `create` starts the member: stop it and note its ID. A stopped member keeps its ID.
-3. **For an implementer, prepare its worktree:** inside it, do the per-checkout identity setup your owner's instructions describe.
+3. **For an implementer, prepare its worktree:** inside it, do any per-checkout identity setup your owner's instructions describe.
 4. **Write the brief** in `$BORGCHART_NOTES`, by rename: the task, scope, non-goals, checks, branch and checkout, report path, deadline and teammates involved; for the monitor, the interval and trigger. An implementer's brief says whether it may run full checks now or must report `ready for checks` and wait. Then send the member one message naming it: `Read <brief path>; take on the work and report there as directed.`
 5. **Start it**, and check `status`. If it is `blocked` (at a folder-trust screen, say), tell the owner and leave it for a person.
 
@@ -57,7 +57,7 @@ Messages go to member IDs, so a member must exist before it can be briefed, and 
 
   A send that returned 0 is committed: never send it again.
 - **Verify.** The report is the helper's claim. Read it, the diff and its evidence, and run the repository's checks yourself in that checkout.
-- **Push** a copy's branch from its own worktree (`git -C <copy worktree> push …`, as the agent account), since pre-push checks run in the tree you push from. Update the pull request description in the same pass.
+- **Push** a copy's branch from its own worktree (`git -C <copy worktree> push …`): a pre-push hook checks the tree you push from.
 - **Stop and check.** Stop the helper, then check `status` shows it `stopped`. Only then change or remove its worktree, or give its checkout to anyone else. To redo finished work, send a new brief and start it again.
 - **Delete a copy** once its work is pushed, which removes its worktree. Never use `--force`: if `delete` refuses, commit, push or report the work it found first. Look at a member's unacked work before you delete it.
 
@@ -75,7 +75,7 @@ Don't request a second review. Keep the findings, how you dealt with each, and t
 
 ## Hand off
 
-Follow the git rules below: an up-to-date description, then a review request to the owner. Report unresolved findings at handoff. You never merge.
+Follow the git rules below: an up-to-date description, then the owner's review request where it applies. Report unresolved findings at handoff. You never merge.
 
 ## Watch
 
@@ -93,12 +93,12 @@ When `BORGCHART_PARENT` is set, your team is a child team, and your parent is th
 - **Your brief arrives from it** by message, naming a brief file. Read it and ack the message once you have taken the work on.
 - **Report to it by message:** done, blocked, handed off, or a usage limit. Write the report in your own `$BORGCHART_NOTES` at the path the brief names, and send your parent one reply to the brief's message, in plain text: a line `Report: <report path>`, then the report's `action-needed:` line.
 - **Operational questions go up to it** by message: a decision the plan doesn't settle, a blocker, a peer holding something you need.
-- **Pull-request matters stay on GitHub:** questions about a pull request, and your review request to the owner at handoff.
+- **Pull-request matters stay on GitHub:** questions about a pull request, and any review request to the owner at handoff.
 
 ## Talking to the owner
 
 - **In your session:** the owner may attach to it and talk to you directly. Answer there.
-- **On GitHub,** as the agent account your owner's instructions name: request their review at handoff. When you need them otherwise (a decision, a blocker, a usage limit) and have no parent, comment on the relevant pull request or issue, or on the tracking issue. Mention the owner's login, as your owner's instructions name it, only when a comment needs their attention.
+- **On GitHub:** when you need them (a decision, a blocker, a usage limit) and have no parent, comment on the relevant pull request or issue, or on the tracking issue. Mention them only when a comment needs their attention.
 - **Usage limits.** If a member hits a usage limit or its vendor refuses to start, stop that member, tell the owner or your parent, and wait.
 
 {{includes/common}}

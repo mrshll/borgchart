@@ -63,7 +63,7 @@ The three aren't self-contained, so they travel together:
 The team files hold no project rules and no owner. Members get both from their vendor's own instruction files, which load as normal:
 
 - **The project's rules** come from the repository's instruction file: here, [AGENTS.md](AGENTS.md), which `CLAUDE.md` imports so both vendors read one text. It names the build wrapper, the checks, the code style and what may appear in public. A `locked` Codex member without `worktree: true` starts in its temp folder and doesn't load it; none of these teams has one.
-- **The owner** is whoever runs the instance. Their own user-level instructions (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`) name their GitHub login, the agent account members act as, how to run GitHub commands and pushes as it, and any per-checkout identity setup. A member whose instructions name no agent account makes no GitHub write or push and asks instead.
+- **The owner** is whoever runs the instance. Their own user-level instructions (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`) name their GitHub login and say how members commit, push and run GitHub commands: as the owner, or as a separate account, with any per-checkout identity setup. Leads request the owner's review only under a separate account.
 
 ### Setup
 
