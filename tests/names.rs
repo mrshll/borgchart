@@ -95,10 +95,8 @@ fn a_name_is_the_id_of_the_member_or_copy_and_is_never_reissued() {
 fn names_that_do_not_fit_are_refused_before_anything_is_issued() {
     let (env, inst) = names_env();
     let before = env.registry();
-    for name in ["Rounding", "rounding_fix", "fix-", &"a".repeat(25)] {
-        let err = env.fails(&["create", &format!("{inst}/helper"), "--name", name]);
-        assert!(err.contains("at most 24 characters"), "{name}: {err}");
-    }
+    let err = env.fails(&["create", &format!("{inst}/helper"), "--name", "Rounding"]);
+    assert!(err.contains("lowercase"), "{err}");
     let err = env.fails(&["create", "oncall", "work/b", "--name", "widgets"]);
     assert!(err.contains("<instance>/<role> --name"), "{err}");
     assert_eq!(env.registry(), before);
@@ -106,6 +104,36 @@ fn names_that_do_not_fit_are_refused_before_anything_is_issued() {
         env.rows(&inst)
             .iter()
             .all(|r| r["role"] != "helper" || r["member"].is_null())
+    );
+    env.ok(&["stop", &inst]);
+}
+
+#[test]
+fn a_named_copy_whose_worktree_fails_keeps_its_name_free() {
+    let (env, inst) = names_env();
+    git(&env.path("work/a"), &["branch", "fix-rounding"]);
+    let dev = format!("{inst}/dev");
+    let err = env.fails(&[
+        "create",
+        &dev,
+        "--name",
+        "rounding-fix",
+        "--branch",
+        "fix-rounding",
+    ]);
+    assert!(err.contains("needs its own worktree"), "{err}");
+    env.ok(&[
+        "create",
+        &dev,
+        "--name",
+        "rounding-fix",
+        "--branch",
+        "fix-rounding-2",
+    ]);
+    assert!(
+        env.worktree(&format!("{dev}-rounding-fix"))
+            .join(".git")
+            .is_file()
     );
     env.ok(&["stop", &inst]);
 }

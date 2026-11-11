@@ -77,7 +77,8 @@ enum Command {
         repo: Option<String>,
         /// For a role: make the new ID `<role>-<name>`, named for its task,
         /// instead of a random suffix: lowercase words joined by hyphens, at
-        /// most 24 characters, never one issued before in the instance.
+        /// most 24 characters, never a role's name, an ID issued before in the
+        /// instance or another ID's suffix.
         #[arg(long)]
         name: Option<String>,
     },

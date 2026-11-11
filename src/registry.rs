@@ -266,6 +266,7 @@ impl InstanceRecord {
                         || self
                             .members
                             .keys()
+                            .chain(self.copies.keys())
                             .any(|id| split_id(id).is_some_and(|(_, t)| t == s))
                 })?;
                 format!("{role}-{suffix}")
@@ -283,8 +284,8 @@ impl InstanceRecord {
     }
 
     /// `<role>-<name>`, if it is a valid ID that no role, member or copy of
-    /// this instance has or had, and `name` isn't a random suffix it issued.
-    fn named(
+    /// this instance has or had, and `name` isn't another issued ID's suffix.
+    pub fn named(
         &self,
         role: &str,
         name: &str,
@@ -303,11 +304,16 @@ impl InstanceRecord {
             ));
         }
         let mut issued = self.members.keys().chain(self.copies.keys());
-        if let Some(taken) = issued.find(|taken| {
-            **taken == id || split_id(taken).is_some_and(|(_, suffix)| suffix == name)
-        }) {
+        if issued.clone().any(|taken| *taken == id) {
             return Err(format!(
-                "`{id}` can't be issued: `{taken}` was issued before in this instance, and IDs are never reused, even after delete; choose another name"
+                "`{id}` was issued before in this instance, and IDs are never reused, even after delete; choose another name"
+            ));
+        }
+        if let Some(taken) =
+            issued.find(|taken| split_id(taken).is_some_and(|(_, suffix)| suffix == name))
+        {
+            return Err(format!(
+                "`{name}` is the suffix of `{taken}` in this instance; choose a name that isn't another ID's suffix"
             ));
         }
         Ok(id)
@@ -630,7 +636,7 @@ mod tests {
         let err = r
             .issue_member("helper", Some(&suffix), no_roles)
             .unwrap_err();
-        assert!(err.contains(&lead), "{err}");
+        assert!(err.contains("suffix of") && err.contains(&lead), "{err}");
         let err = r
             .issue_member("code", Some("review"), |id| id == "code-review")
             .unwrap_err();

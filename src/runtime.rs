@@ -1584,10 +1584,11 @@ pub fn create_member(
     branch: Option<&str>,
     repo: Option<&str>,
 ) -> Result<UpOutcome, String> {
-    if let Some(name) = name {
-        registry::check_name(name)?;
-    }
     let v = validated(&inst)?;
+    if let Some(name) = name {
+        // Refuse a taken name before any fetch; issuing checks again under the lock.
+        inst.record.named(role, name, |id| is_role(&v, id))?;
+    }
     let worktree = v
         .team
         .team_roles

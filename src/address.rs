@@ -104,7 +104,7 @@ pub fn instance(id: &str) -> Result<Instance, String> {
             list.join(", ")
         ));
     }
-    if registry::split_id(id).is_some() {
+    if id.contains('-') {
         return Err(format!(
             "no instance `{id}`. A member is named with its instance outside a member: `<instance>/{id}`; {}",
             known()
