@@ -10,11 +10,7 @@ These rules apply to every member. You work for your parent; the root lead works
 
 **Folders.** Work only in your working directory and the folders your brief or your role names. Never write into the team folder the instance was started from.
 
-**Public repository.** Code, tests, fixtures, docs, commit messages, issues and pull requests use fictional names and data: no machine paths, people's names, account details, usage figures or private notes.
-
-**GitHub.** Use `agent-gh gh` for every GitHub read. Only leads write to GitHub, under the git rules. Reviewers, researchers and monitors write only reports.
-
-**Builds.** Run direct cargo builds and test suites as `tools/cargo-slot <command>` from the checkout root. `.githooks/checks` and the git hooks already use it, so don't wrap them. If a build is killed for memory or the cap is unavailable, stop and report it; don't retry uncapped. Reviewers, researchers, monitors and designers run no heavy builds.
+**Pull requests.** If you open pull requests under a GitHub identity separate from the owner's, request the owner's review on each one at handoff. Under the owner's own identity, a GitHub comment or mention notifies no one: take what needs the owner to your parent, or to the owner in your session.
 
 **Usage limits.** If your vendor refuses to work because of a usage limit, stop and tell your parent, with the evidence; a warning alone is not a refusal. Never switch vendor, model or effort, and never buy or redeem credits, upgrade plans, or request fast mode or paid speed tiers.
 

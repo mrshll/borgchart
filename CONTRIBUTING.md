@@ -60,6 +60,11 @@ The three aren't self-contained, so they travel together:
 - **Shared includes sit beside the teams.** `catalog:shared/...` points at `teams/shared/`, which has no `team.yaml` and is not a team.
 - **The [seating plugin](plugins/seat/README.md), `brg-seat`, is found on `PATH`,** as it was when the instance was created or fully started.
 
+The team files hold no project rules and no owner. Members get both from their vendor's own instruction files, which load as normal:
+
+- **The project's rules** come from the repository's instruction file: here, [AGENTS.md](AGENTS.md), which `CLAUDE.md` imports so both vendors read one text. It names the build wrapper, the checks, the code style and what may appear in public. A `locked` Codex member without `worktree: true` starts in its temp folder and doesn't load it; none of these teams has one.
+- **The owner** is whoever runs the instance. Their own user-level instructions (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`) name their GitHub login and say how members commit, push and run GitHub commands: as the owner, or as a separate account, with any per-checkout identity setup. Leads request the owner's review only under a separate account.
+
 ### Setup
 
 Point brg's configuration at the folder that contains `teams/`. With this `config.yaml` beside it:

@@ -396,11 +396,15 @@ fn denied_word(text: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Words that belong to this repository's own rules (its build wrapper,
+/// checks and language), which live in its `AGENTS.md`, not in team files.
+const PROJECT_WORDS: [&str; 5] = ["cargo", "cargo-slot", "githooks", "clippy", "rust"];
+
 #[test]
 fn the_team_files_stay_generic() {
     assert!(denied_word("the owner merges").is_none());
-    // The owner has approved the machine account and GitHub wrapper in
-    // team instructions. Other private names and machine paths stay denied.
+    // No owner's handle, machine account or GitHub wrapper either: those
+    // come from the owner's own instructions, so any owner can run the teams.
     assert!(denied_word("mrshll-agent").is_some());
 
     // Every sibling definition and shared asset in the catalog.
@@ -411,33 +415,40 @@ fn the_team_files_stay_generic() {
         let held = files.iter().filter(|f| f.starts_with(team_dir(team)));
         assert!(held.count() >= 2, "{team}: {files:?}");
     }
-    // Machine paths and unapproved private names never belong here.
+    // Machine paths and private names never belong here.
     let home = regex::Regex::new(r"/(home|Users)/[^/\s]+|/tmp/|/root/").unwrap();
-    // The owner's @handle is allowed outside the panel. Below, the approved
-    // account and wrapper are allowed everywhere, and the bare owner login
-    // only in git.md's review-request command.
-    let owner = regex::Regex::new(r"@mrshll([^A-Za-z0-9_-]|$)").unwrap();
-    let panel = team_dir("dev-design-team");
     let word = regex::Regex::new(r"[A-Za-z0-9_-]+").unwrap();
     for file in files {
         let text = fs::read_to_string(&file).unwrap();
-        let text = if !file.starts_with(&panel) {
-            owner.replace_all(&text, "$1").to_string()
-        } else {
-            text
-        };
-        let text = word.replace_all(&text, |caps: &regex::Captures<'_>| match &caps[0] {
-            "mrshll-agent" | "agent-gh" => String::new(),
-            "mrshll" if file == shared().join("includes/git.md") => String::new(),
-            other => other.to_string(),
-        });
         assert_eq!(denied_word(&text), None, "{}", file.display());
+        let project = word
+            .find_iter(&text.to_lowercase())
+            .map(|m| m.as_str().to_string())
+            .find(|w| PROJECT_WORDS.contains(&w.as_str()));
+        assert_eq!(project, None, "{} names a project rule", file.display());
         assert!(
             !home.is_match(&text),
             "{} has a machine path: {:?}",
             file.display(),
             home.find(&text).map(|m| m.as_str())
         );
+    }
+}
+
+/// One text for both vendors: `CLAUDE.md` only imports `AGENTS.md` (which
+/// Codex reads), so no rule is Claude-only; and `AGENTS.md` holds the rules
+/// the shared includes defer to. Whether each vendor loads it is the live
+/// tier's concern.
+#[test]
+fn claude_md_only_imports_agents_md() {
+    let root = catalog().join("..");
+    let claude = fs::read_to_string(root.join("CLAUDE.md")).unwrap();
+    assert_eq!(claude.trim(), "@AGENTS.md");
+    let agents = fs::read_to_string(root.join("AGENTS.md")).unwrap();
+    // What the shared includes defer to: the build wrapper, the checks and
+    // the public-repository rule.
+    for rule in ["tools/cargo-slot", ".githooks/checks", "fictional names"] {
+        assert!(agents.contains(rule), "AGENTS.md lacks {rule}");
     }
 }
 
