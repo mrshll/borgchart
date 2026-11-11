@@ -466,6 +466,61 @@ mod tests {
         }
     }
 
+    /// `screen` with the composer box's top rule ending in a session's
+    /// name, as Claude Code draws it for a named session.
+    fn named_box(screen: &str, name: &str) -> String {
+        let lines: Vec<&str> = screen.lines().collect();
+        let top = lines
+            .iter()
+            .rposition(|l| l.starts_with('❯'))
+            .and_then(|i| i.checked_sub(1))
+            .expect("a composer box");
+        let width = lines[top].chars().count();
+        let label = format!(" {name} ─");
+        let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        out[top] = format!("{}{label}", "─".repeat(width - label.chars().count()));
+        out.join("\n") + "\n"
+    }
+
+    #[test]
+    fn claude_named_sessions_read_like_unnamed_ones() {
+        // A named session's title is its name, with the idle or a spinner glyph.
+        let idle = named_box(&fixture("claude-idle-vim-insert-80.txt"), "demo-notes");
+        assert!(idle.contains("─ demo-notes ─\n❯"), "{idle}");
+        let reading = claude().read("✳ demo-notes", &idle);
+        assert_eq!(reading.state, State::Idle);
+        assert_eq!(reading.rule.as_deref(), Some("idle-composer"));
+        // A reduced-motion `● Verb…` with no timer stays ambiguous.
+        let early = named_box(
+            &fixture("claude-working-reduced-motion-80.txt")
+                .replace(
+                    "● Pondering deeply… (1s · ↓ 2 tokens)",
+                    "● Pondering deeply…",
+                )
+                .replace(" · esc to interrupt", ""),
+            "demo-notes",
+        );
+        assert_eq!(claude().read("✳ demo-notes", &early).state, State::Unknown);
+        // Working reads from the screen, not only the title: a spinner, and
+        // a footer with no spinner line.
+        let spinner = named_box(&fixture("claude-working-manual.txt"), "demo-notes");
+        let reading = claude().read("✳ demo-notes", &spinner);
+        assert_eq!(reading.state, State::Working);
+        assert_eq!(reading.rule.as_deref(), Some("working-spinner"));
+        let footer: String = spinner
+            .lines()
+            .filter(|l| !(l.contains('…') && !l.starts_with(' ')))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        let reading = claude().read("✳ demo-notes", &footer);
+        assert_eq!(reading.state, State::Working);
+        assert_eq!(reading.rule.as_deref(), Some("working-footer"));
+        // A label is not a licence for any text: the rule still starts and
+        // ends in dashes.
+        let broken = idle.replace("─ demo-notes ─\n❯", "─ demo-notes\n❯");
+        assert_eq!(claude().read("✳ demo-notes", &broken).state, State::Unknown);
+    }
+
     #[test]
     fn claude_tall_composers() {
         // Vim insert + auto mode, 120 and 80 columns; vim insert idle.
