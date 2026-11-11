@@ -18,12 +18,15 @@
 
   const HEADER = ["lamp-eng-x7k2", "folder ~/src/lighthouse"];
 
-  // Members: [name, vendor mark and model]; copies: [name, team].
+  // A member: its name, vendor mark and model, state and details. A copy
+  // (a nested team): its name, its team, and its members.
   const m = (name, model, state, detail, children) => ({
     kind: "member", name, model, state, detail: detail || "", children: children || [],
   });
-  const copy = (name, team, running, children) => ({
-    kind: "copy", name, team, running, children,
+  // brg counts a copy's members that are not stopped as running.
+  const copy = (name, team, children) => ({
+    kind: "copy", name, team, children,
+    running: children.filter((k) => k.state !== "stopped").length,
   });
 
   const OPUS = "§ opus high";
@@ -44,7 +47,7 @@
     ]),
     m("lead-q8m3", OPUS, "idle", "", [
       m("implementer-b3n7", SOL, "working", "Add the fog-horn schedule"),
-      copy("map-design", "design-panel", 2, [
+      copy("map-design", "design-panel", [
         m("designer-a8e2", OPUS, "working", "Sketch the keeper's log view"),
         m("designer-n6y4", SOL, "working", "Sketch the keeper's log view"),
       ]),
@@ -52,7 +55,7 @@
     ]),
     m("lead-q8m3", OPUS, "working", "Merge the design notes", [
       m("implementer-b3n7", SOL, "idle", "1 unread"),
-      copy("map-design", "design-panel", 1, [
+      copy("map-design", "design-panel", [
         m("designer-a8e2", OPUS, "working", "Write up the log view"),
         m("designer-n6y4", SOL, "idle"),
       ]),
@@ -61,16 +64,16 @@
     ]),
     m("lead-q8m3", OPUS, "idle", "", [
       m("implementer-b3n7", SOL, "idle"),
-      copy("map-design", "design-panel", 1, [
+      copy("map-design", "design-panel", [
         m("designer-a8e2", OPUS, "working", "Write up the log view"),
-        m("designer-n6y4", SOL, "stopped"),
+        m("designer-n6y4", SOL, "idle"),
       ]),
       m("reviewer-t4s9", SONNET, "blocked", "Review the fog-horn schedule"),
       m("researcher-f2g7", TERRA, "stopped"),
     ]),
     m("lead-q8m3", OPUS, "idle", "2 unread", [
       m("implementer-b3n7", SOL, "idle"),
-      copy("map-design", "design-panel", 0, [
+      copy("map-design", "design-panel", [
         m("designer-a8e2", OPUS, "stopped"),
         m("designer-n6y4", SOL, "stopped"),
       ]),
