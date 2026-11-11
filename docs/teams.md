@@ -166,7 +166,7 @@ roles:
   design: {team: dev-design-team, parent: lead, start: false, max: 2}
 ```
 
-- **A team role's member is a copy:** a nested instance of the sub-team, with its own members, notes, state and recorded launch settings, working in its own worktree (`worktree: true`) or in its parent's folder. Each new member start reads the copy's current team files; already-running members keep their launch settings.
+- **A team role's member is a copy:** a nested instance of the sub-team, with its own members, notes, state and recorded launch settings, working in its own worktree (`worktree: true`) or in its parent's folder. Each new member start reads the copy's current team files; already-running members keep their launch settings. Plugin locations, values and secrets stay recorded until a full stop/start.
 - **`team:` names another definition:** `team: dev-team` resolves through the configured team directories, exactly like `brg create dev-team`. Missing or ambiguous names fail validation. There is no same-installation restriction or nested-path compatibility. Definitions can be siblings while runtime working folders and addresses still nest. A definition also runs independently with `brg create dev-team` in a checkout.
 - **New copies use the current catalog.** A new install or changed catalog does not block a running tree. Existing copies retain their recorded source folders and read current files there at each member start. Missing referenced definitions remain tolerable for observing/stopping running instances, but validation, copy creation and a fresh full start refuse them.
 - **Copies are created stopped.** `brg create <instance>/dev` makes the copy and, for `worktree: true`, its worktree; it prints its ID and folder and starts nothing. `brg start <instance>/<copy>` starts the copy's `start: true` roles. A tree's instances may share folders, so the checkout check is between trees.
@@ -189,7 +189,7 @@ roles:
 
   brg refuses to start any instance in that tree, names the root that owns the store, and points to the [cutover steps](bus.md#storage).
 
-- **Configuration changes** reach members when they next start, without stopping their running siblings. Starts refresh declared plugin values and locations, reusing cached secrets; already-running plugin processes stay as they are. Invalid files and missing required values fail at the operation that needs them.
+- **Configuration changes** reach members when they next start, without stopping their running siblings. Joining members use recorded plugin locations, values and secrets; a missing settings file fails with the plugin's name. A full stop/start refreshes plugin locations and values and reads secrets from the caller's environment. Any start repairs a kept member's unresolved role-name parent once the parent member exists; other parent links change when the child restarts. Invalid files and missing required values fail at the operation that needs them.
 
 ## Limits
 

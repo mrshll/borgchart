@@ -328,7 +328,7 @@ fn member_cwd(inst: &Instance, role: &crate::team::Role, member: &str) -> Result
 ///
 /// Everything is checked before anything is written. Starting into a
 /// running instance (its session exists and its start record is there)
-/// reuses its base environment and reads current team files and settings.
+/// reuses its base environment and plugin settings, and reads current team files.
 /// Already-running members keep their launch settings. A bus keeps one store.
 /// The registry and lifecycle locks
 /// are held while files are written and windows started, and released before
@@ -459,7 +459,7 @@ fn start_members(
     }
     let wanted: Vec<(String, PathBuf)> = cwds.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     crate::checkouts::reserve(&lock, &inst.id, &wanted)?;
-    let (mut values, mut missing) = plugin_values(v);
+    let (values, missing) = plugin_values(v);
     let keys = api_keys(v, record, &member_ids)?;
     let missing_error = |missing: &[String]| {
         format!(
@@ -491,26 +491,18 @@ fn start_members(
     {
         lifecycle::check_stopped(state, meta, &restart)?;
     }
-    // Plugin secrets can be reused by helpers whose environment omits them.
-    // Plain values and program locations follow the current declaration.
+    // Joining members share the instance's recorded plugin settings, just
+    // like the siblings and plugin processes already running there.
     if joining {
-        for (name, plugin) in &v.team.plugins {
-            let saved: PluginEnv = std::fs::read(state.plugin_env_file(name))
-                .ok()
-                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-                .unwrap_or_default();
-            for secret in plugin.secrets() {
-                if let Some(value) = saved.env.get(secret) {
-                    values
-                        .entry(name.clone())
-                        .or_default()
-                        .insert(secret.clone(), value.clone());
-                    missing.retain(|entry| entry != &format!("{name}: {secret}"));
-                }
-            }
+        for name in v.team.plugins.keys() {
+            let path = state.plugin_env_file(name);
+            let saved = std::fs::read(&path).map_err(|e| {
+                format!("cannot read plugin `{name}` settings: {e}; stop and start the instance with its required secrets")
+            })?;
+            serde_json::from_slice::<PluginEnv>(&saved)
+                .map_err(|e| format!("cannot read plugin `{name}` settings: {e}"))?;
         }
-    }
-    if !missing.is_empty() {
+    } else if !missing.is_empty() {
         return Err(missing_error(&missing));
     }
     {
@@ -525,7 +517,7 @@ fn start_members(
                 let bus = store::open(state).map_err(|e| e.message)?;
                 let snap = store::snapshot(&bus).map_err(|e| e.message)?;
                 for (member, meta) in &old.members {
-                    if member_ids.contains(member)
+                    if (!joining || member_ids.contains(member))
                         && probe
                             .window(&session, member)
                             .is_none_or(|window| window.dead)
@@ -620,29 +612,45 @@ fn start_members(
     // Every member of the instance is known to the start record, including
     // ones created since the instance started.
     let mut added = fresh;
-    for (name, plugin) in &v.team.plugins {
-        let body = serde_json::to_vec(&PluginEnv {
-            env: values.get(name).cloned().unwrap_or_default(),
-        })
-        .map_err(|e| e.to_string())?;
-        write_private(&state.plugin_env_file(name), &body)
-            .map_err(|e| format!("cannot write plugin settings: {e}"))?;
-        state::ensure_dir(&state.plugin_dir(name)).map_err(|e| e.to_string())?;
-        meta.plugins.insert(
-            name.clone(),
-            PluginMeta {
-                dir: v.plugin_dir(name),
-                has_process: plugin.process.is_some(),
-            },
-        );
-        added = true;
+    if fresh {
+        for (name, plugin) in &v.team.plugins {
+            let body = serde_json::to_vec(&PluginEnv {
+                env: values.get(name).cloned().unwrap_or_default(),
+            })
+            .map_err(|e| e.to_string())?;
+            write_private(&state.plugin_env_file(name), &body)
+                .map_err(|e| format!("cannot write plugin settings: {e}"))?;
+            state::ensure_dir(&state.plugin_dir(name)).map_err(|e| e.to_string())?;
+            meta.plugins.insert(
+                name.clone(),
+                PluginMeta {
+                    dir: v.plugin_dir(name),
+                    has_process: plugin.process.is_some(),
+                },
+            );
+        }
     }
     for (id, _) in record.kept_members() {
         if !meta.members.contains_key(id)
-            && let Some(m) = member_meta(id, &meta.base_env)
+            && let Some(m) = previous
+                .as_ref()
+                .and_then(|old| old.members.get(id))
+                .cloned()
+                .or_else(|| member_meta(id, &meta.base_env))
         {
             meta.members.insert(id.clone(), m);
             added = true;
+        }
+        if let Some(member) = record.role_of(id).and_then(|role| v.team.roles.get(role))
+            && member.parent.is_some()
+            && let Some(m) = meta.members.get_mut(id)
+            && m.parent == member.parent
+        {
+            let parent = parent_member(member);
+            if m.parent != parent {
+                m.parent = parent;
+                added = true;
+            }
         }
         state::open_lock(&state.lock_file(id))
             .map_err(|e| format!("cannot create send lock: {e}"))?;
@@ -809,11 +817,7 @@ fn start_members(
                 incarnation: lifecycle::new_incarnation_id(state, id),
                 started_at: utc_now(),
                 boot_id: lifecycle::boot_id(),
-                vendor_version: if joining {
-                    vendor_version(member.vendor, &base)
-                } else {
-                    meta.members.get(id).and_then(|m| m.vendor_version.clone())
-                },
+                vendor_version: meta.members.get(id).and_then(|m| m.vendor_version.clone()),
                 pane: None,
                 ended_at: None,
                 ended_reason: None,
@@ -2255,11 +2259,13 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
             inst.id
         ));
     }
-    let mut recorded_only = false;
+    let mut recorded_only = None;
     if let Some(meta) = meta {
         for (child, _) in inst.record.kept_members() {
-            if meta.members.get(child).and_then(|m| m.parent.as_deref()) == Some(&id) {
-                recorded_only |= children.insert(child.clone());
+            if meta.members.get(child).and_then(|m| m.parent.as_deref()) == Some(&id)
+                && children.insert(child.clone())
+            {
+                recorded_only = Some(child.clone());
             }
         }
     }
@@ -2272,10 +2278,11 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
                 .map(|child| inst.at(child))
                 .collect::<Vec<_>>()
                 .join("\n  "),
-            if recorded_only {
+            if let Some(child) = recorded_only {
                 format!(
-                    "\nthe team file changed since the last start; brg start {} applies it",
-                    inst.id
+                    "\nthe team file changed since the child's last start; restart the child to apply it: brg stop {} && brg start {}",
+                    inst.at(&child),
+                    inst.at(&child)
                 )
             } else {
                 String::new()

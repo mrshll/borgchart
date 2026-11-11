@@ -19,6 +19,35 @@ use instance_env::*;
 use serde_json::{Value, json};
 
 #[test]
+fn starting_repairs_an_unresolved_parent_so_recursive_stop_reaches_the_child() {
+    let env = Env::new();
+    env.write(
+        "teams/oncall/team.yaml",
+        &TEAM
+            .replace("prompt: lead.md", "prompt: lead.md\n    start: false")
+            .replace("    start: false\n  scout:", "    start: true\n  scout:"),
+    );
+    let out = env.ok(&[
+        "create",
+        "oncall",
+        &env.path("work/a").display().to_string(),
+    ]);
+    let inst = stdout(&out).split_whitespace().next().unwrap().to_string();
+    let child = env.member(&inst, "helper");
+    env.wait_for("child idle", || env.state_of(&inst, "helper") == "idle");
+    env.ok(&["create", &format!("{inst}/lead")]);
+    let parent = env.member(&inst, "lead");
+    env.ok(&["start", &inst]);
+    env.ok(&["stop", "-r", &format!("{inst}/{parent}")]);
+    assert_eq!(env.state_of(&inst, "helper"), "stopped");
+    let meta: Value =
+        serde_json::from_slice(&fs::read(env.path(&format!("state/{inst}/start.json"))).unwrap())
+            .unwrap();
+    assert_eq!(meta["members"][&child]["parent"], parent);
+    env.ok(&["stop", &inst]);
+}
+
+#[test]
 fn stopped_parents_cannot_be_deleted_before_their_kept_children() {
     let env = Env::new();
     let inst = env.create("oncall", "work/a");
@@ -851,7 +880,7 @@ fn tmux_user_config_comes_from_the_configuration_and_a_change_is_reported() {
 }
 
 #[test]
-fn plain_plugin_values_refresh_when_a_member_starts() {
+fn plugin_settings_stay_on_joins_and_refresh_after_a_full_stop_start() {
     let env = Env::new();
     env.write(
         "teams/oncall/team.yaml",
@@ -928,12 +957,71 @@ fn plain_plugin_values_refresh_when_a_member_starts() {
         fs::read_to_string(env.path(&format!("state/{inst}/plugins/pager/calls.log"))).unwrap();
     assert_eq!(
         log.lines().last().unwrap(),
+        format!("room=R0000EXAMPLE token_len=12 instance={inst}")
+    );
+    env.ok(&["stop", &inst]);
+    let out = env
+        .cmd(&["start", &inst])
+        .env("PAGER_TOKEN", "tok-not-real")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", both(&out));
+    env.wait_for("lead relaunched", || env.starts(&lead).len() == 2);
+    command.env(
+        "BORGCHART_INCARNATION",
+        env.starts(&lead)[1]["env"]["BORGCHART_INCARNATION"]
+            .as_str()
+            .unwrap(),
+    );
+    let run = command.output().unwrap();
+    assert!(run.status.success(), "{}", both(&run));
+    let log =
+        fs::read_to_string(env.path(&format!("state/{inst}/plugins/pager/calls.log"))).unwrap();
+    assert_eq!(
+        log.lines().last().unwrap(),
         "source=next room=R0001EXAMPLE token_len=12"
     );
-    // A missing cached secret fails at the start, naming the missing input.
+    env.ok(&["stop", &inst]);
+    // A plain value becoming a secret must use the newly exported secret.
+    let team = fs::read_to_string(env.path("teams/oncall/team.yaml")).unwrap();
+    env.write(
+        "teams/oncall/team.yaml",
+        &team.replace("PAGER_ROOM: R0001EXAMPLE", "PAGER_ROOM:"),
+    );
+    let out = env
+        .cmd(&["start", &inst])
+        .env("PAGER_TOKEN", "tok-not-real")
+        .env("PAGER_ROOM", "R0002EXAMPLE")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", both(&out));
+    env.wait_for("lead relaunched with secret", || {
+        env.starts(&lead).len() == 3
+    });
+    command.env(
+        "BORGCHART_INCARNATION",
+        env.starts(&lead)[2]["env"]["BORGCHART_INCARNATION"]
+            .as_str()
+            .unwrap(),
+    );
+    let run = command.output().unwrap();
+    assert!(run.status.success(), "{}", both(&run));
+    let log =
+        fs::read_to_string(env.path(&format!("state/{inst}/plugins/pager/calls.log"))).unwrap();
+    assert_eq!(
+        log.lines().last().unwrap(),
+        "source=next room=R0002EXAMPLE token_len=12"
+    );
+    // A missing recorded settings file fails at the join, even with secrets exported.
     fs::remove_file(env.path(&format!("state/{inst}/secrets/pager.json"))).unwrap();
-    let err = env.fails(&["start", &inst]);
-    assert!(err.contains("PAGER_TOKEN"), "{err}");
+    let out = env
+        .cmd(&["start", &inst])
+        .env("PAGER_TOKEN", "tok-not-real")
+        .env("PAGER_ROOM", "R0002EXAMPLE")
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "{}", both(&out));
+    assert!(both(&out).contains("pager"), "{}", both(&out));
     env.ok(&["stop", &inst]);
 }
 

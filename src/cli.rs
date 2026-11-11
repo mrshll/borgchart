@@ -84,7 +84,10 @@ enum Command {
     /// using its latest running start.
     /// New member starts use current files and configuration; already-running
     /// members keep their launch settings. A new install does not require
-    /// stopping the tree.
+    /// stopping the tree. Joins keep recorded plugin locations, values and
+    /// secrets; a full stop/start refreshes them from configuration and the
+    /// caller's environment. Any start resolves a child's missing parent
+    /// member; other parent changes apply when the child restarts.
     Start {
         /// `<instance>`, or `<instance>/<member>`.
         #[arg(add = crate::complete::targets())]
