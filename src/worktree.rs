@@ -4,11 +4,122 @@
 //! where members could reach brg's own files): `<state>-worktrees/<address>`,
 //! with the address's `/` written as `.`, which no ID contains. brg adds it,
 //! detached at the team folder's `HEAD` or on a new branch, when it issues the
-//! member or copy, and removes it on `delete` when it is clean.
+//! member or copy, and removes it on `delete` when it is clean. `create --repo`
+//! selects a clone directly in the tree's folder and fetches origin's default
+//! branch before taking the registry lock. Worktree ownership is found afresh
+//! in the root repository and those clones' own records, never through a
+//! member-writable `.git` file. No repository selection is stored.
+//! Use one dev copy per repository; the root lead sequences copies.
 
 use std::path::{Path, PathBuf};
 
-use crate::cleanup::{HARDENED, clean_worktree, git_with};
+use crate::cleanup::{HARDENED, clean_worktree, git_network, git_with};
+
+/// A selected clone and its fetched commit, used only during creation.
+pub struct Start {
+    repository: PathBuf,
+    commit: String,
+}
+
+impl Start {
+    pub fn detail(&self) -> String {
+        format!(
+            " · {} at {}",
+            self.repository
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy(),
+            &self.commit[..7]
+        )
+    }
+}
+
+fn clone(dir: &Path) -> bool {
+    [dir.to_path_buf(), dir.join(".git")]
+        .iter()
+        .all(|path| path.symlink_metadata().is_ok_and(|meta| meta.is_dir()))
+}
+
+/// Select only a real child clone; network failures happen before issuance
+/// or the registry lock. The checkout, its index and branch stay untouched.
+pub fn fetch(root: &Path, name: &str) -> Result<Start, String> {
+    let path = Path::new(name);
+    if path.file_name() != Some(path.as_os_str()) || !clone(&root.join(path)) {
+        return Err(format!(
+            "`{name}` is not a clone directly in {}; name a real directory with a real `.git` directory, not a linked worktree",
+            root.display()
+        ));
+    }
+    let repository = root.join(path);
+    let remote = git_network(&repository, &["ls-remote", "--symref", "origin", "HEAD"])?;
+    let branch = remote
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("ref: refs/heads/")?
+                .strip_suffix("\tHEAD")
+        })
+        .ok_or_else(|| {
+            "origin has no default branch; set its HEAD to a branch before creating a worktree"
+                .to_string()
+        })?;
+    git_network(&repository, &["fetch", "origin", branch])?;
+    let hardened = HARDENED.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let fetched = git_with(
+        &repository,
+        &hardened,
+        &["rev-parse", "--verify", "FETCH_HEAD^{commit}"],
+    )?;
+    let tracking = format!("refs/remotes/origin/{branch}^{{commit}}");
+    let tracked = || {
+        git_with(
+            &repository,
+            &hardened,
+            &["rev-parse", "--verify", &tracking],
+        )
+    };
+    if tracked().ok().as_deref() != Some(fetched.as_str()) {
+        git_network(&repository, &["fetch", "origin"])?;
+        if tracked().ok().as_deref() != Some(fetched.as_str()) {
+            return Err(format!(
+                "origin/{branch} did not reach the fetched default; include that branch in remote.origin.fetch and try again"
+            ));
+        }
+    }
+    Ok(Start {
+        repository,
+        commit: fetched.trim().to_string(),
+    })
+}
+
+/// The tree's original repository (when present), and real child clones.
+/// Each pair is the repository folder and its common git directory. Child
+/// `.git` files and symlinks are never followed. Nothing is cached or stored.
+pub fn repositories(root: &Path) -> Result<Vec<(PathBuf, PathBuf)>, String> {
+    if in_home(root) {
+        return Err(format!(
+            "the tree's folder {} is one of brg's worktrees, whose `.git` file a member may have rewritten",
+            root.display()
+        ));
+    }
+    let hardened = HARDENED.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let mut repositories = Vec::new();
+    if let Ok(common) = git_with(
+        root,
+        &hardened,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    ) {
+        repositories.push((root.to_path_buf(), PathBuf::from(common.trim())));
+    }
+    for entry in
+        std::fs::read_dir(root).map_err(|e| format!("cannot read {}: {e}", root.display()))?
+    {
+        let entry = entry.map_err(|e| format!("cannot read {}: {e}", root.display()))?;
+        if clone(&entry.path()) {
+            repositories.push((entry.path(), entry.path().join(".git")));
+        }
+    }
+    Ok(repositories)
+}
 
 /// The folder that holds every worktree brg adds.
 pub fn home() -> PathBuf {
@@ -39,21 +150,30 @@ pub fn path(address: &str) -> PathBuf {
 
 /// Add a worktree at `dir` at the `HEAD` of `from`, a team's folder in the
 /// tree whose top folder is `root`: detached, or on a new `branch`. git runs
-/// in `root`; a copy's `from` is one of brg's worktrees, read only through
-/// git's own record of it ([`admin_dir`]).
-pub fn add(root: &Path, from: &Path, dir: &Path, branch: Option<&str>) -> Result<(), String> {
+/// in the repository found through its own record ([`admin_dir`]), or the
+/// selected clone at its fetched commit when `start` is given.
+pub fn add(
+    root: &Path,
+    from: &Path,
+    dir: &Path,
+    branch: Option<&str>,
+    start: Option<&Start>,
+) -> Result<(), String> {
     std::fs::create_dir_all(home())
         .map_err(|e| format!("cannot create {}: {e}", home().display()))?;
     let hardened: Vec<String> = HARDENED.iter().map(|s| s.to_string()).collect();
-    let base = if from == root {
-        "HEAD".to_string()
+    let (repository, base) = if let Some(start) = start {
+        (start.repository.clone(), start.commit.clone())
+    } else if from == root {
+        (root.to_path_buf(), "HEAD".to_string())
     } else {
-        let admin = admin_dir(root, from)?;
+        let (repository, admin) = admin_dir(root, from)?;
         let mut pre = vec!["--git-dir".to_string(), admin.display().to_string()];
         pre.extend(hardened.iter().cloned());
-        git_with(root, &pre, &["rev-parse", "HEAD"])?
+        let head = git_with(&repository, &pre, &["rev-parse", "HEAD"])?
             .trim()
-            .to_string()
+            .to_string();
+        (repository, head)
     };
     let target = dir.to_string_lossy();
     let mut args = vec!["worktree", "add"];
@@ -68,9 +188,9 @@ pub fn add(root: &Path, from: &Path, dir: &Path, branch: Option<&str>) -> Result
             root.display()
         ));
     }
-    git_with(root, &hardened, &args).map(|_| ()).map_err(|e| {
+    git_with(&repository, &hardened, &args).map(|_| ()).map_err(|e| {
         format!(
-            "cannot add a worktree from {} (it must be in a git repository with a commit): {e}",
+            "cannot add a worktree from {} (it must be in a git repository with a commit, or name a clone in it: --repo <name>): {e}",
             from.display()
         )
     })
@@ -78,43 +198,37 @@ pub fn add(root: &Path, from: &Path, dir: &Path, branch: Option<&str>) -> Result
 
 /// The folder git keeps for the worktree at `dir`, found through the
 /// repository's own records of its worktrees. `root` is the folder of the
-/// tree's top instance, which a person chose: every worktree in a tree comes
-/// from its repository. Never through a worktree's `.git` file, `dir`'s or
+/// tree's top instance, which a person chose. Search its repository and real
+/// child clones. Never through a worktree's `.git` file, `dir`'s or
 /// a copy's, which members working there can rewrite.
-pub fn admin_dir(root: &Path, dir: &Path) -> Result<PathBuf, String> {
-    if in_home(root) {
-        return Err(format!(
-            "the tree's folder {} is one of brg's worktrees, whose `.git` file a member may have rewritten",
-            root.display()
-        ));
-    }
-    let hardened: Vec<String> = HARDENED.iter().map(|s| s.to_string()).collect();
-    let common = git_with(
-        root,
-        &hardened,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    )?;
-    let worktrees = Path::new(common.trim()).join("worktrees");
+pub fn admin_dir(root: &Path, dir: &Path) -> Result<(PathBuf, PathBuf), String> {
     let want = dir
         .canonicalize()
         .map_err(|e| format!("cannot resolve it: {e}"))?;
-    for entry in std::fs::read_dir(&worktrees)
-        .into_iter()
-        .flatten()
-        .flatten()
-    {
-        let Ok(gitdir) = std::fs::read_to_string(entry.path().join("gitdir")) else {
-            continue;
-        };
-        let top = Path::new(gitdir.trim()).parent().map(Path::canonicalize);
-        if matches!(top, Some(Ok(top)) if top == want) {
-            return Ok(entry.path());
+    let mut found: Option<(PathBuf, PathBuf)> = None;
+    for (repository, common) in repositories(root)? {
+        for entry in std::fs::read_dir(common.join("worktrees"))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let Ok(gitdir) = std::fs::read_to_string(entry.path().join("gitdir")) else {
+                continue;
+            };
+            let top = Path::new(gitdir.trim()).parent().map(Path::canonicalize);
+            if matches!(top, Some(Ok(top)) if top == want) {
+                if let Some((previous, _)) = &found {
+                    return Err(format!(
+                        "both {} and {} list this worktree; repair their git worktree records before trying again",
+                        previous.display(),
+                        repository.display()
+                    ));
+                }
+                found = Some((repository.clone(), entry.path()));
+            }
         }
     }
-    Err(format!(
-        "git in {} has no record of this worktree",
-        root.display()
-    ))
+    found.ok_or_else(|| format!("git in {} has no record of this worktree", root.display()))
 }
 
 /// Why the worktree at `dir`, in the tree whose top folder is `root`, can't
@@ -123,7 +237,8 @@ pub fn unsaved(root: &Path, dir: &Path) -> Result<Option<String>, String> {
     if dir.symlink_metadata().is_err() {
         return Ok(None);
     }
-    clean_worktree(&admin_dir(root, dir)?, dir)
+    let (_, admin) = admin_dir(root, dir)?;
+    clean_worktree(&admin, dir)
 }
 
 /// Remove the worktree at `dir`, in the tree whose top folder is `root`, if
@@ -132,10 +247,10 @@ pub fn remove(root: &Path, dir: &Path) -> Result<(), String> {
     if dir.symlink_metadata().is_err() {
         return Ok(());
     }
-    admin_dir(root, dir)?;
+    let (repository, _) = admin_dir(root, dir)?;
     let hardened: Vec<String> = HARDENED.iter().map(|s| s.to_string()).collect();
     git_with(
-        root,
+        &repository,
         &hardened,
         &["worktree", "remove", &dir.to_string_lossy()],
     )

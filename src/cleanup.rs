@@ -347,6 +347,38 @@ pub(crate) fn git_with(dir: &Path, pre: &[String], args: &[&str]) -> Result<Stri
             command.env_remove(key);
         }
     }
+    run_git(&mut command, dir, pre, args)
+}
+
+/// Reach origin using the caller's credential configuration, without letting
+/// its environment redirect git to another repository or index.
+pub(crate) fn git_network(dir: &Path, args: &[&str]) -> Result<String, String> {
+    let mut command = std::process::Command::new("git");
+    for key in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_COMMON_DIR",
+        "GIT_NAMESPACE",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_SHALLOW_FILE",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    ] {
+        command.env_remove(key);
+    }
+    command.env("GIT_TERMINAL_PROMPT", "0");
+    let hardened = HARDENED.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    run_git(&mut command, dir, &hardened, args)
+}
+
+fn run_git(
+    command: &mut std::process::Command,
+    dir: &Path,
+    pre: &[String],
+    args: &[&str],
+) -> Result<String, String> {
     command.arg("-C").arg(dir).args(pre).args(args);
     let what = args
         .iter()
@@ -358,7 +390,7 @@ pub(crate) fn git_with(dir: &Path, pre: &[String], args: &[&str]) -> Result<Stri
         stdout_bytes: 64 << 20,
         stderr_bytes: 64 << 10,
     };
-    let output = crate::bounded_process::run(&mut command, None, limits).map_err(|e| match e {
+    let output = crate::bounded_process::run(command, None, limits).map_err(|e| match e {
         crate::bounded_process::Error::Deadline => {
             format!(
                 "git {what} did not finish within {} seconds",

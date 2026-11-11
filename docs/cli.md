@@ -16,7 +16,7 @@
 | --- | --- |
 | `brg validate <team> [--json] [--probe]` | Check the team folder and brg's configuration without starting anything; `--probe` also lists each vendor's MCP connectors (this starts your MCP servers) |
 | `brg create <team> [folder]` | Make a new instance of the team working in `folder` (the current folder by default; it must exist), usually the repository it works on; start its `start: true` roles and plugin processes, and print its ID and tree. Run it twice and you have two instances |
-| `brg create <instance>/<role> [--branch <name>]` | For an agent role, make and start the next member (`<role>-<suffix>`) up to the role's `max` (default 1). For a team role, make a stopped nested copy; start it with `start <instance>/<copy>`. For a `worktree: true` role, brg first adds the new member's or copy's git worktree, on the new branch `--branch` names or detached at the folder's `HEAD`. Kept members and copies count, running or stopped. At the limit, list them and refuse; for `max: 1`, point to `start`. A child needs its parent role to have a member |
+| `brg create <instance>/<role> [--branch <name>] [--repo <name>]` | For an agent role, make and start the next member (`<role>-<suffix>`) up to the role's `max` (default 1). For a team role, make a stopped nested copy; start it with `start <instance>/<copy>`. For a `worktree: true` role, brg first adds the new member's or copy's git worktree, on the new branch `--branch` names or detached at the folder's `HEAD`. With `--repo`, select a real clone directly in the tree's top folder and start at origin's fetched default tip instead (below). Both flags require a role with `worktree: true`. Kept members and copies count, running or stopped. At the limit, list them and refuse; for `max: 1`, point to `start`. A child needs its parent role to have a member |
 | `brg start <instance>` | Bring the instance to what should run: the `start: true` roles, members running at its last stop, and copies that were running, recursively. Stopped copies stay stopped. A copy that fails to start is reported alongside the others' results. Running members are left alone. Changed files apply only from a full stop. An unfinished cascade must be completed with `stop` first |
 | `brg start <instance>/<member>` | Start that member again, or say it is already running |
 | `brg start <instance>[/<member>] --resume` | Start as above, but reopen each member's last vendor session (Claude `--resume`, Codex `resume`) instead of a new conversation, with a short note that its last turn may have been cut off. Every member's SessionStart hook records its session when it starts. A member started on its own with no recorded session is refused; a whole instance starts such members fresh and says so, as it does a member whose role changed vendor since its session. Copies the start restores resume too. A fresh `start` replaces the recorded session once the new one reports in, so resume before starting fresh. A resumed conversation keeps the opening prompt it started with: changes to the role's prompt or commands since then reach it only through a fresh start |
@@ -38,6 +38,15 @@
 | `brg msg read ID [--json]` | Show one message in full, including an acknowledged one |
 | `brg msg ack ID… [--external NAME] [--json]` | Acknowledge messages addressed to you; acking twice is a no-op |
 | `brg bus check [--json]` | Check the store for gaps, unreadable files and stray temporaries; never writes |
+
+**Creating from a folder of clones.** Use one dev copy per repository; the root lead sequences copies:
+
+```sh
+brg create <root>/dev --repo widgets --branch fix-rounding
+brg create <root>/dev --repo gadgets --branch fix-rounding
+```
+
+`--repo` accepts one immediate child name in the tree's top folder, at any depth of role address. The child and its `.git` must be real directories: paths, symlinks, linked worktrees and bare repositories are refused. brg asks `origin` for its current default branch (including `master` or a renamed default) and fetches it before the registry lock and before issuing anything. Missing origin, unavailable credentials or network failures refuse creation. Fetch uses the caller's credential configuration with terminal prompting disabled. The original clone's working files, index and checked-out branch stay as they are. Creation prints the repository and short commit, for example `· widgets at 3f2a91c`. Without `--repo`, the start remains the instance folder's `HEAD`, so an implementer inside a dev copy inherits that copy's committed work. Clean worktrees delete without `--force`; deletion, cleanup and reset find their repositories through Git's own records, ignoring child `.git` files and refusing duplicate ownership.
 
 ## Runtime
 

@@ -68,6 +68,7 @@ pub fn create(
     role_name: &str,
     role: &TeamRole,
     branch: Option<&str>,
+    start: Option<&crate::worktree::Start>,
 ) -> Result<UpOutcome, String> {
     let lock = registry::lock()?;
     inst.reload()?;
@@ -123,7 +124,7 @@ pub fn create(
     lock.save_instance(&inst.state, &inst.record)?;
     if role.worktree {
         let root = crate::worktree::root_folder(&inst.id)?;
-        crate::worktree::add(&root, &inst.record.folder, &folder, branch)
+        crate::worktree::add(&root, &inst.record.folder, &folder, branch, start)
             .map_err(|e| format!("copy `{full_id}` needs its own worktree: {e}"))?;
     }
     registry::create_copy(&lock, &full_id, &role.dir, &folder, parent)?;
@@ -132,7 +133,11 @@ pub fn create(
     issued.cwd = Some(folder.clone());
     lock.save_instance(&inst.state, &inst.record)?;
     Ok(UpOutcome {
-        tree: format!("{full_id}  folder {} · stopped\n", folder.display()),
+        tree: format!(
+            "{full_id}  folder {}{} · stopped\n",
+            folder.display(),
+            start.map(|s| s.detail()).unwrap_or_default()
+        ),
         notes: vec![format!("start it: brg start {full_id}")],
         failed: false,
     })
