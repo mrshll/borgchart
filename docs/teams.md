@@ -131,7 +131,7 @@ roles:
     worktree: true                     # optional; each copy gets its own git worktree
 ```
 
-- **Starting a copy.** Each `brg create <instance>/implementer` starts one new copy, with its own suffixed ID. Past `max` it warns and proceeds, counting stopped copies too. Parent roles and plugin `delivers_to:` targets keep only one member; creating another is refused with a reason and a `start` command. Each copy gets the same role file and its own name; with `worktree: true`, its own worktree too.
+- **Starting a copy.** Each `brg create <instance>/implementer` starts one new copy, with its own suffixed ID. Past `max` it warns and proceeds, counting stopped copies too. Each copy gets the same role file and its own name; with `worktree: true`, its own worktree too.
 - **The tree** shows every kept copy with its state and unread count. A `max > 1` role with no kept members gets one dim line:
 
   ```

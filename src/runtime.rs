@@ -1683,12 +1683,6 @@ pub fn create_member(
         .collect();
     lock.save_instance(&inst.state, &inst.record)?;
     let mut outcome = start_members(lock, &inst, &v, vec![id.clone()], false, false)?;
-    if count > member.max {
-        outcome.notes.push(format!(
-            "warning: role `{role}` now has {count} kept members, over its max of {}",
-            member.max
-        ));
-    }
     if let Some(start) = start {
         outcome.tree = outcome
             .tree
@@ -1703,7 +1697,14 @@ pub fn create_member(
             })
             .collect();
     }
-    Ok(name_worktrees(&inst, &added, outcome))
+    let mut outcome = name_worktrees(&inst, &added, outcome);
+    if count > member.max {
+        outcome.notes.push(format!(
+            "warning: role `{role}` now has {count} kept members, over its max of {}",
+            member.max
+        ));
+    }
+    Ok(outcome)
 }
 
 /// Pause after the preliminary create check, before taking the registry

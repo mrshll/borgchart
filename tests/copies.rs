@@ -131,6 +131,16 @@ fn member_create_past_max_keeps_worktrees_and_warns_about_stopped_members() {
         .into_iter()
         .find(|id| id != &first && id != &second)
         .unwrap();
+    // The worktree line follows the tree, as create's help says; the warning comes last.
+    let named = format!(
+        "{inst}/{third}  folder {}",
+        env.worktree(&format!("{inst}/{third}")).display()
+    );
+    let at = |s: &str| warning.lines().position(|l| l.contains(s));
+    assert!(
+        at(&named).is_some() && at(&named) < at("warning: role"),
+        "{warning}"
+    );
     env.ok(&["stop", &format!("{inst}/{third}")]);
     env.ok(&["delete", &format!("{inst}/{third}")]);
     let rows = env.rows(&inst);
