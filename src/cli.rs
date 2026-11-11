@@ -783,12 +783,21 @@ fn run_validate(team: &str, json: bool, probe: bool) -> ExitCode {
         }
         println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
     } else {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let colour = crate::tree::colour_wanted(std::io::stdout().is_terminal());
         for diag in &report.diags {
+            let mut diag = diag.clone();
+            diag.file = diag
+                .file
+                .map(|path| runtime::tilde(&path, home.as_deref()).into());
             eprintln!("{diag}");
+        }
+        if !report.diags.is_empty() {
+            eprintln!();
         }
         if let Some(v) = &validated {
             let warnings = report.warnings().count();
-            println!(
+            let verdict = format!(
                 "ok: {} role(s), {} plugin(s){}",
                 v.team.roles.len(),
                 v.team.plugins.len(),
@@ -798,13 +807,11 @@ fn run_validate(team: &str, json: bool, probe: bool) -> ExitCode {
                     String::new()
                 }
             );
+            println!("{}", validate_heading(&verdict, colour));
+            println!("\n{}", validate_heading("Roles:", colour));
             for (id, role) in &v.team.roles {
-                let sources: Vec<String> = role
-                    .sources
-                    .iter()
-                    .map(|p| p.display().to_string())
-                    .collect();
-                println!("  {id}: {}", sources.join(", "));
+                println!("  {}", validate_heading(id, colour));
+                print_role_sources(&role.source_tree, 2, home.as_deref(), colour);
             }
         }
     }
@@ -812,6 +819,32 @@ fn run_validate(team: &str, json: bool, probe: bool) -> ExitCode {
         ExitCode::from(1)
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+fn validate_heading(text: &str, colour: bool) -> String {
+    if colour {
+        crate::tree::ink_text(text, crate::tree::palette::TEAM, true)
+    } else {
+        text.to_string()
+    }
+}
+
+fn print_role_sources(
+    sources: &[crate::team::RoleSource],
+    depth: usize,
+    home: Option<&std::path::Path>,
+    colour: bool,
+) {
+    for source in sources {
+        let path = runtime::tilde(&source.file, home);
+        let path = if colour {
+            crate::tree::ink_text(&path, crate::tree::palette::FADED, false)
+        } else {
+            path
+        };
+        println!("{:indent$}{path}", "", indent = depth * 2);
+        print_role_sources(&source.includes, depth + 1, home, colour);
     }
 }
 

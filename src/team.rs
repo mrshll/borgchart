@@ -339,11 +339,29 @@ pub struct Role {
     /// The files its instruction was read from, in order: the role file,
     /// then each include and other team's role file where it appears.
     pub sources: Vec<PathBuf>,
+    /// The same files nested under the file that includes them, for text output.
+    #[serde(skip)]
+    pub(crate) source_tree: Vec<RoleSource>,
     /// Extra arguments for the vendor CLI.
     pub args: Vec<String>,
     /// Each member works in its own git worktree, which brg adds when it
     /// issues the member; otherwise members work in the team's folder.
     pub worktree: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RoleSource {
+    pub file: PathBuf,
+    pub includes: Vec<RoleSource>,
+}
+
+impl RoleSource {
+    fn collect_paths(&self, paths: &mut Vec<PathBuf>) {
+        paths.push(self.file.clone());
+        for source in &self.includes {
+            source.collect_paths(paths);
+        }
+    }
 }
 
 /// A role whose copies are nested instances, prepared before their first start.
@@ -1020,7 +1038,7 @@ fn load_role(
     let mut model = None;
     let mut instruction = String::new();
     let mut prompt_sha256 = String::new();
-    let mut sources = Vec::new();
+    let mut source_tree = Vec::new();
     if let Some(prompt_path) = &prompt_path {
         let shown = dir.join(prompt);
         if let Some((front, body, sha)) = read_role_file(
@@ -1029,7 +1047,7 @@ fn load_role(
             &shown,
             prompt_path,
             Reach::Own(search),
-            &mut sources,
+            &mut source_tree,
             report,
         ) {
             prompt_sha256 = sha;
@@ -1057,6 +1075,10 @@ fn load_role(
     if report.errors().count() > before {
         return None;
     }
+    let mut sources = Vec::new();
+    for source in &source_tree {
+        source.collect_paths(&mut sources);
+    }
     Some(Role {
         id: id.to_string(),
         vendor,
@@ -1074,6 +1096,7 @@ fn load_role(
         prompt_sha256,
         instruction,
         sources,
+        source_tree,
         args: m.args.clone(),
         worktree: m.worktree,
     })
@@ -1094,10 +1117,10 @@ fn read_role_file(
     shown: &Path,
     real: &Path,
     reach: Reach,
-    sources: &mut Vec<PathBuf>,
+    sources: &mut Vec<RoleSource>,
     report: &mut Report,
 ) -> Option<(FrontmatterRaw, String, String)> {
-    sources.push(shown.to_path_buf());
+    let mut includes = Vec::new();
     let text = match read_text(real) {
         Ok(t) => t,
         Err(e) => {
@@ -1129,9 +1152,13 @@ fn read_role_file(
         shown,
         &split.body,
         reach,
-        sources,
+        &mut includes,
         report,
     )?;
+    sources.push(RoleSource {
+        file: shown.to_path_buf(),
+        includes,
+    });
     Some((
         front,
         body,
@@ -1156,7 +1183,7 @@ fn team_role_body(
     reference: &str,
     search: &[PathBuf],
     shown: &Path,
-    sources: &mut Vec<PathBuf>,
+    sources: &mut Vec<RoleSource>,
     report: &mut Report,
 ) -> Option<String> {
     let directive = format!("{{{{teams/{reference}}}}}");
@@ -1226,7 +1253,7 @@ fn resolve_includes(
     shown: &Path,
     body: &str,
     reach: Reach,
-    sources: &mut Vec<PathBuf>,
+    sources: &mut Vec<RoleSource>,
     report: &mut Report,
 ) -> Option<String> {
     let mut out = String::new();
@@ -1289,7 +1316,10 @@ fn resolve_includes(
         match resolve_asset(dir, &rel) {
             Ok(real) => match read_text(&real) {
                 Ok(text) => {
-                    sources.push(listed.clone());
+                    sources.push(RoleSource {
+                        file: listed.clone(),
+                        includes: Vec::new(),
+                    });
                     let text = text.replace("\r\n", "\n");
                     if let Some(reference) = text.lines().find(|l| team_role_ref(l).is_some()) {
                         report.error(
