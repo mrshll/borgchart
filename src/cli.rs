@@ -22,10 +22,58 @@ struct Cli {
     command: Command,
 }
 
+/// The top-level help's headed groups. Every visible command is in one.
+const GROUPS: &[(&str, &[&str])] = &[
+    ("Team folders", &["ls", "validate", "secret"]),
+    (
+        "Instances and members",
+        &[
+            "create", "start", "stop", "delete", "status", "attach", "logs",
+        ],
+    ),
+    ("Messages", &["send", "inbox", "msg", "bus"]),
+    ("Cleanup", &["cleanup", "reset"]),
+];
+
+/// The parser, with its top-level help laid out in `GROUPS`: each command's
+/// one-line summary under its heading. Details stay in each command's help.
+fn command() -> clap::Command {
+    let cmd = <Cli as clap::CommandFactory>::command();
+    let header = cmd.get_styles().get_header();
+    let literal = cmd.get_styles().get_literal();
+    let width = GROUPS
+        .iter()
+        .flat_map(|(_, names)| names.iter().map(|n| n.len()))
+        .max()
+        .unwrap_or(0);
+    let mut groups = String::new();
+    for (heading, names) in GROUPS {
+        groups.push_str(&format!("{header}{heading}:{header:#}\n"));
+        for name in *names {
+            let about = cmd
+                .find_subcommand(name)
+                .and_then(clap::Command::get_about)
+                .map(ToString::to_string)
+                .unwrap_or_default();
+            let pad = " ".repeat(width - name.len());
+            groups.push_str(&format!("  {literal}{name}{literal:#}{pad}  {about}\n"));
+        }
+        groups.push('\n');
+    }
+    groups
+        .push_str("`brg help <command>` or `brg <command> --help` gives a command's details.\n\n");
+    let template = format!(
+        "{{before-help}}{{about-with-newline}}\n{{usage-heading}} {{usage}}\n\n{groups}\
+         {header}Options:{header:#}\n{{options}}{{after-help}}"
+    );
+    cmd.help_template(template)
+}
+
 #[derive(Subcommand)]
 enum Command {
-    /// Check a team folder and brg's configuration without starting anything,
-    /// and list the files each agent role's instruction is read from.
+    /// Check a team folder and brg's configuration; starts nothing.
+    ///
+    /// It also lists the files each agent role's instruction is read from.
     Validate {
         /// The team: its name in the search paths, or a path to its folder
         /// (starting with `/`, `./`, `../` or `~/`).
@@ -39,7 +87,9 @@ enum Command {
         #[arg(long)]
         probe: bool,
     },
-    /// Make something new: an instance of a team working in a folder
+    /// Make an instance of a team, or a member of a role.
+    ///
+    /// That is, an instance of a team working in a folder
     /// (`create <team> [folder]`, the current folder by default), or a member
     /// of a role (`create <instance>/<role>`, up to its max of kept members).
     /// Team-role copies are created stopped; start them with `brg start`.
@@ -84,6 +134,7 @@ enum Command {
         name: Option<String>,
     },
     /// Bring an instance to what should be running, or start one member.
+    ///
     /// Restore copies that ran at the last full stop, recursively. Finish
     /// an interrupted cascade with `stop` first. Reuse kept members; never
     /// fill a role to max. A worktree it adds for a new member is named after
@@ -105,6 +156,7 @@ enum Command {
         resume: bool,
     },
     /// Stop an instance and all its copies deepest first, or one member.
+    ///
     /// Every full stop persists `stopping` before the cascade, refusing create/start inside
     /// it until every instance is certainly stopped. Run stop again to
     /// finish an interrupted cascade. A second stop keeps who ran.
@@ -122,9 +174,11 @@ enum Command {
         #[arg(short = 'r', long)]
         recursive: bool,
     },
-    /// Remove a stopped instance, or a stopped member (its ID stays issued).
-    /// With a bus, a member caller may manage only its subtree, using its
-    /// latest running start. A copy's roots cannot delete their own copy.
+    /// Remove a stopped instance, or a stopped member.
+    ///
+    /// A deleted member's ID stays issued. With a bus, a member caller may
+    /// manage only its subtree, using its latest running start. A copy's roots
+    /// cannot delete their own copy.
     /// Unread messages, and a worktree brg added that holds uncommitted or
     /// untracked changes or commits on no remote, need --force; copy history
     /// stays in the tree store.
@@ -140,6 +194,7 @@ enum Command {
         force: bool,
     },
     /// Stop a whole tree and forget it, so `brg create` can start it fresh.
+    ///
     /// Deletes every registration, the root's state folder (all copies'
     /// state, the notes and the tree's messages) and the clean worktrees brg
     /// added for members and copies; copy any notes you need first. Open work
@@ -151,9 +206,10 @@ enum Command {
         #[arg(add = crate::complete::roots())]
         instance: String,
     },
-    /// Remove what brg left behind for deleted members and copies: the
-    /// clean git worktrees it added for them, and their leftover state. A
-    /// worktree with work in it is listed and kept. Without an instance, also
+    /// Remove what brg left behind for deleted members and copies.
+    ///
+    /// That is the clean git worktrees it added for them, and their leftover
+    /// state. A worktree with work in it is listed and kept. Without an instance, also
     /// remove the state of instance IDs brg issued that are no longer
     /// registered. Work folders, kept members' and copies' worktrees, other
     /// worktrees and messages are never touched.
@@ -162,8 +218,9 @@ enum Command {
         #[arg(add = crate::complete::instances())]
         instance: Option<String>,
     },
-    /// List the secrets a team's plugins need, and whether each is set in
-    /// your environment. Prints no values and writes nothing.
+    /// List the secrets a team's plugins need, and whether each is set.
+    ///
+    /// It checks your environment, prints no values and writes nothing.
     Secret {
         /// The team: its name in the search paths, or a path to its folder.
         #[arg(add = crate::complete::teams())]
@@ -178,7 +235,8 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Show an instance tree, or every top-level instance, with nested copies.
+    /// Show an instance tree, or every top-level one, with nested copies.
+    ///
     /// Each member's row shows its ID, vendor and model, state and any unread
     /// messages. A role with no member shows only its state; its `--json` row
     /// also gives its vendor and model.
@@ -228,7 +286,9 @@ enum Command {
         #[arg(short = 'n', long, default_value_t = 200)]
         lines: usize,
     },
-    /// Store a message and submit it to a non-interactive recipient when safe.
+    /// Store a message for its recipient, and type it in when safe.
+    ///
+    /// It is typed in only for a non-interactive recipient.
     #[command(after_long_help = crate::bus::help::send())]
     Send {
         /// The member to type into: `<instance>/<member>`.
@@ -262,7 +322,10 @@ enum Command {
         #[command(subcommand)]
         command: crate::bus::cli::MsgCommand,
     },
-    /// List records addressed to you (or `--member`/`--external`), oldest first.
+    /// List the unacknowledged messages addressed to you, oldest first.
+    ///
+    /// Or another member's with `--member`, or an outside recipient's with
+    /// `--external`.
     #[command(
         args_conflicts_with_subcommands = true,
         after_long_help = crate::bus::help::inbox()
@@ -385,7 +448,12 @@ pub fn main() -> ExitCode {
             std::thread::sleep(minimum.saturating_sub(started.elapsed()));
         }
     };
-    let cli = match Cli::try_parse_from(args) {
+    let mut cmd = command();
+    let parsed = cmd
+        .try_get_matches_from_mut(args)
+        .and_then(|matches| <Cli as clap::FromArgMatches>::from_arg_matches(&matches))
+        .map_err(|e| e.format(&mut cmd));
+    let cli = match parsed {
         Ok(cli) => cli,
         Err(error) => {
             if error.use_stderr() {
@@ -857,6 +925,31 @@ fn print_role_sources(
 mod tests {
     use super::*;
     use clap::CommandFactory;
+
+    /// The top-level help lists every visible command under exactly one
+    /// heading, each with a summary.
+    #[test]
+    fn every_command_is_in_one_help_group() {
+        let mut listed: Vec<&str> = GROUPS.iter().flat_map(|(_, n)| n.iter().copied()).collect();
+        listed.sort_unstable();
+        let mut visible: Vec<String> = Cli::command()
+            .get_subcommands()
+            .filter(|s| !s.is_hide_set())
+            .map(|s| s.get_name().to_string())
+            .collect();
+        visible.sort_unstable();
+        assert_eq!(listed, visible);
+        let cmd = Cli::command();
+        let bare: Vec<_> = listed
+            .iter()
+            .filter(|n| {
+                cmd.find_subcommand(n)
+                    .and_then(clap::Command::get_about)
+                    .is_none()
+            })
+            .collect();
+        assert!(bare.is_empty(), "commands without a summary: {bare:?}");
+    }
 
     /// Every visible argument of every visible command says what it is.
     #[test]
