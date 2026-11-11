@@ -4001,12 +4001,18 @@ pub fn vendor_mark(vendor: &str) -> Option<char> {
 
 pub fn render_status(header: &str, rows: &[StatusRow]) -> String {
     let terminal = std::io::stdout().is_terminal();
-    render_status_as(header, rows, terminal, tree::colour_wanted(terminal))
+    render_status_as(header, rows, terminal, tree::colour_wanted(terminal), None)
 }
 
 /// [`render_status`] for a person's terminal (`short`) or for a pipe. A
 /// terminal leaves out the roles [`hide_empty_roles`] hides.
-pub fn render_status_as(header: &str, rows: &[StatusRow], short: bool, colour: bool) -> String {
+pub fn render_status_as(
+    header: &str,
+    rows: &[StatusRow],
+    short: bool,
+    colour: bool,
+    spin: Option<usize>,
+) -> String {
     let shown;
     let rows = if short {
         shown = hide_empty_roles(rows.to_vec());
@@ -4024,7 +4030,9 @@ pub fn render_status_as(header: &str, rows: &[StatusRow], short: bool, colour: b
         .iter()
         .map(|r| (status_key(r), status_name(r)))
         .collect();
-    tree::render_named(header, &nodes, &plugins, colour, |id| names[id].clone())
+    tree::render_named(header, &nodes, &plugins, colour, spin, |id| {
+        names[id].clone()
+    })
 }
 
 /// A row's identity stays unique when local IDs repeat in different copies.
@@ -4907,8 +4915,8 @@ mod tests {
                 "devlead"
             ]
         );
-        let terminal = render_status_as("i", &rows, true, true);
-        let piped = render_status_as("i", &rows, false, false);
+        let terminal = render_status_as("i", &rows, true, true, None);
+        let piped = render_status_as("i", &rows, false, false, None);
         for hidden in ["helper", "scout", "reviewer"] {
             assert!(!terminal.contains(hidden), "{terminal}");
             assert!(piped.contains(hidden), "{piped}");

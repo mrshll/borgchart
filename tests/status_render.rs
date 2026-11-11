@@ -43,7 +43,7 @@ fn nested_plugin_errors_highlight_the_state_instead_of_the_detail() {
             ..member("feed", Some("lead"))
         },
     ];
-    let text = runtime::render_status_as("harbor", &rows, true, true);
+    let text = runtime::render_status_as("harbor", &rows, true, true, None);
     let plugin = text
         .lines()
         .find(|line| line.contains("plugin feed"))
@@ -66,12 +66,12 @@ fn team_diamonds_identify_running_copies_without_hiding_copy_failures() {
             ..member("design-j5v3", Some("harbor-k3f9/lead"))
         },
     ];
-    let rendered = runtime::render_status_as("harbor", &rows, true, true);
+    let rendered = runtime::render_status_as("harbor", &rows, true, true, None);
     assert!(rendered.lines().any(|line| line.contains("◆ design-j5v3")));
     for (state, running) in [("stopped", 0), ("stopping", 2), ("unreadable", 2)] {
         rows[1].state = state.into();
         rows[1].running = Some(running);
-        let rendered = runtime::render_status_as("harbor", &rows, true, true);
+        let rendered = runtime::render_status_as("harbor", &rows, true, true, None);
         let copy = rendered
             .lines()
             .find(|line| line.contains("design-j5v3"))

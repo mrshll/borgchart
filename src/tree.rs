@@ -38,6 +38,15 @@ pub struct Look {
     pub italic: bool,
 }
 
+/// All working rows share one spinner phase; other state marks stay still.
+pub fn state_mark(look: Look, spin: Option<usize>) -> Option<char> {
+    const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    match (look.tone, spin) {
+        (Tone::Busy, Some(frame)) => Some(FRAMES[frame % FRAMES.len()]),
+        _ => look.mark,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tone {
     /// Alive and needing nothing: ordinary ink.
@@ -278,7 +287,7 @@ pub fn render(
     plugins: &[(String, Vec<String>, Look)],
     colour: bool,
 ) -> String {
-    render_named(team, nodes, plugins, colour, |id| id.to_string())
+    render_named(team, nodes, plugins, colour, None, |id| id.to_string())
 }
 
 /// Render qualified tree keys with caller-provided display names.
@@ -287,6 +296,7 @@ pub fn render_named(
     nodes: &[Node],
     plugins: &[(String, Vec<String>, Look)],
     colour: bool,
+    spin: Option<usize>,
     name: impl Fn(&str) -> String,
 ) -> String {
     let ordered = if colour {
@@ -301,7 +311,7 @@ pub fn render_named(
             || plugins.iter().any(|p| p.2.mark.is_some()));
     let mark = |look: &Look| {
         if marked {
-            format!("{} ", look.mark.unwrap_or(' '))
+            format!("{} ", state_mark(*look, spin).unwrap_or(' '))
         } else {
             String::new()
         }
@@ -557,5 +567,36 @@ mod tests {
         assert!(painted.contains(&format!("{BOLD}{}◆ copy{RESET}", fg(palette::TEAM))));
         assert!(painted.contains(&format!("{} dev-team{RESET}", fg(palette::TEAM))));
         assert!(painted.contains("   2 running"));
+    }
+
+    #[test]
+    fn spin_changes_only_busy_marks_and_keeps_all_workers_in_phase() {
+        let mut nodes = vec![
+            node("worker-a", None, &["§ opus", "working", "topic"]),
+            node("worker-b", None, &["Λ model", "working", ""]),
+            node("reviewer", None, &["§ sonnet", "blocked", "next"]),
+            node("copy", None, &["dev-team", "2 running", ""]),
+            node("idle", None, &["§ haiku", "idle", ""]),
+        ];
+        for (n, (mark, tone)) in nodes.iter_mut().zip([
+            ('●', Tone::Busy),
+            ('●', Tone::Busy),
+            ('?', Tone::Alert),
+            ('◆', Tone::Team),
+            ('·', Tone::Plain),
+        ]) {
+            n.look = Look {
+                mark: Some(mark),
+                tone,
+                italic: false,
+            };
+        }
+        let frame =
+            |colour, spin| render_named("team", &nodes, &[], colour, spin, |id| id.to_string());
+        let still = frame(true, None);
+        assert_eq!(frame(true, Some(0)), still.replace("● worker", "⠋ worker"));
+        assert_eq!(frame(true, Some(1)), still.replace("● worker", "⠙ worker"));
+        assert_eq!(frame(true, Some(10)), frame(true, Some(0)));
+        assert_eq!(frame(false, Some(0)), frame(false, None));
     }
 }
