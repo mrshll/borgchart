@@ -2,32 +2,44 @@
 # Install a revision and atomically select it without changing older installs.
 set -eu
 fail() { echo "install: $*" >&2; exit 1; }
+CDPATH= cd -- "$(dirname "$0")/.."
 revision=$(git rev-parse HEAD)
 dirty=$(git status --porcelain)
 [ -z "$dirty" ] || [ "${ALLOW_DIRTY:-0}" = 1 ] || fail 'checkout is dirty; commit changes or use ALLOW_DIRTY=1'
 : "${PREFIX:=$HOME/.local/share}" "${BINDIR:=$HOME/.local/bin}"
 mkdir -p "$PREFIX" "$BINDIR"
-PREFIX=$(cd "$PREFIX" && pwd -P)
+PREFIX=$(CDPATH= cd -- "$PREFIX" && pwd -P)
+BINDIR=$(CDPATH= cd -- "$BINDIR" && pwd -P)
+lock=$PREFIX/.brg-install.lock
+mkdir "$lock" 2>/dev/null || fail "install lock held at $lock; wait, or remove it after confirming no installer is running"
+tmp=
+trap 'rm -rf "$tmp"; rmdir "$lock"' 0
+trap 'exit 1' HUP INT TERM
 for name in brg borgchart brg-seat; do
   [ ! -e "$BINDIR/$name" ] || [ -L "$BINDIR/$name" ] || fail "move $BINDIR/$name aside; refusing to replace it"
 done
 [ ! -e "$PREFIX/brg-current" ] || [ -L "$PREFIX/brg-current" ] || fail 'move brg-current aside; it must be a symlink'
 tmp=$(mktemp -d "$PREFIX/.brg-install.XXXXXX")
-trap 'rm -rf "$tmp"' 0
-trap 'exit 1' HUP INT TERM
 [ -z "$dirty" ] || revision=$revision-dirty-${tmp##*.}
 [ -z "$dirty" ] || [ ! -e "$PREFIX/brg-$revision" ] || fail 'dirty revision folder exists; run install again for a fresh name'
 platform=$(uname -s)
+set -- cargo build --release --workspace --bins --locked --message-format=json-render-diagnostics
+# cargo-slot requires Linux's flock and systemd; use cargo on other systems.
 if [ "$platform" = Linux ] && [ -x tools/cargo-slot ]; then
-  tools/cargo-slot cargo build --release --workspace --bins --locked
-else
-  # cargo-slot requires Linux's flock and systemd; use cargo on other systems.
-  cargo build --release --workspace --bins --locked
+  set -- tools/cargo-slot "$@"
 fi
+"$@" > "$tmp/artifacts"
+mkdir "$tmp/revision" "$tmp/revision/bin"
+for name in brg borgchart brg-seat; do
+  # Refuse JSON-escaped paths instead of decoding them incorrectly.
+  artifact=$(sed -n '/^{"reason":"compiler-artifact"/s/.*"executable":"\([^"\\]*\/'"$name"'\)".*/\1/p' "$tmp/artifacts")
+  [ -f "$artifact" ] || fail "no single usable artifact for $name; check build targets and use paths without JSON escapes"
+  cp "$artifact" "$tmp/revision/bin/$name"
+done
 if [ ! -d "$PREFIX/brg-$revision" ]; then
-  mkdir "$tmp/revision" "$tmp/revision/bin"
-  for name in brg borgchart brg-seat; do cp "${CARGO_TARGET_DIR:-target}/release/$name" "$tmp/revision/bin/"; done
-  cp -R teams "$tmp/revision/teams"
+  if [ -n "$dirty" ]; then cp -R teams "$tmp/revision/teams"
+  else git archive HEAD teams > "$tmp/teams.tar"; tar -xf "$tmp/teams.tar" -C "$tmp/revision"
+  fi
   printf '%s\n' "$revision" > "$tmp/revision/REVISION"
   mv "$tmp/revision" "$PREFIX/brg-$revision"
 fi
@@ -36,5 +48,8 @@ case "$platform" in
   Darwin) mv -fh "$tmp/current" "$PREFIX/brg-current" ;;
   *) mv -fT "$tmp/current" "$PREFIX/brg-current" ;;
 esac
-for name in brg borgchart brg-seat; do ln -sfn "$PREFIX/brg-current/bin/$name" "$BINDIR/$name"; done
+for name in brg borgchart brg-seat; do
+  target=$PREFIX/brg-current/bin/$name
+  [ "$(readlink "$BINDIR/$name" || :)" = "$target" ] || ln -sfn "$target" "$BINDIR/$name"
+done
 printf 'Installed %s\nAdd to your brg configuration:\nteams: [%s/brg-current/teams]\n' "$revision" "$PREFIX"

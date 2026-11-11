@@ -87,7 +87,7 @@ A team that works on this repository shouldn't run from the checkout it edits: a
 make install
 ```
 
-This builds the workspace release binaries with `--locked`, installs `bin/`, `teams/` and `REVISION` in `$HOME/.local/share/brg-<full-revision>/`, and atomically points `$HOME/.local/share/brg-current` at it. Older revisions stay in place; repeating an install reuses the revision folder. Linux builds use `tools/cargo-slot` when executable; macOS builds use cargo directly.
+This builds the workspace release binaries with `--locked`, installs `bin/`, `teams/` and `REVISION` in `$HOME/.local/share/brg-<full-revision>/`, and atomically points `$HOME/.local/share/brg-current` at it. Clean installs take team files from `HEAD`. Older revisions stay in place; repeating an install reuses the revision folder. Linux builds use `tools/cargo-slot` when executable; macOS builds use cargo directly.
 
 `PREFIX` changes the parent of the revision folders (default `$HOME/.local/share`); `BINDIR` changes where the `brg`, `borgchart` and `brg-seat` symlinks go (default `$HOME/.local/bin`). For example, `make install PREFIX="$HOME/apps" BINDIR="$HOME/bin"`. Existing symlinks are replaced; regular files are refused. Keep `BINDIR` on `PATH`. Dirty checkouts are refused unless you set `ALLOW_DIRTY=1`, which creates a fresh `brg-<full-revision>-dirty-<suffix>` folder on every run.
 
@@ -97,4 +97,4 @@ The installer prints the `teams:` line to add to your brg configuration and neve
 teams: [~/.local/share/brg-current/teams]
 ```
 
-Running instances keep their recorded team folders, but catalog changes can block later member starts until a full restart, PATH plugins can change on their next call, and binaries can change at a member start or, on macOS with a symlinked brg path, on the next brg call. To move an existing instance to the new team files, fully stop it, then run `brg start <instance> --team "$HOME/.local/share/brg-current/teams/<team>"`; on macOS, start through the resolved revision's `bin/brg` path if you need its later calls to stay pinned.
+Running instances keep their recorded team folders and `catalog:` includes. After installing a new revision, teams with `team:` roles (including `borgchart-engineering`) refuse later member starts until a full restart, even if the team files are identical: their resolved child folder paths changed. PATH plugins can change on their next call; binaries can change at a member start or, on macOS with a symlinked brg path, on the next brg call. To move an existing instance to the new team files, fully stop it, then run `brg start <instance> --team "$HOME/.local/share/brg-current/teams/<team>"`; on macOS, start through the resolved revision's `bin/brg` path to pin later calls.
