@@ -1,6 +1,6 @@
 # Concepts
 
-**Status: partly built.** Teams, instances, `roles:`, suffixed member IDs, copies up to `max`, member deletion and member status work today. Bus members may manage only their declared children, using their latest start ID. Teams as members (team roles whose members are child teams, #25) share one message store per runtime tree. The remaining command renames are planned.
+**Status: partly built.** Teams, instances, `roles:`, suffixed member IDs, copies with advisory `max`, member deletion and member status work today. Bus members may manage only their declared children, using their latest start ID. Teams as members (team roles whose members are child teams, #25) share one message store per runtime tree. The remaining command renames are planned.
 
 ## Definitions and what runs from them
 
@@ -69,7 +69,7 @@ There's no `up`. There are four verbs. `create` always makes something new; `sta
 
 | Command | On an instance | On a member |
 | --- | --- | --- |
-| `brg create` | `create <team> <folder>` makes a new instance working in that folder (required), starts it, and prints its ID and tree. `<team>` is a team's name or a path to its folder. Run it twice and you have two instances. | `create <instance>/<role>` makes a new member of that role and starts it. `create` takes only a team or a role, never a member. It's refused past `max`; for a `max: 1` role whose member already exists, it points to `start`. |
+| `brg create` | `create <team> <folder>` makes a new instance working in that folder (required), starts it, and prints its ID and tree. `<team>` is a team's name or a path to its folder. Run it twice and you have two instances. | `create <instance>/<role>` makes a new member of that role and starts it. `create` takes only a team or a role, never a member. Past `max` it warns and proceeds; parent roles and plugin delivery targets keep only one member, pointing to `start` if it exists. |
 | `brg start` | Brings the instance to what should be running. That's the `start: true` roles and the members that were running when it was last stopped. A `start: true` role whose member was deleted gets a fresh member. Members already running are left alone. Members that start use current files and configuration. It takes no folder. | Starts that member with a new start. If it's already running, it says so and changes nothing. A deleted ID is refused. |
 | `brg stop` | Stops every member. On a stopped instance, it says so and changes nothing. | Stops that member; the same on a stopped one. |
 | `brg delete` | Removes a stopped instance: its notes, state and registration. Copy messages stay as history in the tree store; root deletion removes that store. It's refused while anything runs. Unacked messages, or messages it cannot read, are listed and need `--force`. | Removes a stopped member. Unacked messages are listed with a count and require `--force`; running or unknown liveness is always refused. Kept children, running or stopped, also prevent deletion, even with `--force`: their full addresses are listed; delete them first. Its ID stays issued. Immutable messages remain as history; unread ones to a deleted member stop counting as open work. |

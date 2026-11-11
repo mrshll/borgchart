@@ -1,6 +1,6 @@
 # Defining a brg team
 
-Teams, instances, roles, copies up to `max` and the four verbs (`create`, `start`, `stop`, `delete`) work today. Teams as members are being built, and the section below marks what isn't yet. [concepts.md](concepts.md) records the design; [format.md](format.md) describes the shipped format. Items marked **Open** are not decided yet. For command syntax, `brg … --help` is the authority; the tables below are a short summary.
+Teams, instances, roles, copies with advisory `max` and the four verbs (`create`, `start`, `stop`, `delete`) work today. Teams as members are being built, and the section below marks what isn't yet. [concepts.md](concepts.md) records the design; [format.md](format.md) describes the shipped format. Items marked **Open** are not decided yet. For command syntax, `brg … --help` is the authority; the tables below are a short summary.
 
 ## The files
 
