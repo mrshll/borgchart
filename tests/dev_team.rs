@@ -396,9 +396,18 @@ fn denied_word(text: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Words that belong to this repository's own rules (its build wrapper,
-/// checks and language), which live in its `AGENTS.md`, not in team files.
-const PROJECT_WORDS: [&str; 5] = ["cargo", "cargo-slot", "githooks", "clippy", "rust"];
+/// Words that belong to this repository, not to team files: its name, and
+/// its own rules (its build wrapper, checks and language), which live in its
+/// `AGENTS.md`.
+const PROJECT_WORDS: [&str; 7] = [
+    "borgchart",
+    "borgchart-engineering",
+    "cargo",
+    "cargo-slot",
+    "githooks",
+    "clippy",
+    "rust",
+];
 
 #[test]
 fn the_team_files_stay_generic() {
