@@ -499,4 +499,37 @@ mod tests {
         // 2026-11-10 14:02:07 UTC.
         assert_eq!(super::clock(1_794_319_327), "14:02:07");
     }
+
+    #[test]
+    fn working_rows_take_the_busy_colour_whatever_the_vendor() {
+        for vendor in ["claude", "codex"] {
+            let row = super::StatusRow {
+                name: "m".into(),
+                kind: "member",
+                instance: "i".into(),
+                team: "t".into(),
+                member: None,
+                start_id: None,
+                role: None,
+                vendor: Some(vendor.into()),
+                model: None,
+                parent: None,
+                posture: None,
+                state: "working".into(),
+                rule: None,
+                activity: None,
+                detail: None,
+                vendor_version: None,
+                trust_accepted: None,
+                worktree: None,
+                liveness: None,
+                unread: None,
+                running: None,
+                expected_running: false,
+                start: true,
+            };
+            let style = super::state_style(&row);
+            assert_eq!(style.fg, Some(super::rgb(super::tree::palette::BUSY)));
+        }
+    }
 }

@@ -1509,8 +1509,24 @@ pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
     if result.is_err() {
         unregister_if_never_started(&inst);
         remove_unkept_worktrees(&inst, created_folders);
+        return result;
     }
-    result
+    result.map(|outcome| name_worktrees(&inst, &created_folders, outcome))
+}
+
+/// The tree leaves worktrees to `--json`, so whatever adds one names it
+/// after the tree: `<address>  folder <path>`, as `create` does for a copy.
+fn name_worktrees(
+    inst: &Instance,
+    added: &[(String, PathBuf)],
+    mut outcome: UpOutcome,
+) -> UpOutcome {
+    outcome.notes.extend(
+        added
+            .iter()
+            .map(|(id, dir)| format!("{}  folder {}", inst.at(id), dir.display())),
+    );
+    outcome
 }
 
 /// After a `create` whose start failed before any window could start:
@@ -1614,19 +1630,13 @@ pub fn create_member(
     let id = inst
         .record
         .issue_member(role, |id| v.team.roles.contains_key(id))?;
-    let _ = create_worktree(&inst, member, &id, branch)?;
+    let added: Vec<_> = create_worktree(&inst, member, &id, branch)?
+        .map(|dir| (id.clone(), dir))
+        .into_iter()
+        .collect();
     lock.save_instance(&inst.state, &inst.record)?;
-    let address = inst.at(&id);
-    let mut outcome = start_members(lock, &inst, &v, vec![id], false, false)?;
-    // The tree leaves worktrees to `--json`; a new one is named here, unless
-    // a failed start took it away again.
-    let dir = crate::worktree::path(&address);
-    if member.worktree && dir.is_dir() {
-        outcome
-            .notes
-            .push(format!("{address}  folder {}", dir.display()));
-    }
-    Ok(outcome)
+    let outcome = start_members(lock, &inst, &v, vec![id], false, false)?;
+    Ok(name_worktrees(&inst, &added, outcome))
 }
 
 /// Pause after the preliminary create check, before taking the registry
@@ -2033,8 +2043,9 @@ fn start_instance(
             })();
             if result.is_err() {
                 remove_unkept_worktrees(&inst, created_folders);
+                return result;
             }
-            let mut outcome = result?;
+            let mut outcome = name_worktrees(&inst, &created_folders, result?);
             if !restore_copies {
                 return Ok(outcome);
             }

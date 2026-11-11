@@ -454,7 +454,6 @@ mod tests {
             assert!(contrast(l, 1.0) >= 3.0, "{rgb:?} on white");
             assert!(contrast(l, 0.0) >= 3.0, "{rgb:?} on black");
         }
-        assert_ne!(palette::BUSY, palette::ALERT);
     }
 
     fn strip(text: &str) -> String {

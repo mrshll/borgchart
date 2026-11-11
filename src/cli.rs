@@ -50,10 +50,10 @@ enum Command {
     /// issuing it (create, or a full `start` that gives a `start: true` role
     /// a new member), detached at the folder's HEAD or on `--branch`.
     /// For a member or an instance, it prints the instance's tree as `status`
-    /// lays it out, with a new member's ID on its row, then, for a
-    /// `worktree: true` role, a line with its address and worktree; for a
-    /// copy, one line with the copy's ID and its folder (its worktree, for a
-    /// `worktree: true` role).
+    /// lays it out, with a new member's ID on its row, then a line with the
+    /// address and folder of each worktree it added; for a copy, one line
+    /// with the copy's ID and its folder (its worktree, for a `worktree: true`
+    /// role).
     Create {
         /// `<team>` (a name, or a path starting with `/`, `./`, `../` or
         /// `~/`), or `<instance>/<role>`.
@@ -71,8 +71,9 @@ enum Command {
     /// Bring an instance to what should be running, or start one member.
     /// Restore copies that ran at the last full stop, recursively. Finish
     /// an interrupted cascade with `stop` first. Reuse kept members; never
-    /// fill a role to max. With a bus, a member
-    /// caller may manage only its subtree, using its latest running start.
+    /// fill a role to max. A worktree it adds for a new member is named after
+    /// the tree. With a bus, a member caller may manage only its subtree,
+    /// using its latest running start.
     Start {
         /// `<instance>`, or `<instance>/<member>`.
         #[arg(add = crate::complete::targets())]
