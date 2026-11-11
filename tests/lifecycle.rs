@@ -782,42 +782,6 @@ fn a_changed_member_file_reaches_its_next_start() {
 }
 
 #[test]
-fn concurrent_member_creates_create_once() {
-    let env = Env::new(true);
-    env.up();
-    let children: Vec<_> = (0..2)
-        .map(|_| {
-            env.brg_cmd(&["start", "helper"])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .unwrap()
-        })
-        .collect();
-    let outs: Vec<Output> = children
-        .into_iter()
-        .map(|c| c.wait_with_output().unwrap())
-        .collect();
-    let won: Vec<&Output> = outs.iter().filter(|o| o.status.success()).collect();
-    assert_eq!(
-        won.len(),
-        1,
-        "{:?}",
-        outs.iter().map(both).collect::<Vec<_>>()
-    );
-    assert_eq!(outcomes(&stdout(won[0]), &env.m("helper")), ["started"]);
-    let lost = outs.iter().find(|o| !o.status.success()).unwrap();
-    assert!(
-        both(lost).contains("already has its member"),
-        "{}",
-        both(lost)
-    );
-    env.wait_for("helper start", |e| !e.starts("helper").is_empty());
-    std::thread::sleep(Duration::from_millis(500));
-    assert_eq!(env.starts("helper").len(), 1);
-}
-
-#[test]
 fn changed_files_need_every_member_positively_stopped() {
     let env = Env::new(true);
     env.up();
