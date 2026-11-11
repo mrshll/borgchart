@@ -1,6 +1,6 @@
 //! Command-line interface for `brg` (also installed as `borgchart`).
 
-use std::io::Read;
+use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -81,13 +81,8 @@ enum Command {
     /// an interrupted cascade with `stop` first. Reuse kept members; never
     /// fill a role to max. A worktree it adds for a new member is named after
     /// the tree. With a bus, a member caller may manage only its subtree,
-    /// using its latest running start.
-    /// New member starts use current files and configuration; already-running
-    /// members keep their launch settings. A new install does not require
-    /// stopping the tree. Joins keep recorded plugin locations, values and
-    /// secrets; a full stop/start refreshes them from configuration and the
-    /// caller's environment. Any start resolves a child's missing parent
-    /// member; other parent changes apply when the child restarts.
+    /// using its latest running start. Members that start use current files
+    /// and configuration.
     Start {
         /// `<instance>`, or `<instance>/<member>`.
         #[arg(add = crate::complete::targets())]
@@ -182,6 +177,12 @@ enum Command {
     /// Each member's row shows its ID, vendor and model, state and any unread
     /// messages. A role with no member shows only its state; its `--json` row
     /// also gives its vendor and model.
+    ///
+    /// On a terminal, state precedes vendor/model or team. A summary band above
+    /// the tree counts working and idle members, rows needing
+    /// you and unread messages. Painted output uses a filled red state label
+    /// for attention and a gold ◆ for running teams. Working marks spin in
+    /// --watch and --interactive; NO_COLOR suppresses painting and motion.
     Status {
         /// The instance (default: every top-level instance and its copies).
         #[arg(add = crate::complete::instances())]
@@ -609,6 +610,12 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
             } else if all.is_empty() {
                 println!("{}", address::known());
             } else {
+                if std::io::stdout().is_terminal() {
+                    println!(
+                        "{}\n",
+                        runtime::summary_band(&rows, crate::tree::colour_wanted(true))
+                    );
+                }
                 print!("{text}");
             }
             code

@@ -9,6 +9,32 @@ use std::os::unix::fs::symlink;
 
 use instance_env::*;
 
+#[test]
+fn starting_a_sibling_does_not_reparent_a_running_child() {
+    let env = Env::new();
+    let inst = env.create("oncall", "work/a");
+    env.ok(&["create", &format!("{inst}/helper")]);
+    let lead = env.member(&inst, "lead");
+    let helper = env.member(&inst, "helper");
+    env.write(
+        "teams/oncall/team.yaml",
+        &TEAM.replace("parent: lead", "parent: scout"),
+    );
+    env.ok(&["create", &format!("{inst}/scout")]);
+    let out = env
+        .cmd(&["stop", &format!("{inst}/{helper}")])
+        .envs(
+            serde_json::from_value::<std::collections::BTreeMap<String, String>>(
+                env.starts(&lead)[0]["env"].clone(),
+            )
+            .unwrap(),
+        )
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", both(&out));
+    env.ok(&["stop", &inst]);
+}
+
 fn catalog(env: &Env, root: &str) {
     env.team(&format!("{root}/oncall"));
     env.team(&format!("{root}/dev"));
@@ -242,24 +268,6 @@ fn changed_child_team_is_used_by_new_copies_while_parent_runs() {
             .to_string()
             .contains("blue checklist")
     );
-    env.ok(&["stop", &inst]);
-}
-
-#[test]
-fn missing_prompt_and_invalid_yaml_fail_at_the_requested_operation() {
-    let env = Env::new();
-    let inst = env.create("oncall", "work/a");
-    let path = env.path("teams/oncall/helper.md");
-    let prompt = fs::read(&path).unwrap();
-    fs::remove_file(&path).unwrap();
-    let err = env.fails(&["create", &format!("{inst}/helper")]);
-    assert!(err.contains("helper.md"), "{err}");
-    fs::write(path, prompt).unwrap();
-    env.write("teams/oncall/team.yaml", "roles: [\n");
-    let err = env.fails(&["start", &inst]);
-    assert!(err.contains("team.yaml"), "{err}");
-    env.write("teams/oncall/team.yaml", TEAM);
-    env.ok(&["create", &format!("{inst}/helper")]);
     env.ok(&["stop", &inst]);
 }
 

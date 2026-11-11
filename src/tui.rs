@@ -8,7 +8,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, TableState};
+use ratatui::widgets::{Block, BorderType, Cell, Paragraph, Row, Table, TableState};
 
 use crate::address::{self, Instance};
 use crate::runtime::{self, StatusRow};
@@ -16,10 +16,73 @@ use crate::tree;
 
 const REFRESH: Duration = Duration::from_secs(2);
 
-/// `brg status -w`: print the table every few seconds until interrupted.
-/// With no instance, every instance, as a bare `brg status` shows them.
+/// Spinner cadence; data is still read only at the chosen refresh interval.
+pub const SPIN_INTERVAL: Duration = Duration::from_millis(100);
+
+/// `brg status -w`: read the tree every few seconds, animating only while busy.
 pub fn watch(one: Option<&Instance>, interval: Duration) -> Result<(), String> {
     use std::io::IsTerminal;
+    if !tree::colour_wanted(std::io::stdout().is_terminal()) {
+        return watch_plain(one, interval);
+    }
+    let mut sections = load(one, false)?;
+    let mut refreshed = epoch();
+    let mut last_refresh = Instant::now();
+    let mut last_spin = Instant::now();
+    let mut spin: usize = 0;
+    let mut out = std::io::stdout();
+    loop {
+        let busy = working(&sections);
+        let mut frame = watch_frame(&sections, busy.then_some(spin), refreshed);
+        let animate = busy
+            && watch_animation_fits(
+                &frame,
+                crossterm::terminal::size()
+                    .map(|(_, rows)| rows)
+                    .unwrap_or(0),
+            );
+        if busy && !animate {
+            frame = watch_frame(&sections, None, refreshed);
+        }
+        let _ = write!(out, "{}", watch_redraw(&frame));
+        let _ = out.flush();
+        let mut timeout = interval.saturating_sub(last_refresh.elapsed());
+        if animate {
+            timeout = timeout.min(SPIN_INTERVAL.saturating_sub(last_spin.elapsed()));
+        }
+        std::thread::sleep(timeout);
+        if last_refresh.elapsed() >= interval {
+            sections = match load(one, false) {
+                Ok(sections) => sections,
+                Err(error) => {
+                    let _ = write!(out, "\r\n");
+                    let _ = out.flush();
+                    return Err(error);
+                }
+            };
+            refreshed = epoch();
+            last_refresh = Instant::now();
+        }
+        if animate && last_spin.elapsed() >= SPIN_INTERVAL {
+            spin = spin.wrapping_add(1);
+            last_spin = Instant::now();
+        }
+    }
+}
+
+fn epoch() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn watch_animation_fits(frame: &str, rows: u16) -> bool {
+    frame.lines().count() < usize::from(rows)
+}
+
+/// Keep the pre-existing watch stream byte-for-byte without terminal painting.
+fn watch_plain(one: Option<&Instance>, interval: Duration) -> Result<(), String> {
     loop {
         let (text, rows) = match one {
             Some(inst) => {
@@ -28,26 +91,73 @@ pub fn watch(one: Option<&Instance>, interval: Duration) -> Result<(), String> {
             }
             None => every_text()?,
         };
-        let colour = tree::colour_wanted(std::io::stdout().is_terminal());
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let footer = format!("refreshed {} UTC · Ctrl-C to stop", clock(now));
-        let footer = if colour {
-            tree::ink_text(&footer, tree::palette::FADED, false)
-        } else {
-            footer
-        };
+        let footer = format!("refreshed {} UTC · Ctrl-C to stop", clock(epoch()));
         let mut out = std::io::stdout();
-        let _ = write!(
-            out,
-            "\x1b[H\x1b[2J{text}\n{}\n{footer}\n",
-            runtime::summary(&rows, colour)
-        );
+        if std::io::IsTerminal::is_terminal(&out) {
+            let _ = write!(
+                out,
+                "\x1b[H\x1b[2J{}\n\n{text}\n{footer}\n",
+                runtime::summary_band(&rows, false)
+            );
+        } else {
+            let _ = write!(
+                out,
+                "\x1b[H\x1b[2J{text}\n{}\n{footer}\n",
+                runtime::summary(&rows, false)
+            );
+        }
         let _ = out.flush();
         std::thread::sleep(interval);
     }
+}
+
+/// One in-place frame, including erasure for lines that shrink or disappear.
+/// Disable autowrap inside the frame so each logical line takes one row.
+/// The caller uses this only on a painted terminal.
+pub fn watch_redraw(text: &str) -> String {
+    let mut out = String::from("\x1b[?2026h\x1b[?7l\x1b[H");
+    for (i, line) in text.lines().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(line);
+        out.push_str("\x1b[K");
+    }
+    out.push_str("\x1b[J\x1b[?7h\x1b[?2026l");
+    out
+}
+
+fn working(sections: &[Section]) -> bool {
+    sections
+        .iter()
+        .flat_map(|s| &s.rows)
+        .any(|r| runtime::status_look(r).tone == tree::Tone::Busy)
+}
+
+fn watch_frame(sections: &[Section], spin: Option<usize>, refreshed: u64) -> String {
+    let mut text = String::new();
+    for section in sections {
+        text.push_str(&runtime::render_status_as(
+            &section.header,
+            &section.rows,
+            true,
+            true,
+            spin,
+        ));
+    }
+    if sections.is_empty() {
+        text.push_str(&format!("{}\n", address::known()));
+    }
+    let rows: Vec<StatusRow> = sections.iter().flat_map(|s| s.rows.clone()).collect();
+    format!(
+        "{}\n\n{text}\n{}\n",
+        runtime::summary_band(&rows, true),
+        tree::ink_text(
+            &format!("refreshed {} UTC · Ctrl-C to stop", clock(refreshed)),
+            tree::palette::FADED,
+            false
+        )
+    )
 }
 
 /// `HH:MM:SS` of a UTC epoch second.
@@ -194,34 +304,51 @@ fn rgb((r, g, b): tree::Rgb) -> Color {
 
 /// The same tones as `brg status` paints: the state cell in the row's tone,
 /// and a row that is not running faded as a whole.
-fn state_style(row: &StatusRow) -> Style {
+fn state_style(row: &StatusRow, colour: bool) -> Style {
+    tone_style(runtime::status_look(row).tone, colour)
+}
+
+fn tone_style(tone: tree::Tone, colour: bool) -> Style {
+    if !colour {
+        return Style::default();
+    }
     let bold = Style::default().add_modifier(Modifier::BOLD);
-    match runtime::status_look(row).tone {
+    match tone {
         tree::Tone::Plain => Style::default(),
         tree::Tone::Busy => bold.fg(rgb(tree::palette::BUSY)),
+        tree::Tone::Team => bold.fg(rgb(tree::palette::TEAM)),
         tree::Tone::Alert => bold.fg(rgb(tree::palette::ALERT)),
         tree::Tone::Odd => Style::default().fg(rgb(tree::palette::ODD)),
         tree::Tone::Faded => Style::default().fg(rgb(tree::palette::FADED)),
     }
 }
 
-/// The summary line on the screen: grey, with the rows that need a person
-/// in bold red, as `-w` paints it.
-fn summary_line(rows: &[StatusRow]) -> Line<'static> {
-    let faded = Style::default().fg(rgb(tree::palette::FADED));
-    let alert = Style::default()
-        .fg(rgb(tree::palette::ALERT))
-        .add_modifier(Modifier::BOLD);
-    let mut spans = Vec::new();
-    for (i, (text, need)) in runtime::summary_parts(rows).into_iter().enumerate() {
+/// The same toned summary as the text status view.
+fn summary_line(rows: &[StatusRow], colour: bool) -> Line<'static> {
+    let title = if colour {
+        Style::default().add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    let mut spans = vec![Span::styled("borgchart", title), Span::raw("    ")];
+    for (i, (text, tone)) in runtime::summary_band_parts(rows).into_iter().enumerate() {
         if i > 0 {
             spans.push(Span::raw("  "));
         }
-        spans.push(Span::styled(text, if need { alert } else { faded }));
+        let (text, style) = if colour && tone == tree::Tone::Alert {
+            (
+                format!(" {text} "),
+                tone_style(tone, colour).add_modifier(Modifier::REVERSED),
+            )
+        } else {
+            (text, tone_style(tone, colour))
+        };
+        spans.push(Span::styled(text, style));
     }
     Line::from(spans)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw(
     frame: &mut ratatui::Frame,
     title: &str,
@@ -230,9 +357,15 @@ fn draw(
     table_state: &mut TableState,
     message: &str,
     note: Option<&str>,
+    colour: bool,
+    spin: Option<usize>,
 ) {
-    let [top, bottom] =
-        Layout::vertical([Constraint::Min(3), Constraint::Length(3)]).areas(frame.area());
+    let [band, top, bottom] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Min(3),
+        Constraint::Length(2),
+    ])
+    .areas(frame.area());
     // The same tree and columns as `brg status`, each instance's tree its own.
     let prefixes: Vec<std::collections::BTreeMap<String, String>> = sections
         .iter()
@@ -259,7 +392,7 @@ fn draw(
                     .get(&runtime::status_key(r))
                     .cloned()
                     .unwrap_or_default(),
-                runtime::status_look(r).mark.unwrap_or(' '),
+                tree::state_mark(runtime::status_look(r), spin).unwrap_or(' '),
                 runtime::status_name(r)
             );
             let mut cols = runtime::status_cells(r, true);
@@ -273,7 +406,8 @@ fn draw(
                 _ => cols.insert(0, String::new()),
             }
             let [vendor, state, detail] = <[String; 3]>::try_from(cols).unwrap_or_default();
-            [name, vendor, state, detail]
+            let state = format!(" {state} ");
+            [name, state, vendor, detail]
         })
         .collect();
     // Each column as wide as its widest cell, as `brg status` aligns them.
@@ -294,21 +428,43 @@ fn draw(
     let body: Vec<Row> = cells
         .into_iter()
         .zip(&lines)
-        .map(|([name, vendor, state, detail], &(s, r))| {
+        .map(|([name, state, vendor, detail], &(s, r))| {
             let r = r.map(|r| &sections[s].rows[r]);
-            let style = r.map_or(Style::default(), state_style);
-            let faded = Style::default().fg(rgb(tree::palette::FADED));
+            let style = r.map_or(Style::default(), |r| state_style(r, colour));
+            let faded = tone_style(tree::Tone::Faded, colour);
             let row = Row::new(vec![
                 Cell::from(name).style({
-                    let name = style.remove_modifier(Modifier::BOLD);
+                    let name =
+                        if r.is_some_and(|r| runtime::status_look(r).tone == tree::Tone::Team) {
+                            style
+                        } else {
+                            style.remove_modifier(Modifier::BOLD)
+                        };
                     if r.is_some_and(|r| runtime::status_look(r).italic) {
                         name.add_modifier(Modifier::ITALIC)
                     } else {
                         name
                     }
                 }),
-                Cell::from(vendor),
-                Cell::from(state).style(style),
+                Cell::from(Line::from(Span::styled(
+                    state,
+                    if colour
+                        && r.is_some_and(|r| runtime::status_look(r).tone == tree::Tone::Alert)
+                    {
+                        style.add_modifier(Modifier::REVERSED)
+                    } else if r.is_some_and(|r| runtime::status_look(r).tone == tree::Tone::Team) {
+                        Style::default()
+                    } else {
+                        style
+                    },
+                ))),
+                Cell::from(vendor).style(
+                    if r.is_some_and(|r| runtime::status_look(r).tone == tree::Tone::Team) {
+                        style.remove_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    },
+                ),
                 // What a person must do next stays readable.
                 Cell::from(detail).style(
                     if r.is_some_and(|r| runtime::status_look(r).tone == tree::Tone::Alert) {
@@ -328,7 +484,15 @@ fn draw(
     let table = Table::new(body, widths)
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol("> ")
-        .block(Block::bordered().title(format!(" {title} ")));
+        .block(
+            Block::bordered()
+                .border_type(BorderType::Rounded)
+                .border_style(tone_style(tree::Tone::Faded, colour))
+                .title(Span::styled(
+                    format!(" {title} "),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )),
+        );
     frame.render_stateful_widget(table, top, table_state);
     // Each visible header line across the whole row, as `brg status` prints it.
     let inner = top.inner(Margin::new(1, 1));
@@ -358,11 +522,13 @@ fn draw(
     }
     let help = Line::from(
         "j/k move · enter attach (detach: tmux prefix, then d) · a roles · r refresh · q quit",
-    );
+    )
+    .style(tone_style(tree::Tone::Faded, colour));
     let every: Vec<StatusRow> = sections.iter().flat_map(|s| s.rows.clone()).collect();
-    let summary = summary_line(&every);
+    let summary = summary_line(&every, colour);
+    frame.render_widget(Paragraph::new(summary), band);
     frame.render_widget(
-        Paragraph::new(vec![summary, Line::from(message.to_string()), help]),
+        Paragraph::new(vec![Line::from(message.to_string()), help]),
         bottom,
     );
 }
@@ -371,6 +537,7 @@ fn draw(
 /// header line; Enter attaches in the selected member's own instance.
 pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
     // The `a` key shows and hides roles with no member.
+    let colour = tree::colour_wanted(true);
     let mut roles = false;
     let mut sections = load(one, roles)?;
     let headers = one.is_none();
@@ -384,7 +551,18 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
     let mut message = String::new();
     let mut terminal = ratatui::try_init().map_err(|e| format!("cannot start the screen: {e}"))?;
     let mut last = Instant::now();
+    let mut last_spin = Instant::now();
+    let mut spin: usize = 0;
     let result = loop {
+        if last.elapsed() >= REFRESH {
+            reload(one, roles, headers, &mut sections, &mut table_state);
+            last = Instant::now();
+        }
+        let animate = colour && working(&sections);
+        if animate && last_spin.elapsed() >= SPIN_INTERVAL {
+            spin = spin.wrapping_add(1);
+            last_spin = Instant::now();
+        }
         let lines = entries(&sections, headers);
         // The list can shrink on a refresh.
         if table_state.selected().is_some_and(|s| s >= lines.len()) {
@@ -400,19 +578,20 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
                 &mut table_state,
                 &message,
                 note.as_deref(),
+                colour,
+                animate.then_some(spin),
             )
         }) {
             break Err(e.to_string());
         }
-        let timeout = REFRESH.saturating_sub(last.elapsed());
+        let mut timeout = REFRESH.saturating_sub(last.elapsed());
+        if animate {
+            timeout = timeout.min(SPIN_INTERVAL.saturating_sub(last_spin.elapsed()));
+        }
         let polled = event::poll(timeout).map_err(|e| e.to_string());
         match polled {
             Err(e) => break Err(e),
-            Ok(false) => {
-                reload(one, roles, headers, &mut sections, &mut table_state);
-                last = Instant::now();
-                continue;
-            }
+            Ok(false) => continue,
             Ok(true) => {}
         }
         let Ok(Event::Key(key)) = event::read() else {
@@ -494,6 +673,58 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn watch_redraw_disables_wrapping_only_inside_synchronized_frames() {
+        let frame = super::watch_redraw(&format!("{}\nfooter\n", "wide".repeat(100)));
+        assert!(frame.starts_with("\x1b[?2026h\x1b[?7l"));
+        assert!(frame.ends_with("\x1b[?7h\x1b[?2026l"));
+        assert_eq!(frame.matches("\x1b[?7l").count(), 1);
+        assert_eq!(frame.matches("\x1b[?7h").count(), 1);
+    }
+
+    #[test]
+    fn watch_frames_at_or_above_terminal_height_do_not_animate() {
+        let frame = "row\n".repeat(24);
+        assert!(super::watch_animation_fits(&frame, 25));
+        assert!(!super::watch_animation_fits(&frame, 24));
+        assert!(!super::watch_animation_fits(&frame, 23));
+        assert!(!super::watch_animation_fits(&frame, 0));
+    }
+
+    #[test]
+    fn interactive_frame_distinguishes_the_title_and_keys_from_the_tree() {
+        use ratatui::backend::TestBackend;
+        use ratatui::style::{Color, Modifier};
+        let mut terminal = ratatui::Terminal::new(TestBackend::new(100, 12)).unwrap();
+        for colour in [true, false] {
+            terminal
+                .draw(|f| {
+                    super::draw(
+                        f,
+                        "t",
+                        &[],
+                        false,
+                        &mut super::TableState::default(),
+                        "",
+                        None,
+                        colour,
+                        None,
+                    )
+                })
+                .unwrap();
+            let screen = terminal.backend().buffer();
+            assert_eq!(screen[(0, 2)].symbol(), "╭");
+            assert!(screen[(2, 2)].modifier.contains(Modifier::BOLD));
+            if colour {
+                let grey = super::rgb(super::tree::palette::FADED);
+                assert_eq!(screen[(0, 2)].fg, grey);
+                assert_eq!(screen[(0, 11)].fg, grey);
+            } else {
+                assert!(screen.content.iter().all(|cell| cell.fg == Color::Reset));
+            }
+        }
+    }
+
+    #[test]
     fn clock_is_utc_time_of_day() {
         assert_eq!(super::clock(0), "00:00:00");
         // 2026-11-10 14:02:07 UTC.
@@ -528,7 +759,7 @@ mod tests {
                 expected_running: false,
                 start: true,
             };
-            let style = super::state_style(&row);
+            let style = super::state_style(&row, true);
             assert_eq!(style.fg, Some(super::rgb(super::tree::palette::BUSY)));
         }
     }

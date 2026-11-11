@@ -461,7 +461,7 @@ fn start_members(
     crate::checkouts::reserve(&lock, &inst.id, &wanted)?;
     let (values, missing) = plugin_values(v);
     let keys = api_keys(v, record, &member_ids)?;
-    let missing_error = |missing: &[String]| {
+    let missing_error = || {
         format!(
             "set these secrets in your environment first (brg stores none); nothing was started: {}",
             missing.join(", ")
@@ -470,7 +470,7 @@ fn start_members(
     let probe = tmux_for(state);
     let looks_running = probe.has_session(&session) && state.meta_file().exists();
     if !looks_running && !missing.is_empty() {
-        return Err(missing_error(&missing));
+        return Err(missing_error());
     }
 
     // Serialize lifecycle changes, then decide for real.
@@ -491,19 +491,8 @@ fn start_members(
     {
         lifecycle::check_stopped(state, meta, &restart)?;
     }
-    // Joining members share the instance's recorded plugin settings, just
-    // like the siblings and plugin processes already running there.
-    if joining {
-        for name in v.team.plugins.keys() {
-            let path = state.plugin_env_file(name);
-            let saved = std::fs::read(&path).map_err(|e| {
-                format!("cannot read plugin `{name}` settings: {e}; stop and start the instance with its required secrets")
-            })?;
-            serde_json::from_slice::<PluginEnv>(&saved)
-                .map_err(|e| format!("cannot read plugin `{name}` settings: {e}"))?;
-        }
-    } else if !missing.is_empty() {
-        return Err(missing_error(&missing));
+    if !joining && !missing.is_empty() {
+        return Err(missing_error());
     }
     {
         let paths = StorePaths::new(state);
@@ -597,7 +586,7 @@ fn start_members(
             Tmux::new(&state.tmux_conf(), base.clone())
                 .write_config(user_config.as_deref())
                 .map_err(|e| format!("cannot write tmux config: {e}"))?;
-            Meta {
+            let mut meta = Meta {
                 team_dir: v.team.dir.clone(),
                 folder: record.folder.clone(),
                 brg: brg.clone(),
@@ -606,49 +595,45 @@ fn start_members(
                 base_env: base.clone(),
                 windows_started: may_still_run,
                 ..Meta::default()
+            };
+            // Plugins: their values (secrets included) go to private files for the shims.
+            for (name, plugin) in &v.team.plugins {
+                let body = serde_json::to_vec(&PluginEnv {
+                    env: values.get(name).cloned().unwrap_or_default(),
+                })
+                .map_err(|e| e.to_string())?;
+                write_private(&state.plugin_env_file(name), &body)
+                    .map_err(|e| format!("cannot write plugin settings: {e}"))?;
+                state::ensure_dir(&state.plugin_dir(name)).map_err(|e| e.to_string())?;
+                meta.plugins.insert(
+                    name.clone(),
+                    PluginMeta {
+                        dir: v.plugin_dir(name),
+                        has_process: plugin.process.is_some(),
+                    },
+                );
             }
+            meta
         }
     };
     // Every member of the instance is known to the start record, including
     // ones created since the instance started.
     let mut added = fresh;
-    if fresh {
-        for (name, plugin) in &v.team.plugins {
-            let body = serde_json::to_vec(&PluginEnv {
-                env: values.get(name).cloned().unwrap_or_default(),
-            })
-            .map_err(|e| e.to_string())?;
-            write_private(&state.plugin_env_file(name), &body)
-                .map_err(|e| format!("cannot write plugin settings: {e}"))?;
-            state::ensure_dir(&state.plugin_dir(name)).map_err(|e| e.to_string())?;
-            meta.plugins.insert(
-                name.clone(),
-                PluginMeta {
-                    dir: v.plugin_dir(name),
-                    has_process: plugin.process.is_some(),
-                },
-            );
-        }
-    }
     for (id, _) in record.kept_members() {
         if !meta.members.contains_key(id)
-            && let Some(m) = previous
-                .as_ref()
-                .and_then(|old| old.members.get(id))
-                .cloned()
-                .or_else(|| member_meta(id, &meta.base_env))
+            && let Some(m) = member_meta(id, &meta.base_env)
         {
             meta.members.insert(id.clone(), m);
             added = true;
         }
-        if let Some(member) = record.role_of(id).and_then(|role| v.team.roles.get(role))
-            && member.parent.is_some()
-            && let Some(m) = meta.members.get_mut(id)
-            && m.parent == member.parent
+        if let Some(entry) = meta.members.get_mut(id)
+            && let Some(role) = record.role_of(id).and_then(|r| v.team.roles.get(r))
+            && role.parent.is_some()
+            && entry.parent == role.parent
         {
-            let parent = parent_member(member);
-            if m.parent != parent {
-                m.parent = parent;
+            let parent = parent_member(role);
+            if entry.parent != parent {
+                entry.parent = parent;
                 added = true;
             }
         }
@@ -817,7 +802,11 @@ fn start_members(
                 incarnation: lifecycle::new_incarnation_id(state, id),
                 started_at: utc_now(),
                 boot_id: lifecycle::boot_id(),
-                vendor_version: meta.members.get(id).and_then(|m| m.vendor_version.clone()),
+                vendor_version: if joining {
+                    vendor_version(member.vendor, &base)
+                } else {
+                    meta.members.get(id).and_then(|m| m.vendor_version.clone())
+                },
                 pane: None,
                 ended_at: None,
                 ended_reason: None,
@@ -1216,7 +1205,7 @@ fn start_members(
             &header(inst),
             &nodes,
             &plugins,
-            std::io::stdout().is_terminal(),
+            tree::colour_wanted(std::io::stdout().is_terminal()),
         ),
         notes,
         failed,
@@ -2332,13 +2321,11 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
             inst.id
         ));
     }
-    let mut recorded_only = None;
+    let mut recorded_only = false;
     if let Some(meta) = meta {
         for (child, _) in inst.record.kept_members() {
-            if meta.members.get(child).and_then(|m| m.parent.as_deref()) == Some(&id)
-                && children.insert(child.clone())
-            {
-                recorded_only = Some(child.clone());
+            if meta.members.get(child).and_then(|m| m.parent.as_deref()) == Some(&id) {
+                recorded_only |= children.insert(child.clone());
             }
         }
     }
@@ -2351,11 +2338,10 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
                 .map(|child| inst.at(child))
                 .collect::<Vec<_>>()
                 .join("\n  "),
-            if let Some(child) = recorded_only {
+            if recorded_only {
                 format!(
-                    "\nthe team file changed since the child's last start; restart the child to apply it: brg stop {} && brg start {}",
-                    inst.at(&child),
-                    inst.at(&child)
+                    "\nthe team file changed since the last start; brg start {} applies it",
+                    inst.id
                 )
             } else {
                 String::new()
@@ -4074,8 +4060,7 @@ pub fn status_cells(r: &StatusRow, short: bool) -> Vec<String> {
     ]
 }
 
-/// A vendor's one-cell mark, after herdr-radar's text logos: ordinary
-/// Unicode that any terminal font draws.
+/// A vendor's one-cell mark, using ordinary Unicode that any terminal font draws.
 pub fn vendor_mark(vendor: &str) -> Option<char> {
     match vendor {
         "claude" => Some('§'),
@@ -4085,12 +4070,19 @@ pub fn vendor_mark(vendor: &str) -> Option<char> {
 }
 
 pub fn render_status(header: &str, rows: &[StatusRow]) -> String {
-    render_status_as(header, rows, std::io::stdout().is_terminal())
+    let terminal = std::io::stdout().is_terminal();
+    render_status_as(header, rows, terminal, tree::colour_wanted(terminal), None)
 }
 
 /// [`render_status`] for a person's terminal (`short`) or for a pipe. A
 /// terminal leaves out the roles [`hide_empty_roles`] hides.
-pub fn render_status_as(header: &str, rows: &[StatusRow], short: bool) -> String {
+pub fn render_status_as(
+    header: &str,
+    rows: &[StatusRow],
+    short: bool,
+    colour: bool,
+    spin: Option<usize>,
+) -> String {
     let shown;
     let rows = if short {
         shown = hide_empty_roles(rows.to_vec());
@@ -4108,7 +4100,9 @@ pub fn render_status_as(header: &str, rows: &[StatusRow], short: bool) -> String
         .iter()
         .map(|r| (status_key(r), status_name(r)))
         .collect();
-    tree::render_named(header, &nodes, &plugins, short, |id| names[id].clone())
+    tree::render_named(header, &nodes, &plugins, colour, spin, short, |id| {
+        names[id].clone()
+    })
 }
 
 /// A row's identity stays unique when local IDs repeat in different copies.
@@ -4140,7 +4134,20 @@ fn status_nodes_as(rows: &[StatusRow], short: bool) -> Vec<tree::Node> {
         .map(|r| tree::Node {
             id: status_key(r),
             parent: parent_key(r),
-            cols: status_cells(r, short),
+            cols: {
+                let mut cols = status_cells(r, short);
+                if short && r.kind == "plugin" {
+                    cols.insert(0, String::new());
+                }
+                if short {
+                    match r.kind {
+                        "member" | "copy" | "plugin" => cols.swap(0, 1),
+                        "role" => {}
+                        _ => cols.insert(1, String::new()),
+                    }
+                }
+                cols
+            },
             look: status_look(r),
         })
         .collect()
@@ -4207,7 +4214,7 @@ pub fn status_look(r: &StatusRow) -> tree::Look {
         },
         ("copy", "unreadable") => look('◌', Tone::Odd),
         ("copy", "stopping") => look('◌', Tone::Faded),
-        ("copy", _) if r.running.unwrap_or(0) > 0 => look('●', Tone::Plain),
+        ("copy", _) if r.running.unwrap_or(0) > 0 => look('◆', Tone::Team),
         ("copy", _) => faded,
         ("plugin", "alive")
             if r.detail
@@ -4229,11 +4236,12 @@ pub fn status_look(r: &StatusRow) -> tree::Look {
     }
 }
 
-/// The `-w` and `-i` summary, in parts: how many members are working and
-/// idle, how many rows need a person (the red ones, flagged `true`), and
+/// The terminal summary, in parts: how many members are working and
+/// idle, how many rows need a person (the alert tone), and
 /// unread messages. Counts of zero are left out; with nothing to count, it
 /// says so.
-pub fn summary_parts(rows: &[StatusRow]) -> Vec<(String, bool)> {
+pub fn summary_parts(rows: &[StatusRow]) -> Vec<(String, tree::Tone)> {
+    use tree::Tone;
     let members = || rows.iter().filter(|r| r.kind == "member");
     let working = members().filter(|r| r.state == "working").count();
     let idle = members().filter(|r| r.state == "idle").count();
@@ -4244,34 +4252,62 @@ pub fn summary_parts(rows: &[StatusRow]) -> Vec<(String, bool)> {
     let unread: usize = members().filter_map(|r| r.unread).sum();
     let mut parts = Vec::new();
     if working > 0 {
-        parts.push((format!("● {working} working"), false));
+        parts.push((format!("● {working} working"), Tone::Busy));
     }
     if idle > 0 {
-        parts.push((format!("· {idle} idle"), false));
+        parts.push((format!("· {idle} idle"), Tone::Faded));
     }
     if need > 0 {
-        parts.push((format!("! {need} need you"), true));
+        parts.push((format!("! {need} need you"), Tone::Alert));
     }
     if unread > 0 {
-        parts.push((format!("{unread} unread"), false));
+        parts.push((format!("{unread} unread"), Tone::Faded));
     }
     if parts.is_empty() {
-        parts.push(("nothing running".into(), false));
+        parts.push(("nothing running".into(), Tone::Faded));
     }
     parts
 }
 
-/// [`summary_parts`] as one line, painted when `colour`: grey, with the
-/// rows that need a person in bold red.
+/// [`summary_parts`] as one line, with working counts in teal and rows
+/// that need a person in red when painted.
 pub fn summary(rows: &[StatusRow], colour: bool) -> String {
-    let paint = |t: &str, alert: bool| match (colour, alert) {
-        (false, _) => t.to_string(),
-        (true, false) => tree::ink_text(t, tree::palette::FADED, false),
-        (true, true) => tree::ink_text(t, tree::palette::ALERT, true),
+    paint_summary(&summary_parts(rows), colour)
+}
+
+/// Attention first for the terminal band; pipe summaries retain their order.
+pub fn summary_band_parts(rows: &[StatusRow]) -> Vec<(String, tree::Tone)> {
+    let mut parts = summary_parts(rows);
+    parts.sort_by_key(|(_, tone)| match tone {
+        tree::Tone::Alert => 0,
+        tree::Tone::Busy => 1,
+        _ => 2,
+    });
+    parts
+}
+
+/// One band for the entire terminal view, above all instance headers.
+pub fn summary_band(rows: &[StatusRow], colour: bool) -> String {
+    let brand = if colour {
+        "\x1b[1mborgchart\x1b[0m"
+    } else {
+        "borgchart"
     };
-    summary_parts(rows)
+    format!(
+        "{brand}    {}",
+        paint_summary(&summary_band_parts(rows), colour)
+    )
+}
+
+fn paint_summary(parts: &[(String, tree::Tone)], colour: bool) -> String {
+    parts
         .iter()
-        .map(|(t, alert)| paint(t, *alert))
+        .map(|(text, tone)| match (colour, tone) {
+            (false, _) => text.clone(),
+            (true, tree::Tone::Busy) => tree::ink_text(text, tree::palette::BUSY, true),
+            (true, tree::Tone::Alert) => tree::alert_chip(text),
+            (true, _) => tree::ink_text(text, tree::palette::FADED, false),
+        })
         .collect::<Vec<_>>()
         .join("  ")
 }
@@ -4907,7 +4943,8 @@ mod tests {
         );
         // Only what needs a person is bold red.
         let painted = summary(&rows, true);
-        assert!(painted.contains(&tree::ink_text("! 2 need you", tree::palette::ALERT, true)));
+        assert!(painted.contains(&tree::ink_text("● 2 working", tree::palette::BUSY, true)));
+        assert!(painted.contains(&tree::alert_chip("! 2 need you")));
         assert!(painted.contains(&tree::ink_text("· 1 idle", tree::palette::FADED, false)));
         assert_eq!(summary(&rows[5..], false), "nothing running");
         // A role with no member yet is drawn as a slot: italic.
@@ -4983,8 +5020,8 @@ mod tests {
                 "devlead"
             ]
         );
-        let terminal = render_status_as("i", &rows, true);
-        let piped = render_status_as("i", &rows, false);
+        let terminal = render_status_as("i", &rows, true, true, None);
+        let piped = render_status_as("i", &rows, false, false, None);
         for hidden in ["helper", "scout", "reviewer"] {
             assert!(!terminal.contains(hidden), "{terminal}");
             assert!(piped.contains(hidden), "{piped}");

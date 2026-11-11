@@ -362,6 +362,8 @@ fn joining_locked_member_cannot_abandon_unacked_ordinary_work() {
         "teams/oncall/team.yaml",
         &TEAM.replace("prompt: scout.md", "prompt: scout.md\n    posture: locked"),
     );
+    // Starting a helper must not transition the stopped scout.
+    env.ok(&["create", &format!("{instance}/helper")]);
     let out = env.brg(&["start", &format!("{instance}/{scout}")]);
     assert!(!out.status.success(), "{}", both(&out));
     assert_eq!(env.starts(&scout).len(), 1);

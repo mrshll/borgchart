@@ -38,6 +38,15 @@ pub struct Look {
     pub italic: bool,
 }
 
+/// All working rows share one spinner phase; other state marks stay still.
+pub fn state_mark(look: Look, spin: Option<usize>) -> Option<char> {
+    const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    match (look.tone, spin) {
+        (Tone::Busy, Some(frame)) => Some(FRAMES[frame % FRAMES.len()]),
+        _ => look.mark,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tone {
     /// Alive and needing nothing: ordinary ink.
@@ -45,6 +54,8 @@ pub enum Tone {
     Plain,
     /// Busy: one colour for every vendor, far from the alert red.
     Busy,
+    /// A running nested team, rather than one working member.
+    Team,
     /// Waiting on a person, or ended when it should run.
     Alert,
     /// State could not be read.
@@ -63,6 +74,7 @@ pub mod palette {
     use super::Rgb;
     /// Working rows, whatever their vendor.
     pub const BUSY: Rgb = (0x1f, 0x93, 0x9a);
+    pub const TEAM: Rgb = (0xa9, 0x81, 0x2a);
     pub const ALERT: Rgb = (0xc0, 0x4a, 0x4a);
     pub const ODD: Rgb = (0x90, 0x7a, 0xa9);
     /// Furniture, details and rows that are not running.
@@ -84,6 +96,11 @@ pub fn ink_text(text: &str, rgb: Rgb, bold: bool) -> String {
     paint(text, &style)
 }
 
+/// An attention label: keep its one-space padding inside reverse video.
+pub fn alert_chip(text: &str) -> String {
+    format!("{}\x1b[7m {text} {RESET}", ink(Tone::Alert))
+}
+
 /// Whether to paint: a terminal, and no `NO_COLOR` (no-color.org).
 pub fn colour_wanted(terminal: bool) -> bool {
     terminal && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
@@ -94,6 +111,7 @@ fn ink(tone: Tone) -> String {
     match tone {
         Tone::Plain => String::new(),
         Tone::Busy => format!("{BOLD}{}", fg(palette::BUSY)),
+        Tone::Team => format!("{BOLD}{}", fg(palette::TEAM)),
         Tone::Alert => format!("{BOLD}{}", fg(palette::ALERT)),
         Tone::Odd => fg(palette::ODD),
         Tone::Faded => fg(palette::FADED),
@@ -217,9 +235,15 @@ fn columns(rows: &[Vec<String>]) -> Vec<String> {
 
 /// One painted line. The first cell is `prefix`, `mark`, `name`: furniture
 /// recedes, the mark and name take the row's tone, as does the cell at
-/// `state`. Cells before it (vendor and model) are plain and cells after it
-/// (details) recede, unless the row is faded, when everything does.
-fn painted(prefix: &str, row: &[String], look: Look, state: usize) -> String {
+/// `state`. Metadata stays plain; details recede, unless the row is faded,
+/// when everything does.
+fn painted(
+    prefix: &str,
+    row: &[String],
+    look: Look,
+    state: usize,
+    metadata: Option<usize>,
+) -> String {
     let faded = fg(palette::FADED);
     let tone = ink(look.tone);
     let mut line = String::new();
@@ -236,10 +260,22 @@ fn painted(prefix: &str, row: &[String], look: Look, state: usize) -> String {
     }
     for (i, cell) in cells.enumerate() {
         let i = i + 1;
+        if i == state && look.tone == Tone::Alert {
+            let body = cell.trim();
+            // Separators and alignment stay outside the filled label.
+            let before = (cell.len() - cell.trim_start().len()).saturating_sub(1);
+            let after = (cell.len() - cell.trim_end().len()).saturating_sub(1);
+            line.push_str(&" ".repeat(before));
+            line.push_str(&alert_chip(body));
+            line.push_str(&" ".repeat(after));
+            continue;
+        }
         let style = match look.tone {
             Tone::Faded => faded.clone(),
+            Tone::Team if i == state => String::new(),
+            Tone::Team if Some(i) == metadata => fg(palette::TEAM),
             _ if i == state => tone.clone(),
-            _ if i < state => String::new(),
+            _ if Some(i) == metadata => String::new(),
             // Details: what a person must do next stays readable.
             Tone::Alert => String::new(),
             _ => faded.clone(),
@@ -257,31 +293,37 @@ pub fn render(
     plugins: &[(String, Vec<String>, Look)],
     colour: bool,
 ) -> String {
-    render_named(team, nodes, plugins, colour, |id| id.to_string())
+    render_named(team, nodes, plugins, colour, None, false, |id| {
+        id.to_string()
+    })
 }
 
 /// Render qualified tree keys with caller-provided display names.
+/// Status terminals project state first; generic create/start trees do not.
 pub fn render_named(
     team: &str,
     nodes: &[Node],
     plugins: &[(String, Vec<String>, Look)],
     colour: bool,
+    spin: Option<usize>,
+    state_first: bool,
     name: impl Fn(&str) -> String,
 ) -> String {
-    let colour = colour_wanted(colour);
-    let ordered = if colour {
+    let spin = if colour { spin } else { None };
+    let terminal = colour || state_first;
+    let ordered = if terminal {
         order_live_first(nodes)
     } else {
         order(nodes)
     };
-    // A mark slot only when some line carries a mark, and only when painting:
+    // A mark slot only when some line carries a mark, on terminal layouts:
     // piped text stays exactly as it was.
-    let marked = colour
+    let marked = terminal
         && (nodes.iter().any(|n| n.look.mark.is_some())
             || plugins.iter().any(|p| p.2.mark.is_some()));
     let mark = |look: &Look| {
         if marked {
-            format!("{} ", look.mark.unwrap_or(' '))
+            format!("{} ", state_mark(*look, spin).unwrap_or(' '))
         } else {
             String::new()
         }
@@ -292,6 +334,16 @@ pub fn render_named(
             let n = &nodes[*i];
             let mut row = vec![format!("{prefix}{}{}", mark(&n.look), name(&n.id))];
             row.extend(n.cols.iter().cloned());
+            if terminal {
+                let state = if state_first || n.cols.len() == 1 {
+                    1
+                } else {
+                    2
+                };
+                if let Some(cell) = row.get_mut(state) {
+                    *cell = format!(" {cell} ");
+                }
+            }
             row
         })
         .collect();
@@ -309,8 +361,13 @@ pub fn render_named(
     if colour {
         for (row, (i, prefix)) in cells(&rows).into_iter().zip(ordered) {
             // A role with no member has one column, its state.
-            let state = if nodes[i].cols.len() == 1 { 1 } else { 2 };
-            out.push_str(&painted(&prefix, &row, nodes[i].look, state));
+            let state = if state_first || nodes[i].cols.len() == 1 {
+                1
+            } else {
+                2
+            };
+            let metadata = (nodes[i].cols.len() > 1).then_some(if state_first { 2 } else { 1 });
+            out.push_str(&painted(&prefix, &row, nodes[i].look, state, metadata));
             out.push('\n');
         }
     } else {
@@ -320,7 +377,7 @@ pub fn render_named(
         }
     }
     let mut plugins: Vec<&(String, Vec<String>, Look)> = plugins.iter().collect();
-    if colour {
+    if terminal {
         // Stable: running plugins first, each group in its given order.
         plugins.sort_by_key(|p| p.2.tone == Tone::Faded);
     }
@@ -329,12 +386,15 @@ pub fn render_named(
         .map(|(name, cols, look)| {
             let mut row = vec![format!("{}plugin {name}", mark(look))];
             row.extend(cols.iter().cloned());
+            if terminal && let Some(cell) = row.get_mut(1) {
+                *cell = format!(" {cell} ");
+            }
             row
         })
         .collect();
     if colour {
         for (row, (_, _, look)) in cells(&plugin_rows).into_iter().zip(plugins) {
-            out.push_str(&painted("", &row, *look, 1));
+            out.push_str(&painted("", &row, *look, 1, None));
             out.push('\n');
         }
     } else {
@@ -449,7 +509,13 @@ mod tests {
             0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
         };
         let contrast = |a: f64, b: f64| (a.max(b) + 0.05) / (a.min(b) + 0.05);
-        for rgb in [palette::BUSY, palette::ALERT, palette::ODD, palette::FADED] {
+        for rgb in [
+            palette::BUSY,
+            palette::TEAM,
+            palette::ALERT,
+            palette::ODD,
+            palette::FADED,
+        ] {
             let l = luminance(rgb);
             assert!(contrast(l, 1.0) >= 3.0, "{rgb:?} on white");
             assert!(contrast(l, 0.0) >= 3.0, "{rgb:?} on black");
@@ -492,19 +558,20 @@ mod tests {
             ..look(None, Tone::Faded)
         };
         let plain = render("team  team /t · folder /w", &nodes, &[], false);
-        // NO_COLOR turns painting off.
-        if std::env::var_os("NO_COLOR").is_some() {
-            return;
-        }
         let painted = render("team  team /t · folder /w", &nodes, &[], true);
         assert_ne!(painted, plain);
+        assert!(
+            painted.contains("\x1b[7m"),
+            "alert states must have a filled label"
+        );
         assert_eq!(
             strip(&painted),
             "team  team /t · folder /w\n\
-             └─ ● lead      claude opus high            working\n   \
-             ├─ ? helper codex o3                    blocked  brg attach x\n   \
-             └─   absent not created (start: false)\n"
+             └─ ● lead      claude opus high               working\n   \
+             ├─ ? helper codex o3                       blocked   brg attach x\n   \
+             └─   absent  not created (start: false)\n"
         );
+        assert!(painted.contains(&alert_chip("blocked")));
         // A working row is bold in the busy colour, never the alert red.
         let working = painted.lines().nth(1).unwrap();
         assert!(working.contains(&format!("{BOLD}{}", fg(palette::BUSY))));
@@ -512,8 +579,53 @@ mod tests {
         // Live rows lead; the row that is not running is last and grey from
         // end to end.
         let absent = painted.lines().last().unwrap();
-        assert!(absent.contains(&format!("{} not created", fg(palette::FADED))));
+        assert!(absent.contains(&format!("{}  not created", fg(palette::FADED))));
         // A role with no member yet: its name in italics.
         assert!(absent.contains(&format!("{}{ITALIC}  absent", fg(palette::FADED))));
+        let mut team = node("copy", None, &["dev-team", "2 running", ""]);
+        team.look = look(Some('◆'), Tone::Team);
+        let painted = render("team", &[team], &[], true);
+        assert!(painted.contains(&format!("{BOLD}{}◆ copy{RESET}", fg(palette::TEAM))));
+        assert!(painted.contains(&format!("{} dev-team{RESET}", fg(palette::TEAM))));
+        assert!(painted.contains("   2 running"));
+    }
+
+    #[test]
+    fn spin_changes_only_busy_marks_and_keeps_all_workers_in_phase() {
+        let mut nodes = vec![
+            node("worker-a", None, &["§ opus", "working", "topic"]),
+            node("worker-b", None, &["Λ model", "working", ""]),
+            node("reviewer", None, &["§ sonnet", "blocked", "next"]),
+            node("copy", None, &["dev-team", "2 running", ""]),
+            node("idle", None, &["§ haiku", "idle", ""]),
+        ];
+        for (n, (mark, tone)) in nodes.iter_mut().zip([
+            ('●', Tone::Busy),
+            ('●', Tone::Busy),
+            ('?', Tone::Alert),
+            ('◆', Tone::Team),
+            ('·', Tone::Plain),
+        ]) {
+            n.look = Look {
+                mark: Some(mark),
+                tone,
+                italic: false,
+            };
+        }
+        let frame = |colour, spin| {
+            render_named("team", &nodes, &[], colour, spin, false, |id| {
+                id.to_string()
+            })
+        };
+        let still = frame(true, None);
+        assert_eq!(frame(true, Some(0)), still.replace("● worker", "⠋ worker"));
+        assert_eq!(frame(true, Some(1)), still.replace("● worker", "⠙ worker"));
+        assert_eq!(frame(true, Some(10)), frame(true, Some(0)));
+        for node in &mut nodes {
+            node.cols.swap(0, 1);
+        }
+        let monochrome =
+            |spin| render_named("team", &nodes, &[], false, spin, true, |id| id.to_string());
+        assert_eq!(monochrome(Some(0)), monochrome(None));
     }
 }

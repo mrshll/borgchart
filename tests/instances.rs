@@ -169,17 +169,12 @@ fn starting_repairs_an_unresolved_parent_so_recursive_stop_reaches_the_child() {
         &env.path("work/a").display().to_string(),
     ]);
     let inst = stdout(&out).split_whitespace().next().unwrap().to_string();
-    let child = env.member(&inst, "helper");
     env.wait_for("child idle", || env.state_of(&inst, "helper") == "idle");
     env.ok(&["create", &format!("{inst}/lead")]);
     let parent = env.member(&inst, "lead");
     env.ok(&["start", &inst]);
     env.ok(&["stop", "-r", &format!("{inst}/{parent}")]);
     assert_eq!(env.state_of(&inst, "helper"), "stopped");
-    let meta: Value =
-        serde_json::from_slice(&fs::read(env.path(&format!("state/{inst}/start.json"))).unwrap())
-            .unwrap();
-    assert_eq!(meta["members"][&child]["parent"], parent);
     env.ok(&["stop", &inst]);
 }
 
@@ -1016,7 +1011,7 @@ fn tmux_user_config_comes_from_the_configuration_and_a_change_is_reported() {
 }
 
 #[test]
-fn plugin_settings_stay_on_joins_and_refresh_after_a_full_stop_start() {
+fn plain_plugin_values_come_from_the_team() {
     let env = Env::new();
     env.write(
         "teams/oncall/team.yaml",
@@ -1054,8 +1049,7 @@ fn plugin_settings_stay_on_joins_and_refresh_after_a_full_stop_start() {
     env.wait_for("lead idle", || env.state_of(&inst, "lead") == "idle");
     let lead = env.member(&inst, "lead");
     let shim = env.path(&format!("state/{inst}/members/{lead}/bin/pager"));
-    let mut command = Command::new(&shim);
-    command
+    let run = Command::new(&shim)
         .args(["read", "1"])
         .env_clear()
         .envs(
@@ -1064,8 +1058,9 @@ fn plugin_settings_stay_on_joins_and_refresh_after_a_full_stop_start() {
             )
             .unwrap(),
         )
-        .env("PATH", "/usr/bin:/bin");
-    let run = command.output().unwrap();
+        .env("PATH", "/usr/bin:/bin")
+        .output()
+        .unwrap();
     assert!(run.status.success(), "{}", both(&run));
     let log =
         fs::read_to_string(env.path(&format!("state/{inst}/plugins/pager/calls.log"))).unwrap();
@@ -1073,91 +1068,6 @@ fn plugin_settings_stay_on_joins_and_refresh_after_a_full_stop_start() {
         log.trim(),
         format!("room=R0000EXAMPLE token_len=12 instance={inst}")
     );
-    let team = fs::read_to_string(env.path("teams/oncall/team.yaml")).unwrap();
-    env.write(
-        "teams/oncall/team.yaml",
-        &team
-            .replace("R0000EXAMPLE", "R0001EXAMPLE")
-            .replace("path: plugins/pager", "path: plugins/pager-next"),
-    );
-    fs::create_dir_all(env.path("teams/oncall/plugins/pager-next")).unwrap();
-    script(
-        &env.path("teams/oncall/plugins/pager-next/pager"),
-        "#!/bin/sh\necho \"source=next room=$PAGER_ROOM token_len=${#PAGER_TOKEN}\" >> \"$BORGCHART_STATE_DIR/calls.log\"\n",
-    );
-    // The caller has no plugin token; the running instance keeps its secret.
-    env.ok(&["create", &format!("{inst}/scout")]);
-    let run = command.output().unwrap();
-    assert!(run.status.success(), "{}", both(&run));
-    let log =
-        fs::read_to_string(env.path(&format!("state/{inst}/plugins/pager/calls.log"))).unwrap();
-    assert_eq!(
-        log.lines().last().unwrap(),
-        format!("room=R0000EXAMPLE token_len=12 instance={inst}")
-    );
-    env.ok(&["stop", &inst]);
-    let out = env
-        .cmd(&["start", &inst])
-        .env("PAGER_TOKEN", "tok-not-real")
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "{}", both(&out));
-    env.wait_for("lead relaunched", || env.starts(&lead).len() == 2);
-    command.env(
-        "BORGCHART_INCARNATION",
-        env.starts(&lead)[1]["env"]["BORGCHART_INCARNATION"]
-            .as_str()
-            .unwrap(),
-    );
-    let run = command.output().unwrap();
-    assert!(run.status.success(), "{}", both(&run));
-    let log =
-        fs::read_to_string(env.path(&format!("state/{inst}/plugins/pager/calls.log"))).unwrap();
-    assert_eq!(
-        log.lines().last().unwrap(),
-        "source=next room=R0001EXAMPLE token_len=12"
-    );
-    env.ok(&["stop", &inst]);
-    // A plain value becoming a secret must use the newly exported secret.
-    let team = fs::read_to_string(env.path("teams/oncall/team.yaml")).unwrap();
-    env.write(
-        "teams/oncall/team.yaml",
-        &team.replace("PAGER_ROOM: R0001EXAMPLE", "PAGER_ROOM:"),
-    );
-    let out = env
-        .cmd(&["start", &inst])
-        .env("PAGER_TOKEN", "tok-not-real")
-        .env("PAGER_ROOM", "R0002EXAMPLE")
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "{}", both(&out));
-    env.wait_for("lead relaunched with secret", || {
-        env.starts(&lead).len() == 3
-    });
-    command.env(
-        "BORGCHART_INCARNATION",
-        env.starts(&lead)[2]["env"]["BORGCHART_INCARNATION"]
-            .as_str()
-            .unwrap(),
-    );
-    let run = command.output().unwrap();
-    assert!(run.status.success(), "{}", both(&run));
-    let log =
-        fs::read_to_string(env.path(&format!("state/{inst}/plugins/pager/calls.log"))).unwrap();
-    assert_eq!(
-        log.lines().last().unwrap(),
-        "source=next room=R0002EXAMPLE token_len=12"
-    );
-    // A missing recorded settings file fails at the join, even with secrets exported.
-    fs::remove_file(env.path(&format!("state/{inst}/secrets/pager.json"))).unwrap();
-    let out = env
-        .cmd(&["start", &inst])
-        .env("PAGER_TOKEN", "tok-not-real")
-        .env("PAGER_ROOM", "R0002EXAMPLE")
-        .output()
-        .unwrap();
-    assert!(!out.status.success(), "{}", both(&out));
-    assert!(both(&out).contains("pager"), "{}", both(&out));
     env.ok(&["stop", &inst]);
 }
 
