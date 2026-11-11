@@ -1,4 +1,4 @@
-# The team this repository's engineering runs under, at the root of a tree
+# The team an owner's engineering runs under, at the root of a tree
 # of teams: a root lead that runs the engineering effort, with dev teams,
 # design panels, researchers and monitors as its roles. Dev teams and
 # design panels are child teams: `create` makes a copy stopped, the lead
