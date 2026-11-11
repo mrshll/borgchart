@@ -3989,8 +3989,7 @@ pub fn status_cells(r: &StatusRow, short: bool) -> Vec<String> {
     ]
 }
 
-/// A vendor's one-cell mark, after herdr-radar's text logos: ordinary
-/// Unicode that any terminal font draws.
+/// A vendor's one-cell mark, using ordinary Unicode that any terminal font draws.
 pub fn vendor_mark(vendor: &str) -> Option<char> {
     match vendor {
         "claude" => Some('§'),
