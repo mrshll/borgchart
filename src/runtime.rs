@@ -2244,13 +2244,11 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
             inst.id
         ));
     }
-    let mut recorded_only = None;
+    let mut recorded_only = false;
     if let Some(meta) = meta {
         for (child, _) in inst.record.kept_members() {
-            if meta.members.get(child).and_then(|m| m.parent.as_deref()) == Some(&id)
-                && children.insert(child.clone())
-            {
-                recorded_only = Some(child.clone());
+            if meta.members.get(child).and_then(|m| m.parent.as_deref()) == Some(&id) {
+                recorded_only |= children.insert(child.clone());
             }
         }
     }
@@ -2263,11 +2261,10 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
                 .map(|child| inst.at(child))
                 .collect::<Vec<_>>()
                 .join("\n  "),
-            if let Some(child) = recorded_only {
+            if recorded_only {
                 format!(
-                    "\nthe team file changed since the child's last start; restart the child to apply it: brg stop {} && brg start {}",
-                    inst.at(&child),
-                    inst.at(&child)
+                    "\nthe team file changed since the last start; brg start {} applies it",
+                    inst.id
                 )
             } else {
                 String::new()
