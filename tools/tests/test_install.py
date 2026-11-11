@@ -45,7 +45,7 @@ def checkout(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         'output=${BUILD_OUTPUT:-"$(pwd)/target/release"}\n'
         'mkdir -p "$output"\n'
         "for name in brg borgchart brg-seat; do\n"
-        "  printf '#!/bin/sh\\necho installed\\n' > \"$output/$name\"\n"
+        '  printf \'#!/bin/sh\\necho %s\\n\' "${BUILD_LABEL:-installed}" > "$output/$name"\n'
         '  chmod +x "$output/$name"\n'
         '  if [ "${OMIT_ARTIFACT:-}" != "$name" ]; then\n'
         '    printf \'{"executable": "%s/%s", "reason": "compiler-artifact"}\\n\' "$output" "$name"\n'
@@ -63,6 +63,7 @@ def checkout(tmp_path: Path) -> tuple[Path, dict[str, str]]:
             "CARGO_BUILD_TARGET_DIR",
             "BUILD_OUTPUT",
             "OMIT_ARTIFACT",
+            "BUILD_LABEL",
             "MAKEFLAGS",
             "MFLAGS",
             "CDPATH",
@@ -92,21 +93,13 @@ def checkout(tmp_path: Path) -> tuple[Path, dict[str, str]]:
 @pytest.mark.parametrize(
     "platform,wrapped", [("Linux", True), ("Linux", False), ("Darwin", False)]
 )
-def test_upgrade_keeps_old_revision_and_repeat_does_not_rewrite_it(
+def test_upgrade_replaces_fixed_install_without_changing_open_binary_or_links(
     checkout: tuple[Path, dict[str, str]], platform: str, wrapped: bool
 ) -> None:
     repo, env = checkout
     commands = Path(env["PATH"].split(":")[0])
     executable(commands / "uname", f"echo {platform}\n")
-    if platform == "Darwin":
-        # Exercise the Darwin branch on Linux; Apple's mv source separately
-        # confirms -h uses rename on the destination symlink itself.
-        executable(
-            commands / "mv",
-            'if [ "$1" = -fh ]; then shift; exec /bin/mv -fT "$@"; fi\n'
-            'exec /bin/mv "$@"\n',
-        )
-    elif not wrapped:
+    if platform == "Linux" and not wrapped:
         (repo / "tools" / "cargo-slot").chmod(0o644)
         assert run(repo, env, "git", "add", ".").returncode == 0
         assert (
@@ -126,20 +119,17 @@ def test_upgrade_keeps_old_revision_and_repeat_does_not_rewrite_it(
     revision = run(repo, env, "git", "rev-parse", "HEAD").stdout.strip()
     first = run(repo, env, "make", "install")
     assert first.returncode == 0, first.stderr
-    assert first.stdout.splitlines().count(f"teams: [{prefix}/brg-current/teams]") == 1
-    old = prefix / f"brg-{revision}"
-    assert (old / "REVISION").read_text() == f"{revision}\n"
-    assert (old / "teams/example/role.md").read_text() == "original prompt\n"
-    original_inode = (old / "bin/brg").stat().st_ino
+    installed = prefix / "brg"
+    assert (installed / "REVISION").read_text() == f"{revision}\n"
+    assert first.stdout.splitlines().count(f"teams: [{prefix}/brg/teams]") == 1
+    assert (installed / "teams/example/role.md").read_text() == "original prompt\n"
     link_inodes = {name: (bindir / name).lstat().st_ino for name in PROGRAMS}
     for name in PROGRAMS:
-        assert (bindir / name).readlink() == prefix / "brg-current/bin" / name
+        assert (bindir / name).readlink() == installed / "bin" / name
         assert run(repo, env, str(bindir / name)).stdout == "installed\n"
     assert ("wrapped" in Path(env["BUILD_LOG"]).read_text()) == wrapped
-    assert run(repo, env, "make", "install").returncode == 0
-    assert (old / "bin/brg").stat().st_ino == original_inode
-    assert {name: (bindir / name).lstat().st_ino for name in PROGRAMS} == link_inodes
     (repo / "teams/example/role.md").write_text("updated prompt\n")
+    (repo / "teams/example/added.md").write_text("new asset\n")
     assert run(repo, env, "git", "add", ".").returncode == 0
     assert (
         run(
@@ -155,18 +145,35 @@ def test_upgrade_keeps_old_revision_and_repeat_does_not_rewrite_it(
         == 0
     )
     revision = run(repo, env, "git", "rev-parse", "HEAD").stdout.strip()
-    upgraded = run(repo, env, "make", "install")
-    assert upgraded.returncode == 0, upgraded.stderr
-    assert (prefix / "brg-current").readlink() == Path(f"brg-{revision}")
-    assert (
-        prefix / "brg-current/teams/example/role.md"
-    ).read_text() == "updated prompt\n"
-    assert (old / "bin/brg").stat().st_ino == original_inode
-    assert not list(old.glob("brg-*"))
-    assert not list(old.glob(".brg-*"))
+    env["BUILD_LABEL"] = "upgraded"
+    # A running executable, like this open handle, retains the old inode.
+    with (installed / "bin/brg").open() as old_binary:
+        original = old_binary.read()
+        upgraded = run(repo, env, "make", "install")
+        assert upgraded.returncode == 0, upgraded.stderr
+        old_binary.seek(0)
+        assert old_binary.read() == original
+        assert (
+            os.fstat(old_binary.fileno()).st_ino
+            != (installed / "bin/brg").stat().st_ino
+        )
+    assert (installed / "REVISION").read_text() == f"{revision}\n"
+    assert (installed / "teams/example/role.md").read_text() == "updated prompt\n"
+    assert (installed / "teams/example/added.md").read_text() == "new asset\n"
+    for name in PROGRAMS:
+        assert run(repo, env, str(bindir / name)).stdout == "upgraded\n"
+    # Reinstalling the same revision repairs drift instead of reusing it.
+    (installed / "teams/example/obsolete.md").touch()
+    (installed / "bin/brg").write_text("damaged\n")
+    repeated = run(repo, env, "make", "install")
+    assert repeated.returncode == 0, repeated.stderr
+    assert run(repo, env, str(bindir / "brg")).stdout == "upgraded\n"
+    assert not (installed / "teams/example/obsolete.md").exists()
+    assert {name: (bindir / name).lstat().st_ino for name in PROGRAMS} == link_inodes
+    assert set(prefix.iterdir()) == {installed}
 
 
-def test_dirty_checkout_refuses_until_override_and_never_reuses_dirty_install(
+def test_dirty_checkout_refuses_until_override_and_replaces_dirty_install(
     checkout: tuple[Path, dict[str, str]],
 ) -> None:
     repo, env = checkout
@@ -178,26 +185,24 @@ def test_dirty_checkout_refuses_until_override_and_never_reuses_dirty_install(
     env["ALLOW_DIRTY"] = "1"
     prefix = Path(env["PREFIX"])
     revision = run(repo, env, "git", "rev-parse", "HEAD").stdout.strip()
-    previous = None
-    for _ in range(2):
+    for prompt in ("first dirty prompt\n", "second dirty prompt\n"):
+        (repo / "teams/example/role.md").write_text(prompt)
         installed = run(repo, env, "make", "install")
         assert installed.returncode == 0, installed.stderr
-        current = (prefix / "brg-current").resolve()
-        assert current.name.startswith(f"brg-{revision}-dirty-")
-        assert "dirty" in (current / "REVISION").read_text()
-        assert current != previous
-        if previous is not None:
-            assert previous.is_dir()
-        previous = current
+        current = prefix / "brg"
+        assert (current / "REVISION").read_text() == f"{revision}-dirty\n"
+        assert (current / "teams/example/role.md").read_text() == prompt
+        assert set(prefix.iterdir()) == {current}
 
 
 @pytest.mark.parametrize("name", PROGRAMS)
-def test_existing_regular_binary_is_preserved_without_switching_current(
+def test_existing_regular_binary_refuses_before_replacing_installed_files(
     checkout: tuple[Path, dict[str, str]], name: str
 ) -> None:
     repo, env = checkout
     assert run(repo, env, "make", "install").returncode == 0
-    current = (Path(env["PREFIX"]) / "brg-current").readlink()
+    installed = Path(env["PREFIX"]) / "brg"
+    revision = (installed / "REVISION").read_text()
     binary = Path(env["BINDIR"]) / name
     binary.unlink()
     binary.write_text("keep this file\n")
@@ -205,16 +210,17 @@ def test_existing_regular_binary_is_preserved_without_switching_current(
     (repo / "untracked").touch()
     assert run(repo, env, "make", "install").returncode != 0
     assert binary.read_text() == "keep this file\n"
-    assert (Path(env["PREFIX"]) / "brg-current").readlink() == current
+    assert (installed / "REVISION").read_text() == revision
+    assert run(repo, env, str(installed / "bin/brg")).stdout == "installed\n"
 
 
-def test_incomplete_copy_never_publishes_revision_or_switches_current(
+def test_failed_staging_preserves_installed_binaries_and_teams(
     checkout: tuple[Path, dict[str, str]],
 ) -> None:
     repo, env = checkout
     assert run(repo, env, "make", "install").returncode == 0
     prefix = Path(env["PREFIX"])
-    previous = (prefix / "brg-current").readlink()
+    previous = (prefix / "brg/REVISION").read_text()
     (repo / "teams/example/role.md").write_text("new prompt\n")
     assert run(repo, env, "git", "add", ".").returncode == 0
     assert (
@@ -230,13 +236,32 @@ def test_incomplete_copy_never_publishes_revision_or_switches_current(
         ).returncode
         == 0
     )
-    revision = run(repo, env, "git", "rev-parse", "HEAD").stdout.strip()
     commands = Path(env["PATH"].split(":")[0])
     executable(commands / "cp", "exit 42\n")
     assert run(repo, env, "make", "install").returncode != 0
-    assert not (prefix / f"brg-{revision}").exists()
-    assert (prefix / "brg-current").readlink() == previous
+    assert (prefix / "brg/REVISION").read_text() == previous
+    assert (prefix / "brg/teams/example/role.md").read_text() == "original prompt\n"
+    assert run(repo, env, str(prefix / "brg/bin/brg")).stdout == "installed\n"
     assert not list(prefix.glob(".brg-install.*"))
+
+
+def test_failed_teams_publish_restores_previous_catalog(
+    checkout: tuple[Path, dict[str, str]],
+) -> None:
+    repo, env = checkout
+    assert run(repo, env, "make", "install").returncode == 0
+    commands = Path(env["PATH"].split(":")[0])
+    executable(
+        commands / "mv",
+        'case "$1" in */install/teams) exit 42 ;; esac\nexec /bin/mv "$@"\n',
+    )
+    env["ALLOW_DIRTY"] = "1"
+    (repo / "teams/example/role.md").write_text("new prompt\n")
+    assert run(repo, env, "make", "install").returncode != 0
+    prefix = Path(env["PREFIX"])
+    assert (prefix / "brg/teams/example/role.md").read_text() == "original prompt\n"
+    assert not list(prefix.glob(".brg-install.*"))
+    assert not (prefix / ".brg-install.lock").exists()
 
 
 def test_defaults_install_under_isolated_home(
@@ -249,9 +274,9 @@ def test_defaults_install_under_isolated_home(
     assert result.returncode == 0, result.stderr
     home = Path(env["HOME"])
     prefix = home / ".local/share"
-    assert (prefix / "brg-current/bin/brg").is_file()
-    assert (home / ".local/bin/brg").readlink() == prefix / "brg-current/bin/brg"
-    assert result.stdout.splitlines().count(f"teams: [{prefix}/brg-current/teams]") == 1
+    assert (prefix / "brg/bin/brg").is_file()
+    assert (home / ".local/bin/brg").readlink() == prefix / "brg/bin/brg"
+    assert result.stdout.splitlines().count(f"teams: [{prefix}/brg/teams]") == 1
 
 
 def test_reported_artifact_path_wins_over_stale_default_build(
@@ -280,7 +305,7 @@ def test_held_install_lock_refuses_without_removing_another_installers_lock(
     result = run(repo, env, "make", "install")
     assert result.returncode != 0
     assert lock.is_dir()
-    assert not (prefix / "brg-current").exists()
+    assert not (prefix / "brg").exists()
     assert not Path(env["BUILD_LOG"]).exists()
 
 
@@ -293,7 +318,7 @@ def test_missing_artifact_refuses_publication_and_releases_owned_lock(
     result = run(repo, env, "make", "install")
     assert result.returncode != 0
     prefix = Path(env["PREFIX"])
-    assert not (prefix / "brg-current").exists()
+    assert not (prefix / "brg").exists()
     assert not list(prefix.glob("brg-*"))
     assert not (prefix / ".brg-install.lock").exists()
 
@@ -321,7 +346,7 @@ def test_json_escaped_artifact_paths_refuse_instead_of_copying_stale_binaries(
     result = run(repo, env, "make", "install")
     assert result.returncode != 0
     prefix = Path(env["PREFIX"])
-    assert not (prefix / "brg-current").exists()
+    assert not (prefix / "brg").exists()
     assert not list(prefix.glob("brg-*"))
     assert not (prefix / ".brg-install.lock").exists()
 
@@ -334,8 +359,8 @@ def test_direct_install_from_elsewhere_handles_cdpath_and_relative_destinations(
     result = run(repo.parent, env, str(repo / "tools/install"))
     assert result.returncode == 0, result.stderr
     prefix = repo / env["PREFIX"]
-    assert (repo / env["BINDIR"] / "brg").readlink() == prefix / "brg-current/bin/brg"
-    assert result.stdout.splitlines().count(f"teams: [{prefix}/brg-current/teams]") == 1
+    assert (repo / env["BINDIR"] / "brg").readlink() == prefix / "brg/bin/brg"
+    assert result.stdout.splitlines().count(f"teams: [{prefix}/brg/teams]") == 1
 
 
 def test_clean_install_archives_head_while_dirty_override_copies_working_teams(
@@ -354,9 +379,7 @@ def test_clean_install_archives_head_while_dirty_override_copies_working_teams(
     result = run(repo, env, "make", "install")
     assert result.returncode == 0, result.stderr
     prefix = Path(env["PREFIX"])
-    assert (
-        prefix / "brg-current/teams/example/role.md"
-    ).read_text() == "original prompt\n"
+    assert (prefix / "brg/teams/example/role.md").read_text() == "original prompt\n"
     assert (
         run(
             repo, env, "git", "update-index", "--no-assume-unchanged", str(prompt)
@@ -366,6 +389,4 @@ def test_clean_install_archives_head_while_dirty_override_copies_working_teams(
     env["ALLOW_DIRTY"] = "1"
     result = run(repo, env, "make", "install")
     assert result.returncode == 0, result.stderr
-    assert (
-        prefix / "brg-current/teams/example/role.md"
-    ).read_text() == "unrecorded prompt\n"
+    assert (prefix / "brg/teams/example/role.md").read_text() == "unrecorded prompt\n"
