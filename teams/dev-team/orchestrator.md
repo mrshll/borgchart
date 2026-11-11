@@ -59,7 +59,7 @@ Messages go to member IDs, so a member must exist before it can be briefed, and 
 - **Verify.** The report is the helper's claim. Read it, the diff and its evidence, and run the checks the development rules below name yourself in that checkout.
 - **Push** a copy's branch from its own worktree (`git -C <copy worktree> push …`): a pre-push hook checks the tree you push from. Where CI runs the full checks, watch it on the pushed head, and send a red run back to the implementer with the failing job's log.
 - **Stop and check.** Stop the helper, then check `status` shows it `stopped`. Only then change or remove its worktree, or give its checkout to anyone else. To redo finished work, send a new brief and start it again.
-- **Delete a copy** once its work is pushed, which removes its worktree. Never use `--force`: if `delete` refuses, commit, push or report the work it found first. Look at a member's unacked work before you delete it.
+- **Delete a copy** once its work is pushed and, where CI runs the full checks, green on its head, which removes its worktree. Never use `--force`: if `delete` refuses, commit, push or report the work it found first. Look at a member's unacked work before you delete it.
 
 ## Review
 
