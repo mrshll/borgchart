@@ -44,7 +44,7 @@ Messages go to member IDs, so a member must exist before it can be briefed, and 
 1. **Seat-check** before each `create` or `start`: run `brg-seat route <vendor> <model>` for the member it launches. Go ahead only on `go`. On `wait`, an unknown answer or an error, check again later; don't take another vendor or model instead.
 2. **Create the member once** from its role, with `create`; an implementer's worktree goes on the new branch its work needs, or stays detached for the copy to create the branch. `create` starts the member: stop it and note its ID. A stopped member keeps its ID.
 3. **For an implementer, prepare its worktree:** inside it, do any per-checkout identity setup your owner's instructions describe.
-4. **Write the brief** in `$BORGCHART_NOTES`, by rename: the task, scope, non-goals, checks, branch and checkout, report path, deadline and teammates involved; for the monitor, the interval and trigger. An implementer's brief says whether it may run full checks now or must report `ready for checks` and wait. Then send the member one message naming it: `Read <brief path>; take on the work and report there as directed.`
+4. **Write the brief** in `$BORGCHART_NOTES`, by rename: the task, scope, non-goals, checks, branch and checkout, report path, deadline and teammates involved; for the monitor, the interval and trigger. An implementer's brief says whether it may run its checks now or must report `ready for checks` and wait. Then send the member one message naming it: `Read <brief path>; take on the work and report there as directed.`
 5. **Start it**, and check `status`. If it is `blocked` (at a folder-trust screen, say), tell the owner and leave it for a person.
 
 ## Follow and verify
@@ -56,8 +56,8 @@ Messages go to member IDs, so a member must exist before it can be briefed, and 
   - otherwise: escalate.
 
   A send that returned 0 is committed: never send it again.
-- **Verify.** The report is the helper's claim. Read it, the diff and its evidence, and run the repository's checks yourself in that checkout.
-- **Push** a copy's branch from its own worktree (`git -C <copy worktree> push …`): a pre-push hook checks the tree you push from.
+- **Verify.** The report is the helper's claim. Read it, the diff and its evidence, and run the checks the development rules below name yourself in that checkout.
+- **Push** a copy's branch from its own worktree (`git -C <copy worktree> push …`): a pre-push hook checks the tree you push from. Where CI runs the full checks, watch it on the pushed head, and send a red run back to the implementer with the failing job's log.
 - **Stop and check.** Stop the helper, then check `status` shows it `stopped`. Only then change or remove its worktree, or give its checkout to anyone else. To redo finished work, send a new brief and start it again.
 - **Delete a copy** once its work is pushed, which removes its worktree. Never use `--force`: if `delete` refuses, commit, push or report the work it found first. Look at a member's unacked work before you delete it.
 
