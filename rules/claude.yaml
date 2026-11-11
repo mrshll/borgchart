@@ -46,7 +46,7 @@ rules:
     state: working
     priority: 50
     bottom: 1000
-    any: ['─{3,}(?: [^\n]*\S ─+)?[ \t]*\n❯[^\n]*\n(?:(?:[ \t][^\n]*)?\n)*─{3,}[ \t]*(?:\n(?:[ \t][^\n]*)?)*\n  (?:[^\n]* · )?esc to interrupt(?: · [^\n]*)?[ \t]*(?:\n(?:[ \t][^\n]*)?)*\z']
+    any: ['^─{3,}(?: [^\n]*\S ─+)?[ \t]*\n❯[^\n]*\n(?:(?:[ \t][^\n]*)?\n)*─{3,}[ \t]*(?:\n(?:[ \t][^\n]*)?)*\n  (?:[^\n]* · )?esc to interrupt(?: · [^\n]*)?[ \t]*(?:\n(?:[ \t][^\n]*)?)*\z']
   - id: working-title
     state: working
     priority: 50

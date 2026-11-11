@@ -515,6 +515,19 @@ mod tests {
         let reading = claude().read("✳ demo-notes", &footer);
         assert_eq!(reading.state, State::Working);
         assert_eq!(reading.rule.as_deref(), Some("working-footer"));
+        // The top rule starts the line: text before it is not a box.
+        let shifted: String = footer
+            .lines()
+            .map(|l| match l.ends_with(" demo-notes ─") {
+                true => format!("x {l}\n"),
+                false => format!("{l}\n"),
+            })
+            .collect();
+        assert_ne!(shifted, footer);
+        assert_eq!(
+            claude().read("✳ demo-notes", &shifted).state,
+            State::Unknown
+        );
         // A label is not a licence for any text: the rule still starts and
         // ends in dashes.
         let broken = idle.replace("─ demo-notes ─\n❯", "─ demo-notes\n❯");
