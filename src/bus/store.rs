@@ -231,7 +231,7 @@ pub fn actor_for(bus: &Bus, caller: &Caller) -> Result<Actor, Failure> {
     match caller {
         Caller::Operator => Err(Failure::new(
             Code::Refused,
-            "no caller identity: instance-only plugins must pass `--external NAME`; members publish as themselves, callers without team context default to `external:owner`",
+            "no caller identity: a plugin process must pass `--external NAME`",
         )),
         Caller::External { name } => Ok(Actor::External { name: name.clone() }),
         Caller::Member {

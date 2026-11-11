@@ -511,7 +511,8 @@ fn acks_are_idempotent_and_recipient_only() {
         None,
     );
     assert_eq!(ext.code, 4);
-    let operator = f.brg(&As::Operator, &["msg", "ack", "m3", "--json"], None);
+    let mut cmd = f.command(&As::Operator, &["msg", "ack", "m3", "--json"]);
+    let operator = output(cmd.env("BORGCHART_INSTANCE", TEAM).output().unwrap());
     assert_eq!(operator.code, 4);
     let missing = f.brg(&As::Member("helper"), &["msg", "ack", "m9", "--json"], None);
     assert_eq!(missing.code, 10);
@@ -1116,6 +1117,25 @@ fn external_recipient_flow() {
     let d = json!({"to": "lead", "reply_to": ["m1"], "body": "yes"});
     assert_eq!(f.publish(&As::Operator, &d).code, 0);
     assert_eq!(ids(&f.inbox(&As::Member("lead"), &[])), ["m2"]);
+}
+
+#[test]
+fn member_launch_context_cannot_send_as_owner_without_identity() {
+    let f = Fixture::new();
+    let mut cmd = f.command(
+        &As::Operator,
+        &["msg", "send", "oncall-2a3b/helper2", "hello", "--json"],
+    );
+    let out = output(
+        cmd.env("BORGCHART_ROLE", "helper")
+            .env("BORGCHART_NOTES", f.dir.path().join("notes"))
+            .env("BORGCHART_PARENT", "oncall-2a3b/lead")
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(out.code, 5, "{:?}", out.json);
+    assert!(f.records().is_empty());
+    assert!(ids(&f.inbox(&As::Member("helper2"), &[])).is_empty());
 }
 
 #[test]

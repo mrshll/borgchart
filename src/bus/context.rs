@@ -16,6 +16,14 @@ pub const ENV_MEMBER: &str = "BORGCHART_MEMBER";
 /// A unique ID for one start of one member.
 pub const ENV_INCARNATION: &str = "BORGCHART_INCARNATION";
 
+const MEMBER_ONLY_ENV: [&str; 5] = [
+    ENV_MEMBER,
+    ENV_INCARNATION,
+    crate::exec::ENV_ROLE,
+    crate::exec::ENV_NOTES,
+    "BORGCHART_PARENT",
+];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Caller {
     Member {
@@ -55,7 +63,9 @@ pub fn instance_from(
     // instance alone (a plugin process) is not a member context.
     let set = |k: &str| get(k).is_some_and(|v| !v.is_empty());
     let parts = [ENV_MEMBER, ENV_INCARNATION];
-    if parts.iter().any(|k| set(k)) && !(parts.iter().all(|k| set(k)) && set(ENV_INSTANCE)) {
+    if MEMBER_ONLY_ENV.iter().any(|k| set(k))
+        && !(parts.iter().all(|k| set(k)) && set(ENV_INSTANCE))
+    {
         return Err(Failure::new(
             Code::Refused,
             format!(
@@ -92,7 +102,10 @@ pub fn caller_from(
     let member = get(ENV_MEMBER).filter(|v| !v.is_empty());
     let incarnation = get(ENV_INCARNATION).filter(|v| !v.is_empty());
     let instance = get(ENV_INSTANCE).filter(|v| !v.is_empty());
-    if member.is_some() || incarnation.is_some() {
+    if MEMBER_ONLY_ENV
+        .iter()
+        .any(|k| get(k).is_some_and(|v| !v.is_empty()))
+    {
         if external.is_some() {
             return Err(Failure::new(
                 Code::Refused,
@@ -190,6 +203,33 @@ mod tests {
             caller_from(Some("supervisor"), &e).unwrap_err().code,
             Code::Refused
         );
+    }
+
+    #[test]
+    fn member_launch_variables_without_identity_are_refused() {
+        for key in [
+            crate::exec::ENV_ROLE,
+            crate::exec::ENV_NOTES,
+            "BORGCHART_PARENT",
+        ] {
+            for instance in ["", "oncall-2a3b"] {
+                let pairs = [(key, "member-context"), (ENV_INSTANCE, instance)];
+                let e = env(&pairs);
+                assert_eq!(caller_from(None, &e).unwrap_err().code, Code::Refused);
+                assert_eq!(
+                    instance_from(Some("oncall-2a3b"), &e).unwrap_err().code,
+                    Code::Refused
+                );
+            }
+            let pairs = [(key, "")];
+            let empty = env(&pairs);
+            assert_eq!(
+                caller_from(None, &empty).unwrap(),
+                Caller::External {
+                    name: "owner".into()
+                }
+            );
+        }
     }
 
     #[test]
