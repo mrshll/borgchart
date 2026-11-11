@@ -84,9 +84,13 @@ fn copies_get_their_own_worktrees_and_keep_slots_without_filling_max() {
     let inst = env.create("oncall", "work/a");
     assert!(env.copies(&inst).is_empty());
     assert_eq!(env.state_of(&inst, "helper"), "on demand (none created)");
-    env.ok(&["create", &format!("{inst}/helper")]);
+    let created = stdout(&env.ok(&["create", &format!("{inst}/helper")]));
     let first = env.copies(&inst)[0].clone();
     assert_eq!(env.copies(&inst), std::slice::from_ref(&first));
+    // `create` names the new worktree; the status tree leaves it to --json.
+    let folder = env.worktree(&format!("{inst}/{first}"));
+    let named = format!("{inst}/{first}  folder {}", folder.display());
+    assert!(created.lines().any(|l| l == named), "{created}");
     env.ok(&["create", &format!("{inst}/helper")]);
     let second = env
         .copies(&inst)
@@ -129,6 +133,7 @@ fn copies_get_their_own_worktrees_and_keep_slots_without_filling_max() {
     );
     let tree = stdout(&env.ok(&["status", &inst]));
     assert!(tree.contains(&first) && tree.contains(&second));
+    assert!(!tree.contains(&folder.display().to_string()), "{tree}");
     env.ok(&["start", &format!("{inst}/{first}")]);
     assert_eq!(env.starts(&first).len(), 2);
     env.ok(&["stop", &format!("{inst}/{first}")]);
@@ -249,6 +254,43 @@ fn a_copy_whose_worktree_is_gone_does_not_start() {
     assert_ne!(first, second);
     env.wait_for("second copy idle", || !env.starts(&second).is_empty());
     assert_eq!(env.copies(&inst).len(), 2);
+    env.ok(&["stop", &inst]);
+}
+
+#[test]
+fn create_and_a_full_start_name_the_worktrees_they_add() {
+    let env = copies_env(2);
+    let path = env.path("teams/oncall/team.yaml");
+    fs::write(
+        &path,
+        fs::read_to_string(&path).unwrap().replace(
+            "    parent: lead\n    start: false",
+            "    parent: lead\n    start: true",
+        ),
+    )
+    .unwrap();
+    let named = |out: &str, inst: &str, id: &str| {
+        let line = format!(
+            "{inst}/{id}  folder {}",
+            env.worktree(&format!("{inst}/{id}")).display()
+        );
+        assert!(out.lines().any(|l| l == line), "{out}");
+    };
+    let out = stdout(&env.ok(&[
+        "create",
+        "oncall",
+        &env.path("work/a").display().to_string(),
+    ]));
+    let inst = out.split_whitespace().next().unwrap().to_string();
+    let first = env.member(&inst, "helper");
+    named(&out, &inst, &first);
+    env.ok(&["stop", &inst]);
+    env.ok(&["delete", &format!("{inst}/{first}")]);
+    // A full start gives the `start: true` role a new member and worktree.
+    let out = stdout(&env.ok(&["start", &inst]));
+    let second = env.member(&inst, "helper");
+    assert_ne!(first, second);
+    named(&out, &inst, &second);
     env.ok(&["stop", &inst]);
 }
 

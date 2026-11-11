@@ -198,8 +198,7 @@ fn state_style(row: &StatusRow) -> Style {
     let bold = Style::default().add_modifier(Modifier::BOLD);
     match runtime::status_look(row).tone {
         tree::Tone::Plain => Style::default(),
-        tree::Tone::Busy(Some(c)) => bold.fg(rgb(c)),
-        tree::Tone::Busy(None) => bold,
+        tree::Tone::Busy => bold.fg(rgb(tree::palette::BUSY)),
         tree::Tone::Alert => bold.fg(rgb(tree::palette::ALERT)),
         tree::Tone::Odd => Style::default().fg(rgb(tree::palette::ODD)),
         tree::Tone::Faded => Style::default().fg(rgb(tree::palette::FADED)),
@@ -499,5 +498,38 @@ mod tests {
         assert_eq!(super::clock(0), "00:00:00");
         // 2026-11-10 14:02:07 UTC.
         assert_eq!(super::clock(1_794_319_327), "14:02:07");
+    }
+
+    #[test]
+    fn working_rows_take_the_busy_colour_whatever_the_vendor() {
+        for vendor in ["claude", "codex"] {
+            let row = super::StatusRow {
+                name: "m".into(),
+                kind: "member",
+                instance: "i".into(),
+                team: "t".into(),
+                member: None,
+                start_id: None,
+                role: None,
+                vendor: Some(vendor.into()),
+                model: None,
+                parent: None,
+                posture: None,
+                state: "working".into(),
+                rule: None,
+                activity: None,
+                detail: None,
+                vendor_version: None,
+                trust_accepted: None,
+                worktree: None,
+                liveness: None,
+                unread: None,
+                running: None,
+                expected_running: false,
+                start: true,
+            };
+            let style = super::state_style(&row);
+            assert_eq!(style.fg, Some(super::rgb(super::tree::palette::BUSY)));
+        }
     }
 }

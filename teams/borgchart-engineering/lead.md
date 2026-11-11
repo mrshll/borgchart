@@ -31,7 +31,7 @@ A role's `max` is capacity, not a target: keep as few copies and helpers active 
 
 ## Folders
 
-Your instance's folder is a checkout of the repository, or a plain folder of clones, one per repository. You, researchers, monitors and design panels work in it. Each dev copy works in its own git worktree, which brg adds when you create the copy and removes when you delete it; `status` shows where.
+Your instance's folder is a checkout of the repository, or a plain folder of clones, one per repository. You, researchers, monitors and design panels work in it. Each dev copy works in its own git worktree, which brg adds when you create the copy and removes when you delete it; `create` prints it, and `status --json` gives it as `worktree`.
 
 - **One writer per checkout.** Your checkout is yours, and read-only to researchers, monitors and designers. Leave it unchanged (no edits, checkouts or resets) while one of them is using it. A dev copy writes only in its own worktree.
 - **Clones are the owner's.** In a folder of clones, every clone is read-only to the whole tree: leave its branch, index and files as they are. GitHub commands run from the folder need the repository named, with `-R <owner>/<repo>`.

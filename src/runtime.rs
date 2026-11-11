@@ -1509,8 +1509,24 @@ pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
     if result.is_err() {
         unregister_if_never_started(&inst);
         remove_unkept_worktrees(&inst, created_folders);
+        return result;
     }
-    result
+    result.map(|outcome| name_worktrees(&inst, &created_folders, outcome))
+}
+
+/// The tree leaves worktrees to `--json`, so whatever adds one names it
+/// after the tree: `<address>  folder <path>`, as `create` does for a copy.
+fn name_worktrees(
+    inst: &Instance,
+    added: &[(String, PathBuf)],
+    mut outcome: UpOutcome,
+) -> UpOutcome {
+    outcome.notes.extend(
+        added
+            .iter()
+            .map(|(id, dir)| format!("{}  folder {}", inst.at(id), dir.display())),
+    );
+    outcome
 }
 
 /// After a `create` whose start failed before any window could start:
@@ -1628,7 +1644,10 @@ pub fn create_member(
     let id = inst
         .record
         .issue_member(role, |id| v.team.roles.contains_key(id))?;
-    let _ = create_worktree(&inst, member, &id, branch, start.as_ref())?;
+    let added: Vec<_> = create_worktree(&inst, member, &id, branch, start.as_ref())?
+        .map(|dir| (id.clone(), dir))
+        .into_iter()
+        .collect();
     lock.save_instance(&inst.state, &inst.record)?;
     let mut outcome = start_members(lock, &inst, &v, vec![id.clone()], false, false)?;
     if let Some(start) = start {
@@ -1645,7 +1664,7 @@ pub fn create_member(
             })
             .collect();
     }
-    Ok(outcome)
+    Ok(name_worktrees(&inst, &added, outcome))
 }
 
 /// Pause after the preliminary create check, before taking the registry
@@ -2053,8 +2072,9 @@ fn start_instance(
             })();
             if result.is_err() {
                 remove_unkept_worktrees(&inst, created_folders);
+                return result;
             }
-            let mut outcome = result?;
+            let mut outcome = name_worktrees(&inst, &created_folders, result?);
             if !restore_copies {
                 return Ok(outcome);
             }
@@ -3939,12 +3959,7 @@ pub fn status_cells(r: &StatusRow, short: bool) -> Vec<String> {
                 } else {
                     format!("{} running", r.running.unwrap_or(0))
                 },
-                r.detail
-                    .iter()
-                    .cloned()
-                    .chain(r.worktree.as_ref().map(|w| format!("worktree {w}")))
-                    .collect::<Vec<_>>()
-                    .join("; "),
+                r.detail.clone().unwrap_or_default(),
             ];
         }
         "role" => return vec![r.state.clone()],
@@ -3961,9 +3976,6 @@ pub fn status_cells(r: &StatusRow, short: bool) -> Vec<String> {
     detail.extend(r.detail.clone());
     if let Some(unread) = r.unread.filter(|&n| n > 0) {
         detail.push(format!("{unread} unread"));
-    }
-    if let Some(worktree) = &r.worktree {
-        detail.push(format!("worktree {worktree}"));
     }
     let vendor = r.vendor.as_deref().unwrap_or("-");
     vec![
@@ -4103,10 +4115,6 @@ pub fn status_look(r: &StatusRow) -> tree::Look {
         tone: Tone::Faded,
         italic: false,
     };
-    let brand = match r.vendor.as_deref() {
-        Some("claude") => Some(tree::palette::CLAUDE),
-        _ => None,
-    };
     match (r.kind, r.state.as_str()) {
         ("role", _) => Look {
             italic: true,
@@ -4124,7 +4132,7 @@ pub fn status_look(r: &StatusRow) -> tree::Look {
             look('!', Tone::Alert)
         }
         ("plugin", "alive") => look('●', Tone::Plain),
-        (_, "working") => look('●', Tone::Busy(brand)),
+        (_, "working") => look('●', Tone::Busy),
         (_, "idle") => look('·', Tone::Plain),
         (_, "blocked") => look('?', Tone::Alert),
         (_, "gate-inactive") => look('!', Tone::Alert),
@@ -4724,11 +4732,53 @@ mod tests {
         );
         let codex = row("codex", None);
         assert!(cells(&codex, true).starts_with("Λ|"));
+        // Working is one colour whatever the vendor: red is only for alerts.
+        assert_eq!(status_look(&claude).tone, tree::Tone::Busy);
+        assert_eq!(status_look(&codex).tone, tree::Tone::Busy);
         assert!(cells(&codex, false).starts_with("codex default|"));
         // An idle member's topic is its last one: not shown.
         let mut idle = claude.clone();
         idle.state = "idle".into();
         assert_eq!(cells(&idle, true), "§ opus high|idle|2 unread");
+    }
+
+    #[test]
+    fn the_tree_leaves_the_worktree_to_json() {
+        let member = StatusRow {
+            name: "m".into(),
+            kind: "member",
+            instance: "i".into(),
+            team: "t".into(),
+            member: None,
+            start_id: None,
+            role: None,
+            vendor: Some("claude".into()),
+            model: None,
+            parent: None,
+            posture: None,
+            state: "idle".into(),
+            rule: None,
+            activity: None,
+            detail: None,
+            vendor_version: None,
+            trust_accepted: None,
+            worktree: Some("/srv/example/worktrees/team.m".into()),
+            liveness: None,
+            unread: Some(1),
+            running: None,
+            expected_running: false,
+            start: true,
+        };
+        let copy = StatusRow {
+            kind: "copy",
+            detail: Some("note".into()),
+            running: Some(2),
+            ..member.clone()
+        };
+        for short in [true, false] {
+            assert_eq!(status_cells(&member, short)[2], "1 unread");
+            assert_eq!(status_cells(&copy, short)[1..], ["2 running", "note"]);
+        }
     }
 
     #[test]

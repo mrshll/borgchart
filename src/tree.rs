@@ -43,8 +43,8 @@ pub enum Tone {
     /// Alive and needing nothing: ordinary ink.
     #[default]
     Plain,
-    /// Busy: the vendor's own hue, or bold ink for a vendor with none.
-    Busy(Option<Rgb>),
+    /// Busy: one colour for every vendor, far from the alert red.
+    Busy,
     /// Waiting on a person, or ended when it should run.
     Alert,
     /// State could not be read.
@@ -55,13 +55,14 @@ pub enum Tone {
 
 pub type Rgb = (u8, u8, u8);
 
-/// The palette, after herdr-radar's: every value clears 3:1 on both a light
-/// and a dark terminal, because a CLI cannot know which it is printing on.
+/// The palette: every value clears 3:1 on both a light and a dark
+/// terminal, because a CLI cannot know which it is printing on.
 /// Faded rows are an explicit grey rather than SGR `dim`, which every
 /// terminal renders at a different strength (some not at all).
 pub mod palette {
     use super::Rgb;
-    pub const CLAUDE: Rgb = (0xd9, 0x77, 0x57); // Anthropic coral, as published
+    /// Working rows, whatever their vendor.
+    pub const BUSY: Rgb = (0x1f, 0x93, 0x9a);
     pub const ALERT: Rgb = (0xc0, 0x4a, 0x4a);
     pub const ODD: Rgb = (0x90, 0x7a, 0xa9);
     /// Furniture, details and rows that are not running.
@@ -92,8 +93,7 @@ pub fn colour_wanted(terminal: bool) -> bool {
 fn ink(tone: Tone) -> String {
     match tone {
         Tone::Plain => String::new(),
-        Tone::Busy(Some(rgb)) => format!("{BOLD}{}", fg(rgb)),
-        Tone::Busy(None) => BOLD.into(),
+        Tone::Busy => format!("{BOLD}{}", fg(palette::BUSY)),
         Tone::Alert => format!("{BOLD}{}", fg(palette::ALERT)),
         Tone::Odd => fg(palette::ODD),
         Tone::Faded => fg(palette::FADED),
@@ -434,6 +434,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_palette_reads_on_light_and_dark_terminals() {
+        // WCAG relative luminance and contrast ratio.
+        let luminance = |(r, g, b): Rgb| {
+            let lin = |c: u8| {
+                let c = f64::from(c) / 255.0;
+                if c <= 0.03928 {
+                    c / 12.92
+                } else {
+                    ((c + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+        };
+        let contrast = |a: f64, b: f64| (a.max(b) + 0.05) / (a.min(b) + 0.05);
+        for rgb in [palette::BUSY, palette::ALERT, palette::ODD, palette::FADED] {
+            let l = luminance(rgb);
+            assert!(contrast(l, 1.0) >= 3.0, "{rgb:?} on white");
+            assert!(contrast(l, 0.0) >= 3.0, "{rgb:?} on black");
+        }
+    }
+
     fn strip(text: &str) -> String {
         let mut out = String::new();
         let mut chars = text.chars();
@@ -463,7 +485,7 @@ mod tests {
             ),
             node("absent", Some("lead"), &["not created (start: false)"]),
         ];
-        nodes[0].look = look(Some('●'), Tone::Busy(Some(palette::CLAUDE)));
+        nodes[0].look = look(Some('●'), Tone::Busy);
         nodes[1].look = look(Some('?'), Tone::Alert);
         nodes[2].look = Look {
             italic: true,
@@ -483,6 +505,10 @@ mod tests {
              ├─ ? helper codex o3                    blocked  brg attach x\n   \
              └─   absent not created (start: false)\n"
         );
+        // A working row is bold in the busy colour, never the alert red.
+        let working = painted.lines().nth(1).unwrap();
+        assert!(working.contains(&format!("{BOLD}{}", fg(palette::BUSY))));
+        assert!(!working.contains(&fg(palette::ALERT)));
         // Live rows lead; the row that is not running is last and grey from
         // end to end.
         let absent = painted.lines().last().unwrap();

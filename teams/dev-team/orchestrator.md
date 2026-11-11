@@ -31,7 +31,7 @@ If the work turns on a choice that is costly to reverse (persistence, data contr
 
 Do small things yourself when briefing and verifying a helper would cost more.
 
-Your instance's folder is the shared checkout: you, the reviewer, researcher and monitor work in it. Each implementer copy works in its own git worktree, which brg adds from the shared checkout's `HEAD` when you create the copy and removes when you delete it; `status` shows where.
+Your instance's folder is the shared checkout: you, the reviewer, researcher and monitor work in it. Each implementer copy works in its own git worktree, which brg adds from the shared checkout's `HEAD` when you create the copy and removes when you delete it; `create` prints it, and `status --json` gives it as `worktree`.
 
 - **One writer per checkout, one piece of work per implementer copy.** brg doesn't enforce this; you do.
 - **The shared checkout** stays unchanged (no edits, checkouts or resets) while a reviewer, researcher or monitor is working in it.

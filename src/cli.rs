@@ -54,7 +54,8 @@ enum Command {
     /// checkout stays as it is. Use one dev copy per repository; the root
     /// lead sequences copies.
     /// For a member or an instance, it prints the instance's tree as `status`
-    /// lays it out, with a new member's ID on its row; for a copy, one line
+    /// lays it out, with a new member's ID on its row, then a line with the
+    /// address and folder of each worktree it added; for a copy, one line
     /// with the copy's ID and its folder (its worktree, for a `worktree: true`
     /// role).
     Create {
@@ -78,8 +79,9 @@ enum Command {
     /// Bring an instance to what should be running, or start one member.
     /// Restore copies that ran at the last full stop, recursively. Finish
     /// an interrupted cascade with `stop` first. Reuse kept members; never
-    /// fill a role to max. With a bus, a member
-    /// caller may manage only its subtree, using its latest running start.
+    /// fill a role to max. A worktree it adds for a new member is named after
+    /// the tree. With a bus, a member caller may manage only its subtree,
+    /// using its latest running start.
     Start {
         /// `<instance>`, or `<instance>/<member>`.
         #[arg(add = crate::complete::targets())]
@@ -190,6 +192,13 @@ enum Command {
         interactive: bool,
     },
     /// Open a member's live session (detach with your tmux prefix, then d).
+    ///
+    /// brg's tmux server runs without your own tmux config unless brg's
+    /// configuration sets `tmux.user_config`, and a change to it applies only
+    /// once every instance on brg's server has stopped and the server starts
+    /// again. To keep your own bindings without a restart, attach from inside
+    /// your own tmux. brg's prefix is then tmux's default, Ctrl-b (press it
+    /// twice if your own prefix is Ctrl-b too).
     Attach {
         /// The member: `<instance>/<member>`.
         #[arg(add = crate::complete::members())]
