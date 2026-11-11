@@ -1207,7 +1207,7 @@ fn start_members(
             &header(inst),
             &nodes,
             &plugins,
-            std::io::stdout().is_terminal(),
+            tree::colour_wanted(std::io::stdout().is_terminal()),
         ),
         notes,
         failed,
@@ -4000,12 +4000,13 @@ pub fn vendor_mark(vendor: &str) -> Option<char> {
 }
 
 pub fn render_status(header: &str, rows: &[StatusRow]) -> String {
-    render_status_as(header, rows, std::io::stdout().is_terminal())
+    let terminal = std::io::stdout().is_terminal();
+    render_status_as(header, rows, terminal, tree::colour_wanted(terminal))
 }
 
 /// [`render_status`] for a person's terminal (`short`) or for a pipe. A
 /// terminal leaves out the roles [`hide_empty_roles`] hides.
-pub fn render_status_as(header: &str, rows: &[StatusRow], short: bool) -> String {
+pub fn render_status_as(header: &str, rows: &[StatusRow], short: bool, colour: bool) -> String {
     let shown;
     let rows = if short {
         shown = hide_empty_roles(rows.to_vec());
@@ -4023,7 +4024,7 @@ pub fn render_status_as(header: &str, rows: &[StatusRow], short: bool) -> String
         .iter()
         .map(|r| (status_key(r), status_name(r)))
         .collect();
-    tree::render_named(header, &nodes, &plugins, short, |id| names[id].clone())
+    tree::render_named(header, &nodes, &plugins, colour, |id| names[id].clone())
 }
 
 /// A row's identity stays unique when local IDs repeat in different copies.
@@ -4144,11 +4145,12 @@ pub fn status_look(r: &StatusRow) -> tree::Look {
     }
 }
 
-/// The `-w` and `-i` summary, in parts: how many members are working and
-/// idle, how many rows need a person (the red ones, flagged `true`), and
+/// The terminal summary, in parts: how many members are working and
+/// idle, how many rows need a person (the alert tone), and
 /// unread messages. Counts of zero are left out; with nothing to count, it
 /// says so.
-pub fn summary_parts(rows: &[StatusRow]) -> Vec<(String, bool)> {
+pub fn summary_parts(rows: &[StatusRow]) -> Vec<(String, tree::Tone)> {
+    use tree::Tone;
     let members = || rows.iter().filter(|r| r.kind == "member");
     let working = members().filter(|r| r.state == "working").count();
     let idle = members().filter(|r| r.state == "idle").count();
@@ -4159,34 +4161,34 @@ pub fn summary_parts(rows: &[StatusRow]) -> Vec<(String, bool)> {
     let unread: usize = members().filter_map(|r| r.unread).sum();
     let mut parts = Vec::new();
     if working > 0 {
-        parts.push((format!("● {working} working"), false));
+        parts.push((format!("● {working} working"), Tone::Busy));
     }
     if idle > 0 {
-        parts.push((format!("· {idle} idle"), false));
+        parts.push((format!("· {idle} idle"), Tone::Faded));
     }
     if need > 0 {
-        parts.push((format!("! {need} need you"), true));
+        parts.push((format!("! {need} need you"), Tone::Alert));
     }
     if unread > 0 {
-        parts.push((format!("{unread} unread"), false));
+        parts.push((format!("{unread} unread"), Tone::Faded));
     }
     if parts.is_empty() {
-        parts.push(("nothing running".into(), false));
+        parts.push(("nothing running".into(), Tone::Faded));
     }
     parts
 }
 
-/// [`summary_parts`] as one line, painted when `colour`: grey, with the
-/// rows that need a person in bold red.
+/// [`summary_parts`] as one line, with working counts in teal and rows
+/// that need a person in red when painted.
 pub fn summary(rows: &[StatusRow], colour: bool) -> String {
-    let paint = |t: &str, alert: bool| match (colour, alert) {
-        (false, _) => t.to_string(),
-        (true, false) => tree::ink_text(t, tree::palette::FADED, false),
-        (true, true) => tree::ink_text(t, tree::palette::ALERT, true),
-    };
     summary_parts(rows)
         .iter()
-        .map(|(t, alert)| paint(t, *alert))
+        .map(|(text, tone)| match (colour, tone) {
+            (false, _) => text.clone(),
+            (true, tree::Tone::Busy) => tree::ink_text(text, tree::palette::BUSY, true),
+            (true, tree::Tone::Alert) => tree::ink_text(text, tree::palette::ALERT, true),
+            (true, _) => tree::ink_text(text, tree::palette::FADED, false),
+        })
         .collect::<Vec<_>>()
         .join("  ")
 }
@@ -4822,6 +4824,7 @@ mod tests {
         );
         // Only what needs a person is bold red.
         let painted = summary(&rows, true);
+        assert!(painted.contains(&tree::ink_text("● 2 working", tree::palette::BUSY, true)));
         assert!(painted.contains(&tree::ink_text("! 2 need you", tree::palette::ALERT, true)));
         assert!(painted.contains(&tree::ink_text("· 1 idle", tree::palette::FADED, false)));
         assert_eq!(summary(&rows[5..], false), "nothing running");
@@ -4898,8 +4901,8 @@ mod tests {
                 "devlead"
             ]
         );
-        let terminal = render_status_as("i", &rows, true);
-        let piped = render_status_as("i", &rows, false);
+        let terminal = render_status_as("i", &rows, true, true);
+        let piped = render_status_as("i", &rows, false, false);
         for hidden in ["helper", "scout", "reviewer"] {
             assert!(!terminal.contains(hidden), "{terminal}");
             assert!(piped.contains(hidden), "{piped}");

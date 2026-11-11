@@ -491,3 +491,117 @@ fn bare_status_i_with_no_instances_says_so_until_one_is_created() {
         dump,
     );
 }
+
+/// A one-shot command in a private terminal, plus the same status through a pipe.
+/// No members start: the fixture has only an uncreated role.
+fn status_terminal(no_colour: bool, action: &str) -> (String, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join("team")).unwrap();
+    fs::create_dir_all(root.join("work")).unwrap();
+    fs::write(
+        root.join("team/team.yaml"),
+        "roles:\n  scout: {prompt: scout.md, start: false}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("team/scout.md"),
+        "---\n---\nObserve the harbor.\n",
+    )
+    .unwrap();
+    let brg = env!("CARGO_BIN_EXE_brg");
+    let private = common::PrivateTmux::new();
+    let inner = private.socket("status-inner");
+    let create = common::command(brg)
+        .env_clear()
+        .env("PATH", private.path_with("/usr/bin:/bin"))
+        .env("BORGCHART_TMUX_TMPDIR", private.dir())
+        .env("BORGCHART_TMUX_SOCKET", &inner)
+        .env("HOME", root)
+        .env("BORGCHART_CONFIG", root.join("missing.yaml"))
+        .env("BORGCHART_STATE_HOME", root.join("state"))
+        .args(["create"])
+        .arg(root.join("team"))
+        .arg(root.join("work"))
+        .output()
+        .unwrap();
+    assert!(create.status.success(), "{create:?}");
+    let created = String::from_utf8(create.stdout).unwrap();
+    let id = created.split_whitespace().next().unwrap();
+    let pipe = common::command(brg)
+        .env_clear()
+        .env("PATH", private.path_with("/usr/bin:/bin"))
+        .env("BORGCHART_TMUX_TMPDIR", private.dir())
+        .env("BORGCHART_TMUX_SOCKET", &inner)
+        .env("HOME", root)
+        .env("BORGCHART_CONFIG", root.join("missing.yaml"))
+        .env("BORGCHART_STATE_HOME", root.join("state"))
+        .args(["status", id])
+        .output()
+        .unwrap();
+    assert!(pipe.status.success(), "{pipe:?}");
+    let script = root.join("status.sh");
+    fs::write(&script, format!(
+        "#!/bin/sh\nenv -i PATH={guard}:/usr/bin:/bin HOME={root} TERM=xterm-256color LANG=C.UTF-8 BORGCHART_CONFIG={root}/missing.yaml BORGCHART_STATE_HOME={root}/state BORGCHART_TMUX_TMPDIR={tmpdir} BORGCHART_TMUX_SOCKET={inner} {no_colour} {brg} {action} {id}\nprintf '\\nSCENE-DONE\\n'\nsleep 600\n",
+        guard = private.bin().display(), root = root.display(),
+        tmpdir = private.dir().display(),
+        no_colour = if no_colour { "NO_COLOR=1" } else { "" },
+    )).unwrap();
+    let socket = private.socket("status-once");
+    let out = private
+        .tmux(&socket)
+        .args([
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-s",
+            "o",
+            "-x",
+            "160",
+            "-y",
+            "24",
+            "sh",
+        ])
+        .arg(&script)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let screen = || {
+        tmux(
+            &private,
+            &socket,
+            &["capture-pane", "-p", "-e", "-t", "=o:"],
+        )
+    };
+    wait(
+        "one-shot status",
+        || screen().contains("SCENE-DONE"),
+        screen,
+    );
+    (screen(), String::from_utf8(pipe.stdout).unwrap())
+}
+
+#[test]
+fn no_color_keeps_one_shot_terminal_status_unpainted() {
+    for action in ["status", "start"] {
+        let (painted, _) = status_terminal(false, action);
+        assert!(
+            painted.contains("\x1b["),
+            "{action} positive control must paint: {painted:?}"
+        );
+        let (plain, _) = status_terminal(true, action);
+        assert!(
+            !plain.contains("\x1b["),
+            "NO_COLOR must suppress {action} painting: {plain:?}"
+        );
+    }
+}
+
+#[test]
+fn terminal_status_summarizes_without_adding_a_summary_to_the_pipe() {
+    let (terminal, pipe) = status_terminal(false, "status");
+    let summary = borgchart::runtime::summary(&[], false);
+    assert!(terminal.contains(&summary), "{terminal:?}");
+    assert!(!pipe.contains(&summary), "{pipe:?}");
+}

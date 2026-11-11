@@ -1,6 +1,6 @@
 //! Command-line interface for `brg` (also installed as `borgchart`).
 
-use std::io::Read;
+use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -602,6 +602,12 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
                 println!("{}", address::known());
             } else {
                 print!("{text}");
+                if std::io::stdout().is_terminal() {
+                    println!(
+                        "\n{}",
+                        runtime::summary(&rows, crate::tree::colour_wanted(true))
+                    );
+                }
             }
             code
         }

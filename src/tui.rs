@@ -195,8 +195,12 @@ fn rgb((r, g, b): tree::Rgb) -> Color {
 /// The same tones as `brg status` paints: the state cell in the row's tone,
 /// and a row that is not running faded as a whole.
 fn state_style(row: &StatusRow) -> Style {
+    tone_style(runtime::status_look(row).tone)
+}
+
+fn tone_style(tone: tree::Tone) -> Style {
     let bold = Style::default().add_modifier(Modifier::BOLD);
-    match runtime::status_look(row).tone {
+    match tone {
         tree::Tone::Plain => Style::default(),
         tree::Tone::Busy => bold.fg(rgb(tree::palette::BUSY)),
         tree::Tone::Alert => bold.fg(rgb(tree::palette::ALERT)),
@@ -205,19 +209,14 @@ fn state_style(row: &StatusRow) -> Style {
     }
 }
 
-/// The summary line on the screen: grey, with the rows that need a person
-/// in bold red, as `-w` paints it.
+/// The same toned summary as the text status view.
 fn summary_line(rows: &[StatusRow]) -> Line<'static> {
-    let faded = Style::default().fg(rgb(tree::palette::FADED));
-    let alert = Style::default()
-        .fg(rgb(tree::palette::ALERT))
-        .add_modifier(Modifier::BOLD);
     let mut spans = Vec::new();
-    for (i, (text, need)) in runtime::summary_parts(rows).into_iter().enumerate() {
+    for (i, (text, tone)) in runtime::summary_parts(rows).into_iter().enumerate() {
         if i > 0 {
             spans.push(Span::raw("  "));
         }
-        spans.push(Span::styled(text, if need { alert } else { faded }));
+        spans.push(Span::styled(text, tone_style(tone)));
     }
     Line::from(spans)
 }

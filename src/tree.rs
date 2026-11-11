@@ -268,7 +268,6 @@ pub fn render_named(
     colour: bool,
     name: impl Fn(&str) -> String,
 ) -> String {
-    let colour = colour_wanted(colour);
     let ordered = if colour {
         order_live_first(nodes)
     } else {
@@ -492,10 +491,6 @@ mod tests {
             ..look(None, Tone::Faded)
         };
         let plain = render("team  team /t · folder /w", &nodes, &[], false);
-        // NO_COLOR turns painting off.
-        if std::env::var_os("NO_COLOR").is_some() {
-            return;
-        }
         let painted = render("team  team /t · folder /w", &nodes, &[], true);
         assert_ne!(painted, plain);
         assert_eq!(
