@@ -330,6 +330,48 @@ fn records_without_store_identity_are_refused_without_writes() {
 }
 
 #[test]
+fn full_start_cannot_hide_unacked_work_on_a_kept_unstarted_locked_member() {
+    let env = Env::new();
+    let instance = env.create("oncall", "work/a");
+    env.ok(&["create", &format!("{instance}/scout")]);
+    let scout = env.member(&instance, "scout");
+    publish(&env, &instance, json!({"to":scout,"body":"ordinary work"}));
+    env.ok(&["stop", &format!("{instance}/{scout}")]);
+    env.ok(&["stop", &instance]);
+    env.write(
+        "teams/oncall/team.yaml",
+        &TEAM.replace("prompt: scout.md", "prompt: scout.md\n    posture: locked"),
+    );
+    let out = env.brg(&["start", &instance]);
+    assert!(!out.status.success(), "{}", both(&out));
+    assert!(env.starts(&scout).len() == 1);
+    let out = env.brg(&["start", &format!("{instance}/{scout}")]);
+    assert!(!out.status.success(), "{}", both(&out));
+    assert!(env.starts(&scout).len() == 1);
+}
+
+#[test]
+fn joining_locked_member_cannot_abandon_unacked_ordinary_work() {
+    let env = Env::new();
+    let instance = env.create("oncall", "work/a");
+    env.ok(&["create", &format!("{instance}/scout")]);
+    let scout = env.member(&instance, "scout");
+    publish(&env, &instance, json!({"to":scout,"body":"ordinary work"}));
+    env.ok(&["stop", &format!("{instance}/{scout}")]);
+    env.write(
+        "teams/oncall/team.yaml",
+        &TEAM.replace("prompt: scout.md", "prompt: scout.md\n    posture: locked"),
+    );
+    // Starting a helper must not transition the stopped scout.
+    env.ok(&["create", &format!("{instance}/helper")]);
+    let out = env.brg(&["start", &format!("{instance}/{scout}")]);
+    assert!(!out.status.success(), "{}", both(&out));
+    assert_eq!(env.starts(&scout).len(), 1);
+    assert_eq!(env.row(&instance, "scout")["unread"], 1);
+    env.ok(&["stop", &instance]);
+}
+
+#[test]
 fn vendor_to_locked_requires_settling_ordinary_messages() {
     let env = Env::new();
     let instance = env.create("oncall", "work/a");

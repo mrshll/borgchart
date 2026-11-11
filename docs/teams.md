@@ -149,7 +149,6 @@ roles:
 - **Addressing.** `devteam-k3f9/implementer-x7k2` reaches one copy. A bare `implementer` is always refused where a member is expected, listing the kept members or naming `create` when it has none.
 - **Messages go to a member.** The lead chooses a full member ID; there is no role queue.
 
-- **Capacity and restarts.** `max` is optional, defaults to 1 and must be at least 1. `start: true` with `max > 1` makes one member at instance creation. `start` reuses kept members and never fills to `max`; a `start: true` role with none left gets one new member. Lowering `max` after a full stop keeps every member and refuses creation until enough are deleted. Deleted suffixes are never reused.
 - **Parents.** `parent:` and a plugin's `delivers_to:` require a `max: 1` agent role. A person may manage anything; a member at its latest running start may create, start, stop or delete anything below it along recorded parent edges, including members and copies at every depth. The caller's start is checked in its own instance under the registry lock. Members cannot manage themselves, ancestors, siblings or independent instances, and a copy's roots cannot manage their own copy or each other. Stopped, replaced and incomplete starts are refused. Creating a child requires a kept parent member.
 - **Folders.** Members work in the instance's folder, usually the repository. With `worktree: true`, brg adds each new member or copy its own git worktree from that folder when it issues it (`create`, or a full `start` that gives a `start: true` role a new member), detached at the folder's `HEAD`, or on a new branch with `brg create <instance>/<role> --branch <name>`. Worktrees live beside brg's state folder, at `~/.local/state/borgchart-worktrees/<address>` (with `/` written as `.`); the command that adds one names it, and `status --json` gives it as `worktree`. `delete` removes a clean one, refuses one with uncommitted work or commits on no remote, and with `--force` leaves it as it is. Members without a worktree share the folder; the team's instructions still enforce one writer per checkout.
 - **Taking work and attention** remain team rules. The lead chooses a member, gives it one brief, tracks its reply and checks its deadline. An ended copy remains addressable with unread counts until deleted; the lead can restart it with `brg start <instance>/<member>`.
@@ -166,9 +165,9 @@ roles:
   design: {team: dev-design-team, parent: lead, start: false, max: 2}
 ```
 
-- **A team role's member is a copy:** a nested instance of the sub-team, with its own members, notes, state and frozen configuration, working in its own worktree (`worktree: true`) or in its parent's folder. The copy freezes its team folder's files at its first start, and picks up changes at its own next full stop and start.
+- **A team role's member is a copy:** a nested instance of the sub-team, with its own members, notes and state, working in its own worktree (`worktree: true`) or in its parent's folder. Members that start read the copy's current team files.
 - **`team:` names another definition:** `team: dev-team` resolves through the configured team directories, exactly like `brg create dev-team`. Missing or ambiguous names fail validation. There is no same-installation restriction or nested-path compatibility. Definitions can be siblings while runtime working folders and addresses still nest. A definition also runs independently with `brg create dev-team` in a checkout.
-- **Resolution is frozen while running.** Child definition directories belong to the parent start snapshot; a changed catalog cannot silently redirect a later copy. Apply changed resolution at a full stop/start. Existing copies retain their own recorded source folders and freeze their contents independently. Missing referenced definitions remain tolerable for observing/stopping running instances, but validation, copy creation and a fresh full start refuse them.
+- **New copies use the current catalog.** Existing copies retain their recorded source folders. Missing referenced definitions remain tolerable for observing/stopping running instances, but validation, copy creation and a fresh full start refuse them.
 - **Copies are created stopped.** `brg create <instance>/dev` makes the copy and, for `worktree: true`, its worktree; it prints its ID and folder and starts nothing. `brg start <instance>/<copy>` starts the copy's `start: true` roles. A tree's instances may share folders, so the checkout check is between trees.
 - **Addresses nest:** `<instance>/<copy>/<member>`, for example `engineering-h4k2/dev-a7k2/lead-c4nd`. A copy's instance ID is its full path. A target resolves by the longest registered instance prefix, then a member, a role or nothing. A copy's top members (those with no parent role) get their parent's full address in `BORGCHART_PARENT`.
 - **Escalation follows `parent:` one level at a time.** A copy's top members hang under the member of the team role's `parent`. Only the root writes to `external:NAME`; a child team's lead writes to its parent. Siblings don't message each other: their parent carries what one needs from another.
@@ -189,7 +188,7 @@ roles:
 
   brg refuses to start any instance in that tree, names the root that owns the store, and points to the [cutover steps](bus.md#storage).
 
-- **Configuration changes** take effect at the next full `brg stop` and `brg start`. Starting one member into a running instance with changed files says so, in instance and role terms.
+- **Configuration changes** reach members when they next start, without stopping their running siblings.
 
 ## Limits
 

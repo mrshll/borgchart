@@ -8,7 +8,7 @@ This is trusted, same-user operation: callers identify themselves through their 
 
 No bus opt-in is needed. Use `bus: {alert: {plugin: notify, action: alert}}` only to configure a real alert action; automatic alert dispatch is not wired.
 
-Codex `vendor` members have full host access and no tool approvals; Claude `vendor` members get messages and notes as added folders. Locked recipients get no new bus commands, directories or sandbox grants. Team files and launch settings are frozen while the instance is running. Apply changes with a full stop and start, after every member is positively stopped.
+Codex `vendor` members have full host access and no tool approvals; Claude `vendor` members get messages and notes as added folders. Locked recipients get no new bus commands, directories or sandbox grants.
 
 ## Storage
 

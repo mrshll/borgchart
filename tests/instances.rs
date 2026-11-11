@@ -19,6 +19,30 @@ use instance_env::*;
 use serde_json::{Value, json};
 
 #[test]
+fn starting_repairs_an_unresolved_parent_so_recursive_stop_reaches_the_child() {
+    let env = Env::new();
+    env.write(
+        "teams/oncall/team.yaml",
+        &TEAM
+            .replace("prompt: lead.md", "prompt: lead.md\n    start: false")
+            .replace("    start: false\n  scout:", "    start: true\n  scout:"),
+    );
+    let out = env.ok(&[
+        "create",
+        "oncall",
+        &env.path("work/a").display().to_string(),
+    ]);
+    let inst = stdout(&out).split_whitespace().next().unwrap().to_string();
+    env.wait_for("child idle", || env.state_of(&inst, "helper") == "idle");
+    env.ok(&["create", &format!("{inst}/lead")]);
+    let parent = env.member(&inst, "lead");
+    env.ok(&["start", &inst]);
+    env.ok(&["stop", "-r", &format!("{inst}/{parent}")]);
+    assert_eq!(env.state_of(&inst, "helper"), "stopped");
+    env.ok(&["stop", &inst]);
+}
+
+#[test]
 fn stopped_parents_cannot_be_deleted_before_their_kept_children() {
     let env = Env::new();
     let inst = env.create("oncall", "work/a");
@@ -761,14 +785,17 @@ fn auth_comes_from_the_configuration_and_a_missing_file_means_login() {
     env.wait_for("lead idle", || env.state_of(&b, "lead") == "idle");
     let lead_b = env.member(&b, "lead");
     assert_eq!(env.starts(&lead_b)[0]["env"]["ANTHROPIC_API_KEY"], sentinel);
-    // A changed `auth` refuses a member start into the running instance,
-    // and applies after a full stop.
+    // A changed auth setting applies to a new member while its siblings run.
     env.config("");
-    let err = env.fails(&["create", &format!("{b}/scout")]);
+    env.ok(&["create", &format!("{b}/scout")]);
+    let scout = env.member(&b, "scout");
+    env.wait_for("scout started", || !env.starts(&scout).is_empty());
     assert!(
-        err.contains("`auth`") && err.contains(&format!("brg stop {b}")),
-        "{err}"
+        env.starts(&scout)[0]["env"]
+            .get("ANTHROPIC_API_KEY")
+            .is_none()
     );
+    assert_eq!(env.starts(&lead_b).len(), 1);
     env.ok(&["stop", &b]);
     env.ok(&["start", &b]);
     env.wait_for("lead idle", || env.state_of(&b, "lead") == "idle");

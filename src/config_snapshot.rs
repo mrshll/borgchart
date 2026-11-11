@@ -18,10 +18,10 @@ pub struct ConfigSnapshot {
     /// expanded), and the global settings that reach members:
     /// `config/auth`, `config/auto_trust` and `config/plugins/<name>` (where
     /// a shared plugin resolves), plus `teams/<role>` (the resolved source
-    /// folder; each copy freezes the source's contents independently).
+    /// folder when this snapshot was taken).
     pub inputs: BTreeMap<String, String>,
-    /// Recoverable canonical sources frozen at this instance's start. Contents
-    /// are independently frozen by each copy when that copy starts.
+    /// Recorded canonical sources, used to observe and manage the declaring
+    /// instance when a referenced team is unavailable in the current catalog.
     pub team_dirs: BTreeMap<String, std::path::PathBuf>,
 }
 

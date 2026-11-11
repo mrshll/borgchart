@@ -6,7 +6,6 @@ use std::path::Path;
 use crate::address::{self, Instance};
 use crate::registry;
 use crate::runtime::UpOutcome;
-use crate::state;
 use crate::team::TeamRole;
 use crate::validate::Validated;
 
@@ -74,17 +73,7 @@ pub fn create(
     inst.reload()?;
     check_not_stopping(&inst)?;
     crate::runtime::check_parent_authority(&inst, role_name, Some(v), None)?;
-    if let Some(meta) = state::read_meta(&inst.state)?
-        && meta.stopped_at.is_none()
-    {
-        crate::lifecycle::check_join(
-            &meta,
-            &v.config_snapshot(),
-            &inst.state,
-            &inst.id,
-            &state::restart_hint(&inst.id),
-        )?;
-    }
+    crate::state::read_meta(&inst.state)?;
     let parent = role.parent.as_deref().map(|parent_role| {
         inst.record.members_of(parent_role).first().cloned()
             .map(|member| inst.at(&member))
