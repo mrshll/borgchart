@@ -1,6 +1,6 @@
 # Defining a brg team
 
-Teams, instances, roles, copies with advisory `max` and the four verbs (`create`, `start`, `stop`, `delete`) work today. Teams as members are being built, and the section below marks what isn't yet. [concepts.md](concepts.md) records the design; [format.md](format.md) describes the shipped format. Items marked **Open** are not decided yet. For command syntax, `brg … --help` is the authority; the tables below are a short summary.
+Teams, instances, roles, copies with advisory `max`, teams as members and the four verbs (`create`, `start`, `stop`, `delete`) work today. [concepts.md](concepts.md) records the design; [format.md](format.md) describes the shipped format. Items marked **Open** are not decided yet. For command syntax, `brg … --help` is the authority; the tables below are a short summary.
 
 ## The files
 
@@ -201,4 +201,3 @@ roles:
 
 - **Sessions:** whether separate groups of teams (`--session`) are needed at all. They are kept minimal for now.
 - **Secrets:** how a hosted brg would map them to a cloud secret manager.
-- **When renames land:** `prompt`, `message …`, `rules:` and the folded commands arrive in one follow-up change (#19). Until then the commands keep today's names (`send`, `msg`, `inbox`, `bus check`).
