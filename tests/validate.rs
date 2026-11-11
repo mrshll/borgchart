@@ -1003,3 +1003,171 @@ fn a_role_takes_worktree_and_no_cwd() {
     );
     expect_error(&f, "unknown field `cwd`");
 }
+
+/// Two catalogs on the search path: `shared` holds `engineering`, whose
+/// lead uses the catalog's shared includes; `private` holds `office`, whose
+/// lead includes the engineering lead between its own lines.
+struct Catalogs {
+    dir: tempfile::TempDir,
+}
+
+impl Catalogs {
+    fn new() -> Self {
+        let c = Catalogs {
+            dir: tempfile::tempdir().unwrap(),
+        };
+        c.write(
+            "shared/engineering/team.yaml",
+            "includes: catalog:shared/includes\nroles: {lead: {prompt: lead.md}}\n",
+        );
+        c.write(
+            "shared/engineering/lead.md",
+            "---\nmodels: {claude: opus high}\n---\nShared lead.\n{{includes/common}}\n",
+        );
+        c.write("shared/shared/includes/common.md", "Common rules.\n");
+        c.write(
+            "private/office/team.yaml",
+            "roles: {lead: {prompt: lead.md}}\n",
+        );
+        c.write(
+            "private/office/lead.md",
+            "---\nmodels: {claude: sonnet}\n---\nBefore.\n{{teams/engineering/lead}}\nAfter.\n{{includes/local}}\n",
+        );
+        c.write("private/office/includes/local.md", "Local rules.\n");
+        c
+    }
+
+    fn path(&self, rel: &str) -> PathBuf {
+        self.dir.path().canonicalize().unwrap().join(rel)
+    }
+
+    fn write(&self, rel: &str, text: &str) {
+        let path = self.path(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+
+    fn run(&self) -> (Report, Option<Validated>) {
+        let config = Config {
+            teams: vec![self.path("shared"), self.path("private")],
+            ..Config::default()
+        };
+        validate_with(&self.path("private/office"), config)
+    }
+
+    fn error(&self) -> String {
+        let (report, validated) = self.run();
+        assert!(validated.is_none(), "expected failure, got ok");
+        errors(&report)
+    }
+}
+
+#[test]
+fn a_role_file_includes_another_teams_role_body() {
+    let c = Catalogs::new();
+    let (report, validated) = c.run();
+    let v = validated.unwrap_or_else(|| panic!("{}", errors(&report)));
+    let lead = &v.team.roles["lead"];
+    // Its includes resolve in its own team; its frontmatter stays behind.
+    assert_eq!(
+        lead.instruction,
+        "Before.\nShared lead.\nCommon rules.\nAfter.\nLocal rules.\n"
+    );
+    assert_eq!(lead.model.as_ref().unwrap().name, "sonnet");
+    assert_eq!(
+        lead.sources,
+        [
+            c.path("private/office/lead.md"),
+            c.path("shared/engineering/lead.md"),
+            c.path("shared/shared/includes/common.md"),
+            c.path("private/office/includes/local.md"),
+        ]
+    );
+    // Nothing is pinned: the shared text is read again, and the change shows.
+    let before = v.config_snapshot().digest;
+    c.write(
+        "shared/engineering/lead.md",
+        "---\n---\nShared lead, edited.\n{{includes/common}}\n",
+    );
+    let (report, validated) = c.run();
+    let v = validated.unwrap_or_else(|| panic!("{}", errors(&report)));
+    assert!(v.team.roles["lead"].instruction.contains("edited"));
+    assert_ne!(v.config_snapshot().digest, before);
+}
+
+#[test]
+fn a_role_file_reached_from_another_team_cannot_reach_further() {
+    let c = Catalogs::new();
+    c.write(
+        "shared/engineering/lead.md",
+        "---\n---\nShared lead.\n{{teams/office/lead}}\n",
+    );
+    let err = c.error();
+    assert!(
+        err.contains(&c.path("shared/engineering/lead.md").display().to_string())
+            && err.contains(&c.path("private/office/lead.md").display().to_string()),
+        "{err}"
+    );
+    // Nor can an include file use it.
+    let c = Catalogs::new();
+    c.write(
+        "private/office/includes/local.md",
+        "{{teams/engineering/lead}}\n",
+    );
+    assert!(c.error().contains("one level deep"));
+}
+
+#[test]
+fn a_missing_or_ambiguous_team_or_role_is_an_error() {
+    let c = Catalogs::new();
+    let lead = |line: &str| format!("---\n---\nBefore.\n{line}\n");
+    c.write("private/office/lead.md", &lead("{{teams/nowhere/lead}}"));
+    let err = c.error();
+    assert!(
+        err.contains("no team `nowhere`") && err.contains(&c.path("shared").display().to_string()),
+        "{err}"
+    );
+    c.write(
+        "private/office/lead.md",
+        &lead("{{teams/engineering/scout}}"),
+    );
+    let err = c.error();
+    assert!(
+        err.contains("no role `scout`")
+            && err.contains(&c.path("shared/engineering/team.yaml").display().to_string()),
+        "{err}"
+    );
+    for line in [
+        "{{teams/engineering}}",
+        "{{teams/../lead}}",
+        "{{teams/./x/lead}}",
+    ] {
+        c.write("private/office/lead.md", &lead(line));
+        assert!(c.error().contains("bad team role reference"), "{line}");
+    }
+    c.write(
+        "private/office/lead.md",
+        &lead("{{teams/engineering/lead}}"),
+    );
+    c.write(
+        "private/engineering/team.yaml",
+        "roles: {lead: {prompt: lead.md}}\n",
+    );
+    c.write("private/engineering/lead.md", "---\n---\nOther lead.\n");
+    assert!(
+        c.error()
+            .contains("more than one team is called `engineering`")
+    );
+}
+
+#[test]
+fn the_size_limit_covers_the_combined_instruction() {
+    let c = Catalogs::new();
+    let half = "x".repeat(600 * 1024);
+    c.write("shared/engineering/lead.md", &format!("---\n---\n{half}\n"));
+    c.write(
+        "private/office/lead.md",
+        &format!("---\n---\n{half}\n{{{{teams/engineering/lead}}}}\n"),
+    );
+    assert!(c.error().contains("larger than"));
+}

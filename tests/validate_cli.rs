@@ -25,6 +25,16 @@ fn roles_load_and_a_role_may_not_hide_another_roles_member() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
+    // Each role's source files follow the summary.
+    let lead = f.dir.path().canonicalize().unwrap().join("lead.md");
+    let listed = format!("  lead: {}", lead.display());
+    assert!(
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .any(|l| l == listed),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
     f.write(
         "team.yaml",
         "roles: {lead: {prompt: lead.md}, lead-k3f9: {prompt: lead.md}}\n",
@@ -47,6 +57,12 @@ fn cli_reports_json_and_exit_codes() {
     assert!(ok.status.success());
     let parsed: serde_json::Value = serde_json::from_slice(&ok.stdout).unwrap();
     assert_eq!(parsed["ok"], true);
+    let sources = parsed["roles"]["triager"]["sources"].as_array().unwrap();
+    assert!(sources[0].as_str().unwrap().ends_with("triager.md"));
+    assert!(
+        sources.len() > 1,
+        "its include is listed after it: {sources:?}"
+    );
 
     f.edit("team.yaml", "parent: lead", "parent: boss");
     let bad = common::command(env!("CARGO_BIN_EXE_borgchart"))

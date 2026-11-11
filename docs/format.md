@@ -119,7 +119,41 @@ You read each new message in the channel and decide whether it needs the lead.
   - Model names are passed to the vendor unchanged.
 - **The body** is the member's standing instruction, sent as its opening prompt.
 - **Includes:** a line that is exactly `{{includes/<stem>}}` is replaced by `<includes>/<stem>.md`. Includes are one level deep: an included file can't include another.
-- **Paths:** prompts, includes and plugin paths must stay inside the team directory. `..` and symlinks that lead outside are refused.
+- **Another team's role file:** a line that is exactly `{{teams/<team>/<role>}}` is replaced by the body of role `<role>`'s file in team `<team>`.
+  - The team is found by name through `teams:`, like a `team:` reference. A missing or ambiguous name is an error, and so is a role with no role file.
+  - Its includes resolve in its own team. Its frontmatter is left behind, so the including file names its own models.
+  - A file reached this way can't use `{{teams/...}}` itself, and neither can an include, so there are no cycles.
+  - The size limit covers the combined instruction.
+  - Nothing is pinned: each launch reads both files as they are on disk, and `validate` lists each role's files in order.
+- **Paths:** prompts, includes and plugin paths must stay inside the team directory. `..` and symlinks that lead outside are refused. Another team's role file is confined to that team's directory in the same way.
+
+### Reusing a shared team
+
+A private team can be a shared one plus additions. Keep it in a catalog of your own, listed beside the shared one under `teams:` in brg's configuration. Its `team.yaml` is a complete team file. Child teams resolve by name across both catalogs. Its role files take the shared text with one line, then add their own:
+
+```yaml
+# private-teams/studio/team.yaml
+plugins:
+  oncall:
+    path: plugins/oncall
+    actions: {page: oncall page <text>}
+roles:
+  lead:    {prompt: lead.md, interactive: true, plugins: {oncall: [page]}}
+  dev:     {team: dev-team, parent: lead, start: false, max: 4, worktree: true}
+  design:  {team: dev-design-team, parent: lead, start: false, max: 2}
+  support: {team: support, parent: lead, start: false}
+```
+
+```markdown
+---
+models: {claude: opus high}
+---
+{{teams/engineering/lead}}
+
+When a release is blocked, page the on-call engineer with `oncall page <text>`.
+```
+
+`dev-team` and `dev-design-team` come from the shared catalog. `support` is a sub-team in `private-teams/support/`.
 
 ## Plugins
 
