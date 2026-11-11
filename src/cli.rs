@@ -89,7 +89,7 @@ enum Command {
     },
     /// Make an instance of a team, or a member of a role.
     ///
-    /// Make something new: an instance of a team working in a folder
+    /// That is, an instance of a team working in a folder
     /// (`create <team> [folder]`, the current folder by default), or a member
     /// of a role (`create <instance>/<role>`, up to its max of kept members).
     /// Team-role copies are created stopped; start them with `brg start`.
@@ -286,9 +286,9 @@ enum Command {
         #[arg(short = 'n', long, default_value_t = 200)]
         lines: usize,
     },
-    /// Store a message for a member, and type it in when safe.
+    /// Store a message for its recipient, and type it in when safe.
     ///
-    /// Store a message and submit it to a non-interactive recipient when safe.
+    /// It is typed in only for a non-interactive recipient.
     #[command(after_long_help = crate::bus::help::send())]
     Send {
         /// The member to type into: `<instance>/<member>`.
@@ -324,7 +324,8 @@ enum Command {
     },
     /// List the unacknowledged messages addressed to you, oldest first.
     ///
-    /// List records addressed to you (or `--member`/`--external`), oldest first.
+    /// Or another member's with `--member`, or an outside recipient's with
+    /// `--external`.
     #[command(
         args_conflicts_with_subcommands = true,
         after_long_help = crate::bus::help::inbox()
@@ -887,7 +888,8 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
 
-    /// The top-level help lists every visible command under exactly one heading.
+    /// The top-level help lists every visible command under exactly one
+    /// heading, each with a summary.
     #[test]
     fn every_command_is_in_one_help_group() {
         let mut listed: Vec<&str> = GROUPS.iter().flat_map(|(_, n)| n.iter().copied()).collect();
@@ -899,6 +901,16 @@ mod tests {
             .collect();
         visible.sort_unstable();
         assert_eq!(listed, visible);
+        let cmd = Cli::command();
+        let bare: Vec<_> = listed
+            .iter()
+            .filter(|n| {
+                cmd.find_subcommand(n)
+                    .and_then(clap::Command::get_about)
+                    .is_none()
+            })
+            .collect();
+        assert!(bare.is_empty(), "commands without a summary: {bare:?}");
     }
 
     /// Every visible argument of every visible command says what it is.

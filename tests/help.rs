@@ -70,7 +70,6 @@ fn top_level_help_groups_one_line_summaries_and_leaves_details_to_commands() {
         ] {
             assert!(text.lines().any(|l| l == heading), "{flag}: {text}");
         }
-        assert!(text.contains("  create    Make an instance"), "{text}");
         let long: Vec<_> = text.lines().filter(|l| l.chars().count() > 80).collect();
         assert!(long.is_empty(), "{flag}: lines over 80 columns: {long:?}");
         assert!(!text.contains("--repo"), "{flag}: details leaked: {text}");
