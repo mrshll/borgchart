@@ -17,7 +17,7 @@ use crate::tree;
 const REFRESH: Duration = Duration::from_secs(2);
 
 /// Spinner cadence; data is still read only at the chosen refresh interval.
-pub const SPIN_INTERVAL: Duration = Duration::from_millis(100);
+pub const SPIN_INTERVAL: Duration = Duration::from_millis(500);
 
 /// `brg status -w`: read the tree every few seconds, animating only while busy.
 pub fn watch(one: Option<&Instance>, interval: Duration) -> Result<(), String> {
@@ -672,6 +672,11 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn spinner_advances_twice_a_second() {
+        assert_eq!(super::SPIN_INTERVAL, super::Duration::from_millis(500));
+    }
+
     #[test]
     fn watch_redraw_disables_wrapping_only_inside_synchronized_frames() {
         let frame = super::watch_redraw(&format!("{}\nfooter\n", "wide".repeat(100)));
