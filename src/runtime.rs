@@ -1908,6 +1908,72 @@ pub fn is_running(inst: &Instance) -> bool {
     tmux.windows(&inst.state.session()).iter().any(|w| !w.dead)
 }
 
+/// A new source must still describe every kept member and copy, and keep
+/// their recorded parent edges addressable. Deleted IDs impose no constraint.
+fn check_repoint_members(inst: &Instance, v: &Validated) -> Result<(), String> {
+    let mut conflicts = Vec::new();
+    for (id, member) in inst.record.kept_members() {
+        if !v.team.roles.contains_key(&member.role) {
+            conflicts.push(format!(
+                "member `{}` has missing agent role `{}`",
+                inst.at(id),
+                member.role
+            ));
+        }
+    }
+    for (id, copy) in inst.record.copies.iter().filter(|(_, c)| !c.deleted) {
+        if !v.team.team_roles.contains_key(&copy.role) {
+            conflicts.push(format!(
+                "copy `{}` has missing team role `{}`",
+                inst.at(id),
+                copy.role
+            ));
+        }
+    }
+    let mut parents = Vec::new();
+    if let Some(parent) = &inst.record.parent {
+        parents.push((inst.id.clone(), parent.clone()));
+    }
+    if let Some(meta) = state::read_meta(&inst.state)? {
+        for (id, _) in inst.record.kept_members() {
+            if let Some(parent) = meta.members.get(id).and_then(|m| m.parent.as_ref()) {
+                parents.push((inst.at(id), parent_address(inst, parent)));
+            }
+        }
+    }
+    for (id, _) in inst.record.copies.iter().filter(|(_, c)| !c.deleted) {
+        let copy = address::instance(&inst.at(id))?;
+        if let Some(parent) = copy.record.parent {
+            parents.push((copy.id, parent));
+        }
+    }
+    for (child, parent) in parents {
+        let exists = parent.rsplit_once('/').is_some_and(|(instance, member)| {
+            if instance == inst.id {
+                inst.record
+                    .role_of(member)
+                    .is_some_and(|role| v.team.roles.contains_key(role))
+                    // A role-name fallback is resolved once its member exists.
+                    || v.team.roles.contains_key(member)
+            } else {
+                address::instance(instance)
+                    .is_ok_and(|ancestor| ancestor.record.role_of(member).is_some())
+            }
+        });
+        if !exists {
+            conflicts.push(format!("`{child}` has missing parent `{parent}`"));
+        }
+    }
+    if conflicts.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "the new team cannot keep these members: {}; delete the affected stopped members or copies first, or choose the right team folder",
+            conflicts.join("; ")
+        ))
+    }
+}
+
 /// `brg start <instance> --team <path>`: point a stopped instance at its
 /// team folder's new place.
 fn repoint(inst: &mut Instance, team: &Path) -> Result<(), String> {
@@ -1922,14 +1988,6 @@ fn repoint(inst: &mut Instance, team: &Path) -> Result<(), String> {
         ));
     }
     let name = crate::team::team_name(&dir);
-    if name != inst.record.team {
-        return Err(format!(
-            "{} is team `{name}`, not instance `{}`'s team `{}`",
-            dir.display(),
-            inst.id,
-            inst.record.team
-        ));
-    }
     let lock = registry::lock()?;
     inst.reload()?;
     crate::nesting::check_not_stopping(inst)?;
@@ -1941,13 +1999,28 @@ fn repoint(inst: &mut Instance, team: &Path) -> Result<(), String> {
             inst.id, inst.id
         ));
     }
+    let v = if let Some((parent, _)) = inst.id.rsplit_once('/') {
+        crate::nesting::validate_child(&address::instance(parent)?, &dir)?
+    } else {
+        validate_printing(&dir)?
+    };
+    check_repoint_members(inst, &v)?;
     let mut registry = lock.load()?;
     if let Some(entry) = registry.instances.get_mut(&inst.id) {
         entry.team_dir = dir.clone();
+        entry.team = name.clone();
     }
+    let old_name = std::mem::replace(&mut inst.record.team, name.clone());
     inst.record.team_dir = dir;
     lock.save_instance(&inst.state, &inst.record)?;
-    lock.save(&registry)
+    lock.save(&registry)?;
+    if old_name != name {
+        eprintln!(
+            "instance `{}` is now team `{name}` (was `{old_name}`)",
+            inst.id
+        );
+    }
+    Ok(())
 }
 
 /// Which members a full start brings up: the `start: true` roles' members
