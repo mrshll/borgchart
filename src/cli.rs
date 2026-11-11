@@ -174,6 +174,11 @@ enum Command {
     /// Each member's row shows its ID, vendor and model, state and any unread
     /// messages. A role with no member shows only its state; its `--json` row
     /// also gives its vendor and model.
+    ///
+    /// On a terminal, a summary counts working and idle members, rows needing
+    /// you and unread messages. Painted output uses a filled red state label
+    /// for attention and a gold ◆ for running teams. Working marks spin in
+    /// --watch and --interactive; NO_COLOR suppresses painting and motion.
     Status {
         /// The instance (default: every top-level instance and its copies).
         #[arg(add = crate::complete::instances())]

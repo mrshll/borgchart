@@ -8,7 +8,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, TableState};
+use ratatui::widgets::{Block, BorderType, Cell, Paragraph, Row, Table, TableState};
 
 use crate::address::{self, Instance};
 use crate::runtime::{self, StatusRow};
@@ -467,7 +467,15 @@ fn draw(
     let table = Table::new(body, widths)
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol("> ")
-        .block(Block::bordered().title(format!(" {title} ")));
+        .block(
+            Block::bordered()
+                .border_type(BorderType::Rounded)
+                .border_style(tone_style(tree::Tone::Faded, colour))
+                .title(Span::styled(
+                    format!(" {title} "),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )),
+        );
     frame.render_stateful_widget(table, top, table_state);
     // Each visible header line across the whole row, as `brg status` prints it.
     let inner = top.inner(Margin::new(1, 1));
@@ -497,7 +505,8 @@ fn draw(
     }
     let help = Line::from(
         "j/k move · enter attach (detach: tmux prefix, then d) · a roles · r refresh · q quit",
-    );
+    )
+    .style(tone_style(tree::Tone::Faded, colour));
     let every: Vec<StatusRow> = sections.iter().flat_map(|s| s.rows.clone()).collect();
     let summary = summary_line(&every, colour);
     frame.render_widget(
@@ -661,6 +670,40 @@ mod tests {
         assert!(!super::watch_animation_fits(&frame, 24));
         assert!(!super::watch_animation_fits(&frame, 23));
         assert!(!super::watch_animation_fits(&frame, 0));
+    }
+
+    #[test]
+    fn interactive_frame_distinguishes_the_title_and_keys_from_the_tree() {
+        use ratatui::backend::TestBackend;
+        use ratatui::style::{Color, Modifier};
+        let mut terminal = ratatui::Terminal::new(TestBackend::new(100, 12)).unwrap();
+        for colour in [true, false] {
+            terminal
+                .draw(|f| {
+                    super::draw(
+                        f,
+                        "t",
+                        &[],
+                        false,
+                        &mut super::TableState::default(),
+                        "",
+                        None,
+                        colour,
+                        None,
+                    )
+                })
+                .unwrap();
+            let screen = terminal.backend().buffer();
+            assert_eq!(screen[(0, 0)].symbol(), "╭");
+            assert!(screen[(2, 0)].modifier.contains(Modifier::BOLD));
+            if colour {
+                let grey = super::rgb(super::tree::palette::FADED);
+                assert_eq!(screen[(0, 0)].fg, grey);
+                assert_eq!(screen[(0, 11)].fg, grey);
+            } else {
+                assert!(screen.content.iter().all(|cell| cell.fg == Color::Reset));
+            }
+        }
     }
 
     #[test]
