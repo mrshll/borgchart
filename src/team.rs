@@ -322,7 +322,7 @@ pub struct Role {
     pub model: Option<Model>,
     pub parent: Option<String>,
     pub start: bool,
-    /// Inbox-only delivery, frozen when the instance starts.
+    /// Inbox-only delivery, recorded at each member's start.
     pub interactive: bool,
     /// Kept members, running or stopped, allowed for this role.
     pub max: usize,

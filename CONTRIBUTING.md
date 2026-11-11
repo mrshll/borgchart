@@ -94,4 +94,4 @@ export PATH="$prefix/bin:$PATH"
 export BORGCHART_CONFIG="$prefix/config.yaml"
 ```
 
-Put the `config.yaml` above in `$prefix`. Use a new prefix for each revision, and keep its `bin` first on `PATH` when creating or fully starting an instance.
+Put the `config.yaml` above in `$prefix`. Use a new prefix for each revision, and keep its `bin` first on `PATH` when creating an instance or starting a member. A new brg install or changed catalog does not block a running tree; new copies use the current catalog while existing instances retain their recorded source folders. New member starts read current files; already-running members keep their launch settings.

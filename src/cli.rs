@@ -82,6 +82,9 @@ enum Command {
     /// fill a role to max. A worktree it adds for a new member is named after
     /// the tree. With a bus, a member caller may manage only its subtree,
     /// using its latest running start.
+    /// New member starts use current files and configuration; already-running
+    /// members keep their launch settings. A new install does not require
+    /// stopping the tree.
     Start {
         /// `<instance>`, or `<instance>/<member>`.
         #[arg(add = crate::complete::targets())]
