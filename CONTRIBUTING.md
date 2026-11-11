@@ -2,7 +2,7 @@
 
 ## Checks
 
-Four checks must pass before a change merges. CI runs the Rust checks on Linux and macOS, and the Python tests on Linux. They live in one script, so the git hooks and CI run the same commands:
+Four checks must pass before a change merges. CI runs the Rust checks on Linux and macOS, and the Python tests on Linux. `make check` runs the quick checks (`fmt clippy fast`); `make test` runs the full checks. They use the same script as the git hooks and CI:
 
 ```
 .githooks/checks              # all four: fmt, clippy, test, py
@@ -11,6 +11,8 @@ Four checks must pass before a change merges. CI runs the Rust checks on Linux a
 ```
 
 The tests need `tmux`, and `py` needs `uv`. Before running only the department integration target, build its sibling plugin binary with `tools/cargo-slot cargo build --workspace --bins --all-features --locked`; `.githooks/checks test` does this automatically.
+
+`make build` builds the release workspace binaries; `make fmt` formats Rust, `make lint` runs clippy, and `make clean` removes build artifacts. Run `make` for help; [installation](#installing-from-a-checkout) uses `make install`.
 
 ## Test tiers
 
@@ -81,15 +83,15 @@ Then create an instance from a checkout of the repository: `cd <checkout>; brg c
 
 ### Installing from a checkout
 
-A team that works on this repository shouldn't run from the checkout it edits: a half-finished change to brg or to a role file would take effect at the next start. Install a separate copy from a clean checkout:
+A team that works on this repository shouldn't run from the checkout it edits: a half-finished change to brg or to a role file would take effect at the next start. Install a separate copy from a checkout:
 
 ```sh
 make install
 ```
 
-This builds the workspace release binaries with `--locked` and replaces `bin/`, `teams/` and `REVISION` in the fixed `$HOME/.local/share/brg/` directory on every install. Clean installs take team files from `HEAD`. Each binary is staged on the same filesystem and renamed into place, so a reader sees a complete file and a running process keeps its old inode. The teams directory is swapped with two renames, leaving a brief window where `teams/` is missing. Linux builds use `tools/cargo-slot` when executable; macOS builds use cargo directly.
+This builds the workspace release binaries with `--locked`, copies `brg`, `borgchart` and `brg-seat` into `$HOME/.local/share/brg/bin/`, replaces `teams/` with the checkout's team files, and records `git rev-parse HEAD` in `REVISION`. Each binary is copied to a temporary name beside its destination and renamed into place, so readers see a complete file and running processes keep their old inode. The team files are copied before the old directory is removed and the new one renamed into place; `teams/` is briefly missing. Linux builds use `tools/cargo-slot` when executable; other systems use cargo directly.
 
-`PREFIX` changes the parent of `brg/` (default `$HOME/.local/share`); `BINDIR` changes where the `brg`, `borgchart` and `brg-seat` symlinks go (default `$HOME/.local/bin`). For example, `make install PREFIX="$HOME/apps" BINDIR="$HOME/bin"`. The links point directly at `$PREFIX/brg/bin/<name>`; matching links are left alone, other symlinks are replaced, and regular files are refused. Keep `BINDIR` on `PATH`. Dirty checkouts are refused unless you set `ALLOW_DIRTY=1`, which installs working team files and marks `REVISION` with `-dirty`.
+`PREFIX` changes the parent of `brg/` (default `$HOME/.local/share`); `BINDIR` changes where the `brg`, `borgchart` and `brg-seat` symlinks go (default `$HOME/.local/bin`). For example, `make install PREFIX="$HOME/apps" BINDIR="$HOME/bin"`. Use absolute paths. The links point directly at `$PREFIX/brg/bin/<name>` and are replaced with `ln -sfn`. Keep `BINDIR` on `PATH`.
 
 The installer prints the `teams:` line to add once to your brg configuration and never edits that file. With the default prefix, use:
 
