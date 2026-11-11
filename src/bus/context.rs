@@ -1,5 +1,6 @@
 //! Who is calling: a member (from its launch environment), an outside caller
-//! naming itself with `--external`, or an operator with neither.
+//! using `owner` by default or naming itself with `--external`, or an
+//! instance-only plugin with no outside identity.
 //!
 //! This prevents mistakes, not spoofing: anything running as the same user
 //! can set these variables.
@@ -24,7 +25,7 @@ pub enum Caller {
     External {
         name: String,
     },
-    /// No member context and no `--external`: may read, not publish.
+    /// Instance-only context and no `--external`: may read, not publish.
     Operator,
 }
 
@@ -34,7 +35,7 @@ pub enum Caller {
 pub enum Actor {
     /// A member, from its launch context.
     Member { member: String, incarnation: String },
-    /// An outside caller that named itself with `--external`.
+    /// An outside caller, defaulting to `owner` without team context.
     External { name: String },
 }
 
@@ -119,6 +120,9 @@ pub fn caller_from(
             Code::Usage,
             format!("`--external {name}`: names match [a-z][a-z0-9_-]{{0,31}}"),
         )),
+        None if instance.is_none() => Ok(Caller::External {
+            name: "owner".into(),
+        }),
         None => Ok(Caller::Operator),
     }
 }
@@ -189,7 +193,7 @@ mod tests {
     }
 
     #[test]
-    fn external_and_operator() {
+    fn external_default_does_not_apply_in_a_plugin_context() {
         let e = env(&[]);
         assert_eq!(
             caller_from(Some("supervisor"), &e).unwrap(),
@@ -197,7 +201,14 @@ mod tests {
                 name: "supervisor".into()
             }
         );
-        assert_eq!(caller_from(None, &e).unwrap(), Caller::Operator);
+        assert_eq!(
+            caller_from(None, &e).unwrap(),
+            Caller::External {
+                name: "owner".into()
+            }
+        );
+        let plugin = env(&[(ENV_INSTANCE, "oncall-2a3b")]);
+        assert_eq!(caller_from(None, &plugin).unwrap(), Caller::Operator);
         assert_eq!(
             caller_from(Some("Bad Name"), &e).unwrap_err().code,
             Code::Usage

@@ -551,22 +551,21 @@ fn caller_context_is_checked() {
         None,
     );
     assert_eq!(out.code, 4);
-    // An operator can't publish.
-    let out = f.brg(
+    // An instance-only plugin process can't silently publish as the owner.
+    let mut cmd = f.command(
         &As::Operator,
-        &["msg", "send", "oncall-2a3b/lead", "-", "--json"],
-        Some(b"x"),
+        &["msg", "send", "oncall-2a3b/lead", "x", "--json"],
     );
-    assert_eq!(out.code, 2);
+    let out = output(cmd.env("BORGCHART_INSTANCE", TEAM).output().unwrap());
+    assert_eq!(out.code, 2, "{:?}", out.json);
     // A partial member context.
     let mut cmd = f.command(&As::Operator, &["msg", "ack", "m1", "--json"]);
     let out = cmd.env("BORGCHART_MEMBER", "lead").output().unwrap();
     assert_eq!(out.status.code(), Some(4));
-    // Operators need to name an inbox.
-    assert_eq!(
-        f.brg(&As::Operator, &["msg", "list", "--json"], None).code,
-        2
-    );
+    // Instance-only plugins still need to name an inbox.
+    let mut cmd = f.command(&As::Operator, &["msg", "list", "--json"]);
+    let out = output(cmd.env("BORGCHART_INSTANCE", TEAM).output().unwrap());
+    assert_eq!(out.code, 2, "{:?}", out.json);
 
     let fenced = [
         As::MemberWith("helper", "helper-0"),
@@ -1117,6 +1116,66 @@ fn external_recipient_flow() {
     let d = json!({"to": "lead", "reply_to": ["m1"], "body": "yes"});
     assert_eq!(f.publish(&As::Operator, &d).code, 0);
     assert_eq!(ids(&f.inbox(&As::Member("lead"), &[])), ["m2"]);
+}
+
+#[test]
+fn shell_send_defaults_to_owner_and_preserves_explicit_authorship() {
+    let f = Fixture::new();
+    for (flags, author) in [
+        (vec![], "external:owner"),
+        (vec!["--external", "other"], "external:other"),
+    ] {
+        let mut args = vec!["msg", "send", "oncall-2a3b/lead", "hello", "--json"];
+        args.extend(flags);
+        let sent = f.brg(&As::Operator, &args, None);
+        assert_eq!(sent.code, 0, "{author}: {:?}", sent.json);
+        let id = sent.json["id"].as_str().unwrap();
+        let read = f.brg(&As::Operator, &["msg", "read", id, "--json"], None);
+        assert_eq!(read.code, 0, "{:?}", read.json);
+        assert_eq!(read.json["record"]["from"], author);
+    }
+    // A default outside identity must not narrow the operator's read access.
+    assert_eq!(
+        ids(&f.inbox(&As::Operator, &["--member", "lead"])),
+        ["m1", "m2"]
+    );
+    let checked = f.brg(&As::Operator, &["msg", "check", "--json"], None);
+    assert_eq!(checked.code, 0, "{:?}", checked.json);
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn shell_inbox_commands_default_to_owner_and_preserve_explicit_recipient() {
+    let f = Fixture::new();
+    for name in ["owner", "other"] {
+        let sent = f.publish(
+            &As::Member("lead"),
+            &note(&format!("external:{name}"), "reply"),
+        );
+        assert_eq!(sent.code, 0, "{:?}", sent.json);
+    }
+    for (flags, name, id) in [
+        (vec![], "owner", "m1"),
+        (vec!["--external", "other"], "other", "m2"),
+    ] {
+        let mut list = vec!["msg", "list", "--json"];
+        list.extend(&flags);
+        let listed = f.brg(&As::Operator, &list, None);
+        let mut wait = vec!["msg", "wait", "--timeout", "60", "--json"];
+        wait.extend(&flags);
+        let waited = f.brg(&As::Operator, &wait, None);
+        let mut ack = vec!["msg", "ack", id, "--json"];
+        ack.extend(&flags);
+        let acked = f.brg(&As::Operator, &ack, None);
+        for (command, out) in [("list", listed), ("wait", waited)] {
+            assert_eq!(out.code, 0, "{name} {command}: {:?}", out.json);
+            assert_eq!(out.json["recipient"], format!("external:{name}"));
+            assert_eq!(ids(&out.json), [id], "{name} {command}");
+        }
+        assert_eq!(acked.code, 0, "{name} ack: {:?}", acked.json);
+        assert_eq!(acked.json["acked"][0]["outcome"], "acked");
+        assert!(ids(&f.inbox(&As::Operator, &flags)).is_empty());
+    }
 }
 
 /// Hold `path` (created if missing) with an exclusive flock.
