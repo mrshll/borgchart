@@ -119,36 +119,14 @@ You read each new message in the channel and decide whether it needs the lead.
   - Model names are passed to the vendor unchanged.
 - **The body** is the member's standing instruction, sent as its opening prompt.
 - **Includes:** a line that is exactly `{{includes/<stem>}}` is replaced by `<includes>/<stem>.md`. Includes are one level deep: an included file can't include another.
-- **Another team's role file:** a line that is exactly `{{teams/<team>/<role>}}` is replaced by the body of role `<role>`'s file in team `<team>`.
-  - The team is found by name through `teams:`, like a `team:` reference. A missing or ambiguous name is an error, and so is a role with no role file.
-  - Its includes resolve in its own team. Its frontmatter is left behind, so the including file names its own models.
-  - A file reached this way can't use `{{teams/...}}` itself, and neither can an include, so there are no cycles.
-  - The size limit covers the combined instruction.
-  - Nothing is pinned: each launch reads both files as they are on disk, and `validate` lists each role's files in order. If the other team goes missing or becomes ambiguous, every command that reads the including team refuses until it's found again, `status` of its running instances included.
-- **Paths:** prompts, includes and plugin paths must stay inside the team directory. `..` and symlinks that lead outside are refused. Another team's role file is confined to that team's directory in the same way.
+- **Another team's role file:** a line that is exactly `{{teams/<team>/<role>}}` is replaced by the body of that role's file. Its includes resolve in its own team, and its frontmatter is left out.
+  - The team is found by name, like a `team:` reference. A file reached this way, and any include, can't use the directive.
+  - The size limit covers the result. Nothing is pinned: if the team goes missing or becomes ambiguous, every command that reads the including team refuses, `status` included. `validate` lists each role's files in order.
+- **Paths:** prompts, includes and plugin paths must stay inside the team directory, and another team's role file inside its own. `..` and symlinks that lead outside are refused.
 
 ### Reusing a shared team
 
-A private team can be a shared one plus additions. Keep it in a catalog of your own, listed beside the shared one under `teams:` in brg's configuration. Its `team.yaml` is a complete team file. It must still declare the roles and plugins the included text relies on, here everything the shared `engineering` team declares. Child teams resolve by name across both catalogs. Its role files take the shared text with one line, then add their own:
-
-```yaml
-# private-teams/studio/team.yaml
-plugins:
-  seat:
-    actions: {route: brg-seat route <vendor> <model>}
-  oncall:
-    path: plugins/oncall
-    actions: {page: oncall page <text>}
-roles:
-  lead:       {prompt: lead.md, interactive: true, plugins: {seat: [route], oncall: [page]}}
-  dev:        {team: dev-team, parent: lead, start: false, max: 4, worktree: true}
-  design:     {team: dev-design-team, parent: lead, start: false, max: 2}
-  researcher: {prompt: researcher.md, vendor: codex, parent: lead, start: false, max: 4}
-  monitor:    {prompt: monitor.md, parent: lead, start: false, max: 4}
-  support:    {team: support, parent: lead, start: false}
-```
-
-`researcher.md` and `monitor.md` are each one `{{teams/engineering/<role>}}` line under their own models. `lead.md` adds a line of its own:
+A private team can be a shared one plus additions, kept in a catalog of your own listed beside the shared one under `teams:`. Its `team.yaml` is a complete team file: it declares the roles and plugins the shared text relies on, plus its own (say an `oncall` plugin and a `support` sub-team). Child teams such as `dev-team` resolve by name across both catalogs. Each role file takes the shared text with one line and adds its own:
 
 ```markdown
 ---
@@ -158,8 +136,6 @@ models: {claude: opus high}
 
 When a release is blocked, page the on-call engineer with `oncall page <text>`.
 ```
-
-`dev-team` and `dev-design-team` come from the shared catalog. `support` is a sub-team in `private-teams/support/`.
 
 ## Plugins
 
