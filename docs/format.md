@@ -51,6 +51,7 @@ roles:
     max: 1                      # optional; limit on kept members, running or stopped (default 1)
     posture: locked             # optional: vendor (default) | locked
     worktree: false             # optional: true = each member gets its own git worktree
+    remote_control: false       # optional: start Claude Remote Control, named by its full address
     args: []                    # optional: extra vendor launch arguments
     untrusted_input: true       # it reads text from outside (a channel, an inbox)
     plugins: {slackbot: [read, escalate]}
@@ -68,6 +69,16 @@ The role's identity is its key under `roles:`. `brg delete <instance>/<member>` 
 **Messages.** Every team has a bus. `send TARGET TEXT` records work, then may type it; ordinary recipients explicitly ack and use one `inbox wait`. `status` shows ordinary unread counts. Omit `bus` unless configuring a real `bus: {alert: {plugin: notify, action: alert}}` action; automatic alert dispatch is not wired. Locked recipients have immutable no-ack-required history, no inbox recovery and no new grants. See [the bus](bus.md).
 
 **`interactive`.** An agent role's boolean, default false, applies to every copy and is frozen at start. True means inbox-only: never paste/Enter, even with `send --force`. Use it for a lead whose session a person shares; remote-session users may leave it false. It is invalid with `posture: locked` or on a nested `team:` role. The bundled dev-team lead is interactive; helpers keep the false default.
+
+**`remote_control`.** An agent role's boolean, default false; Claude-only and requires your claude.ai login (`auth: login`, not `auth: api_key`).
+True adds `--remote-control <instance>/<member>` on fresh starts and resumes.
+The session appears at [claude.ai/code](https://claude.ai/code) and in the Claude app under Code, named by that full member address.
+On first use, if a member shows `blocked` at a Remote Control consent dialog, attach and accept it once, or run `/remote-control` in any Claude session of yours first.
+`brg status` links a running Claude member's name on a terminal when its live session file provides an address, including sessions enabled by hand; `status -w` does too.
+`status --json` gives `remote_control_url` when known; otherwise the field is absent and the name stays plain. Piped text stays plain, and `status -i` has no link.
+The address comes from `<CLAUDE_CONFIG_DIR>/sessions/<pane pid>.json`, or `~/.claude/sessions/<pane pid>.json` by default; missing or changed session data is ignored.
+Locked members keep their gate, including for remote tool calls.
+Remote prompts don't pass through the terminal, so the guarded wake's input-box checks are unaffected; at worst a reminder is queued behind a remote turn.
 
 **Catalog assets.** Sibling definitions may share includes and plugins from the fixed `shared/` folder beside them. Set `includes: catalog:shared/includes` and a plugin's `path: catalog:shared/plugins/<name>`. These paths are relative to the directory containing the team definition and confined to its real `shared/` folder. Other catalog prefixes, absolute paths, `..`, a symlinked shared root and symlink escapes are refused. Ordinary includes/plugins and every prompt file retain their team-root confinement. The existing `shared:<name>` plugin syntax still uses the global `plugins_dir`; it is distinct from catalog assets.
 

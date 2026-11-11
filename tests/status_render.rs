@@ -18,6 +18,7 @@ fn member(name: &str, parent: Option<&str>) -> StatusRow {
         state: "working".into(),
         rule: None,
         activity: None,
+        remote_control_url: None,
         detail: None,
         vendor_version: None,
         trust_accepted: None,
@@ -116,4 +117,28 @@ fn terminal_states_stay_visible_at_80_columns_with_long_models() {
         .unwrap();
     assert!(reviewer.find("example-model").unwrap() < reviewer.find("blocked").unwrap());
     assert!(!piped.contains('\x1b'));
+}
+
+#[test]
+fn remote_control_links_only_terminal_names_without_moving_columns() {
+    let mut rows = [member("lead", None), member("reviewer", Some("lead"))];
+    rows[0].vendor = Some("claude".into());
+    let osc8 = regex::Regex::new("\x1b\\]8;;[^\x1b]*\x1b\\\\").unwrap();
+    for colour in [true, false] {
+        rows[0].remote_control_url = None;
+        let plain = runtime::render_status_as("harbor", &rows, true, colour, None);
+        let piped = runtime::render_status_as("harbor", &rows, false, colour, None);
+        rows[0].remote_control_url = Some("https://claude.ai/code/session_Example42".into());
+        let linked = runtime::render_status_as("harbor", &rows, true, colour, None);
+        assert!(
+            linked.contains(
+                "\x1b]8;;https://claude.ai/code/session_Example42\x1b\\lead\x1b]8;;\x1b\\"
+            )
+        );
+        assert_eq!(osc8.replace_all(&linked, ""), plain);
+        assert_eq!(
+            runtime::render_status_as("harbor", &rows, false, colour, None),
+            piped
+        );
+    }
 }

@@ -224,6 +224,19 @@ fn cross_check(v: &Validated, report: &mut Report) {
             );
         }
 
+        if member.remote_control && member.vendor != Vendor::Claude {
+            report.error(
+                team_file,
+                at("Remote Control is Claude-only; remove `remote_control`"),
+            );
+        }
+        if member.remote_control && v.auth() == Auth::ApiKey {
+            report.error(
+                config_file.or(team_file),
+                at("Remote Control needs your claude.ai login; remove `remote_control` or use `auth: login`"),
+            );
+        }
+
         if v.auth() == Auth::ApiKey
             && member.vendor == Vendor::Claude
             && !member.connectors.is_empty()

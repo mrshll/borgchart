@@ -64,6 +64,42 @@ fn valid_team_loads() {
     );
 }
 
+#[test]
+fn remote_control_refuses_codex_members() {
+    let f = Fixture::new();
+    f.edit(
+        "team.yaml",
+        "  lead:\n",
+        "  lead:\n    vendor: codex\n    remote_control: true\n",
+    );
+    refused(&f);
+}
+
+#[test]
+fn remote_control_refuses_api_key_auth() {
+    let f = Fixture::new();
+    f.edit(
+        "team.yaml",
+        "  lead:\n",
+        "  lead:\n    remote_control: true\n",
+    );
+    f.write("config.yaml", "schema: 1\nauth: api_key\n");
+    refused(&f);
+}
+
+#[test]
+fn remote_control_refuses_team_roles_even_when_false() {
+    for enabled in [true, false] {
+        let f = nested_team();
+        f.edit(
+            "team.yaml",
+            "team: dev,",
+            &format!("team: dev, remote_control: {enabled},"),
+        );
+        refused(&f);
+    }
+}
+
 fn nested_team() -> Fixture {
     let f = Fixture::new();
     f.write(

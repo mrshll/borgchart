@@ -400,6 +400,12 @@ pub fn member_launch(
                 }
             }
             argv.extend(extra_args);
+            if member.remote_control {
+                argv.extend([
+                    "--remote-control".into(),
+                    format!("{}/{member_id}", state.id),
+                ]);
+            }
             if let Some(session) = resume {
                 argv.extend(["--resume".into(), session.to_string()]);
             }
