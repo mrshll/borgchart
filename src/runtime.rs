@@ -1,4 +1,4 @@
-//! The tmux runtime: `create`, `start`, `stop`, `delete`, `status`, `ls`,
+//! The tmux runtime: `create`, `start`, `stop`, `delete`, `status`, `templates`,
 //! `attach`, `logs` and `msg send`, on instances and their members.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -2571,7 +2571,7 @@ pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
     Ok(lines)
 }
 
-/// `brg reset <root>`: stop the whole tree, then forget it: every
+/// `brg destroy <root>`: stop the whole tree, then forget it: every
 /// registration and the root's state folder (all copies' state, notes and
 /// the tree's messages), and the clean worktrees brg added for it. No open
 /// work refuses it; anything brg can't confirm stopped does. The working
@@ -2582,18 +2582,18 @@ pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
 pub fn reset(inst: Instance, warn: impl FnOnce(String)) -> Result<crate::cleanup::Outcome, String> {
     if has_member_context() {
         return Err(
-            "`reset` stops a whole tree, the member running it included; run it from your own shell"
+            "`destroy` stops a whole tree, the member running it included; run it from your own shell"
                 .into(),
         );
     }
     if inst.id.contains('/') {
         return Err(format!(
-            "`{}` is a copy; reset takes a tree's root. For a copy, use brg stop -r and brg delete",
+            "`{}` is a copy; destroy takes a tree's root. For a copy, use brg stop -r and brg delete",
             inst.id
         ));
     }
     warn(format!(
-        "resetting {}: this deletes its notes and messages and every copy's; copy anything you need from {} first",
+        "destroying {}: this deletes its notes and messages and every copy's; copy anything you need from {} first",
         inst.id,
         inst.state.root.display()
     ));
@@ -2605,7 +2605,7 @@ pub fn reset(inst: Instance, warn: impl FnOnce(String)) -> Result<crate::cleanup
     for copy in crate::nesting::descendants(&root)? {
         tree.push(copy.instance.map_err(|e| {
             format!(
-                "copy `{}` can't be read ({e}); nothing was deleted. Restore it, then: brg reset {}",
+                "copy `{}` can't be read ({e}); nothing was deleted. Restore it, then: brg destroy {}",
                 copy.id, root.id
             )
         })?);
@@ -2660,7 +2660,7 @@ pub fn reset(inst: Instance, warn: impl FnOnce(String)) -> Result<crate::cleanup
     drop(bus_lock);
     drop(state_locks);
     out.lines.push(format!(
-        "reset {}: its registrations, state, notes and messages are deleted; its working folder {} was left as it is",
+        "destroy {}: its registrations, state, notes and messages are deleted; its working folder {} was left as it is",
         root.id,
         root.record.folder.display()
     ));
@@ -2672,7 +2672,7 @@ pub fn reset(inst: Instance, warn: impl FnOnce(String)) -> Result<crate::cleanup
     Ok(out)
 }
 
-/// `brg secret <team>`: each secret its plugins need (plugin, name), and
+/// `brg secrets <team>`: each secret its plugins need (plugin, name), and
 /// whether the caller's environment sets it. No value is read out.
 pub fn secrets(team: &str) -> Result<Vec<(String, String, bool)>, String> {
     let mut report = crate::diag::Report::default();
@@ -2703,7 +2703,7 @@ pub fn secrets(team: &str) -> Result<Vec<(String, String, bool)>, String> {
         .collect())
 }
 
-/// One team in `brg ls`, with its instances.
+/// One team in `brg templates`, with its instances.
 #[derive(Debug, Serialize)]
 pub struct Listed {
     /// `None` for instances whose team is outside the search paths.
@@ -2722,7 +2722,7 @@ pub struct ListedInstance {
     pub created_at: String,
 }
 
-/// `brg ls`: the teams in the search paths, each with its instances, then
+/// `brg templates`: the teams in the search paths, each with its instances, then
 /// instances whose team is elsewhere.
 pub fn ls() -> Result<Vec<Listed>, String> {
     let mut report = crate::diag::Report::default();
@@ -2776,7 +2776,7 @@ pub fn ls() -> Result<Vec<Listed>, String> {
     Ok(out)
 }
 
-/// `brg ls` as text.
+/// `brg templates` as text.
 pub fn render_ls(listed: &[Listed]) -> String {
     let mut out = String::new();
     for l in listed {

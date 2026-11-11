@@ -17,7 +17,7 @@
 //!   instance argument only).
 //!
 //! Work folders, kept members' and copies' folders, repositories, other
-//! worktrees and messages are never touched. `brg reset` applies
+//! worktrees and messages are never touched. `brg destroy` applies
 //! the same folder rules to every member and copy of the tree it forgets
 //! ([`tree_folders`]).
 
@@ -100,7 +100,7 @@ fn held(registry: &registry::Registry, counts: impl Fn(&str) -> bool) -> Vec<Pat
     held
 }
 
-/// `reset`'s folder pass over a tree about to be forgotten, deepest first:
+/// `destroy`'s folder pass over a tree about to be forgotten, deepest first:
 /// every member's and copy's worktree, kept or deleted, by the same rules as
 /// cleanup. Folders that instances outside the tree work in stay protected.
 pub(crate) fn tree_folders(tree: &[Instance], registry: &registry::Registry) -> Outcome {

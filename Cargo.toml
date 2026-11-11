@@ -14,16 +14,12 @@ repository = "https://github.com/mrshll/borgchart"
 publish = false
 
 [lib]
-# Internal only: shared by the `brg` and `borgchart` binaries. Not a public API.
+# Internal only: used by `brg` and `brg-seat`. Not a public API.
 path = "src/lib.rs"
 
 [[bin]]
 name = "brg"
 path = "src/main.rs"
-
-[[bin]]
-name = "borgchart"
-path = "src/bin/borgchart.rs"
 
 [[bin]]
 # Test-only stand-in for the Claude and Codex CLIs; never installed.

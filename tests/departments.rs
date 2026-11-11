@@ -12,7 +12,7 @@ fn create_copy(env: &Env, parent: &str, role: &str) -> (String, std::path::PathB
     let before = env.registry();
     let output = env.ok(&["create", &format!("{parent}/{role}")]);
     let listed: serde_json::Value =
-        serde_json::from_slice(&env.ok(&["ls", "--json"]).stdout).unwrap();
+        serde_json::from_slice(&env.ok(&["templates", "--json"]).stdout).unwrap();
     let copy = listed
         .as_array()
         .unwrap()
@@ -674,7 +674,7 @@ fn depth_three_copies_wait_for_preparation_and_cascade_before_parent_deletion() 
     env.ok(&["delete", &panel]);
     env.ok(&["delete", &dev]);
     env.ok(&["delete", &dept]);
-    let remaining = stdout(&env.ok(&["ls", "--json"]));
+    let remaining = stdout(&env.ok(&["templates", "--json"]));
     assert!(!remaining.contains(&dept));
     // The dev copy's clean worktree goes with it; the root checkout stays.
     assert!(!dev_folder.exists());

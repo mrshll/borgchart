@@ -1,5 +1,5 @@
 //! Instances and the four verbs: `create`, `start`, `stop`, `delete`, with
-//! `ls`, `status` and addressing. Teams are found by name in the search
+//! `templates`, `status` and addressing. Teams are found by name in the search
 //! paths of a test configuration (`BORGCHART_CONFIG`) or by path. Real tmux
 //! on a private per-test socket, with `fake-agent` standing in for `claude`
 //! and `codex`.
@@ -460,7 +460,7 @@ fn teams_are_found_by_name_or_by_path() {
         .unwrap()
         .to_string();
     assert!(well_formed(&a, "oncall") && well_formed(&b, "oncall") && a != b);
-    let ls: Value = serde_json::from_slice(&env.ok(&["ls", "--json"]).stdout).unwrap();
+    let ls: Value = serde_json::from_slice(&env.ok(&["templates", "--json"]).stdout).unwrap();
     let teams: Vec<&Value> = ls.as_array().unwrap().iter().collect();
     assert_eq!(teams.len(), 2, "{ls}");
     for t in &teams {

@@ -134,7 +134,7 @@ fn people_can_create_independent_bus_instances() {
 fn copy_from_output(env: &Env, out: &Output) -> (String, PathBuf) {
     let id = stdout(out).split_whitespace().next().unwrap().to_string();
     let listed: serde_json::Value =
-        serde_json::from_slice(&env.ok(&["ls", "--json"]).stdout).unwrap();
+        serde_json::from_slice(&env.ok(&["templates", "--json"]).stdout).unwrap();
     let copy = listed
         .as_array()
         .unwrap()

@@ -729,7 +729,7 @@ fn repo_worktree_branch_conflicts_identify_the_selected_clone_without_recommendi
         "{err}"
     );
     assert!(!err.contains("--repo"), "{err}");
-    env.ok(&["reset", &inst]);
+    env.ok(&["destroy", &inst]);
 }
 
 fn remote_advance_during_fetch(fallback: bool) {
@@ -889,7 +889,7 @@ fn repo_selection_uses_the_renamed_remote_default_instead_of_stale_origin_head()
         git(&env.worktree(&copy), &["rev-parse", "HEAD"]),
         git(&gadgets, &["rev-parse", "HEAD"])
     );
-    env.ok(&["reset", &inst]);
+    env.ok(&["destroy", &inst]);
 }
 
 #[test]
@@ -1002,7 +1002,7 @@ fn invalid_repo_sources_and_unreachable_origins_issue_nothing() {
 }
 
 #[test]
-fn repo_cleanup_and_reset_remove_clean_worktrees_and_keep_dirty_ones_in_both_clones() {
+fn repo_cleanup_and_destroy_remove_clean_worktrees_and_keep_dirty_ones_in_both_clones() {
     let env = repositories_env("main");
     let inst = env.create("oncall", "work/a");
     let mut clean = Vec::new();
@@ -1025,7 +1025,7 @@ fn repo_cleanup_and_reset_remove_clean_worktrees_and_keep_dirty_ones_in_both_clo
     for folder in clean.iter().step_by(2) {
         assert!(!folder.exists());
     }
-    env.ok(&["reset", &inst]);
+    env.ok(&["destroy", &inst]);
     assert!(clean.iter().all(|p| !p.exists()));
     assert!(dirty.iter().all(|p| p.join("draft").is_file()));
 }
@@ -1079,7 +1079,7 @@ fn repo_members_can_select_a_clone_at_any_depth_but_shared_roles_cannot() {
     env.fails(&["create", "oncall", "--repo", "widgets"]);
     env.fails(&["create", &format!("{inst}/scout"), "--repo", "widgets"]);
     assert!(env.member(&inst, "scout").is_empty());
-    env.ok(&["reset", &inst]);
+    env.ok(&["destroy", &inst]);
 }
 
 #[test]
@@ -1218,6 +1218,6 @@ exec '{git}' "$@"
         };
         env.ok(&["stop", &inst]);
         env.ok(&["delete", &selected]);
-        env.ok(&["reset", &inst]);
+        env.ok(&["destroy", &inst]);
     }
 }

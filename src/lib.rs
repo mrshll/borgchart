@@ -1,4 +1,4 @@
-//! borgchart internals, shared by the `brg` and `borgchart` binaries.
+//! borgchart internals, used by `brg` and `brg-seat`.
 //!
 //! This crate is not a public library: nothing here is promised stable.
 

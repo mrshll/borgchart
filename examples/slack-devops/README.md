@@ -33,7 +33,7 @@ What the lead can't do: look at systems. It is a smart auto-responder that ackno
    auth: api_key
    ```
 
-5. **Export the bot token** in the shell you start from, e.g. `export SLACK_BOT_TOKEN=<your-bot-token>`, or start brg under your secret manager's `run`. Never write it into a file: brg stores no secrets. `brg secret ./examples/slack-devops` says whether it is set.
+5. **Export the bot token** in the shell you start from, e.g. `export SLACK_BOT_TOKEN=<your-bot-token>`, or start brg under your secret manager's `run`. Never write it into a file: brg stores no secrets. `brg secrets ./examples/slack-devops` says whether it is set.
 6. **Check and start** an instance, in a folder of its own outside this checkout (the agents are `locked`, so their folder can't hold the team's files):
 
    ```sh

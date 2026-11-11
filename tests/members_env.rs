@@ -1,5 +1,5 @@
 //! What members are started with and who may act on an instance: writable
-//! folders by posture, API keys and secrets, `brg secret`, the notes
+//! folders by posture, API keys and secrets, `brg secrets`, the notes
 //! `create` prints about a folder's project settings, and instance
 //! selection for bus commands.
 //!
@@ -297,11 +297,11 @@ fn login_passes_no_key_and_api_key_only_the_members_own() {
 }
 
 #[test]
-fn brg_secret_lists_the_names_and_whether_each_is_set() {
+fn brg_secrets_lists_the_names_and_whether_each_is_set() {
     let env = Env::new();
     with_pager(&env);
     let before = every_file(&env).len();
-    let out = env.ok(&["secret", "oncall"]);
+    let out = env.ok(&["secrets", "oncall"]);
     let text = stdout(&out);
     assert!(text.contains("pager: PAGER_TOKEN"), "{text}");
     assert!(text.contains("not set"), "{text}");
@@ -309,7 +309,7 @@ fn brg_secret_lists_the_names_and_whether_each_is_set() {
         !text.contains("PAGER_ROOM"),
         "plain values aren't secrets: {text}"
     );
-    let out = keyed(&env, &["secret", "oncall", "--json"]);
+    let out = keyed(&env, &["secrets", "oncall", "--json"]);
     assert!(out.status.success(), "{}", both(&out));
     assert!(!both(&out).contains(PAGER), "{}", both(&out));
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
