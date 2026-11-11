@@ -1,4 +1,4 @@
-//! Copy limits, parent authority and checkout separation through the CLI.
+//! Advisory copy counts, parent authority and checkout separation through the CLI.
 #![cfg(feature = "test-support")]
 
 mod common;
@@ -79,7 +79,7 @@ fn copies_env(max: usize) -> Env {
 }
 
 #[test]
-fn copies_get_their_own_worktrees_and_keep_slots_without_filling_max() {
+fn member_create_past_max_keeps_worktrees_and_warns_about_stopped_members() {
     let env = copies_env(2);
     let inst = env.create("oncall", "work/a");
     assert!(env.copies(&inst).is_empty());
@@ -120,12 +120,19 @@ fn copies_get_their_own_worktrees_and_keep_slots_without_filling_max() {
         .env("BORGCHART_SUFFIX_SEED", "7")
         .output()
         .unwrap();
-    assert!(!out.status.success(), "{}", both(&out));
-    let refused = both(&out);
+    assert!(out.status.success(), "{}", both(&out));
+    let warning = stdout(&out);
     assert!(
-        refused.contains(&first) && refused.contains(&second),
-        "{refused}"
+        warning.contains("warning: role `helper` now has 3 kept members, over its max of 2"),
+        "{warning}"
     );
+    let third = env
+        .copies(&inst)
+        .into_iter()
+        .find(|id| id != &first && id != &second)
+        .unwrap();
+    env.ok(&["stop", &format!("{inst}/{third}")]);
+    env.ok(&["delete", &format!("{inst}/{third}")]);
     let rows = env.rows(&inst);
     assert!(
         rows.iter()
@@ -225,19 +232,28 @@ fn delete_keeps_a_worktree_with_work_in_it() {
 }
 
 #[test]
-fn concurrent_creates_cannot_take_the_same_last_slot() {
+fn concurrent_member_creates_warn_at_the_locked_count_without_reusing_ids() {
     let env = copies_env(2);
     let inst = env.create("oncall", "work/a");
     env.copy(&inst);
     let [a, b] = env.race_copies(&inst);
-    assert_ne!(
-        a.status.success(),
-        b.status.success(),
+    assert!(
+        a.status.success() && b.status.success(),
         "{}{}",
         both(&a),
         both(&b)
     );
-    assert_eq!(env.copies(&inst).len(), 2);
+    assert_eq!(env.copies(&inst).len(), 3);
+    let warnings = [stdout(&a), stdout(&b)].join("\n");
+    assert_eq!(
+        warnings.matches("warning: role `helper`").count(),
+        1,
+        "{warnings}"
+    );
+    assert!(
+        warnings.contains("3 kept members, over its max of 2"),
+        "{warnings}"
+    );
     env.ok(&["stop", &inst]);
 }
 
@@ -448,7 +464,7 @@ fn only_the_latest_parent_start_can_manage_children() {
 }
 
 #[test]
-fn start_true_copies_keep_members_when_max_is_lowered() {
+fn lowered_max_keeps_existing_members_and_warns_on_another_create() {
     let env = copies_env(3);
     let path = env.path("teams/oncall/team.yaml");
     let text = fs::read_to_string(&path)
@@ -486,9 +502,14 @@ fn start_true_copies_keep_members_when_max_is_lowered() {
         .env("BORGCHART_SUFFIX_SEED", "7")
         .output()
         .unwrap();
-    assert!(!out.status.success(), "{}", both(&out));
+    assert!(out.status.success(), "{}", both(&out));
+    assert!(
+        stdout(&out).contains("3 kept members, over its max of 1"),
+        "{}",
+        both(&out)
+    );
     env.ok(&["stop", &inst]);
-    for id in &kept {
+    for id in &env.copies(&inst) {
         env.ok(&["delete", &format!("{inst}/{id}")]);
     }
     env.ok(&["start", &inst]);

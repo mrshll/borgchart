@@ -80,21 +80,13 @@ pub fn create(
             .map(|member| inst.at(&member))
             .ok_or_else(|| format!("role `{role_name}`'s parent role `{parent_role}` has no member; create it first: brg create {}", inst.at(parent_role)))
     }).transpose()?;
-    let kept: Vec<_> = inst
+    let count = inst
         .record
         .copies
-        .iter()
-        .filter(|(_, copy)| !copy.deleted && copy.role == role_name)
-        .map(|(id, _)| inst.at(id))
-        .collect();
-    if kept.len() >= role.max {
-        return Err(format!(
-            "role `{role_name}` has {} kept copies (max: {}): {}; delete a stopped copy before creating another",
-            kept.len(),
-            role.max,
-            kept.join(", ")
-        ));
-    }
+        .values()
+        .filter(|copy| !copy.deleted && copy.role == role_name)
+        .count()
+        + 1;
     crate::team::find(&role.name, &v.config.teams)?;
     let id = inst
         .record
@@ -130,13 +122,20 @@ pub fn create(
     issued.deleted = false;
     issued.cwd = Some(folder.clone());
     lock.save_instance(&inst.state, &inst.record)?;
+    let mut notes = vec![format!("start it: brg start {full_id}")];
+    if count > role.max {
+        notes.push(format!(
+            "warning: role `{role_name}` now has {count} kept copies, over its max of {}",
+            role.max
+        ));
+    }
     Ok(UpOutcome {
         tree: format!(
             "{full_id}  folder {}{} · stopped\n",
             folder.display(),
             start.map(|s| s.detail()).unwrap_or_default()
         ),
-        notes: vec![format!("start it: brg start {full_id}")],
+        notes,
         failed: false,
     })
 }

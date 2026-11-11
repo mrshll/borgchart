@@ -324,7 +324,7 @@ pub struct Role {
     pub start: bool,
     /// Inbox-only delivery, recorded at each member's start.
     pub interactive: bool,
-    /// Kept members, running or stopped, allowed for this role.
+    /// Advisory count of kept members, running or stopped.
     pub max: usize,
     pub posture: Posture,
     pub untrusted_input: bool,

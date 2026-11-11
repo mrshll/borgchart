@@ -539,23 +539,96 @@ fn stop_on_a_stopped_instance_or_member_is_a_no_op() {
 }
 
 #[test]
-fn create_of_an_existing_member_is_refused_and_start_resumes_it() {
+fn member_creates_past_max_warn_and_keep_each_member() {
     let env = Env::new();
     let inst = env.create("oncall", "work/a");
     env.ok(&["create", &format!("{inst}/helper")]);
     let helper = env.member(&inst, "helper");
-    let err = env.fails(&["create", &format!("{inst}/helper")]);
-    assert!(err.contains(&format!("brg start {inst}/{helper}")), "{err}");
+    let out = env.ok(&["create", &format!("{inst}/helper")]);
+    assert!(
+        stdout(&out).contains("warning: role `helper` now has 2 kept members, over its max of 1"),
+        "{}",
+        both(&out)
+    );
     env.ok(&["stop", &format!("{inst}/{helper}")]);
-    let err = env.fails(&["create", &format!("{inst}/helper")]);
-    assert!(err.contains(&format!("brg start {inst}/{helper}")), "{err}");
+    let out = env.ok(&["create", &format!("{inst}/helper")]);
+    assert!(
+        stdout(&out).contains("warning: role `helper` now has 3 kept members, over its max of 1"),
+        "{}",
+        both(&out)
+    );
+    let members: Vec<_> = env
+        .rows(&inst)
+        .into_iter()
+        .filter(|r| r["role"] == "helper")
+        .collect();
+    assert_eq!(members.len(), 3);
+    assert!(
+        members
+            .iter()
+            .any(|r| r["member"] == helper && r["state"] == "stopped")
+    );
     let out = env.ok(&["start", &format!("{inst}/{helper}")]);
     assert!(stdout(&out).contains("started"), "{}", both(&out));
     env.wait_for("helper idle", || env.state_of(&inst, "helper") == "idle");
-    assert_eq!(env.member(&inst, "helper"), helper, "the same member");
     assert_eq!(env.starts(&helper).len(), 2);
     let out = env.ok(&["start", &format!("{inst}/{helper}")]);
     assert!(stdout(&out).contains("already running"), "{}", both(&out));
+    env.ok(&["stop", &inst]);
+}
+
+#[test]
+fn second_parent_member_is_refused_before_parent_lookup_becomes_ambiguous() {
+    let env = Env::new();
+    env.team("teams/dev");
+    env.write(
+        "teams/oncall/team.yaml",
+        &format!("{TEAM}  dev: {{team: dev, parent: lead}}\n"),
+    );
+    let inst = env.create("oncall", "work/a");
+    let lead = env.member(&inst, "lead");
+    for stopped in [false, true] {
+        if stopped {
+            env.ok(&["stop", &format!("{inst}/{lead}")]);
+        }
+        let err = env.fails(&["create", &format!("{inst}/lead")]);
+        assert!(
+            err.contains("parent role") && err.contains("`helper`") && err.contains("`dev`"),
+            "{err}"
+        );
+        assert!(err.contains(&format!("brg start {inst}/{lead}")), "{err}");
+        assert_eq!(
+            env.rows(&inst)
+                .iter()
+                .filter(|r| r["role"] == "lead")
+                .count(),
+            1
+        );
+    }
+    env.ok(&["stop", &inst]);
+}
+
+#[test]
+fn second_plugin_target_member_is_refused_before_delivery_becomes_ambiguous() {
+    let env = Env::new();
+    let inst = env.create("oncall", "work/a");
+    env.ok(&["create", &format!("{inst}/scout")]);
+    let scout = env.member(&inst, "scout");
+    // The new declaration is validated on create; no plugin needs to run.
+    env.write("teams/oncall/team.yaml", &format!("{TEAM}\nplugins:\n  pager: {{process: [\"true\"], delivers_to: scout}}\n  watcher: {{process: [\"true\"], delivers_to: scout}}\n"));
+    let err = env.fails(&["create", &format!("{inst}/scout")]);
+    assert!(
+        err.contains("delivers_to") && err.contains("`pager`") && err.contains("`watcher`"),
+        "{err}"
+    );
+    assert!(err.contains(&format!("brg start {inst}/{scout}")), "{err}");
+    assert_eq!(
+        env.rows(&inst)
+            .iter()
+            .filter(|r| r["role"] == "scout")
+            .count(),
+        1
+    );
     env.ok(&["stop", &inst]);
 }
 

@@ -488,7 +488,7 @@ fn nested_status_screens_keep_healthy_members_visible_when_a_copy_becomes_unread
 }
 
 #[test]
-fn team_copies_share_the_tree_store_and_keep_separate_slots_until_deleted() {
+fn team_copy_create_past_max_warns_without_changing_the_printed_id_line() {
     let env = department();
     let dept = env.create("oncall", "work/a");
     let (first, first_folder) = create_copy(&env, &dept, "dev");
@@ -509,11 +509,20 @@ fn team_copies_share_the_tree_store_and_keep_separate_slots_until_deleted() {
         assert!(env.path(&format!("state/{copy}/notes")).is_dir());
         assert!(env.rows(copy).iter().all(|r| r["member"].is_null()));
     }
-    let refused = env.fails(&["create", &format!("{dept}/dev")]);
-    assert!(
-        refused.contains(&first) && refused.contains(&second),
-        "{refused}"
+    let out = env.ok(&["create", &format!("{dept}/dev")]);
+    let output = stdout(&out);
+    let third = output.split_whitespace().next().unwrap();
+    let folder = env.worktree(third);
+    assert_eq!(
+        output.lines().next().unwrap(),
+        format!("{third}  folder {} · stopped", folder.display())
     );
+    assert!(
+        output.contains("warning: role `dev` now has 3 kept copies, over its max of 2"),
+        "{output}"
+    );
+    assert!(env.rows(third).iter().all(|r| r["member"].is_null()));
+    env.ok(&["delete", third]);
     for copy in [&first, &second] {
         env.ok(&["start", copy]);
         env.wait_for("copy lead idle", || env.state_of(copy, "lead") == "idle");
@@ -551,8 +560,15 @@ fn team_copies_share_the_tree_store_and_keep_separate_slots_until_deleted() {
         );
     }
     env.ok(&["stop", &first]);
-    let refused = env.fails(&["create", &format!("{dept}/dev")]);
-    assert!(refused.contains(&first) && refused.contains(&second));
+    let out = env.ok(&["create", &format!("{dept}/dev")]);
+    assert!(
+        stdout(&out).contains("3 kept copies, over its max of 2"),
+        "{}",
+        both(&out)
+    );
+    let output = stdout(&out);
+    let extra = output.split_whitespace().next().unwrap();
+    env.ok(&["delete", extra]);
     assert_eq!(env.state_of(&second, "lead"), "idle");
     env.ok(&["delete", &first, "--force"]);
     let (replacement, _) = create_copy(&env, &dept, "dev");

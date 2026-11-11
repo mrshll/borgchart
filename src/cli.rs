@@ -41,7 +41,7 @@ enum Command {
     },
     /// Make something new: an instance of a team working in a folder
     /// (`create <team> [folder]`, the current folder by default), or a member
-    /// of a role (`create <instance>/<role>`, up to its max of kept members).
+    /// of a role (`create <instance>/<role>`, warning past its max of kept members).
     /// Team-role copies are created stopped; start them with `brg start`.
     /// Agent members and top-level instances are started. With a bus, a child role's parent role must have a member.
     /// For a role target with a bus, a member caller must be an ancestor,

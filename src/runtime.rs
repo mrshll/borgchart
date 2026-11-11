@@ -1635,21 +1635,47 @@ pub fn create_member(
     crate::nesting::check_not_stopping(&inst)?;
     check_parent_authority(&inst, role, Some(&v), None)?;
     let existing = inst.record.members_of(role);
-    if existing.len() >= member.max {
-        if member.max == 1 && existing.len() == 1 {
-            return Err(format!(
-                "role `{role}` already has its member `{}` (max: 1), running or stopped; start it with `brg start {}`",
-                existing[0],
-                inst.at(&existing[0])
+    if let Some(first) = existing.first() {
+        let children: Vec<_> = v
+            .team
+            .roles
+            .iter()
+            .map(|(id, child)| (id, child.parent.as_deref()))
+            .chain(
+                v.team
+                    .team_roles
+                    .iter()
+                    .map(|(id, child)| (id, child.parent.as_deref())),
+            )
+            .filter(|(_, parent)| *parent == Some(role))
+            .map(|(id, _)| format!("`{id}`"))
+            .collect();
+        let plugins: Vec<_> = v
+            .team
+            .plugins
+            .iter()
+            .filter(|(_, plugin)| plugin.delivers_to.as_deref() == Some(role))
+            .map(|(id, _)| format!("`{id}`"))
+            .collect();
+        let mut reasons = Vec::new();
+        if !children.is_empty() {
+            reasons.push(format!("a parent role (of {})", children.join(", ")));
+        }
+        if !plugins.is_empty() {
+            reasons.push(format!(
+                "a `delivers_to` target (of plugins {})",
+                plugins.join(", ")
             ));
         }
-        return Err(format!(
-            "role `{role}` already has {} kept members (max: {}), running or stopped: {}; delete a stopped member before creating another",
-            existing.len(),
-            member.max,
-            existing.join(", ")
-        ));
+        if !reasons.is_empty() {
+            return Err(format!(
+                "role `{role}` already has its member `{first}`: it is {}, which keeps one member so parent lookup and plugin delivery stay unambiguous; start it with `brg start {}`",
+                reasons.join(" and "),
+                inst.at(first)
+            ));
+        }
     }
+    let count = existing.len() + 1;
     let id = inst.record.issue_member(role, name, |id| is_role(&v, id))?;
     let added: Vec<_> = create_worktree(&inst, member, &id, branch, start.as_ref())?
         .map(|dir| (id.clone(), dir))
@@ -1657,6 +1683,12 @@ pub fn create_member(
         .collect();
     lock.save_instance(&inst.state, &inst.record)?;
     let mut outcome = start_members(lock, &inst, &v, vec![id.clone()], false, false)?;
+    if count > member.max {
+        outcome.notes.push(format!(
+            "warning: role `{role}` now has {count} kept members, over its max of {}",
+            member.max
+        ));
+    }
     if let Some(start) = start {
         outcome.tree = outcome
             .tree

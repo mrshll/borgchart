@@ -48,7 +48,7 @@ roles:
     vendor: claude              # optional; default from `default`
     parent: lead                # optional; another role
     start: true                 # optional; false = its member is made with `brg create <instance>/triager`
-    max: 1                      # optional; limit on kept members, running or stopped (default 1)
+    max: 1                      # optional; advisory count of kept members, running or stopped (default 1)
     posture: locked             # optional: vendor (default) | locked
     worktree: false             # optional: true = each member gets its own git worktree
     args: []                    # optional: extra vendor launch arguments
@@ -85,7 +85,7 @@ A team role accepts only `team`, `parent`, `start`, `max` and `worktree`. Agent 
 
 New copies resolve team names through the current catalog. Each copy records its source folder and reads its current files when a member starts. If a kept copy's source folder is gone, starting it errors without looking up a replacement by name. Explicit `start <copy> --team <path>` remains available to recover a moved folder.
 
-**Parents.** A `parent` must be another agent role with `max: 1`, and parent links can't form a cycle. A plugin's `delivers_to:` also requires a `max: 1` agent role. A member's parent is the member of its parent role. Messages a plugin routes "to the parent" go along this edge. A person may manage anything; a member at its latest running start may create, start, stop or delete anything in its subtree. Authority follows recorded parent edges within instances and across copies, at every depth, and is checked under the registry lock with the caller's start in its own instance. Members cannot manage themselves, ancestors, siblings or independent instances. A copy's roots cannot manage their own copy or each other. Stopped, replaced and incomplete starts are refused. Creating a child requires its parent role to have a member.
+**Parents.** A `parent` must be another agent role with `max: 1`, and parent links can't form a cycle. A plugin's `delivers_to:` also requires a `max: 1` agent role. These roles keep only one member so parent lookup and plugin delivery stay unambiguous; other roles warn and proceed when created past `max`. A member's parent is the member of its parent role. Messages a plugin routes "to the parent" go along this edge. A person may manage anything; a member at its latest running start may create, start, stop or delete anything in its subtree. Authority follows recorded parent edges within instances and across copies, at every depth, and is checked under the registry lock with the caller's start in its own instance. Members cannot manage themselves, ancestors, siblings or independent instances. A copy's roots cannot manage their own copy or each other. Stopped, replaced and incomplete starts are refused. Creating a child requires its parent role to have a member.
 
 **`env`.** A map of names (`{A: , B: value}`); a name without a value is a secret. Secrets come from the environment `brg create` or `brg start` runs in: brg stores none. `brg secret <team>` lists them and whether each is set.
 
