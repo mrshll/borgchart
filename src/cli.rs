@@ -92,7 +92,9 @@ enum Command {
         /// `<instance>`, or `<instance>/<member>`.
         #[arg(add = crate::complete::targets())]
         target: String,
-        /// Point a stopped instance at its team folder's new place.
+        /// Point a stopped instance or copy at a moved or renamed team folder,
+        /// keeping its ID and messages. The new team must retain every kept
+        /// member's agent role, every kept copy's team role and their parents.
         #[arg(long)]
         team: Option<PathBuf>,
         /// Reopen each member's last vendor session instead of starting a new
