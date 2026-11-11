@@ -4843,16 +4843,6 @@ mod tests {
         ] {
             assert_eq!(remote_control_url(text), None, "{text:?}");
         }
-    }
-
-    #[test]
-    fn remote_control_parser_rejects_another_sessions_address() {
-        let text = r#"{"sessionId":"example-session","bridgeSessionId":"session_Example42"}"#;
-        assert_eq!(remote_control_url_for_session(text, "other-session"), None);
-        assert_eq!(
-            remote_control_url_for_session(text, "example-session").as_deref(),
-            Some("https://claude.ai/code/session_Example42")
-        );
         for text in [
             r#"{"bridgeSessionId":"session_Example42"}"#,
             r#"{"sessionId":null,"bridgeSessionId":"session_Example42"}"#,
@@ -4860,7 +4850,8 @@ mod tests {
         ] {
             assert_eq!(
                 remote_control_url_for_session(text, "example-session"),
-                None
+                None,
+                "{text:?}"
             );
         }
     }

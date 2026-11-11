@@ -72,7 +72,7 @@ fn remote_control_refuses_codex_members() {
         "  lead:\n",
         "  lead:\n    vendor: codex\n    remote_control: true\n",
     );
-    refused(&f);
+    expect_error(&f, "remote_control");
 }
 
 #[test]
@@ -84,7 +84,7 @@ fn remote_control_refuses_api_key_auth() {
         "  lead:\n    remote_control: true\n",
     );
     f.write("config.yaml", "schema: 1\nauth: api_key\n");
-    refused(&f);
+    expect_error(&f, "remote_control");
 }
 
 #[test]
