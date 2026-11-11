@@ -62,7 +62,7 @@ Then write one plan from the proposals: for each material choice, which proposal
 
 ## Start a workstream
 
-1. **Create the copy** from the `dev` role, with its worktree on the new branch its work needs (or detached, for a branch the copy creates). In a folder of clones, name its clone with `--repo <name>`: one dev copy per repository, and you sequence the copies. Note the copy's ID and its worktree.
+1. **Create the copy** from the `dev` role, with its worktree on the new branch its work needs (or detached, for a branch the copy creates). In a folder of clones, name its clone with `--repo <name>`: one dev copy per repository, and you sequence the copies. Name the copy for its task with `--name`: a few lowercase words joined by hyphens, leading with the repository in a folder of clones (`--name widgets-rounding-fix`). Note the copy's ID and its worktree.
 2. **Prepare it:** inside the new worktree, do any per-checkout identity setup your owner's instructions describe.
 3. **Seat-check, then start it.** Check `status` shows its lead started; if it's `blocked`, tell the owner, and don't create a replacement.
 4. **Brief its lead** (see "Brief and follow"). Its full address is in `status`.

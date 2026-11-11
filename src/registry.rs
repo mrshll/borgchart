@@ -35,6 +35,35 @@ pub fn is_suffix(s: &str) -> bool {
     s.len() == SUFFIX_LEN && s.bytes().all(|b| ALPHABET.contains(&b))
 }
 
+/// The longest name `create --name` takes.
+pub const NAME_MAX: usize = 24;
+
+/// Whether `name` can follow a role in an ID: lowercase letters and digits,
+/// in words joined by single hyphens, at most [`NAME_MAX`] characters.
+pub fn check_name(name: &str) -> Result<(), String> {
+    let words = name.split('-').all(|w| {
+        !w.is_empty()
+            && w.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+    });
+    if words && name.len() <= NAME_MAX {
+        return Ok(());
+    }
+    Err(format!(
+        "`--name {name}` doesn't fit: use lowercase letters and digits in words joined by single hyphens, at most {NAME_MAX} characters, like `rounding-fix`"
+    ))
+}
+
+/// Whether `id` is one brg issues for `role`: `<role>-<suffix>`, or
+/// `<role>-<name>` from `create --name`.
+pub fn is_id_of(id: &str, role: &str) -> bool {
+    crate::names::is_valid_member_id(id)
+        && id
+            .strip_prefix(role)
+            .and_then(|rest| rest.strip_prefix('-'))
+            .is_some_and(|name| check_name(name).is_ok())
+}
+
 /// `<base>-<suffix>` split from the right, so a base with `-` in it works:
 /// `dev-team-k3f9` is (`dev-team`, `k3f9`).
 pub fn split_id(id: &str) -> Option<(&str, &str)> {
@@ -190,15 +219,26 @@ impl InstanceRecord {
             .map(|m| m.role.as_str())
     }
 
-    /// Issue a team-role copy, preserving its suffix after deletion.
-    pub fn issue_copy(&mut self, role: &str) -> Result<String, String> {
-        let suffix = new_suffix(|s| {
-            self.members
-                .keys()
-                .chain(self.copies.keys())
-                .any(|id| split_id(id).is_some_and(|(_, issued)| issued == s))
-        })?;
-        let id = format!("{role}-{suffix}");
+    /// Issue a team-role copy, preserving its suffix after deletion:
+    /// `<role>-<name>` when named, else a random suffix no member or copy has.
+    pub fn issue_copy(
+        &mut self,
+        role: &str,
+        name: Option<&str>,
+        is_role: impl Fn(&str) -> bool,
+    ) -> Result<String, String> {
+        let id = match name {
+            Some(name) => self.named(role, name, is_role)?,
+            None => {
+                let suffix = new_suffix(|s| {
+                    self.members
+                        .keys()
+                        .chain(self.copies.keys())
+                        .any(|id| split_id(id).is_some_and(|(_, issued)| issued == s))
+                })?;
+                format!("{role}-{suffix}")
+            }
+        };
         self.copies.insert(
             id.clone(),
             IssuedMember {
@@ -210,21 +250,27 @@ impl InstanceRecord {
         Ok(id)
     }
 
-    /// Issue a new member of `role`: `<role>-<suffix>`, never one this
-    /// instance issued before.
+    /// Issue a new member of `role`: `<role>-<name>` when named, else
+    /// `<role>-<suffix>`, never one this instance issued before.
     pub fn issue_member(
         &mut self,
         role: &str,
+        name: Option<&str>,
         is_role: impl Fn(&str) -> bool,
     ) -> Result<String, String> {
-        let suffix = new_suffix(|s| {
-            is_role(&format!("{role}-{s}"))
-                || self
-                    .members
-                    .keys()
-                    .any(|id| split_id(id).is_some_and(|(_, t)| t == s))
-        })?;
-        let id = format!("{role}-{suffix}");
+        let id = match name {
+            Some(name) => self.named(role, name, is_role)?,
+            None => {
+                let suffix = new_suffix(|s| {
+                    is_role(&format!("{role}-{s}"))
+                        || self
+                            .members
+                            .keys()
+                            .any(|id| split_id(id).is_some_and(|(_, t)| t == s))
+                })?;
+                format!("{role}-{suffix}")
+            }
+        };
         self.members.insert(
             id.clone(),
             IssuedMember {
@@ -233,6 +279,37 @@ impl InstanceRecord {
                 cwd: None,
             },
         );
+        Ok(id)
+    }
+
+    /// `<role>-<name>`, if it is a valid ID that no role, member or copy of
+    /// this instance has or had, and `name` isn't a random suffix it issued.
+    fn named(
+        &self,
+        role: &str,
+        name: &str,
+        is_role: impl Fn(&str) -> bool,
+    ) -> Result<String, String> {
+        check_name(name)?;
+        let id = format!("{role}-{name}");
+        if !crate::names::is_valid_member_id(&id) {
+            return Err(format!(
+                "`{id}` is longer than 40 characters; choose a shorter name"
+            ));
+        }
+        if is_role(&id) {
+            return Err(format!(
+                "`{id}` is the name of a role in this team; choose another name"
+            ));
+        }
+        let mut issued = self.members.keys().chain(self.copies.keys());
+        if let Some(taken) = issued.find(|taken| {
+            **taken == id || split_id(taken).is_some_and(|(_, suffix)| suffix == name)
+        }) {
+            return Err(format!(
+                "`{id}` can't be issued: `{taken}` was issued before in this instance, and IDs are never reused, even after delete; choose another name"
+            ));
+        }
         Ok(id)
     }
 }
@@ -446,7 +523,7 @@ mod tests {
         // though no issued member has that suffix yet.
         let role = std::cell::OnceCell::new();
         let member = record
-            .issue_member("code-review", |candidate| {
+            .issue_member("code-review", None, |candidate| {
                 role.get_or_init(|| candidate.to_string()) == candidate
             })
             .unwrap();
@@ -477,11 +554,90 @@ mod tests {
             stopping: false,
             copies_running_at_stop: None,
         };
-        let a = r.issue_member("my-role", |_| false).unwrap();
+        let a = r.issue_member("my-role", None, |_| false).unwrap();
         let (role, suffix) = split_id(&a).unwrap();
         assert_eq!(role, "my-role");
         assert!(is_suffix(suffix));
         assert_eq!(r.members_of("my-role"), vec![a.clone()]);
         assert_eq!(r.role_of(&a), Some("my-role"));
+    }
+
+    #[test]
+    fn names_are_lowercase_words_up_to_the_cap() {
+        for name in [
+            "rounding-fix",
+            "k3f9",
+            "v2-docs",
+            "a",
+            &"a".repeat(NAME_MAX),
+        ] {
+            assert!(check_name(name).is_ok(), "{name}");
+        }
+        let long = "a".repeat(NAME_MAX + 1);
+        for name in [
+            "",
+            "Rounding",
+            "rounding_fix",
+            "-fix",
+            "fix-",
+            "a--b",
+            "a.b",
+            &long,
+        ] {
+            let err = check_name(name).unwrap_err();
+            assert!(err.contains("at most 24"), "{name}: {err}");
+        }
+    }
+
+    #[test]
+    fn named_ids_are_issued_once_in_the_instance() {
+        let mut r = InstanceRecord {
+            schema: SCHEMA,
+            id: "t-2222".into(),
+            team: "t".into(),
+            team_dir: "/x".into(),
+            folder: "/y".into(),
+            created_at: "now".into(),
+            members: BTreeMap::new(),
+            copies: BTreeMap::new(),
+            parent: None,
+            running_at_stop: None,
+            stopping: false,
+            copies_running_at_stop: None,
+        };
+        let no_roles = |_: &str| false;
+        let id = r
+            .issue_member("helper", Some("rounding-fix"), no_roles)
+            .unwrap();
+        assert_eq!(id, "helper-rounding-fix");
+        assert_eq!(r.role_of(&id), Some("helper"));
+        r.members.get_mut(&id).unwrap().deleted = true;
+        for err in [
+            r.issue_member("helper", Some("rounding-fix"), no_roles),
+            r.issue_copy("helper", Some("rounding-fix"), no_roles),
+        ] {
+            assert!(err.unwrap_err().contains("issued before"));
+        }
+        let copy = r.issue_copy("dev", Some("make-install"), no_roles).unwrap();
+        assert_eq!(copy, "dev-make-install");
+        let err = r
+            .issue_member("dev", Some("make-install"), no_roles)
+            .unwrap_err();
+        assert!(err.contains("issued before"), "{err}");
+        // A random suffix stays unique in the instance, so a name can't take one.
+        let lead = r.issue_member("lead", None, no_roles).unwrap();
+        let suffix = split_id(&lead).unwrap().1.to_string();
+        let err = r
+            .issue_member("helper", Some(&suffix), no_roles)
+            .unwrap_err();
+        assert!(err.contains(&lead), "{err}");
+        let err = r
+            .issue_member("code", Some("review"), |id| id == "code-review")
+            .unwrap_err();
+        assert!(err.contains("role"), "{err}");
+        let err = r
+            .issue_member(&"r".repeat(32), Some("rounding-fix"), no_roles)
+            .unwrap_err();
+        assert!(err.contains("40"), "{err}");
     }
 }

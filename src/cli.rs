@@ -75,6 +75,11 @@ enum Command {
         /// tree's folder and fetch origin's default branch before creating.
         #[arg(long)]
         repo: Option<String>,
+        /// For a role: make the new ID `<role>-<name>`, named for its task,
+        /// instead of a random suffix: lowercase words joined by hyphens, at
+        /// most 24 characters, never one issued before in the instance.
+        #[arg(long)]
+        name: Option<String>,
     },
     /// Bring an instance to what should be running, or start one member.
     /// Restore copies that ran at the last full stop, recursively. Finish
@@ -404,9 +409,15 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
             folder,
             branch,
             repo,
+            name,
         } => {
             let team_like = crate::team::is_path(&target) || !target.contains('/');
-            let result = if team_like {
+            let result = if team_like && name.is_some() {
+                Err(
+                    "`--name` names a new member or copy, not an instance: brg create <instance>/<role> --name <name>"
+                        .to_string(),
+                )
+            } else if team_like {
                 match branch
                     .as_ref()
                     .map(|_| "--branch")
@@ -422,9 +433,13 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
                     Ok(_) if folder.is_some() => Err(format!(
                         "`{target}` names a role, which takes no folder: its member works in the instance's folder"
                     )),
-                    Ok((inst, Target::Role(role))) => {
-                        runtime::create_member(inst, &role, branch.as_deref(), repo.as_deref())
-                    }
+                    Ok((inst, Target::Role(role))) => runtime::create_member(
+                        inst,
+                        &role,
+                        name.as_deref(),
+                        branch.as_deref(),
+                        repo.as_deref(),
+                    ),
                     Ok((inst, Target::Member(m))) => Err(format!(
                         "`create` takes a role, not a member; `{m}` exists already: brg start {}",
                         inst.at(&m)

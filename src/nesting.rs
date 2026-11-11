@@ -65,6 +65,7 @@ pub fn create(
     mut inst: Instance,
     v: &Validated,
     role_name: &str,
+    name: Option<&str>,
     role: &TeamRole,
     branch: Option<&str>,
     start: Option<&crate::worktree::Start>,
@@ -95,7 +96,9 @@ pub fn create(
         ));
     }
     crate::team::find(&role.name, &v.config.teams)?;
-    let id = inst.record.issue_copy(role_name)?;
+    let id = inst
+        .record
+        .issue_copy(role_name, name, |id| crate::runtime::is_role(v, id))?;
     let full_id = inst.at(&id);
     let folder = if role.worktree {
         crate::worktree::path(&full_id)
