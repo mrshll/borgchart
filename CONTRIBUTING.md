@@ -83,20 +83,22 @@ Then create an instance from a checkout of the repository: `cd <checkout>; brg c
 
 ### Installing from a checkout
 
-A team that works on this repository shouldn't run from the checkout it edits: a half-finished change to brg or to a role file would take effect at the next start. Install a separate copy from a checkout:
+A team that works on this repository should use binaries and team files from a separate checkout: a half-finished change to brg or to a role file would take effect at the next start. Install the binaries from that separate checkout:
 
 ```sh
 make install
 ```
 
-This builds the workspace release binaries with `--locked`, copies `brg`, `borgchart` and `brg-seat` into `$HOME/.local/share/brg/bin/`, replaces `teams/` with the checkout's team files, and records `git rev-parse HEAD` in `REVISION`. Each binary is copied to a temporary name beside its destination and renamed into place, so readers see a complete file and running processes keep their old inode. The team files are copied before the old directory is removed and the new one renamed into place; `teams/` is briefly missing. Linux builds use `tools/cargo-slot` when executable; other systems use cargo directly.
+This builds the workspace release binaries with `--locked`, copies `brg`, `borgchart` and `brg-seat` into `$HOME/.local/share/brg/bin/`, and records `git rev-parse HEAD` in `$HOME/.local/share/brg/REVISION`. Each binary is copied to a temporary name beside its destination and renamed into place, so readers see a complete file and running processes keep their old inode. Linux builds use `tools/cargo-slot` when executable; other systems use cargo directly.
 
 `PREFIX` changes the parent of `brg/` (default `$HOME/.local/share`); `BINDIR` changes where the `brg`, `borgchart` and `brg-seat` symlinks go (default `$HOME/.local/bin`). For example, `make install PREFIX="$HOME/apps" BINDIR="$HOME/bin"`. Use absolute paths. The links point directly at `$PREFIX/brg/bin/<name>` and are replaced with `ln -sfn`. Keep `BINDIR` on `PATH`.
 
-The installer prints the `teams:` line to add once to your brg configuration and never edits that file. With the default prefix, use:
+The installer leaves team files and brg's configuration alone. Set `teams:` in that configuration to point straight at a checkout's `teams/` folder, which follows whatever that checkout has checked out. You may list several catalogs:
 
 ```text
-teams: [~/.local/share/brg/teams]
+teams: [~/workspace/<checkout>/teams, ~/<other>/teams]
 ```
 
-A running tree meets the installed binary and team files at its next brg call or next new member, by design. To move a tree started from an old per-revision directory, use the new binary to run `brg stop <instance>`, then `brg start <instance> --team "$HOME/.local/share/brg/teams/<team>" --resume`. That repoints only the named instance: kept copies retain their recorded team folders and each needs its own full stop and `start --team <new-team-folder> --resume`, working from parent to child; keep the old installation until every copy has moved.
+A team name found in two listed catalogs is refused as ambiguous; for a command, name the team by its path instead. A team file's `team: <name>` role takes no path, so the listed catalogs must not share a team name that a team file refers to.
+
+A running tree meets the installed binary and team files at its next brg call or next new member, by design. To move a tree started from an old per-revision directory, use the new binary to run `brg stop <instance>`, then `brg start <instance> --team "<checkout>/teams/<team>" --resume`. That repoints only the named instance: kept copies retain their recorded team folders and each needs its own full stop and `start --team <new-team-folder> --resume`, working from parent to child; keep the old installation until every copy has moved.
