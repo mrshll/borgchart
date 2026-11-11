@@ -17,7 +17,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, ubuntu-24.04, macos-15]
+        # macOS runs only on pushes to main; pull requests are gated on Linux.
+        os: ${{ github.event_name == 'push' && fromJSON('["ubuntu-22.04", "ubuntu-24.04", "macos-15"]') || fromJSON('["ubuntu-22.04", "ubuntu-24.04"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

@@ -2,7 +2,7 @@
 
 ## Checks
 
-Four checks must pass before a change merges. CI runs the Rust checks on Linux and macOS, and the Python tests on Linux. `make check` runs the quick checks (`fmt clippy fast`); `make test` runs the full checks. They use the same script as the git hooks and CI:
+Four checks must pass before a change merges. CI runs the Rust checks on Linux for pull requests and on Linux and macOS for pushes to main, and the Python tests on Linux. `make check` runs the quick checks (`fmt clippy fast`); `make test` runs the full checks. They use the same script as the git hooks and CI:
 
 ```
 .githooks/checks              # all four: fmt, clippy, test, py
