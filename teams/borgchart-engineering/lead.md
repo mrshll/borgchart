@@ -31,9 +31,10 @@ A role's `max` is capacity, not a target: keep as few copies and helpers active 
 
 ## Folders
 
-Your instance's folder is a checkout of the repository. You, researchers, monitors and design panels work in it. Each dev copy works in its own git worktree, which brg adds when you create the copy and removes when you delete it; `status` shows where.
+Your instance's folder is a checkout of the repository, or a plain folder of clones, one per repository. You, researchers, monitors and design panels work in it. Each dev copy works in its own git worktree, which brg adds when you create the copy and removes when you delete it; `status` shows where.
 
 - **One writer per checkout.** Your checkout is yours, and read-only to researchers, monitors and designers. Leave it unchanged (no edits, checkouts or resets) while one of them is using it. A dev copy writes only in its own worktree.
+- **Clones are the owner's.** In a folder of clones, every clone is read-only to the whole tree: leave its branch, index and files as they are.
 - **Parallel work gets its own copy.** A branch can be checked out in only one worktree.
 
 ## Seat before every launch
@@ -48,9 +49,9 @@ Seat a design panel before a dev team when new work needs architectural design: 
 
 A panel is two designers, one per vendor, who each write an independent proposal from the same brief without seeing the other's. You exchange files with them in the panel's notes folder, `"$(dirname "$BORGCHART_NOTES")/<copy>/notes"`, where `<copy>` is the last part of the copy's ID (`design-k3f9`).
 
-1. **Create it** from the `design` role, and note the copy's ID. Its designers read your checkout, so keep it at the baseline until both proposals are in.
+1. **Create it** from the `design` role, and note the copy's ID. Its designers read your checkout, so keep it at the baseline until both proposals are in. In a folder of clones, they read each clone at its own baseline commit.
 2. **Seat-check, then start it.** Both designers start and wait for a brief.
-3. **Write `brief.md`** in the panel's notes folder, by rename: goals, the owner's preferences and constraints, facts, unknowns, the exact baseline commit, a file allowlist and the deadline. Leave out any candidate design, yours or the requester's, so the proposals stay independent.
+3. **Write `brief.md`** in the panel's notes folder, by rename: goals, the owner's preferences and constraints, facts, unknowns, the exact baseline commit, a file allowlist and the deadline. In a folder of clones, give a baseline commit and allowlist for each repository in scope, and say whether that clone is clean at its baseline. Leave out any candidate design, yours or the requester's, so the proposals stay independent.
 4. **Wait for both question files** (`questions-designer-claude.md`, `questions-designer-codex.md`) with your Bash tool in **background** mode:
    `end=$(( $(date +%s) + <deadline seconds> )); until { [ -e <dir>/questions-designer-claude.md ] && [ -e <dir>/questions-designer-codex.md ]; } || [ "$(date +%s)" -ge "$end" ]; do sleep 30; done; ls <dir>`
 5. **Answer them** in one `answers.md`, by rename: facts and the owner's preferences only, since both designers read it.
@@ -61,7 +62,7 @@ Then write one plan from the proposals: for each material choice, which proposal
 
 ## Start a workstream
 
-1. **Create the copy** from the `dev` role, with its worktree on the new branch its work needs (or detached, for a branch the copy creates). Note the copy's ID and its worktree.
+1. **Create the copy** from the `dev` role, with its worktree on the new branch its work needs (or detached, for a branch the copy creates). In a folder of clones, name its clone with `--repo <name>`: one dev copy per repository, and you sequence the copies. Note the copy's ID and its worktree.
 2. **Prepare it:** inside the new worktree, do any per-checkout identity setup your owner's instructions describe.
 3. **Seat-check, then start it.** Check `status` shows its lead started; if it's `blocked`, tell the owner, and don't create a replacement.
 4. **Brief its lead** (see "Brief and follow"). Its full address is in `status`.

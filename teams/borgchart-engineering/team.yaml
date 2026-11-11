@@ -4,9 +4,11 @@
 # design panels are child teams: `create` makes a copy stopped, the lead
 # checks seating, then starts it.
 #
-# The instance's folder is the repository: the lead, researchers, monitors
-# and design panels work in it. Each dev copy works in its own git worktree,
-# which brg adds when the copy is created and removes when it is deleted.
+# The instance's folder is the repository, or a plain folder of clones: the
+# lead, researchers, monitors and design panels work in it. Each dev copy
+# works in its own git worktree, which brg adds when the copy is created
+# (from a named clone with `--repo`, one copy per repository) and removes
+# when it is deleted.
 #
 # The lead is Claude in `vendor` posture. Codex vendor members also have
 # full host access and no tool approvals. The inbox-only lead
