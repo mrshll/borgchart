@@ -40,6 +40,8 @@ Directories must be real, owned by you and private (0700; files 0600). Immutable
 
 Inside a member use `"$BORGCHART_BIN"`, the brg that started it. Its instance, member and start ID come from `BORGCHART_INSTANCE`, `BORGCHART_MEMBER` and `BORGCHART_INCARNATION`. Outside a member, `msg list`, `msg read`, `msg ack`, `msg wait` and `msg check` require `--instance ID`; inside one that option may only repeat its own instance. `msg send` takes the instance in its target address. Without team context, outside callers default to `external:owner`; `--external NAME` overrides it. Instance-only plugin processes must still name `--external NAME` to send, ack or wait.
 
+Team context means any nonempty `BORGCHART_INSTANCE`, `BORGCHART_MEMBER`, `BORGCHART_INCARNATION`, `BORGCHART_ROLE`, `BORGCHART_NOTES` or `BORGCHART_PARENT`. Member variables without the complete instance, member and start identity are refused as incomplete member context, including when only role, notes or parent remains.
+
 - Members send to their parent or children, by full member ID. Only root members of the tree's root instance may also send to `external:NAME`.
 - A copy's root members and their parent in the enclosing instance can also send across their parent edge. Use the full `instance/member` address; a copy's roots receive their parent's address in `BORGCHART_PARENT`.
 - Outside callers may use `--external NAME` and may send to any kept member in the tree after its first start. Their replies go to `external:NAME` (`external:owner` by default without team context). That flag is refused inside a member.
