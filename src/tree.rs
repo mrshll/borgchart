@@ -62,7 +62,7 @@ pub type Rgb = (u8, u8, u8);
 pub mod palette {
     use super::Rgb;
     /// Working rows, whatever their vendor.
-    pub const BUSY: Rgb = (0x2f, 0x8f, 0x46);
+    pub const BUSY: Rgb = (0x1f, 0x93, 0x9a);
     pub const ALERT: Rgb = (0xc0, 0x4a, 0x4a);
     pub const ODD: Rgb = (0x90, 0x7a, 0xa9);
     /// Furniture, details and rows that are not running.
