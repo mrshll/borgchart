@@ -59,8 +59,8 @@ under its parent instance, independently of where its team definition is stored.
   - `brg secret <team>` lists the secret names the team's plugins need, and whether each is set in your environment. It stores and prints no values.
   - Members' windows start from a small base environment, so secrets don't reach them that way. The one exception is the vendor's own key: with `auth: api_key`, brg passes `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` to that vendor's members by name, and with `login` it passes neither. A plugin receives a secret only when its `env` names it: brg writes it to that plugin's private file (mode 0600), which the plugin's shims read, and removes the file at stop.
   - **0600 keeps other users out, not the members.** Members run as you. A member that isn't `locked` and has shell or file access could read that file while it exists. Only `locked` members are kept from it, by their gate.
-- **Prompts** come only from the team: each role file and the includes it names. The vendor's own instruction files load as normal (`~/.claude/CLAUDE.md`, the repo's `CLAUDE.md`, `AGENTS.md`). brg neither adds nor suppresses anything else.
-  - **Standing rules** go in the team's own files, without repeating what the vendors' files already give every member. There's no separate overlay for local rules.
+- **Prompts** come only from the team: each role file, the includes it names and any other team's role file it names. The vendor's own instruction files load as normal (`~/.claude/CLAUDE.md`, the repo's `CLAUDE.md`, `AGENTS.md`). brg neither adds nor suppresses anything else.
+  - **Standing rules** go in the team's own files, without repeating what the vendors' files already give every member. To layer local rules on a shared team, keep a complete team of your own whose role files include the shared ones with `{{teams/<team>/<role>}}` and add your lines after.
 - **Context for one piece of work,** such as a tracking issue or a handover note, goes to the lead in a message. It isn't configuration.
 
 ## Commands

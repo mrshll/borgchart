@@ -24,7 +24,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Check a team folder and brg's configuration without starting anything.
+    /// Check a team folder and brg's configuration without starting anything,
+    /// and list the files each agent role's instruction is read from.
     Validate {
         /// The team: its name in the search paths, or a path to its folder
         /// (starting with `/`, `./`, `../` or `~/`).
@@ -760,11 +761,26 @@ fn run_validate(team: &str, json: bool, probe: bool) -> ExitCode {
         crate::probe::probe(v, &mut report);
     }
     if json {
-        let out = serde_json::json!({
+        let mut out = serde_json::json!({
             "ok": !report.has_errors(),
             "errors": report.errors().collect::<Vec<_>>(),
             "warnings": report.warnings().collect::<Vec<_>>(),
         });
+        if let Some(v) = &validated {
+            out["roles"] = v
+                .team
+                .roles
+                .iter()
+                .map(|(id, role)| {
+                    let sources: Vec<String> = role
+                        .sources
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect();
+                    (id.clone(), serde_json::json!({ "sources": sources }))
+                })
+                .collect();
+        }
         println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
     } else {
         for diag in &report.diags {
@@ -782,6 +798,14 @@ fn run_validate(team: &str, json: bool, probe: bool) -> ExitCode {
                     String::new()
                 }
             );
+            for (id, role) in &v.team.roles {
+                let sources: Vec<String> = role
+                    .sources
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect();
+                println!("  {id}: {}", sources.join(", "));
+            }
         }
     }
     if report.has_errors() {

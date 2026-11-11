@@ -119,7 +119,23 @@ You read each new message in the channel and decide whether it needs the lead.
   - Model names are passed to the vendor unchanged.
 - **The body** is the member's standing instruction, sent as its opening prompt.
 - **Includes:** a line that is exactly `{{includes/<stem>}}` is replaced by `<includes>/<stem>.md`. Includes are one level deep: an included file can't include another.
-- **Paths:** prompts, includes and plugin paths must stay inside the team directory. `..` and symlinks that lead outside are refused.
+- **Another team's role file:** a line that is exactly `{{teams/<team>/<role>}}` is replaced by the body of that role's file. Its includes resolve in its own team, and its frontmatter is left out.
+  - The team is found by name, like a `team:` reference. A file reached this way, and any include, can't use the directive.
+  - The size limit covers the result. Nothing is pinned: if the team goes missing or becomes ambiguous, every command that reads the including team refuses, `status` included. `validate` lists each role's files in order.
+- **Paths:** prompts, includes and plugin paths must stay inside the team directory, and another team's role file inside its own. `..` and symlinks that lead outside are refused.
+
+### Reusing a shared team
+
+A private team can be a shared one plus additions, kept in a catalog of your own listed beside the shared one under `teams:`. Its `team.yaml` is a complete team file: it declares the roles and plugins the shared text relies on, plus its own (say an `oncall` plugin and a `support` sub-team). Child teams such as `dev-team` resolve by name across both catalogs. Each role file takes the shared text with one line and adds its own:
+
+```markdown
+---
+models: {claude: opus high}
+---
+{{teams/engineering/lead}}
+
+When a release is blocked, page the on-call engineer with `oncall page <text>`.
+```
 
 ## Plugins
 

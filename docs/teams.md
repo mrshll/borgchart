@@ -58,6 +58,7 @@ You are the implementer on a development team. The lead assigns you one bounded 
 - **`models`:** pins a model, and optionally an effort, per vendor. Only the member's own vendor needs an entry; `teams/dev-team/` names both, so moving a member to the other vendor is a one-line change to its `vendor:` in `team.yaml`.
 - **Body:** the standing instruction. It's sent once, when the member starts.
 - **Includes:** one level deep.
+- **Another team's role file:** a line `{{teams/<team>/<role>}}` takes that role's instruction body wholesale, so a private team can reuse a shared lead and add its own lines ([format](format.md#reusing-a-shared-team)).
 
 ### Instances
 

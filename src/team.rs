@@ -336,6 +336,9 @@ pub struct Role {
     pub prompt_sha256: String,
     /// The member body with includes resolved: its standing instruction.
     pub instruction: String,
+    /// The files its instruction was read from, in order: the role file,
+    /// then each include and other team's role file where it appears.
+    pub sources: Vec<PathBuf>,
     /// Extra arguments for the vendor CLI.
     pub args: Vec<String>,
     /// Each member works in its own git worktree, which brg adds when it
@@ -594,6 +597,7 @@ pub(crate) fn load_with(
         }
         if let Some(member) = load_role(
             dir,
+            search,
             &team_file,
             &includes_dir,
             default_vendor,
@@ -892,6 +896,7 @@ fn load_team_role(
 #[allow(clippy::too_many_arguments)]
 fn load_role(
     dir: &Path,
+    search: &[PathBuf],
     team_file: &Path,
     includes_dir: &str,
     default_vendor: Vendor,
@@ -1015,11 +1020,18 @@ fn load_role(
     let mut model = None;
     let mut instruction = String::new();
     let mut prompt_sha256 = String::new();
+    let mut sources = Vec::new();
     if let Some(prompt_path) = &prompt_path {
         let shown = dir.join(prompt);
-        if let Some((front, body, sha)) =
-            read_role_file(dir, includes_dir, &shown, prompt_path, report)
-        {
+        if let Some((front, body, sha)) = read_role_file(
+            dir,
+            includes_dir,
+            &shown,
+            prompt_path,
+            Reach::Own(search),
+            &mut sources,
+            report,
+        ) {
             prompt_sha256 = sha;
             let configured = match vendor {
                 Vendor::Claude => front.models.claude,
@@ -1061,9 +1073,19 @@ fn load_role(
         prompt_file: dir.join(prompt),
         prompt_sha256,
         instruction,
+        sources,
         args: m.args.clone(),
         worktree: m.worktree,
     })
+}
+
+/// How a role file was reached: from its own team, where it may include
+/// another team's role file, or included that way by the file given, where
+/// it may not.
+#[derive(Clone, Copy)]
+enum Reach<'a> {
+    Own(&'a [PathBuf]),
+    IncludedBy(&'a Path),
 }
 
 fn read_role_file(
@@ -1071,8 +1093,11 @@ fn read_role_file(
     includes_dir: &str,
     shown: &Path,
     real: &Path,
+    reach: Reach,
+    sources: &mut Vec<PathBuf>,
     report: &mut Report,
 ) -> Option<(FrontmatterRaw, String, String)> {
+    sources.push(shown.to_path_buf());
     let text = match read_text(real) {
         Ok(t) => t,
         Err(e) => {
@@ -1098,7 +1123,15 @@ fn read_role_file(
             }
         }
     };
-    let body = resolve_includes(dir, includes_dir, shown, &split.body, report)?;
+    let body = resolve_includes(
+        dir,
+        includes_dir,
+        shown,
+        &split.body,
+        reach,
+        sources,
+        report,
+    )?;
     Some((
         front,
         body,
@@ -1111,16 +1144,129 @@ fn include_stem(line: &str) -> Option<&str> {
     line.trim().strip_prefix("{{includes/")?.strip_suffix("}}")
 }
 
+/// Own-line `{{teams/<team>/<role>}}` directives: another team's role file.
+fn team_role_ref(line: &str) -> Option<&str> {
+    line.trim().strip_prefix("{{teams/")?.strip_suffix("}}")
+}
+
+/// The expanded body of the role file `reference` (`<team>/<role>`) names,
+/// found like a `team:` reference. Its frontmatter is left behind, and its
+/// includes resolve in its own team.
+fn team_role_body(
+    reference: &str,
+    search: &[PathBuf],
+    shown: &Path,
+    sources: &mut Vec<PathBuf>,
+    report: &mut Report,
+) -> Option<String> {
+    let directive = format!("{{{{teams/{reference}}}}}");
+    let mut fail = |at: &Path, msg: String| {
+        report.error(Some(at), format!("`{directive}`: {msg}"));
+        None
+    };
+    let named = |team: &str| {
+        !team.is_empty()
+            && team
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+    };
+    let Some((team, role)) = reference
+        .split_once('/')
+        .filter(|(team, role)| named(team) && is_valid_id(role))
+    else {
+        return fail(
+            shown,
+            "bad team role reference; write `{{teams/<team>/<role>}}` with a team's name and one of its roles".into(),
+        );
+    };
+    let other = match find(team, search) {
+        Ok(dir) => dir,
+        Err(e) => return fail(shown, e),
+    };
+    let team_file = other.join(TEAM_FILE);
+    let raw: TeamFileRaw = match read_text(&team_file).and_then(|text| yaml::parse(&text)) {
+        Ok(raw) => raw,
+        Err(e) => return fail(shown, format!("{}: {e}", team_file.display())),
+    };
+    let Some(prompt) = raw.roles.get(role).and_then(|m| m.prompt.as_deref()) else {
+        return fail(
+            shown,
+            format!(
+                "team `{team}` has no role `{role}` with a role file in {}",
+                team_file.display()
+            ),
+        );
+    };
+    let real = match resolve_within(&other, prompt) {
+        Ok(real) => real,
+        Err(e) => {
+            return fail(
+                shown,
+                format!("role `{role}`'s prompt {e} ({})", team_file.display()),
+            );
+        }
+    };
+    let includes_dir = raw.includes.as_deref().unwrap_or("includes");
+    let other_shown = other.join(prompt);
+    read_role_file(
+        &other,
+        includes_dir,
+        &other_shown,
+        &real,
+        Reach::IncludedBy(shown),
+        sources,
+        report,
+    )
+    .map(|(_, body, _)| body)
+}
+
 fn resolve_includes(
     dir: &Path,
     includes_dir: &str,
     shown: &Path,
     body: &str,
+    reach: Reach,
+    sources: &mut Vec<PathBuf>,
     report: &mut Report,
 ) -> Option<String> {
     let mut out = String::new();
     let mut ok = true;
     for line in body.split_inclusive('\n') {
+        if let Some(reference) = team_role_ref(line) {
+            let text = match reach {
+                Reach::Own(search) => team_role_body(reference, search, shown, sources, report),
+                Reach::IncludedBy(by) => {
+                    report.error(
+                        Some(shown),
+                        format!(
+                            "`{}`: {} includes this role file from another team, and a role file reached that way can't include another",
+                            line.trim(),
+                            by.display()
+                        ),
+                    );
+                    None
+                }
+            };
+            let Some(text) = text else {
+                ok = false;
+                continue;
+            };
+            if out.len() + text.len() > yaml::MAX_FILE_BYTES {
+                report.error(
+                    Some(shown),
+                    format!(
+                        "instruction is larger than {} bytes once includes are expanded",
+                        yaml::MAX_FILE_BYTES
+                    ),
+                );
+                return None;
+            }
+            out.push_str(&text);
+            if !text.is_empty() && !text.ends_with('\n') {
+                out.push('\n');
+            }
+            continue;
+        }
         let Some(stem) = include_stem(line) else {
             out.push_str(line);
             continue;
@@ -1135,13 +1281,31 @@ fn resolve_includes(
             continue;
         }
         let rel = format!("{includes_dir}/{stem}.md");
+        // The include as the team names it: a catalog path is under its catalog.
+        let listed = match rel.strip_prefix("catalog:") {
+            Some(rest) => dir.parent().unwrap_or(dir).join(rest),
+            None => dir.join(&rel),
+        };
         match resolve_asset(dir, &rel) {
             Ok(real) => match read_text(&real) {
                 Ok(text) => {
+                    sources.push(listed.clone());
                     let text = text.replace("\r\n", "\n");
+                    if let Some(reference) = text.lines().find(|l| team_role_ref(l).is_some()) {
+                        report.error(
+                            Some(&listed),
+                            format!(
+                                "`{}`: an include can't take another team's role file; put the line in the role file that includes this one, {}",
+                                reference.trim(),
+                                shown.display()
+                            ),
+                        );
+                        ok = false;
+                        continue;
+                    }
                     if text.lines().any(|l| include_stem(l).is_some()) {
                         report.error(
-                            Some(&dir.join(&rel)),
+                            Some(&listed),
                             "includes are one level deep; this include contains another include",
                         );
                         ok = false;
