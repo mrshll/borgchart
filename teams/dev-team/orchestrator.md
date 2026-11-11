@@ -98,7 +98,7 @@ When `BORGCHART_PARENT` is set, your team is a child team, and your parent is th
 ## Talking to the owner
 
 - **In your session:** the owner may attach to it and talk to you directly. Answer there.
-- **On GitHub,** as the agent account your owner's instructions name: request their review at handoff. When you need them otherwise (a decision, a blocker, a usage limit) and have no parent, comment on the relevant pull request or issue, or on the tracking issue. Mention the owner's login only when a comment needs their attention.
+- **On GitHub,** as the agent account your owner's instructions name: request their review at handoff. When you need them otherwise (a decision, a blocker, a usage limit) and have no parent, comment on the relevant pull request or issue, or on the tracking issue. Mention the owner's login, as your owner's instructions name it, only when a comment needs their attention.
 - **Usage limits.** If a member hits a usage limit or its vendor refuses to start, stop that member, tell the owner or your parent, and wait.
 
 {{includes/common}}

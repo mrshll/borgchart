@@ -435,16 +435,19 @@ fn the_team_files_stay_generic() {
     }
 }
 
-/// The rules the team files leave to the repository reach both vendors from
-/// one text: Codex reads `AGENTS.md`, and `CLAUDE.md` only imports it.
+/// One text for both vendors: `CLAUDE.md` only imports `AGENTS.md` (which
+/// Codex reads), so no rule is Claude-only; and `AGENTS.md` holds the rules
+/// the shared includes defer to. Whether each vendor loads it is the live
+/// tier's concern.
 #[test]
-fn the_repository_rules_reach_both_vendors() {
+fn claude_md_only_imports_agents_md() {
     let root = catalog().join("..");
     let claude = fs::read_to_string(root.join("CLAUDE.md")).unwrap();
     assert_eq!(claude.trim(), "@AGENTS.md");
     let agents = fs::read_to_string(root.join("AGENTS.md")).unwrap();
-    // What the shared includes defer to: the build wrapper and the checks.
-    for rule in ["tools/cargo-slot", ".githooks/checks"] {
+    // What the shared includes defer to: the build wrapper, the checks and
+    // the public-repository rule.
+    for rule in ["tools/cargo-slot", ".githooks/checks", "fictional names"] {
         assert!(agents.contains(rule), "AGENTS.md lacks {rule}");
     }
 }

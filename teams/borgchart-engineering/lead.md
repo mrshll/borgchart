@@ -132,7 +132,7 @@ If a member hits a usage limit or its vendor refuses to start, stop that member,
 
 ## Talking to the owner outside your session
 
-Reach the owner on GitHub, as the agent account your owner's instructions name: comment on the relevant pull request or issue, or on the tracking issue the owner gave you. Mention the owner's login only when a comment needs their attention.
+Reach the owner on GitHub, as the agent account your owner's instructions name: comment on the relevant pull request or issue, or on the tracking issue the owner gave you. Mention the owner's login, as your owner's instructions name it, only when a comment needs their attention.
 
 {{includes/common}}
 
