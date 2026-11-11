@@ -802,7 +802,11 @@ fn start_members(
                 incarnation: lifecycle::new_incarnation_id(state, id),
                 started_at: utc_now(),
                 boot_id: lifecycle::boot_id(),
-                vendor_version: meta.members.get(id).and_then(|m| m.vendor_version.clone()),
+                vendor_version: if joining {
+                    vendor_version(member.vendor, &base)
+                } else {
+                    meta.members.get(id).and_then(|m| m.vendor_version.clone())
+                },
                 pane: None,
                 ended_at: None,
                 ended_reason: None,
