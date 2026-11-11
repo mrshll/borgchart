@@ -461,7 +461,7 @@ fn start_members(
     crate::checkouts::reserve(&lock, &inst.id, &wanted)?;
     let (values, missing) = plugin_values(v);
     let keys = api_keys(v, record, &member_ids)?;
-    let missing_error = |missing: &[String]| {
+    let missing_error = || {
         format!(
             "set these secrets in your environment first (brg stores none); nothing was started: {}",
             missing.join(", ")
@@ -470,7 +470,7 @@ fn start_members(
     let probe = tmux_for(state);
     let looks_running = probe.has_session(&session) && state.meta_file().exists();
     if !looks_running && !missing.is_empty() {
-        return Err(missing_error(&missing));
+        return Err(missing_error());
     }
 
     // Serialize lifecycle changes, then decide for real.
@@ -491,19 +491,8 @@ fn start_members(
     {
         lifecycle::check_stopped(state, meta, &restart)?;
     }
-    // Joining members share the instance's recorded plugin settings, just
-    // like the siblings and plugin processes already running there.
-    if joining {
-        for name in v.team.plugins.keys() {
-            let path = state.plugin_env_file(name);
-            let saved = std::fs::read(&path).map_err(|e| {
-                format!("cannot read plugin `{name}` settings: {e}; stop and start the instance with its required secrets")
-            })?;
-            serde_json::from_slice::<PluginEnv>(&saved)
-                .map_err(|e| format!("cannot read plugin `{name}` settings: {e}"))?;
-        }
-    } else if !missing.is_empty() {
-        return Err(missing_error(&missing));
+    if !joining && !missing.is_empty() {
+        return Err(missing_error());
     }
     {
         let paths = StorePaths::new(state);
@@ -597,7 +586,7 @@ fn start_members(
             Tmux::new(&state.tmux_conf(), base.clone())
                 .write_config(user_config.as_deref())
                 .map_err(|e| format!("cannot write tmux config: {e}"))?;
-            Meta {
+            let mut meta = Meta {
                 team_dir: v.team.dir.clone(),
                 folder: record.folder.clone(),
                 brg: brg.clone(),
@@ -606,30 +595,30 @@ fn start_members(
                 base_env: base.clone(),
                 windows_started: may_still_run,
                 ..Meta::default()
+            };
+            // Plugins: their values (secrets included) go to private files for the shims.
+            for (name, plugin) in &v.team.plugins {
+                let body = serde_json::to_vec(&PluginEnv {
+                    env: values.get(name).cloned().unwrap_or_default(),
+                })
+                .map_err(|e| e.to_string())?;
+                write_private(&state.plugin_env_file(name), &body)
+                    .map_err(|e| format!("cannot write plugin settings: {e}"))?;
+                state::ensure_dir(&state.plugin_dir(name)).map_err(|e| e.to_string())?;
+                meta.plugins.insert(
+                    name.clone(),
+                    PluginMeta {
+                        dir: v.plugin_dir(name),
+                        has_process: plugin.process.is_some(),
+                    },
+                );
             }
+            meta
         }
     };
     // Every member of the instance is known to the start record, including
     // ones created since the instance started.
     let mut added = fresh;
-    if fresh {
-        for (name, plugin) in &v.team.plugins {
-            let body = serde_json::to_vec(&PluginEnv {
-                env: values.get(name).cloned().unwrap_or_default(),
-            })
-            .map_err(|e| e.to_string())?;
-            write_private(&state.plugin_env_file(name), &body)
-                .map_err(|e| format!("cannot write plugin settings: {e}"))?;
-            state::ensure_dir(&state.plugin_dir(name)).map_err(|e| e.to_string())?;
-            meta.plugins.insert(
-                name.clone(),
-                PluginMeta {
-                    dir: v.plugin_dir(name),
-                    has_process: plugin.process.is_some(),
-                },
-            );
-        }
-    }
     for (id, _) in record.kept_members() {
         if !meta.members.contains_key(id)
             && let Some(m) = previous
