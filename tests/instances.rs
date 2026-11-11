@@ -19,6 +19,142 @@ use instance_env::*;
 use serde_json::{Value, json};
 
 #[test]
+fn renamed_teams_keep_instance_identity_messages_and_use_the_new_source() {
+    let env = Env::new();
+    let inst = env.create("oncall", "work/a");
+    let lead = env.member(&inst, "lead");
+    let sent = env.ok(&[
+        "send",
+        &format!("{inst}/{lead}"),
+        "Keep the draft",
+        "--external",
+        "ops",
+        "--json",
+    ]);
+    let message: Value = serde_json::from_slice(&sent.stdout).unwrap();
+    env.ok(&["stop", &inst]);
+    let issued = env.registry()["issued"].clone();
+    fs::rename(env.path("teams/oncall"), env.path("teams/pager")).unwrap();
+    env.write(
+        "teams/pager/lead.md",
+        "---\nmodels: {claude: opus high}\n---\nUse the violet checklist.\n",
+    );
+    let out = env.ok(&[
+        "start",
+        &inst,
+        "--team",
+        &env.path("teams/pager").display().to_string(),
+    ]);
+    println!("rename start: {}", both(&out));
+    env.wait_for("restarted lead", || env.starts(&lead).len() == 2);
+    assert!(
+        env.starts(&lead)[1]["argv"]
+            .to_string()
+            .contains("violet checklist")
+    );
+    assert_eq!(env.member(&inst, "lead"), lead);
+    assert!(
+        env.rows(&inst)
+            .iter()
+            .all(|r| r["instance"] == inst && r["team"] == "pager")
+    );
+    let status = stdout(&env.ok(&["status", &inst]));
+    assert!(
+        status.contains(&inst) && status.contains("pager"),
+        "{status}"
+    );
+    assert_eq!(env.registry()["issued"], issued);
+    let hint = env.fails(&["status", "pager"]);
+    assert!(hint.contains("is a team") && hint.contains(&inst), "{hint}");
+    env.ok(&[
+        "msg",
+        "read",
+        message["id"].as_str().unwrap(),
+        "--instance",
+        &inst,
+    ]);
+    env.ok(&["stop", &inst]);
+}
+
+#[test]
+fn repoint_refuses_every_kept_agent_whose_role_is_missing() {
+    let env = Env::new();
+    let inst = env.create("oncall", "work/a");
+    for role in ["helper", "scout"] {
+        env.ok(&["create", &format!("{inst}/{role}")]);
+    }
+    let helper = env.member(&inst, "helper");
+    let scout = env.member(&inst, "scout");
+    env.ok(&["stop", &inst]);
+    env.team("moved/oncall");
+    env.write(
+        "moved/oncall/team.yaml",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n",
+    );
+    let moved = env.path("moved/oncall").display().to_string();
+    let refusal = env.fails(&["start", &inst, "--team", &moved]);
+    println!("missing agents: {refusal}");
+    for member in [&helper, &scout] {
+        assert!(refusal.contains(member), "{refusal}");
+    }
+    // Refusal must leave the original source usable.
+    env.ok(&["start", &inst]);
+    env.wait_for("helper restarted", || env.starts(&helper).len() == 2);
+    env.ok(&["stop", &inst]);
+    for member in [&helper, &scout] {
+        env.ok(&["delete", &format!("{inst}/{member}")]);
+    }
+    // Deleted roles impose no compatibility constraint.
+    env.ok(&["start", &inst, "--team", &moved]);
+    env.ok(&["stop", &inst]);
+}
+
+#[test]
+fn invalid_repoint_leaves_the_original_team_usable() {
+    let env = Env::new();
+    let inst = env.create("oncall", "work/a");
+    env.ok(&["stop", &inst]);
+    env.team("moved/oncall");
+    env.write("moved/oncall/team.yaml", "roles: [");
+    env.fails(&[
+        "start",
+        &inst,
+        "--team",
+        &env.path("moved/oncall").display().to_string(),
+    ]);
+    env.ok(&["start", &inst]);
+    env.ok(&["stop", &inst]);
+}
+
+#[test]
+fn repoint_refuses_a_dangling_recorded_parent_before_changing_source() {
+    let env = Env::new();
+    let inst = env.create("oncall", "work/a");
+    env.ok(&["create", &format!("{inst}/helper")]);
+    let helper = env.member(&inst, "helper");
+    env.ok(&["stop", &inst]);
+    let path = env.path(&format!("state/{inst}/start.json"));
+    let original = fs::read(&path).unwrap();
+    let mut meta: Value = serde_json::from_slice(&original).unwrap();
+    meta["members"][&helper]["parent"] = json!("lead-2222");
+    fs::write(&path, serde_json::to_vec(&meta).unwrap()).unwrap();
+    env.team("moved/oncall");
+    let refusal = env.fails(&[
+        "start",
+        &inst,
+        "--team",
+        &env.path("moved/oncall").display().to_string(),
+    ]);
+    assert!(
+        refusal.contains(&helper) && refusal.contains("lead-2222"),
+        "{refusal}"
+    );
+    fs::write(path, original).unwrap();
+    env.ok(&["start", &inst]);
+    env.ok(&["stop", &inst]);
+}
+
+#[test]
 fn starting_repairs_an_unresolved_parent_so_recursive_stop_reaches_the_child() {
     let env = Env::new();
     env.write(

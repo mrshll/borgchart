@@ -10,6 +10,73 @@ use std::process::Output;
 
 use instance_env::*;
 
+#[test]
+fn repoint_refuses_a_kept_copy_whose_team_role_is_missing() {
+    let env = Env::new();
+    env.team("teams/workers");
+    env.write(
+        "teams/oncall/team.yaml",
+        &format!("{TEAM}  dev: {{team: workers, parent: lead}}\n"),
+    );
+    let inst = env.create("oncall", "work/a");
+    let copy = stdout(&env.ok(&["create", &format!("{inst}/dev")]))
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_string();
+    env.ok(&["stop", &inst]);
+    env.team("moved/oncall");
+    let moved = env.path("moved/oncall").display().to_string();
+    let refusal = env.fails(&["start", &inst, "--team", &moved]);
+    println!("missing copy: {refusal}");
+    assert!(
+        refusal.contains(&copy) && refusal.contains("dev"),
+        "{refusal}"
+    );
+    env.ok(&["delete", &copy]);
+    env.ok(&["start", &inst, "--team", &moved]);
+    env.ok(&["stop", &inst]);
+}
+
+#[test]
+fn copies_can_repoint_to_a_renamed_team_without_changing_address() {
+    let env = Env::new();
+    env.team("teams/workers");
+    env.write(
+        "teams/oncall/team.yaml",
+        &format!("{TEAM}  dev: {{team: workers, parent: lead}}\n"),
+    );
+    let inst = env.create("oncall", "work/a");
+    let copy = stdout(&env.ok(&["create", &format!("{inst}/dev")]))
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_string();
+    env.ok(&["start", &copy]);
+    let lead = env.member(&copy, "lead");
+    env.ok(&["stop", &copy]);
+    fs::rename(env.path("teams/workers"), env.path("teams/responders")).unwrap();
+    // The declaring role also follows the new catalog name.
+    env.write(
+        "teams/oncall/team.yaml",
+        &format!("{TEAM}  dev: {{team: responders, parent: lead}}\n"),
+    );
+    env.ok(&[
+        "start",
+        &copy,
+        "--team",
+        &env.path("teams/responders").display().to_string(),
+    ]);
+    env.wait_for("copy lead restarted", || env.starts(&lead).len() == 2);
+    assert_eq!(env.member(&copy, "lead"), lead);
+    assert!(
+        env.rows(&copy)
+            .iter()
+            .all(|r| r["instance"] == copy && r["team"] == "responders")
+    );
+    env.ok(&["stop", &inst]);
+}
+
 impl Env {
     fn role_extra(&self, role: &str, lines: &str) {
         let path = self.path("teams/oncall/team.yaml");

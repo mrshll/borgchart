@@ -97,6 +97,29 @@ fn deleted_copy(env: &Env, inst: &str) -> String {
 }
 
 #[test]
+fn cleanup_removes_unregistered_old_prefix_state_after_a_team_rename() {
+    let env = Env::new();
+    let inst = env.create("oncall", "work/a");
+    env.ok(&["stop", &inst]);
+    fs::rename(env.path("teams/oncall"), env.path("teams/pager")).unwrap();
+    env.ok(&[
+        "start",
+        &inst,
+        "--team",
+        &env.path("teams/pager").display().to_string(),
+    ]);
+    env.ok(&["stop", &inst]);
+    env.ok(&["delete", &inst]);
+    // Simulate state left behind by an interrupted deletion.
+    let leftover = env.path(&format!("state/{inst}"));
+    fs::create_dir_all(leftover.join("notes")).unwrap();
+    fs::write(leftover.join("notes/draft"), "unfinished\n").unwrap();
+    let out = env.ok(&["cleanup"]);
+    println!("cleanup after rename: {}", both(&out));
+    assert!(!leftover.exists());
+}
+
+#[test]
 fn cleanup_removes_clean_worktrees_and_keeps_any_with_work() {
     let env = worktrees_env();
     let lead = env.path("work/a");
