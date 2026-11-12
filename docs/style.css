@@ -87,11 +87,11 @@ pre {
 }
 .prompt { margin-bottom: 0.4em; }
 
-/* The status tree: sized so the scene's widest line (79 columns) fits its
+/* The status tree: sized so the scene's widest line (82 columns) fits its
    pane, or on a phone the name, state and vendor mark; the rest scrolls
    inside the box, as a terminal with wrapping off cuts it. */
 .screen {
-  font-size: min(1rem, calc(100cqw / 49));
+  font-size: min(1rem, calc(100cqw / 50));
   line-height: 1.25;
   margin: 0;
 }
@@ -117,7 +117,8 @@ pre {
   background: var(--ink);
 }
 
-@media (max-width: 60rem) {
+/* Side by side only where the tree's half keeps it at 11px or more. */
+@media (max-width: 73rem) {
   .hero { grid-template-columns: minmax(0, 1fr); gap: 1.45em; }
 }
 @media (max-width: 40rem) {

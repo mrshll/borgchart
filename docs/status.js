@@ -1,6 +1,8 @@
-// The front page's hero: a request typed to a team's lead on the right, and
-// on the left the team's `brg status -w`, growing as the lead takes it on.
-// A fixed fictional team, drawn the way brg draws a terminal tree.
+// The front page's hero: on the right, the request that started this site,
+// typed to the root lead of the team that built it; on the left that team's
+// `brg status -w`, growing as the lead takes it on. The tree is the real
+// one (engineering-56uw and the dev team it started), replayed as a fixed
+// scene and drawn the way brg draws a terminal tree.
 //
 // Taken from the code, so re-check it there when the look changes:
 //   marks, tones and spinner frames  src/tree.rs (state_mark, Tone, ink, painted)
@@ -17,10 +19,11 @@
   const REFRESH_MS = 2000; // `status -w` reads again every 2 s
   const STEP_MS = 4000; // each step of the scene lasts two refreshes
   const TYPE_AFTER_MS = 2500; // the tree shows alone before typing starts
+  const KEY_MS = 50; // each key takes 50-90 ms, a breath longer after . and ,
   const SEND_AFTER_MS = 1000; // a pause between the last key and Enter
   const HOLD_MS = 12000; // the grown tree rests before the scene restarts
 
-  const HEADER = ["lamp-eng-x7k2", "folder ~/src/lighthouse"];
+  const HEADER = ["engineering-56uw", "folder ~/workspace/borgchart"];
 
   // A member: its name, vendor mark and model, state and details. A copy
   // (a nested team): its name, its team, and its members.
@@ -35,19 +38,19 @@
     kind: "copy", name, team, children, running: live(children),
   });
 
+  const FABLE = "§ fable low";
   const OPUS = "§ opus high";
-  const SONNET = "§ sonnet medium";
-  const SOL = "Λ gpt-6.1 high";
+  const SOL = "Λ gpt-6.1-sol high";
 
   // The root lead, and the dev team it starts: a copy whose one root is
   // its own lead, with the implementer and reviewer under that lead, as in
   // teams/dev-team.
-  const lead = (state, detail, kids) => m("lead-q8m3", OPUS, state, detail, kids);
+  const lead = (state, detail, kids) => m("lead-th8v", FABLE, state, detail, kids);
   const dev = (state, detail, kids) => [
-    copy("dev-k2m8", "dev-team", [m("lead-c4nd", OPUS, state, detail, kids)]),
+    copy("dev-website", "dev-team", [m("lead-f9tt", OPUS, state, detail, kids)]),
   ];
-  const builder = (state, detail) => m("implementer-h7p2", SOL, state, detail);
-  const checker = (state, detail) => m("reviewer-w9d3", SONNET, state, detail);
+  const builder = (state, detail) => m("implementer-site", SOL, state, detail);
+  const checker = (state, detail) => m("reviewer-site-review", OPUS, state, detail);
   const done = () => dev("idle", "", [builder("idle"), checker("idle")]);
 
   // The scene, one tree per step. The first shows while the request is
@@ -63,35 +66,36 @@
     },
     {
       tree: lead("idle", "", dev("working", "Read the brief")),
-      say: "Started dev-k2m8 on it.",
+      say: "Started dev-website on it.",
     },
     { tree: lead("idle", "", dev("working", "Plan the page", [builder("working", "Build the tree")])) },
-    { tree: lead("idle", "", dev("idle", "", [builder("working", "Write the man page")])) },
+    { tree: lead("idle", "", dev("idle", "", [builder("working", "Write the docs")])) },
     {
       tree: lead("idle", "", dev("working", "Start a review", [
         builder("idle"),
-        checker("working", "Review the page"),
+        checker("working", "Review the PR"),
       ])),
     },
     {
       tree: lead("idle", "", dev("idle", "", [
-        builder("working", "Fix the phone view"),
+        builder("working", "Fix the layout"),
         checker("idle"),
       ])),
     },
     {
-      tree: lead("idle", "", dev("working", "Write the handoff", [
+      tree: lead("idle", "", dev("working", "Hand off", [
         builder("idle"),
         checker("idle"),
       ])),
     },
     { tree: lead("idle", "1 unacked", done()) },
-    { tree: lead("working", "Check the handoff", done()) },
+    { tree: lead("working", "Check the work", done()) },
     { tree: lead("idle", "", done()), say: "The pull request is ready for your review." },
   ];
   // The still frame for reduced motion: the grown tree mid-run, every
   // member in it and some at work.
   const STILL = 6;
+  const last = SCENE.length - 1;
 
   // src/runtime.rs status_look, for the states the scene uses.
   function look(node) {
@@ -203,7 +207,9 @@
     return `<span class="b">borgchart</span>    ` + parts.join("  ");
   }
 
-  const clock = (date) => date.toISOString().slice(11, 19);
+  function clock(date) {
+    return date.toISOString().slice(11, 19);
+  }
 
   function frame(step, spin, refreshed) {
     const root = SCENE[step].tree;
@@ -236,14 +242,14 @@
   const typedText = document.getElementById("request");
   if (!out || !talk || !typedText) return;
   const request = typedText.textContent.trim().replace(/\s+/g, " ");
+  const replies = SCENE.filter((s) => s.say).map((s) => s.say);
   talk.setAttribute("role", "img");
-  talk.setAttribute("aria-label", "Someone types a request to the team's lead: " + request);
+  talk.setAttribute("aria-label",
+    "The request typed to the root lead: " + request + " The lead answers: " + replies.join(" "));
 
-  // Hold the room the largest frame and the whole session need, so the page
+  // Hold the room of the grown tree and the whole session, so the page
   // doesn't move as the tree grows and the lead answers.
-  const last = SCENE.length - 1;
-  const roomy = SCENE.reduce((best, s, i) => (tree(s.tree, null).length > tree(SCENE[best].tree, null).length ? i : best), 0);
-  out.previousElementSibling.innerHTML = frame(roomy, null, new Date());
+  out.previousElementSibling.innerHTML = frame(last, null, new Date());
   talk.previousElementSibling.innerHTML = session(request, request.length, true, last);
 
   if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
@@ -258,32 +264,46 @@
   const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
   const keys = [];
   let at = TYPE_AFTER_MS;
+  let prev = "";
   for (const ch of request) {
-    at += 55 + rand() * 45 + (/[.,]/.test(ch) ? 380 : 0);
+    at += KEY_MS + rand() * 40 + (/[.,]/.test(prev) ? 380 : 0);
     keys.push(at);
+    prev = ch;
   }
   const sendAt = at + SEND_AFTER_MS;
   // The tree changes only when `status -w` reads again, on its 2 s beat.
   const firstRead = Math.ceil(sendAt / REFRESH_MS) * REFRESH_MS;
   const cycle = firstRead + (last - 1) * STEP_MS + HOLD_MS;
 
-  let start = Date.now();
+  // Time runs on the page's own clock, so a change to the system clock
+  // can't stall it; the wall clock only names the refresh in the footer.
+  let start = performance.now();
+  let lastRead = -1, refreshed = new Date();
   let shownTree = "", shownTalk = "";
   const draw = () => {
-    let t = Date.now() - start;
+    let t = performance.now() - start;
     if (t >= cycle) {
       start += cycle * Math.floor(t / cycle);
-      t = Date.now() - start;
+      t = performance.now() - start;
     }
     const read = Math.floor(t / REFRESH_MS) * REFRESH_MS;
+    if (read !== lastRead) {
+      lastRead = read;
+      refreshed = new Date();
+    }
     const step = read < firstRead ? 0 : Math.min(last, 1 + Math.floor((read - firstRead) / STEP_MS));
-    const html = frame(step, Math.floor(t / SPIN_MS), new Date(Date.now() - (t - read)));
+    const html = frame(step, Math.floor(t / SPIN_MS), refreshed);
     if (html !== shownTree) out.innerHTML = shownTree = html;
     let typed = 0;
     while (typed < keys.length && keys[typed] <= t) typed++;
     const said = session(request, typed, t >= sendAt, step);
     if (said !== shownTalk) talk.innerHTML = shownTalk = said;
+    // Wake for whatever changes next: a key, the send, or the spinner's
+    // 500 ms tick (which the refreshes and steps fall on too).
+    let next = (Math.floor(t / SPIN_MS) + 1) * SPIN_MS;
+    if (typed < keys.length) next = Math.min(next, keys[typed]);
+    else if (t < sendAt) next = Math.min(next, sendAt);
+    setTimeout(draw, Math.max(10, next - t));
   };
   draw();
-  setInterval(draw, 50);
 })();
