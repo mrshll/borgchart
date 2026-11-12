@@ -1,0 +1,87 @@
+<!doctype html>
+<!-- borgchart.ai. GitHub Pages serves docs/ on main as it is (CNAME,
+     .nojekyll; no build step). The animated tree is status.js, whose header
+     names the brg source it copies; the palette is style.css; the command
+     text is the COMMANDS section below. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>borgchart: teams of coding agents</title>
+<meta name="description" content="borgchart runs teams of coding agents from plain files. brg starts them, shows who is working and what needs you, and stops them again.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+
+<p class="prompt"><span class="faded">$</span> brg status -w</p>
+<pre id="status" class="screen" role="img" aria-label="An animated brg status tree of a fictional team">brg status -w draws a live tree of the team here; it needs JavaScript.</pre>
+
+<p class="prompt"><span class="faded">$</span> man brg</p>
+
+<p class="title"><span>BRG(1)</span><span>borgchart manual</span><span>BRG(1)</span></p>
+
+<h2>NAME</h2>
+<p>brg, borgchart - run teams of coding agents from plain files</p>
+
+<h2>SYNOPSIS</h2>
+<p><b>brg</b> &lt;COMMAND&gt; [OPTIONS]</p>
+
+<h2>DESCRIPTION</h2>
+<p>Describe each role's model and standing task in a team folder, then <b>brg create</b> &lt;team&gt; &lt;folder&gt; starts an instance of it working in that folder. <b>brg status</b> shows who is alive, what they are doing and their unread message counts; <b>brg attach</b> drops you into a member's live session; <b>brg stop</b> stops it all, and <b>brg start</b> brings it back.</p>
+<p>Members are <b>claude</b> and <b>codex</b> sessions on a private tmux server. They talk over a message bus of durable plain messages and acknowledgements, and a team can be a member of another team.</p>
+<p>Early, and expected to change.</p>
+
+<h2>QUICK START</h2>
+<pre class="block"><span class="faded">$</span> cargo install --git https://github.com/mrshll/borgchart --locked borgchart
+<span class="faded">$</span> brg validate ./lamp-eng
+<span class="faded">$</span> brg create ./lamp-eng ~/src/lighthouse
+<span class="faded">$</span> brg status -w
+<span class="faded">$</span> brg attach lamp-eng-x7k2/lead-q8m3
+<span class="faded">$</span> brg stop lamp-eng-x7k2</pre>
+<p>Needs Rust 1.89 or newer, tmux 3.2 or newer, and the <b>claude</b> and/or <b>codex</b> CLIs.</p>
+
+<h2>COMMANDS</h2>
+<!-- The commands: the one place to edit when brg's commands change.
+     Grouped and worded as `brg --help` lists them (src/cli.rs GROUPS):
+     each line is the command's one-line summary. -->
+<p class="group">Team folders</p>
+<dl class="commands">
+<dt>ls</dt><dd>List the teams in the search paths, each with its instances</dd>
+<dt>validate</dt><dd>Check a team folder and brg's configuration; starts nothing</dd>
+<dt>secret</dt><dd>List the secrets a team's plugins need, and whether each is set</dd>
+</dl>
+<p class="group">Instances and members</p>
+<dl class="commands">
+<dt>create</dt><dd>Make an instance of a team, or a member of a role</dd>
+<dt>start</dt><dd>Bring an instance to what should be running, or start one member</dd>
+<dt>stop</dt><dd>Stop an instance and all its copies deepest first, or one member</dd>
+<dt>delete</dt><dd>Remove a stopped instance, or a stopped member</dd>
+<dt>status</dt><dd>Show an instance tree, or every top-level one, with nested copies</dd>
+<dt>attach</dt><dd>Open a member's live session (detach with your tmux prefix, then d)</dd>
+<dt>logs</dt><dd>Show a member's or plugin's recent output</dd>
+</dl>
+<p class="group">Messages</p>
+<dl class="commands">
+<dt>send</dt><dd>Store a message for its recipient, and type it in when safe</dd>
+<dt>inbox</dt><dd>List the unacknowledged messages addressed to you, oldest first</dd>
+<dt>msg</dt><dd>Read and acknowledge bus records</dd>
+<dt>bus</dt><dd>Check the tree's message storage</dd>
+</dl>
+<p class="group">Cleanup</p>
+<dl class="commands">
+<dt>cleanup</dt><dd>Remove what brg left behind for deleted members and copies</dd>
+<dt>reset</dt><dd>Stop a whole tree and forget it, so <code>brg create</code> can start it fresh</dd>
+</dl>
+<p><code>brg help &lt;command&gt;</code> or <code>brg &lt;command&gt; --help</code> gives a command's details.</p>
+
+<h2>SEE ALSO</h2>
+<p><a href="https://github.com/mrshll/borgchart">github.com/mrshll/borgchart</a>, the source and issues</p>
+<p><a href="https://github.com/mrshll/borgchart/blob/main/docs/concepts.md">concepts</a>, <a href="https://github.com/mrshll/borgchart/blob/main/docs/format.md">team format</a>, <a href="https://github.com/mrshll/borgchart/blob/main/docs/cli.md">commands</a>, <a href="https://github.com/mrshll/borgchart/blob/main/docs/bus.md">message bus</a>, <a href="https://github.com/mrshll/borgchart/blob/main/docs/teams.md">defining a team</a></p>
+
+<p class="prompt"><span class="faded">$</span> <span class="cursor">&nbsp;</span></p>
+
+</main>
+<script src="status.js"></script>
+</body>
+</html>
