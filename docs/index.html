@@ -1,8 +1,8 @@
 <!doctype html>
 <!-- borgchart.ai. GitHub Pages serves docs/ on main as it is (CNAME,
      .nojekyll; no build step). The animated tree is status.js, whose header
-     names the brg source it copies; the palette is style.css; the command
-     text is the COMMANDS section below. -->
+     names the brg source it copies and holds the generator; the palette is
+     style.css; the command text is the COMMANDS section below. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -15,7 +15,10 @@
 <main>
 
 <p class="prompt"><span class="faded">$</span> brg status -w</p>
-<pre id="status" class="screen" role="img" aria-label="An animated brg status tree of a fictional team">brg status -w draws a live tree of the team here; it needs JavaScript.</pre>
+<div class="stack">
+<pre class="screen ghost" aria-hidden="true"></pre>
+<pre id="status" class="screen" role="img" aria-label="An animated brg status tree of a team of coding agents, its teams and members coming and going">brg status -w draws a live tree of the team here; it needs JavaScript.</pre>
+</div>
 
 <p class="prompt"><span class="faded">$</span> man brg</p>
 
@@ -28,36 +31,39 @@
 <p><b>brg</b> &lt;COMMAND&gt; [OPTIONS]</p>
 
 <h2>DESCRIPTION</h2>
-<p>Describe each role's model and standing task in a team folder, then <b>brg create</b> &lt;team&gt; &lt;folder&gt; starts an instance of it working in that folder. <b>brg status</b> shows who is alive, what they are doing and their unread message counts; <b>brg attach</b> drops you into a member's live session; <b>brg stop</b> stops it all, and <b>brg start</b> brings it back.</p>
+<p>Describe each role's model and standing task in a template folder, then <b>brg create</b> &lt;template&gt; &lt;folder&gt; starts a team from it, working in that folder. <b>brg status</b> shows who is alive, what they are doing and their unacked message counts; <b>brg attach</b> drops you into a member's live session; <b>brg stop</b> stops it all, and <b>brg start</b> brings it back.</p>
 <p>Members are <b>claude</b> and <b>codex</b> sessions on a private tmux server. They talk over a message bus of durable plain messages and acknowledgements, and a team can be a member of another team.</p>
 <p>Early, and expected to change.</p>
 
 <h2>QUICK START</h2>
 <pre class="block"><span class="faded">$</span> cargo install --git https://github.com/mrshll/borgchart --locked --bin brg borgchart
-<span class="faded">$</span> brg validate ./lamp-eng
-<span class="faded">$</span> brg create ./lamp-eng ~/src/lighthouse
+<span class="faded">$</span> git clone https://github.com/mrshll/borgchart ~/workspace/borgchart
+<span class="faded">$</span> cd ~/workspace/borgchart
+<span class="faded">$</span> brg validate ./templates/engineering
+<span class="faded">$</span> brg create ./templates/engineering
 <span class="faded">$</span> brg status -w
-<span class="faded">$</span> brg attach lamp-eng-x7k2/lead-q8m3
-<span class="faded">$</span> brg stop lamp-eng-x7k2</pre>
+<span class="faded">$</span> brg attach engineering-59e9/lead-a2df
+<span class="faded">$</span> brg stop engineering-59e9</pre>
+<p>This runs the repository's own engineering team on its own code, the team in the tree above. <b>brg create</b> prints the new team's ID and its root lead's; <b>engineering-59e9</b> and <b>lead-a2df</b> stand for them here.</p>
 <p>Needs Rust 1.89 or newer, tmux 3.2 or newer, and the <b>claude</b> and/or <b>codex</b> CLIs.</p>
 
 <h2>COMMANDS</h2>
 <!-- The commands: the one place to edit when brg's commands change.
      Grouped and worded as `brg --help` lists them (src/cli.rs GROUPS):
      each line is the command's one-line summary. -->
-<p class="group">Team folders</p>
+<p class="group">Team templates</p>
 <dl class="commands">
-<dt>templates</dt><dd>List available team templates and their instances</dd>
-<dt>validate</dt><dd>Check a team folder and brg's configuration; starts nothing</dd>
-<dt>secrets</dt><dd>List the secrets a team's plugins need, and whether each is set</dd>
+<dt>templates</dt><dd>List available team templates and their teams</dd>
+<dt>validate</dt><dd>Check a team template and brg's configuration; starts nothing</dd>
+<dt>secrets</dt><dd>List the secrets a template's plugins need, and whether each is set</dd>
 </dl>
-<p class="group">Instances and members</p>
+<p class="group">Teams and members</p>
 <dl class="commands">
-<dt>create</dt><dd>Make an instance of a team, or a member of a role</dd>
-<dt>start</dt><dd>Bring an instance to what should be running, or start one member</dd>
-<dt>stop</dt><dd>Stop an instance and all its copies deepest first, or one member</dd>
-<dt>delete</dt><dd>Remove a stopped instance, or a stopped member</dd>
-<dt>status</dt><dd>Show an instance tree, or every top-level one, with nested copies</dd>
+<dt>create</dt><dd>Make a team from a team template, or a member of a role</dd>
+<dt>start</dt><dd>Bring a team to what should be running, or start one member</dd>
+<dt>stop</dt><dd>Stop a team and all its child teams deepest first, or one member</dd>
+<dt>delete</dt><dd>Remove a stopped team, or a stopped member</dd>
+<dt>status</dt><dd>Show a team tree, or every top-level one, with nested child teams</dd>
 <dt>attach</dt><dd>Open a member's live session (detach with your tmux prefix, then d)</dd>
 <dt>logs</dt><dd>Show a member's or plugin's recent output</dd>
 </dl>
@@ -67,7 +73,7 @@
 </dl>
 <p class="group">Cleanup</p>
 <dl class="commands">
-<dt>cleanup</dt><dd>Remove what brg left behind for deleted members and copies</dd>
+<dt>cleanup</dt><dd>Remove what brg left behind for deleted members and child teams</dd>
 <dt>destroy</dt><dd>Stop a whole tree and delete its records, notes and messages</dd>
 </dl>
 <p><code>brg help &lt;command&gt;</code> or <code>brg &lt;command&gt; --help</code> gives a command's details.</p>
