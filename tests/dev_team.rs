@@ -1,4 +1,4 @@
-//! The sibling definitions under `teams/`: the engineering department,
+//! The sibling definitions under `templates/`: the engineering department,
 //! dev team and design panel: the catalog guide's deployment
 //! validate, the member files expand and stay generic, one message round
 //! works with `fake-agent` members, the department lead seats a panel, and the
@@ -14,7 +14,7 @@ const TEAMS: [&str; 2] = ["dev-team", "dev-design-team"];
 
 /// The installable catalog: sibling teams and one shared asset folder.
 fn catalog() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("teams")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("templates")
 }
 
 fn team_dir(name: &str) -> PathBuf {
@@ -61,7 +61,7 @@ fn readme_commands(prefix: &str) -> Vec<String> {
 }
 
 /// As CONTRIBUTING.md sets it up: a pinned copy of the complete teams catalog
-/// in `dir/pinned/teams`, where brg resolves names; and its configuration
+/// in `dir/pinned/templates`, where brg resolves names; and its configuration
 /// in `dir/config.yaml`. The instance's folder is `dir/work`, a checkout
 /// with one baseline commit pushed to a local remote.
 fn setup(dir: &Path, text: &str) -> PathBuf {
@@ -84,7 +84,7 @@ fn setup(dir: &Path, text: &str) -> PathBuf {
         ],
     );
     git_in(&work, &["push", "-q", "origin", "HEAD"]);
-    copy_dir(&catalog(), &dir.join("pinned/teams"));
+    copy_dir(&catalog(), &dir.join("pinned/templates"));
     let file = dir.join("pinned/config.yaml");
     fs::write(&file, text).unwrap();
     fs::create_dir_all(dir.join("home")).unwrap();
@@ -192,9 +192,9 @@ fn the_department_validates_cleanly() {
     assert_eq!(report["warnings"], serde_json::json!([]), "{report}");
 }
 
-/// Each team's member files, by the `prompt:` lines of its `team.yaml`.
+/// Each team's member files, by the `prompt:` lines of its `template.yaml`.
 fn member_files(team: &str) -> Vec<PathBuf> {
-    let text = fs::read_to_string(team_dir(team).join("team.yaml")).unwrap();
+    let text = fs::read_to_string(team_dir(team).join("template.yaml")).unwrap();
     let mut files: Vec<PathBuf> = text
         .lines()
         .filter_map(|l| l.trim().strip_prefix("prompt: "))
@@ -285,13 +285,13 @@ fn git_rules_reach_only_the_roles_that_write() {
 /// a member of either vendor may run says how that vendor runs it.
 #[test]
 fn members_wait_the_way_their_vendor_allows() {
-    // Member files run as Claude by team.yaml, plus the helper rules (Claude
+    // Member files run as Claude by template.yaml, plus the helper rules (Claude
     // helpers use them too) and the designer (one designer is Claude).
     let mut files = vec![
         shared().join("includes/helper.md"),
         team_dir("dev-design-team").join("designer.md"),
     ];
-    let team = fs::read_to_string(dev_team().join("team.yaml")).unwrap();
+    let team = fs::read_to_string(dev_team().join("template.yaml")).unwrap();
     let mut prompt = None;
     for line in team.lines().map(str::trim) {
         if let Some(p) = line.strip_prefix("prompt: ") {
@@ -528,7 +528,7 @@ mod round {
             reg["instances"]
                 .as_object()?
                 .iter()
-                .find(|(_, e)| e["team"] == team)
+                .find(|(_, e)| e["template"] == team)
                 .map(|(id, _)| id.clone())
         }
 
@@ -1159,7 +1159,10 @@ mod round {
 
         team.ok(&[
             "create",
-            &team.path("pinned/teams/engineering").display().to_string(),
+            &team
+                .path("pinned/templates/engineering")
+                .display()
+                .to_string(),
             &team.path("work").display().to_string(),
         ]);
         let dept = team
@@ -1448,7 +1451,7 @@ fn pinned_sibling_catalog_validates_without_the_source_checkout() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    let found = borgchart::team::list(&[dir.path().join("pinned/teams")]);
+    let found = borgchart::team::list(&[dir.path().join("pinned/templates")]);
     assert_eq!(found.len(), 3);
     assert!(!found.iter().any(|(name, _)| name == "shared"));
 }

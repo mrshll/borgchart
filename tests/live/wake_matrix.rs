@@ -91,7 +91,7 @@ fn direct_run_env(
     std::fs::create_dir_all(&xdg_state).unwrap();
     env.insert("XDG_STATE_HOME".into(), xdg_state.display().to_string());
     std::fs::create_dir_all(&state).unwrap();
-    std::fs::write(&config, "schema: 1\nteams: []\nauto_trust: false\n").unwrap();
+    std::fs::write(&config, "schema: 1\ntemplates: []\nauto_trust: false\n").unwrap();
     let bin = std::path::Path::new(env!("CARGO_BIN_EXE_brg"));
     let path = format!(
         "{}:{}",

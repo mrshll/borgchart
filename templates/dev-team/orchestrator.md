@@ -12,7 +12,7 @@ On start, and whenever you resume:
 2. Read your inbox, with message bodies. Your first message names the work: a brief file, or the tracking issue and any handover note in `$BORGCHART_NOTES`.
 3. Run `status`.
 
-Roles come from `team.yaml`, not from which members happen to be running. Keep progress and delegation in the pull request description and comments.
+Roles come from `template.yaml`, not from which members happen to be running. Keep progress and delegation in the pull request description and comments.
 
 ## Plan
 

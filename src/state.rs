@@ -173,6 +173,7 @@ impl StateDir {
 /// Facts written at a start and read by `status`, `msg send`, shims and the gate.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Meta {
+    #[serde(rename = "template_dir")]
     pub team_dir: PathBuf,
     /// The instance's working folder.
     pub folder: PathBuf,

@@ -8,7 +8,7 @@ use instance_env::*;
 
 fn tree() -> (Env, String) {
     let env = Env::new();
-    env.write("teams/oncall/team.yaml", "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead}\n  leaf: {prompt: helper.md, parent: helper}\n  scout: {prompt: scout.md, parent: lead}\n");
+    env.write("templates/oncall/template.yaml", "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead}\n  leaf: {prompt: helper.md, parent: helper}\n  scout: {prompt: scout.md, parent: lead}\n");
     let inst = env.create("oncall", "work/a");
     (env, inst)
 }
@@ -149,7 +149,7 @@ fn recursive_stop_removes_every_target_from_the_restore_snapshot() {
 #[test]
 fn recursive_walk_uses_recorded_parents_after_team_file_changes() {
     let (env, inst) = tree();
-    let team = env.path("teams/oncall/team.yaml");
+    let team = env.path("templates/oncall/template.yaml");
     let changed = std::fs::read_to_string(&team)
         .unwrap()
         .replace("parent: helper", "parent: lead");

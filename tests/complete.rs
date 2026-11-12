@@ -82,7 +82,7 @@ roles:
     prompt: scout.md
     start: false
   dev:
-    team: dev
+    template: dev
     parent: lead
     start: false
 "#;
@@ -90,10 +90,10 @@ roles:
 #[test]
 fn completion_offers_instances_kept_members_and_teams() {
     let env = Env::new();
-    env.write("teams/oncall/team.yaml", DEPARTMENT);
-    env.team("teams/dev");
+    env.write("templates/oncall/template.yaml", DEPARTMENT);
+    env.team("templates/dev");
     env.write(
-        "teams/dev/team.yaml",
+        "templates/dev/template.yaml",
         "bus: {}\nroles:\n  lead: {prompt: lead.md}\n",
     );
     std::fs::create_dir(env.path("work/a/lead")).unwrap();
@@ -146,7 +146,7 @@ fn completion_offers_instances_kept_members_and_teams() {
     );
 
     assert!(complete(&env, &["create", ""]).contains(&"oncall".to_string()));
-    assert_eq!(complete(&env, &["validate", "./te"]), ["./teams/"]);
+    assert_eq!(complete(&env, &["validate", "./te"]), ["./templates/"]);
     env.ok(&["stop", &inst]);
 }
 

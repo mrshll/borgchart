@@ -1,4 +1,4 @@
-//! The team format: `team.yaml` plus one Markdown file per role.
+//! The template format: `template.yaml` plus one Markdown file per role.
 //!
 //! See `docs/format.md` for the format itself.
 
@@ -13,7 +13,21 @@ use crate::names::{is_plain_word, is_valid_env_name, is_valid_id};
 use crate::paths::{is_executable, resolve_within};
 use crate::yaml;
 
-pub const TEAM_FILE: &str = "team.yaml";
+pub const TEAM_FILE: &str = "template.yaml";
+
+fn missing_template(dir: &Path) -> String {
+    if dir.join("team.yaml").is_file() {
+        format!(
+            "{} has team.yaml; brg now reads template.yaml (rename it, and a role's `team:` key to `template:`)",
+            dir.display()
+        )
+    } else {
+        format!(
+            "{} is not a team template folder (no {TEAM_FILE} in it)",
+            dir.display()
+        )
+    }
+}
 
 /// Reasoning-effort words accepted after a model name.
 pub const EFFORTS: &[&str] = &["minimal", "low", "medium", "high", "xhigh", "max"];
@@ -118,6 +132,7 @@ impl EnvRaw {
 #[serde(deny_unknown_fields)]
 struct RoleRaw {
     prompt: Option<String>,
+    #[serde(rename = "template")]
     team: Option<String>,
     vendor: Option<Vendor>,
     parent: Option<String>,
@@ -173,22 +188,23 @@ struct ModelsRaw {
     codex: Option<String>,
 }
 
-// ---- resolved team ---------------------------------------------------------
+// ---- resolved template ---------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Team {
-    /// The team folder, with symlinks resolved.
+    /// The template folder, with symlinks resolved.
     pub dir: PathBuf,
-    /// The team's name: its folder's name (see [`team_name`]).
+    /// The template's name: its folder's name (see [`team_name`]).
     pub name: String,
-    /// SHA-256 of `team.yaml` as it was read and parsed.
+    /// SHA-256 of `template.yaml` as it was read and parsed.
     pub file_sha256: String,
     /// Canonical catalog include directory, captured during validation.
     pub catalog_includes: Option<PathBuf>,
     pub default_vendor: Vendor,
-    /// Optional alert settings; every team has a coordination bus.
+    /// Optional alert settings; every template has a coordination bus.
     pub bus: Option<BusConfig>,
     pub roles: BTreeMap<String, Role>,
+    #[serde(rename = "template_roles")]
     pub team_roles: BTreeMap<String, TeamRole>,
     pub plugins: BTreeMap<String, Plugin>,
 }
@@ -211,7 +227,7 @@ pub fn is_path(arg: &str) -> bool {
     arg.starts_with('/') || arg.starts_with("./") || arg.starts_with("../") || arg.starts_with("~/")
 }
 
-/// The teams in the search paths: each subfolder holding a `team.yaml`,
+/// The templates in the search paths: each subfolder holding a `template.yaml`,
 /// with its name, in search-path order.
 pub fn list(search: &[PathBuf]) -> Vec<(String, PathBuf)> {
     let mut out = Vec::new();
@@ -235,7 +251,7 @@ pub fn list(search: &[PathBuf]) -> Vec<(String, PathBuf)> {
     out
 }
 
-/// Find a team: a path (see [`is_path`]) to its folder, or a name looked up
+/// Find a template: a path (see [`is_path`]) to its folder, or a name looked up
 /// in every search path. Two folders with the name are refused, listing
 /// both; brg never picks the first.
 pub fn find(arg: &str, search: &[PathBuf]) -> Result<PathBuf, String> {
@@ -248,16 +264,13 @@ pub fn find(arg: &str, search: &[PathBuf]) -> Result<PathBuf, String> {
             None => PathBuf::from(arg),
         };
         if !path.join(TEAM_FILE).is_file() {
-            return Err(format!(
-                "{} is not a team folder (no {TEAM_FILE} in it)",
-                path.display()
-            ));
+            return Err(missing_template(&path));
         }
         return Ok(path.canonicalize().unwrap_or(path));
     }
     if arg.contains('/') {
         return Err(format!(
-            "`{arg}` is not a team's name; for a folder, write `./{arg}`"
+            "`{arg}` is not a template's name; for a folder, write `./{arg}`"
         ));
     }
     let matches: Vec<PathBuf> = list(search)
@@ -267,20 +280,29 @@ pub fn find(arg: &str, search: &[PathBuf]) -> Result<PathBuf, String> {
         .collect();
     match matches.as_slice() {
         [one] => Ok(one.clone()),
-        [] => Err(format!(
-            "no team `{arg}` in {}; for a folder, give its path (`./{arg}`)",
-            if search.is_empty() {
-                "the search paths (none are set)".to_string()
-            } else {
-                search
-                    .iter()
-                    .map(|p| p.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
+        [] => {
+            if let Some(dir) = search
+                .iter()
+                .map(|root| root.join(arg))
+                .find(|dir| dir.join("team.yaml").is_file())
+            {
+                return Err(missing_template(&dir));
             }
-        )),
+            Err(format!(
+                "no template `{arg}` in {}; for a folder, give its path (`./{arg}`)",
+                if search.is_empty() {
+                    "the search paths (none are set)".to_string()
+                } else {
+                    search
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                }
+            ))
+        }
         many => Err(format!(
-            "more than one team is called `{arg}`; name one by its path: {}",
+            "more than one template is called `{arg}`; name one by its path: {}",
             many.iter()
                 .map(|p| p.display().to_string())
                 .collect::<Vec<_>>()
@@ -289,7 +311,7 @@ pub fn find(arg: &str, search: &[PathBuf]) -> Result<PathBuf, String> {
     }
 }
 
-/// The name a team goes by: its folder's name, lowercased, with anything
+/// The name a template goes by: its folder's name, lowercased, with anything
 /// outside `[a-z0-9_-]` turned into `-` (at most 32 characters).
 pub fn team_name(dir: &Path) -> String {
     let clean: String = dir
@@ -341,7 +363,7 @@ pub struct Role {
     /// The member body with includes resolved: its standing instruction.
     pub instruction: String,
     /// The files its instruction was read from, in order: the role file,
-    /// then each include and other team's role file where it appears.
+    /// then each include and other template's role file where it appears.
     pub sources: Vec<PathBuf>,
     /// The same files nested under the file that includes them, for text output.
     #[serde(skip)]
@@ -349,7 +371,7 @@ pub struct Role {
     /// Extra arguments for the vendor CLI.
     pub args: Vec<String>,
     /// Each member works in its own git worktree, which brg adds when it
-    /// issues the member; otherwise members work in the team's folder.
+    /// issues the member; otherwise members work in the instance's working folder.
     pub worktree: bool,
 }
 
@@ -376,7 +398,7 @@ pub struct TeamRole {
     pub parent: Option<String>,
     pub max: usize,
     /// Each copy works in its own git worktree, which brg adds when it
-    /// creates the copy; otherwise copies work in this team's folder.
+    /// creates the copy; otherwise copies work in this instance's working folder.
     pub worktree: bool,
 }
 
@@ -419,7 +441,7 @@ pub struct Plugin {
     pub delivers_to: Option<String>,
     /// Every name the plugin gets, in order.
     pub env: Vec<String>,
-    /// The plain values the team gives; every other name is a secret.
+    /// The plain values the template gives; every other name is a secret.
     pub values: BTreeMap<String, String>,
     pub actions: BTreeMap<String, Action>,
 }
@@ -433,7 +455,7 @@ impl Plugin {
 
 #[derive(Debug, Clone, Serialize)]
 pub enum PluginLocation {
-    /// A directory inside the team, relative to the team dir.
+    /// A directory inside the template, relative to the template dir.
     Team(String),
     /// `shared:<name>`, resolved under the configuration's `plugins_dir`.
     Shared(String),
@@ -518,7 +540,7 @@ pub fn parse_model(value: &str) -> Result<Model, String> {
     }
 }
 
-/// Load and check a team directory. Problems go into `report`; a team is
+/// Load and check a template directory. Problems go into `report`; a template is
 /// returned only when there were no errors.
 pub fn load(dir: &Path, report: &mut Report) -> Option<Team> {
     let config = crate::config::load(report)?;
@@ -537,7 +559,7 @@ pub(crate) fn load_with(
     let dir = real.as_deref().unwrap_or(dir);
     let team_file = dir.join(TEAM_FILE);
     if !team_file.exists() {
-        report.error(Some(&team_file), "team file not found");
+        report.error(Some(&team_file), missing_template(dir));
         return None;
     }
     let text = match read_text(&team_file) {
@@ -550,7 +572,12 @@ pub(crate) fn load_with(
     let raw: TeamFileRaw = match yaml::parse(&text) {
         Ok(raw) => raw,
         Err(e) => {
-            report.error(Some(&team_file), e);
+            let message = if e.contains("unknown field `team`") {
+                "a role's `team:` key is no longer read; rename it to `template:`".to_string()
+            } else {
+                e
+            };
+            report.error(Some(&team_file), message);
             return None;
         }
     };
@@ -568,10 +595,10 @@ pub(crate) fn load_with(
                 continue;
             }
             for field in fields.roles[id].keys() {
-                if !["team", "parent", "start", "max", "worktree"].contains(&field.as_str()) {
+                if !["template", "parent", "start", "max", "worktree"].contains(&field.as_str()) {
                     report.error(
                         Some(&team_file),
-                        format!("role `{id}`: remove `{field}`; a team role takes only `team`, `parent`, `start`, `max` and `worktree`"),
+                        format!("role `{id}`: remove `{field}`; a team role takes only `template`, `parent`, `start`, `max` and `worktree`"),
                     );
                 }
             }
@@ -672,7 +699,7 @@ fn resolve_asset(dir: &Path, path: &str) -> Result<PathBuf, String> {
     let Some(relative) = relative.strip_prefix("shared/") else {
         return Err("catalog assets must start with `catalog:shared/`".into());
     };
-    let catalog = dir.parent().ok_or("team has no catalog directory")?;
+    let catalog = dir.parent().ok_or("template has no catalog directory")?;
     let shared = catalog.join("shared");
     let metadata = std::fs::symlink_metadata(&shared)
         .map_err(|e| format!("cannot read catalog shared folder: {e}"))?;
@@ -690,7 +717,16 @@ fn read_text(path: &Path) -> Result<String, String> {
             yaml::MAX_FILE_BYTES
         ));
     }
-    std::fs::read_to_string(path).map_err(|e| format!("cannot read: {e}"))
+    let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read: {e}"))?;
+    if text
+        .lines()
+        .any(|line| line.trim().starts_with("{{teams/") && line.trim().ends_with("}}"))
+    {
+        return Err(
+            "`{{teams/…}}` is no longer read; use `{{templates/<template>/<role>}}`".into(),
+        );
+    }
+    Ok(text)
 }
 
 fn load_plugin(
@@ -813,7 +849,7 @@ fn load_plugin(
         _ => {}
     }
 
-    // Commands that live in a team-local plugin directory must exist and be executable.
+    // Commands that live in a template-local plugin directory must exist and be executable.
     let local_dir = match &location {
         Some(PluginLocation::Team(rel)) => Some(dir.join(rel)),
         Some(PluginLocation::Catalog(path)) => Some(path.clone()),
@@ -881,7 +917,7 @@ fn load_team_role(
             return Err("name must match `[a-z][a-z0-9_-]{0,31}`".into());
         }
         if role.prompt.is_some() {
-            return Err("choose either `prompt` or `team`".into());
+            return Err("choose either `prompt` or `template`".into());
         }
         if role.start == Some(true) {
             return Err("a team role must have `start: false` or omit `start`; create and prepare each copy before starting it".into());
@@ -891,7 +927,7 @@ fn load_team_role(
             || matches!(path, "." | "..")
             || is_path(path)
         {
-            return Err("`team` must be a team name from the configured teams directories, not a path or shared: reference".into());
+            return Err("`template` must be a template name from the configured templates directories, not a path or shared: reference".into());
         }
         let dir = find(path, search)
             .or_else(|error| frozen.and_then(|paths| paths.get(id)).cloned().ok_or(error))?;
@@ -1029,7 +1065,7 @@ fn load_role(
 
     // Role file.
     let Some(prompt) = m.prompt.as_deref() else {
-        report.error(Some(team_file), at("needs a `prompt` or `team`".into()));
+        report.error(Some(team_file), at("needs a `prompt` or `template`".into()));
         return None;
     };
     let prompt_path = match resolve_within(dir, prompt) {
@@ -1107,8 +1143,8 @@ fn load_role(
     })
 }
 
-/// How a role file was reached: from its own team, where it may include
-/// another team's role file, or included that way by the file given, where
+/// How a role file was reached: from its own template, where it may include
+/// another template's role file, or included that way by the file given, where
 /// it may not.
 #[derive(Clone, Copy)]
 enum Reach<'a> {
@@ -1176,14 +1212,14 @@ fn include_stem(line: &str) -> Option<&str> {
     line.trim().strip_prefix("{{includes/")?.strip_suffix("}}")
 }
 
-/// Own-line `{{teams/<team>/<role>}}` directives: another team's role file.
+/// Own-line `{{templates/<template>/<role>}}` directives: another template's role file.
 fn team_role_ref(line: &str) -> Option<&str> {
-    line.trim().strip_prefix("{{teams/")?.strip_suffix("}}")
+    line.trim().strip_prefix("{{templates/")?.strip_suffix("}}")
 }
 
-/// The expanded body of the role file `reference` (`<team>/<role>`) names,
-/// found like a `team:` reference. Its frontmatter is left behind, and its
-/// includes resolve in its own team.
+/// The expanded body of the role file `reference` (`<template>/<role>`) names,
+/// found like a `template:` reference. Its frontmatter is left behind, and its
+/// includes resolve in its own template.
 fn team_role_body(
     reference: &str,
     search: &[PathBuf],
@@ -1191,7 +1227,7 @@ fn team_role_body(
     sources: &mut Vec<RoleSource>,
     report: &mut Report,
 ) -> Option<String> {
-    let directive = format!("{{{{teams/{reference}}}}}");
+    let directive = format!("{{{{templates/{reference}}}}}");
     let mut fail = |at: &Path, msg: String| {
         report.error(Some(at), format!("`{directive}`: {msg}"));
         None
@@ -1208,7 +1244,7 @@ fn team_role_body(
     else {
         return fail(
             shown,
-            "bad team role reference; write `{{teams/<team>/<role>}}` with a team's name and one of its roles".into(),
+            "bad template role reference; write `{{templates/<template>/<role>}}` with a template's name and one of its roles".into(),
         );
     };
     let other = match find(team, search) {
@@ -1224,7 +1260,7 @@ fn team_role_body(
         return fail(
             shown,
             format!(
-                "team `{team}` has no role `{role}` with a role file in {}",
+                "template `{team}` has no role `{role}` with a role file in {}",
                 team_file.display()
             ),
         );
@@ -1271,7 +1307,7 @@ fn resolve_includes(
                     report.error(
                         Some(shown),
                         format!(
-                            "`{}`: {} includes this role file from another team, and a role file reached that way can't include another",
+                            "`{}`: {} includes this role file from another template, and a role file reached that way can't include another",
                             line.trim(),
                             by.display()
                         ),
@@ -1313,7 +1349,7 @@ fn resolve_includes(
             continue;
         }
         let rel = format!("{includes_dir}/{stem}.md");
-        // The include as the team names it: a catalog path is under its catalog.
+        // The include as the template names it: a catalog path is under its catalog.
         let listed = match rel.strip_prefix("catalog:") {
             Some(rest) => dir.parent().unwrap_or(dir).join(rest),
             None => dir.join(&rel),
@@ -1330,7 +1366,7 @@ fn resolve_includes(
                         report.error(
                             Some(&listed),
                             format!(
-                                "`{}`: an include can't take another team's role file; put the line in the role file that includes this one, {}",
+                                "`{}`: an include can't take another template's role file; put the line in the role file that includes this one, {}",
                                 reference.trim(),
                                 shown.display()
                             ),

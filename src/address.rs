@@ -5,7 +5,7 @@
 //! role. IDs are parsed from the right, so roles and teams with `-` in their
 //! names work. The instance can be left out only inside a member, where it
 //! comes from `BORGCHART_INSTANCE`; everywhere else it is named in full. brg
-//! never infers one from a team's name or from which instances run.
+//! never infers one from a template's name or from which instances run.
 
 use crate::registry::{self, InstanceRecord};
 use crate::state::StateDir;
@@ -56,7 +56,7 @@ pub fn known() -> String {
         .map(|r| r.instances.keys().cloned().collect())
         .unwrap_or_default();
     if ids.is_empty() {
-        "there are no instances; create one with `brg create <team> <folder>`".into()
+        "there are no instances; create one with `brg create <template> <folder>`".into()
     } else {
         format!("instances: {}", ids.join(", "))
     }
@@ -74,7 +74,7 @@ pub fn every() -> Result<Vec<Instance>, String> {
 }
 
 /// The registered instance `id`. The error says what to write instead when
-/// `id` is a team's name, a member or a path.
+/// `id` is a template's name, a member or a path.
 pub fn instance(id: &str) -> Result<Instance, String> {
     if !id.split('/').all(crate::names::is_valid_member_id) {
         return Err(format!(
@@ -100,7 +100,7 @@ pub fn instance(id: &str) -> Result<Instance, String> {
     if !of_team.is_empty() {
         let list: Vec<&str> = of_team.iter().map(|s| s.as_str()).collect();
         return Err(format!(
-            "`{id}` is a team, not an instance; name one of its instances in full: {}",
+            "`{id}` is a template, not an instance; name one of its instances in full: {}",
             list.join(", ")
         ));
     }

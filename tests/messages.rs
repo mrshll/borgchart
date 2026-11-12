@@ -461,7 +461,10 @@ fn status_shows_unacked_counts_and_survives_store_damage() {
 
     // Bus storage is present even without explicit bus settings.
     let env = Env::new();
-    env.write("teams/oncall/team.yaml", &TEAM.replace("bus: {}\n", ""));
+    env.write(
+        "templates/oncall/template.yaml",
+        &TEAM.replace("bus: {}\n", ""),
+    );
     let instance = env.create("oncall", "work/a");
     assert_eq!(env.row(&instance, "lead")["unacked"], 0);
     let text = stdout(&env.ok(&["status", &instance]));

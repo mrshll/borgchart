@@ -80,9 +80,9 @@ fn vendor_codex_seating_probe() {
             bus: false,
         },
     );
-    let yaml = fs::read_to_string(t.dir.join("team.yaml")).unwrap();
+    let yaml = fs::read_to_string(t.dir.join("template.yaml")).unwrap();
     fs::write(
-        t.dir.join("team.yaml"),
+        t.dir.join("template.yaml"),
         format!(
             "plugins:\n  seat:\n    actions:\n      route: brg-seat route <vendor> <model>\n{}",
             yaml.replace("    prompt:", "    plugins: {seat: [route]}\n    prompt:")

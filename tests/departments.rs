@@ -36,10 +36,10 @@ fn create_copy(env: &Env, parent: &str, role: &str) -> (String, std::path::PathB
 fn department() -> Env {
     let env = Env::new();
     env.write(
-        "teams/oncall/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  dev: {team: dev, parent: lead, start: false, max: 2, worktree: true}\n",
+        "templates/oncall/template.yaml",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  dev: {template: dev, parent: lead, start: false, max: 2, worktree: true}\n",
     );
-    env.team("teams/dev");
+    env.team("templates/dev");
     fs::remove_dir(env.path("work/a")).unwrap();
     env.checkout("work/a");
     env
@@ -49,10 +49,10 @@ fn department() -> Env {
 fn nested_addresses_start_and_stop_only_the_named_copy_or_member() {
     let env = department();
     env.write(
-        "teams/dev/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead, start: false}\n  design: {team: design, parent: lead, start: false}\n",
+        "templates/dev/template.yaml",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead, start: false}\n  design: {template: design, parent: lead, start: false}\n",
     );
-    env.team("teams/design");
+    env.team("templates/design");
     let dept = env.create("oncall", "work/a");
     let (first, folder) = create_copy(&env, &dept, "dev");
     let (peer, peer_folder) = create_copy(&env, &dept, "dev");
@@ -165,10 +165,10 @@ fn invalid_address_segments_are_refused_before_reading_the_registry() {
 #[test]
 fn underscore_team_names_create_addressable_instances() {
     let env = Env::new();
-    env.team("teams/_scratch");
+    env.team("templates/_scratch");
     let out = env.ok(&[
         "create",
-        "./teams/_scratch",
+        "./templates/_scratch",
         &env.path("work/a").display().to_string(),
     ]);
     let id = stdout(&out).split_whitespace().next().unwrap().to_string();
@@ -209,18 +209,18 @@ fn missing_nested_copy_reports_kept_alternatives() {
 #[test]
 fn status_nests_copies_once_with_full_paths_and_states() {
     let env = department();
-    let dev_team = env.path("teams/dev/team.yaml");
+    let dev_team = env.path("templates/dev/template.yaml");
     fs::write(
         &dev_team,
         format!(
-            "{}  design: {{team: design, parent: lead, start: false}}\n",
+            "{}  design: {{template: design, parent: lead, start: false}}\n",
             fs::read_to_string(&dev_team).unwrap()
         ),
     )
     .unwrap();
-    env.team("teams/design");
-    let team = env.path("teams/oncall/team.yaml");
-    fs::write(&team, format!("{}  review: {{team: dev, parent: lead, start: false}}\n  research: {{team: dev, parent: lead, start: false, max: 2}}\n", fs::read_to_string(&team).unwrap())).unwrap();
+    env.team("templates/design");
+    let team = env.path("templates/oncall/template.yaml");
+    fs::write(&team, format!("{}  review: {{template: dev, parent: lead, start: false}}\n  research: {{template: dev, parent: lead, start: false, max: 2}}\n", fs::read_to_string(&team).unwrap())).unwrap();
     let dept = env.create("oncall", "work/a");
     let dept_lead = env.member(&dept, "lead");
     let rows = env.rows(&dept);
@@ -259,7 +259,7 @@ fn status_nests_copies_once_with_full_paths_and_states() {
             .position(|r| r["kind"] == "copy" && r["instance"] == *copy)
             .expect("copy must appear under its parent");
         assert_eq!(rows[index]["parent"], format!("{dept}/{dept_lead}"));
-        assert_eq!(rows[index]["team"], "dev");
+        assert_eq!(rows[index]["template"], "dev");
         assert_eq!(rows[index]["running"], running);
         let member_index = rows
             .iter()
@@ -299,7 +299,7 @@ fn status_nests_copies_once_with_full_paths_and_states() {
             assert!(
                 !text
                     .lines()
-                    .any(|line| line.starts_with(&format!("{copy}  team ")))
+                    .any(|line| line.starts_with(&format!("{copy}  template ")))
             );
             let name = copy.rsplit('/').next().unwrap();
             assert!(text.lines().any(|line| line.contains(name)
@@ -405,7 +405,7 @@ fn nested_status_screens_keep_healthy_members_visible_when_a_copy_becomes_unread
             "{text}"
         );
         assert!(
-            !text.contains(&format!("{copy}  team "))
+            !text.contains(&format!("{copy}  template "))
                 && !text.contains(&format!("{copy}  folder ")),
             "nested copy must not have a top-level header: {text}"
         );
@@ -565,24 +565,24 @@ fn team_copies_share_the_tree_store_and_keep_separate_slots_until_deleted() {
 fn depth_three_copies_wait_for_preparation_and_cascade_before_parent_deletion() {
     let env = Env::new();
     env.write(
-        "teams/oncall/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md, start: true}\n  dev: {team: dev, parent: lead, start: false, max: 2, worktree: true}\n",
+        "templates/oncall/template.yaml",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md, start: true}\n  dev: {template: dev, parent: lead, start: false, max: 2, worktree: true}\n",
     );
     env.write(
-        "teams/dev/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md, start: true}\n  design: {team: design, parent: lead, start: false}\n",
+        "templates/dev/template.yaml",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md, start: true}\n  design: {template: design, parent: lead, start: false}\n",
     );
     env.write(
-        "teams/dev/lead.md",
+        "templates/dev/lead.md",
         "---\nmodels: {claude: opus high}\n---\nLead the fictional development team.\n",
     );
     env.write(
-        "teams/design/team.yaml",
+        "templates/design/template.yaml",
         "bus: {}\nroles:\n  amber: {prompt: amber.md, start: true}\n  violet: {prompt: violet.md, start: true}\n",
     );
     for role in ["amber", "violet"] {
         env.write(
-            &format!("teams/design/{role}.md"),
+            &format!("templates/design/{role}.md"),
             "---\nmodels: {claude: opus high}\n---\nReview the fictional design.\n",
         );
     }
@@ -687,7 +687,7 @@ fn worktrees_in_a_copy_never_follow_the_copys_rewritten_git_file() {
     // file when it adds or removes worktrees inside that copy.
     let env = department();
     env.write(
-        "teams/dev/team.yaml",
+        "templates/dev/template.yaml",
         "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead, start: false, worktree: true}\n",
     );
     let dept = env.create("oncall", "work/a");

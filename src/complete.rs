@@ -4,7 +4,7 @@
 //! exits before anything else runs.
 //!
 //! Candidates come from brg's records only (the registry, instance records
-//! and the configured team folders), read without a lock: a tab press
+//! and the configured template folders), read without a lock: a tab press
 //! writes nothing, takes no lock and starts no tmux.
 //!
 //! This uses `clap_complete`'s dynamic engine, which sits behind its
@@ -57,8 +57,8 @@ pub fn members() -> ArgValueCandidates {
     ArgValueCandidates::new(member_candidates)
 }
 
-/// The teams in the configured search paths, or folders once the word
-/// starts like a path (`/`, `.` or `~`, which no team name does).
+/// The templates in the configured search paths, or folders once the word
+/// starts like a path (`/`, `.` or `~`, which no template name does).
 pub fn teams() -> ArgValueCompleter {
     ArgValueCompleter::new(|current: &OsStr| {
         let typed = current.to_string_lossy();

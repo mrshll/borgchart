@@ -54,27 +54,27 @@ The hooks check the working tree, not only what is staged. Each check uses `tool
 
 ## Running the engineering teams
 
-`teams/` holds three team definitions (`engineering`, `dev-team` and `dev-design-team`) and a `shared/` folder of includes they all use. Each `team.yaml` and its role files are the only description of that team.
+`templates/` holds three team templates (`engineering`, `dev-team` and `dev-design-team`) and a `shared/` folder of includes they all use. Each `template.yaml` and its role files are the only description of that template.
 
 The three aren't self-contained, so they travel together:
 
-- **Child teams resolve by name.** `team: dev-team` is looked up in the `teams:` search paths of brg's configuration.
-- **Shared includes sit beside the teams.** `catalog:shared/...` points at `teams/shared/`, which has no `team.yaml` and is not a team.
+- **Child teams resolve by name.** `template: dev-team` is looked up in the `templates:` search paths of brg's configuration.
+- **Shared includes sit beside the templates.** `catalog:shared/...` points at `templates/shared/`, which has no `template.yaml` and is not a template.
 - **The [seating plugin](plugins/seat/README.md), `brg-seat`, is found on `PATH`,** as it was when the instance was created or fully started.
 
-The team files hold no project rules and no owner. Members get both from their vendor's own instruction files, which load as normal:
+The template files hold no project rules and no owner. Members get both from their vendor's own instruction files, which load as normal:
 
 - **The project's rules** come from the repository's instruction file: here, [AGENTS.md](AGENTS.md), which `CLAUDE.md` imports so both vendors read one text. It names the build wrapper, the checks, the code style and what may appear in public. A `locked` Codex member without `worktree: true` starts in its temp folder and doesn't load it; none of these teams has one.
 - **The owner** is whoever runs the instance. Their own user-level instructions (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`) name their GitHub login and say how members commit, push and run GitHub commands: as the owner, or as a separate account, with any per-checkout identity setup. Leads request the owner's review only under a separate account.
 
 ### Setup
 
-Point brg's configuration at the folder that contains `teams/`. With this `config.yaml` beside it:
+Point brg's configuration at the folder that contains `templates/`. With this `config.yaml` beside it:
 
 ```yaml
 schema: 1
 auth: login
-teams: [./teams]
+templates: [./templates]
 ```
 
 set `BORGCHART_CONFIG` to that file's absolute path, put `brg-seat` on `PATH`, and validate: `brg validate engineering`, `brg validate dev-team`, `brg validate dev-design-team`. If another configured directory provides one of these names, validation refuses the ambiguity.
@@ -83,22 +83,24 @@ Then create an instance from a checkout of the repository: `cd <checkout>; brg c
 
 ### Installing from a checkout
 
-A team that works on this repository should use binaries and team files from a separate checkout: a half-finished change to brg or to a role file would take effect at the next start. Install the binaries from that separate checkout:
+A team that works on this repository should use binaries and template files from a separate checkout: a half-finished change to brg or to a role file would take effect at the next start. Install the binaries from that separate checkout:
 
 ```sh
 make install
 ```
 
+This vocabulary cutover does not migrate state. Destroy existing trees with their original brg before installing this version, then create new instances from templates.
+
 This builds the workspace release binaries with `--locked`, copies `brg` and `brg-seat` into `$HOME/.local/share/brg/bin/`, and records `git rev-parse HEAD` in `$HOME/.local/share/brg/REVISION`. Each binary is copied to a temporary name beside its destination and renamed into place, so readers see a complete file and running processes keep their old inode. Linux builds use `tools/cargo-slot` when executable; other systems use cargo directly.
 
 `PREFIX` changes the parent of `brg/` (default `$HOME/.local/share`); `BINDIR` changes where the `brg` and `brg-seat` symlinks go (default `$HOME/.local/bin`). For example, `make install PREFIX="$HOME/apps" BINDIR="$HOME/bin"`. Use absolute paths. The links point directly at `$PREFIX/brg/bin/<name>` and are replaced with `ln -sfn`. Keep `BINDIR` on `PATH`. The old `borgchart` link is removed only if it points to `$PREFIX/brg/bin/borgchart`; unrelated links and files are left alone.
 
-The installer leaves team files and brg's configuration alone. Set `teams:` in that configuration to point straight at a checkout's `teams/` folder, which follows whatever that checkout has checked out. You may list several catalogs:
+The installer leaves template files and brg's configuration alone. Set `templates:` in that configuration to point straight at a checkout's `templates/` folder, which follows whatever that checkout has checked out. You may list several catalogs:
 
 ```text
-teams: [~/workspace/<checkout>/teams, ~/<other>/teams]
+templates: [~/workspace/<checkout>/templates, ~/<other>/templates]
 ```
 
-A team name found in two listed catalogs is refused as ambiguous; for a command, name the team by its path instead. A team file's `team: <name>` role takes no path, so the listed catalogs must not share a team name that a team file refers to.
+A template name found in two listed catalogs is refused as ambiguous; for a command, name the template by its path instead. A template file's `template: <name>` role takes no path, so the listed catalogs must not share a template name that a template file refers to.
 
-A running tree meets the installed binary and team files at its next brg call or next new member, by design. To move a tree started from an old per-revision directory, use the new binary to run `brg stop <instance>`, then `brg start <instance> --team "<checkout>/teams/<team>" --resume`. That repoints only the named instance: kept copies retain their recorded team folders and each needs its own full stop and `start --team <new-team-folder> --resume`, working from parent to child; keep the old installation until every copy has moved.
+A running tree meets the installed binary and template files at its next brg call or next new member, by design. To move a tree started from an old per-revision directory, use the new binary to run `brg stop <instance>`, then `brg start <instance> --template "<checkout>/templates/<template>" --resume`. That repoints only the named instance: kept copies retain their recorded template folders and each needs its own full stop and `start --template <new-template-folder> --resume`, working from parent to child; keep the old installation until every copy has moved.

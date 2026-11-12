@@ -24,7 +24,7 @@ What the lead can't do: look at systems. It is a smart auto-responder that ackno
 ## Setup
 
 1. **Create a Slack app** with a bot user. Give it the bot scopes `channels:history` and `chat:write`, install it to your workspace, and invite the bot to **one** channel.
-2. **Copy the channel's ID** (it starts with `C`) into `team.yaml` as the value of `SLACK_CHANNEL_ID`.
+2. **Copy the channel's ID** (it starts with `C`) into `template.yaml` as the value of `SLACK_CHANNEL_ID`.
 3. **Install** `brg`, tmux, uv and Claude Code.
 4. **Pick auth** in brg's configuration, `~/.config/borgchart/config.yaml`. `auth: api_key` (recommended for this example) gives each Claude agent `ANTHROPIC_API_KEY` from the shell you start from, and nothing else of yours; `auth: login` (the default) uses your Claude login and passes no key, even if one is set.
 
@@ -60,7 +60,7 @@ What the lead can't do: look at systems. It is a smart auto-responder that ackno
 
 ## Running in `vendor` posture
 
-To let the lead use your own vendor settings (e.g. Claude's auto mode) and tools beyond `slackbot`, set `posture: vendor` on the lead in your copy of `team.yaml`. The team marks the lead `untrusted_input`, so `brg validate` will also ask you to add `accept_risk: true` to it. Only do this for a channel you trust: anyone who can post there can then try to steer an agent that has a shell and your credentials.
+To let the lead use your own vendor settings (e.g. Claude's auto mode) and tools beyond `slackbot`, set `posture: vendor` on the lead in your copy of `template.yaml`. The team marks the lead `untrusted_input`, so `brg validate` will also ask you to add `accept_risk: true` to it. Only do this for a channel you trust: anyone who can post there can then try to steer an agent that has a shell and your credentials.
 
 ## Tests
 

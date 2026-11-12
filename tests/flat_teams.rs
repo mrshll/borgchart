@@ -32,8 +32,8 @@ fn check(root: &Path, roots: &[&Path]) -> Result<Validated, String> {
 fn parent(root: &Path, name: &str) {
     write(
         root,
-        "parent/team.yaml",
-        &format!("bus: {{}}\nroles: {{child: {{team: '{name}'}}}}\n"),
+        "parent/template.yaml",
+        &format!("bus: {{}}\nroles: {{child: {{template: '{name}'}}}}\n"),
     );
 }
 
@@ -42,19 +42,19 @@ fn names_resolve_across_configured_roots_and_refuse_missing_or_ambiguous() {
     let a = tempfile::tempdir().unwrap();
     let b = tempfile::tempdir().unwrap();
     parent(a.path(), "child");
-    write(b.path(), "child/team.yaml", "bus: {}\nroles: {}\n");
+    write(b.path(), "child/template.yaml", "bus: {}\nroles: {}\n");
     let v = check(&a.path().join("parent"), &[a.path(), b.path()]).unwrap();
     assert_eq!(v.team.team_roles["child"].dir, b.path().join("child"));
     assert!(
         check(&a.path().join("parent"), &[a.path()])
             .unwrap_err()
-            .contains("no team `child`")
+            .contains("no template `child`")
     );
-    write(a.path(), "child/team.yaml", "bus: {}\nroles: {}\n");
+    write(a.path(), "child/template.yaml", "bus: {}\nroles: {}\n");
     assert!(
         check(&a.path().join("parent"), &[a.path(), b.path()])
             .unwrap_err()
-            .contains("more than one team")
+            .contains("more than one template")
     );
 }
 
@@ -66,14 +66,14 @@ fn paths_and_shared_forms_are_not_team_names() {
         "./child",
         "../child",
         "/tmp/child",
-        "teams/child",
+        "templates/child",
         "shared:child",
     ] {
         parent(root.path(), name);
         assert!(
             check(&root.path().join("parent"), &[root.path()])
                 .unwrap_err()
-                .contains("team name"),
+                .contains("template name"),
             "{name}"
         );
     }
@@ -86,24 +86,24 @@ fn canonical_identity_refuses_cycles_but_allows_reuse() {
     assert!(
         check(&root.path().join("parent"), &[root.path()])
             .unwrap_err()
-            .contains("team cycle")
+            .contains("template cycle")
     );
     parent(root.path(), "child");
     write(
         root.path(),
-        "child/team.yaml",
-        "bus: {}\nroles: {back: {team: parent}}\n",
+        "child/template.yaml",
+        "bus: {}\nroles: {back: {template: parent}}\n",
     );
     assert!(
         check(&root.path().join("parent"), &[root.path()])
             .unwrap_err()
-            .contains("team cycle")
+            .contains("template cycle")
     );
-    write(root.path(), "child/team.yaml", "bus: {}\nroles: {}\n");
+    write(root.path(), "child/template.yaml", "bus: {}\nroles: {}\n");
     write(
         root.path(),
-        "parent/team.yaml",
-        "bus: {}\nroles:\n  first: {team: child}\n  second: {team: child}\n",
+        "parent/template.yaml",
+        "bus: {}\nroles:\n  first: {template: child}\n  second: {template: child}\n",
     );
     symlink(root.path().join("child"), root.path().join("alias")).unwrap();
     assert!(check(&root.path().join("parent"), &[root.path()]).is_ok());
@@ -112,7 +112,7 @@ fn canonical_identity_refuses_cycles_but_allows_reuse() {
 fn assets(root: &Path) {
     write(
         root,
-        "parent/team.yaml",
+        "parent/template.yaml",
         "includes: catalog:shared/includes\nplugins: {seat: {path: 'catalog:shared/plugins/seat', command: seat}}\nroles: {lead: {prompt: lead.md}}\n",
     );
     write(
@@ -167,7 +167,7 @@ fn catalog_assets_refuse_traversal_and_symlinked_shared_root() {
     ] {
         write(
             root.path(),
-            "parent/team.yaml",
+            "parent/template.yaml",
             &format!("includes: '{path}'\nroles: {{lead: {{prompt: lead.md}}}}\n"),
         );
         assert!(
@@ -238,7 +238,7 @@ fn catalog_descendants_cannot_escape_shared_and_prompts_remain_team_local() {
     assets(root.path());
     write(
         root.path(),
-        "parent/team.yaml",
+        "parent/template.yaml",
         "roles: {lead: {prompt: 'catalog:shared/includes/rules.md'}}\n",
     );
     assert!(check(&root.path().join("parent"), &[root.path()]).is_err());
@@ -257,7 +257,7 @@ fn catalog_plugins_reject_nonshared_paths_and_shared_root_aliases() {
     ] {
         write(
             root.path(),
-            "parent/team.yaml",
+            "parent/template.yaml",
             &format!("plugins: {{seat: {{path: '{path}', command: seat}}}}\nroles: {{}}\n"),
         );
         assert!(
@@ -279,11 +279,11 @@ fn catalog_plugins_reject_nonshared_paths_and_shared_root_aliases() {
 fn a_local_nested_folder_is_not_an_implicit_name_search_root() {
     let root = tempfile::tempdir().unwrap();
     parent(root.path(), "child");
-    write(root.path(), "parent/child/team.yaml", "roles: {}\n");
+    write(root.path(), "parent/child/template.yaml", "roles: {}\n");
     assert!(
         check(&root.path().join("parent"), &[root.path()])
             .unwrap_err()
-            .contains("no team `child`")
+            .contains("no template `child`")
     );
 }
 
@@ -291,7 +291,7 @@ fn a_local_nested_folder_is_not_an_implicit_name_search_root() {
 fn digit_leading_team_names_keep_find_semantics() {
     let root = tempfile::tempdir().unwrap();
     parent(root.path(), "123-dev");
-    write(root.path(), "123-dev/team.yaml", "roles: {}\n");
+    write(root.path(), "123-dev/template.yaml", "roles: {}\n");
     let v = check(&root.path().join("parent"), &[root.path()]).unwrap();
     assert_eq!(
         v.team.team_roles["child"].dir,

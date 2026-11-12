@@ -24,10 +24,10 @@ impl Tree {
     fn new() -> Self {
         let env = Env::new();
         env.write(
-            "teams/oncall/team.yaml",
-            "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  dev: {team: dev, parent: lead, start: false, max: 2}\n",
+            "templates/oncall/template.yaml",
+            "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  dev: {template: dev, parent: lead, start: false, max: 2}\n",
         );
-        env.team("teams/dev");
+        env.team("templates/dev");
         fs::create_dir(env.path("work/a/lead")).unwrap();
         let parent = env.create("oncall", "work/a");
         env.ok(&["create", &format!("{parent}/dev")]);
@@ -249,7 +249,7 @@ fn publish_to(tree: &Tree, child: bool, to: &str) -> Output {
 fn routing_allows_parent_edges_but_refuses_siblings_cousins_and_deleted_ancestors() {
     let tree = Tree::new();
     tree.env.ok(&["stop", &tree.parent]);
-    let team = tree.env.path("teams/oncall/team.yaml");
+    let team = tree.env.path("templates/oncall/template.yaml");
     let config = fs::read_to_string(&team).unwrap();
     fs::write(
         team,
@@ -257,10 +257,10 @@ fn routing_allows_parent_edges_but_refuses_siblings_cousins_and_deleted_ancestor
     )
     .unwrap();
     tree.env.write(
-        "teams/dev/team.yaml",
-        "roles:\n  lead: {prompt: lead.md}\n  leaf: {team: leaf, parent: lead, start: false}\n",
+        "templates/dev/template.yaml",
+        "roles:\n  lead: {prompt: lead.md}\n  leaf: {template: leaf, parent: lead, start: false}\n",
     );
-    tree.env.team("teams/leaf");
+    tree.env.team("templates/leaf");
     tree.env.ok(&["start", &tree.parent]);
     tree.env.ok(&["create", &format!("{}/helper", tree.parent)]);
     let helper = tree.env.member(&tree.parent, "helper");

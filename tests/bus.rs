@@ -36,7 +36,7 @@ enum As {
 }
 
 impl Fixture {
-    /// A deployment with a bus and a started team: `lead` (the root) with
+    /// A deployment with a bus and a started template: `lead` (the root) with
     /// children `helper` and `helper2`, and `sub` under `helper`.
     fn new() -> Self {
         let f = Fixture {
@@ -68,9 +68,9 @@ impl Fixture {
         self.write_private(
             &self.root().join("registry.json"),
             &json!({
-                "schema": 1,
+                "schema": 2,
                 "instances": {TEAM: {
-                    "team": "oncall", "team_dir": self.dir.path().join("oncall"),
+                    "template": "oncall", "template_dir": self.dir.path().join("oncall"),
                     "folder": self.dir.path().join("work"), "created_at": "2026-11-05T19:00:00.000Z",
                 }},
                 "issued": {"oncall": ["2a3b"]},
@@ -79,8 +79,8 @@ impl Fixture {
         self.write_private(
             &self.root().join(TEAM).join("instance.json"),
             &json!({
-                "schema": 1, "id": TEAM, "team": "oncall",
-                "team_dir": self.dir.path().join("oncall"),
+                "schema": 2, "id": TEAM, "template": "oncall",
+                "template_dir": self.dir.path().join("oncall"),
                 "folder": self.dir.path().join("work"),
                 "created_at": "2026-11-05T19:00:00.000Z",
                 "members": members,
@@ -102,8 +102,8 @@ impl Fixture {
             json!({"role": m, "vendor": "claude", "posture": "vendor", "interactive": false, "parent": p, "vendor_version": null, "started": true})
         )).collect();
         self.write_private(&self.root().join(TEAM).join("start.json"), &json!({
-            "team_dir": self.dir.path().join("oncall"), "folder": self.dir.path().join("work"),
-            "brg": env!("CARGO_BIN_EXE_brg"), "config": {"version": 1, "digest": "00", "inputs": {}, "team_dirs": {}},
+            "template_dir": self.dir.path().join("oncall"), "folder": self.dir.path().join("work"),
+            "brg": env!("CARGO_BIN_EXE_brg"), "config": {"version": 1, "digest": "00", "inputs": {}, "template_dirs": {}},
             "socket": "brg-bus-example", "windows_started": true,
             "base_env": {}, "members": members, "plugins": {},
         }));

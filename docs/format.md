@@ -1,17 +1,17 @@
 # Team and configuration format
 
-A **team** is a folder you can share: its roles (under `roles:`), what each one is told, which plugin programs they may use, and their shared message bus. **brg's configuration** (`config.yaml`) holds what belongs to you rather than to a team: auth, folder trust, where team names are looked up, shared plugins and tmux. An **instance** is a team running in one working folder, given at `brg create <team> <folder>` ([concepts](concepts.md)).
+A **team template** is a folder you can share: its roles (under `roles:`), what each one is told, which plugin programs they may use, and their shared message bus. **brg's configuration** (`config.yaml`) holds what belongs to you rather than to a template: auth, folder trust, where template names are looked up, shared plugins and tmux. An **instance** is a template running in one working folder, given at `brg create <template> <folder>` ([concepts](concepts.md)).
 
 ```
 examples/slack-devops/
-├── team.yaml           # roles, plugins, bus
+├── template.yaml           # roles, plugins, bus
 ├── triager.md          # one Markdown role file per role
 ├── lead.md
 ├── includes/           # shared text, pulled in with {{includes/<stem>}}
 └── plugins/slackbot/   # a colocated plugin
 ```
 
-`brg validate <team>` checks the team and the configuration before anything starts and reports every problem at once.
+`brg validate <template>` checks the template and the configuration before anything starts and reports every problem at once.
 
 ## YAML rules
 
@@ -23,15 +23,15 @@ Every borgchart file is YAML 1.2 parsed strictly:
 - **Size limits:** files over 1 MiB and runaway alias expansion are refused.
 - **Unknown fields** are errors.
 
-## `team.yaml`
+## `template.yaml`
 
 ```yaml
 default: claude                 # vendor for roles that don't name one: claude | codex
-includes: includes              # optional; team-local or catalog:shared/includes
+includes: includes              # optional; template-local or catalog:shared/includes
 
 plugins:
   slackbot:
-    path: plugins/slackbot      # team-local; catalog:shared/…; shared:<name>; or omit for PATH
+    path: plugins/slackbot      # template-local; catalog:shared/…; shared:<name>; or omit for PATH
     process: [./watch.py]       # optional: a long-running program brg starts and stops
     delivers_to: triager        # optional: the role whose member the process hands work to
     env:                        # the only variables the plugin receives
@@ -44,7 +44,7 @@ plugins:
 
 roles:
   triager:
-    prompt: triager.md          # the role file, relative to the team dir
+    prompt: triager.md          # the role file, relative to the template dir
     vendor: claude              # optional; default from `default`
     parent: lead                # optional; another role
     start: true                 # optional; false = its member is made with `brg create <instance>/triager`
@@ -62,41 +62,41 @@ roles:
     plugins: {slackbot: [read, reply]}
 ```
 
-**Names.** Role, plugin and action names match `[a-z][a-z0-9_-]{0,31}`. A role's member is `<role>-<suffix>` (`triager-x7k2`). A role cannot be named `<another role>-<suffix>`, where the suffix is four characters from `23456789abcdefghjkmnpqrstuvwxyz`: that would also name a member. Environment names match `[A-Z_][A-Z0-9_]*`. The team's name is its folder's name, lowercased, with anything outside `[a-z0-9_-]` turned into `-`.
+**Names.** Role, plugin and action names match `[a-z][a-z0-9_-]{0,31}`. A role's member is `<role>-<suffix>` (`triager-x7k2`). A role cannot be named `<another role>-<suffix>`, where the suffix is four characters from `23456789abcdefghjkmnpqrstuvwxyz`: that would also name a member. Environment names match `[A-Z_][A-Z0-9_]*`. The template's name is its folder's name, lowercased, with anything outside `[a-z0-9_-]` turned into `-`.
 
 The role's identity is its key under `roles:`. `brg delete <instance>/<member>` removes a stopped member; its ID stays issued and is never reused. A later `create <instance>/<role>` gets a fresh ID.
 
 **Messages.** Every team has a bus. `msg send TARGET TEXT` records work, then may type it; ordinary recipients explicitly ack and use one `msg wait`. `status` shows ordinary unacked counts. Omit `bus` unless configuring a real `bus: {alert: {plugin: notify, action: alert}}` action; automatic alert dispatch is not wired. Locked recipients have immutable no-ack-required history, no inbox recovery and no new grants. See [the bus](bus.md).
 
-**`interactive`.** An agent role's boolean, default false, applies to every copy and is frozen at start. True means inbox-only: never paste/Enter, even with `msg send --allow-unknown`. Use it for a lead whose session a person shares; remote-session users may leave it false. It is invalid with `posture: locked` or on a nested `team:` role. The bundled dev-team lead is interactive; helpers keep the false default.
+**`interactive`.** An agent role's boolean, default false, applies to every copy and is frozen at start. True means inbox-only: never paste/Enter, even with `msg send --allow-unknown`. Use it for a lead whose session a person shares; remote-session users may leave it false. It is invalid with `posture: locked` or on a nested `template:` role. The bundled dev-team lead is interactive; helpers keep the false default.
 
 **`remote_control`.** An agent role's boolean, default false; Claude-only and requires your claude.ai login (`auth: login`, not `auth: api_key`); on Team and Enterprise plans an Owner must first enable Remote Control in Claude Code's admin settings, and it isn't available through Bedrock, Google Cloud, Foundry or a custom `ANTHROPIC_BASE_URL`, where the member runs without a remote session or link. True adds `--remote-control <instance>/<member>` on fresh starts and resumes, naming the session by its full member address at [claude.ai/code](https://claude.ai/code) and in the Claude app under Code. On first use, if a member shows `blocked` at a Remote Control consent dialog, attach and accept it once, or run `/remote-control` in any Claude session of yours first. `brg status` and `status -w` link a running Claude member's name on a terminal, including sessions enabled by hand, and `status --json` gives `remote_control_url` when known: the address comes from an undocumented field in Claude Code's own session file under `<CLAUDE_CONFIG_DIR or ~/.claude>/sessions/`, matched by the member's recorded session; missing or changed data leaves the name plain and the JSON field absent (checked on Claude Code 2.1.322). Remote prompts arrive over Claude Code's own connection, not the terminal, so they shouldn't disturb the guarded wake's input-box checks; at worst a reminder queues behind a remote turn.
 
-**Catalog assets.** Sibling definitions may share includes and plugins from the fixed `shared/` folder beside them. Set `includes: catalog:shared/includes` and a plugin's `path: catalog:shared/plugins/<name>`. These paths are relative to the directory containing the team definition and confined to its real `shared/` folder. Other catalog prefixes, absolute paths, `..`, a symlinked shared root and symlink escapes are refused. Ordinary includes/plugins and every prompt file retain their team-root confinement. The existing `shared:<name>` plugin syntax still uses the global `plugins_dir`; it is distinct from catalog assets.
+**Catalog assets.** Sibling templates may share includes and plugins from the fixed `shared/` folder beside them. Set `includes: catalog:shared/includes` and a plugin's `path: catalog:shared/plugins/<name>`. These paths are relative to the directory containing the team template and confined to its real `shared/` folder. Other catalog prefixes, absolute paths, `..`, a symlinked shared root and symlink escapes are refused. Ordinary includes/plugins and every prompt file retain their template-root confinement. The existing `shared:<name>` plugin syntax still uses the global `plugins_dir`; it is distinct from catalog assets.
 
-**Team roles.** A role with `team:` creates a nested instance instead of an agent:
+**Team roles.** A role with `template:` creates a nested instance instead of an agent:
 
 ```yaml
 roles:
   lead: {prompt: lead.md}
-  dev: {team: dev, parent: lead, start: false, max: 2, worktree: true}
+  dev: {template: dev, parent: lead, start: false, max: 2, worktree: true}
 ```
 
-A team role accepts only `team`, `parent`, `start`, `max` and `worktree`. Agent options, including `prompt`, `vendor`, `posture`, `plugins`, `connectors`, `interactive` and `args`, are errors even when empty or false. `start` must be false or absent: `create <instance>/dev` makes a stopped copy (and its worktree), which the parent starts with `start <instance>/<copy>`.
+A team role accepts only `template`, `parent`, `start`, `max` and `worktree`. Agent options, including `prompt`, `vendor`, `posture`, `plugins`, `connectors`, `interactive` and `args`, are errors even when empty or false. `start` must be false or absent: `create <instance>/dev` makes a stopped copy (and its worktree), which the parent starts with `start <instance>/<copy>`.
 
-`team` is a team name, resolved through the configured `teams` directories exactly like `brg create <name>`. Missing and ambiguous names are refused; path forms and the old nested definition form are not supported. `max` defaults to 1 and must be at least 1. Each runtime tree shares one message store at its root. `validate` checks referenced teams recursively and reports their errors at their own files. A team may not contain itself, directly or indirectly, as judged by resolved folders. Creation and a copy's full start also check its recorded ancestors, including after a team-folder move.
+`template` is a template name, resolved through the configured `templates` directories exactly like `brg create <name>`. Missing and ambiguous names are refused; path forms and the old nested definition form are not supported. `max` defaults to 1 and must be at least 1. Each runtime tree shares one message store at its root. `validate` checks referenced templates recursively and reports their errors at their own files. A template may not contain itself, directly or indirectly, as judged by resolved folders. Creation and a copy's full start also check its recorded ancestors, including after a template-folder move.
 
-New copies resolve team names through the current catalog. Each copy records its source folder and reads its current files when a member starts. If a kept copy's source folder is gone, starting it errors without looking up a replacement by name. Explicit `start <copy> --team <path>` remains available to recover a moved folder.
+New copies resolve template names through the current catalog. Each copy records its source folder and reads its current files when a member starts. If a kept copy's source folder is gone, starting it errors without looking up a replacement by name. Explicit `start <copy> --template <path>` remains available to recover a moved folder.
 
 **Parents.** A `parent` must be another agent role with `max: 1`, and parent links can't form a cycle. A plugin's `delivers_to:` also requires a `max: 1` agent role. A member's parent is the member of its parent role. Messages a plugin routes "to the parent" go along this edge. A person may manage anything; a member at its latest running start may create, start, stop or delete anything in its subtree. Authority follows recorded parent edges within instances and across copies, at every depth, and is checked under the registry lock with the caller's start in its own instance. Members cannot manage themselves, ancestors, siblings or independent instances. A copy's roots cannot manage their own copy or each other. Stopped, replaced and incomplete starts are refused. Creating a child requires its parent role to have a member.
 
-**`env`.** A map of names (`{A: , B: value}`); a name without a value is a secret. Secrets come from the environment `brg create` or `brg start` runs in: brg stores none. `brg secrets <team>` lists them and whether each is set.
+**`env`.** A map of names (`{A: , B: value}`); a name without a value is a secret. Secrets come from the environment `brg create` or `brg start` runs in: brg stores none. `brg secrets <template>` lists them and whether each is set.
 
-**`worktree`.** Members work in the instance's working folder (a `locked` Codex member: in its temp folder). With `worktree: true`, each member, or each copy of a team role, gets its own git worktree from the team's folder instead: brg adds it when it issues the member (`create`, or a full `start` that gives a `start: true` role a new member), detached at the folder's `HEAD`, or on a new branch with `create <instance>/<role> --branch <name>`. The folder must be in a git repository with a commit. The worktree lives beside brg's state folder, at `<state>-worktrees/<address>` (`~/.local/state/borgchart-worktrees/` by default, with the address's `/` written as `.`); the command that adds it names it, and `status --json` gives it as `worktree`. Starting an existing member never adds one; if it is gone, the start is refused. `delete` removes it with `git worktree remove` when it is clean; it refuses while the worktree holds uncommitted or untracked changes or commits on no remote, and `--force` deletes the member but leaves the worktree as it is. A copy of a team role without `worktree: true` works in its parent's folder. `cwd` is no longer accepted.
+**`worktree`.** Members work in the instance's working folder (a `locked` Codex member: in its temp folder). With `worktree: true`, each member, or each copy of a team role, gets its own git worktree from the instance's folder instead: brg adds it when it issues the member (`create`, or a full `start` that gives a `start: true` role a new member), detached at the folder's `HEAD`, or on a new branch with `create <instance>/<role> --branch <name>`. The folder must be in a git repository with a commit. The worktree lives beside brg's state folder, at `<state>-worktrees/<address>` (`~/.local/state/borgchart-worktrees/` by default, with the address's `/` written as `.`); the command that adds it names it, and `status --json` gives it as `worktree`. Starting an existing member never adds one; if it is gone, the start is refused. `delete` removes it with `git worktree remove` when it is clean; it refuses while the worktree holds uncommitted or untracked changes or commits on no remote, and `--force` deletes the member but leaves the worktree as it is. A copy of a team role without `worktree: true` works in its parent's folder. `cwd` is no longer accepted.
 
-For a tree rooted in a plain folder of clones, `create <instance>/<role> --repo <name>` selects a clone directly in the tree's top folder for a `worktree: true` role. The name must be one child directory name: no paths, symlinks, linked worktrees (`.git` files), bare repositories or symlinked `.git` directories. brg queries `origin` for its default branch and fetches it before taking the registry lock, then starts at the fetched tip, detached or on `--branch <name>`. Missing origin, unavailable credentials or a failed fetch refuse creation before issuing anything. The clone's checked-out branch, index and working files stay as they are. Without `--repo`, the start remains the instance folder's `HEAD`; an implementer inside a dev copy inherits that copy's committed work. Use one dev copy per repository; the root lead sequences copies. Repository selection is a creation option, never a team-file field or stored setting. Deletion, cleanup and destroy find ownership through the original repository and real child clones' own worktree records; ambiguous ownership is refused.
+For a tree rooted in a plain folder of clones, `create <instance>/<role> --repo <name>` selects a clone directly in the tree's top folder for a `worktree: true` role. The name must be one child directory name: no paths, symlinks, linked worktrees (`.git` files), bare repositories or symlinked `.git` directories. brg queries `origin` for its default branch and fetches it before taking the registry lock, then starts at the fetched tip, detached or on `--branch <name>`. Missing origin, unavailable credentials or a failed fetch refuse creation before issuing anything. The clone's checked-out branch, index and working files stay as they are. Without `--repo`, the start remains the instance folder's `HEAD`; an implementer inside a dev copy inherits that copy's committed work. Use one dev copy per repository; the root lead sequences copies. Repository selection is a creation option, never a template-file field or stored setting. Deletion, cleanup and destroy find ownership through the original repository and real child clones' own worktree records; ambiguous ownership is refused.
 
-**`args`.** Extra vendor launch arguments. Treat them as trusted, like the rest of the team: they can widen an agent's permissions. A `-c check_for_update_on_startup=…` (Codex) overrides brg's default of turning the update check off, so an unattended member doesn't stop at Codex's "Update available" prompt; `--add-dir` (Claude) replaces the folders brg adds, and a `-c projects…` replaces brg's Codex trust. Custom Codex vendor-posture permission overrides (`-s`/`--sandbox`, `-a`/`--ask-for-approval`, or equivalent modes) are unsupported; brg supplies full access and no approvals.
+**`args`.** Extra vendor launch arguments. Treat them as trusted, like the rest of the template: they can widen an agent's permissions. A `-c check_for_update_on_startup=…` (Codex) overrides brg's default of turning the update check off, so an unattended member doesn't stop at Codex's "Update available" prompt; `--add-dir` (Claude) replaces the folders brg adds, and a `-c projects…` replaces brg's Codex trust. Custom Codex vendor-posture permission overrides (`-s`/`--sandbox`, `-a`/`--ask-for-approval`, or equivalent modes) are unsupported; brg supplies full access and no approvals.
 
 ## Role files
 
@@ -115,27 +115,27 @@ You read each new message in the channel and decide whether it needs the lead.
   - Empty or whitespace-only frontmatter uses the vendor's default model.
   - A byte-order mark and CRLF line endings are accepted.
   - A later `---` is ordinary body text.
-- The role's name comes from `roles:` in `team.yaml`; frontmatter holds only `models`.
+- The role's name comes from `roles:` in `template.yaml`; frontmatter holds only `models`.
 - **`models`** maps a vendor to `"<model>"` or `"<model> <effort>"`.
   - The effort is one of `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.
   - Only the member's own vendor needs an entry; without one, the vendor's default model is used (with a warning).
   - Model names are passed to the vendor unchanged.
 - **The body** is the member's standing instruction, sent as its opening prompt.
 - **Includes:** a line that is exactly `{{includes/<stem>}}` is replaced by `<includes>/<stem>.md`. Includes are one level deep: an included file can't include another.
-- **Another team's role file:** a line that is exactly `{{teams/<team>/<role>}}` is replaced by the body of that role's file. Its includes resolve in its own team, and its frontmatter is left out.
-  - The team is found by name, like a `team:` reference. A file reached this way, and any include, can't use the directive.
-  - The size limit covers the result. Nothing is pinned: if the team goes missing or becomes ambiguous, every command that reads the including team refuses, `status` included. `validate` lists each role's files in order.
-- **Paths:** prompts, includes and plugin paths must stay inside the team directory, and another team's role file inside its own. `..` and symlinks that lead outside are refused.
+- **Another template's role file:** a line that is exactly `{{templates/<template>/<role>}}` is replaced by the body of that role's file. Its includes resolve in its own template, and its frontmatter is left out.
+  - The template is found by name, like a `template:` reference. A file reached this way, and any include, can't use the directive.
+  - The size limit covers the result. Nothing is pinned: if the template goes missing or becomes ambiguous, every command that reads the including template refuses, `status` included. `validate` lists each role's files in order.
+- **Paths:** prompts, includes and plugin paths must stay inside the template directory, and another template's role file inside its own. `..` and symlinks that lead outside are refused.
 
-### Reusing a shared team
+### Reusing a shared template
 
-A private team can be a shared one plus additions, kept in a catalog of your own listed beside the shared one under `teams:`. Its `team.yaml` is a complete team file: it declares the roles and plugins the shared text relies on, plus its own (say an `oncall` plugin and a `support` sub-team). Child teams such as `dev-team` resolve by name across both catalogs. Each role file takes the shared text with one line and adds its own:
+A private template can be a shared one plus additions, kept in a catalog of your own listed beside the shared one under `templates:`. Its `template.yaml` is a complete template file: it declares the roles and plugins the shared text relies on, plus its own (say an `oncall` plugin and a `support` sub-team). Child teams such as `dev-team` resolve by name across both catalogs. Each role file takes the shared text with one line and adds its own:
 
 ```markdown
 ---
 models: {claude: opus high}
 ---
-{{teams/engineering/lead}}
+{{templates/engineering/lead}}
 
 When a release is blocked, page the on-call engineer with `oncall page <text>`.
 ```
@@ -144,9 +144,9 @@ When a release is blocked, page the on-call engineer with `oncall page <text>`.
 
 A plugin is a plain script or program, in any language, that members run themselves. borgchart does not wrap plugins in an MCP server.
 
-- **What brg runs:** brg launches only the programs `team.yaml` lists. This limits what brg starts; it is not a sandbox. A listed program, or a member with a shell, can run anything.
+- **What brg runs:** brg launches only the programs `template.yaml` lists. This limits what brg starts; it is not a sandbox. A listed program, or a member with a shell, can run anything.
 - **Location:**
-  - `path: plugins/<dir>`: a directory inside the team. It is also the programs' working directory.
+  - `path: plugins/<dir>`: a directory inside the template. It is also the programs' working directory.
   - `path: catalog:shared/<path>`: a shared plugin in the sibling catalog asset folder, confined as above.
   - `path: shared:<name>`: `<plugins_dir>/<name>`, where `plugins_dir` is set in brg's configuration. Where it resolves is frozen while an instance runs.
   - No `path`: the commands are whatever those names resolve to on `PATH` when the instance starts.
@@ -166,7 +166,7 @@ A plugin is a plain script or program, in any language, that members run themsel
 
 ## Postures
 
-How much a member may do is set per role, in `team.yaml`.
+How much a member may do is set per role, in `template.yaml`.
 
 - **`vendor`** (default): the agent uses your settings and MCP connectors, with these permission rules:
   - **Codex:** brg passes `--sandbox danger-full-access --ask-for-approval never`. Shell commands have full host access and run without tool approvals. This also applies to vendor-posture researchers using `--search`. Folder trust is separate: `auto_trust: true` supplies session-only trust; otherwise an untrusted folder can still stop at its trust dialog.
@@ -179,7 +179,7 @@ How much a member may do is set per role, in `team.yaml`.
 
 **What `locked` does and doesn't do.** The gate is the barrier: it decides every tool call.
 - **Claude:** `locked` has no sandbox. Granted plugin commands run with your full rights.
-- **Codex:** `locked` keeps network on, and Codex's sandbox lets commands read any file. Writes are limited to the granted plugins' data directories, the member's temp directory and its working directory. A `locked` Codex member without `worktree: true` starts in its temp directory. It never gets the instance's messages or notes, and its folder can't overlap the team folder. Plugin programs that need to write elsewhere, such as `uv` writing its cache, fail inside the sandbox; give such a plugin a program that doesn't (e.g. plain `python3` for a standard-library script). brg doesn't move caches into member-writable directories, because a member could then plant code there.
+- **Codex:** `locked` keeps network on, and Codex's sandbox lets commands read any file. Writes are limited to the granted plugins' data directories, the member's temp directory and its working directory. A `locked` Codex member without `worktree: true` starts in its temp directory. It never gets the instance's messages or notes, and its folder can't overlap the template folder. Plugin programs that need to write elsewhere, such as `uv` writing its cache, fail inside the sandbox; give such a plugin a program that doesn't (e.g. plain `python3` for a standard-library script). brg doesn't move caches into member-writable directories, because a member could then plant code there.
 - **The tmux socket:** brg's tmux socket is a full capability. Anything that can reach it can type into, read or stop any member. That is why `locked` members get no general shell.
 - **Fail closed:** if a `locked` member's gate doesn't report in when it starts, it is stopped, or (behind Claude's folder-trust prompt) gets no input until the gate does report in.
 
@@ -209,7 +209,7 @@ roles:
 - **Names:** use server names exactly as `claude mcp list` / `codex mcp list` print them.
 - **Acting as you:** connector actions act as **you**, not as a bot. A connector that reads mail or messages is untrusted input.
 - **Auth:** Claude's own connectors need your login, so `auth: api_key` can't be used with members that declare them.
-- **Probing:** `brg validate --probe` asks each vendor CLI which servers are configured (`claude mcp list`, `codex mcp list --json`, run in the team folder), and warns about missing names. Listing health-checks, and so starts, your MCP servers, which is why it only runs when asked. Claude's list is parsed from its text output and may need updating across versions. It can't check that a connector is signed in, which account it acts as, or its scopes.
+- **Probing:** `brg validate --probe` asks each vendor CLI which servers are configured (`claude mcp list`, `codex mcp list --json`, run in the template folder), and warns about missing names. Listing health-checks, and so starts, your MCP servers, which is why it only runs when asked. Claude's list is parsed from its text output and may need updating across versions. It can't check that a connector is signed in, which account it acts as, or its scopes.
 
 ## `config.yaml`
 
@@ -219,13 +219,13 @@ brg's configuration is `~/.config/borgchart/config.yaml`, or the file `$BORGCHAR
 schema: 1
 auth: login                   # login (default) | api_key, for every member
 auto_trust: true              # trust each member's folder without a person (Claude default: locked members only)
-teams:                        # where team names are looked up, each a folder of teams
-  - ~/.config/borgchart/teams # the default
+templates:                    # where template names are looked up, each a folder of templates
+  - ~/.config/borgchart/templates # the default
 plugins_dir: ~/borgchart-plugins   # where shared:<name> plugins live
 tmux: {user_config: true}     # load your own tmux config on brg's server (default: false)
 ```
 
-- **Settings:** members that start use current `auth`, `auto_trust` and team files. Plugin settings refresh after a full stop/start. An instance retains its recorded team folder.
+- **Settings:** members that start use current `auth`, `auto_trust` and template files. Plugin settings refresh after a full stop/start. An instance retains its recorded template folder.
 - **`auth: login`:** brg passes no API-key variables, so a stray key in your shell can't replace your login.
 - **`auth: api_key`:** brg passes each member its own vendor's key by name: `ANTHROPIC_API_KEY` to Claude members, `OPENAI_API_KEY` to Codex members, from the environment `create` or `start` runs in. Nothing stores the key.
 - **`auto_trust`:** trusts each member's folder (the instance's working folder, or its own worktree), so the member doesn't stop at its vendor's folder-trust screen. Choosing the folder at `create` is your consent. Each trust is printed and shown in `brg status --json` (`trust_accepted`). Set `auto_trust: false` to attach and answer the screen yourself; `brg status` shows such a member as `blocked (folder trust)` with the `brg attach` command.

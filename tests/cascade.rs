@@ -13,17 +13,17 @@ use instance_env::*;
 fn department() -> Env {
     let env = Env::new();
     env.write(
-        "teams/oncall/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  dev: {team: dev, parent: lead, start: false, max: 4, worktree: true}\n",
+        "templates/oncall/template.yaml",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  dev: {template: dev, parent: lead, start: false, max: 4, worktree: true}\n",
     );
-    env.team("teams/dev");
+    env.team("templates/dev");
     env.write(
-        "teams/dev/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead, start: false}\n  scout: {prompt: scout.md, start: false}\n  design: {team: design, parent: lead, start: false, max: 2}\n",
+        "templates/dev/template.yaml",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead, start: false}\n  scout: {prompt: scout.md, start: false}\n  design: {template: design, parent: lead, start: false, max: 2}\n",
     );
-    env.team("teams/design");
+    env.team("templates/design");
     env.write(
-        "teams/design/team.yaml",
+        "templates/design/template.yaml",
         "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead, start: false}\n",
     );
     fs::remove_dir(env.path("work/a")).unwrap();
@@ -369,7 +369,7 @@ fn full_start_skips_running_copy_validation_but_checks_stopped_restores() {
     env.wait_for("copy restored", || env.state_of(&dev, "lead") == "idle");
     let lead = env.member(&dev, "lead");
     let before = env.starts(&lead).len();
-    let path = env.path("teams/dev/lead.md");
+    let path = env.path("templates/dev/lead.md");
     let prompt = fs::read_to_string(&path).unwrap();
     fs::write(
         &path,
@@ -619,7 +619,7 @@ fn recursive_member_stop_reuses_nested_copy_cascades() {
 #[test]
 fn recursive_stop_checks_copy_sockets_before_stopping_any_member() {
     let env = department();
-    let team = env.path("teams/oncall/team.yaml");
+    let team = env.path("templates/oncall/template.yaml");
     let mut text = fs::read_to_string(&team).unwrap();
     text.push_str("  helper: {prompt: helper.md, parent: lead}\n");
     fs::write(team, text).unwrap();
@@ -650,7 +650,7 @@ fn recursive_stop_checks_copy_sockets_before_stopping_any_member() {
 #[test]
 fn a_failed_member_stop_does_not_fence_a_copy_the_walk_has_not_reached() {
     let env = department();
-    let team = env.path("teams/oncall/team.yaml");
+    let team = env.path("templates/oncall/template.yaml");
     let mut text = fs::read_to_string(&team).unwrap();
     text.push_str("  helper: {prompt: helper.md, parent: lead}\n");
     fs::write(team, text).unwrap();

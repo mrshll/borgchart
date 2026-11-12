@@ -15,13 +15,13 @@ pub struct Fixture {
 }
 
 impl Fixture {
-    /// A small valid team: a locked triager and a lead, with a script plugin.
+    /// A small valid template: a locked triager and a lead, with a script plugin.
     pub fn new() -> Self {
         let f = Fixture {
             dir: tempfile::tempdir().unwrap(),
         };
         f.write(
-            "team.yaml",
+            "template.yaml",
             r#"
 default: claude
 plugins:

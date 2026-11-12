@@ -35,7 +35,7 @@ fn status_i_attaches_detaches_and_quits() {
         fs::write(p, text).unwrap();
     };
     write(
-        "team/team.yaml",
+        "team/template.yaml",
         "bus: {}\nplugins:\n  watcher: {path: plugins/watcher, process: [./run.sh]}\nroles:\n  alpha: {prompt: alpha.md}\n  beta: {prompt: beta.md, vendor: codex, parent: alpha}\n  scout: {prompt: scout.md, parent: alpha, start: false}\n",
     );
     write("team/alpha.md", "---\n---\nYou are alpha.\n");
@@ -270,7 +270,10 @@ fn bare_status_i_shows_every_instance_and_attaches_in_the_selected_one() {
         fs::create_dir_all(p.parent().unwrap()).unwrap();
         fs::write(p, text).unwrap();
     };
-    write("team/team.yaml", "roles:\n  alpha: {prompt: alpha.md}\n");
+    write(
+        "team/template.yaml",
+        "roles:\n  alpha: {prompt: alpha.md}\n",
+    );
     write("team/alpha.md", "---\n---\nYou are alpha.\n");
     fs::create_dir_all(root.join("bin")).unwrap();
     fs::create_dir_all(root.join("home")).unwrap();
@@ -397,7 +400,10 @@ fn bare_status_i_with_no_instances_says_so_until_one_is_created() {
         fs::create_dir_all(p.parent().unwrap()).unwrap();
         fs::write(p, text).unwrap();
     };
-    write("team/team.yaml", "roles:\n  alpha: {prompt: alpha.md}\n");
+    write(
+        "team/template.yaml",
+        "roles:\n  alpha: {prompt: alpha.md}\n",
+    );
     write("team/alpha.md", "---\n---\nYou are alpha.\n");
     fs::create_dir_all(root.join("bin")).unwrap();
     fs::create_dir_all(root.join("home")).unwrap();
@@ -501,7 +507,7 @@ fn status_terminal(no_colour: bool, action: &str) -> (String, String) {
     fs::create_dir_all(root.join("team")).unwrap();
     fs::create_dir_all(root.join("work")).unwrap();
     fs::write(
-        root.join("team/team.yaml"),
+        root.join("team/template.yaml"),
         "roles:\n  scout: {prompt: scout.md, start: false}\n",
     )
     .unwrap();
@@ -709,7 +715,7 @@ fn watch_erases_old_rows_and_uses_synchronized_redraw_when_the_tree_shrinks() {
     fs::create_dir_all(root.join("work/old-long-folder")).unwrap();
     fs::create_dir_all(root.join("work/new")).unwrap();
     fs::write(
-        root.join("team/team.yaml"),
+        root.join("team/template.yaml"),
         "roles:\n  scout: {prompt: scout.md, start: false}\n",
     )
     .unwrap();

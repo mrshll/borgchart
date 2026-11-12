@@ -187,13 +187,13 @@ fn changed_roles_keep_the_store_and_replies_to_removed_members() {
     publish(&env, &instance, json!({"to": scout, "body": "keep this"}));
     env.ok(&["stop", &instance]);
     env.write(
-        "teams/oncall/team.yaml",
+        "templates/oncall/template.yaml",
         &TEAM
             .replace("    parent: lead\n", "")
             .replace("  scout:\n    prompt: scout.md\n    start: false\n", ""),
     );
     env.write(
-        "teams/oncall/lead.md",
+        "templates/oncall/lead.md",
         "---\nmodels: {claude: opus high}\n---\nThe lead, edited.\n",
     );
     env.ok(&["start", &instance]);
@@ -246,7 +246,7 @@ fn changed_files_require_every_previous_member_positively_stopped() {
         .unwrap();
     fs::write(current, json!({"member": helper, "incarnation": "helper.20261105000000000.abcd", "started_at": "2026-11-05T00:00:00Z"}).to_string()).unwrap();
     env.write(
-        "teams/oncall/team.yaml",
+        "templates/oncall/template.yaml",
         &TEAM.replace("    parent: lead\n", "").replace(
             "  scout:\n    prompt: scout.md\n    start: false",
             "  scout:\n    prompt: scout.md\n    start: true",
@@ -339,7 +339,7 @@ fn full_start_cannot_hide_unacked_work_on_a_kept_unstarted_locked_member() {
     env.ok(&["stop", &format!("{instance}/{scout}")]);
     env.ok(&["stop", &instance]);
     env.write(
-        "teams/oncall/team.yaml",
+        "templates/oncall/template.yaml",
         &TEAM.replace("prompt: scout.md", "prompt: scout.md\n    posture: locked"),
     );
     let out = env.brg(&["start", &instance]);
@@ -359,7 +359,7 @@ fn joining_locked_member_cannot_abandon_unacked_ordinary_work() {
     publish(&env, &instance, json!({"to":scout,"body":"ordinary work"}));
     env.ok(&["stop", &format!("{instance}/{scout}")]);
     env.write(
-        "teams/oncall/team.yaml",
+        "templates/oncall/template.yaml",
         &TEAM.replace("prompt: scout.md", "prompt: scout.md\n    posture: locked"),
     );
     // Starting a helper must not transition the stopped scout.
@@ -379,7 +379,7 @@ fn vendor_to_locked_requires_settling_ordinary_messages() {
     publish(&env, &instance, json!({"to":lead,"body":"ordinary work"}));
     env.ok(&["stop", &instance]);
     env.write(
-        "teams/oncall/team.yaml",
+        "templates/oncall/template.yaml",
         &TEAM.replace(
             "    prompt: lead.md",
             "    prompt: lead.md\n    posture: locked",
@@ -401,14 +401,14 @@ fn vendor_to_locked_requires_settling_ordinary_messages() {
         true
     );
     // Settle it under the vendor configuration, then the same transition succeeds.
-    env.write("teams/oncall/team.yaml", TEAM);
+    env.write("templates/oncall/template.yaml", TEAM);
     env.ok(&["start", &instance]);
     env.wait_for("new lead launch", || env.starts(&lead).len() >= 2);
     let ack = member_command(&env, &instance, &lead, &["msg", "ack", "m1", "--json"]);
     assert!(ack.status.success(), "{}", both(&ack));
     env.ok(&["stop", &instance]);
     env.write(
-        "teams/oncall/team.yaml",
+        "templates/oncall/template.yaml",
         &TEAM.replace(
             "    prompt: lead.md",
             "    prompt: lead.md\n    posture: locked",
