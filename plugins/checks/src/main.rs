@@ -84,12 +84,20 @@ fn action(action: Action) -> Result<(), (i32, String)> {
                 "status/exit",
                 format!(
                     "{} / {}",
-                    record.status,
-                    record
-                        .exit_code
-                        .as_str()
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| record.exit_code.to_string())
+                    if record.status.is_empty() {
+                        "unknown"
+                    } else {
+                        &record.status
+                    },
+                    if record.exit_code.is_null() {
+                        String::new()
+                    } else {
+                        record
+                            .exit_code
+                            .as_str()
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| record.exit_code.to_string())
+                    }
                 ),
             ),
             ("last stderr", record.stderr.clone()),

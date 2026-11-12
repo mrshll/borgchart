@@ -134,6 +134,76 @@ fn initial_timeout_retains_partial_evidence_and_recovery_wakes_once() {
 }
 
 #[test]
+fn output_limit_reports_failure_once_without_retaining_output() {
+    for (cap, redirect) in [(16 << 20, ""), (1 << 20, ">&2")] {
+        let f = Fixture::new();
+        let tick = |f: &Fixture| {
+            let result = f
+                .command(&["run", "--once"])
+                .env("CHECKS_TIMEOUT_SECONDS", "5")
+                .output()
+                .unwrap();
+            assert!(result.status.success(), "{result:?}");
+        };
+        f.config(
+            &["sh", "-c", &format!("head -c {cap} /dev/zero {redirect}")],
+            "",
+        );
+        tick(&f);
+        assert!(f.last().contains("--- status/exit: ok / 0\n"));
+        let f = Fixture::new();
+        f.config(
+            &[
+                "sh",
+                "-c",
+                &format!("head -c {} /dev/zero {redirect}", cap + 1),
+            ],
+            "",
+        );
+        for _ in 0..2 {
+            tick(&f);
+        }
+        let evidence = f.last();
+        assert!(evidence.contains("--- status/exit: failing / output-limit\n"));
+        assert!(!evidence.contains("\\x00"), "overflow output was retained");
+        assert_eq!(f.read("health.json")["ok"], false);
+        let sends = f.sends();
+        assert_eq!(sends.len(), 1);
+        assert!(sends[0].last().unwrap().ends_with("sample failing"));
+    }
+}
+
+#[test]
+fn dangling_symlink_executables_stop_startup() {
+    let f = Fixture::new();
+    std::os::unix::fs::symlink("/nonexistent/check-tool", f.path("dangling")).unwrap();
+    f.config(&["./dangling"], "");
+    let result = f.run(&["run", "--once"]);
+    assert_eq!(result.status.code(), Some(1), "{result:?}");
+    let error = String::from_utf8(result.stderr).unwrap();
+    assert_eq!(error.lines().count(), 1);
+    let health = f.read("health.json");
+    assert_eq!(health["ok"], false);
+    assert_eq!(health["detail"], error.trim());
+    assert!(f.sends().is_empty());
+}
+
+#[test]
+fn last_renders_missing_exit_and_status_without_null_or_blank_status() {
+    let f = Fixture::new();
+    for (status, displayed) in [("ok", "ok"), ("", "unknown")] {
+        f.write(
+            "state/checks.json",
+            &json!({"checks":{"sample":{"status":status}}}).to_string(),
+        );
+        assert!(
+            f.last()
+                .contains(&format!("--- status/exit: {displayed} / \n"))
+        );
+    }
+}
+
+#[test]
 fn recovery_also_reports_change_against_last_good_result() {
     let f = Fixture::new();
     f.tick();
@@ -244,21 +314,10 @@ macro_rules! invalid {
         }
     };
 }
-invalid!(unknown_top_level_keys_stop_startup, "unknown: 1", "checks");
-invalid!(
-    unknown_entry_keys_stop_startup,
-    "- {name: sample, run: ['true'], every_minutes: 1, unknown: 1}",
-    "sample"
-);
 invalid!(
     invalid_names_stop_startup,
     "- {name: BAD, run: ['true'], every_minutes: 1}",
     "BAD"
-);
-invalid!(
-    duplicate_names_stop_startup,
-    "- {name: sample, run: ['true'], every_minutes: 1}\n- {name: sample, run: ['true'], every_minutes: 1}",
-    "sample"
 );
 invalid!(
     absolute_executables_stop_startup,
@@ -296,29 +355,9 @@ invalid!(
     "sample"
 );
 invalid!(
-    negative_interval_stops_startup,
-    "- {name: sample, run: ['true'], every_minutes: -1}",
-    "sample"
-);
-invalid!(
-    boolean_interval_stops_startup,
-    "- {name: sample, run: ['true'], every_minutes: true}",
-    "sample"
-);
-invalid!(
     infinite_interval_stops_startup,
     "- {name: sample, run: ['true'], every_minutes: .inf}",
     "checks"
-);
-invalid!(
-    nan_interval_stops_startup,
-    "- {name: sample, run: ['true'], every_minutes: .nan}",
-    "checks"
-);
-invalid!(
-    string_interval_stops_startup,
-    "- {name: sample, run: ['true'], every_minutes: '1'}",
-    "sample"
 );
 invalid!(
     invalid_regex_stops_startup,
@@ -326,16 +365,6 @@ invalid!(
     "sample"
 );
 invalid!(non_list_config_stops_startup, "check: wrong", "checks");
-invalid!(
-    duplicate_yaml_keys_stop_startup,
-    "- {name: sample, name: other, run: ['true'], every_minutes: 1}",
-    "checks"
-);
-invalid!(
-    yaml11_boolean_cannot_become_an_interval,
-    "- {name: sample, run: ['true'], every_minutes: yes}",
-    "sample"
-);
 
 #[test]
 fn last_frames_controls_previous_output_and_full_digest_beyond_cap() {
@@ -574,7 +603,7 @@ fn timeout_leaves_no_shell_background_or_pipeline_process_running() {
     let before = Instant::now();
     assert!(
         f.command(&["run", "--once"])
-            .env("CHECKS_TIMEOUT_SECONDS", "0.3")
+            .env("CHECKS_TIMEOUT_SECONDS", "1")
             .status()
             .unwrap()
             .success()

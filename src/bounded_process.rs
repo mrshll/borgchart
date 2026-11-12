@@ -2,8 +2,8 @@
 use std::borrow::Cow;
 use std::io::{self, Read, Write};
 use std::os::fd::AsFd;
-use std::os::unix::process::{CommandExt, ExitStatusExt};
-use std::process::{Child, Command, Output, Stdio};
+use std::os::unix::process::CommandExt;
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy)]
@@ -96,17 +96,22 @@ fn drain(
 /// process group. Nonzero exits are normal outputs. Errors discard output and
 /// contain no child-supplied text. Cleanup may take up to 250ms beyond deadline.
 pub fn run(command: &mut Command, input: Option<&[u8]>, limits: Limits) -> Result<Output, Error> {
-    drive(command, input, limits, false, false, |_| {
+    let captured = drive(command, input, limits, false, false, |_| {
         Ok(Action::Continue)
     })?
-    .map(|capture| capture.output)
-    .ok_or(Error::Io(io::ErrorKind::UnexpectedEof))
+    .ok_or(Error::Io(io::ErrorKind::UnexpectedEof))?;
+    Ok(Output {
+        status: captured.status.ok_or(Error::Deadline)?,
+        stdout: captured.stdout,
+        stderr: captured.stderr,
+    })
 }
 
 pub struct Captured {
-    pub output: Output,
-    /// On timeout, output is partial and its synthetic status must be ignored.
-    pub timed_out: bool,
+    /// None means the deadline expired; stdout and stderr are partial evidence.
+    pub status: Option<ExitStatus>,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
 }
 /// Preserve collected evidence on deadline, killing the same owned process group.
 /// Limits still bound capture; callers choose whether full stdout is affordable.
@@ -172,12 +177,9 @@ fn drive(
         if Instant::now() >= limits.deadline {
             if capture_timeout {
                 return Ok(Some(Captured {
-                    output: Output {
-                        status: std::process::ExitStatus::from_raw(9),
-                        stdout: out,
-                        stderr: err,
-                    },
-                    timed_out: true,
+                    status: None,
+                    stdout: out,
+                    stderr: err,
                 }));
             }
             return Err(Error::Deadline);
@@ -244,12 +246,9 @@ fn drive(
             && err_eof
         {
             return Ok(Some(Captured {
-                output: Output {
-                    status,
-                    stdout: out,
-                    stderr: err,
-                },
-                timed_out: false,
+                status: Some(status),
+                stdout: out,
+                stderr: err,
             }));
         }
         // Drain ready streams without timer pacing. Keep one read per stream

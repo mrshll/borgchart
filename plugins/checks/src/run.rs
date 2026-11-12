@@ -4,7 +4,7 @@ use crate::{
     state::{Snapshot, one_line, update},
 };
 use borgchart::{
-    bounded_process::{self, Limits},
+    bounded_process::{self, Error, Limits, Stream},
     plugin::{self, Outcome},
 };
 use serde_json::json;
@@ -54,35 +54,42 @@ fn deliver(state: &mut Snapshot, store: &plugin::State) -> Result<String, String
 fn collect(check: &Check, state: &mut Snapshot, timeout: Duration) {
     let last_run = borgchart::bus::time::utc_now();
     let execution = config::command_path(&check.run[0])
-        .ok()
+        .map_err(|_| Error::Io(std::io::ErrorKind::InvalidInput))
         .and_then(|program| {
             bounded_process::capture(
                 Command::new(program).args(&check.run[1..]),
                 Limits {
                     deadline: Instant::now() + timeout,
-                    stdout_bytes: usize::MAX,
-                    stderr_bytes: usize::MAX,
+                    stdout_bytes: 16 << 20,
+                    stderr_bytes: 1 << 20,
                 },
             )
-            .ok()
         });
     let (output, errors, code) = match execution {
-        Some(result) => (
-            result.output.stdout,
-            result.output.stderr,
-            if result.timed_out {
-                json!("timeout")
-            } else {
-                json!(
-                    result.output.status.code().unwrap_or_else(|| -result
-                        .output
-                        .status
-                        .signal()
-                        .unwrap_or(1))
-                )
+        Ok(result) => (
+            result.stdout,
+            result.stderr,
+            match result.status {
+                Some(status) => json!(
+                    status
+                        .code()
+                        .unwrap_or_else(|| -status.signal().unwrap_or(1))
+                ),
+                None => json!("timeout"),
             },
         ),
-        None => (
+        Err(Error::OutputLimit(stream)) => {
+            let (stream, cap) = match stream {
+                Stream::Stdout => ("stdout", 16),
+                Stream::Stderr => ("stderr", 1),
+            };
+            (
+                Vec::new(),
+                format!("{stream} exceeded {cap} MiB; reduce the check's output").into_bytes(),
+                json!("output-limit"),
+            )
+        }
+        Err(_) => (
             Vec::new(),
             b"cannot run command; check executable and permissions".to_vec(),
             json!(127),

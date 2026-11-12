@@ -53,7 +53,7 @@ tick after startup, then after their configured interval. Each command has a
 fixed 60-second timeout. SHA-256 uses full stdout after `ignore`; saved evidence
 is capped at 64 KiB UTF-8 per output. The first successful result establishes a
 baseline without waking. A changed digest queues `<name> changed`. A nonzero exit,
-timeout or command launch failure queues `<name> failing` once. The next success
+timeout, output overflow or command launch failure queues `<name> failing` once. The next success
 queues `<name> recovered`, plus `changed` if its digest differs from the last good
 result. Restarting preserves the baseline, so a change while stopped wakes once.
 
@@ -69,7 +69,7 @@ during delivery can lose that notice rather than duplicate it.
 `BORGCHART_STATE_DIR` is required and holds locked, atomically replaced
 `checks.json`, plus `health.json`. File opens refuse symlinks. Newly created state
 folders are private; existing folder permissions are preserved. State retains the command, last run and
-success times (UTC), status, exit code or `timeout`, last stderr line (up to 500
+success times (UTC), status, exit code, `timeout` or `output-limit`, last stderr line (up to 500
 characters), current output, last good digest and previous distinct successful
 output. Removed checks and their queued signals are pruned at startup. After each
 check and tick, health reports `ok`, `at`, `detail`, `uncertain_sends`,
@@ -99,8 +99,9 @@ invalid startup configuration; check or delivery failures appear in health.
 uses the fixed 60-second default. There are no time/cron triggers. A check whose
 output changes every run wakes every interval, so use `ignore` for volatile data.
 Checks run one after another, so slow commands delay the next check and tick.
-A check's full stdout and stderr are held in memory while collecting evidence
-and digesting stdout; choose commands with affordable output sizes.
+Each check captures at most 16 MiB of stdout and 1 MiB of stderr. Exceeding either
+cap kills the process group, discards its output and records `failing / output-limit`
+with a stderr hint to reduce the check's output.
 
 Build with `tools/cargo-slot cargo build -p brg-checks --locked`.
 For a local demonstration without a real bus, from the checkout root run these

@@ -54,7 +54,7 @@ pub fn command_path(value: &str) -> Result<String, String> {
         // Missing local executables fail at execution, just as missing PATH commands do.
         let mut ancestor = cwd.join(path);
         let mut tail = Vec::new();
-        while !ancestor.exists() {
+        while fs::symlink_metadata(&ancestor).is_err() {
             tail.push(
                 ancestor
                     .file_name()
