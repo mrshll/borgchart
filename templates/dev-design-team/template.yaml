@@ -1,10 +1,4 @@
-# The design panel: two designers, one per vendor, each writing an
-# independent proposal from the same blind brief. It is a child team:
-# the engineering team's `design` role. Its parent creates a stopped child team,
-# starts it, and deletes it after; the designers read the code in the
-# parent's checkout and change none of it. See ../engineering/lead.md. Designers exchange files with the lead (the
-# brief, questions, answers, proposals) in the child team's notes folder. The
-# runtime tree shares one message store.
+# A design panel: two designers, one per vendor, each writing a proposal from the same blind brief.
 
 roles:
   designer-claude:
