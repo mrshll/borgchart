@@ -1,5 +1,5 @@
 // The front page's `brg status -w`: the real root of the team that builds
-// borgchart (engineering-56uw and its lead), with a made-up tree beneath it
+// borgchart (engineering-59e9 and its lead), with a made-up tree beneath it
 // that grows and shrinks on its own. Dev teams, design panels, researchers
 // and monitors come and go, their members turn working and idle, and
 // finished ones stop and are deleted, only as the repository's own team
@@ -24,7 +24,7 @@
   const WIDEST = 83; // nor a line wider than this (the CSS fits it)
   const WARM_BEATS = 60; // beats run before the first frame, so it opens on a grown tree
 
-  const HEADER = ["engineering-56uw", "folder ~/workspace/borgchart"];
+  const HEADER = ["engineering-59e9", "folder ~/workspace/borgchart"];
 
   // A member: its name, vendor mark and model, and state. A child team: its
   // name, its template, and its members. The page leaves out the
@@ -84,7 +84,7 @@
   // after hours of all of those would one come round again, never while
   // its namesake is still in the tree.
   const ALPHABET = "23456789abcdefghjkmnpqrstuvwxyz";
-  const issued = new Set(["lead-th8v"]);
+  const issued = new Set(["lead-a2df"]);
   let justGone = []; // deleted this refresh, so not reused in the same one
   function suffixed(role) {
     let id;
@@ -113,7 +113,7 @@
   // Every member lives through the states brg prints, in order: not started,
   // idle, working and idle for a few rounds, stopped for a while, deleted.
   // A unit's rows are the most it can grow to, kept within MAX_ROWS.
-  const root = m("lead-th8v", MODEL.root, "idle");
+  const root = m("lead-a2df", MODEL.root, "idle");
   let unacked = 0, busyUntil = 0, beatNo = 0;
   let units = [];
 
