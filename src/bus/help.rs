@@ -18,7 +18,10 @@ Inside a member:
 pub fn list() -> String {
     "Lists every unacknowledged message to you, oldest first. --full includes
 bodies. --member ID reads another member's inbox; --external NAME reads that
-outside recipient's inbox. Outside a member, pass --instance ID.
+outside recipient's inbox. Without team context (BORGCHART_INSTANCE,
+BORGCHART_MEMBER, BORGCHART_INCARNATION, BORGCHART_ROLE, BORGCHART_NOTES and
+BORGCHART_PARENT all unset or empty), the inbox defaults to external:owner.
+Instance-only plugins must name an inbox. Outside a member, pass --instance ID.
 
 The tree shares one store and one set of message IDs. --member accepts a full
 address anywhere in the tree, or a bare ID in your own or --instance instance.
@@ -36,6 +39,10 @@ A member's loop:
 
 pub fn wait() -> String {
     "Waits for your own inbox, or external:NAME with --external NAME.
+Without team context (BORGCHART_INSTANCE, BORGCHART_MEMBER,
+BORGCHART_INCARNATION, BORGCHART_ROLE, BORGCHART_NOTES and BORGCHART_PARENT
+all unset or empty), defaults to external:owner. Instance-only plugins must
+name --external NAME.
 --timeout is 60-86400 seconds, default 86400. --full includes message bodies;
 --json prints the same inbox object as `brg msg list --json`.
 The 60 s floor applies to nonzero exits except fenced, timeout included.
@@ -60,13 +67,16 @@ not-found (10) and error (1).
 
 pub fn send() -> String {
     format!(
-        "Outside callers must name --external NAME. Members use their launch identity
-and may send only to their parent or children. Across a copy's parent edge,
-name the full instance/member address (a copy's roots find their parent's in
-BORGCHART_PARENT). The tree shares one store and message IDs; typed and locked
-delivery work across edges too. Only root members of the tree's root instance
-may address external:NAME. --from asserts a parent route within one instance,
-not authorship. --reply-to takes plain existing IDs such as m1.
+        "Without team context (BORGCHART_INSTANCE, BORGCHART_MEMBER,
+BORGCHART_INCARNATION, BORGCHART_ROLE, BORGCHART_NOTES and BORGCHART_PARENT
+all unset or empty), outside callers default to external:owner; --external NAME
+overrides it. Instance-only plugins must name --external NAME. Members use their
+launch identity and may send only to their parent or children. Across a copy's
+parent edge, name the full instance/member address (a copy's roots find their
+parent's in BORGCHART_PARENT). The tree shares one store and message IDs; typed
+and locked delivery work across edges too. Only root members of the tree's root
+instance may address external:NAME. --from asserts a parent route within one
+instance, not authorship. --reply-to takes plain existing IDs such as m1.
 This command takes no --instance; name the target as <instance>/<member>.
 
 Ordinary messages commit before optional typing. Exit 0 means committed even

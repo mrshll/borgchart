@@ -56,7 +56,7 @@ under its parent instance, independently of where its team definition is stored.
 
   It's the same for every team, for now. `tmux.user_config` keeps today's meaning: it's read when brg's tmux server starts, and a change applies once every instance on that server is stopped. A hosted brg would use `api_key` only.
 - **Secrets** are never stored by brg, and never written in a file you edit. A secret's value comes from the environment of the shell that runs `create` or `start` (for example, under your password manager's `run`), as today.
-  - `brg secret <team>` lists the secret names the team's plugins need, and whether each is set in your environment. It stores and prints no values.
+  - `brg secrets <team>` lists the secret names the team's plugins need, and whether each is set in your environment. It stores and prints no values.
   - Members' windows start from a small base environment, so secrets don't reach them that way. The one exception is the vendor's own key: with `auth: api_key`, brg passes `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` to that vendor's members by name, and with `login` it passes neither. A plugin receives a secret only when its `env` names it: brg writes it to that plugin's private file (mode 0600), which the plugin's shims read, and removes the file at stop.
   - **0600 keeps other users out, not the members.** Members run as you. A member that isn't `locked` and has shell or file access could read that file while it exists. Only `locked` members are kept from it, by their gate.
 - **Prompts** come only from the team: each role file, the includes it names and any other team's role file it names. The vendor's own instruction files load as normal (`~/.claude/CLAUDE.md`, the repo's `CLAUDE.md`, `AGENTS.md`). brg neither adds nor suppresses anything else.
@@ -82,7 +82,7 @@ There's no `up`. `create` always makes something new; `start`, `stop` and `delet
 
 **Also:**
 - `attach`, `logs` and `msg send` take a member address.
-- `brg ls` lists the teams in the search paths, each with its instances, running or stopped.
+- `brg templates` lists the teams in the search paths, each with its instances, running or stopped.
 - `brg status` shows the tree and each member's unacked count, including in `-i` and `--json`.
 - `brg validate <team>` checks the team folder and the global configuration.
 
@@ -103,7 +103,7 @@ There's no `up`. `create` always makes something new; `start`, `stop` and `delet
 - Two or more: brg lists their paths and asks for one. It never picks the first.
 - A path always works, in or out of the search paths.
 
-Two folders with the same name can both run. Their instances are told apart by their suffixes, and `brg ls` shows each one's folder.
+Two folders with the same name can both run. Their instances are told apart by their suffixes, and `brg templates` shows each one's folder.
 
 **Leaving the instance out.** Inside a member, an address without an instance means that member's own instance, so a lead writes `implementer-x7k2`. Everywhere else the full instance ID is needed (`dev-team-k3f9/implementer-x7k2`, `brg start dev-team-k3f9`). There are no other shortcuts for now: brg never infers an instance from a team's name or from which instances are running. `msg` commands other than `msg send` take the instance as `--instance`; inside a member it's always the member's own.
 
@@ -127,7 +127,7 @@ Two folders with the same name can both run. Their instances are told apart by t
 - **A new message format:** brg refuses to start any instance whose tree store uses an earlier format, names the root that owns it, and points to the [cutover steps](bus.md#storage). `stop` and liveness never parse messages, so they still work on the old instance. A stopped instance holds no checkout; `delete` of unreadable messages needs `--force` ("its contents can't be inspected"). No storage generations are needed.
 - **Durability:** brg refuses a state folder under `/tmp` or any other path cleaned by age. Reads scan the store; there is no index or archiving.
 
-**One tree, several repositories.** The tree's working folder may be a plain folder of clones. Create one dev copy per repository with `brg create <root>/dev --repo widgets` and `brg create <root>/dev --repo gadgets`; the root lead sequences their work. Each name selects a real clone directly in the tree's top folder, with a real `.git` directory. Paths, symlinks, linked worktrees and bare repositories are refused. brg discovers origin's current default branch and fetches it before issuing the copy and before taking the registry lock; a missing or unreachable origin refuses creation. The worktree starts at that tip while the original clone keeps its branch, index and working files, including uncommitted work. `--branch` optionally creates a new branch at the same tip. An implementer created inside a copy without `--repo` starts from the copy's current committed `HEAD`, including commits made there. The repository is found afresh through Git's own worktree records for delete, cleanup and reset, without a stored repository setting. While the root holds the plain folder, the checkout check also excludes independent running trees inside its clones.
+**One tree, several repositories.** The tree's working folder may be a plain folder of clones. Create one dev copy per repository with `brg create <root>/dev --repo widgets` and `brg create <root>/dev --repo gadgets`; the root lead sequences their work. Each name selects a real clone directly in the tree's top folder, with a real `.git` directory. Paths, symlinks, linked worktrees and bare repositories are refused. brg discovers origin's current default branch and fetches it before issuing the copy and before taking the registry lock; a missing or unreachable origin refuses creation. The worktree starts at that tip while the original clone keeps its branch, index and working files, including uncommitted work. `--branch` optionally creates a new branch at the same tip. An implementer created inside a copy without `--repo` starts from the copy's current committed `HEAD`, including commits made there. The repository is found afresh through Git's own worktree records for delete, cleanup and destroy, without a stored repository setting. While the root holds the plain folder, the checkout check also excludes independent running trees inside its clones.
 
 **Starts** keep today's IDs (incarnations), for fencing a replaced process, identifying its recorded tmux pane, liveness and stop. `BORGCHART_INCARNATION` is the current member start's ID, not a per-member number. Start records live in brg's own files outside messages. If their state is missing or unreadable, brg refuses to guess whether a member is stopped. Instance IDs are never reused, so a process left over from a deleted instance cannot act as a member of a new one.
 

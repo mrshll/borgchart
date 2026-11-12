@@ -27,8 +27,9 @@ clean:
 
 install: build
 	mkdir -p "$(PREFIX)/brg/bin" "$(BINDIR)"
-	for name in brg borgchart brg-seat; do \
+	for name in brg brg-seat; do \
 		cp "target/release/$$name" "$(PREFIX)/brg/bin/$$name.tmp" && mv -f "$(PREFIX)/brg/bin/$$name.tmp" "$(PREFIX)/brg/bin/$$name" || exit 1; \
 	done
 	git rev-parse HEAD > "$(PREFIX)/brg/REVISION"
-	for name in brg borgchart brg-seat; do ln -sfn "$(PREFIX)/brg/bin/$$name" "$(BINDIR)/$$name" || exit 1; done
+	for name in brg brg-seat; do ln -sfn "$(PREFIX)/brg/bin/$$name" "$(BINDIR)/$$name" || exit 1; done
+	if [ -L "$(BINDIR)/borgchart" ] && [ "$$(readlink "$(BINDIR)/borgchart")" = "$(PREFIX)/brg/bin/borgchart" ]; then rm "$(BINDIR)/borgchart"; fi

@@ -231,7 +231,7 @@ pub fn actor_for(bus: &Bus, caller: &Caller) -> Result<Actor, Failure> {
     match caller {
         Caller::Operator => Err(Failure::new(
             Code::Refused,
-            "no caller identity: members publish as themselves, outside callers pass `--external NAME`",
+            "no caller identity: a plugin process must pass `--external NAME`",
         )),
         Caller::External { name } => Ok(Actor::External { name: name.clone() }),
         Caller::Member {
@@ -430,7 +430,7 @@ impl Snapshot {
             Some(first) => Err(Failure::new(
                 Code::Corrupt,
                 format!(
-                    "the store is corrupt ({first}{}); mutations are stopped. `brg msg check` lists the problems",
+                    "the store is corrupt ({first}{}); mutations are stopped. `brg msg integrity-check` lists the problems",
                     if self.problems.len() > 1 {
                         format!(", and {} more", self.problems.len() - 1)
                     } else {
@@ -699,7 +699,7 @@ pub fn publish(bus: &Bus, caller: &Caller, draft_bytes: &[u8]) -> Result<Record,
         Written::Created => Ok(rec),
         Written::Exists => Err(Failure::new(
             Code::Corrupt,
-            "the next record already exists; `brg msg check` lists the problems",
+            "the next record already exists; `brg msg integrity-check` lists the problems",
         )),
     }
 }

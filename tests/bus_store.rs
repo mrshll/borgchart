@@ -301,7 +301,7 @@ fn damaged_store(case: &str) {
     } else {
         assert!(err.contains("damaged"), "{err}");
     }
-    let check = env.brg(&["msg", "check", "--instance", &instance, "--json"]);
+    let check = env.brg(&["msg", "integrity-check", "--instance", &instance, "--json"]);
     assert!(!check.status.success(), "{}", both(&check));
     let out = env.publish(&instance, &json!({"to": lead, "body": "refuse me"}));
     assert!(!out.status.success(), "{}", both(&out));

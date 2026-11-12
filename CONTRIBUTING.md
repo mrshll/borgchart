@@ -89,9 +89,9 @@ A team that works on this repository should use binaries and team files from a s
 make install
 ```
 
-This builds the workspace release binaries with `--locked`, copies `brg`, `borgchart` and `brg-seat` into `$HOME/.local/share/brg/bin/`, and records `git rev-parse HEAD` in `$HOME/.local/share/brg/REVISION`. Each binary is copied to a temporary name beside its destination and renamed into place, so readers see a complete file and running processes keep their old inode. Linux builds use `tools/cargo-slot` when executable; other systems use cargo directly.
+This builds the workspace release binaries with `--locked`, copies `brg` and `brg-seat` into `$HOME/.local/share/brg/bin/`, and records `git rev-parse HEAD` in `$HOME/.local/share/brg/REVISION`. Each binary is copied to a temporary name beside its destination and renamed into place, so readers see a complete file and running processes keep their old inode. Linux builds use `tools/cargo-slot` when executable; other systems use cargo directly.
 
-`PREFIX` changes the parent of `brg/` (default `$HOME/.local/share`); `BINDIR` changes where the `brg`, `borgchart` and `brg-seat` symlinks go (default `$HOME/.local/bin`). For example, `make install PREFIX="$HOME/apps" BINDIR="$HOME/bin"`. Use absolute paths. The links point directly at `$PREFIX/brg/bin/<name>` and are replaced with `ln -sfn`. Keep `BINDIR` on `PATH`.
+`PREFIX` changes the parent of `brg/` (default `$HOME/.local/share`); `BINDIR` changes where the `brg` and `brg-seat` symlinks go (default `$HOME/.local/bin`). For example, `make install PREFIX="$HOME/apps" BINDIR="$HOME/bin"`. Use absolute paths. The links point directly at `$PREFIX/brg/bin/<name>` and are replaced with `ln -sfn`. Keep `BINDIR` on `PATH`. The old `borgchart` link is removed only if it points to `$PREFIX/brg/bin/borgchart`; unrelated links and files are left alone.
 
 The installer leaves team files and brg's configuration alone. Set `teams:` in that configuration to point straight at a checkout's `teams/` folder, which follows whatever that checkout has checked out. You may list several catalogs:
 

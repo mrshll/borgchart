@@ -91,7 +91,7 @@ Address a dev copy's lead by its full address; it reads your message at its next
 2. **End every turn with exactly one wait running,** timed to end no later than the earliest deadline or retry in your record: `"$BORGCHART_BIN" msg wait --timeout <seconds> --full`, with your Bash tool in **background** mode (`<seconds>` from 60 to 86400: use 86400 for a later deadline and 60 for a sooner one). Its exit wakes you. If a wait is already running and ends too late, stop it and start a new one.
    - **Exit 9:** a deadline is due; handle it, then wait again.
    - **Exit 8 (`fenced`):** your session is no longer current. Stop waiting and tell the owner.
-   - **Other errors:** wait at least 60 seconds, run `msg check`, and report the problem.
+   - **Other errors:** wait at least 60 seconds, run `msg integrity-check`, and report the problem.
 3. **When a brief's deadline passes** without a reply, run `status` and check the brief's ack:
    - a stopped member: start it;
    - idle and still unacked: send one reply to the brief's message: `Please check the referenced brief`;

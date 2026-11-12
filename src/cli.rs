@@ -1,4 +1,4 @@
-//! Command-line interface for `brg` (also installed as `borgchart`).
+//! Command-line interface for `brg`.
 
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -24,7 +24,7 @@ struct Cli {
 
 /// The top-level help's headed groups. Every visible command is in one.
 const GROUPS: &[(&str, &[&str])] = &[
-    ("Team folders", &["ls", "validate", "secret"]),
+    ("Team folders", &["templates", "validate", "secrets"]),
     (
         "Instances and members",
         &[
@@ -32,7 +32,7 @@ const GROUPS: &[(&str, &[&str])] = &[
         ],
     ),
     ("Messages", &["msg"]),
-    ("Cleanup", &["cleanup", "reset"]),
+    ("Cleanup", &["cleanup", "destroy"]),
 ];
 
 /// The parser, with its top-level help laid out in `GROUPS`: each command's
@@ -193,15 +193,17 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
-    /// Stop a whole tree and forget it, so `brg create` can start it fresh.
+    /// Stop a whole tree and delete its records, notes and messages.
     ///
-    /// Deletes every registration, the root's state folder (all copies'
-    /// state, the notes and the tree's messages) and the clean worktrees brg
-    /// added for members and copies; copy any notes you need first. Open work
-    /// never refuses it, and there is no prompt; anything brg can't confirm
-    /// stopped does. Working folders, checkouts and other worktrees are left
-    /// as they are. Run it from your own shell, never inside a member.
-    Reset {
+    /// It stops the tree first, then deletes every registration, the root's
+    /// state folder (all copies' state, the notes and the tree's messages) and
+    /// the clean worktrees brg added for members and copies; copy any notes
+    /// you need first. Open work never refuses it, and there is no prompt; it
+    /// refuses if brg can't confirm every member stopped. Working folders,
+    /// checkouts and other worktrees are left as they are, and `brg create`
+    /// can start the tree fresh. Run it from your own shell, never inside a
+    /// member.
+    Destroy {
         /// The tree's root instance (a copy is refused).
         #[arg(add = crate::complete::roots())]
         instance: String,
@@ -221,7 +223,7 @@ enum Command {
     /// List the secrets a team's plugins need, and whether each is set.
     ///
     /// It checks your environment, prints no values and writes nothing.
-    Secret {
+    Secrets {
         /// The team: its name in the search paths, or a path to its folder.
         #[arg(add = crate::complete::teams())]
         team: String,
@@ -229,8 +231,11 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// List the teams in the search paths, each with its instances.
-    Ls {
+    /// List available team templates and their instances.
+    ///
+    /// The teams found in the search paths (`teams:` in brg's configuration),
+    /// each with its instances, then instances of teams elsewhere.
+    Templates {
         /// Print the list as JSON.
         #[arg(long)]
         json: bool,
@@ -527,12 +532,12 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Command::Reset { instance } => {
+        Command::Destroy { instance } => {
             let inst = match or_fail!(address::resolve(&instance)) {
                 (inst, Target::Instance) => inst,
                 (inst, _) => {
                     return fail(format!(
-                        "`reset` takes a tree's root instance; `{instance}` is in instance `{}`",
+                        "`destroy` takes a tree's root instance; `{instance}` is in instance `{}`",
                         inst.id
                     ));
                 }
@@ -570,7 +575,7 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
                 ExitCode::SUCCESS
             }
         }
-        Command::Secret { team, json } => {
+        Command::Secrets { team, json } => {
             let secrets = or_fail!(runtime::secrets(&team));
             if json {
                 let rows: Vec<serde_json::Value> = secrets
@@ -587,7 +592,7 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Command::Ls { json } => {
+        Command::Templates { json } => {
             let listed = or_fail!(runtime::ls());
             if json {
                 println!(

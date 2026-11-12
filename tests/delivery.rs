@@ -232,10 +232,11 @@ fn concurrent_publishers_in_two_instances_share_contiguous_ids() {
     ids.sort();
     assert_eq!(ids, ["m1", "m2", "m3", "m4", "m5", "m6"]);
     for instance in [&tree.parent, &tree.child] {
-        let checked = value(
-            tree.env
-                .ok(&["msg", "check", "--instance", instance, "--json"]),
-        );
+        let checked =
+            value(
+                tree.env
+                    .ok(&["msg", "integrity-check", "--instance", instance, "--json"]),
+            );
         assert_eq!(checked["records"], 6);
     }
 }
@@ -363,10 +364,13 @@ fn routing_allows_parent_edges_but_refuses_siblings_cousins_and_deleted_ancestor
     ]);
     fs::write(&record_path, original).unwrap();
     assert_eq!(refused.status.code(), Some(5), "{}", both(&refused));
-    let checked = value(
-        tree.env
-            .ok(&["msg", "check", "--instance", &tree.parent, "--json"]),
-    );
+    let checked = value(tree.env.ok(&[
+        "msg",
+        "integrity-check",
+        "--instance",
+        &tree.parent,
+        "--json",
+    ]));
     assert_eq!(checked["records"], 2, "refused routes must not publish");
 }
 
@@ -714,10 +718,13 @@ fn copy_delete_and_publish_cannot_orphan_a_message() {
         }
         let out = finish(publishing);
         assert!(!out.status.success(), "{}", both(&out));
-        let checked = value(
-            tree.env
-                .ok(&["msg", "check", "--instance", &tree.parent, "--json"]),
-        );
+        let checked = value(tree.env.ok(&[
+            "msg",
+            "integrity-check",
+            "--instance",
+            &tree.parent,
+            "--json",
+        ]));
         assert_eq!(checked["records"], 0);
     }
 }

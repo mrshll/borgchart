@@ -1739,10 +1739,14 @@ fn walk(root: &Path) -> Vec<PathBuf> {
 }
 
 #[test]
-fn send_requires_named_external_author_before_recording() {
+fn plugin_send_without_external_author_is_refused_before_recording() {
     let env = Env::new();
     env.up();
-    let output = env.brg(&["msg", "send", "beta", "not attributed"]);
+    let output = env
+        .brg_cmd(&["msg", "send", "beta", "not attributed"])
+        .env("BORGCHART_INSTANCE", env.instance().unwrap())
+        .output()
+        .unwrap();
     assert_eq!(output.status.code(), Some(2));
     assert!(submissions(&env, "beta").is_empty());
     let records = env.path(&format!(

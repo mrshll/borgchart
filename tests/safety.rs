@@ -404,7 +404,7 @@ fn a_partial_member_context_is_refused_for_reads_too() {
         ("BORGCHART_INCARNATION", "x.1.abcd"),
     ] {
         for args in [
-            vec!["msg", "check", "--instance", b.as_str()],
+            vec!["msg", "integrity-check", "--instance", b.as_str()],
             vec!["msg", "read", "m1", "--instance", b.as_str()],
             vec![
                 "msg",
@@ -426,7 +426,7 @@ fn a_partial_member_context_is_refused_for_reads_too() {
     }
     // A plugin process has only its instance: that still works.
     let out = env
-        .cmd(&["msg", "check"])
+        .cmd(&["msg", "integrity-check"])
         .env("BORGCHART_INSTANCE", &a)
         .output()
         .unwrap();

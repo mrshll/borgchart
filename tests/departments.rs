@@ -12,7 +12,7 @@ fn create_copy(env: &Env, parent: &str, role: &str) -> (String, std::path::PathB
     let before = env.registry();
     let output = env.ok(&["create", &format!("{parent}/{role}")]);
     let listed: serde_json::Value =
-        serde_json::from_slice(&env.ok(&["ls", "--json"]).stdout).unwrap();
+        serde_json::from_slice(&env.ok(&["templates", "--json"]).stdout).unwrap();
     let copy = listed
         .as_array()
         .unwrap()
@@ -517,7 +517,7 @@ fn team_copies_share_the_tree_store_and_keep_separate_slots_until_deleted() {
     for copy in [&first, &second] {
         env.ok(&["start", copy]);
         env.wait_for("copy lead idle", || env.state_of(copy, "lead") == "idle");
-        env.ok(&["msg", "check", "--instance", copy]);
+        env.ok(&["msg", "integrity-check", "--instance", copy]);
     }
     let first_lead = env.member(&first, "lead");
     let second_lead = env.member(&second, "lead");
@@ -643,7 +643,7 @@ fn depth_three_copies_wait_for_preparation_and_cascade_before_parent_deletion() 
             assert_eq!(state, env.path(&format!("state/{instance}")));
             assert!(notes.is_dir());
             assert_eq!(state.join("messages").is_dir(), instance == &dept);
-            env.ok(&["msg", "check", "--instance", instance]);
+            env.ok(&["msg", "integrity-check", "--instance", instance]);
             notes
         })
         .collect();
@@ -674,7 +674,7 @@ fn depth_three_copies_wait_for_preparation_and_cascade_before_parent_deletion() 
     env.ok(&["delete", &panel]);
     env.ok(&["delete", &dev]);
     env.ok(&["delete", &dept]);
-    let remaining = stdout(&env.ok(&["ls", "--json"]));
+    let remaining = stdout(&env.ok(&["templates", "--json"]));
     assert!(!remaining.contains(&dept));
     // The dev copy's clean worktree goes with it; the root checkout stays.
     assert!(!dev_folder.exists());
