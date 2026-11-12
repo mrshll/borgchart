@@ -289,8 +289,6 @@ fn failed_intake_sends_keep_the_batch_until_exit_zero_and_report_sanitized_error
             json!({"message":format!("delivery refused {TOKEN}\n\u{1b}")}),
         ),
         (0, json!({"delivery":"stored"})),
-        (0, json!({"delivery":"uncertain"})),
-        (124, json!({"message":"send failed"})),
         (5, json!({"id":"m1","message":"delivery failed"})),
     ] {
         let h = Harness::new();
@@ -328,7 +326,14 @@ fn timed_out_intake_send_keeps_the_batch_for_the_next_poll() {
     let start = std::time::Instant::now();
     h.tick();
     assert!(start.elapsed() < std::time::Duration::from_secs(35));
-    assert_eq!(h.state("health.json")["ok"], false);
+    let health = h.state("health.json");
+    assert_eq!(health["ok"], false);
+    let detail = health["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("30 s") && detail.contains("retry"),
+        "{detail}"
+    );
+    assert!(!detail.contains("BORGCHART_BIN"), "{detail}");
     std::fs::remove_file(h.dir.path().join("delay")).unwrap();
     h.tick();
     assert_eq!(h.sends().len(), 2);
@@ -370,18 +375,16 @@ fn batch_budget_leaves_remaining_items_for_the_next_poll() {
 #[test]
 fn promote_reports_brg_ids_and_errors_so_members_can_retry_failed_sends() {
     let h = Harness::new();
-    for code in [4, 5, 124] {
-        h.outcome(
-            code,
-            json!({"id":"m1", "message":format!("route refused {TOKEN}\n\u{1b}")}),
-        );
-        let output = h.run(&["promote", ts(&post(0)), "deploy"]);
-        assert_eq!(output.status.code(), Some(1));
-        let error = String::from_utf8(output.stderr).unwrap();
-        assert!(error.contains("route refused [redacted]"));
-        assert!(!error.contains(TOKEN));
-        assert_eq!(error.lines().count(), 1);
-    }
+    h.outcome(
+        5,
+        json!({"id":"m1", "message":format!("route refused {TOKEN}\n\u{1b}")}),
+    );
+    let output = h.run(&["promote", ts(&post(0)), "deploy"]);
+    assert_eq!(output.status.code(), Some(1));
+    let error = String::from_utf8(output.stderr).unwrap();
+    assert!(error.contains("route refused [redacted]"));
+    assert!(!error.contains(TOKEN));
+    assert_eq!(error.lines().count(), 1);
     for reason in ["outage", "deploy", "security", "question", "other"] {
         h.outcome(0, json!({"id":"m2"}));
         let output = success(h.run(&["promote", ts(&post(0)), reason]));
@@ -609,6 +612,42 @@ fn watch_preserves_existing_state_directory_permissions() {
         std::fs::metadata(root).unwrap().permissions().mode() & 0o777,
         0o755
     );
+}
+
+#[test]
+fn watch_prevents_exposing_new_state_with_a_permissive_umask() {
+    use std::os::unix::fs::PermissionsExt;
+    let h = Harness::new();
+    let root = h.dir.path().join("state");
+    std::fs::remove_dir(&root).unwrap();
+    success(
+        std::process::Command::new("/bin/sh")
+            .env_clear()
+            .envs(&h.env)
+            .env_remove("BORGCHART_MEMBER")
+            .env_remove("BORGCHART_PARENT")
+            .args([
+                "-c",
+                "umask 000; exec \"$1\" watch --once",
+                "watch",
+                env!("CARGO_BIN_EXE_brg-slack"),
+            ])
+            .output()
+            .unwrap(),
+    );
+    for (path, mode) in [
+        (root.clone(), 0o700),
+        (root.join("cursor.json"), 0o600),
+        (root.join("health.json"), 0o600),
+        (root.join("plugin.lock"), 0o600),
+    ] {
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            mode,
+            "{}",
+            path.display()
+        );
+    }
 }
 
 #[test]

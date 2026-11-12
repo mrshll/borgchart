@@ -28,8 +28,13 @@ pub fn send(plugin: &str, target: &str, text: &str, from: Option<&str>) -> Resul
         stdout_bytes: 65536,
         stderr_bytes: 65536,
     };
-    let output = bounded_process::run(&mut command, None, limits)
-        .map_err(|error| format!("cannot send with brg: {error}; check BORGCHART_BIN and retry"))?;
+    let output = bounded_process::run(&mut command, None, limits).map_err(|error| match error {
+        bounded_process::Error::Deadline => "brg did not answer within 30 s; retry".into(),
+        bounded_process::Error::Io(io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied) => {
+            format!("cannot send with brg: {error}; check BORGCHART_BIN and retry")
+        }
+        _ => format!("cannot send with brg: {error}; retry"),
+    })?;
     let bytes = if output.stdout.iter().all(u8::is_ascii_whitespace) {
         &output.stderr
     } else {
