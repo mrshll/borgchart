@@ -1,9 +1,8 @@
 <!doctype html>
 <!-- borgchart.ai. GitHub Pages serves docs/ on main as it is (CNAME,
      .nojekyll; no build step). The animated tree is status.js, whose header
-     names the brg source it copies and holds the scene; the request typed
-     beside it is in this file, below; the palette is style.css; the command
-     text is the COMMANDS section below. -->
+     names the brg source it copies and holds the generator; the palette is
+     style.css; the command text is the COMMANDS section below. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -13,25 +12,13 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header class="hero">
-<section class="pane">
+<main>
+
 <p class="prompt"><span class="faded">$</span> brg status -w</p>
 <div class="stack">
 <pre class="screen ghost" aria-hidden="true"></pre>
-<pre id="status" class="screen" role="img" aria-label="An animated brg status tree of the team that built this site, growing as its lead takes on the request">brg status -w draws a live tree of the team here; it needs JavaScript.</pre>
+<pre id="status" class="screen" role="img" aria-label="An animated brg status tree of a team of coding agents, its teams and members coming and going">brg status -w draws a live tree of the team here; it needs JavaScript.</pre>
 </div>
-</section>
-<section class="pane">
-<p class="prompt"><span class="faded">$</span> brg attach engineering-56uw/lead-th8v</p>
-<div class="stack session">
-<div class="ghost" aria-hidden="true"></div>
-<!-- The owner's own request for this site, as typed to the root lead of
-     the team that built it; status.js types it out. -->
-<div id="session"><p class="said"><span class="faded">›</span> <span id="request">I also want to create a website for BorgChart because I own the domain name borgchart.ai. I would love for it to be almost like a CLI --help or man page with the same colorful output and even animation of the status as something that's front and center. It should read as almost like a plain terminal output as the web page.</span></p></div>
-</div>
-</section>
-</header>
-<main>
 
 <p class="prompt"><span class="faded">$</span> man brg</p>
 

@@ -1,8 +1,9 @@
-// The front page's hero: on the right, the request that started this site,
-// typed to the root lead of the team that built it; on the left that team's
-// `brg status -w`, growing as the lead takes it on. The tree is the real
-// one (engineering-56uw and the dev team it started), replayed as a fixed
-// scene and drawn the way brg draws a terminal tree.
+// The front page's `brg status -w`: the real root of the team that builds
+// borgchart (engineering-56uw and its lead), with a made-up tree beneath it
+// that grows and shrinks on its own. Dev teams, design panels, researchers
+// and monitors come and go, their members turn working and idle, and
+// finished ones stop and are deleted, only as the repository's own team
+// templates allow (teams/engineering, teams/dev-team, teams/dev-design-team).
 //
 // Taken from the code, so re-check it there when the look changes:
 //   marks, tones and spinner frames  src/tree.rs (state_mark, Tone, ink, painted)
@@ -11,17 +12,15 @@
 //   columns and vendor marks         src/runtime.rs status_cells, vendor_mark
 //   summary band and watch footer    src/runtime.rs summary_band, src/tui.rs watch_frame
 //   spinner speed                    src/tui.rs SPIN_INTERVAL (500 ms)
+//   member ID suffixes               src/registry.rs ALPHABET
 "use strict";
 
 (function () {
   const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
   const SPIN_MS = 500;
   const REFRESH_MS = 2000; // `status -w` reads again every 2 s
-  const STEP_MS = 4000; // each step of the scene lasts two refreshes
-  const TYPE_AFTER_MS = 2500; // the tree shows alone before typing starts
-  const KEY_MS = 50; // each key takes 50-90 ms, a breath longer after . and ,
-  const SEND_AFTER_MS = 1000; // a pause between the last key and Enter
-  const HOLD_MS = 12000; // the grown tree rests before the scene restarts
+  const MAX_ROWS = 12; // the tree never has more rows than this, root included
+  const WARM_BEATS = 12; // beats run before the first frame, so it opens on a tree
 
   const HEADER = ["engineering-56uw", "folder ~/workspace/borgchart"];
 
@@ -35,64 +34,182 @@
   const live = (nodes) => nodes.reduce((n, k) =>
     k.kind === "copy" ? n : n + (k.state !== "stopped" ? 1 : 0) + live(k.children), 0);
   const copy = (name, team, children) => ({
-    kind: "copy", name, team, children, running: live(children),
+    kind: "copy", name, team, children, get running() { return live(this.children); },
   });
 
-  const FABLE = "§ fable low";
-  const OPUS = "§ opus high";
-  const SOL = "Λ gpt-6.1-sol high";
+  // Each role's vendor mark and model, from the templates' front matter.
+  const MODEL = {
+    root: "§ fable low", // teams/engineering lead
+    researcher: "Λ gpt-6.1-terra medium", // teams/engineering researcher (codex)
+    monitor: "§ sonnet low", // teams/engineering monitor
+    lead: "§ opus high", // teams/dev-team lead (orchestrator.md)
+    implementer: "Λ gpt-6.1-sol high", // teams/dev-team implementer (codex)
+    reviewer: "§ opus high", // teams/dev-team reviewer
+    designerClaude: "§ fable medium", // teams/dev-design-team designer-claude
+    designerCodex: "Λ gpt-6-astra high", // teams/dev-design-team designer-codex
+  };
+  // What a member is doing, as its activity reads in the details column.
+  const SAYS = {
+    lead: ["Read the brief", "Plan the work", "Split the work", "Check the build"],
+    implementer: ["Build the fix", "Write tests", "Run the checks", "Tidy the diff"],
+    reviewer: ["Review the PR", "Read the diff", "Try it out"],
+    researcher: ["Compare tools", "Read the docs", "Check sources", "Write it up"],
+    monitor: ["Watch CI", "Check the logs", "Watch quotas"],
+    designer: ["Sketch a page", "Draft options", "Compare drafts", "Write it up"],
+  };
 
-  // The root lead, and the dev team it starts: a copy whose one root is
-  // its own lead, with the implementer and reviewer under that lead, as in
-  // teams/dev-team.
-  const lead = (state, detail, kids) => m("lead-th8v", FABLE, state, detail, kids);
-  const dev = (state, detail, kids) => [
-    copy("dev-website", "dev-team", [m("lead-f9tt", OPUS, state, detail, kids)]),
-  ];
-  const builder = (state, detail) => m("implementer-site", SOL, state, detail);
-  const checker = (state, detail) => m("reviewer-site-review", OPUS, state, detail);
-  const done = () => dev("idle", "", [builder("idle"), checker("idle")]);
+  // A seeded generator (mulberry32), fresh each load.
+  let seed = (Date.now() ^ 0x9e3779b9) >>> 0;
+  function rand() {
+    seed = (seed + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(seed ^ (seed >>> 15), seed | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
+  const pick = (xs) => xs[Math.floor(rand() * xs.length)];
+  const chance = (p) => rand() < p;
+  // A member ID's suffix: four of brg's suffix letters, never issued twice.
+  const ALPHABET = "23456789abcdefghjkmnpqrstuvwxyz";
+  const issued = new Set(["th8v"]);
+  function id(role) {
+    let s;
+    do s = Array.from({ length: 4 }, () => pick(ALPHABET)).join("");
+    while (issued.has(s));
+    issued.add(s);
+    return `${role}-${s}`;
+  }
 
-  // The scene, one tree per step. The first shows while the request is
-  // typed; the rest follow its sending, each with what the lead says then.
-  // The lead plans and starts a dev team, whose lead brings in an
-  // implementer and then a reviewer, and the pull request comes back up.
-  const SCENE = [
-    { tree: lead("idle") },
-    { tree: lead("working", "Read the request") },
-    {
-      tree: lead("working", "Plan the site"),
-      say: "Planning it: a dev team builds the page, and a reviewer checks it before it comes to you.",
-    },
-    {
-      tree: lead("idle", "", dev("working", "Read the brief")),
-      say: "Started dev-website on it.",
-    },
-    { tree: lead("idle", "", dev("working", "Plan the page", [builder("working", "Build the tree")])) },
-    { tree: lead("idle", "", dev("idle", "", [builder("working", "Write the docs")])) },
-    {
-      tree: lead("idle", "", dev("working", "Start a review", [
-        builder("idle"),
-        checker("working", "Review the PR"),
-      ])),
-    },
-    {
-      tree: lead("idle", "", dev("idle", "", [
-        builder("working", "Fix the layout"),
-        checker("idle"),
-      ])),
-    },
-    {
-      tree: lead("idle", "", dev("working", "Hand off", [
-        builder("idle"),
-        checker("idle"),
-      ])),
-    },
-    { tree: lead("idle", "1 unacked", done()) },
-    { tree: lead("working", "Check the work", done()) },
-    { tree: lead("idle", "", done()), say: "The pull request is ready for your review." },
-  ];
-  const last = SCENE.length - 1;
+  // The root lead, and the units under it. A unit is one child of the root
+  // (a copy, a researcher or a monitor) with the steps it still has to take;
+  // its rows are the most it can grow to, kept within MAX_ROWS.
+  const root = m("lead-th8v", MODEL.root, "idle");
+  let unacked = 0, busyUntil = 0, beatNo = 0;
+  let units = [];
+
+  const work = (n, says) => { n.state = "working"; n.detail = says; };
+  const rest = (n) => { n.state = "idle"; n.detail = ""; };
+  const stop = (n) => {
+    if (n.kind === "member") { n.state = "stopped"; n.detail = ""; }
+    n.children.forEach(stop);
+  };
+  // The root lead starts something, then goes back to waiting; a unit that
+  // reports back leaves it a message to read.
+  const rootWork = (says) => { work(root, says); busyUntil = beatNo + 1; };
+  const report = () => { unacked++; };
+
+  const KINDS = {
+    dev: { rows: 5, most: 2, make: devTeam },
+    design: { rows: 3, most: 1, make: designPanel },
+    researcher: { rows: 1, most: 2, make: researcher },
+    monitor: { rows: 1, most: 1, make: monitor },
+  };
+
+  // A dev team: its lead plans, brings in an implementer (sometimes two),
+  // then a reviewer, hands off, and the copy is stopped and deleted.
+  function devTeam() {
+    const lead = m(id("lead"), MODEL.lead, "working", "Read the brief");
+    const team = copy(id("dev"), "dev-team", [lead]);
+    const builders = [];
+    const add = () => {
+      const b = m(id("implementer"), MODEL.implementer, "working", pick(SAYS.implementer));
+      builders.push(b);
+      lead.children.push(b);
+    };
+    const checker = m(id("reviewer"), MODEL.reviewer, "working", pick(SAYS.reviewer));
+    rootWork("Start a team");
+    return { node: team, steps: [
+      () => work(lead, pick(SAYS.lead)),
+      () => { add(); rest(lead); },
+      () => (chance(0.5) ? add() : work(builders[0], pick(SAYS.implementer))),
+      () => { builders.forEach(rest); work(lead, "Check the build"); },
+      () => { rest(lead); lead.children.push(checker); },
+      () => { rest(checker); work(builders[0], "Fix the review"); },
+      () => { rest(builders[0]); work(lead, "Hand off"); },
+      () => { rest(lead); report(); },
+      () => stop(team),
+      null,
+    ] };
+  }
+
+  // A design panel: two designers, one per vendor, sketch side by side.
+  function designPanel() {
+    const a = m(id("designer-claude"), MODEL.designerClaude, "working", pick(SAYS.designer));
+    const b = m(id("designer-codex"), MODEL.designerCodex, "working", pick(SAYS.designer));
+    const team = copy(id("design"), "dev-design-team", [a, b]);
+    rootWork("Start a panel");
+    return { node: team, steps: [
+      () => (chance(0.5) ? rest(a) : rest(b)),
+      () => { work(a, pick(SAYS.designer)); work(b, "Compare drafts"); },
+      () => rest(b),
+      () => { rest(a); report(); },
+      () => stop(team),
+      null,
+    ] };
+  }
+
+  function researcher() {
+    const r = m(id("researcher"), MODEL.researcher, "working", pick(SAYS.researcher));
+    rootWork("Ask a question");
+    return { node: r, steps: [
+      () => work(r, pick(SAYS.researcher)),
+      () => work(r, "Write it up"),
+      () => { rest(r); report(); },
+      () => stop(r),
+      null,
+    ] };
+  }
+
+  // A monitor watches for a while, waking now and then, before it stops.
+  function monitor() {
+    const w = m(id("monitor"), MODEL.monitor, "working", pick(SAYS.monitor));
+    rootWork("Set a watch");
+    const steps = [];
+    for (let i = 3 + Math.floor(rand() * 4); i > 0; i--) {
+      steps.push(() => rest(w), () => work(w, pick(SAYS.monitor)));
+    }
+    steps.push(() => rest(w), () => stop(w), null);
+    return { node: w, steps };
+  }
+
+  // One `status -w` refresh: often nothing changes; otherwise one thing,
+  // now and then two. A unit's last step (null) deletes it. When nobody is
+  // working, a unit takes its next step, so the tree rarely sits still.
+  const busy = (n) => (n.state === "working" ? 1 : 0) + n.children.reduce((k, c) => k + busy(c), 0);
+  function beat() {
+    beatNo++;
+    if (root.state === "working" && beatNo > busyUntil) rest(root);
+    if (!units.length || !chance(0.3)) {
+      for (let i = chance(0.2) ? 2 : 1; i > 0; i--) act();
+    }
+    if (units.length && !busy(root)) advance(pick(units));
+    if (root.state === "idle") root.detail = unacked ? `${unacked} unacked` : "";
+  }
+  function act() {
+    if (unacked && root.state === "idle" && chance(0.4)) {
+      unacked = 0;
+      rootWork("Read a report");
+      return;
+    }
+    const held = units.reduce((n, u) => n + KINDS[u.kind].rows, 1);
+    const room = Object.keys(KINDS).filter((k) =>
+      held + KINDS[k].rows <= MAX_ROWS && units.filter((u) => u.kind === k).length < KINDS[k].most);
+    if (room.length && (units.length === 0 || chance(units.length < 3 ? 0.35 : 0.12))) {
+      const kind = pick(room);
+      const unit = { kind, ...KINDS[kind].make() };
+      units.push(unit);
+      root.children.push(unit.node);
+      return;
+    }
+    if (units.length) advance(pick(units));
+  }
+  function advance(unit) {
+    const step = unit.steps.shift();
+    if (step) step();
+    else {
+      units = units.filter((u) => u !== unit);
+      root.children = root.children.filter((n) => n !== unit.node);
+    }
+  }
 
   // src/runtime.rs status_look, for the states the scene uses.
   function look(node) {
@@ -208,96 +325,41 @@
     return date.toISOString().slice(11, 19);
   }
 
-  function frame(step, spin, refreshed) {
-    const root = SCENE[step].tree;
+
+  function frame(spin, refreshed, rows) {
     return [
       band(root),
       "",
       `<span class="b">${HEADER[0]}</span>  <span class="faded">${HEADER[1]}</span>`,
-      ...tree(root, spin),
+      ...(rows || tree(root, spin)),
       "",
       `<span class="faded">refreshed ${clock(refreshed)} UTC · Ctrl-C to stop</span>`,
     ].join("\n");
   }
 
-  // The session beside the tree: the request as far as it is typed, then,
-  // once sent, what the lead has said so far and a fresh prompt.
-  const CURSOR = '<span class="cursor">&nbsp;</span>';
-  // Hyphenated words (one-page, --help) wrap whole, as a terminal would.
-  const words = (text) => esc(text).replace(/\S*-\S*/g, '<span class="whole">$&</span>');
-  function session(request, typed, sent, step) {
-    const said = `<p class="said"><span class="faded">›</span> ${words(request.slice(0, typed))}${sent ? "" : CURSOR}</p>`;
-    if (!sent) return said;
-    const replies = SCENE.slice(1, step + 1)
-      .filter((s) => s.say)
-      .map((s) => `<p class="reply">${esc(s.say)}</p>`);
-    return [said, ...replies, `<p class="said"><span class="faded">›</span> ${CURSOR}</p>`].join("");
-  }
-
   const out = document.getElementById("status");
-  const talk = document.getElementById("session");
-  const typedText = document.getElementById("request");
-  if (!out || !talk || !typedText) return;
-  const request = typedText.textContent.trim().replace(/\s+/g, " ");
-  const replies = SCENE.filter((s) => s.say).map((s) => s.say);
-  talk.setAttribute("role", "img");
-  talk.setAttribute("aria-label",
-    "The request typed to the root lead: " + request + " The lead answers: " + replies.join(" "));
+  if (!out) return;
+  // Hold the room of the largest tree the generator allows, so the page
+  // never moves as it grows and shrinks.
+  out.previousElementSibling.innerHTML = frame(null, new Date(), Array(MAX_ROWS).fill(" "));
+  for (let i = 0; i < WARM_BEATS; i++) beat();
 
-  // Hold the room of the grown tree and the whole session, so the page
-  // doesn't move as the tree grows and the lead answers.
-  out.previousElementSibling.innerHTML = frame(last, null, new Date());
-  talk.previousElementSibling.innerHTML = session(request, request.length, true, last);
-
-  // The animation always runs, reduced-motion setting or not: the owner's
-  // call, as it is a slow typing line and a 2 fps spinner.
-
-  // When each key lands: an unhurried, slightly uneven pace, with a breath
-  // after punctuation. A fixed seed keeps every run the same.
-  let seed = 7;
-  const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-  const keys = [];
-  let at = TYPE_AFTER_MS;
-  let prev = "";
-  for (const ch of request) {
-    at += KEY_MS + rand() * 40 + (/[.,]/.test(prev) ? 380 : 0);
-    keys.push(at);
-    prev = ch;
-  }
-  const sendAt = at + SEND_AFTER_MS;
-  // The tree changes only when `status -w` reads again, on its 2 s beat.
-  const firstRead = Math.ceil(sendAt / REFRESH_MS) * REFRESH_MS;
-  const cycle = firstRead + (last - 1) * STEP_MS + HOLD_MS;
-
-  // Time runs on the page's own clock, so a change to the system clock
-  // can't stall it; the wall clock only names the refresh in the footer.
-  let start = performance.now();
-  let lastRead = -1, refreshed = new Date();
-  let shownTree = "", shownTalk = "";
+  // The tree changes once per 2 s refresh (only once, however many a
+  // backgrounded tab missed), and the spinner turns every 500 ms. Time runs
+  // on the page's own clock; the wall clock only names the refresh.
+  const start = performance.now();
+  let read = 0, refreshed = new Date(), shown = "";
   const draw = () => {
-    let t = performance.now() - start;
-    if (t >= cycle) {
-      start += cycle * Math.floor(t / cycle);
-      t = performance.now() - start;
-    }
-    const read = Math.floor(t / REFRESH_MS) * REFRESH_MS;
-    if (read !== lastRead) {
-      lastRead = read;
+    const t = performance.now() - start;
+    const now = Math.floor(t / REFRESH_MS);
+    if (now !== read) {
+      read = now;
       refreshed = new Date();
+      beat();
     }
-    const step = read < firstRead ? 0 : Math.min(last, 1 + Math.floor((read - firstRead) / STEP_MS));
-    const html = frame(step, Math.floor(t / SPIN_MS), refreshed);
-    if (html !== shownTree) out.innerHTML = shownTree = html;
-    let typed = 0;
-    while (typed < keys.length && keys[typed] <= t) typed++;
-    const said = session(request, typed, t >= sendAt, step);
-    if (said !== shownTalk) talk.innerHTML = shownTalk = said;
-    // Wake for whatever changes next: a key, the send, or the spinner's
-    // 500 ms tick (which the refreshes and steps fall on too).
-    let next = (Math.floor(t / SPIN_MS) + 1) * SPIN_MS;
-    if (typed < keys.length) next = Math.min(next, keys[typed]);
-    else if (t < sendAt) next = Math.min(next, sendAt);
-    setTimeout(draw, Math.max(10, next - t));
+    const html = frame(Math.floor(t / SPIN_MS), refreshed);
+    if (html !== shown) out.innerHTML = shown = html;
+    setTimeout(draw, SPIN_MS - (t % SPIN_MS) + 5);
   };
   draw();
 })();
