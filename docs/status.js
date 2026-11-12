@@ -20,6 +20,7 @@
   const SPIN_MS = 500;
   const REFRESH_MS = 2000; // `status -w` reads again every 2 s
   const MAX_ROWS = 12; // the tree never has more rows than this, root included
+  const WIDEST = 84; // nor a line wider than this (the CSS fits it)
   const WARM_BEATS = 12; // beats run before the first frame, so it opens on a tree
 
   const HEADER = ["engineering-56uw", "folder ~/workspace/borgchart"];
@@ -55,7 +56,7 @@
     reviewer: ["Review the PR", "Read the diff", "Try it out"],
     researcher: ["Compare tools", "Read the docs", "Check sources", "Write it up"],
     monitor: ["Watch CI", "Check the logs", "Watch quotas"],
-    designer: ["Sketch a page", "Draft options", "Compare drafts", "Write it up"],
+    designer: ["Sketch a page", "Draft options", "Try a layout", "Write it up"],
   };
 
   // A seeded generator (mulberry32), fresh each load.
@@ -83,7 +84,7 @@
   // (a copy, a researcher or a monitor) with the steps it still has to take;
   // its rows are the most it can grow to, kept within MAX_ROWS.
   const root = m("lead-th8v", MODEL.root, "idle");
-  let unacked = 0, busyUntil = 0, beatNo = 0;
+  let unacked = 0, pending = 0, busyUntil = 0, beatNo = 0;
   let units = [];
 
   const work = (n, says) => { n.state = "working"; n.detail = says; };
@@ -93,9 +94,12 @@
     n.children.forEach(stop);
   };
   // The root lead starts something, then goes back to waiting; a unit that
-  // reports back leaves it a message to read.
+  // reports back leaves it a message to read. brg would print a working
+  // lead's unacked count after its activity, too wide for the page, so a
+  // report lands only once the root is idle, and the root reads its
+  // messages before starting anything new.
   const rootWork = (says) => { work(root, says); busyUntil = beatNo + 1; };
-  const report = () => { unacked++; };
+  const report = () => { pending++; };
 
   const KINDS = {
     dev: { rows: 5, most: 2, make: devTeam },
@@ -139,7 +143,7 @@
     rootWork("Start a panel");
     return { node: team, steps: [
       () => (chance(0.5) ? rest(a) : rest(b)),
-      () => { work(a, pick(SAYS.designer)); work(b, "Compare drafts"); },
+      () => { work(a, pick(SAYS.designer)); work(b, pick(SAYS.designer)); },
       () => rest(b),
       () => { rest(a); report(); },
       () => stop(team),
@@ -178,6 +182,10 @@
   function beat() {
     beatNo++;
     if (root.state === "working" && beatNo > busyUntil) rest(root);
+    if (root.state === "idle") {
+      unacked += pending;
+      pending = 0;
+    }
     if (!units.length || !chance(0.3)) {
       for (let i = chance(0.2) ? 2 : 1; i > 0; i--) act();
     }
@@ -193,7 +201,7 @@
     const held = units.reduce((n, u) => n + KINDS[u.kind].rows, 1);
     const room = Object.keys(KINDS).filter((k) =>
       held + KINDS[k].rows <= MAX_ROWS && units.filter((u) => u.kind === k).length < KINDS[k].most);
-    if (room.length && (units.length === 0 || chance(units.length < 3 ? 0.35 : 0.12))) {
+    if (!unacked && room.length && (units.length === 0 || chance(units.length < 3 ? 0.35 : 0.12))) {
       const kind = pick(room);
       const unit = { kind, ...KINDS[kind].make() };
       units.push(unit);
@@ -341,7 +349,9 @@
   if (!out) return;
   // Hold the room of the largest tree the generator allows, so the page
   // never moves as it grows and shrinks.
-  out.previousElementSibling.innerHTML = frame(null, new Date(), Array(MAX_ROWS).fill(" "));
+  // It is as wide as the widest line too, so it keeps room for a sideways
+  // scrollbar wherever the live frame could need one.
+  out.previousElementSibling.innerHTML = frame(null, new Date(), Array(MAX_ROWS).fill(" ".repeat(WIDEST)));
   for (let i = 0; i < WARM_BEATS; i++) beat();
 
   // The tree changes once per 2 s refresh (only once, however many a
