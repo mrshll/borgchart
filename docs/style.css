@@ -4,6 +4,7 @@
    darkens or lightens the tones that fall short of 4.5:1 on it. */
 :root {
   --bg: #fbfbf8;
+  --well: #f2f2ed;   /* the status tree's room; every tone it uses keeps 4.5:1 */
   --ink: #1d1f24;
   --busy: #17767c;   /* brg #1f939a */
   --team: #85651f;   /* brg #a9812a */
@@ -14,6 +15,7 @@
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #121418;
+    --well: #1a1c21;
     --ink: #d9dbe0;
     --busy: #1f939a;
     --team: #a9812a;
@@ -41,9 +43,13 @@ main {
 }
 
 /* The status tree holds the room of its largest frame (a hidden copy
-   beneath), so the page stays put while the tree grows and shrinks. */
+   beneath), so the page stays put while the tree grows and shrinks. That
+   room is shaded, so it reads as one block whatever the tree's size. */
 .stack {
   display: grid;
+  background: var(--well);
+  padding: 0.8em 1.5ch;
+  border-radius: 4px;
   grid-template-columns: minmax(0, 1fr);
   container-type: inline-size;
   margin-bottom: 2.9em;
