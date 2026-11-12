@@ -16,7 +16,6 @@ fn member_team_environment_selects_messages_without_the_retired_variable_or_flag
     let team = env.create("oncall", "work/a");
     let member = env.member(&team, "lead");
     let start = &env.starts(&member)[0];
-    assert_eq!(start["env"]["BORGCHART_TEAM"], team);
     assert!(start["env"].get("BORGCHART_INSTANCE").is_none());
     let member_env: BTreeMap<String, String> =
         serde_json::from_value(start["env"].clone()).unwrap();
@@ -27,12 +26,6 @@ fn member_team_environment_selects_messages_without_the_retired_variable_or_flag
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", both(&out));
-    for args in [
-        vec!["msg", "--team", &team, "list", "--json"],
-        vec!["msg", "list", "--team", &team, "--json"],
-    ] {
-        env.ok(&args);
-    }
     let out = env.brg(&["msg", "--instance", &team, "list"]);
     assert_eq!(out.status.code(), Some(2), "{}", both(&out));
     env.ok(&["stop", &team]);

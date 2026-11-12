@@ -401,10 +401,14 @@ pub fn main() -> ExitCode {
     {
         loop {
             match tokens.next() {
-                Some(arg) if arg == "--team" => {
+                // Skip the removed spelling too so old role text cannot spin.
+                Some(arg) if arg == "--team" || arg == "--instance" => {
                     tokens.next();
                 }
-                Some(arg) if arg.to_str().is_some_and(|s| s.starts_with("--team=")) => {}
+                Some(arg)
+                    if arg.to_str().is_some_and(|s| {
+                        s.starts_with("--team=") || s.starts_with("--instance=")
+                    }) => {}
                 Some(arg) => break arg == "wait",
                 None => break false,
             }

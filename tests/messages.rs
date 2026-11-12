@@ -313,6 +313,8 @@ fn wait_errors_and_usage_errors_obey_the_minimum() {
         vec!["msg", "--team", "missing", "wait", "--bogus"],
         vec!["msg", "--team=missing", "wait", "--bogus"],
         vec!["inbox", "wait"],
+        vec!["msg", "--instance", "missing", "wait", "--bogus"],
+        vec!["msg", "--instance=missing", "wait", "--bogus"],
     ] {
         let start = Instant::now();
         let out = env
@@ -321,7 +323,7 @@ fn wait_errors_and_usage_errors_obey_the_minimum() {
             .output()
             .unwrap();
         assert!(!out.status.success());
-        if args[0] == "inbox" {
+        if args[0] == "inbox" || args[1].starts_with("--instance") {
             assert_eq!(out.status.code(), Some(2), "{}", both(&out));
         }
         assert!(
