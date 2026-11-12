@@ -50,11 +50,14 @@
 
 <h2>QUICK START</h2>
 <pre class="block"><span class="faded">$</span> cargo install --git https://github.com/mrshll/borgchart --locked --bin brg borgchart
-<span class="faded">$</span> brg validate ./lamp-eng
-<span class="faded">$</span> brg create ./lamp-eng ~/src/lighthouse
+<span class="faded">$</span> git clone https://github.com/mrshll/borgchart ~/workspace/borgchart
+<span class="faded">$</span> cd ~/workspace/borgchart
+<span class="faded">$</span> brg validate ./teams/engineering
+<span class="faded">$</span> brg create ./teams/engineering
 <span class="faded">$</span> brg status -w
-<span class="faded">$</span> brg attach lamp-eng-x7k2/lead-q8m3
-<span class="faded">$</span> brg stop lamp-eng-x7k2</pre>
+<span class="faded">$</span> brg attach engineering-56uw/lead-th8v
+<span class="faded">$</span> brg stop engineering-56uw</pre>
+<p>This runs the repository's own engineering team on its own code, the team in the tree above. <b>brg create</b> prints the new instance's ID and its root lead's; <b>engineering-56uw</b> and <b>lead-th8v</b> stand for them here.</p>
 <p>Needs Rust 1.89 or newer, tmux 3.2 or newer, and the <b>claude</b> and/or <b>codex</b> CLIs.</p>
 
 <h2>COMMANDS</h2>
