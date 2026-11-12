@@ -1240,7 +1240,7 @@ pub fn header_as(inst: &Instance, short: bool) -> String {
 }
 
 /// `path` with a leading `home` written `~`.
-fn tilde(path: &std::path::Path, home: Option<&std::path::Path>) -> String {
+pub(crate) fn tilde(path: &std::path::Path, home: Option<&std::path::Path>) -> String {
     // A home of `/`, or an empty one, would shorten every path.
     match home
         .filter(|h| h.parent().is_some())
