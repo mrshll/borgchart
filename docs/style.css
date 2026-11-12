@@ -77,11 +77,11 @@ pre {
 }
 .prompt { margin-bottom: 0.4em; }
 
-/* The status tree: sized so its widest possible line (84 columns) fits, or
+/* The status tree: sized so its widest possible line (81 columns) fits, or
    on a phone the name, state and vendor mark; the rest scrolls inside the
    box, as a terminal with wrapping off cuts it. */
 .screen {
-  font-size: min(1rem, calc(100cqw / 51));
+  font-size: min(1rem, calc(100cqw / 49));
   line-height: 1.25;
   margin: 0;
 }
@@ -110,7 +110,7 @@ pre {
 @media (max-width: 40rem) {
   html { font-size: 14px; }
   main { padding-top: 1rem; }
-  .screen { font-size: min(1rem, calc(100cqw / 28)); }
+  .screen { font-size: min(1rem, calc(100cqw / 30)); }
   h2 ~ p:not(.prompt), h2 ~ pre, h2 ~ dl { padding-left: 3ch; }
   .title span:nth-child(2) { display: none; }
 }

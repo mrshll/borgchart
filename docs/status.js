@@ -20,15 +20,17 @@
   const SPIN_MS = 500;
   const REFRESH_MS = 2000; // `status -w` reads again every 2 s
   const MAX_ROWS = 12; // the tree never has more rows than this, root included
-  const WIDEST = 84; // nor a line wider than this (the CSS fits it)
+  const WIDEST = 81; // nor a line wider than this (the CSS fits it)
   const WARM_BEATS = 12; // beats run before the first frame, so it opens on a tree
 
   const HEADER = ["engineering-56uw", "folder ~/workspace/borgchart"];
 
-  // A member: its name, vendor mark and model, state and details. A copy
-  // (a nested team): its name, its team, and its members.
-  const m = (name, model, state, detail, children) => ({
-    kind: "member", name, model, state, detail: detail || "", children: children || [],
+  // A member: its name, vendor mark and model, and state. A copy (a nested
+  // team): its name, its team, and its members. The page leaves out the
+  // activity brg prints in the details column; only the root's unacked
+  // count is shown there.
+  const m = (name, model, state, children) => ({
+    kind: "member", name, model, state, detail: "", children: children || [],
   });
   // brg counts a copy's own members that are not stopped as running, at
   // any depth inside it but not inside deeper copies.
@@ -49,14 +51,16 @@
     designerClaude: "§ fable medium", // teams/dev-design-team designer-claude
     designerCodex: "Λ gpt-6-astra high", // teams/dev-design-team designer-codex
   };
-  // What a member is doing, as its activity reads in the details column.
-  const SAYS = {
-    lead: ["Read the brief", "Plan the work", "Split the work", "Check the build"],
-    implementer: ["Build the fix", "Write tests", "Run the checks", "Tidy the diff"],
-    reviewer: ["Review the PR", "Read the diff", "Try it out"],
-    researcher: ["Compare tools", "Read the docs", "Check sources", "Write it up"],
-    monitor: ["Watch CI", "Check the logs", "Watch quotas"],
-    designer: ["Sketch a page", "Draft options", "Try a layout", "Write it up"],
+  // What the root lead gives out, as `brg create --name` would name it:
+  // a dev team's task, with the short word its implementer and reviewer
+  // are named for; a design panel's, a researcher's and a monitor's.
+  const TASKS = {
+    dev: [["website", "site"], ["msg-group", "msg"], ["status-band", "band"], ["seat-plugin", "seat"],
+      ["wake-rules", "wake"], ["help-text", "help"], ["worktrees", "worktree"], ["bus-store", "store"],
+      ["remote-control", "remote"], ["install", "install"], ["validate", "checks"], ["cleanup", "cleanup"]],
+    design: ["commands", "status", "site", "help", "explorer", "onboarding"],
+    researcher: ["wake-rules", "models", "tmux-versions", "quotas", "ci-cache", "fonts", "pages-dns"],
+    monitor: ["ci", "quotas", "pages", "nightly", "disk"],
   };
 
   // A seeded generator (mulberry32), fresh each load.
@@ -69,37 +73,56 @@
   }
   const pick = (xs) => xs[Math.floor(rand() * xs.length)];
   const chance = (p) => rand() < p;
-  // A member ID's suffix: four of brg's suffix letters, never issued twice.
+
+  // IDs. The members a team starts by itself (its lead, the designers) get
+  // brg's random suffix; everything the root lead creates is named for its
+  // task (`<role>-<name>`, lowercase words, at most 24 characters, and here
+  // at most 26 for the whole ID, so the tree stays within WIDEST). brg
+  // never issues an ID twice in an instance, so a root task that has been
+  // used is used up: then two tasks join (dev-website-cleanup), and only
+  // after hours of all of those would one come round again, never while
+  // its namesake is still in the tree.
   const ALPHABET = "23456789abcdefghjkmnpqrstuvwxyz";
-  const issued = new Set(["th8v"]);
-  function id(role) {
-    let s;
-    do s = Array.from({ length: 4 }, () => pick(ALPHABET)).join("");
-    while (issued.has(s));
-    issued.add(s);
-    return `${role}-${s}`;
+  const issued = new Set(["lead-th8v"]);
+  function suffixed(role) {
+    let id;
+    do id = `${role}-` + Array.from({ length: 4 }, () => pick(ALPHABET)).join("");
+    while (issued.has(id));
+    issued.add(id);
+    return id;
+  }
+  function named(role, tasks) {
+    const fits = (n) => n.length <= Math.min(24, 25 - role.length);
+    const free = (names) => names.filter((n) => fits(n) && !issued.has(`${role}-${n}`));
+    let names = free(tasks);
+    if (!names.length) names = free(tasks.flatMap((a) => tasks.filter((b) => b !== a).map((b) => `${a}-${b}`)));
+    if (!names.length) {
+      const inTree = new Set(root.children.map((n) => n.name));
+      names = tasks.filter((n) => !inTree.has(`${role}-${n}`));
+    }
+    const id = `${role}-${pick(names)}`;
+    issued.add(id);
+    return id;
   }
 
   // The root lead, and the units under it. A unit is one child of the root
   // (a copy, a researcher or a monitor) with the steps it still has to take;
   // its rows are the most it can grow to, kept within MAX_ROWS.
   const root = m("lead-th8v", MODEL.root, "idle");
-  let unacked = 0, pending = 0, busyUntil = 0, beatNo = 0;
+  let unacked = 0, busyUntil = 0, beatNo = 0;
   let units = [];
 
-  const work = (n, says) => { n.state = "working"; n.detail = says; };
-  const rest = (n) => { n.state = "idle"; n.detail = ""; };
+  const work = (n) => { n.state = "working"; };
+  const rest = (n) => { n.state = "idle"; };
   const stop = (n) => {
-    if (n.kind === "member") { n.state = "stopped"; n.detail = ""; }
+    if (n.kind === "member") n.state = "stopped";
     n.children.forEach(stop);
   };
   // The root lead starts something, then goes back to waiting; a unit that
-  // reports back leaves it a message to read. brg would print a working
-  // lead's unacked count after its activity, too wide for the page, so a
-  // report lands only once the root is idle, and the root reads its
-  // messages before starting anything new.
-  const rootWork = (says) => { work(root, says); busyUntil = beatNo + 1; };
-  const report = () => { pending++; };
+  // reports back leaves it a message, which it reads before starting
+  // anything new.
+  const rootWork = () => { work(root); busyUntil = beatNo + 1; };
+  const report = () => { unacked++; };
 
   const KINDS = {
     dev: { rows: 5, most: 2, make: devTeam },
@@ -109,41 +132,44 @@
   };
 
   // A dev team: its lead plans, brings in an implementer (sometimes two),
-  // then a reviewer, hands off, and the copy is stopped and deleted.
+  // then a reviewer, hands off, and the copy is stopped and deleted. The
+  // copy is its own instance, so its members' names are its own.
   function devTeam() {
-    const lead = m(id("lead"), MODEL.lead, "working", "Read the brief");
-    const team = copy(id("dev"), "dev-team", [lead]);
+    const name = named("dev", TASKS.dev.map(([task]) => task));
+    const [, word] = TASKS.dev.find(([task]) => name === `dev-${task}` || name.startsWith(`dev-${task}-`));
+    const lead = m(suffixed("lead"), MODEL.lead, "working");
+    const team = copy(name, "dev-team", [lead]);
     const builders = [];
     const add = () => {
-      const b = m(id("implementer"), MODEL.implementer, "working", pick(SAYS.implementer));
+      const b = m(builders.length ? "implementer-tests" : `implementer-${word}`, MODEL.implementer, "working");
       builders.push(b);
       lead.children.push(b);
     };
-    const checker = m(id("reviewer"), MODEL.reviewer, "working", pick(SAYS.reviewer));
-    rootWork("Start a team");
+    const checker = m(`reviewer-${word}`, MODEL.reviewer, "working");
+    rootWork();
     return { node: team, steps: [
-      () => work(lead, pick(SAYS.lead)),
       () => { add(); rest(lead); },
-      () => (chance(0.5) ? add() : work(builders[0], pick(SAYS.implementer))),
-      () => { builders.forEach(rest); work(lead, "Check the build"); },
+      () => (chance(0.5) ? add() : rest(builders[0])),
+      () => { builders.forEach(rest); work(lead); },
       () => { rest(lead); lead.children.push(checker); },
-      () => { rest(checker); work(builders[0], "Fix the review"); },
-      () => { rest(builders[0]); work(lead, "Hand off"); },
+      () => { rest(checker); work(builders[0]); },
+      () => { rest(builders[0]); work(lead); },
       () => { rest(lead); report(); },
       () => stop(team),
       null,
     ] };
   }
 
-  // A design panel: two designers, one per vendor, sketch side by side.
+  // A design panel: two designers, one per vendor, each drafting its own
+  // proposal; both start with the panel.
   function designPanel() {
-    const a = m(id("designer-claude"), MODEL.designerClaude, "working", pick(SAYS.designer));
-    const b = m(id("designer-codex"), MODEL.designerCodex, "working", pick(SAYS.designer));
-    const team = copy(id("design"), "dev-design-team", [a, b]);
-    rootWork("Start a panel");
+    const a = m(suffixed("designer-claude"), MODEL.designerClaude, "working");
+    const b = m(suffixed("designer-codex"), MODEL.designerCodex, "working");
+    const team = copy(named("design", TASKS.design), "dev-design-team", [a, b]);
+    rootWork();
     return { node: team, steps: [
       () => (chance(0.5) ? rest(a) : rest(b)),
-      () => { work(a, pick(SAYS.designer)); work(b, pick(SAYS.designer)); },
+      () => { work(a); work(b); },
       () => rest(b),
       () => { rest(a); report(); },
       () => stop(team),
@@ -152,11 +178,11 @@
   }
 
   function researcher() {
-    const r = m(id("researcher"), MODEL.researcher, "working", pick(SAYS.researcher));
-    rootWork("Ask a question");
+    const r = m(named("researcher", TASKS.researcher), MODEL.researcher, "working");
+    rootWork();
     return { node: r, steps: [
-      () => work(r, pick(SAYS.researcher)),
-      () => work(r, "Write it up"),
+      () => rest(r),
+      () => work(r),
       () => { rest(r); report(); },
       () => stop(r),
       null,
@@ -165,12 +191,10 @@
 
   // A monitor watches for a while, waking now and then, before it stops.
   function monitor() {
-    const w = m(id("monitor"), MODEL.monitor, "working", pick(SAYS.monitor));
-    rootWork("Set a watch");
+    const w = m(named("monitor", TASKS.monitor), MODEL.monitor, "working");
+    rootWork();
     const steps = [];
-    for (let i = 3 + Math.floor(rand() * 4); i > 0; i--) {
-      steps.push(() => rest(w), () => work(w, pick(SAYS.monitor)));
-    }
+    for (let i = 3 + Math.floor(rand() * 4); i > 0; i--) steps.push(() => rest(w), () => work(w));
     steps.push(() => rest(w), () => stop(w), null);
     return { node: w, steps };
   }
@@ -182,20 +206,16 @@
   function beat() {
     beatNo++;
     if (root.state === "working" && beatNo > busyUntil) rest(root);
-    if (root.state === "idle") {
-      unacked += pending;
-      pending = 0;
-    }
     if (!units.length || !chance(0.3)) {
       for (let i = chance(0.2) ? 2 : 1; i > 0; i--) act();
     }
     if (units.length && !busy(root)) advance(pick(units));
-    if (root.state === "idle") root.detail = unacked ? `${unacked} unacked` : "";
+    root.detail = unacked ? `${unacked} unacked` : "";
   }
   function act() {
     if (unacked && root.state === "idle" && chance(0.4)) {
       unacked = 0;
-      rootWork("Read a report");
+      rootWork();
       return;
     }
     const held = units.reduce((n, u) => n + KINDS[u.kind].rows, 1);
