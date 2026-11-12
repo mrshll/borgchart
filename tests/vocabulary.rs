@@ -58,7 +58,7 @@ fn retired_template_inputs_are_refused_with_the_replacement() {
 fn schema_one_state_is_refused_before_deserializing_retired_fields() {
     for file in [
         "registry.json",
-        "sample-2222/instance.json",
+        "sample-2222/team.json",
         "sample-2222/start.json",
     ] {
         let root = tempfile::tempdir().unwrap();
@@ -86,7 +86,7 @@ fn schema_one_state_is_refused_before_deserializing_retired_fields() {
             _ => old_record,
         };
         fs::write(&path, serde_json::to_vec(&contents).unwrap()).unwrap();
-        if file.ends_with("instance.json") {
+        if file.ends_with("team.json") {
             let mut registry = borgchart::registry::Registry {
                 schema: borgchart::registry::SCHEMA,
                 ..Default::default()

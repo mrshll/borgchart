@@ -525,7 +525,7 @@ mod round {
         /// The instance of `team`, once created.
         fn instance_of(&self, team: &str) -> Option<String> {
             let reg = self.read("state/registry.json")?;
-            reg["instances"]
+            reg["teams"]
                 .as_object()?
                 .iter()
                 .find(|(_, e)| e["template"] == team)
@@ -541,7 +541,7 @@ mod round {
         /// The member of `role` in `instance`.
         fn member_in(&self, instance: &str, role: &str) -> String {
             let rec = self
-                .read(&format!("state/{instance}/instance.json"))
+                .read(&format!("state/{instance}/team.json"))
                 .expect("its record");
             rec["members"]
                 .as_object()
@@ -945,7 +945,7 @@ mod round {
 
         let (up, code) = run(
             "panel-create",
-            "\"$BORGCHART_BIN\" create \"$BORGCHART_INSTANCE/design\"",
+            "\"$BORGCHART_BIN\" create \"$BORGCHART_TEAM/design\"",
         );
         assert_eq!(code, 0, "{up}");
         let panel = up.split_whitespace().next().unwrap().to_string();
@@ -1027,7 +1027,7 @@ mod round {
                     .unwrap();
             assert!(start["argv"].to_string().contains("You are a designer"));
             assert_eq!(start["cwd"], work.display().to_string());
-            assert_eq!(start["env"]["BORGCHART_INSTANCE"], panel.as_str());
+            assert_eq!(start["env"]["BORGCHART_TEAM"], panel.as_str());
             assert_eq!(start["env"]["BORGCHART_PARENT"], format!("{inst}/{lead}"));
             notes = Some(PathBuf::from(
                 start["env"]["BORGCHART_NOTES"].as_str().unwrap(),
@@ -1114,7 +1114,7 @@ mod round {
         }
         assert!(work.join(".git").is_dir(), "the lead's checkout stays");
         let registry = team.read("state/registry.json").unwrap();
-        assert!(registry["instances"].get(&panel).is_none(), "{registry}");
+        assert!(registry["teams"].get(&panel).is_none(), "{registry}");
         // The department still runs.
         lead_idle();
         team.ok(&["stop", &inst]);
@@ -1135,7 +1135,7 @@ mod round {
     fn prompt_of(team: &Team, instance: &str, member: &str) -> String {
         let log = team.path(&format!("home/fake-agent/{member}.jsonl"));
         let start = first_start(team, &format!("{member} started"), &log);
-        assert_eq!(start["env"]["BORGCHART_INSTANCE"], instance);
+        assert_eq!(start["env"]["BORGCHART_TEAM"], instance);
         start["argv"]
             .as_array()
             .unwrap()
@@ -1216,7 +1216,7 @@ mod round {
 
         let (up, code) = run(
             "dev-create",
-            "\"$BORGCHART_BIN\" create \"$BORGCHART_INSTANCE/dev\" --branch example/work",
+            "\"$BORGCHART_BIN\" create \"$BORGCHART_TEAM/dev\" --branch example/work",
         );
         assert_eq!(code, 0, "{up}");
         let copy_id = up.split_whitespace().next().unwrap().to_string();
@@ -1308,7 +1308,7 @@ mod round {
         for role in ["researcher", "monitor"] {
             let (made, code) = run(
                 &format!("{role}-create"),
-                &format!("\"$BORGCHART_BIN\" create \"$BORGCHART_INSTANCE/{role}\""),
+                &format!("\"$BORGCHART_BIN\" create \"$BORGCHART_TEAM/{role}\""),
             );
             assert_eq!(code, 0, "{made}");
         }

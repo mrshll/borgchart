@@ -4,14 +4,14 @@
 //! Members always carry a suffix (`implementer-x7k2`), so a bare name is a
 //! role. IDs are parsed from the right, so roles and teams with `-` in their
 //! names work. The instance can be left out only inside a member, where it
-//! comes from `BORGCHART_INSTANCE`; everywhere else it is named in full. brg
+//! comes from `BORGCHART_TEAM`; everywhere else it is named in full. brg
 //! never infers one from a template's name or from which instances run.
 
 use crate::registry::{self, InstanceRecord};
 use crate::state::StateDir;
 
 /// Set in every member's and plugin's environment: its instance.
-pub const ENV_INSTANCE: &str = "BORGCHART_INSTANCE";
+pub const ENV_INSTANCE: &str = "BORGCHART_TEAM";
 
 /// One registered instance, with its record.
 #[derive(Debug, Clone)]

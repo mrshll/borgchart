@@ -18,13 +18,13 @@ Inside a member:
 pub fn list() -> String {
     "Lists every unacknowledged message to you, oldest first. --full includes
 bodies. --member ID reads another member's inbox; --external NAME reads that
-outside recipient's inbox. Without team context (BORGCHART_INSTANCE,
+outside recipient's inbox. Without team context (BORGCHART_TEAM,
 BORGCHART_MEMBER, BORGCHART_INCARNATION, BORGCHART_ROLE, BORGCHART_NOTES and
 BORGCHART_PARENT all unset or empty), the inbox defaults to external:owner.
-Instance-only plugins must name an inbox. Outside a member, pass --instance ID.
+Instance-only plugins must name an inbox. Outside a member, pass --team ID.
 
 The tree shares one store and one set of message IDs. --member accepts a full
-address anywhere in the tree, or a bare ID in your own or --instance instance.
+address anywhere in the tree, or a bare ID in your own or --team instance.
 Reading never acknowledges. Use `msg read ID` for an older message and
 `msg ack ID...` once you have taken messages on, then `msg wait`.
 Progress and reports belong in your notes and GitHub.
@@ -39,7 +39,7 @@ A member's loop:
 
 pub fn wait() -> String {
     "Waits for your own inbox, or external:NAME with --external NAME.
-Without team context (BORGCHART_INSTANCE, BORGCHART_MEMBER,
+Without team context (BORGCHART_TEAM, BORGCHART_MEMBER,
 BORGCHART_INCARNATION, BORGCHART_ROLE, BORGCHART_NOTES and BORGCHART_PARENT
 all unset or empty), defaults to external:owner. Instance-only plugins must
 name --external NAME.
@@ -67,7 +67,7 @@ not-found (10) and error (1).
 
 pub fn send() -> String {
     format!(
-        "Without team context (BORGCHART_INSTANCE, BORGCHART_MEMBER,
+        "Without team context (BORGCHART_TEAM, BORGCHART_MEMBER,
 BORGCHART_INCARNATION, BORGCHART_ROLE, BORGCHART_NOTES and BORGCHART_PARENT
 all unset or empty), outside callers default to external:owner; --external NAME
 overrides it. Instance-only plugins must name --external NAME. Members use their
@@ -77,7 +77,7 @@ parent's in BORGCHART_PARENT). The tree shares one store and message IDs; typed
 and locked delivery work across edges too. Only root members of the tree's root
 instance may address external:NAME. --from asserts a parent route within one
 instance, not authorship. --reply-to takes plain existing IDs such as m1.
-This command takes no --instance; name the target as <instance>/<member>.
+This command takes no --team; name the target as <instance>/<member>.
 
 Ordinary messages commit before optional typing. Exit 0 means committed even
 when delivery is stored or uncertain; never automatically republish. Interactive

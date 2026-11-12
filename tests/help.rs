@@ -178,6 +178,8 @@ fn shipped_roles_and_docs_do_not_instruct_removed_commands() {
                 "start --team",
                 "teams/",
                 "{{teams/",
+                "BORGCHART_INSTANCE",
+                "--instance",
             ] {
                 let word = |c: char| c.is_alphanumeric() || c == '_';
                 let found = text.match_indices(removed).any(|(start, _)| {

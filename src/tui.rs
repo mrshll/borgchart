@@ -397,7 +397,7 @@ fn draw(
             );
             let mut cols = runtime::status_cells(r, true);
             match r.kind {
-                "member" | "copy" => {}
+                "member" | "team" => {}
                 // A role with no kept member shows its creation state.
                 "role" => {
                     cols.insert(0, String::new());

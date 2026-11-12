@@ -618,7 +618,7 @@ fn repo_default_branch_options_are_refused_without_running_them_or_issuing_anyth
     git(origin, &["update-ref", &reference, "HEAD"]);
     git(origin, &["symbolic-ref", "HEAD", &reference]);
     let inst = env.create("oncall", "work/a");
-    let record = env.path(&format!("state/{inst}/instance.json"));
+    let record = env.path(&format!("state/{inst}/team.json"));
     let before = fs::read(&record).unwrap();
     let out = env.brg(&["create", &format!("{inst}/helper"), "--repo", "widgets"]);
     assert!(!marker.exists(), "origin's branch ran as a fetch option");
@@ -644,7 +644,7 @@ fn repo_creation_in_a_managed_root_refuses_before_contacting_origin() {
         ],
     );
     let inst = env.create("oncall", "state-worktrees/root");
-    let record = env.path(&format!("state/{inst}/instance.json"));
+    let record = env.path(&format!("state/{inst}/team.json"));
     let before = fs::read(&record).unwrap();
     env.fails(&["create", &format!("{inst}/helper"), "--repo", "widgets"]);
     assert!(
@@ -699,7 +699,7 @@ exec '{git}' "$@"
                 ),
             );
         }
-        let record = env.path(&format!("state/{inst}/instance.json"));
+        let record = env.path(&format!("state/{inst}/team.json"));
         let before = fs::read(&record).unwrap();
         let err = env.fails(&["create", &format!("{inst}/helper"), "--repo", "widgets"]);
         assert!(err.contains("widgets"), "{stage}: {err}");
@@ -976,7 +976,7 @@ fn invalid_repo_sources_and_unreachable_origins_issue_nothing() {
     let inst = env.create("oncall", "work/a");
     let copy = repo_copy(&env, &inst, "widgets", None);
     env.ok(&["delete", &copy]);
-    let record = env.path(&format!("state/{inst}/instance.json"));
+    let record = env.path(&format!("state/{inst}/team.json"));
     let before = fs::read(&record).unwrap();
     let absolute = env.path("work/a/widgets").display().to_string();
     for name in [

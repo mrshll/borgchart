@@ -294,7 +294,7 @@ enum Command {
     /// Send, list, read, acknowledge, wait for and check messages.
     Msg {
         /// The instance (outside a member; inside one, only its own).
-        #[arg(long, global = true, add = crate::complete::instances())]
+        #[arg(long = "team", value_name = "TEAM", global = true, add = crate::complete::instances())]
         instance: Option<String>,
         #[command(subcommand)]
         command: crate::bus::cli::MsgCommand,
@@ -401,10 +401,10 @@ pub fn main() -> ExitCode {
     {
         loop {
             match tokens.next() {
-                Some(arg) if arg == "--instance" => {
+                Some(arg) if arg == "--team" => {
                     tokens.next();
                 }
-                Some(arg) if arg.to_str().is_some_and(|s| s.starts_with("--instance=")) => {}
+                Some(arg) if arg.to_str().is_some_and(|s| s.starts_with("--team=")) => {}
                 Some(arg) => break arg == "wait",
                 None => break false,
             }

@@ -35,14 +35,14 @@ impl Tree {
         env.ok(&[
             "msg",
             "list",
-            "--instance",
+            "--team",
             &parent,
             "--member",
             &parent_member,
             "--json",
         ]);
         let registry = env.registry();
-        let child = registry["instances"]
+        let child = registry["teams"]
             .as_object()
             .unwrap()
             .keys()
@@ -74,7 +74,7 @@ impl Tree {
         )
         .unwrap();
         let mut cmd = self.env.cmd(args);
-        cmd.env("BORGCHART_INSTANCE", instance)
+        cmd.env("BORGCHART_TEAM", instance)
             .env("BORGCHART_MEMBER", member)
             .env(
                 "BORGCHART_INCARNATION",
@@ -232,11 +232,10 @@ fn concurrent_publishers_in_two_instances_share_contiguous_ids() {
     ids.sort();
     assert_eq!(ids, ["m1", "m2", "m3", "m4", "m5", "m6"]);
     for instance in [&tree.parent, &tree.child] {
-        let checked =
-            value(
-                tree.env
-                    .ok(&["msg", "integrity-check", "--instance", instance, "--json"]),
-            );
+        let checked = value(
+            tree.env
+                .ok(&["msg", "integrity-check", "--team", instance, "--json"]),
+        );
         assert_eq!(checked["records"], 6);
     }
 }
@@ -271,7 +270,7 @@ fn routing_allows_parent_edges_but_refuses_siblings_cousins_and_deleted_ancestor
         let start = tree.env.starts(member).last().unwrap().clone();
         tree.env
             .cmd(&["msg", "send", to, "Routing check", "--json"])
-            .env("BORGCHART_INSTANCE", instance)
+            .env("BORGCHART_TEAM", instance)
             .env("BORGCHART_MEMBER", member)
             .env(
                 "BORGCHART_INCARNATION",
@@ -285,7 +284,7 @@ fn routing_allows_parent_edges_but_refuses_siblings_cousins_and_deleted_ancestor
         let inbox = value(tree.env.ok(&[
             "msg",
             "list",
-            "--instance",
+            "--team",
             &tree.parent,
             "--member",
             to,
@@ -301,7 +300,7 @@ fn routing_allows_parent_edges_but_refuses_siblings_cousins_and_deleted_ancestor
         );
     }
     tree.env.ok(&["create", &format!("{}/dev", tree.parent)]);
-    let sibling = tree.env.registry()["instances"]
+    let sibling = tree.env.registry()["teams"]
         .as_object()
         .unwrap()
         .keys()
@@ -312,7 +311,7 @@ fn routing_allows_parent_edges_but_refuses_siblings_cousins_and_deleted_ancestor
     let mut leaves = Vec::new();
     for instance in [&tree.child, &sibling] {
         tree.env.ok(&["create", &format!("{instance}/leaf")]);
-        let leaf = tree.env.registry()["instances"]
+        let leaf = tree.env.registry()["teams"]
             .as_object()
             .unwrap()
             .keys()
@@ -332,26 +331,18 @@ fn routing_allows_parent_edges_but_refuses_siblings_cousins_and_deleted_ancestor
         let out = publish_to(&tree, true, &format!("{receiver}/{member}"));
         assert_eq!(out.status.code(), Some(5), "{}", both(&out));
         let inbox = value(tree.env.ok(&[
-            "msg",
-            "list",
-            "--instance",
-            receiver,
-            "--member",
-            &member,
-            "--json",
+            "msg", "list", "--team", receiver, "--member", &member, "--json",
         ]));
         assert!(inbox["records"].as_array().unwrap().is_empty());
     }
 
     // Model the interval after an ancestor's tombstone is saved and before
     // its state folder is removed: the recipient and its own parent still exist.
-    let record_path = tree
-        .env
-        .path(&format!("state/{}/instance.json", tree.parent));
+    let record_path = tree.env.path(&format!("state/{}/team.json", tree.parent));
     let original = fs::read(&record_path).unwrap();
     let mut record: Value = serde_json::from_slice(&original).unwrap();
     let copy = tree.child.rsplit('/').next().unwrap();
-    record["copies"][copy]["deleted"] = json!(true);
+    record["child_teams"][copy]["deleted"] = json!(true);
     fs::write(&record_path, record.to_string()).unwrap();
     let refused = tree.env.brg(&[
         "msg",
@@ -364,13 +355,10 @@ fn routing_allows_parent_edges_but_refuses_siblings_cousins_and_deleted_ancestor
     ]);
     fs::write(&record_path, original).unwrap();
     assert_eq!(refused.status.code(), Some(5), "{}", both(&refused));
-    let checked = value(tree.env.ok(&[
-        "msg",
-        "integrity-check",
-        "--instance",
-        &tree.parent,
-        "--json",
-    ]));
+    let checked = value(
+        tree.env
+            .ok(&["msg", "integrity-check", "--team", &tree.parent, "--json"]),
+    );
     assert_eq!(checked["records"], 2, "refused routes must not publish");
 }
 
@@ -413,7 +401,7 @@ fn a_copy_non_root_cannot_bypass_its_root_in_either_direction() {
     let inbox = value(tree.env.ok(&[
         "msg",
         "list",
-        "--instance",
+        "--team",
         &tree.child,
         "--member",
         &helper,
@@ -431,7 +419,7 @@ fn only_the_tree_root_can_publish_to_an_external_caller() {
     let outside = value(tree.env.ok(&[
         "msg",
         "list",
-        "--instance",
+        "--team",
         &tree.parent,
         "--external",
         "ops",
@@ -471,7 +459,7 @@ fn missing_start_records_cannot_hide_open_work_from_delete() {
         tree.env.ok(&["delete", instance, "--force"]);
         if child {
             tree.env.ok(&["create", &format!("{}/dev", tree.parent)]);
-            let unstarted = tree.env.registry()["instances"]
+            let unstarted = tree.env.registry()["teams"]
                 .as_object()
                 .unwrap()
                 .keys()
@@ -642,7 +630,7 @@ fn deleting_a_copy_preserves_history_without_leaving_pending_work() {
     tree.env.ok(&["delete", &tree.child, "--force"]);
     let read = value(
         tree.env
-            .ok(&["msg", "read", id, "--instance", &tree.parent, "--json"]),
+            .ok(&["msg", "read", id, "--team", &tree.parent, "--json"]),
     );
     assert_eq!(read["record"]["body"], "Copy task");
     assert_eq!(
@@ -718,13 +706,11 @@ fn copy_delete_and_publish_cannot_orphan_a_message() {
         }
         let out = finish(publishing);
         assert!(!out.status.success(), "{}", both(&out));
-        let checked = value(tree.env.ok(&[
-            "msg",
-            "integrity-check",
-            "--instance",
-            &tree.parent,
-            "--json",
-        ]));
+        let checked =
+            value(
+                tree.env
+                    .ok(&["msg", "integrity-check", "--team", &tree.parent, "--json"]),
+            );
         assert_eq!(checked["records"], 0);
     }
 }

@@ -37,7 +37,7 @@ fn progress_counts_every_recipient_and_keeps_sequence_extrema_after_acks() {
         let start = env.starts(id).last().unwrap().clone();
         let out = env
             .cmd(&["msg", "ack", record])
-            .env("BORGCHART_INSTANCE", &instance)
+            .env("BORGCHART_TEAM", &instance)
             .env("BORGCHART_MEMBER", id)
             .env(
                 "BORGCHART_INCARNATION",

@@ -50,7 +50,7 @@ nowhere="GIT_DIR=/nonexistent/caller-repo/.git
   BORGCHART_CONFIG=/nonexistent/caller-team/config.yaml
   BORGCHART_STATE_HOME=/nonexistent/caller-team/state
   BORGCHART_STATE_DIR=/nonexistent/caller-team/member-state
-  BORGCHART_INSTANCE=caller-team-2222
+  BORGCHART_TEAM=caller-team-2222
   BORGCHART_MEMBER=caller-member-2222
   BORGCHART_ROLE=caller-member
   BORGCHART_NOTES=/nonexistent/caller-team/notes

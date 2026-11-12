@@ -17,14 +17,14 @@ fn create_copy(env: &Env, parent: &str, role: &str) -> (String, std::path::PathB
         .as_array()
         .unwrap()
         .iter()
-        .flat_map(|team| team["instances"].as_array().unwrap())
+        .flat_map(|team| team["teams"].as_array().unwrap())
         .find(|instance| {
-            instance["instance"].as_str().is_some_and(|id| {
-                id.starts_with(&format!("{parent}/{role}-")) && before["instances"][id].is_null()
+            instance["team"].as_str().is_some_and(|id| {
+                id.starts_with(&format!("{parent}/{role}-")) && before["teams"][id].is_null()
             })
         })
         .expect("create must register the copy");
-    let id = copy["instance"].as_str().unwrap().to_string();
+    let id = copy["team"].as_str().unwrap().to_string();
     let folder = std::path::PathBuf::from(copy["folder"].as_str().unwrap());
     assert!(both(&output).contains(&folder.display().to_string()));
     assert_eq!(copy["running"], false, "copies must wait for preparation");
@@ -67,7 +67,7 @@ fn nested_addresses_start_and_stop_only_the_named_copy_or_member() {
     let row = |instance: &str, role: &str| {
         env.rows(instance)
             .into_iter()
-            .find(|r| r["instance"] == instance && r["role"] == role)
+            .find(|r| r["team"] == instance && r["role"] == role)
             .unwrap()
     };
     let state_of =
@@ -148,7 +148,7 @@ fn invalid_address_segments_are_refused_before_reading_the_registry() {
             for inside in [false, true] {
                 let mut cmd = env.cmd(&[command, address]);
                 if inside {
-                    cmd.env("BORGCHART_INSTANCE", "oncall-2222");
+                    cmd.env("BORGCHART_TEAM", "oncall-2222");
                 }
                 let out = cmd.output().unwrap();
                 assert!(!out.status.success());
@@ -256,14 +256,14 @@ fn status_nests_copies_once_with_full_paths_and_states() {
     for (copy, running) in [(&first, 0), (&second, 1)] {
         let index = rows
             .iter()
-            .position(|r| r["kind"] == "copy" && r["instance"] == *copy)
+            .position(|r| r["kind"] == "team" && r["team"] == *copy)
             .expect("copy must appear under its parent");
         assert_eq!(rows[index]["parent"], format!("{dept}/{dept_lead}"));
         assert_eq!(rows[index]["template"], "dev");
         assert_eq!(rows[index]["running"], running);
         let member_index = rows
             .iter()
-            .position(|r| r["instance"] == *copy && r["member"] == lead)
+            .position(|r| r["team"] == *copy && r["member"] == lead)
             .unwrap();
         assert!(member_index > index);
         assert_eq!(
@@ -275,18 +275,18 @@ fn status_nests_copies_once_with_full_paths_and_states() {
         serde_json::from_slice(&env.ok(&["status", "--json"]).stdout).unwrap();
     let panel_index = bare
         .iter()
-        .position(|r| r["kind"] == "copy" && r["instance"] == panel)
+        .position(|r| r["kind"] == "team" && r["team"] == panel)
         .expect("depth-three copy must be visible");
     assert_eq!(bare[panel_index]["parent"], format!("{first}/{lead}"));
     assert!(
         bare.iter()
             .skip(panel_index + 1)
-            .any(|r| r["instance"] == panel && r["member"] == panel_lead)
+            .any(|r| r["team"] == panel && r["member"] == panel_lead)
     );
     for copy in [&first, &second] {
         assert_eq!(
             bare.iter()
-                .filter(|r| r["instance"] == *copy && r["member"] == lead)
+                .filter(|r| r["team"] == *copy && r["member"] == lead)
                 .count(),
             1,
             "a nested member must appear once"
@@ -311,7 +311,7 @@ fn status_nests_copies_once_with_full_paths_and_states() {
     let rows = env.rows(&dept);
     assert_eq!(
         rows.iter()
-            .find(|r| r["kind"] == "copy" && r["instance"] == first)
+            .find(|r| r["kind"] == "team" && r["team"] == first)
             .unwrap()["running"],
         1
     );
@@ -415,7 +415,7 @@ fn nested_status_screens_keep_healthy_members_visible_when_a_copy_becomes_unread
             ),
             "{text}"
         );
-        let path = env.path(&format!("state/{peer}/instance.json"));
+        let path = env.path(&format!("state/{peer}/team.json"));
         let original = fs::read(&path).unwrap();
         fs::write(&path, "unreadable copy record").unwrap();
         env.wait_for("screen keeps healthy rows beside unreadable copy", || {
@@ -450,11 +450,11 @@ fn nested_status_screens_keep_healthy_members_visible_when_a_copy_becomes_unread
                 .collect();
             let selected = rows
                 .iter()
-                .position(|r| r["instance"] == copy && r["member"] == lead)
+                .position(|r| r["team"] == copy && r["member"] == lead)
                 .unwrap();
             let copy_index = rows
                 .iter()
-                .position(|r| r["kind"] == "copy" && r["instance"] == copy)
+                .position(|r| r["kind"] == "team" && r["team"] == copy)
                 .unwrap();
             let moves = copy_index + usize::from(!args.contains(&dept.as_str()));
             for _ in 0..moves {
@@ -517,7 +517,7 @@ fn team_copies_share_the_tree_store_and_keep_separate_slots_until_deleted() {
     for copy in [&first, &second] {
         env.ok(&["start", copy]);
         env.wait_for("copy lead idle", || env.state_of(copy, "lead") == "idle");
-        env.ok(&["msg", "integrity-check", "--instance", copy]);
+        env.ok(&["msg", "integrity-check", "--team", copy]);
     }
     let first_lead = env.member(&first, "lead");
     let second_lead = env.member(&second, "lead");
@@ -535,14 +535,14 @@ fn team_copies_share_the_tree_store_and_keep_separate_slots_until_deleted() {
         let starts: Vec<_> = env
             .starts(lead)
             .into_iter()
-            .filter(|start| start["env"]["BORGCHART_INSTANCE"] == *copy)
+            .filter(|start| start["env"]["BORGCHART_TEAM"] == *copy)
             .collect();
         assert_eq!(starts.len(), 1);
         assert_eq!(
             starts[0]["cwd"],
             folder.canonicalize().unwrap().display().to_string()
         );
-        assert_eq!(starts[0]["env"]["BORGCHART_INSTANCE"], *copy);
+        assert_eq!(starts[0]["env"]["BORGCHART_TEAM"], *copy);
         assert_eq!(
             starts[0]["env"]["BORGCHART_NOTES"],
             env.path(&format!("state/{copy}/notes"))
@@ -605,7 +605,7 @@ fn depth_three_copies_wait_for_preparation_and_cascade_before_parent_deletion() 
         start["cwd"],
         dev_folder.canonicalize().unwrap().display().to_string()
     );
-    assert_eq!(start["env"]["BORGCHART_INSTANCE"], dev);
+    assert_eq!(start["env"]["BORGCHART_TEAM"], dev);
     assert_eq!(
         start["env"]["BORGCHART_PARENT"],
         format!("{dept}/{dept_lead}")
@@ -643,7 +643,7 @@ fn depth_three_copies_wait_for_preparation_and_cascade_before_parent_deletion() 
             assert_eq!(state, env.path(&format!("state/{instance}")));
             assert!(notes.is_dir());
             assert_eq!(state.join("messages").is_dir(), instance == &dept);
-            env.ok(&["msg", "integrity-check", "--instance", instance]);
+            env.ok(&["msg", "integrity-check", "--team", instance]);
             notes
         })
         .collect();

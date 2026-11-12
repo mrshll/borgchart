@@ -35,7 +35,7 @@ fn prepared_copy(env: &Env, parent: &str, role: &str) -> (String, PathBuf) {
     let out = env.ok(&["create", &format!("{parent}/{role}")]);
     let id = stdout(&out).split_whitespace().next().unwrap().to_string();
     let record: serde_json::Value =
-        serde_json::from_slice(&fs::read(env.path(&format!("state/{id}/instance.json"))).unwrap())
+        serde_json::from_slice(&fs::read(env.path(&format!("state/{id}/team.json"))).unwrap())
             .unwrap();
     let folder = PathBuf::from(record["folder"].as_str().unwrap());
     (id, folder)
@@ -49,7 +49,7 @@ fn start(env: &Env, instance: &str) {
 fn own_row(env: &Env, instance: &str, role: &str) -> serde_json::Value {
     env.rows(instance)
         .into_iter()
-        .find(|row| row["instance"] == instance && row["role"] == role && row["kind"] != "copy")
+        .find(|row| row["team"] == instance && row["role"] == role && row["kind"] != "team")
         .unwrap()
 }
 
@@ -60,7 +60,7 @@ fn child_lead(env: &Env, instance: &str, args: &[&str]) -> Command {
     let vars = &starts.last().unwrap()["env"];
     let mut cmd = env.cmd(args);
     for name in [
-        "BORGCHART_INSTANCE",
+        "BORGCHART_TEAM",
         "BORGCHART_MEMBER",
         "BORGCHART_INCARNATION",
     ] {
@@ -115,9 +115,11 @@ fn stopping_department_refuses_child_create_and_start() {
     env.wait_for("cascade marks persisted", || {
         gate.with_extension("waiting").exists()
     });
-    assert!(env.rows(&dept).iter().any(|row| {
-        row["instance"] == dev && row["kind"] == "copy" && row["state"] == "stopping"
-    }));
+    assert!(
+        env.rows(&dept).iter().any(|row| {
+            row["team"] == dev && row["kind"] == "team" && row["state"] == "stopping"
+        })
+    );
     assert!(stdout(&env.ok(&["status", &dept])).contains("stopping"));
     // An already-finished descendant still inherits its enclosing stop.
     env.ok(&["stop", &panel]);
@@ -400,7 +402,7 @@ fn unreadable_copy_does_not_hide_status_or_block_stopping_readable_instances() {
         start(&env, &peer);
         let (panel, _) = prepared_copy(&env, &dev, "design");
         let path = match damage {
-            "record" | "missing-record" => env.path(&format!("state/{panel}/instance.json")),
+            "record" | "missing-record" => env.path(&format!("state/{panel}/team.json")),
             "state" => env.path(&format!("state/{panel}")),
             _ => unreachable!(),
         };
@@ -414,13 +416,13 @@ fn unreadable_copy_does_not_hide_status_or_block_stopping_readable_instances() {
             let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
             assert!(
                 rows.iter()
-                    .any(|r| r["instance"] == dept && r["kind"] == "member")
+                    .any(|r| r["team"] == dept && r["kind"] == "member")
             );
             assert!(
                 rows.iter()
-                    .any(|r| r["instance"] == dev && r["kind"] == "member")
+                    .any(|r| r["team"] == dev && r["kind"] == "member")
             );
-            let row = rows.iter().find(|r| r["instance"] == panel).unwrap();
+            let row = rows.iter().find(|r| r["team"] == panel).unwrap();
             assert_eq!(row["state"], "unreadable", "{damage}: {rows:?}");
             assert!(!row["detail"].as_str().unwrap().is_empty());
         }
@@ -453,15 +455,15 @@ fn failed_copy_delete_preserves_registered_state() {
     let dept = env.create("oncall", "work/a");
     let (dev, _) = prepared_copy(&env, &dept, "dev");
     env.ok(&["stop", &dept]);
-    let parent = env.path(&format!("state/{dept}/instance.json"));
+    let parent = env.path(&format!("state/{dept}/team.json"));
     let original = fs::read(&parent).unwrap();
     fs::write(&parent, "unreadable parent record").unwrap();
     env.fails(&["delete", &dev, "--force"]);
-    assert!(!env.registry()["instances"][&dev].is_null());
-    assert!(env.path(&format!("state/{dev}/instance.json")).is_file());
+    assert!(!env.registry()["teams"][&dev].is_null());
+    assert!(env.path(&format!("state/{dev}/team.json")).is_file());
     fs::write(parent, original).unwrap();
     env.ok(&["delete", &dev, "--force"]);
-    assert!(env.registry()["instances"][&dev].is_null());
+    assert!(env.registry()["teams"][&dev].is_null());
     assert!(!env.path(&format!("state/{dev}")).exists());
 }
 
@@ -557,7 +559,7 @@ fn member_delete_preserves_kept_copies_even_with_force() {
             }
             let refused = env.fails(&args);
             assert!(refused.contains(&dev), "{refused}");
-            assert!(env.path(&format!("state/{dev}/instance.json")).is_file());
+            assert!(env.path(&format!("state/{dev}/team.json")).is_file());
             env.ok(&["status", &dev]);
         }
     }
@@ -606,7 +608,7 @@ fn recursive_member_stop_reuses_nested_copy_cascades() {
     );
     for inst in [&dev, &panel] {
         let record: serde_json::Value = serde_json::from_slice(
-            &fs::read(env.path(&format!("state/{inst}/instance.json"))).unwrap(),
+            &fs::read(env.path(&format!("state/{inst}/team.json"))).unwrap(),
         )
         .unwrap();
         assert_ne!(record["stopping"], true);
@@ -640,7 +642,7 @@ fn recursive_stop_checks_copy_sockets_before_stopping_any_member() {
     assert_eq!(env.row(&dept, "lead")["liveness"], "alive");
     assert_eq!(own_row(&env, &dept, "helper")["liveness"], "alive");
     let record: serde_json::Value =
-        serde_json::from_slice(&fs::read(env.path(&format!("state/{dev}/instance.json"))).unwrap())
+        serde_json::from_slice(&fs::read(env.path(&format!("state/{dev}/team.json"))).unwrap())
             .unwrap();
     assert_ne!(record["stopping"], true);
     fs::write(path, original).unwrap();
@@ -667,7 +669,7 @@ fn a_failed_member_stop_does_not_fence_a_copy_the_walk_has_not_reached() {
     let target = format!("{dept}/{}", env.member(&dept, "lead"));
     env.fails(&["stop", "-r", &target]);
     let record: serde_json::Value =
-        serde_json::from_slice(&fs::read(env.path(&format!("state/{dev}/instance.json"))).unwrap())
+        serde_json::from_slice(&fs::read(env.path(&format!("state/{dev}/team.json"))).unwrap())
             .unwrap();
     assert_ne!(record["stopping"], true, "unreached copy was fenced");
     assert_eq!(env.row(&dev, "lead")["liveness"], "alive");

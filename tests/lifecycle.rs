@@ -126,16 +126,15 @@ impl Env {
     fn instance(&self) -> Option<String> {
         let reg: Value =
             serde_json::from_slice(&fs::read(self.path("state/registry.json")).ok()?).ok()?;
-        reg["instances"].as_object()?.keys().next().cloned()
+        reg["teams"].as_object()?.keys().next().cloned()
     }
 
     /// The member of `role` in the instance, once created.
     fn member_id(&self, role: &str) -> Option<String> {
         let inst = self.instance()?;
-        let rec: Value = serde_json::from_slice(
-            &fs::read(self.path(&format!("state/{inst}/instance.json"))).ok()?,
-        )
-        .ok()?;
+        let rec: Value =
+            serde_json::from_slice(&fs::read(self.path(&format!("state/{inst}/team.json"))).ok()?)
+                .ok()?;
         rec["members"]
             .as_object()?
             .iter()
@@ -501,7 +500,7 @@ fn status_prints_the_same_tree_with_live_states() {
     assert_eq!(rows[0]["kind"], "member");
     assert_eq!(rows[0]["member"], env.m("lead"));
     assert_eq!(rows[0]["role"], "lead");
-    assert_eq!(rows[0]["instance"], env.inst());
+    assert_eq!(rows[0]["team"], env.inst());
     assert_eq!(rows[0]["template"], "oncall");
     assert_eq!(rows[1]["kind"], "role");
     assert_eq!(rows[1]["parent"], env.m("lead"));

@@ -346,7 +346,7 @@ fn create_twice_makes_two_instances_with_suffixed_members() {
     // The member's own ID reaches it, with its instance and role.
     let start = &env.starts(&lead_a)[0];
     assert_eq!(start["env"]["BORGCHART_MEMBER"], lead_a);
-    assert_eq!(start["env"]["BORGCHART_INSTANCE"], a);
+    assert_eq!(start["env"]["BORGCHART_TEAM"], a);
     assert_eq!(start["env"]["BORGCHART_ROLE"], "lead");
     assert!(
         start["env"]["BORGCHART_NOTES"]
@@ -470,7 +470,7 @@ fn teams_are_found_by_name_or_by_path() {
     let teams: Vec<&Value> = ls.as_array().unwrap().iter().collect();
     assert_eq!(teams.len(), 2, "{ls}");
     for t in &teams {
-        assert_eq!(t["instances"].as_array().unwrap().len(), 1, "{ls}");
+        assert_eq!(t["teams"].as_array().unwrap().len(), 1, "{ls}");
     }
     env.ok(&["stop", &a]);
     env.ok(&["stop", &b]);
@@ -483,7 +483,7 @@ fn create_needs_an_existing_folder() {
     assert!(err.contains("folder"), "{err}");
     let err = env.fails(&["create", "oncall", "work/missing"]);
     assert!(err.contains("does not exist"), "{err}");
-    assert!(!env.path("state/registry.json").exists() || env.registry()["instances"] == json!({}));
+    assert!(!env.path("state/registry.json").exists() || env.registry()["teams"] == json!({}));
 }
 
 // --- 3, 4, 10. start, stop and create of a member ---
@@ -534,15 +534,7 @@ fn full_start_leaves_a_stopped_member_with_unacked_messages_stopped() {
     env.wait_for("lead idle", || env.state_of(&inst, "lead") == "idle");
     assert_eq!(env.state_of(&inst, "scout"), "stopped");
     assert_eq!(env.starts(&scout).len(), 1);
-    let inbox = env.ok(&[
-        "msg",
-        "list",
-        "--member",
-        &scout,
-        "--instance",
-        &inst,
-        "--json",
-    ]);
+    let inbox = env.ok(&["msg", "list", "--member", &scout, "--team", &inst, "--json"]);
     let inbox: Value = serde_json::from_slice(&inbox.stdout).unwrap();
     assert_eq!(inbox["records"][0]["id"], "m1");
     env.ok(&["stop", &inst]);
@@ -605,7 +597,7 @@ fn delete_needs_a_stop_and_force_for_unacked_messages_and_keeps_the_folder() {
     assert!(env.path(&format!("state/{inst}")).is_dir());
     env.ok(&["delete", &inst, "--force"]);
     assert!(!env.path(&format!("state/{inst}")).exists());
-    assert!(env.registry()["instances"].get(&inst).is_none());
+    assert!(env.registry()["teams"].get(&inst).is_none());
     assert_eq!(
         fs::read_to_string(env.path("work/a/keep.txt")).unwrap(),
         "mine\n"
@@ -630,18 +622,18 @@ fn addresses_name_the_instance_in_full_outside_a_member() {
         err.contains("is a template") && err.contains(&inst),
         "{err}"
     );
-    // Inside a member, the instance comes from BORGCHART_INSTANCE.
+    // Inside a member, the instance comes from BORGCHART_TEAM.
     let out = env
         .cmd(&["logs", &lead])
-        .env("BORGCHART_INSTANCE", &inst)
+        .env("BORGCHART_TEAM", &inst)
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", both(&out));
-    // Bus commands take `--instance`, required outside a member.
+    // Bus commands take `--team`, required outside a member.
     let err = env.fails(&["msg", "list", "--external", "ops"]);
-    assert!(err.contains("--instance") && err.contains(&inst), "{err}");
-    env.ok(&["msg", "list", "--external", "ops", "--instance", &inst]);
-    env.ok(&["msg", "integrity-check", "--instance", &inst]);
+    assert!(err.contains("--team") && err.contains(&inst), "{err}");
+    env.ok(&["msg", "list", "--external", "ops", "--team", &inst]);
+    env.ok(&["msg", "integrity-check", "--team", &inst]);
     // An instance isn't a recipient; nor is a role.
     for to in [inst.as_str(), "lead"] {
         let out = env.publish(&inst, &json!({"to": to, "body": "hi"}));
@@ -912,7 +904,7 @@ fn plain_plugin_values_come_from_the_team() {
     fs::create_dir_all(env.path("templates/oncall/plugins/pager")).unwrap();
     script(
         &env.path("templates/oncall/plugins/pager/pager"),
-        "#!/bin/sh\necho \"room=$PAGER_ROOM token_len=${#PAGER_TOKEN} instance=$BORGCHART_INSTANCE\" >> \"$BORGCHART_STATE_DIR/calls.log\"\n",
+        "#!/bin/sh\necho \"room=$PAGER_ROOM token_len=${#PAGER_TOKEN} instance=$BORGCHART_TEAM\" >> \"$BORGCHART_STATE_DIR/calls.log\"\n",
     );
     // The secret must come from the environment.
     let err = env.fails(&[

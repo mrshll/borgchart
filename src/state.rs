@@ -98,9 +98,9 @@ impl StateDir {
         format!("brg-{}", self.id)
     }
 
-    /// The instance's record (`instance.json`): see `registry`.
+    /// The instance's record (`team.json`): see `registry`.
     pub fn instance_file(&self) -> PathBuf {
-        self.root.join("instance.json")
+        self.root.join("team.json")
     }
     /// The message store, shared by every instance in this tree.
     pub fn messages_dir(&self) -> PathBuf {

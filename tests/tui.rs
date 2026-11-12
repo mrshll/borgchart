@@ -131,14 +131,14 @@ fn status_i_attaches_detaches_and_quits() {
 
     let registry: serde_json::Value =
         serde_json::from_slice(&fs::read(root.join("state/registry.json")).unwrap()).unwrap();
-    let instance = registry["instances"]
+    let instance = registry["teams"]
         .as_object()
         .unwrap()
         .keys()
         .next()
         .unwrap();
     let record: serde_json::Value = serde_json::from_slice(
-        &fs::read(root.join(format!("state/{instance}/instance.json"))).unwrap(),
+        &fs::read(root.join(format!("state/{instance}/team.json"))).unwrap(),
     )
     .unwrap();
     let alpha = record["members"]
@@ -331,11 +331,7 @@ fn bare_status_i_shows_every_instance_and_attaches_in_the_selected_one() {
         fs::read(root.join("state/registry.json"))
             .ok()
             .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-            .and_then(|r| {
-                r["instances"]
-                    .as_object()
-                    .map(|m| m.keys().cloned().collect())
-            })
+            .and_then(|r| r["teams"].as_object().map(|m| m.keys().cloned().collect()))
             .unwrap_or_default()
     };
     wait("two instances", || instances().len() == 2, dump);

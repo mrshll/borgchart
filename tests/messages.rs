@@ -50,7 +50,7 @@ fn send(env: &Env, instance: &str, to: &str, body: &str) -> Value {
 fn member(env: &Env, instance: &str, id: &str, args: &[&str]) -> Command {
     let start = env.starts(id).last().unwrap().clone();
     let mut cmd = env.cmd(args);
-    cmd.env("BORGCHART_INSTANCE", instance)
+    cmd.env("BORGCHART_TEAM", instance)
         .env("BORGCHART_MEMBER", id)
         .env(
             "BORGCHART_INCARNATION",
@@ -95,14 +95,7 @@ fn plain_message_round_trip_and_missing_reference() {
     assert_eq!(out["id"], "m1");
     let inbox: Value = serde_json::from_slice(
         &env.ok(&[
-            "msg",
-            "list",
-            "--instance",
-            &instance,
-            "--member",
-            &lead,
-            "--full",
-            "--json",
+            "msg", "list", "--team", &instance, "--member", &lead, "--full", "--json",
         ])
         .stdout,
     )
@@ -111,7 +104,7 @@ fn plain_message_round_trip_and_missing_reference() {
     assert_eq!(inbox["records"][0]["body"], "hello");
     assert!(inbox.get("next").is_none());
     let read: Value = serde_json::from_slice(
-        &env.ok(&["msg", "read", "m1", "--instance", &instance, "--json"])
+        &env.ok(&["msg", "read", "m1", "--team", &instance, "--json"])
             .stdout,
     )
     .unwrap();
@@ -128,13 +121,7 @@ fn plain_message_round_trip_and_missing_reference() {
     assert!(ack.status.success(), "{}", both(&ack));
     let inbox: Value = serde_json::from_slice(
         &env.ok(&[
-            "msg",
-            "list",
-            "--instance",
-            &instance,
-            "--member",
-            &lead,
-            "--json",
+            "msg", "list", "--team", &instance, "--member", &lead, "--json",
         ])
         .stdout,
     )
@@ -167,13 +154,7 @@ fn identical_publishes_are_two_messages_and_inbox_has_no_pages() {
     }
     let inbox: Value = serde_json::from_slice(
         &env.ok(&[
-            "msg",
-            "list",
-            "--member",
-            &lead,
-            "--instance",
-            &instance,
-            "--json",
+            "msg", "list", "--member", &lead, "--team", &instance, "--json",
         ])
         .stdout,
     )
@@ -267,7 +248,7 @@ fn ack_refresh_catches_up_the_locked_tail_before_validating_acks() {
     let inbox: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(inbox["records"].as_array().unwrap().len(), 1);
     assert_eq!(inbox["records"][0]["id"], "m3");
-    env.ok(&["msg", "integrity-check", "--instance", &instance, "--json"]);
+    env.ok(&["msg", "integrity-check", "--team", &instance, "--json"]);
     env.ok(&["stop", &instance]);
 }
 
@@ -282,14 +263,7 @@ fn existing_messages_wait_for_the_minimum_and_match_inbox_output() {
     assert!(out.status.success(), "{}", both(&out));
     assert!(start.elapsed() >= Duration::from_millis(700));
     let expected = env.ok(&[
-        "msg",
-        "list",
-        "--instance",
-        &instance,
-        "--member",
-        &lead,
-        "--json",
-        "--full",
+        "msg", "list", "--team", &instance, "--member", &lead, "--json", "--full",
     ]);
     assert_eq!(out.stdout, expected.stdout);
     // Acknowledging everything during the wait must not cause an empty wake
@@ -336,8 +310,8 @@ fn wait_errors_and_usage_errors_obey_the_minimum() {
         vec!["msg", "wait", "--timeout", "60"],
         vec!["msg", "wait", "--timeout", "bad"],
         vec!["msg", "wait", "--bogus"],
-        vec!["msg", "--instance", "missing", "wait", "--bogus"],
-        vec!["msg", "--instance=missing", "wait", "--bogus"],
+        vec!["msg", "--team", "missing", "wait", "--bogus"],
+        vec!["msg", "--team=missing", "wait", "--bogus"],
         vec!["inbox", "wait"],
     ] {
         let start = Instant::now();
@@ -362,8 +336,8 @@ fn wait_errors_and_usage_errors_obey_the_minimum() {
 fn send_refuses_instance_instead_of_ignoring_it() {
     let env = Env::new();
     for args in [
-        vec!["msg", "--instance", "other", "send", "x/y", "hello"],
-        vec!["msg", "send", "--instance", "other", "x/y", "hello"],
+        vec!["msg", "--team", "other", "send", "x/y", "hello"],
+        vec!["msg", "send", "--team", "other", "x/y", "hello"],
     ] {
         let out = env.cmd(&args).output().unwrap();
         assert_eq!(out.status.code(), Some(2), "{args:?}: {}", both(&out));

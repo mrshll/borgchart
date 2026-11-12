@@ -62,7 +62,7 @@ fn started_copy(env: &Env, root: &str) -> (String, std::path::PathBuf) {
 fn registered(env: &Env) -> Vec<String> {
     let registry: Value =
         serde_json::from_slice(&fs::read(env.path("state/registry.json")).unwrap()).unwrap();
-    registry["instances"]
+    registry["teams"]
         .as_object()
         .unwrap()
         .keys()
@@ -185,7 +185,7 @@ fn destroy_refuses_members_copies_and_trees_it_cannot_confirm_stopped() {
     assert!(refused.contains(&copy_lead), "{refused}");
 
     assert_eq!(registered(&env), before);
-    assert!(env.path(&format!("state/{root}/instance.json")).is_file());
+    assert!(env.path(&format!("state/{root}/team.json")).is_file());
     fs::write(incarnation, original).unwrap();
     env.ok(&["stop", &root]);
     env.tmux(&["kill-session", "-t", "=sentinel"]);

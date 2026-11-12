@@ -41,16 +41,13 @@ fn member_command(env: &Env, instance: &str, member: &str, args: &[&str]) -> std
     let start = env.starts(member).last().unwrap().clone();
     let mut command = env.cmd(args);
     for name in [
-        "BORGCHART_INSTANCE",
+        "BORGCHART_TEAM",
         "BORGCHART_MEMBER",
         "BORGCHART_INCARNATION",
     ] {
         command.env(name, start["env"][name].as_str().unwrap());
     }
-    command
-        .env("BORGCHART_INSTANCE", instance)
-        .output()
-        .unwrap()
+    command.env("BORGCHART_TEAM", instance).output().unwrap()
 }
 
 #[test]
@@ -155,7 +152,7 @@ fn one_store_keeps_ids_references_and_acks_across_a_restart() {
     let out = member_command(&env, &instance, &lead, &["msg", "ack", "m1", "--json"]);
     assert!(out.status.success(), "{}", both(&out));
     let original: Value = serde_json::from_slice(
-        &env.ok(&["msg", "read", "m1", "--instance", &instance, "--json"])
+        &env.ok(&["msg", "read", "m1", "--team", &instance, "--json"])
             .stdout,
     )
     .unwrap();
@@ -216,7 +213,7 @@ fn changed_roles_keep_the_store_and_replies_to_removed_members() {
     let record: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(record["id"], "m3");
     let old: Value = serde_json::from_slice(
-        &env.ok(&["msg", "read", "m1", "--instance", &instance, "--json"])
+        &env.ok(&["msg", "read", "m1", "--team", &instance, "--json"])
             .stdout,
     )
     .unwrap();
@@ -301,7 +298,7 @@ fn damaged_store(case: &str) {
     } else {
         assert!(err.contains("damaged"), "{err}");
     }
-    let check = env.brg(&["msg", "integrity-check", "--instance", &instance, "--json"]);
+    let check = env.brg(&["msg", "integrity-check", "--team", &instance, "--json"]);
     assert!(!check.status.success(), "{}", both(&check));
     let out = env.publish(&instance, &json!({"to": lead, "body": "refuse me"}));
     assert!(!out.status.success(), "{}", both(&out));
