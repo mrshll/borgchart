@@ -12,7 +12,7 @@ Codex `vendor` members have full host access and no tool approvals; Claude `vend
 
 ## Storage
 
-One store belongs to a whole team tree: its root team and every nested child team share `<state home>/<root>/messages/`. Child teams have no store of their own. Message numbers continue across stops, starts, child team deletion and template-file changes:
+One store belongs to a whole team tree: its root team and every child team share `<state home>/<root>/messages/`. Child teams have no store of their own. Message numbers continue across stops, starts, child team deletion and template-file changes:
 
 | Path | Contents |
 | --- | --- |
@@ -38,14 +38,14 @@ Directories must be real, owned by you and private (0700; files 0600). Immutable
 
 ## Callers and recipients
 
-Inside a member use `"$BORGCHART_BIN"`, the brg that started it. Its team, member and start ID come from `BORGCHART_TEAM`, `BORGCHART_MEMBER` and `BORGCHART_INCARNATION`. Outside a member, `msg list`, `msg read`, `msg ack`, `msg wait` and `msg integrity-check` require `--team ID`; inside one that option may only repeat its own team. `msg send` takes the team in its target address. Without team context, outside callers default to `external:owner`; `--external NAME` overrides it. Team-only plugin processes must still name `--external NAME` to send, ack or wait.
+Inside a member use `"$BORGCHART_BIN"`, the brg that started it. Its team, member and start ID come from `BORGCHART_TEAM`, `BORGCHART_MEMBER` and `BORGCHART_INCARNATION`. Outside a member, `msg list`, `msg read`, `msg ack`, `msg wait` and `msg integrity-check` require `--team ID`; inside one that option may only repeat its own team. `msg send` takes the team in its target address. Without team context, outside callers default to `external:owner`; `--external NAME` overrides it. A plugin process with only `BORGCHART_TEAM` set must still name `--external NAME` to send, ack or wait.
 
 Team context means any nonempty `BORGCHART_TEAM`, `BORGCHART_MEMBER`, `BORGCHART_INCARNATION`, `BORGCHART_ROLE`, `BORGCHART_NOTES` or `BORGCHART_PARENT`. Member variables without the complete team, member and start identity are refused as incomplete member context, including when only role, notes or parent remains.
 
 - Members send to their parent or children, by full member ID. Only root members of the tree's root team may also send to `external:NAME`.
 - A child team's root members and their parent in the enclosing team can also send across their parent edge. Use the full `team/member` address; a child team's roots receive their parent's address in `BORGCHART_PARENT`.
 - Outside callers may use `--external NAME` and may send to any kept member in the tree after its first start. Their replies go to `external:NAME` (`external:owner` by default without team context). That flag is refused inside a member.
-- Any caller can read a named member's inbox and individual messages, and check the store. A team-only plugin without an outside identity cannot send or ack.
+- Any caller can read a named member's inbox and individual messages, and check the store. A plugin process with no member identity cannot send or ack without `--external NAME`.
 - A member is addressable after its first start, including while stopped. A role name or another team's member outside a parent edge is refused; there is no role queue.
 
 ## Send and message
@@ -80,7 +80,7 @@ MESSAGE
 
 Send JSON keeps `ok`, `code`, `message` and adds `outcome`, committed `id`, `delivery` (`typed`, `stored`, `uncertain` or `recorded-not-typed`) and a reason. See [send outcomes](cli.md#brg-msg-send). The other bus commands retain their own outcome codes below.
 
-**Inbox:** `brg msg list [--member ID | --external NAME] [--full] [--json]` returns every ordinary unacked message, oldest first. A member defaults to itself; without team context, a caller defaults to `external:owner`. Team-only plugins must name an inbox. `--member` reads another member's inbox anywhere in the tree. A bare ID resolves in the caller's team, or the outside caller's `--team`; a full address selects any member in the tree. Headers omit body and add `body_bytes` and `acked`; `--full` includes body instead of body_bytes. Reading never acknowledges.
+**Inbox:** `brg msg list [--member ID | --external NAME] [--full] [--json]` returns every ordinary unacked message, oldest first. A member defaults to itself; without team context, a caller defaults to `external:owner`. A plugin process with only `BORGCHART_TEAM` set must name an inbox. `--member` reads another member's inbox anywhere in the tree. A bare ID resolves in the caller's team, or the outside caller's `--team`; a full address selects any member in the tree. Headers omit body and add `body_bytes` and `acked`; `--full` includes body instead of body_bytes. Reading never acknowledges.
 
 ```sh
 brg msg list --team dev-team-k3f9 --member lead-q8m3 --json

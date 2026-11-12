@@ -427,7 +427,7 @@ impl RoleSource {
     }
 }
 
-/// A role whose child teams are nested teams, prepared before their first start.
+/// A role filled by child teams, prepared before their first start.
 #[derive(Debug, Clone, Serialize)]
 pub struct TeamRole {
     pub name: String,

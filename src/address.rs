@@ -1,4 +1,4 @@
-//! Addresses: `[team/]member` and `[team/]<role>`, resolved to an
+//! Addresses: `[team/]member` and `[team/]<role>`, resolved to a
 //! team plus a member or a role.
 //!
 //! Members always carry a suffix (`implementer-x7k2`), so a bare name is a

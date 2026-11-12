@@ -166,7 +166,7 @@ fn clock(epoch: u64) -> String {
     format!("{:02}:{:02}:{:02}", day / 3600, day % 3600 / 60, day % 60)
 }
 
-/// Every team's header and tree, read again now, and all their rows; an
+/// Every team's header and tree, read again now, and all their rows; a
 /// team whose status fails shows its error in its place.
 fn every_text() -> Result<(String, Vec<StatusRow>), String> {
     let all = address::every()?;

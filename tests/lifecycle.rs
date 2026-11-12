@@ -49,7 +49,7 @@ const LEAD: &str = "---\nmodels:\n  claude: opus high\n---\nYou are the lead.\n"
 const HELPER: &str = "---\nmodels:\n  codex: example-model\n---\nYou are the helper.\n";
 
 impl Env {
-    /// A two-member team in a folder called `oncall`, its team working
+    /// A two-member template in a folder called `oncall`, its team working
     /// in `work`; with `bus`, the team has `bus: {}`.
     fn new(bus: bool) -> Self {
         let dir = tempfile::tempdir().unwrap();
@@ -175,7 +175,7 @@ impl Env {
             .join(format!("members/{}/incarnation.json", self.m(role)))
     }
 
-    /// The tests act on the team's one team, and name members by role
+    /// The tests act on the fixture's one team, and name members by role
     /// (each role has one member): `start` creates the team the first
     /// time and starts it after, `start <role>` creates or starts its
     /// member, `stop [<role>]`, `status`, `logs`, `attach` and `msg send` go to
@@ -343,7 +343,7 @@ impl Env {
         out
     }
 
-    /// A child team of the built brg with extra bytes, so it is another build.
+    /// A copy of the built brg with extra bytes, so it is another build.
     fn other_brg(&self, name: &str) -> PathBuf {
         let path = self.path(name);
         let mut bytes = fs::read(env!("CARGO_BIN_EXE_brg")).unwrap();

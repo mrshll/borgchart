@@ -34,7 +34,7 @@ fn dev_team() -> PathBuf {
 }
 
 /// The ```yaml blocks of CONTRIBUTING.md: the configuration a
-/// reader child teams.
+/// reader copies.
 fn readme_configs() -> Vec<String> {
     let text = fs::read_to_string(catalog().join("../CONTRIBUTING.md")).unwrap();
     let mut blocks = Vec::new();
@@ -48,7 +48,7 @@ fn readme_configs() -> Vec<String> {
     blocks
 }
 
-/// The guide's commands that start with `prefix`, as a reader child teams them
+/// The guide's commands that start with `prefix`, as a reader copies them
 /// (each inside backticks).
 fn readme_commands(prefix: &str) -> Vec<String> {
     let text = fs::read_to_string(catalog().join("../CONTRIBUTING.md")).unwrap();
@@ -60,7 +60,7 @@ fn readme_commands(prefix: &str) -> Vec<String> {
         .collect()
 }
 
-/// As CONTRIBUTING.md sets it up: a pinned child team of the complete teams catalog
+/// As CONTRIBUTING.md sets it up: a pinned copy of the complete template catalog
 /// in `dir/pinned/templates`, where brg resolves names; and its configuration
 /// in `dir/config.yaml`. The team's folder is `dir/work`, a checkout
 /// with one baseline commit pushed to a local remote.
@@ -146,7 +146,7 @@ fn validate(dir: &Path, config: &Path, team: &str) -> Output {
         .unwrap()
 }
 
-/// What a reader child teams from the guide works as written: the teams
+/// What a reader copies from the guide works as written: the teams
 /// validate by its catalog paths, with no errors and no warnings.
 #[test]
 fn the_readme_configuration_validates_cleanly() {
@@ -522,7 +522,7 @@ mod round {
             serde_json::from_slice(&fs::read(self.path(rel)).ok()?).ok()
         }
 
-        /// The team of `team`, once created.
+        /// The team from template `team`, once created.
         fn instance_of(&self, team: &str) -> Option<String> {
             let reg = self.read("state/registry.json")?;
             reg["teams"]
@@ -532,9 +532,10 @@ mod round {
                 .map(|(id, _)| id.clone())
         }
 
-        /// The dev team's team.
+        /// The team made from `dev-team`.
         fn inst(&self) -> String {
-            self.instance_of("dev-team").expect("the dev team's team")
+            self.instance_of("dev-team")
+                .expect("the team made from `dev-team`")
         }
 
         /// The member of `role` in `team`.
@@ -651,8 +652,8 @@ mod round {
             self.run_in(role, name, &script);
         }
 
-        /// Create the dev team's team in `work/`, by name, from the
-        /// pinned child team.
+        /// Create the team made from `dev-team` in `work/`, by name, from the
+        /// pinned copy.
         fn create(&self) -> String {
             let folder = self.path("work").display().to_string();
             let out = self.ok(&["create", "dev-team", &folder]);
@@ -687,7 +688,7 @@ mod round {
         }
     }
 
-    /// Extract executable examples, not child teams of their argv in the test.
+    /// Extract executable examples, not copies of their argv in the test.
     fn documented(text: &str, prefix: &str) -> String {
         for block in text.split("```sh\n").skip(1) {
             let script = block.split("```").next().unwrap().trim();

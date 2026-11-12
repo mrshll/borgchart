@@ -50,7 +50,7 @@ In a linked worktree, use `git config --worktree core.hooksPath .githooks` (it n
 
 Neither hook runs tests: CI runs the fast tier, the full test suites and `py` on every pull request.
 
-The hooks check the working tree, not only what is staged. Each check uses `tools/cargo-slot` automatically: at most two commands across all teams, an 8 GiB memory cap, no swap and six cargo jobs by default. Direct cargo commands use `tools/cargo-slot cargo …`; do not wrap `.githooks/checks` again. The wrapper requires Linux with `flock` and a working systemd user manager, and fails closed if the cap cannot run. Slots live under `$HOME/.local/state/borgchart/cargo-slots`; `HOME` must be absolute and nonempty. Both `XDG_RUNTIME_DIR` and `XDG_STATE_HOME` are ignored, so callers with the same home share the same two slots. Drain builds before migrating older wrappers, including in-tree child teams on branches not yet updated from main. Hosted CI explicitly uses `CHECKS_WRAP=env` to preserve its existing runner limits; members never set this override.
+The hooks check the working tree, not only what is staged. Each check uses `tools/cargo-slot` automatically: at most two commands across all teams, an 8 GiB memory cap, no swap and six cargo jobs by default. Direct cargo commands use `tools/cargo-slot cargo …`; do not wrap `.githooks/checks` again. The wrapper requires Linux with `flock` and a working systemd user manager, and fails closed if the cap cannot run. Slots live under `$HOME/.local/state/borgchart/cargo-slots`; `HOME` must be absolute and nonempty. Both `XDG_RUNTIME_DIR` and `XDG_STATE_HOME` are ignored, so callers with the same home share the same two slots. Drain builds before migrating older wrappers, including older `tools/cargo-slot` versions checked in on branches not yet updated from main. Hosted CI explicitly uses `CHECKS_WRAP=env` to preserve its existing runner limits; members never set this override.
 
 ## Running the engineering teams
 
@@ -79,7 +79,7 @@ templates: [./templates]
 
 set `BORGCHART_CONFIG` to that file's absolute path, put `brg-seat` on `PATH`, and validate: `brg validate engineering`, `brg validate dev-team`, `brg validate dev-design-team`. If another configured directory provides one of these names, validation refuses the ambiguity.
 
-Then create a team from a checkout of the repository: `cd <checkout>; brg create engineering`, or `brg create dev-team`. Its lead works in the checkout, and brg adds a git worktree for each dev team and implementer as it creates them.
+Then create a team from a checkout of the repository: `cd <checkout>; brg create engineering`, or `brg create dev-team`. Its lead works in the checkout, and brg adds a git worktree for each child team and implementer as it creates them.
 
 ### Installing from a checkout
 
@@ -91,7 +91,7 @@ make install
 
 This vocabulary cutover does not migrate state. Destroy existing trees with their original brg before installing this version, then create new teams from templates.
 
-This builds the workspace release binaries with `--locked`, copies `brg` and `brg-seat` into `$HOME/.local/share/brg/bin/`, and records `git rev-parse HEAD` in `$HOME/.local/share/brg/REVISION`. Each binary is copied to a temporary name beside its destination and renamed into place, so readers see a complete file and running processes keep their old inode. Linux builds use `tools/cargo-slot` when executable; other systems use cargo directly.
+This builds the workspace release binaries with `--locked`, installs `brg` and `brg-seat` into `$HOME/.local/share/brg/bin/`, and records `git rev-parse HEAD` in `$HOME/.local/share/brg/REVISION`. Each binary is copied to a temporary name beside its destination and renamed into place, so readers see a complete file and running processes keep their old inode. Linux builds use `tools/cargo-slot` when executable; other systems use cargo directly.
 
 `PREFIX` changes the parent of `brg/` (default `$HOME/.local/share`); `BINDIR` changes where the `brg` and `brg-seat` symlinks go (default `$HOME/.local/bin`). For example, `make install PREFIX="$HOME/apps" BINDIR="$HOME/bin"`. Use absolute paths. The links point directly at `$PREFIX/brg/bin/<name>` and are replaced with `ln -sfn`. Keep `BINDIR` on `PATH`. The old `borgchart` link is removed only if it points to `$PREFIX/brg/bin/borgchart`; unrelated links and files are left alone.
 

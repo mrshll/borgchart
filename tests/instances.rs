@@ -616,7 +616,7 @@ fn addresses_name_the_instance_in_full_outside_a_member() {
     // Outside a member, a member needs its team, even with one running.
     let err = env.fails(&["logs", &lead]);
     assert!(err.contains(&format!("<team>/{lead}")), "{err}");
-    // A team's name where a team is expected.
+    // A template's name where a team ID is expected.
     let err = env.fails(&["status", "oncall"]);
     assert!(
         err.contains("is a template") && err.contains(&inst),

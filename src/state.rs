@@ -37,7 +37,7 @@ pub fn tmux_socket() -> String {
     std::env::var(ENV_TMUX_SOCKET).unwrap_or_else(|_| DEFAULT_SOCKET.to_string())
 }
 
-/// Whether `path` is somewhere cleaned by age (`/tmp`, `/var/tmp`), where an
+/// Whether `path` is somewhere cleaned by age (`/tmp`, `/var/tmp`), where a
 /// team's messages could vanish. Test builds may use it.
 pub fn age_cleaned(path: &Path) -> bool {
     let real = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());

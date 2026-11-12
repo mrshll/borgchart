@@ -14,8 +14,8 @@ use std::fs;
 use instance_env::*;
 use serde_json::{Value, json};
 
-/// The test team with `helper` and `dev`, a team role whose child teams run the
-/// `dev` team, each in its own worktree.
+/// The test team with `helper` and `dev`, a team role whose child teams use the
+/// `dev` template, each in its own worktree.
 const TREE: &str = r#"
 bus: {}
 roles:
@@ -49,7 +49,7 @@ fn tree_env() -> Env {
     env
 }
 
-/// A started dev team of `root`: its ID and folder.
+/// A started dev child team of `root`: its ID and folder.
 fn started_copy(env: &Env, root: &str) -> (String, std::path::PathBuf) {
     let out = env.ok(&["create", &format!("{root}/dev")]);
     let copy = stdout(&out).split_whitespace().next().unwrap().to_string();

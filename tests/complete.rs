@@ -67,7 +67,7 @@ fn snapshot(root: &Path) -> BTreeMap<PathBuf, (u64, SystemTime)> {
     out
 }
 
-/// The test team plus `dev`, a team role whose child teams run the `dev` team.
+/// The test team plus `dev`, a team role whose child teams use the `dev` template.
 const DEPARTMENT: &str = r#"
 bus: {}
 roles:

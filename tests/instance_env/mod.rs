@@ -62,7 +62,7 @@ impl Env {
         env
     }
 
-    /// A child team of the test team at `rel`.
+    /// A copy of the test template at `rel`.
     pub fn team(&self, rel: &str) {
         self.write(&format!("{rel}/template.yaml"), TEAM);
         for (role, model) in [

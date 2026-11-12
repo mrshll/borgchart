@@ -123,7 +123,7 @@ roles:
             .unwrap_or_else(|| panic!("no member of `{role}` yet"))
     }
 
-    /// The tests act on the team's one team, working in `work`, and
+    /// The tests act on the fixture's one team, working in `work`, and
     /// name members by role: `start` creates the team the first time,
     /// `start <role>` creates or starts its member, and `stop`, `status`,
     /// `logs` and `msg send` (with `--from`) go to the team.

@@ -59,7 +59,7 @@ pub fn check_not_stopping(inst: &Instance) -> Result<(), String> {
 }
 
 /// Make a child team's registration, and its worktree for a `worktree: true` role
-/// (detached at the team's working folder's `HEAD`, or on a new `branch`), without
+/// (detached at the working folder's `HEAD`, or on a new `branch`), without
 /// starting any member.
 pub fn create(
     mut inst: Instance,

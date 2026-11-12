@@ -1,6 +1,6 @@
 //! Who is calling: a member (from its launch environment), an outside caller
-//! using `owner` by default or naming itself with `--external`, or an
-//! team-only plugin with no outside identity.
+//! using `owner` by default or naming itself with `--external`, or a plugin
+//! process with only `BORGCHART_TEAM` set and no outside identity.
 //!
 //! This prevents mistakes, not spoofing: anything running as the same user
 //! can set these variables.
@@ -33,7 +33,7 @@ pub enum Caller {
     External {
         name: String,
     },
-    /// Team-only context and no `--external`: may read, not publish.
+    /// Only `BORGCHART_TEAM` set and no `--external`: may read, not publish.
     Operator,
 }
 
@@ -60,7 +60,7 @@ pub fn instance_from(
 ) -> Result<String, Failure> {
     // A partial member context is refused before any store is chosen, for
     // reads as well as writes: it would otherwise act as an operator. An
-    // team alone (a plugin process) is not a member context.
+    // Only `BORGCHART_TEAM` set (a plugin process) is not a member context.
     let set = |k: &str| get(k).is_some_and(|v| !v.is_empty());
     let parts = [ENV_MEMBER, ENV_INCARNATION];
     if MEMBER_ONLY_ENV.iter().any(|k| set(k))

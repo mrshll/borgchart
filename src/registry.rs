@@ -226,7 +226,7 @@ impl InstanceRecord {
             .map(|m| m.role.as_str())
     }
 
-    /// Issue a team-role child team, preserving its suffix after deletion:
+    /// Issue a child team of a team role, preserving its suffix after deletion:
     /// `<role>-<name>` when named, else a random suffix no member or child team has.
     pub fn issue_copy(
         &mut self,
@@ -416,7 +416,7 @@ pub fn read_instance(state: &StateDir) -> Result<InstanceRecord, String> {
     read_json(&state.instance_file())?.ok_or_else(|| format!("team `{}` has no record", state.id))
 }
 
-/// Register a new team of `team` (its name and folder) working in
+/// Register a new team from template `team` (its name and folder), working in
 /// `folder`: a fresh suffix, the registry entry, the state folder and its
 /// record. Called with the lock held.
 pub fn create(

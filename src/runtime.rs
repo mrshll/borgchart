@@ -3480,7 +3480,7 @@ pub struct StatusRow {
 pub const NOT_STARTED: &str = "not started";
 /// A member's state when it ran and has ended.
 pub const STOPPED: &str = "stopped";
-/// A role that allows child teams but has no kept member.
+/// A role that allows several members but has none kept.
 pub const ON_DEMAND: &str = "on demand (none created)";
 /// A `start: false` role with no member.
 pub const NOT_STARTING: &str = "not created (start: false)";
@@ -4428,7 +4428,7 @@ pub fn send(
     let caller = context::caller(external).map_err(send_failure)?;
     if matches!(caller, context::Caller::Operator) {
         return Err(SendError::Usage(
-            "team-only plugin senders must pass --external NAME".into(),
+            "a plugin process with no member identity must pass --external NAME to send".into(),
         ));
     }
     let own = context::instance(None)
@@ -5071,7 +5071,7 @@ mod tests {
                 "not created (start: true)",
                 Some("lead"),
             ),
-            // So does a `start: true` role that allows child teams and has none.
+            // So does a `start: true` role that allows several members and has none kept.
             StatusRow {
                 start: true,
                 ..row("role", "i", "pool", ON_DEMAND, Some("lead"))

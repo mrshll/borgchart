@@ -552,7 +552,7 @@ fn caller_context_is_checked() {
         None,
     );
     assert_eq!(out.code, 4);
-    // A team-only plugin process can't silently publish as the owner.
+    // A plugin process with only `BORGCHART_TEAM` set can't silently publish as the owner.
     let mut cmd = f.command(
         &As::Operator,
         &["msg", "send", "oncall-2a3b/lead", "x", "--json"],
@@ -563,7 +563,7 @@ fn caller_context_is_checked() {
     let mut cmd = f.command(&As::Operator, &["msg", "ack", "m1", "--json"]);
     let out = cmd.env("BORGCHART_MEMBER", "lead").output().unwrap();
     assert_eq!(out.status.code(), Some(4));
-    // Team-only plugins still need to name an inbox.
+    // Plugin processes with only `BORGCHART_TEAM` set still need to name an inbox.
     let mut cmd = f.command(&As::Operator, &["msg", "list", "--json"]);
     let out = output(cmd.env("BORGCHART_TEAM", TEAM).output().unwrap());
     assert_eq!(out.code, 2, "{:?}", out.json);

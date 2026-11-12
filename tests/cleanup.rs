@@ -12,8 +12,8 @@ use std::fs;
 
 use instance_env::*;
 
-/// The test team with `helper` and `dev`, a team role whose child teams run
-/// the `dev` team, each in its own worktree.
+/// The test team with `helper` and `dev`, a team role whose child teams use
+/// the `dev` template, each in its own worktree.
 const TEAM_WITH_WORKTREES: &str = r#"
 bus: {}
 roles:
@@ -86,7 +86,7 @@ fn left_clean(env: &Env, inst: &str) -> (String, std::path::PathBuf) {
     (id, leaf)
 }
 
-/// A stopped dev team of `inst`, deleted again: its ID.
+/// A stopped dev child team of `inst`, deleted again: its ID.
 fn deleted_copy(env: &Env, inst: &str) -> String {
     let out = env.ok(&["create", &format!("{inst}/dev")]);
     let copy = stdout(&out).split_whitespace().next().unwrap().to_string();

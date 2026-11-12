@@ -227,16 +227,30 @@ fn shipped_roles_and_docs_do_not_instruct_removed_commands() {
 
 #[test]
 fn running_team_help_does_not_teach_retired_instance_or_copy_words() {
-    let retired = regex::Regex::new(r"(?i)\b(instances?|cop(?:y|ies))\b").unwrap();
-    for args in [
-        vec![],
-        vec!["create"],
-        vec!["start"],
-        vec!["status"],
-        vec!["templates"],
-    ] {
-        let text = help(&args);
-        assert!(!retired.is_match(&text), "{args:?}: {text}");
+    let retired = regex::Regex::new(r"(?i)\b(instances?|cop(?:y|ies)|team-only)\b").unwrap();
+    let copy_mode = regex::Regex::new(r"(?i)\bcopy mode\b").unwrap();
+    let command = regex::Regex::new(r"^  ([a-z][a-z-]*)\s{2,}\S").unwrap();
+    let mut pending: Vec<Vec<String>> = vec![vec![]];
+    while let Some(args) = pending.pop() {
+        let text = help(&args.iter().map(String::as_str).collect::<Vec<_>>());
+        for line in text.lines() {
+            // `help` forwards to these pages and has no `--help` of its own.
+            if let Some(found) = command.captures(line)
+                && &found[1] != "help"
+            {
+                let mut child = args.clone();
+                child.push(found[1].to_string());
+                pending.push(child);
+            }
+        }
+        let words = copy_mode.replace_all(&text, "");
+        assert!(!retired.is_match(&words), "{args:?}: {text}");
+        if args.first().is_some_and(|command| command == "msg") {
+            // Bus after-help paragraphs are hand-wrapped; clap owns the tables/options.
+            for line in text.lines().filter(|line| !line.starts_with(' ')) {
+                assert!(line.chars().count() <= 80, "{args:?}: {line}");
+            }
+        }
     }
 }
 
@@ -250,18 +264,23 @@ fn shipped_prose_does_not_teach_retired_running_team_vocabulary() {
             return;
         }
         let relative = path.strip_prefix(root).unwrap().to_str().unwrap();
+        if (relative.starts_with("examples/") || relative.starts_with("plugins/"))
+            && !matches!(
+                path.extension().and_then(|ext| ext.to_str()),
+                Some("md" | "rst" | "txt" | "adoc")
+            )
+        {
+            return;
+        }
         let Ok(mut text) = std::fs::read_to_string(path) else {
             return;
         };
-        // These describe tmux's input mode or copying a file/value, never a child team.
+        // These name tmux's input mode, never a child team.
         for (file, phrase) in [
             ("docs/cli.md", "Copy mode"),
             ("docs/cli.md", "copy mode"),
             ("docs/format.md", "tmux copy mode"),
             ("docs/bus.md", "copy mode"),
-            ("CONTRIBUTING.md", "copies `brg` and `brg-seat`"),
-            ("examples/slack-devops/README.md", "Copy the channel's ID"),
-            ("examples/slack-devops/README.md", "copy of `template.yaml`"),
         ] {
             if relative == file {
                 text = text.replace(phrase, "");
@@ -273,8 +292,8 @@ fn shipped_prose_does_not_teach_retired_running_team_vocabulary() {
         );
     }
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let retired = regex::Regex::new(r"(?i)\b(instances?|cop(?:y|ies))\b").unwrap();
-    for dir in ["templates", "examples"] {
+    let retired = regex::Regex::new(r"(?i)\b(instances?|cop(?:y|ies)|team-only)\b").unwrap();
+    for dir in ["templates", "examples", "plugins", "rules"] {
         check(root, &root.join(dir), &retired);
     }
     for entry in std::fs::read_dir(root.join("docs")).unwrap() {

@@ -13,7 +13,7 @@
 //! - **State of deleted members and child teams** inside a registered team's
 //!   state folder, as an interrupted `delete` leaves it.
 //! - **Unregistered team state** in brg's state folder: a folder named
-//!   for a team ID brg issued, with no registered team (without an
+//!   for a team ID brg issued, with no registered team (without a
 //!   team argument only).
 //!
 //! Work folders, kept members' and child teams' folders, repositories, other

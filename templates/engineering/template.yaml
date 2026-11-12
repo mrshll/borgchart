@@ -1,12 +1,12 @@
 # The team an owner's engineering runs under, at the root of a tree
-# of teams: a root lead that runs the engineering effort, with dev teams,
-# design panels, researchers and monitors as its roles. Dev teams and
-# design panels are child teams: `create` makes a child team stopped, the lead
-# checks seating, then starts it.
+# of teams: a root lead that runs the engineering effort, with dev child teams,
+# design panels, researchers and monitors as its roles. The `dev` and `design`
+# roles use child teams. `create` leaves them stopped; the lead checks
+# seating, then starts them.
 #
 # The team's folder is the repository, or a plain folder of clones: the
-# lead, researchers, monitors and design panels work in it. Each dev team
-# works in its own git worktree, which brg adds when the child team is created
+# lead, researchers, monitors and design panels work in it. Each dev child team
+# works in its own git worktree, which brg adds when it is created
 # (from a named clone with `--repo`, one child team per repository) and removes
 # when it is deleted.
 #

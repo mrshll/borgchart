@@ -102,8 +102,8 @@ enum Command {
     /// a new member), detached at the folder's HEAD or on `--branch`.
     /// With `--repo`, name a clone directly in the tree's folder instead:
     /// fetch origin's default branch and start at its tip. The clone's
-    /// checkout stays as it is. Use one dev team per repository; the root
-    /// lead sequences child teams.
+    /// checkout stays as it is. Use one child team per repository; the root
+    /// lead sequences them.
     /// For a member or a team, it prints the team's tree as `status`
     /// lays it out, with a new member's ID on its row, then a line with the
     /// address and folder of each worktree it added; for a child team, one line
@@ -205,7 +205,7 @@ enum Command {
     /// member.
     Destroy {
         /// The tree's root team (a child team is refused).
-        #[arg(value_name = "team", add = crate::complete::roots())]
+        #[arg(value_name = "TEAM", add = crate::complete::roots())]
         instance: String,
     },
     /// Remove what brg left behind for deleted members and child teams.
@@ -217,7 +217,7 @@ enum Command {
     /// worktrees and messages are never touched.
     Cleanup {
         /// Only this team and its child teams (default: every team).
-        #[arg(value_name = "team", add = crate::complete::instances())]
+        #[arg(value_name = "TEAM", add = crate::complete::instances())]
         instance: Option<String>,
     },
     /// List the secrets a template's plugins need, and whether each is set.
@@ -253,7 +253,7 @@ enum Command {
     /// --watch and --interactive; NO_COLOR suppresses painting and motion.
     Status {
         /// The team (default: every top-level team and its child teams).
-        #[arg(value_name = "team", add = crate::complete::instances())]
+        #[arg(value_name = "TEAM", add = crate::complete::instances())]
         instance: Option<String>,
         /// Print the rows as JSON.
         #[arg(long, conflicts_with_all = ["watch", "interactive"])]

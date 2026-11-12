@@ -3,13 +3,13 @@
 //! Each lives at a fixed place beside brg's state folder (never inside it,
 //! where members could reach brg's own files): `<state>-worktrees/<address>`,
 //! with the address's `/` written as `.`, which no ID contains. brg adds it,
-//! detached at the team's working folder's `HEAD` or on a new branch, when it issues the
+//! detached at the working folder's `HEAD` or on a new branch, when it issues the
 //! member or child team, and removes it on `delete` when it is clean. `create --repo`
 //! selects a clone directly in the tree's folder and fetches origin's default
 //! branch before taking the registry lock. Worktree ownership is found afresh
 //! in the root repository and those clones' own records, never through a
 //! member-writable `.git` file. No repository selection is stored.
-//! Use one dev team per repository; the root lead sequences child teams.
+//! Use one child team per repository; the root lead sequences them.
 
 use std::path::{Path, PathBuf};
 

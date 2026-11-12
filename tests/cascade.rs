@@ -408,7 +408,7 @@ fn unreadable_copy_does_not_hide_status_or_block_stopping_readable_instances() {
             "state" => env.path(&format!("state/{panel}")),
             _ => unreachable!(),
         };
-        let moved = env.path("moved-child team-data");
+        let moved = env.path("moved-child-team-data");
         fs::rename(&path, &moved).unwrap();
         if damage == "record" {
             fs::write(&path, "unreadable team record").unwrap();
