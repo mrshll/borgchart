@@ -224,3 +224,66 @@ fn shipped_roles_and_docs_do_not_instruct_removed_commands() {
     check(&root.join("plugins"));
     check(&root.join("rules"));
 }
+
+#[test]
+fn running_team_help_does_not_teach_retired_instance_or_copy_words() {
+    let retired = regex::Regex::new(r"(?i)\b(instances?|cop(?:y|ies))\b").unwrap();
+    for args in [
+        vec![],
+        vec!["create"],
+        vec!["start"],
+        vec!["status"],
+        vec!["templates"],
+    ] {
+        let text = help(&args);
+        assert!(!retired.is_match(&text), "{args:?}: {text}");
+    }
+}
+
+#[test]
+fn shipped_prose_does_not_teach_retired_running_team_vocabulary() {
+    fn check(root: &std::path::Path, path: &std::path::Path, retired: &regex::Regex) {
+        if path.is_dir() {
+            for entry in std::fs::read_dir(path).unwrap() {
+                check(root, &entry.unwrap().path(), retired);
+            }
+            return;
+        }
+        let relative = path.strip_prefix(root).unwrap().to_str().unwrap();
+        let Ok(mut text) = std::fs::read_to_string(path) else {
+            return;
+        };
+        // These describe tmux's input mode or copying a file/value, never a child team.
+        for (file, phrase) in [
+            ("docs/cli.md", "Copy mode"),
+            ("docs/cli.md", "copy mode"),
+            ("docs/format.md", "tmux copy mode"),
+            ("docs/bus.md", "copy mode"),
+            ("CONTRIBUTING.md", "copies `brg` and `brg-seat`"),
+            ("examples/slack-devops/README.md", "Copy the channel's ID"),
+            ("examples/slack-devops/README.md", "copy of `template.yaml`"),
+        ] {
+            if relative == file {
+                text = text.replace(phrase, "");
+            }
+        }
+        assert!(
+            !retired.is_match(&text),
+            "{relative} still teaches retired vocabulary"
+        );
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let retired = regex::Regex::new(r"(?i)\b(instances?|cop(?:y|ies))\b").unwrap();
+    for dir in ["templates", "examples"] {
+        check(root, &root.join(dir), &retired);
+    }
+    for entry in std::fs::read_dir(root.join("docs")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|ext| ext == "md") {
+            check(root, &path, &retired);
+        }
+    }
+    for file in ["README.md", "CONTRIBUTING.md"] {
+        check(root, &root.join(file), &retired);
+    }
+}
