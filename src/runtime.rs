@@ -3820,9 +3820,6 @@ fn status_with_counts(
             {
                 details.push(h);
             }
-            if let Some(n) = pending(&state.plugin_dir(name)) {
-                details.push(n);
-            }
             if !details.is_empty() {
                 row.detail = Some(details.join(", "));
             }
@@ -4004,13 +4001,6 @@ fn health(dir: &Path) -> Option<String> {
     } else {
         format!("error: {}", printable(detail))
     })
-}
-
-/// Lines in a plugin's `undelivered.jsonl`, if any.
-fn pending(dir: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(dir.join("undelivered.jsonl")).ok()?;
-    let n = text.lines().filter(|l| !l.trim().is_empty()).count();
-    (n > 0).then(|| format!("{n} undelivered"))
 }
 
 /// `brg status` as text: the team's tree with each member's vendor, model,
