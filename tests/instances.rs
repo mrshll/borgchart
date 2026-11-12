@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 fn starting_repairs_an_unresolved_parent_so_recursive_stop_reaches_the_child() {
     let env = Env::new();
     env.write(
-        "teams/oncall/team.yaml",
+        "templates/oncall/template.yaml",
         &TEAM
             .replace("prompt: lead.md", "prompt: lead.md\n    start: false")
             .replace("    start: false\n  scout:", "    start: true\n  scout:"),
@@ -64,7 +64,7 @@ fn stopped_parents_cannot_be_deleted_before_their_kept_children() {
         assert_eq!(env.member(&inst, "helper"), child);
     }
 
-    env.write("teams/oncall/team.yaml", "roles: [");
+    env.write("templates/oncall/template.yaml", "roles: [");
     for force in [false, true] {
         let mut args = vec!["delete", &parent_address];
         if force {
@@ -73,7 +73,7 @@ fn stopped_parents_cannot_be_deleted_before_their_kept_children() {
         let refusal = env.fails(&args);
         assert!(refusal.contains(&child_address), "{refusal}");
     }
-    env.write("teams/oncall/team.yaml", TEAM);
+    env.write("templates/oncall/template.yaml", TEAM);
     assert_eq!(env.member(&inst, "lead"), parent);
     assert_eq!(env.member(&inst, "helper"), child);
 
@@ -170,10 +170,10 @@ fn members_with_unloadable_teams_and_incomplete_parent_records_cannot_be_deleted
             meta["members"].as_object_mut().unwrap().remove(&child);
             fs::write(&start_file, serde_json::to_vec(&meta).unwrap()).unwrap();
         }
-        env.write("teams/oncall/team.yaml", "roles: [");
+        env.write("templates/oncall/template.yaml", "roles: [");
         env.fails(&["delete", &format!("{inst}/{parent}"), "--force"]);
         fs::write(&start_file, start).unwrap();
-        env.write("teams/oncall/team.yaml", TEAM);
+        env.write("templates/oncall/template.yaml", TEAM);
         assert_eq!(env.member(&inst, "lead"), parent);
         assert_eq!(env.member(&inst, "helper"), child);
         env.ok(&["delete", &format!("{inst}/{child}")]);
@@ -201,7 +201,10 @@ fn members_with_unknown_liveness_cannot_be_deleted() {
 #[test]
 fn members_can_be_deleted_without_a_message_bus() {
     let env = Env::new();
-    env.write("teams/oncall/team.yaml", &TEAM.replace("bus: {}\n", ""));
+    env.write(
+        "templates/oncall/template.yaml",
+        &TEAM.replace("bus: {}\n", ""),
+    );
     let inst = env.create("oncall", "work/a");
     let lead = env.member(&inst, "lead");
     env.ok(&["stop", &inst]);
@@ -240,7 +243,7 @@ fn publish_refusals_only_suggest_declared_role_addresses() {
 fn role_addresses_never_choose_a_member_and_status_tracks_each_start() {
     let env = Env::new();
     env.write(
-        "teams/oncall/team.yaml",
+        "templates/oncall/template.yaml",
         &TEAM.replace("prompt: lead.md", "prompt: lead.md\n    start: false"),
     );
     let out = env.ok(&[
@@ -259,7 +262,7 @@ fn role_addresses_never_choose_a_member_and_status_tracks_each_start() {
         );
     }
     env.ok(&["delete", &empty]);
-    env.write("teams/oncall/team.yaml", TEAM);
+    env.write("templates/oncall/template.yaml", TEAM);
     let inst = env.create("oncall", "work/a");
     let lead = env.member(&inst, "lead");
     for command in ["start", "stop", "attach", "logs", "delete", "send"] {
@@ -412,29 +415,32 @@ fn a_deleted_instances_suffix_is_never_issued_again() {
 fn teams_are_found_by_name_or_by_path() {
     let env = Env::new();
     // By path, from the current folder and absolute.
-    let out = env.ok(&["validate", "./teams/oncall"]);
+    let out = env.ok(&["validate", "./templates/oncall"]);
     assert!(stdout(&out).starts_with("ok:"), "{}", both(&out));
-    env.ok(&["validate", &env.path("teams/oncall").display().to_string()]);
+    env.ok(&[
+        "validate",
+        &env.path("templates/oncall").display().to_string(),
+    ]);
     env.ok(&["validate", "oncall"]);
     // A path without `./` is refused with the hint.
-    let err = env.fails(&["create", "teams/oncall", "work/a"]);
-    assert!(err.contains("./teams/oncall"), "{err}");
-    let err = env.fails(&["validate", "teams/oncall"]);
-    assert!(err.contains("./teams/oncall"), "{err}");
+    let err = env.fails(&["create", "templates/oncall", "work/a"]);
+    assert!(err.contains("./templates/oncall"), "{err}");
+    let err = env.fails(&["validate", "templates/oncall"]);
+    assert!(err.contains("./templates/oncall"), "{err}");
     // A name in two search paths is refused, listing both.
     env.team("more/oncall");
     env.write(
         "config.yaml",
         &format!(
-            "schema: 1\nteams: [{}, {}]\n",
-            env.path("teams").display(),
+            "schema: 1\ntemplates: [{}, {}]\n",
+            env.path("templates").display(),
             env.path("more").display()
         ),
     );
     let err = env.fails(&["create", "oncall", "work/a"]);
     assert!(
         err.contains(
-            &env.path("teams/oncall")
+            &env.path("templates/oncall")
                 .canonicalize()
                 .unwrap()
                 .display()
@@ -449,7 +455,7 @@ fn teams_are_found_by_name_or_by_path() {
         "{err}"
     );
     // Two folders with the same name both run, by path.
-    let a = stdout(&env.ok(&["create", "./teams/oncall", "work/a"]))
+    let a = stdout(&env.ok(&["create", "./templates/oncall", "work/a"]))
         .split_whitespace()
         .next()
         .unwrap()
@@ -620,7 +626,10 @@ fn addresses_name_the_instance_in_full_outside_a_member() {
     assert!(err.contains(&format!("<instance>/{lead}")), "{err}");
     // A team's name where an instance is expected.
     let err = env.fails(&["status", "oncall"]);
-    assert!(err.contains("is a team") && err.contains(&inst), "{err}");
+    assert!(
+        err.contains("is a template") && err.contains(&inst),
+        "{err}"
+    );
     // Inside a member, the instance comes from BORGCHART_INSTANCE.
     let out = env
         .cmd(&["logs", &lead])
@@ -768,7 +777,7 @@ fn auth_comes_from_the_configuration_and_a_missing_file_means_login() {
     let out = env
         .cmd(&[
             "create",
-            "./teams/oncall",
+            "./templates/oncall",
             &env.path("work/a").display().to_string(),
         ])
         .env("BORGCHART_CONFIG", env.path("missing.yaml"))
@@ -894,15 +903,15 @@ fn tmux_user_config_comes_from_the_configuration_and_a_change_is_reported() {
 fn plain_plugin_values_come_from_the_team() {
     let env = Env::new();
     env.write(
-        "teams/oncall/team.yaml",
+        "templates/oncall/template.yaml",
         &TEAM.replace(
             "roles:\n  lead:\n    prompt: lead.md\n",
             "plugins:\n  pager:\n    path: plugins/pager\n    env:\n      PAGER_ROOM: R0000EXAMPLE\n      PAGER_TOKEN:\n    actions:\n      read: pager read <id>\nroles:\n  lead:\n    prompt: lead.md\n    plugins: {pager: [read]}\n",
         ),
     );
-    fs::create_dir_all(env.path("teams/oncall/plugins/pager")).unwrap();
+    fs::create_dir_all(env.path("templates/oncall/plugins/pager")).unwrap();
     script(
-        &env.path("teams/oncall/plugins/pager/pager"),
+        &env.path("templates/oncall/plugins/pager/pager"),
         "#!/bin/sh\necho \"room=$PAGER_ROOM token_len=${#PAGER_TOKEN} instance=$BORGCHART_INSTANCE\" >> \"$BORGCHART_STATE_DIR/calls.log\"\n",
     );
     // The secret must come from the environment.
@@ -955,7 +964,7 @@ fn plain_plugin_values_come_from_the_team() {
 fn a_roles_args_come_from_the_team_and_members_work_in_its_folder() {
     let env = Env::new();
     env.write(
-        "teams/oncall/team.yaml",
+        "templates/oncall/template.yaml",
         &TEAM.replace(
             "  lead:\n    prompt: lead.md\n",
             "  lead:\n    prompt: lead.md\n    args: [--example-flag]\n",
@@ -983,7 +992,7 @@ fn a_roles_args_come_from_the_team_and_members_work_in_its_folder() {
     env.ok(&["stop", &inst]);
     // `cwd` is gone: members work in the instance's folder or a worktree.
     env.write(
-        "teams/oncall/team.yaml",
+        "templates/oncall/template.yaml",
         &TEAM.replace(
             "  lead:\n    prompt: lead.md\n",
             "  lead:\n    prompt: lead.md\n    cwd: sub\n",

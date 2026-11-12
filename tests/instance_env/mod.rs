@@ -57,14 +57,14 @@ impl Env {
         fs::create_dir_all(env.path("home")).unwrap();
         fs::create_dir_all(env.path("work/a")).unwrap();
         fs::create_dir_all(env.path("work/b")).unwrap();
-        env.team("teams/oncall");
+        env.team("templates/oncall");
         env.config("");
         env
     }
 
     /// A copy of the test team at `rel`.
     pub fn team(&self, rel: &str) {
-        self.write(&format!("{rel}/team.yaml"), TEAM);
+        self.write(&format!("{rel}/template.yaml"), TEAM);
         for (role, model) in [
             ("lead", "claude: opus high"),
             ("helper", "codex: example-model"),
@@ -82,8 +82,8 @@ impl Env {
         self.write(
             "config.yaml",
             &format!(
-                "schema: 1\nteams: [{}]\n{extra}",
-                self.path("teams").display()
+                "schema: 1\ntemplates: [{}]\n{extra}",
+                self.path("templates").display()
             ),
         );
     }
@@ -138,7 +138,7 @@ impl Env {
         both(&out)
     }
 
-    /// `brg create <team> <folder>`; the new instance's ID.
+    /// `brg create <template> <folder>`; the new instance's ID.
     pub fn create(&self, team: &str, folder: &str) -> String {
         let out = self.ok(&["create", team, &self.path(folder).display().to_string()]);
         let id = stdout(&out)

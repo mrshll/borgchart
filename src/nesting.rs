@@ -149,7 +149,7 @@ pub fn validate_child(parent: &Instance, dir: &Path) -> Result<Validated, String
     loop {
         let folder = current.record.team_dir.canonicalize().map_err(|_| {
             format!(
-                "`{}`'s team folder is gone; restore it before creating or starting a copy",
+                "`{}`'s template folder is gone; restore it before creating or starting a copy",
                 current.id
             )
         })?;

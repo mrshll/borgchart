@@ -69,7 +69,7 @@ fn top_level_help_groups_one_line_summaries_and_leaves_details_to_commands() {
             .unwrap();
         let text = String::from_utf8(out.stdout).unwrap();
         for heading in [
-            "Team folders:",
+            "Team templates:",
             "Instances and members:",
             "Messages:",
             "Cleanup:",
@@ -144,10 +144,18 @@ fn removed_message_commands_and_force_flag_are_refused() {
 #[test]
 fn shipped_roles_and_docs_do_not_instruct_removed_commands() {
     fn check(path: &std::path::Path) {
+        assert!(path.exists(), "missing shipped surface: {}", path.display());
         if path.is_dir() {
             for entry in std::fs::read_dir(path).unwrap() {
                 check(&entry.unwrap().path());
             }
+        } else if path.starts_with(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs"))
+            && matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("html" | "js")
+            )
+        {
+            // The website owns its generated surface separately.
         } else if let Ok(text) = std::fs::read_to_string(path) {
             for removed in [
                 "inbox wait",
@@ -164,18 +172,31 @@ fn shipped_roles_and_docs_do_not_instruct_removed_commands() {
                 "\"$BORGCHART_BIN\" ls",
                 "\"$BORGCHART_BIN\" secret",
                 "\"$BORGCHART_BIN\" reset",
+                "team folder",
+                "team's files",
+                "team.yaml",
+                "start --team",
+                "teams/",
+                "{{teams/",
             ] {
                 let word = |c: char| c.is_alphanumeric() || c == '_';
                 let found = text.match_indices(removed).any(|(start, _)| {
                     !text[..start].chars().next_back().is_some_and(word)
-                        && !text[start + removed.len()..]
-                            .chars()
-                            .next()
-                            .is_some_and(word)
+                        && (removed.ends_with('/')
+                            || !text[start + removed.len()..]
+                                .chars()
+                                .next()
+                                .is_some_and(word))
                 });
                 assert!(!found, "{} names {removed}", path.display());
             }
             let install = regex::Regex::new(r"cargo install[^\n`]*\sborgchart\b").unwrap();
+            let old_config = regex::Regex::new(r"(?m)^teams:").unwrap();
+            assert!(
+                !old_config.is_match(&text),
+                "{} names teams:",
+                path.display()
+            );
             let mut code_block = false;
             for line in text.lines() {
                 if line.trim_start().starts_with("```") {
@@ -193,7 +214,7 @@ fn shipped_roles_and_docs_do_not_instruct_removed_commands() {
         }
     }
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    check(&root.join("teams"));
+    check(&root.join("templates"));
     check(&root.join("examples"));
     check(&root.join("docs"));
     check(&root.join("README.md"));

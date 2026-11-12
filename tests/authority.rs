@@ -13,17 +13,17 @@ use instance_env::*;
 fn department() -> Env {
     let env = Env::new();
     env.write(
-        "teams/oncall/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead, start: false}\n  scout: {prompt: scout.md, start: false}\n  dev: {team: dev, parent: lead, start: false, max: 4}\n",
+        "templates/oncall/template.yaml",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead, start: false}\n  scout: {prompt: scout.md, start: false}\n  dev: {template: dev, parent: lead, start: false, max: 4}\n",
     );
-    env.team("teams/dev");
+    env.team("templates/dev");
     env.write(
-        "teams/dev/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead, start: false}\n  design: {team: design, parent: lead, start: false}\n",
+        "templates/dev/template.yaml",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead, start: false}\n  design: {template: design, parent: lead, start: false}\n",
     );
-    env.team("teams/design");
+    env.team("templates/design");
     env.write(
-        "teams/design/team.yaml",
+        "templates/design/template.yaml",
         "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  scout: {prompt: scout.md}\n",
     );
     fs::create_dir(env.path("work/a/lead")).unwrap();
@@ -103,9 +103,9 @@ fn members_cannot_create_independent_bus_instances() {
 fn members_cannot_create_independent_teams_without_bus_settings() {
     let env = department();
     let dept = env.create("oncall", "work/a");
-    env.team("teams/panel");
+    env.team("templates/panel");
     env.write(
-        "teams/panel/team.yaml",
+        "templates/panel/template.yaml",
         "roles: {lead: {prompt: lead.md}}\n",
     );
     let folder = env.path("work/b").display().to_string();
@@ -392,7 +392,7 @@ fn recorded_copy_parents_survive_live_team_edits() {
     let dev = prepared_copy(&env, &dept, "dev");
     env.ok(&["start", &dev]);
     env.wait_for("dev lead idle", || env.state_of(&dev, "lead") == "idle");
-    let team = env.path("teams/oncall/team.yaml");
+    let team = env.path("templates/oncall/template.yaml");
     let original = fs::read_to_string(&team).unwrap();
     fs::write(
         &team,
@@ -413,7 +413,7 @@ fn recorded_copy_parents_survive_live_team_edits() {
 #[test]
 fn ancestors_manage_grandchildren_within_one_instance() {
     let env = department();
-    let team = env.path("teams/oncall/team.yaml");
+    let team = env.path("templates/oncall/template.yaml");
     let original = fs::read_to_string(&team).unwrap();
     fs::write(
         &team,

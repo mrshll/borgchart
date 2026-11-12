@@ -52,7 +52,7 @@ impl Env {
 
     /// Add `lines` to `role`'s entry in the team file.
     fn role_extra(&self, role: &str, lines: &str) {
-        let path = self.path("teams/oncall/team.yaml");
+        let path = self.path("templates/oncall/template.yaml");
         let text = fs::read_to_string(&path).unwrap();
         let entry = format!("  {role}:\n    prompt: {role}.md\n");
         assert!(text.contains(&entry), "{text}");
@@ -108,7 +108,7 @@ fn locked_members_keep_their_launch() {
     let env = Env::new();
     // No bus: a team with one can't have `locked` members.
     env.write(
-        "teams/oncall/team.yaml",
+        "templates/oncall/template.yaml",
         &TEAM.replace("bus: {}\n", "").replace(
             "    vendor: codex\n    parent: lead\n    start: false\n",
             "    vendor: codex\n    parent: lead\n    start: false\n    posture: locked\n",
@@ -191,13 +191,13 @@ const PAGER: &str = "pager-not-real-77d0";
 /// The test team with a plugin that needs a secret and has a plain value.
 fn with_pager(env: &Env) {
     env.write(
-        "teams/oncall/team.yaml",
+        "templates/oncall/template.yaml",
         &TEAM.replace(
             "roles:\n  lead:\n    prompt: lead.md\n",
             "plugins:\n  pager:\n    path: plugins/pager\n    env: {PAGER_TOKEN: , PAGER_ROOM: R0000EXAMPLE}\n    actions:\n      read: pager read <id>\nroles:\n  lead:\n    prompt: lead.md\n    plugins: {pager: [read]}\n",
         ),
     );
-    let script = env.path("teams/oncall/plugins/pager/pager");
+    let script = env.path("templates/oncall/plugins/pager/pager");
     fs::create_dir_all(script.parent().unwrap()).unwrap();
     fs::write(&script, "#!/bin/sh\necho ok\n").unwrap();
     use std::os::unix::fs::PermissionsExt;
@@ -511,7 +511,7 @@ fn a_roles_added_folders_replace_brgs_in_either_form() {
 fn plugin_actions_preserve_and_fence_the_launch_incarnation() {
     let env = Env::new();
     with_pager(&env);
-    fs::write(env.path("teams/oncall/plugins/pager/pager"),
+    fs::write(env.path("templates/oncall/plugins/pager/pager"),
         "#!/bin/sh\nif [ \"${1-}\" = send ]; then exec \"$BORGCHART_BIN\" msg send external:ops hello --json; fi\nprintf '%s\\n' \"$BORGCHART_INSTANCE\" \"$BORGCHART_MEMBER\" \"$BORGCHART_INCARNATION\"\n").unwrap();
     let out = keyed(&env, &["create", "oncall", &env.folder("work/a")]);
     assert!(out.status.success(), "{}", both(&out));

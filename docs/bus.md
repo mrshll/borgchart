@@ -12,7 +12,7 @@ Codex `vendor` members have full host access and no tool approvals; Claude `vend
 
 ## Storage
 
-One store belongs to a whole team tree: its root instance and every nested copy share `<state home>/<root>/messages/`. Copies have no store of their own. Message numbers continue across stops, starts, copy deletion and team-file changes:
+One store belongs to a whole team tree: its root instance and every nested copy share `<state home>/<root>/messages/`. Copies have no store of their own. Message numbers continue across stops, starts, copy deletion and template-file changes:
 
 | Path | Contents |
 | --- | --- |

@@ -29,13 +29,13 @@ roles:
     vendor: claude
     start: true
   dev:
-    team: dev-team
+    template: dev-team
     parent: lead
     start: false
     max: 6
     worktree: true
   design:
-    team: dev-design-team
+    template: dev-design-team
     parent: lead
     start: false
     max: 3

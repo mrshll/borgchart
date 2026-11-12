@@ -17,7 +17,7 @@ fn starting_a_sibling_does_not_reparent_a_running_child() {
     let lead = env.member(&inst, "lead");
     let helper = env.member(&inst, "helper");
     env.write(
-        "teams/oncall/team.yaml",
+        "templates/oncall/template.yaml",
         &TEAM.replace("parent: lead", "parent: scout"),
     );
     env.ok(&["create", &format!("{inst}/scout")]);
@@ -39,8 +39,8 @@ fn catalog(env: &Env, root: &str) {
     env.team(&format!("{root}/oncall"));
     env.team(&format!("{root}/dev"));
     env.write(
-        &format!("{root}/oncall/team.yaml"),
-        &format!("{TEAM}  dev: {{team: dev, parent: lead, max: 2}}\n"),
+        &format!("{root}/oncall/template.yaml"),
+        &format!("{TEAM}  dev: {{template: dev, parent: lead, max: 2}}\n"),
     );
 }
 
@@ -78,9 +78,9 @@ fn catalog_change_allows_joins(flip_symlink: bool) {
     env.write(
         "config.yaml",
         if flip_symlink {
-            "schema: 1\nteams: [current]\n"
+            "schema: 1\ntemplates: [current]\n"
         } else {
-            "schema: 1\nteams: [revision-a]\n"
+            "schema: 1\ntemplates: [revision-a]\n"
         },
     );
     let inst = env.create("oncall", "work/a");
@@ -124,7 +124,7 @@ fn catalog_change_allows_joins(flip_symlink: bool) {
         fs::remove_file(env.path("current")).unwrap();
         symlink(env.path("revision-b"), env.path("current")).unwrap();
     } else {
-        env.write("config.yaml", "schema: 1\nteams: [revision-b]\n");
+        env.write("config.yaml", "schema: 1\ntemplates: [revision-b]\n");
     }
     let next = create_copy(&env, &inst);
     env.ok(&["start", &next]);
@@ -186,11 +186,11 @@ fn changed_role_and_auth_apply_to_new_starts_without_restarting_siblings() {
     let inst = env.create("oncall", "work/a");
     let lead = env.member(&inst, "lead");
     env.write(
-        "teams/oncall/team.yaml",
+        "templates/oncall/template.yaml",
         &TEAM.replace("vendor: codex", "vendor: claude"),
     );
     env.write(
-        "teams/oncall/helper.md",
+        "templates/oncall/helper.md",
         "---\nmodels: {claude: haiku}\n---\nUse the amber checklist.\n",
     );
     env.config("auth: api_key\n");
@@ -207,9 +207,9 @@ fn changed_role_and_auth_apply_to_new_starts_without_restarting_siblings() {
     assert_eq!(starts[0]["env"]["ANTHROPIC_API_KEY"], "example-key");
     assert_eq!(env.starts(&lead).len(), 1);
     env.ok(&["stop", &format!("{inst}/{helper}")]);
-    let team = fs::read_to_string(env.path("teams/oncall/team.yaml")).unwrap();
+    let team = fs::read_to_string(env.path("templates/oncall/template.yaml")).unwrap();
     env.write(
-        "teams/oncall/team.yaml",
+        "templates/oncall/template.yaml",
         &team.replace(
             "    prompt: helper.md\n",
             "    prompt: helper.md\n    interactive: true\n",
@@ -242,14 +242,14 @@ fn changed_role_and_auth_apply_to_new_starts_without_restarting_siblings() {
 #[test]
 fn changed_child_team_is_used_by_new_copies_while_parent_runs() {
     let env = Env::new();
-    catalog(&env, "teams");
+    catalog(&env, "templates");
     let inst = env.create("oncall", "work/a");
     let first = create_copy(&env, &inst);
     env.ok(&["start", &first]);
     let lead = env.member(&first, "lead");
     env.wait_for("first copy launch", || !env.starts(&lead).is_empty());
     env.write(
-        "teams/dev/lead.md",
+        "templates/dev/lead.md",
         "---\nmodels: {claude: haiku}\n---\nUse the blue checklist.\n",
     );
     let next = create_copy(&env, &inst);
@@ -276,7 +276,7 @@ fn changed_child_team_is_used_by_new_copies_while_parent_runs() {
 #[test]
 fn damaged_start_record_still_refuses_copy_creation() {
     let env = Env::new();
-    catalog(&env, "teams");
+    catalog(&env, "templates");
     let inst = env.create("oncall", "work/a");
     let path = env.path(&format!("state/{inst}/start.json"));
     let recorded = fs::read(&path).unwrap();

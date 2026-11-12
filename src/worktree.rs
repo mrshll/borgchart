@@ -3,7 +3,7 @@
 //! Each lives at a fixed place beside brg's state folder (never inside it,
 //! where members could reach brg's own files): `<state>-worktrees/<address>`,
 //! with the address's `/` written as `.`, which no ID contains. brg adds it,
-//! detached at the team folder's `HEAD` or on a new branch, when it issues the
+//! detached at the instance folder's `HEAD` or on a new branch, when it issues the
 //! member or copy, and removes it on `delete` when it is clean. `create --repo`
 //! selects a clone directly in the tree's folder and fetches origin's default
 //! branch before taking the registry lock. Worktree ownership is found afresh
@@ -170,7 +170,7 @@ pub fn path(address: &str) -> PathBuf {
     home().join(address.replace('/', "."))
 }
 
-/// Add a worktree at `dir` at the `HEAD` of `from`, a team's folder in the
+/// Add a worktree at `dir` at the `HEAD` of `from`, an instance's working folder in the
 /// tree whose top folder is `root`: detached, or on a new `branch`. git runs
 /// in the repository found through its own record ([`admin_dir`]), or the
 /// selected clone at its fetched commit when `start` is given.

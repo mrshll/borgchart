@@ -34,7 +34,7 @@ impl Env {
         std::os::unix::fs::symlink(fake, bin.join("codex")).unwrap();
         fs::create_dir_all(env.path("home")).unwrap();
         env.write(
-            "team/team.yaml",
+            "team/template.yaml",
             r#"
 plugins:
   pager:
@@ -88,9 +88,9 @@ roles:
         self.write("config.yaml", &format!("schema: 1\n{extra}"));
     }
 
-    /// Add `lines` to `role`'s entry in the team file.
+    /// Add `lines` to `role`'s entry in the template file.
     fn role_extra(&self, role: &str, lines: &str) {
-        let path = self.path("team/team.yaml");
+        let path = self.path("team/template.yaml");
         let text = fs::read_to_string(&path).unwrap();
         let entry = format!("  {role}:\n    prompt: {role}.md\n");
         assert!(text.contains(&entry), "{text}");
@@ -419,7 +419,7 @@ fn up_status_send_logs_down() {
     // The instance's tree under its header line, then plugin processes.
     let text = stdout(&table);
     let inst = env.instance().unwrap();
-    assert!(text.starts_with(&format!("{inst}  team ")), "{text}");
+    assert!(text.starts_with(&format!("{inst}  template ")), "{text}");
     assert!(
         text.lines()
             .nth(1)
@@ -2101,9 +2101,9 @@ fn a_member_whose_vendor_changed_starts_fresh() {
     assert!(env.brg(&["stop"]).status.success());
     // Codex to Claude across a full stop: the Codex session can't be
     // handed to Claude.
-    let team = fs::read_to_string(env.path("team/team.yaml")).unwrap();
+    let team = fs::read_to_string(env.path("team/template.yaml")).unwrap();
     env.write(
-        "team/team.yaml",
+        "team/template.yaml",
         &team.replace("    vendor: codex\n", "    vendor: claude\n"),
     );
     env.write(

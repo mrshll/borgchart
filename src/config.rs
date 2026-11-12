@@ -1,5 +1,5 @@
 //! brg's global configuration, `~/.config/borgchart/config.yaml` (or
-//! `$BORGCHART_CONFIG`): what belongs to you rather than to a team.
+//! `$BORGCHART_CONFIG`): what belongs to you rather than to a template.
 //!
 //! The file is optional; a missing one means the defaults. Relative paths in
 //! it are relative to its folder, and `~/` is your home.
@@ -39,6 +39,7 @@ struct ConfigRaw {
     schema: u32,
     auth: Option<Auth>,
     auto_trust: Option<bool>,
+    #[serde(rename = "templates")]
     teams: Option<Vec<String>>,
     plugins_dir: Option<String>,
     tmux: Option<TmuxRaw>,
@@ -103,7 +104,8 @@ pub struct Config {
     /// `Some(false)` for none. Codex: session config, only with `Some(true)`
     /// and only in `vendor` posture.
     pub auto_trust: Option<bool>,
-    /// Where team names are looked up, in order.
+    /// Where template names are looked up, in order.
+    #[serde(rename = "templates")]
     pub teams: Vec<PathBuf>,
     /// Where `shared:<name>` plugins live.
     pub plugins_dir: Option<PathBuf>,
@@ -137,7 +139,7 @@ impl Default for Config {
             file: None,
             auth: Auth::default(),
             auto_trust: None,
-            teams: vec![default_dir().join("teams")],
+            teams: vec![default_dir().join("templates")],
             plugins_dir: None,
             tmux_user_config: None,
         }
@@ -174,7 +176,12 @@ pub fn load_file(file: &Path, report: &mut Report) -> Option<Config> {
     let raw: ConfigRaw = match yaml::parse(&text) {
         Ok(r) => r,
         Err(e) => {
-            report.error(Some(&file), e);
+            let message = if e.contains("unknown field `teams`") {
+                "`teams:` is no longer read; rename it to `templates:`".to_string()
+            } else {
+                e
+            };
+            report.error(Some(&file), message);
             return None;
         }
     };
@@ -216,7 +223,10 @@ mod tests {
     #[test]
     fn home_and_relative_paths() {
         let base = Path::new("/etc/brg");
-        assert_eq!(expand_home(base, "teams"), PathBuf::from("/etc/brg/teams"));
+        assert_eq!(
+            expand_home(base, "templates"),
+            PathBuf::from("/etc/brg/templates")
+        );
         assert_eq!(expand_home(base, "/abs"), PathBuf::from("/abs"));
     }
 }

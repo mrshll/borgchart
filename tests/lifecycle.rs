@@ -62,7 +62,7 @@ impl Env {
         std::os::unix::fs::symlink(fake, bin.join("claude")).unwrap();
         std::os::unix::fs::symlink(fake, bin.join("codex")).unwrap();
         fs::create_dir_all(env.path("home")).unwrap();
-        env.write("oncall/team.yaml", TEAM);
+        env.write("oncall/template.yaml", TEAM);
         env.write("oncall/lead.md", LEAD);
         env.write("oncall/helper.md", HELPER);
         env.script(
@@ -70,7 +70,7 @@ impl Env {
             "#!/bin/sh\necho \"pager $* member=$BORGCHART_MEMBER token_len=${#PAGER_TOKEN}\" >> \"$BORGCHART_STATE_DIR/calls.log\"\necho ok\n",
         );
         if bus {
-            env.write("oncall/team.yaml", &format!("bus: {{}}\n{TEAM}"));
+            env.write("oncall/template.yaml", &format!("bus: {{}}\n{TEAM}"));
         }
         fs::create_dir_all(env.path("work")).unwrap();
         env.write("config.yaml", "schema: 1\n");
@@ -458,7 +458,7 @@ fn up_prints_the_team_as_a_tree() {
     assert_eq!(
         header,
         format!(
-            "{}  team {} · folder {}",
+            "{}  template {} · folder {}",
             env.inst(),
             env.path("oncall").canonicalize().unwrap().display(),
             env.path("work").canonicalize().unwrap().display()
@@ -502,7 +502,7 @@ fn status_prints_the_same_tree_with_live_states() {
     assert_eq!(rows[0]["member"], env.m("lead"));
     assert_eq!(rows[0]["role"], "lead");
     assert_eq!(rows[0]["instance"], env.inst());
-    assert_eq!(rows[0]["team"], "oncall");
+    assert_eq!(rows[0]["template"], "oncall");
     assert_eq!(rows[1]["kind"], "role");
     assert_eq!(rows[1]["parent"], env.m("lead"));
     assert_eq!(rows[0]["model"], "opus high");
@@ -1112,7 +1112,7 @@ fn a_previous_boot_stops_without_tmux_even_with_only_deferred_roles() {
                 "    prompt: lead.md\n    start: false\n",
             );
             env.write(
-                "oncall/team.yaml",
+                "oncall/template.yaml",
                 &format!("{}{team}", if bus { "bus: {}\n" } else { "" }),
             );
             env.ok(&["start"]);
@@ -1308,7 +1308,7 @@ fn down_on_a_team_that_never_started_says_not_running() {
     for bus in [false, true] {
         let env = Env::new(bus);
         env.write(
-            "oncall/team.yaml",
+            "oncall/template.yaml",
             &TEAM.replace(
                 "    prompt: lead.md\n",
                 "    prompt: lead.md\n    start: false\n",
@@ -1336,7 +1336,7 @@ fn an_up_that_cannot_see_the_server_does_not_make_down_say_not_running() {
     for bus in [false, true] {
         let env = Env::new(bus);
         env.write(
-            "oncall/team.yaml",
+            "oncall/template.yaml",
             &TEAM.replace(
                 "    prompt: lead.md\n",
                 "    prompt: lead.md\n    start: false\n",
@@ -1371,7 +1371,7 @@ fn killed_plugin_only_server_does_not_wedge_stop_or_start() {
     for bus in [false, true] {
         let env = Env::new(bus);
         env.write(
-            "oncall/team.yaml",
+            "oncall/template.yaml",
             &TEAM
                 .replace(
                     "    prompt: lead.md\n",
@@ -1559,7 +1559,7 @@ fn pid_of(child: &std::process::Child) -> String {
 fn a_stale_gate_waiter_leaves_a_replacement_alone() {
     let env = Env::new(false);
     env.write(
-        "oncall/team.yaml",
+        "oncall/template.yaml",
         &TEAM.replace(
             "    prompt: lead.md\n",
             "    prompt: lead.md\n    posture: locked\n",
@@ -1692,7 +1692,7 @@ fn api_key_child_starts_take_the_key_from_the_caller() {
 fn a_plugin_command_may_not_hide_brg() {
     let env = Env::new(false);
     env.write(
-        "oncall/team.yaml",
+        "oncall/template.yaml",
         &TEAM
             .replace(
                 "read: pager read <id>",
@@ -1751,7 +1751,7 @@ fn changed_files_check_members_the_new_configuration_dropped() {
     fs::write(env.incarnation_file("helper"), unknown_helper(&env)).unwrap();
     // helper is removed from the team (and lead's file changes with it).
     env.write(
-        "oncall/team.yaml",
+        "oncall/template.yaml",
         &format!("bus: {{}}\n{}", TEAM.split("  helper:\n").next().unwrap()),
     );
     assert_changed_files_refused(&env, "helper");

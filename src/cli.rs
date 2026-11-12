@@ -24,7 +24,7 @@ struct Cli {
 
 /// The top-level help's headed groups. Every visible command is in one.
 const GROUPS: &[(&str, &[&str])] = &[
-    ("Team folders", &["templates", "validate", "secrets"]),
+    ("Team templates", &["templates", "validate", "secrets"]),
     (
         "Instances and members",
         &[
@@ -71,14 +71,14 @@ fn command() -> clap::Command {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Check a team folder and brg's configuration; starts nothing.
+    /// Check a team template and brg's configuration; starts nothing.
     ///
     /// It also lists the files each agent role's instruction is read from.
     Validate {
-        /// The team: its name in the search paths, or a path to its folder
+        /// The template: its name in the search paths, or a path to its folder
         /// (starting with `/`, `./`, `../` or `~/`).
         #[arg(add = crate::complete::teams())]
-        team: String,
+        template: String,
         /// Print the report as JSON.
         #[arg(long)]
         json: bool,
@@ -87,16 +87,16 @@ enum Command {
         #[arg(long)]
         probe: bool,
     },
-    /// Make an instance of a team, or a member of a role.
+    /// Make an instance from a team template, or a member of a role.
     ///
-    /// That is, an instance of a team working in a folder
-    /// (`create <team> [folder]`, the current folder by default), or a member
+    /// That is, an instance from a template working in a folder
+    /// (`create <template> [folder]`, the current folder by default), or a member
     /// of a role (`create <instance>/<role>`, up to its max of kept members).
     /// Team-role copies are created stopped; start them with `brg start`.
     /// Agent members and top-level instances are started. With a bus, a child role's parent role must have a member.
     /// For a role target with a bus, a member caller must be an ancestor,
     /// using its latest running start in its own instance.
-    /// Members work in the team's folder. A `worktree: true` role's member or
+    /// Members work in the instance's working folder. A `worktree: true` role's member or
     /// copy gets its own git worktree from it instead, which brg adds when
     /// issuing it (create, or a full `start` that gives a `start: true` role
     /// a new member), detached at the folder's HEAD or on `--branch`.
@@ -110,11 +110,11 @@ enum Command {
     /// with the copy's ID and its folder (its worktree, for a `worktree: true`
     /// role).
     Create {
-        /// `<team>` (a name, or a path starting with `/`, `./`, `../` or
+        /// `<template>` (a name, or a path starting with `/`, `./`, `../` or
         /// `~/`), or `<instance>/<role>`.
         #[arg(add = crate::complete::teams())]
         target: String,
-        /// The instance's working folder, for a team: usually the repository
+        /// The instance's working folder, for a template: usually the repository
         /// it works on. It must exist. Default: the current folder.
         #[arg(value_hint = clap::ValueHint::DirPath)]
         folder: Option<String>,
@@ -145,9 +145,9 @@ enum Command {
         /// `<instance>`, or `<instance>/<member>`.
         #[arg(add = crate::complete::targets())]
         target: String,
-        /// Point a stopped instance at its team folder's new place.
+        /// Point a stopped instance at its template folder's new place.
         #[arg(long)]
-        team: Option<PathBuf>,
+        template: Option<PathBuf>,
         /// Reopen each member's last vendor session instead of starting a new
         /// conversation. A member started on its own needs a recorded session;
         /// a whole instance starts fresh whoever has none. Restored copies
@@ -220,21 +220,21 @@ enum Command {
         #[arg(add = crate::complete::instances())]
         instance: Option<String>,
     },
-    /// List the secrets a team's plugins need, and whether each is set.
+    /// List the secrets a template's plugins need, and whether each is set.
     ///
     /// It checks your environment, prints no values and writes nothing.
     Secrets {
-        /// The team: its name in the search paths, or a path to its folder.
+        /// The template: its name in the search paths, or a path to its folder.
         #[arg(add = crate::complete::teams())]
-        team: String,
+        template: String,
         /// Print {secrets: [{plugin, name, set}]} as JSON.
         #[arg(long)]
         json: bool,
     },
     /// List available team templates and their instances.
     ///
-    /// The teams found in the search paths (`teams:` in brg's configuration),
-    /// each with its instances, then instances of teams elsewhere.
+    /// The templates found in the search paths (`templates:` in brg's configuration),
+    /// each with its instances, then instances of templates elsewhere.
     Templates {
         /// Print the list as JSON.
         #[arg(long)]
@@ -246,7 +246,7 @@ enum Command {
     /// messages. A role with no member shows only its state; its `--json` row
     /// also gives its vendor and model.
     ///
-    /// On a terminal, state precedes vendor/model or team. A summary band above
+    /// On a terminal, state precedes vendor/model or template. A summary band above
     /// the tree counts working and idle members, rows needing
     /// you and unacked messages. Painted output uses a filled red state label
     /// for attention and a gold ◆ for running teams. Working marks spin in
@@ -444,7 +444,11 @@ pub fn main() -> ExitCode {
 
 fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
     match cli.command {
-        Command::Validate { team, json, probe } => run_validate(&team, json, probe),
+        Command::Validate {
+            template,
+            json,
+            probe,
+        } => run_validate(&template, json, probe),
         Command::Create {
             target,
             folder,
@@ -486,7 +490,7 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
                         inst.at(&m)
                     )),
                     Ok((inst, Target::Instance)) => Err(format!(
-                        "`create` makes an instance from a team, or a member from `{}/<role>`",
+                        "`create` makes an instance from a template, or a member from `{}/<role>`",
                         inst.id
                     )),
                     Err(e) => Err(e),
@@ -496,13 +500,13 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
         }
         Command::Start {
             target,
-            team,
+            template,
             resume,
         } => {
             let result = match or_fail!(address::resolve(&target)) {
-                (inst, Target::Instance) => runtime::start(inst, None, team.as_deref(), resume),
+                (inst, Target::Instance) => runtime::start(inst, None, template.as_deref(), resume),
                 (inst, Target::Member(m) | Target::Role(m)) => {
-                    runtime::start(inst, Some(&m), team.as_deref(), resume)
+                    runtime::start(inst, Some(&m), template.as_deref(), resume)
                 }
             };
             print_outcome(or_fail!(result))
@@ -575,8 +579,8 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
                 ExitCode::SUCCESS
             }
         }
-        Command::Secrets { team, json } => {
-            let secrets = or_fail!(runtime::secrets(&team));
+        Command::Secrets { template, json } => {
+            let secrets = or_fail!(runtime::secrets(&template));
             if json {
                 let rows: Vec<serde_json::Value> = secrets
                     .iter()
@@ -584,7 +588,7 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
                     .collect();
                 println!("{}", serde_json::json!({ "secrets": rows }));
             } else if secrets.is_empty() {
-                println!("the team's plugins need no secrets");
+                println!("the template's plugins need no secrets");
             } else {
                 for (plugin, name, set) in &secrets {
                     println!("{plugin}: {name}  {}", if *set { "set" } else { "not set" });

@@ -30,7 +30,7 @@ roles:
     prompt: scout.md
     start: false
   dev:
-    team: dev
+    template: dev
     parent: lead
     start: false
     worktree: true
@@ -38,10 +38,10 @@ roles:
 
 fn worktrees_env() -> Env {
     let env = Env::new();
-    env.write("teams/oncall/team.yaml", TEAM_WITH_WORKTREES);
-    env.team("teams/dev");
+    env.write("templates/oncall/template.yaml", TEAM_WITH_WORKTREES);
+    env.team("templates/dev");
     env.write(
-        "teams/dev/team.yaml",
+        "templates/dev/template.yaml",
         "bus: {}\nroles:\n  lead: {prompt: lead.md}\n",
     );
     for folder in ["work/a", "work/b"] {

@@ -12,7 +12,7 @@ use instance_env::*;
 
 impl Env {
     fn role_extra(&self, role: &str, lines: &str) {
-        let path = self.path("teams/oncall/team.yaml");
+        let path = self.path("templates/oncall/template.yaml");
         let text = fs::read_to_string(&path).unwrap();
         let entry = format!("    prompt: {role}.md\n");
         fs::write(path, text.replace(&entry, &format!("{entry}{lines}"))).unwrap();
@@ -260,7 +260,7 @@ fn a_copy_whose_worktree_is_gone_does_not_start() {
 #[test]
 fn create_and_a_full_start_name_the_worktrees_they_add() {
     let env = copies_env(2);
-    let path = env.path("teams/oncall/team.yaml");
+    let path = env.path("templates/oncall/template.yaml");
     fs::write(
         &path,
         fs::read_to_string(&path).unwrap().replace(
@@ -297,7 +297,7 @@ fn create_and_a_full_start_name_the_worktrees_they_add() {
 #[test]
 fn refused_replacement_starts_do_not_leave_unkept_copy_folders() {
     let env = copies_env(2);
-    let path = env.path("teams/oncall/team.yaml");
+    let path = env.path("templates/oncall/template.yaml");
     fs::write(
         &path,
         fs::read_to_string(&path).unwrap().replace(
@@ -326,7 +326,7 @@ fn refused_replacement_starts_do_not_leave_unkept_copy_folders() {
 #[test]
 fn refused_starts_keep_folders_for_members_saved_before_launch() {
     let env = copies_env(2);
-    let path = env.path("teams/oncall/team.yaml");
+    let path = env.path("templates/oncall/template.yaml");
     fs::write(
         &path,
         fs::read_to_string(&path).unwrap().replace(
@@ -367,7 +367,7 @@ fn recorded_parents_can_manage_children_after_live_team_edits() {
         let lead = env.member(&inst, "lead");
         let helper = env.member(&inst, "helper");
         let scout = env.member(&inst, "scout");
-        let path = env.path("teams/oncall/team.yaml");
+        let path = env.path("templates/oncall/template.yaml");
         let original = fs::read_to_string(&path).unwrap();
         let changed = if invalid {
             "roles: [".into()
@@ -450,7 +450,7 @@ fn only_the_latest_parent_start_can_manage_children() {
 #[test]
 fn start_true_copies_keep_members_when_max_is_lowered() {
     let env = copies_env(3);
-    let path = env.path("teams/oncall/team.yaml");
+    let path = env.path("templates/oncall/template.yaml");
     let text = fs::read_to_string(&path)
         .unwrap()
         .replace("    start: false", "    start: true");
@@ -545,12 +545,12 @@ fn delete_and_cleanup_never_follow_a_rewritten_worktree_git_file() {
 // must never become sources. Nothing in these scenarios reaches the network.
 fn repositories_env(default: &str) -> Env {
     let env = Env::new();
-    env.team("teams/workers");
+    env.team("templates/workers");
     env.write(
-        "teams/oncall/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {team: workers, parent: lead, start: false, max: 8, worktree: true}\n  scout: {prompt: scout.md, start: false}\n",
+        "templates/oncall/template.yaml",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {template: workers, parent: lead, start: false, max: 8, worktree: true}\n  scout: {prompt: scout.md, start: false}\n",
     );
-    let workers = env.path("teams/workers/team.yaml");
+    let workers = env.path("templates/workers/template.yaml");
     let text = fs::read_to_string(&workers).unwrap();
     fs::write(
         workers,

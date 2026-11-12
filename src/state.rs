@@ -173,6 +173,7 @@ impl StateDir {
 /// Facts written at a start and read by `status`, `msg send`, shims and the gate.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Meta {
+    #[serde(rename = "template_dir")]
     pub team_dir: PathBuf,
     /// The instance's working folder.
     pub folder: PathBuf,
@@ -233,7 +234,20 @@ pub fn read_meta(state: &StateDir) -> Result<Option<Meta>, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
     };
-    serde_json::from_str(&text)
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    if value.get("team_dir").is_some()
+        || value
+            .get("config")
+            .and_then(|config| config.get("team_dirs"))
+            .is_some()
+    {
+        return Err(format!(
+            "this state was written by an older brg: destroy it with that brg, or remove {}",
+            state.root.display()
+        ));
+    }
+    serde_json::from_value(value)
         .map(Some)
         .map_err(|e| format!("cannot read {}: {e}", path.display()))
 }

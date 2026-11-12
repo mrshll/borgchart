@@ -328,7 +328,7 @@ fn member_cwd(inst: &Instance, role: &crate::team::Role, member: &str) -> Result
 ///
 /// Everything is checked before anything is written. Starting into a
 /// running instance (its session exists and its start record is there)
-/// reuses its base environment and plugin settings, and reads current team files.
+/// reuses its base environment and plugin settings, and reads current template files.
 /// Already-running members keep their launch settings. A bus keeps one store.
 /// The registry and lifecycle locks
 /// are held while files are written and windows started, and released before
@@ -435,14 +435,14 @@ fn start_members(
         if overlaps(cwd, &v.team.dir) {
             if v.posture(&member.id) == Posture::Locked {
                 return Err(format!(
-                    "{} is `locked`, and its folder {} overlaps the team folder {}, so it could change its own role files; give it a folder apart from the team. Nothing was started",
+                    "{} is `locked`, and its folder {} overlaps the template folder {}, so it could change its own role files; give it a folder apart from the template. Nothing was started",
                     inst.at(id),
                     cwd.display(),
                     v.team.dir.display()
                 ));
             }
             let note = format!(
-                "note: the team folder {} is inside the members' folder {}; they can change the team's files",
+                "note: the template folder {} is inside the members' folder {}; they can change the template's files",
                 v.team.dir.display(),
                 cwd.display()
             );
@@ -1212,11 +1212,10 @@ fn start_members(
     })
 }
 
-/// The first line of an instance's tree: its ID, team folder and working
+/// The first line of an instance's tree: its ID, template folder and working
 /// folder. On a terminal, only the ID and the working folder, with the home
-/// folder as `~`: the team folder is long and rarely what a person looks
-/// for. Piped text keeps the whole line, so what a script reads never
-/// changes.
+/// folder as `~`: the template folder is long and rarely what a person looks
+/// for. Piped text keeps the whole line.
 pub fn header(inst: &Instance) -> String {
     header_as(inst, std::io::stdout().is_terminal())
 }
@@ -1231,7 +1230,7 @@ pub fn header_as(inst: &Instance, short: bool) -> String {
         )
     } else {
         format!(
-            "{}  team {} · folder {}",
+            "{}  template {} · folder {}",
             inst.id,
             inst.record.team_dir.display(),
             inst.record.folder.display()
@@ -1407,7 +1406,7 @@ fn check_state_overlap(folder: &Path, instance_state: &Path) -> Result<(), Strin
     Ok(())
 }
 
-/// Validate a team folder, printing what validation found; `Err` on errors.
+/// Validate a template folder, printing what validation found; `Err` on errors.
 fn validate_printing(dir: &Path) -> Result<Validated, String> {
     let (report, validated) = validate(dir);
     for diag in &report.diags {
@@ -1444,7 +1443,7 @@ fn precheck(v: &Validated, roles: &[&crate::team::Role], secrets: bool) -> Resul
     Ok(())
 }
 
-/// `brg create <team> <folder>`: a new instance of the instance working in
+/// `brg create <template> <folder>`: a new instance of the instance working in
 /// `folder`, with its `start: true` roles' members, started.
 pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
     let mut report = crate::diag::Report::default();
@@ -1599,14 +1598,14 @@ pub fn create_member(
         && worktree == Some(false)
     {
         return Err(format!(
-            "`--branch {branch}` names a branch for a new worktree, but role `{role}` works in the team's folder (no `worktree: true`)"
+            "`--branch {branch}` names a branch for a new worktree, but role `{role}` works in the instance's folder (no `worktree: true`)"
         ));
     }
     if let Some(repo) = repo
         && worktree == Some(false)
     {
         return Err(format!(
-            "`--repo {repo}` names a clone for a new worktree, but role `{role}` works in the team's folder (no `worktree: true`)"
+            "`--repo {repo}` names a clone for a new worktree, but role `{role}` works in the instance's folder (no `worktree: true`)"
         ));
     }
     if let Some(team_role) = v.team.team_roles.get(role) {
@@ -1619,7 +1618,7 @@ pub fn create_member(
     }
     let Some(member) = v.team.roles.get(role) else {
         return Err(format!(
-            "instance `{}`'s team has no role `{role}`; its roles: {}",
+            "instance `{}`'s template has no role `{role}`; its roles: {}",
             inst.id,
             v.team.roles.keys().cloned().collect::<Vec<_>>().join(", ")
         ));
@@ -1906,23 +1905,19 @@ pub fn is_running(inst: &Instance) -> bool {
     tmux.windows(&inst.state.session()).iter().any(|w| !w.dead)
 }
 
-/// `brg start <instance> --team <path>`: point a stopped instance at its
-/// team folder's new place.
+/// `brg start <instance> --template <path>`: point a stopped instance at its
+/// template folder's new place.
 fn repoint(inst: &mut Instance, team: &Path) -> Result<(), String> {
     let dir = team
         .canonicalize()
         .map_err(|_| format!("{} does not exist", team.display()))?;
     if !dir.join(crate::team::TEAM_FILE).is_file() {
-        return Err(format!(
-            "{} is not a team folder (no {} in it)",
-            dir.display(),
-            crate::team::TEAM_FILE
-        ));
+        return Err(crate::team::missing_template(&dir));
     }
     let name = crate::team::team_name(&dir);
     if name != inst.record.team {
         return Err(format!(
-            "{} is team `{name}`, not instance `{}`'s team `{}`",
+            "{} is template `{name}`, not instance `{}`'s template `{}`",
             dir.display(),
             inst.id,
             inst.record.team
@@ -1932,10 +1927,10 @@ fn repoint(inst: &mut Instance, team: &Path) -> Result<(), String> {
     inst.reload()?;
     crate::nesting::check_not_stopping(inst)?;
     check_instance_authority(inst)?;
-    unreadable_start_record(inst, "its team folder can't be changed")?;
+    unreadable_start_record(inst, "its template folder can't be changed")?;
     if is_running(inst) {
         return Err(format!(
-            "instance `{}` is running; a new team folder applies only from a full stop: brg stop {}",
+            "instance `{}` is running; a new template folder applies only from a full stop: brg stop {}",
             inst.id, inst.id
         ));
     }
@@ -2009,7 +2004,7 @@ fn recorded_session(state: &StateDir, member: &str) -> Option<String> {
     crate::gate::usable_session_id(id).then(|| id.to_string())
 }
 
-/// `brg start <instance>[/<member>] [--team <path>] [--resume]`.
+/// `brg start <instance>[/<member>] [--template <path>] [--resume]`.
 pub fn start(
     inst: Instance,
     member: Option<&str>,
@@ -2029,7 +2024,8 @@ fn start_instance(
     if let Some(dir) = team {
         if member.is_some() {
             return Err(
-                "`--team` points the whole instance at a team folder; leave the member out".into(),
+                "`--template` points the whole instance at a template folder; leave the member out"
+                    .into(),
             );
         }
         repoint(&mut inst, dir)?;
@@ -2037,7 +2033,7 @@ fn start_instance(
     let member = member.map(|m| address::member(&inst, m)).transpose()?;
     if !inst.record.team_dir.join(crate::team::TEAM_FILE).is_file() {
         return Err(format!(
-            "instance `{}`'s team folder {} is gone; if it moved, point the instance at it: brg start {} --team <path>",
+            "instance `{}`'s template folder {} is gone; if it moved, point the instance at it: brg start {} --template <path>",
             inst.id,
             inst.record.team_dir.display(),
             inst.id
@@ -2252,7 +2248,7 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
         })
     {
         return Err(format!(
-            "brg can't tell whether member `{}` has kept children, so it can't be deleted, even with --force; restore its team and start the instance: brg start {} --team <path>",
+            "brg can't tell whether member `{}` has kept children, so it can't be deleted, even with --force; restore its template and start the instance: brg start {} --template <path>",
             inst.at(&id),
             inst.id
         ));
@@ -2276,7 +2272,7 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
                 .join("\n  "),
             if recorded_only {
                 format!(
-                    "\nthe team file changed since the last start; brg start {} applies it",
+                    "\nthe template file changed since the last start; brg start {} applies it",
                     inst.id
                 )
             } else {
@@ -2672,7 +2668,7 @@ pub fn reset(inst: Instance, warn: impl FnOnce(String)) -> Result<crate::cleanup
     Ok(out)
 }
 
-/// `brg secrets <team>`: each secret its plugins need (plugin, name), and
+/// `brg secrets <template>`: each secret its plugins need (plugin, name), and
 /// whether the caller's environment sets it. No value is read out.
 pub fn secrets(team: &str) -> Result<Vec<(String, String, bool)>, String> {
     let mut report = crate::diag::Report::default();
@@ -2703,11 +2699,13 @@ pub fn secrets(team: &str) -> Result<Vec<(String, String, bool)>, String> {
         .collect())
 }
 
-/// One team in `brg templates`, with its instances.
+/// One template in `brg templates`, with its instances.
 #[derive(Debug, Serialize)]
 pub struct Listed {
-    /// `None` for instances whose team is outside the search paths.
+    /// `None` for instances whose template is outside the search paths.
+    #[serde(rename = "template")]
     pub team: Option<String>,
+    #[serde(rename = "template_dir")]
     pub dir: Option<PathBuf>,
     pub instances: Vec<ListedInstance>,
 }
@@ -2715,15 +2713,17 @@ pub struct Listed {
 #[derive(Debug, Serialize)]
 pub struct ListedInstance {
     pub instance: String,
+    #[serde(rename = "template")]
     pub team: String,
+    #[serde(rename = "template_dir")]
     pub team_dir: PathBuf,
     pub folder: PathBuf,
     pub running: bool,
     pub created_at: String,
 }
 
-/// `brg templates`: the teams in the search paths, each with its instances, then
-/// instances whose team is elsewhere.
+/// `brg templates`: the templates in the search paths, each with its instances, then
+/// instances whose template is elsewhere.
 pub fn ls() -> Result<Vec<Listed>, String> {
     let mut report = crate::diag::Report::default();
     let config = crate::config::load(&mut report).ok_or_else(|| {
@@ -2734,6 +2734,12 @@ pub fn ls() -> Result<Vec<Listed>, String> {
             .join("\n")
     })?;
     let registry = registry::load()?;
+    for dir in crate::team::retired_folders(&config.teams) {
+        eprintln!("{}", crate::team::missing_template(&dir));
+    }
+    if let Some(hint) = crate::team::retired_default_catalog(&config.teams) {
+        eprintln!("{hint}");
+    }
     let listed = |id: &String, e: &registry::Entry| ListedInstance {
         instance: id.clone(),
         team: e.team.clone(),
@@ -2782,7 +2788,7 @@ pub fn render_ls(listed: &[Listed]) -> String {
     for l in listed {
         match (&l.team, &l.dir) {
             (Some(name), Some(dir)) => out.push_str(&format!("{name}  {}\n", dir.display())),
-            _ => out.push_str("instances of teams outside the search paths\n"),
+            _ => out.push_str("instances of templates outside the search paths\n"),
         }
         if l.instances.is_empty() {
             out.push_str("  (no instances)\n");
@@ -2794,7 +2800,7 @@ pub fn render_ls(listed: &[Listed]) -> String {
                 if i.running { "running" } else { "stopped" },
                 i.folder.display(),
                 if l.team.is_none() {
-                    format!("  team {}", i.team_dir.display())
+                    format!("  template {}", i.team_dir.display())
                 } else {
                     String::new()
                 }
@@ -2802,7 +2808,7 @@ pub fn render_ls(listed: &[Listed]) -> String {
         }
     }
     if out.is_empty() {
-        out.push_str("no teams in the search paths and no instances\n");
+        out.push_str("no templates in the search paths and no instances\n");
     }
     out
 }
@@ -2978,7 +2984,7 @@ enum SubtreeStop {
     },
 }
 
-/// Collect recorded parent edges, not roles from a possibly edited team file.
+/// Collect recorded parent edges, not roles from a possibly edited template file.
 fn member_stop_walk(
     inst: &Instance,
     meta: &Meta,
@@ -3407,7 +3413,8 @@ pub struct StatusRow {
     /// `member`, `role` (no member or copy yet), `copy` or `plugin`.
     pub kind: &'static str,
     pub instance: String,
-    /// The instance's name.
+    /// The template's name.
+    #[serde(rename = "template")]
     pub team: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub member: Option<String>,
@@ -3492,11 +3499,11 @@ pub fn state_label(row: &StatusRow) -> String {
     }
 }
 
-/// Validate the instance's team folder, as recorded.
+/// Validate the instance's template folder, as recorded.
 pub(crate) fn validated(inst: &Instance) -> Result<Validated, String> {
     if !inst.record.team_dir.join(crate::team::TEAM_FILE).is_file() {
         return Err(format!(
-            "instance `{}`'s team folder {} is gone; if it moved, point the instance at it after a full stop: brg start {} --team <path>",
+            "instance `{}`'s template folder {} is gone; if it moved, point the instance at it after a full stop: brg start {} --template <path>",
             inst.id,
             inst.record.team_dir.display(),
             inst.id

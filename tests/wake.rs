@@ -817,20 +817,20 @@ impl Env {
         let folder = self.dir.path();
         write(
             &folder.join("registry.json"),
-            json!({"schema":1,"instances":{"state":{
-            "team":"sample","team_dir":folder,"folder":folder,"created_at":"2026-11-09T00:00:00Z"
+            json!({"schema":2,"instances":{"state":{
+            "template":"sample","template_dir":folder,"folder":folder,"created_at":"2026-11-09T00:00:00Z"
         }},"issued":{}}),
         );
         write(
             &self.state.instance_file(),
-            json!({"schema":1,"id":"state","team":"sample",
-            "team_dir":folder,"folder":folder,"created_at":"2026-11-09T00:00:00Z","members":{"m":{"role":"worker"}}}),
+            json!({"schema":2,"id":"state","template":"sample",
+            "template_dir":folder,"folder":folder,"created_at":"2026-11-09T00:00:00Z","members":{"m":{"role":"worker"}}}),
         );
         write(
             &self.state.meta_file(),
-            json!({"team_dir":folder,"folder":folder,
+            json!({"template_dir":folder,"folder":folder,
             "brg":env!("CARGO_BIN_EXE_brg"),
-            "config":{"version":1,"digest":"00","inputs":{},"team_dirs":{}},
+            "config":{"version":1,"digest":"00","inputs":{},"template_dirs":{}},
             "socket":"brg-wake-test","windows_started":true,
             "base_env":{},"plugins":{},"members":{"m":{
                 "role":"worker","vendor":vendor.as_str(),"posture":if locked {"locked"} else {"vendor"},

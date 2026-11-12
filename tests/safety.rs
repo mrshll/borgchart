@@ -131,7 +131,7 @@ fn killed_server_holds_checkout_until_full_stop_confirms_processes_gone() {
 /// damaged: brg can no longer read which tmux server runs it.
 fn damaged_start_record() -> (Env, String) {
     let env = Env::new();
-    env.write("teams/oncall/team.yaml", TEAM);
+    env.write("templates/oncall/template.yaml", TEAM);
     let a = env.create("oncall", "work/a");
     fs::write(
         env.path(&format!("state/{a}/start.json")),
@@ -187,7 +187,7 @@ fn a_damaged_start_record_blocks_a_repoint() {
     let before = (fs::read_to_string(&record).unwrap(), env.registry());
     let other = env.tmux.socket("brg-other");
     let out = env
-        .cmd(&["start", &a, "--team", &env.folder("moved/oncall")])
+        .cmd(&["start", &a, "--template", &env.folder("moved/oncall")])
         .env("BORGCHART_TMUX_SOCKET", &other)
         .output()
         .unwrap();
@@ -203,6 +203,26 @@ fn a_damaged_start_record_blocks_a_repoint() {
 // --- 7. Moved folders ---
 
 #[test]
+fn repointing_at_a_retired_template_names_the_replacement() {
+    let env = Env::new();
+    let team = env.create("oncall", "work/a");
+    env.ok(&["stop", &team]);
+    env.team("old/oncall");
+    fs::rename(
+        env.path("old/oncall/template.yaml"),
+        env.path("old/oncall/team.yaml"),
+    )
+    .unwrap();
+    let before = env.registry();
+    let error = env.fails(&["start", &team, "--template", &env.folder("old/oncall")]);
+    assert!(
+        error.contains("team.yaml") && error.contains("template.yaml"),
+        "{error}"
+    );
+    assert_eq!(env.registry(), before);
+}
+
+#[test]
 fn a_moved_team_folder_is_re_pointed_after_a_full_stop() {
     let env = Env::new();
     let a = env.create("oncall", "work/a");
@@ -210,14 +230,14 @@ fn a_moved_team_folder_is_re_pointed_after_a_full_stop() {
     let out = env.publish(&a, &json!({"to": lead, "body": "keep me"}));
     assert!(out.status.success(), "{}", both(&out));
     fs::create_dir_all(env.path("elsewhere")).unwrap();
-    fs::rename(env.path("teams/oncall"), env.path("elsewhere/oncall")).unwrap();
+    fs::rename(env.path("templates/oncall"), env.path("elsewhere/oncall")).unwrap();
     let moved = env.folder("elsewhere/oncall");
-    let err = env.fails(&["start", &a, "--team", &moved]);
+    let err = env.fails(&["start", &a, "--template", &moved]);
     assert!(err.contains(&format!("brg stop {a}")), "{err}");
     env.ok(&["stop", &a]);
     let err = env.fails(&["start", &a]);
-    assert!(err.contains("--team"), "{err}");
-    env.ok(&["start", &a, "--team", &moved]);
+    assert!(err.contains("--template"), "{err}");
+    env.ok(&["start", &a, "--template", &moved]);
     env.wait_for("lead idle", || env.state_of(&a, "lead") == "idle");
     assert_eq!(env.member(&a, "lead"), lead, "the same instance and member");
     let inbox = stdout(&env.ok(&["msg", "list", "--member", &lead, "--instance", &a, "--full"]));
@@ -280,7 +300,7 @@ fn an_unreadable_store_still_stops_and_delete_needs_force() {
     env.ok(&["delete", &a, "--force"]);
 }
 
-// --- 14. brg's state folder and the team folder ---
+// --- 14. brg's state folder and the template folder ---
 
 #[test]
 fn a_working_folder_overlapping_brgs_state_is_refused() {
@@ -301,22 +321,22 @@ fn a_working_folder_overlapping_brgs_state_is_refused() {
 fn locked_members_cant_work_around_the_team_folder_and_vendor_ones_get_a_note() {
     let env = Env::new();
     // `vendor` posture: a note.
-    let out = env.ok(&["create", "oncall", &env.folder("teams")]);
-    assert!(stdout(&out).contains("team folder"), "{}", both(&out));
+    let out = env.ok(&["create", "oncall", &env.folder("templates")]);
+    assert!(stdout(&out).contains("template folder"), "{}", both(&out));
     let a = first_word(&stdout(&out));
     env.ok(&["stop", &a]);
     env.ok(&["delete", &a]);
-    // `locked`: refused because the working folder includes the team files.
+    // `locked`: refused because the working folder includes the template files.
     env.write(
-        "teams/oncall/team.yaml",
+        "templates/oncall/template.yaml",
         &TEAM.replace(
             "  lead:\n    prompt: lead.md\n",
             "  lead:\n    prompt: lead.md\n    posture: locked\n",
         ),
     );
-    let err = env.fails(&["create", "oncall", &env.folder("teams")]);
+    let err = env.fails(&["create", "oncall", &env.folder("templates")]);
     assert!(
-        err.contains("locked") && err.contains("team folder"),
+        err.contains("locked") && err.contains("template folder"),
         "{err}"
     );
 }

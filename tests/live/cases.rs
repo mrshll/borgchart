@@ -68,7 +68,7 @@ impl<'w> Team<'w> {
         std::fs::create_dir_all(&dir).unwrap();
         let args = serde_json::to_string(s.args).unwrap();
         std::fs::write(
-            dir.join("team.yaml"),
+            dir.join("template.yaml"),
             format!(
                 "{bus}roles:\n  {m}:\n    prompt: {m}.md\n    vendor: {v}\n    args: {args}\n{posture}",
                 bus = if s.bus { "bus: {}\n" } else { "" },
@@ -91,7 +91,7 @@ impl<'w> Team<'w> {
         let config = dir.with_extension("yaml");
         std::fs::write(
             &config,
-            format!("schema: 1\nteams: []\nauto_trust: {}\n", s.auto_trust),
+            format!("schema: 1\ntemplates: []\nauto_trust: {}\n", s.auto_trust),
         )
         .unwrap();
         let vendor = match s.who {
@@ -123,7 +123,7 @@ impl<'w> Team<'w> {
         let instance = registry["instances"]
             .as_object()?
             .iter()
-            .find(|(_, e)| e["team_dir"] == dir.as_str())
+            .find(|(_, e)| e["template_dir"] == dir.as_str())
             .map(|(id, _)| id.clone())?;
         let record = read(state.join(&instance).join("instance.json"))?;
         let member = record["members"]

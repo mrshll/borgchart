@@ -1,4 +1,4 @@
-//! Whole-team validation: the team, brg's global configuration, and the
+//! Whole-template validation: the template, brg's global configuration, and the
 //! rules between them.
 
 use std::collections::BTreeSet;
@@ -31,7 +31,7 @@ impl Validated {
         self.config.auth
     }
 
-    /// Where a plugin's commands live: its folder in the team, or under
+    /// Where a plugin's commands live: its folder in the template, or under
     /// `plugins_dir`; `None` for commands on `PATH`.
     pub fn plugin_dir(&self, name: &str) -> Option<PathBuf> {
         let plugin = self.team.plugins.get(name)?;
@@ -44,15 +44,15 @@ impl Validated {
     }
 }
 
-/// Validate a team folder and the global configuration before anything
+/// Validate a template folder and the global configuration before anything
 /// starts. Returns the report and, when there were no errors, the resolved
-/// team and configuration.
+/// template and configuration.
 pub fn validate(team_dir: &Path) -> (Report, Option<Validated>) {
     validate_against(team_dir, &[])
 }
 
-/// Validate a copy's current team files against its actual, recorded
-/// ancestor folders, including after an explicit team-folder move.
+/// Validate a copy's current template files against its actual, recorded
+/// ancestor folders, including after an explicit template-folder move.
 pub fn validate_against(team_dir: &Path, ancestors: &[PathBuf]) -> (Report, Option<Validated>) {
     let mut report = Report::default();
     let Some(config) = config::load(&mut report) else {
@@ -61,7 +61,7 @@ pub fn validate_against(team_dir: &Path, ancestors: &[PathBuf]) -> (Report, Opti
     validate_into(team_dir, config, report, ancestors, None)
 }
 
-/// Validate only the declaring instance's files. Referenced teams are
+/// Validate only the declaring instance's files. Referenced templates are
 /// checked separately when a copy is created or started.
 pub(crate) fn validate_own(
     team_dir: &Path,
@@ -93,7 +93,7 @@ fn validate_into(
         return (report, None);
     };
     let validated = Validated { team, config };
-    // Configuration warnings once, first: the team tree is checked per team.
+    // Configuration warnings once, first: the template tree is checked per template.
     if let Some(user) = &validated.config.tmux_user_config {
         check_user_tmux_config(user, validated.config.file.as_deref(), &mut report);
     }
@@ -116,7 +116,7 @@ fn check_team_tree(v: &Validated, ancestors: &[PathBuf], recursive: bool, report
         if parents.contains(&team.dir) {
             report.error(
                 Some(&declaring_file),
-                format!("team cycle: {} is already an ancestor; change the `team` reference so the team does not contain itself", team.dir.display()),
+                format!("template cycle: {} is already an ancestor; change the `template` reference so the template does not contain itself", team.dir.display()),
             );
             continue;
         }
@@ -148,7 +148,7 @@ fn cross_check(v: &Validated, report: &mut Report) {
     let config_file = config_file.as_deref();
 
     if v.team.roles.is_empty() {
-        report.warning(team_file, "the team has no roles");
+        report.warning(team_file, "the template has no roles");
     }
     for name in v.team.plugins.keys() {
         if v.team.roles.contains_key(name) {
@@ -351,7 +351,10 @@ fn check_bus(v: &Validated, bus: &team::BusConfig, team_file: Option<&Path>, rep
         match v.team.plugins.get(&alert.plugin) {
             None => report.error(
                 team_file,
-                format!("bus: alert plugin `{}` is not in the team", alert.plugin),
+                format!(
+                    "bus: alert plugin `{}` is not in the template",
+                    alert.plugin
+                ),
             ),
             Some(plugin) => {
                 if !plugin.actions.contains_key(&alert.action) {

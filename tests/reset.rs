@@ -29,7 +29,7 @@ roles:
     max: 2
     worktree: true
   dev:
-    team: dev
+    template: dev
     parent: lead
     start: false
     max: 2
@@ -38,10 +38,10 @@ roles:
 
 fn tree_env() -> Env {
     let env = Env::new();
-    env.write("teams/oncall/team.yaml", TREE);
-    env.team("teams/dev");
+    env.write("templates/oncall/template.yaml", TREE);
+    env.team("templates/dev");
     env.write(
-        "teams/dev/team.yaml",
+        "templates/dev/template.yaml",
         "bus: {}\nroles:\n  lead: {prompt: lead.md}\n",
     );
     fs::remove_dir(env.path("work/a")).unwrap();

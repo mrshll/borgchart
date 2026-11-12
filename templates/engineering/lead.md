@@ -12,7 +12,7 @@ On start, and whenever you resume:
 2. Read `$BORGCHART_NOTES/work.md`. If it's missing, this is a new instance: start it from the owner's handover message.
 3. Run `status` with no instance.
 
-Roles come from `team.yaml`, not from what happens to be running.
+Roles come from `template.yaml`, not from what happens to be running.
 
 ## Keep the record
 

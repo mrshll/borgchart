@@ -2,7 +2,7 @@
 
 pub fn root() -> String {
     "Teams and instances:
-  `brg create <team> <folder>` starts an instance. `start`, `stop`, `delete`
+  `brg create <template> <folder>` starts an instance. `start`, `stop`, `delete`
   and `status` act on it; members are addressed as <instance>/<member>.
 
 Inside a member:

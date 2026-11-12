@@ -68,7 +68,7 @@ fn valid_team_loads() {
 fn remote_control_refuses_codex_members() {
     let f = Fixture::new();
     f.edit(
-        "team.yaml",
+        "template.yaml",
         "  lead:\n",
         "  lead:\n    vendor: codex\n    remote_control: true\n",
     );
@@ -79,7 +79,7 @@ fn remote_control_refuses_codex_members() {
 fn remote_control_refuses_api_key_auth() {
     let f = Fixture::new();
     f.edit(
-        "team.yaml",
+        "template.yaml",
         "  lead:\n",
         "  lead:\n    remote_control: true\n",
     );
@@ -92,9 +92,9 @@ fn remote_control_refuses_team_roles_even_when_false() {
     for enabled in [true, false] {
         let f = nested_team();
         f.edit(
-            "team.yaml",
-            "team: dev,",
-            &format!("team: dev, remote_control: {enabled},"),
+            "template.yaml",
+            "template: dev,",
+            &format!("template: dev, remote_control: {enabled},"),
         );
         refused(&f);
     }
@@ -103,13 +103,16 @@ fn remote_control_refuses_team_roles_even_when_false() {
 fn nested_team() -> Fixture {
     let f = Fixture::new();
     f.write(
-        "team.yaml",
-        "roles:\n  lead: {prompt: lead.md}\n  dev: {team: dev, parent: lead}\n",
+        "template.yaml",
+        "roles:\n  lead: {prompt: lead.md}\n  dev: {template: dev, parent: lead}\n",
     );
-    f.write("teams/dev/team.yaml", "roles: {}\n");
+    f.write("templates/dev/template.yaml", "roles: {}\n");
     f.write(
         "config.yaml",
-        &format!("schema: 1\nteams: [{}]\n", f.path("teams").display()),
+        &format!(
+            "schema: 1\ntemplates: [{}]\n",
+            f.path("templates").display()
+        ),
     );
     f
 }
@@ -125,7 +128,7 @@ fn refused(f: &Fixture) -> Report {
 fn agent_parent_refuses_team_roles() {
     let f = nested_team();
     f.edit(
-        "team.yaml",
+        "template.yaml",
         "  dev:",
         "  helper: {prompt: lead.md, parent: dev}\n  dev:",
     );
@@ -136,9 +139,9 @@ fn agent_parent_refuses_team_roles() {
 fn team_parent_refuses_team_roles() {
     let f = nested_team();
     f.edit(
-        "team.yaml",
+        "template.yaml",
         "  dev:",
-        "  panel: {team: dev, parent: dev}\n  dev:",
+        "  panel: {template: dev, parent: dev}\n  dev:",
     );
     expect_error(&f, "parent `dev` is a team role; name an agent role");
 }
@@ -147,7 +150,7 @@ fn team_parent_refuses_team_roles() {
 fn plugin_delivery_refuses_team_roles() {
     let f = nested_team();
     f.edit(
-        "team.yaml",
+        "template.yaml",
         "roles:",
         "plugins: {events: {process: [watch], delivers_to: dev}}\nroles:",
     );
@@ -157,31 +160,35 @@ fn plugin_delivery_refuses_team_roles() {
 #[test]
 fn team_roles_refuse_direct_cycles_through_resolved_folder_aliases() {
     let f = nested_team();
-    std::os::unix::fs::symlink(f.dir.path(), f.path("teams/alias")).unwrap();
+    std::os::unix::fs::symlink(f.dir.path(), f.path("templates/alias")).unwrap();
     let name = borgchart::team::team_name(f.dir.path());
-    f.edit("team.yaml", "team: dev", &format!("team: {name}"));
-    expect_error(&f, "team cycle:");
+    f.edit(
+        "template.yaml",
+        "template: dev",
+        &format!("template: {name}"),
+    );
+    expect_error(&f, "template cycle:");
 }
 
 #[test]
 fn team_roles_refuse_indirect_cycles() {
     let f = nested_team();
-    std::os::unix::fs::symlink(f.dir.path(), f.path("teams/ancestor")).unwrap();
+    std::os::unix::fs::symlink(f.dir.path(), f.path("templates/ancestor")).unwrap();
     let name = borgchart::team::team_name(f.dir.path());
     f.write(
-        "teams/dev/team.yaml",
-        &format!("roles: {{back: {{team: {name}}}}}\n"),
+        "templates/dev/template.yaml",
+        &format!("roles: {{back: {{template: {name}}}}}\n"),
     );
-    expect_error(&f, "team cycle:");
+    expect_error(&f, "template cycle:");
 }
 
 #[test]
 fn reused_team_folders_are_not_cycles() {
     let f = nested_team();
     f.edit(
-        "team.yaml",
+        "template.yaml",
         "  dev:",
-        "  peer: {team: dev, parent: lead}\n  dev:",
+        "  peer: {template: dev, parent: lead}\n  dev:",
     );
     let (report, validated) = f.run();
     assert!(validated.is_some(), "{}", errors(&report));
@@ -189,10 +196,20 @@ fn reused_team_folders_are_not_cycles() {
 
 #[test]
 fn team_roles_refuse_paths_and_shared_references() {
-    for reference in ["/tmp/dev", "dev/../dev", "teams/dev", "./dev", "shared:dev"] {
+    for reference in [
+        "/tmp/dev",
+        "dev/../dev",
+        "templates/dev",
+        "./dev",
+        "shared:dev",
+    ] {
         let f = nested_team();
-        f.edit("team.yaml", "team: dev", &format!("team: {reference}"));
-        expect_error(&f, "must be a team name");
+        f.edit(
+            "template.yaml",
+            "template: dev",
+            &format!("template: {reference}"),
+        );
+        expect_error(&f, "must be a template name");
     }
 }
 
@@ -205,7 +222,11 @@ fn team_roles_take_worktree_and_no_cwd() {
         "{}",
         errors(&report)
     );
-    f.edit("team.yaml", "team: dev,", "team: dev, worktree: true,");
+    f.edit(
+        "template.yaml",
+        "template: dev,",
+        "template: dev, worktree: true,",
+    );
     let (report, validated) = f.run();
     assert!(
         validated.unwrap().team.team_roles["dev"].worktree,
@@ -214,9 +235,9 @@ fn team_roles_take_worktree_and_no_cwd() {
     );
     let f = nested_team();
     f.edit(
-        "team.yaml",
-        "team: dev,",
-        "team: dev, cwd: 'dev/{member_id}',",
+        "template.yaml",
+        "template: dev,",
+        "template: dev, cwd: 'dev/{member_id}',",
     );
     expect_error(&f, "unknown field `cwd`");
 }
@@ -224,16 +245,20 @@ fn team_roles_take_worktree_and_no_cwd() {
 #[test]
 fn team_roles_refuse_automatic_start_before_preparation() {
     let f = nested_team();
-    f.edit("team.yaml", "team: dev", "team: dev, start: true");
+    f.edit(
+        "template.yaml",
+        "template: dev",
+        "template: dev, start: true",
+    );
     expect_error(&f, "create and prepare each copy before starting it");
-    f.edit("team.yaml", "start: true", "start: false");
+    f.edit("template.yaml", "start: true", "start: false");
     assert!(f.run().1.is_some());
 }
 
 #[test]
 fn team_roles_refuse_zero_copy_limits() {
     let f = nested_team();
-    f.edit("team.yaml", "team: dev", "team: dev, max: 0");
+    f.edit("template.yaml", "template: dev", "template: dev, max: 0");
     expect_error(&f, "`max` must be at least 1");
 }
 
@@ -256,12 +281,16 @@ fn team_roles_refuse_agent_fields_including_empty_and_false_values() {
         "posture: null",
     ] {
         let f = nested_team();
-        f.edit("team.yaml", "team: dev", &format!("team: dev, {field}"));
+        f.edit(
+            "template.yaml",
+            "template: dev",
+            &format!("template: dev, {field}"),
+        );
         let report = refused(&f);
         let name = field.split(':').next().unwrap();
         assert!(
             report.errors().any(|d| {
-                d.file == Some(f.path("team.yaml"))
+                d.file == Some(f.path("template.yaml"))
                     && d.to_string()
                         .contains(&format!("role `dev`: remove `{name}`"))
             }),
@@ -275,8 +304,11 @@ fn team_roles_refuse_agent_fields_including_empty_and_false_values() {
 fn nested_teams_need_no_bus_opt_in_at_any_depth() {
     let f = nested_team();
     assert!(f.run().1.is_some());
-    f.write("teams/dev/team.yaml", "roles: {panel: {team: panel}}\n");
-    f.write("teams/panel/team.yaml", "roles: {}\n");
+    f.write(
+        "templates/dev/template.yaml",
+        "roles: {panel: {template: panel}}\n",
+    );
+    f.write("templates/panel/template.yaml", "roles: {}\n");
     let (report, validated) = f.run();
     assert!(validated.is_some(), "{}", errors(&report));
 }
@@ -285,12 +317,12 @@ fn nested_teams_need_no_bus_opt_in_at_any_depth() {
 fn validate_reports_subteam_errors_at_the_subteam_file() {
     let f = nested_team();
     f.write(
-        "teams/dev/team.yaml",
+        "templates/dev/template.yaml",
         "roles: {helper: {prompt: missing.md}}\n",
     );
     let report = refused(&f);
     assert!(report.errors().any(|d| {
-        d.file == Some(f.path("teams/dev/team.yaml"))
+        d.file == Some(f.path("templates/dev/template.yaml"))
             && d.to_string()
                 .contains("role `helper`: prompt `missing.md` does not exist")
     }));
@@ -308,7 +340,7 @@ fn copy_limits_refuse_zero() {
     ] {
         let f = Fixture::new();
         // Use a new leaf so neither parent nor plugin delivery is ambiguous.
-        let path = f.path("team.yaml");
+        let path = f.path("template.yaml");
         let text = fs::read_to_string(&path).unwrap();
         fs::write(
             path,
@@ -332,7 +364,7 @@ fn parents_and_plugin_delivery_cannot_choose_between_copies() {
     for target in ["lead", "triager"] {
         let f = Fixture::new();
         f.edit(
-            "team.yaml",
+            "template.yaml",
             &format!("    prompt: {target}.md\n"),
             &format!("    prompt: {target}.md\n    max: 2\n    worktree: true\n"),
         );
@@ -349,7 +381,7 @@ fn parents_and_plugin_delivery_cannot_choose_between_copies() {
 fn duplicate_keys_are_errors() {
     let f = Fixture::new();
     f.edit(
-        "team.yaml",
+        "template.yaml",
         "default: claude\n",
         "default: claude\ndefault: codex\n",
     );
@@ -360,7 +392,7 @@ fn duplicate_keys_are_errors() {
 fn yes_is_not_a_boolean() {
     let f = Fixture::new();
     f.edit(
-        "team.yaml",
+        "template.yaml",
         "    prompt: lead.md\n",
         "    prompt: lead.md\n    start: no\n",
     );
@@ -371,7 +403,7 @@ fn yes_is_not_a_boolean() {
 fn merge_keys_are_refused() {
     let f = Fixture::new();
     f.edit(
-        "team.yaml",
+        "template.yaml",
         "  lead:\n    prompt: lead.md\n",
         "  lead:\n    <<: {prompt: lead.md}\n",
     );
@@ -382,7 +414,7 @@ fn merge_keys_are_refused() {
 fn unknown_fields_are_errors() {
     let f = Fixture::new();
     f.edit(
-        "team.yaml",
+        "template.yaml",
         "    prompt: lead.md\n",
         "    prompt: lead.md\n    colour: blue\n",
     );
@@ -441,7 +473,7 @@ fn prompt_symlink_outside_team_is_refused() {
 #[test]
 fn dotdot_paths_are_refused() {
     let f = Fixture::new();
-    f.edit("team.yaml", "prompt: lead.md", "prompt: ../lead.md");
+    f.edit("template.yaml", "prompt: lead.md", "prompt: ../lead.md");
     expect_error(&f, "`..`");
 }
 
@@ -475,7 +507,7 @@ fn include_amplification_is_capped() {
 fn parent_cycles_are_errors() {
     let f = Fixture::new();
     f.edit(
-        "team.yaml",
+        "template.yaml",
         "    prompt: lead.md\n",
         "    prompt: lead.md\n    parent: triager\n",
     );
@@ -485,7 +517,7 @@ fn parent_cycles_are_errors() {
 #[test]
 fn unknown_parent_is_an_error() {
     let f = Fixture::new();
-    f.edit("team.yaml", "parent: lead", "parent: boss");
+    f.edit("template.yaml", "parent: lead", "parent: boss");
     expect_error(&f, "parent `boss` is not a role");
 }
 
@@ -499,7 +531,11 @@ fn bad_effort_is_an_error() {
 #[test]
 fn missing_plugin_dir_is_an_error() {
     let f = Fixture::new();
-    f.edit("team.yaml", "path: plugins/slackbot", "path: plugins/nope");
+    f.edit(
+        "template.yaml",
+        "path: plugins/slackbot",
+        "path: plugins/nope",
+    );
     expect_error(&f, "does not exist");
 }
 
@@ -518,7 +554,7 @@ fn non_executable_command_is_an_error() {
 fn grant_of_undeclared_plugin_is_an_error() {
     let f = Fixture::new();
     f.edit(
-        "team.yaml",
+        "template.yaml",
         "plugins: {slackbot: [read, reply]}",
         "plugins: {pager: [page]}",
     );
@@ -528,7 +564,7 @@ fn grant_of_undeclared_plugin_is_an_error() {
 #[test]
 fn grant_of_undeclared_action_is_an_error() {
     let f = Fixture::new();
-    f.edit("team.yaml", "[read, escalate]", "[read, delete]");
+    f.edit("template.yaml", "[read, escalate]", "[read, delete]");
     expect_error(&f, "undeclared action `delete`");
 }
 
@@ -556,7 +592,11 @@ fn missing_secret_names_warn() {
 #[test]
 fn delivers_to_must_be_a_role() {
     let f = Fixture::new();
-    f.edit("team.yaml", "delivers_to: triager", "delivers_to: nobody");
+    f.edit(
+        "template.yaml",
+        "delivers_to: triager",
+        "delivers_to: nobody",
+    );
     expect_error(&f, "`delivers_to: nobody` is not a role");
 }
 
@@ -564,7 +604,7 @@ fn delivers_to_must_be_a_role() {
 fn unknown_and_reserved_postures_are_errors() {
     let f = Fixture::new();
     f.edit(
-        "team.yaml",
+        "template.yaml",
         "    posture: locked\n    untrusted_input: true\n    plugins: {slackbot: [read, reply]}",
         "    posture: open\n    plugins: {slackbot: [read, reply]}",
     );
@@ -572,7 +612,7 @@ fn unknown_and_reserved_postures_are_errors() {
 
     let f = Fixture::new();
     f.edit(
-        "team.yaml",
+        "template.yaml",
         "    posture: locked\n    untrusted_input: true\n    plugins: {slackbot: [read, reply]}",
         "    posture: sandboxed\n    plugins: {slackbot: [read, reply]}",
     );
@@ -583,7 +623,7 @@ fn unknown_and_reserved_postures_are_errors() {
 fn untrusted_input_needs_locked_or_accept_risk() {
     let f = Fixture::new();
     f.edit(
-        "team.yaml",
+        "template.yaml",
         "    prompt: lead.md\n    posture: locked\n",
         "    prompt: lead.md\n    posture: vendor\n",
     );
@@ -591,7 +631,7 @@ fn untrusted_input_needs_locked_or_accept_risk() {
 
     let f = Fixture::new();
     f.edit(
-        "team.yaml",
+        "template.yaml",
         "    prompt: lead.md\n    posture: locked\n",
         "    prompt: lead.md\n    posture: vendor\n    accept_risk: true\n",
     );
@@ -605,12 +645,12 @@ fn untrusted_input_needs_locked_or_accept_risk() {
 fn vendor_warnings_cover_targets_and_parents() {
     let f = Fixture::new();
     f.edit(
-        "team.yaml",
+        "template.yaml",
         "    posture: locked\n    untrusted_input: true\n    plugins: {slackbot: [read, escalate]}",
         "    plugins: {slackbot: [read, escalate]}",
     );
     f.edit(
-        "team.yaml",
+        "template.yaml",
         "    prompt: lead.md\n    posture: locked\n    untrusted_input: true\n    plugins: {slackbot: [read, reply]}",
         "    prompt: lead.md",
     );
@@ -625,7 +665,7 @@ fn vendor_warnings_cover_targets_and_parents() {
 fn api_key_with_claude_connectors_is_an_error() {
     let f = Fixture::new();
     f.edit(
-        "team.yaml",
+        "template.yaml",
         "    plugins: {slackbot: [read, reply]}",
         "    plugins: {slackbot: [read, reply]}\n    connectors: {claude.ai Example: [read_thing]}",
     );
@@ -637,7 +677,7 @@ fn api_key_with_claude_connectors_is_an_error() {
 fn locked_connectors_need_tool_lists() {
     let f = Fixture::new();
     f.edit(
-        "team.yaml",
+        "template.yaml",
         "    plugins: {slackbot: [read, reply]}",
         "    plugins: {slackbot: [read, reply]}\n    connectors: [example]",
     );
@@ -648,7 +688,7 @@ fn locked_connectors_need_tool_lists() {
 fn shared_plugin_needs_plugins_dir() {
     let f = Fixture::new();
     f.edit(
-        "team.yaml",
+        "template.yaml",
         "path: plugins/slackbot",
         "path: shared:slackbot",
     );
@@ -674,7 +714,7 @@ fn shared_plugin_needs_plugins_dir() {
 fn bad_connector_shape_has_a_clear_message() {
     let f = Fixture::new();
     f.edit(
-        "team.yaml",
+        "template.yaml",
         "    plugins: {slackbot: [read, reply]}",
         "    plugins: {slackbot: [read, reply]}\n    connectors: {srv: read}",
     );
@@ -684,8 +724,8 @@ fn bad_connector_shape_has_a_clear_message() {
 #[test]
 fn role_and_plugin_names_must_differ() {
     let f = Fixture::new();
-    f.edit("team.yaml", "  lead:\n", "  slackbot:\n");
-    f.edit("team.yaml", "parent: lead", "parent: slackbot");
+    f.edit("template.yaml", "  lead:\n", "  slackbot:\n");
+    f.edit("template.yaml", "parent: lead", "parent: slackbot");
     expect_error(&f, "`slackbot`");
 }
 
@@ -693,7 +733,7 @@ fn role_and_plugin_names_must_differ() {
 fn parse_errors_name_the_file_once() {
     let f = Fixture::new();
     f.edit(
-        "team.yaml",
+        "template.yaml",
         "default: claude\n",
         "default: claude\ndefault: codex\n",
     );
@@ -711,7 +751,7 @@ fn auto_trust_warns_about_locked_codex_members() {
     // Catches: a `locked` Codex member silently left at its trust screen.
     let f = Fixture::new();
     f.edit(
-        "team.yaml",
+        "template.yaml",
         "    prompt: lead.md\n    posture: locked\n",
         "    prompt: lead.md\n    vendor: codex\n    posture: locked\n",
     );
@@ -822,7 +862,7 @@ fn wrong_schema_is_an_error() {
 fn removed_team_fields_are_errors() {
     let f = Fixture::new();
     f.edit(
-        "team.yaml",
+        "template.yaml",
         "default: claude\n",
         "default: claude\nname: other\n",
     );
@@ -842,7 +882,7 @@ fn bus_fixture() -> Fixture {
         dir: tempfile::tempdir().unwrap(),
     };
     f.write(
-        "team/team.yaml",
+        "team/template.yaml",
         r#"
 bus:
   alert: {plugin: notify, action: alert}
@@ -881,7 +921,7 @@ fn bus_config_loads() {
     );
     // No bus opt-in is needed; absent bus means no alert configuration.
     f.edit(
-        "team/team.yaml",
+        "team/template.yaml",
         "bus:\n  alert: {plugin: notify, action: alert}\n",
         "",
     );
@@ -902,7 +942,7 @@ fn bus_config_is_checked() {
         (
             "plugin: notify",
             "plugin: pager",
-            "alert plugin `pager` is not in the team",
+            "alert plugin `pager` is not in the template",
         ),
         ("  alert:", "  warn_age_days: 14\n  alert:", "warn_age_days"),
         (
@@ -913,7 +953,7 @@ fn bus_config_is_checked() {
     ];
     for (from, to, needle) in cases {
         let f = bus_fixture();
-        f.edit("team/team.yaml", from, to);
+        f.edit("team/template.yaml", from, to);
         let (report, validated) = run_bus(&f);
         let errs = errors(&report);
         assert!(validated.is_none(), "{to}: expected failure");
@@ -925,7 +965,7 @@ fn bus_config_is_checked() {
 fn universal_bus_accepts_locked_members_without_expanding_posture() {
     let f = bus_fixture();
     f.edit(
-        "team/team.yaml",
+        "team/template.yaml",
         "    prompt: helper.md\n",
         "    prompt: helper.md\n    posture: locked\n",
     );
@@ -940,7 +980,7 @@ fn universal_bus_accepts_locked_members_without_expanding_posture() {
 fn interactive_is_opt_in_and_invalid_for_locked_recipients() {
     let f = bus_fixture();
     f.edit(
-        "team/team.yaml",
+        "team/template.yaml",
         "    prompt: helper.md\n",
         "    prompt: helper.md\n    interactive: true\n    max: 2\n",
     );
@@ -949,7 +989,7 @@ fn interactive_is_opt_in_and_invalid_for_locked_recipients() {
     assert!(v.team.roles["helper"].interactive);
     assert!(!v.team.roles["lead"].interactive);
     f.edit(
-        "team/team.yaml",
+        "team/template.yaml",
         "    interactive: true\n",
         "    interactive: true\n    posture: locked\n",
     );
@@ -1000,7 +1040,7 @@ fn config_snapshot_follows_file_bytes_not_paths() {
         a.inputs["members/helper/prompt"],
         b.inputs["members/helper/prompt"]
     );
-    assert_eq!(a.inputs["team.yaml"], b.inputs["team.yaml"]);
+    assert_eq!(a.inputs["template.yaml"], b.inputs["template.yaml"]);
 }
 
 #[test]
@@ -1009,12 +1049,12 @@ fn snapshot_describes_what_was_validated() {
     let (report, old) = run_bus(&f);
     let old = old.unwrap_or_else(|| panic!("{}", errors(&report)));
     let before = old.config_snapshot();
-    f.edit("team/team.yaml", "    parent: lead\n", "");
+    f.edit("team/template.yaml", "    parent: lead\n", "");
     let (report, new) = run_bus(&f);
     let new = new.unwrap_or_else(|| panic!("{}", errors(&report)));
     assert_eq!(old.config_snapshot(), before, "nothing is re-read");
     assert_ne!(new.config_snapshot().digest, before.digest);
-    fs::remove_file(f.path("team/team.yaml")).unwrap();
+    fs::remove_file(f.path("team/template.yaml")).unwrap();
     assert_eq!(old.config_snapshot(), before);
 }
 
@@ -1022,7 +1062,7 @@ fn snapshot_describes_what_was_validated() {
 fn a_role_takes_worktree_and_no_cwd() {
     let f = Fixture::new();
     f.edit(
-        "team.yaml",
+        "template.yaml",
         "    prompt: lead.md\n",
         "    prompt: lead.md\n    worktree: true\n    args: [--x]\n",
     );
@@ -1033,7 +1073,7 @@ fn a_role_takes_worktree_and_no_cwd() {
     assert!(!v.team.roles["triager"].worktree);
     let f = Fixture::new();
     f.edit(
-        "team.yaml",
+        "template.yaml",
         "    prompt: lead.md\n",
         "    prompt: lead.md\n    cwd: sub\n",
     );
@@ -1053,7 +1093,7 @@ impl Catalogs {
             dir: tempfile::tempdir().unwrap(),
         };
         c.write(
-            "shared/engineering/team.yaml",
+            "shared/engineering/template.yaml",
             "includes: catalog:shared/includes\nroles: {lead: {prompt: lead.md}}\n",
         );
         c.write(
@@ -1062,12 +1102,12 @@ impl Catalogs {
         );
         c.write("shared/shared/includes/common.md", "Common rules.\n");
         c.write(
-            "private/office/team.yaml",
+            "private/office/template.yaml",
             "roles: {lead: {prompt: lead.md}}\n",
         );
         c.write(
             "private/office/lead.md",
-            "---\nmodels: {claude: sonnet}\n---\nBefore.\n{{teams/engineering/lead}}\nAfter.\n{{includes/local}}\n",
+            "---\nmodels: {claude: sonnet}\n---\nBefore.\n{{templates/engineering/lead}}\nAfter.\n{{includes/local}}\n",
         );
         c.write("private/office/includes/local.md", "Local rules.\n");
         c
@@ -1136,7 +1176,7 @@ fn a_role_file_reached_from_another_team_cannot_reach_further() {
     let c = Catalogs::new();
     c.write(
         "shared/engineering/lead.md",
-        "---\n---\nShared lead.\n{{teams/office/lead}}\n",
+        "---\n---\nShared lead.\n{{templates/office/lead}}\n",
     );
     let err = c.error();
     assert!(
@@ -1148,7 +1188,7 @@ fn a_role_file_reached_from_another_team_cannot_reach_further() {
     let c = Catalogs::new();
     c.write(
         "private/office/includes/local.md",
-        "{{teams/engineering/lead}}\n",
+        "{{templates/engineering/lead}}\n",
     );
     let err = c.error();
     assert!(
@@ -1161,12 +1201,12 @@ fn a_role_file_reached_from_another_team_cannot_reach_further() {
     );
     let c = Catalogs::new();
     c.write(
-        "private/office/team.yaml",
+        "private/office/template.yaml",
         "roles: {lead: {prompt: lead.md}, helper: {prompt: helper.md, parent: lead}}\n",
     );
     c.write(
         "private/office/helper.md",
-        "---\n---\n{{teams/office/lead}}\n",
+        "---\n---\n{{templates/office/lead}}\n",
     );
     assert!(c.error().contains("can't include another"));
 }
@@ -1185,42 +1225,50 @@ fn another_teams_role_file_stays_inside_that_team() {
 fn a_missing_or_ambiguous_team_or_role_is_an_error() {
     let c = Catalogs::new();
     let lead = |line: &str| format!("---\n---\nBefore.\n{line}\n");
-    c.write("private/office/lead.md", &lead("{{teams/nowhere/lead}}"));
+    c.write(
+        "private/office/lead.md",
+        &lead("{{templates/nowhere/lead}}"),
+    );
     let err = c.error();
     assert!(
-        err.contains("no team `nowhere`") && err.contains(&c.path("shared").display().to_string()),
+        err.contains("no template `nowhere`")
+            && err.contains(&c.path("shared").display().to_string()),
         "{err}"
     );
     c.write(
         "private/office/lead.md",
-        &lead("{{teams/engineering/scout}}"),
+        &lead("{{templates/engineering/scout}}"),
     );
     let err = c.error();
     assert!(
         err.contains("no role `scout`")
-            && err.contains(&c.path("shared/engineering/team.yaml").display().to_string()),
+            && err.contains(
+                &c.path("shared/engineering/template.yaml")
+                    .display()
+                    .to_string()
+            ),
         "{err}"
     );
     for line in [
-        "{{teams/engineering}}",
-        "{{teams/../lead}}",
-        "{{teams/./x/lead}}",
+        "{{templates/engineering}}",
+        "{{templates/../lead}}",
+        "{{templates/./x/lead}}",
     ] {
         c.write("private/office/lead.md", &lead(line));
-        assert!(c.error().contains("bad team role reference"), "{line}");
+        assert!(c.error().contains("bad template role reference"), "{line}");
     }
     c.write(
         "private/office/lead.md",
-        &lead("{{teams/engineering/lead}}"),
+        &lead("{{templates/engineering/lead}}"),
     );
     c.write(
-        "private/engineering/team.yaml",
+        "private/engineering/template.yaml",
         "roles: {lead: {prompt: lead.md}}\n",
     );
     c.write("private/engineering/lead.md", "---\n---\nOther lead.\n");
     assert!(
         c.error()
-            .contains("more than one team is called `engineering`")
+            .contains("more than one template is called `engineering`")
     );
 }
 
@@ -1231,7 +1279,7 @@ fn the_size_limit_covers_the_combined_instruction() {
     c.write("shared/engineering/lead.md", &format!("---\n---\n{half}\n"));
     c.write(
         "private/office/lead.md",
-        &format!("---\n---\n{half}\n{{{{teams/engineering/lead}}}}\n"),
+        &format!("---\n---\n{half}\n{{{{templates/engineering/lead}}}}\n"),
     );
     assert!(c.error().contains("larger than"));
 }

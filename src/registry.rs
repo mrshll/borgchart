@@ -1,14 +1,14 @@
 //! The registry of instances, the suffixes that make instance and member
 //! IDs, and each instance's own record.
 //!
-//! - `<state home>/registry.json` lists every instance: its ID, its team's
+//! - `<state home>/registry.json` lists every instance: its ID, its template's
 //!   name and folder, its working folder, and when it was created. It also
 //!   keeps every suffix ever issued for a team's name, so an ID is never
 //!   issued twice, even after `delete`.
 //! - `<state home>/registry.lock` is the one lock over the registry, suffix
 //!   issue, checkout reservation, and the lifecycle steps that need them.
 //! - `<state home>/<instance>/instance.json` is the instance's record: its
-//!   team folder, working folder, issued members, and the members that were
+//!   template folder, working folder, issued members, and the members that were
 //!   running at the last stop.
 //!
 //! Both files are written whole (a temporary file, then a rename, 0600) while
@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::state::{self, StateDir};
 
-pub const SCHEMA: u32 = 1;
+pub const SCHEMA: u32 = 2;
 
 /// The characters a suffix is made of: no `0 1 i l o`.
 pub const ALPHABET: &[u8] = b"23456789abcdefghjkmnpqrstuvwxyz";
@@ -149,7 +149,9 @@ pub struct Registry {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Entry {
+    #[serde(rename = "template")]
     pub team: String,
+    #[serde(rename = "template_dir")]
     pub team_dir: PathBuf,
     pub folder: PathBuf,
     pub created_at: String,
@@ -161,7 +163,9 @@ pub struct Entry {
 pub struct InstanceRecord {
     pub schema: u32,
     pub id: String,
+    #[serde(rename = "template")]
     pub team: String,
+    #[serde(rename = "template_dir")]
     pub team_dir: PathBuf,
     pub folder: PathBuf,
     pub created_at: String,
@@ -330,9 +334,29 @@ fn lock_path() -> PathBuf {
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Option<T>, String> {
     match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(|e| format!("{} can't be read: {e}", path.display())),
+        Ok(bytes) => {
+            let value: serde_json::Value = serde_json::from_slice(&bytes)
+                .map_err(|e| format!("{} can't be read: {e}", path.display()))?;
+            if let Some(schema) = value.get("schema").and_then(serde_json::Value::as_u64)
+                && schema != u64::from(SCHEMA)
+            {
+                let dir = path.parent().unwrap_or(path);
+                return Err(if schema < u64::from(SCHEMA) {
+                    format!(
+                        "this state was written by an older brg: destroy it with that brg, or remove {}",
+                        dir.display()
+                    )
+                } else {
+                    format!(
+                        "this state uses schema {schema}; use a brg that reads it, or remove {}",
+                        dir.display()
+                    )
+                });
+            }
+            serde_json::from_value(value)
+                .map(Some)
+                .map_err(|e| format!("{} can't be read: {e}", path.display()))
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(format!("cannot read {}: {e}", path.display())),
     }
