@@ -22,7 +22,7 @@
 <p class="title"><span>BRG(1)</span><span>borgchart manual</span><span>BRG(1)</span></p>
 
 <h2>NAME</h2>
-<p>brg, borgchart - run teams of coding agents from plain files</p>
+<p>brg - run teams of coding agents from plain files</p>
 
 <h2>SYNOPSIS</h2>
 <p><b>brg</b> &lt;COMMAND&gt; [OPTIONS]</p>
@@ -33,7 +33,7 @@
 <p>Early, and expected to change.</p>
 
 <h2>QUICK START</h2>
-<pre class="block"><span class="faded">$</span> cargo install --git https://github.com/mrshll/borgchart --locked borgchart
+<pre class="block"><span class="faded">$</span> cargo install --git https://github.com/mrshll/borgchart --locked --bin brg borgchart
 <span class="faded">$</span> brg validate ./lamp-eng
 <span class="faded">$</span> brg create ./lamp-eng ~/src/lighthouse
 <span class="faded">$</span> brg status -w
@@ -47,9 +47,9 @@
      each line is the command's one-line summary. -->
 <p class="group">Team folders</p>
 <dl class="commands">
-<dt>ls</dt><dd>List the teams in the search paths, each with its instances</dd>
+<dt>templates</dt><dd>List available team templates and their instances</dd>
 <dt>validate</dt><dd>Check a team folder and brg's configuration; starts nothing</dd>
-<dt>secret</dt><dd>List the secrets a team's plugins need, and whether each is set</dd>
+<dt>secrets</dt><dd>List the secrets a team's plugins need, and whether each is set</dd>
 </dl>
 <p class="group">Instances and members</p>
 <dl class="commands">
@@ -63,15 +63,12 @@
 </dl>
 <p class="group">Messages</p>
 <dl class="commands">
-<dt>send</dt><dd>Store a message for its recipient, and type it in when safe</dd>
-<dt>inbox</dt><dd>List the unacknowledged messages addressed to you, oldest first</dd>
-<dt>msg</dt><dd>Read and acknowledge bus records</dd>
-<dt>bus</dt><dd>Check the tree's message storage</dd>
+<dt>msg</dt><dd>Send, list, read, acknowledge, wait for and check messages</dd>
 </dl>
 <p class="group">Cleanup</p>
 <dl class="commands">
 <dt>cleanup</dt><dd>Remove what brg left behind for deleted members and copies</dd>
-<dt>reset</dt><dd>Stop a whole tree and forget it, so <code>brg create</code> can start it fresh</dd>
+<dt>destroy</dt><dd>Stop a whole tree and delete its records, notes and messages</dd>
 </dl>
 <p><code>brg help &lt;command&gt;</code> or <code>brg &lt;command&gt; --help</code> gives a command's details.</p>
 
