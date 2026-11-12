@@ -23,7 +23,7 @@ It asks the installed vendor CLI for subscription usage, using your existing log
 - **90%:** go, with a warning that stays until usage falls below 80%.
 - **Anything it can't establish** (denied, unknown model, missing or malformed data, no CLI, no login, no network, unwritable cache): wait.
 
-A relevant window is the shared one or the model's own. Retry advice names a reset time only when every relevant hard limit has one, and it is not a promise of access.
+A relevant window is the shared one or the model's own; haiku has no window of its own, so only the shared ones apply. Retry advice names a reset time only when every relevant hard limit has one, and it is not a promise of access.
 
 ## Declaring it
 
