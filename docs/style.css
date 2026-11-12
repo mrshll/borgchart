@@ -36,8 +36,20 @@ body { margin: 0; }
 main {
   max-width: 100ch;
   margin: 0 auto;
-  padding: 2rem 16px 3rem;
+  /* As much room above the status tree as below it (.stack). */
+  padding: 2.9rem 16px 3rem;
 }
+
+/* The status tree holds the room of its largest frame (a hidden copy
+   beneath), so the page stays put while the tree grows and shrinks. */
+.stack {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  container-type: inline-size;
+  margin-bottom: 2.9em;
+}
+.stack > * { grid-area: 1 / 1; }
+.ghost { visibility: hidden; }
 
 p, dl, pre { margin: 0 0 1.45em; }
 h2 {
@@ -66,13 +78,13 @@ pre {
 }
 .prompt { margin-bottom: 0.4em; }
 
-/* The status tree: sized so the name, state and model columns of the
-   scene's widest line (56 columns) fit a phone's width; the details
-   scroll inside the box, as a terminal with wrapping off cuts them. */
+/* The status tree: sized so its widest possible line (83 columns) fits, or
+   on a phone the name, state and vendor mark; the rest scrolls inside the
+   box, as a terminal with wrapping off cuts it. */
 .screen {
-  font-size: min(1rem, calc((100vw - 32px) / 34));
+  font-size: min(1rem, calc(100cqw / 50));
   line-height: 1.25;
-  margin-bottom: 2.9em;
+  margin: 0;
 }
 
 .title {
@@ -84,7 +96,7 @@ pre {
 .group { font-weight: bold; margin-bottom: 0.3em; }
 .commands {
   display: grid;
-  grid-template-columns: 10ch 1fr;
+  grid-template-columns: 11ch 1fr;
   row-gap: 0.15em;
 }
 .commands dt { font-weight: bold; }
@@ -98,7 +110,7 @@ pre {
 
 @media (max-width: 40rem) {
   html { font-size: 14px; }
-  main { padding-top: 1rem; }
+  .screen { font-size: min(1rem, calc(100cqw / 31)); }
   h2 ~ p:not(.prompt), h2 ~ pre, h2 ~ dl { padding-left: 3ch; }
   .title span:nth-child(2) { display: none; }
 }

@@ -214,7 +214,7 @@ fn team_roles_refuse_paths_and_shared_references() {
 }
 
 #[test]
-fn team_roles_take_worktree_and_no_cwd() {
+fn team_roles_take_worktree() {
     let f = nested_team();
     let (report, validated) = f.run();
     assert!(
@@ -233,13 +233,6 @@ fn team_roles_take_worktree_and_no_cwd() {
         "{}",
         errors(&report)
     );
-    let f = nested_team();
-    f.edit(
-        "template.yaml",
-        "template: dev,",
-        "template: dev, cwd: 'dev/{member_id}',",
-    );
-    expect_error(&f, "unknown field `cwd`");
 }
 
 #[test]
@@ -847,8 +840,12 @@ fn user_tmux_config_risks_are_warned_with_their_lines() {
 #[test]
 fn the_configuration_is_strict() {
     let f = Fixture::new();
-    f.edit("config.yaml", "schema: 1\n", "schema: 1\nmembers: {}\n");
-    expect_error(&f, "unknown field `members`");
+    f.edit(
+        "config.yaml",
+        "schema: 1\n",
+        "schema: 1\nunknown_key: example\n",
+    );
+    expect_error(&f, "unknown field `unknown_key`");
 }
 
 #[test]
@@ -859,14 +856,14 @@ fn wrong_schema_is_an_error() {
 }
 
 #[test]
-fn removed_team_fields_are_errors() {
+fn unknown_template_fields_are_errors() {
     let f = Fixture::new();
     f.edit(
         "template.yaml",
         "default: claude\n",
-        "default: claude\nname: other\n",
+        "default: claude\nunknown_key: example\n",
     );
-    expect_error(&f, "unknown field `name`");
+    expect_error(&f, "unknown field `unknown_key`");
 }
 
 #[test]
@@ -935,20 +932,14 @@ fn bus_config_is_checked() {
     let cases: &[(&str, &str, &str)] = &[
         (
             "  alert:",
-            "  run: example-run\n  alert:",
-            "unknown field `run`",
+            "  unknown_key: example\n  alert:",
+            "unknown field `unknown_key`",
         ),
         ("action: alert", "action: page", "has no action `page`"),
         (
             "plugin: notify",
             "plugin: pager",
             "alert plugin `pager` is not in the template",
-        ),
-        ("  alert:", "  warn_age_days: 14\n  alert:", "warn_age_days"),
-        (
-            "  alert:",
-            "  root: /somewhere\n  alert:",
-            "unknown field `root`",
         ),
     ];
     for (from, to, needle) in cases {
@@ -1059,7 +1050,7 @@ fn snapshot_describes_what_was_validated() {
 }
 
 #[test]
-fn a_role_takes_worktree_and_no_cwd() {
+fn a_role_takes_worktree_and_args() {
     let f = Fixture::new();
     f.edit(
         "template.yaml",
@@ -1071,13 +1062,6 @@ fn a_role_takes_worktree_and_no_cwd() {
     assert_eq!(v.team.roles["lead"].args, ["--x"]);
     assert!(v.team.roles["lead"].worktree);
     assert!(!v.team.roles["triager"].worktree);
-    let f = Fixture::new();
-    f.edit(
-        "template.yaml",
-        "    prompt: lead.md\n",
-        "    prompt: lead.md\n    cwd: sub\n",
-    );
-    expect_error(&f, "unknown field `cwd`");
 }
 
 /// Two catalogs on the search path: `shared` holds `engineering`, whose

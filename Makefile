@@ -36,4 +36,3 @@ install: build
 	done
 	git rev-parse HEAD > "$(PREFIX)/brg/REVISION"
 	for name in brg brg-seat; do ln -sfn "$(PREFIX)/brg/bin/$$name" "$(BINDIR)/$$name" || exit 1; done
-	if [ -L "$(BINDIR)/borgchart" ] && [ "$$(readlink "$(BINDIR)/borgchart")" = "$(PREFIX)/brg/bin/borgchart" ]; then rm "$(BINDIR)/borgchart"; fi

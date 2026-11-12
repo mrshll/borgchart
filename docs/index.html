@@ -1,8 +1,8 @@
 <!doctype html>
 <!-- borgchart.ai. GitHub Pages serves docs/ on main as it is (CNAME,
      .nojekyll; no build step). The animated tree is status.js, whose header
-     names the brg source it copies; the palette is style.css; the command
-     text is the COMMANDS section below. -->
+     names the brg source it copies and holds the generator; the palette is
+     style.css; the command text is the COMMANDS section below. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -15,7 +15,10 @@
 <main>
 
 <p class="prompt"><span class="faded">$</span> brg status -w</p>
-<pre id="status" class="screen" role="img" aria-label="An animated brg status tree of a fictional team">brg status -w draws a live tree of the team here; it needs JavaScript.</pre>
+<div class="stack">
+<pre class="screen ghost" aria-hidden="true"></pre>
+<pre id="status" class="screen" role="img" aria-label="An animated brg status tree of a team of coding agents, its teams and members coming and going">brg status -w draws a live tree of the team here; it needs JavaScript.</pre>
+</div>
 
 <p class="prompt"><span class="faded">$</span> man brg</p>
 
@@ -34,11 +37,14 @@
 
 <h2>QUICK START</h2>
 <pre class="block"><span class="faded">$</span> cargo install --git https://github.com/mrshll/borgchart --locked --bin brg borgchart
-<span class="faded">$</span> brg validate ./lamp-eng
-<span class="faded">$</span> brg create ./lamp-eng ~/src/lighthouse
+<span class="faded">$</span> git clone https://github.com/mrshll/borgchart ~/workspace/borgchart
+<span class="faded">$</span> cd ~/workspace/borgchart
+<span class="faded">$</span> brg validate ./templates/engineering
+<span class="faded">$</span> brg create ./templates/engineering
 <span class="faded">$</span> brg status -w
-<span class="faded">$</span> brg attach lamp-eng-x7k2/lead-q8m3
-<span class="faded">$</span> brg stop lamp-eng-x7k2</pre>
+<span class="faded">$</span> brg attach engineering-59e9/lead-a2df
+<span class="faded">$</span> brg stop engineering-59e9</pre>
+<p>This runs the repository's own engineering team on its own code, the team in the tree above. <b>brg create</b> prints the new team's ID and its root lead's; <b>engineering-59e9</b> and <b>lead-a2df</b> stand for them here.</p>
 <p>Needs Rust 1.89 or newer, tmux 3.2 or newer, and the <b>claude</b> and/or <b>codex</b> CLIs.</p>
 
 <h2>COMMANDS</h2>

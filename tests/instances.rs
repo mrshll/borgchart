@@ -982,14 +982,4 @@ fn a_roles_args_come_from_the_team_and_members_work_in_its_folder() {
         "{start}"
     );
     env.ok(&["stop", &inst]);
-    // `cwd` is gone: members work in the team's folder or a worktree.
-    env.write(
-        "templates/oncall/template.yaml",
-        &TEAM.replace(
-            "  lead:\n    prompt: lead.md\n",
-            "  lead:\n    prompt: lead.md\n    cwd: sub\n",
-        ),
-    );
-    let err = env.fails(&["validate", "oncall"]);
-    assert!(err.contains("unknown field `cwd`"), "{err}");
 }

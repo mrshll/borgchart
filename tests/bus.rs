@@ -1376,7 +1376,7 @@ fn inbox_wait_help_names_the_outcomes_wait_returns() {
 }
 
 #[test]
-fn send_help_names_the_unified_inputs_and_publish_is_removed() {
+fn send_help_names_the_message_inputs() {
     let out = Command::new(env!("CARGO_BIN_EXE_brg"))
         .args(["msg", "send", "--help"])
         .output()
@@ -1392,11 +1392,6 @@ fn send_help_names_the_unified_inputs_and_publish_is_removed() {
     ] {
         assert!(help.contains(flag), "{help}");
     }
-    let out = Command::new(env!("CARGO_BIN_EXE_brg"))
-        .args(["msg", "publish", "--help"])
-        .output()
-        .unwrap();
-    assert!(!out.status.success());
 }
 
 #[test]

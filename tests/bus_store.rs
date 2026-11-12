@@ -144,11 +144,6 @@ fn one_store_keeps_ids_references_and_acks_across_a_restart() {
         )["id"],
         "m3"
     );
-    assert!(
-        env.starts(&lead)
-            .iter()
-            .all(|s| s["env"].get("BORGCHART_RUN").is_none())
-    );
     let out = member_command(&env, &instance, &lead, &["msg", "ack", "m1", "--json"]);
     assert!(out.status.success(), "{}", both(&out));
     let original: Value = serde_json::from_slice(
@@ -275,26 +270,14 @@ fn damaged_store(case: &str) {
             json!({"format": 5, "root": instance}).to_string(),
         )
         .unwrap(),
-        "format3" => fs::write(
-            store.join("store.json"),
-            json!({"format": 3, "instance": instance}).to_string(),
-        )
-        .unwrap(),
-        "current" => fs::write(store.join("current"), "r1\n").unwrap(),
-        "directory" => fs::create_dir(store.join("r1")).unwrap(),
+        "file" => fs::write(store.join("extra.txt"), "example\n").unwrap(),
+        "directory" => fs::create_dir(store.join("extra-folder")).unwrap(),
         "records" => fs::create_dir(store.join("records")).unwrap(),
         _ => unreachable!(),
     }
     let before = bytes(&store);
     let err = env.fails(&["start", &instance]);
-    if case == "format3" {
-        assert!(err.contains(&instance), "{err}");
-        assert!(err.contains("earlier format"), "{err}");
-        assert!(err.contains("docs/bus.md#storage"), "{err}");
-        assert!(!err.contains("brg create"), "{err}");
-    } else {
-        assert!(err.contains("damaged"), "{err}");
-    }
+    assert!(err.contains("damaged"), "{err}");
     let check = env.brg(&["msg", "integrity-check", "--team", &instance, "--json"]);
     assert!(!check.status.success(), "{}", both(&check));
     let out = env.publish(&instance, &json!({"to": lead, "body": "refuse me"}));
@@ -311,11 +294,11 @@ fn another_store_format_is_refused_without_writes() {
     damaged_store("format");
 }
 #[test]
-fn a_current_file_is_refused_without_writes() {
-    damaged_store("current");
+fn an_unexpected_file_is_refused_without_writes() {
+    damaged_store("file");
 }
 #[test]
-fn a_generation_directory_is_refused_without_writes() {
+fn an_unexpected_directory_is_refused_without_writes() {
     damaged_store("directory");
 }
 #[test]
@@ -415,9 +398,4 @@ fn vendor_to_locked_requires_settling_ordinary_messages() {
     .unwrap();
     assert_eq!(meta["members"][&lead]["posture"], "locked");
     env.ok(&["stop", &instance]);
-}
-
-#[test]
-fn a_format_3_store_is_refused_without_writes() {
-    damaged_store("format3");
 }

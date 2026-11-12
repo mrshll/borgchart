@@ -38,7 +38,7 @@ roles:
     start: false
 ```
 
-- **Roles** have a role file (`prompt`), an optional `vendor`, a `parent`, and `start`. The key under `roles:` names the role; frontmatter `role:` and the old `members:` key are rejected. `start: false` means its members are created on demand. Each role keeps up to `max` members (default 1), running or stopped. Roles also have a `posture` (`vendor`, the default, or `locked` for members that read untrusted text) and plugin grants.
+- **Roles** have a role file (`prompt`), an optional `vendor`, a `parent`, and `start`. The key under `roles:` names the role. `start: false` means its members are created on demand. Each role keeps up to `max` members (default 1), running or stopped. Roles also have a `posture` (`vendor`, the default, or `locked` for members that read untrusted text) and plugin grants.
 - **`parent`** makes the org chart, and messages follow it: a member writes to its parent or its children. The top member can also write to an outside caller (`external:NAME`).
 - **Plugins** are plain programs, declared under `plugins:` (a folder in the template, or `shared:<name>`, with the variables they receive and the actions members may be granted). brg runs only what `template.yaml` lists. A member can use only the actions it's granted; each granted action appears in its instruction with an absolute path. Secrets reach the plugin through a private file, never the agent's environment.
   - A plugin may also declare a long-running `process` (a watcher of some outside source) with `delivers_to: <role>`.
@@ -181,14 +181,7 @@ roles:
 ## What you never see
 
 - **Storage.** One message store per team tree at its root, with continuous numbering across stops, starts and template-file changes. Reads scan it; there is no index or archiving.
-- **brg versions.** Members call `"$BORGCHART_BIN"`, the brg that started them. If an upgraded brg can't read a team's messages, it says exactly what to do:
-
-  ```
-  brg: the tree's message store at `devteam-k3f9` uses an earlier format; follow the cutover in docs/bus.md#storage (move the old store aside, leave an empty private `messages/` folder, then start the root)
-  ```
-
-  brg refuses to start any team in that tree, names the root that owns the store, and points to the [cutover steps](bus.md#storage).
-
+- **brg versions.** Members call `"$BORGCHART_BIN"`, the brg that started them.
 - **Configuration changes** reach members when they next start, without stopping their running siblings.
 
 ## Limits
