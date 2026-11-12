@@ -18,6 +18,9 @@
 //! Before Enter: the same pane, no prompt, and the input box holds exactly the
 //! reminder (wrapping allowed). Otherwise `HumanRequired` and no Enter. A
 //! person typing between that last check and Enter is the remaining race.
+//! Remote prompts arrive over Claude Code's own connection, not the terminal,
+//! so they shouldn't disturb the guarded wake's input-box checks; at worst a
+//! reminder queues behind a remote turn.
 
 use std::collections::BTreeMap;
 use std::fs::File;

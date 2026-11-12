@@ -754,6 +754,7 @@ mod tests {
                 state: "working".into(),
                 rule: None,
                 activity: None,
+                remote_control_url: None,
                 detail: None,
                 vendor_version: None,
                 trust_accepted: None,

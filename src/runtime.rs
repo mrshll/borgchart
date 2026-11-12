@@ -3432,6 +3432,9 @@ pub struct StatusRow {
     /// (the terminal title), when its rules can read that.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub activity: Option<String>,
+    /// Claude's live Remote Control session, when its session file is readable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_control_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3552,6 +3555,54 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
     status_with_counts(inst, counts.as_ref(), bus_note.as_deref())
 }
 
+/// Ignore missing or changed Claude session data and unsafe hyperlink targets.
+fn remote_control_url(text: &str) -> Option<String> {
+    let session: serde_json::Value = serde_json::from_str(text).ok()?;
+    let id = session.get("bridgeSessionId")?.as_str()?;
+    let suffix = id.strip_prefix("session_")?;
+    if id.len() > 128 || suffix.is_empty() || !suffix.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return None;
+    }
+    Some(format!("https://claude.ai/code/{id}"))
+}
+
+fn remote_control_url_for_session(text: &str, session_id: &str) -> Option<String> {
+    let session: serde_json::Value = serde_json::from_str(text).ok()?;
+    if session.get("sessionId")?.as_str()? != session_id {
+        return None;
+    }
+    remote_control_url(text)
+}
+
+fn claude_remote_control_url(session_id: &str) -> Option<String> {
+    use std::io::Read;
+
+    const MAX_SESSION_BYTES: u64 = 64 * 1024;
+    let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude")))?;
+    std::fs::read_dir(config_dir.join("sessions"))
+        .ok()?
+        .find_map(|entry| {
+            let entry = entry.ok()?;
+            if entry.path().extension()? != "json" || !entry.file_type().ok()?.is_file() {
+                return None;
+            }
+            let file = std::fs::File::open(entry.path()).ok()?;
+            if file.metadata().ok()?.len() > MAX_SESSION_BYTES {
+                return None;
+            }
+            let mut text = String::new();
+            file.take(MAX_SESSION_BYTES + 1)
+                .read_to_string(&mut text)
+                .ok()?;
+            if text.len() as u64 > MAX_SESSION_BYTES {
+                return None;
+            }
+            remote_control_url_for_session(&text, session_id)
+        })
+}
+
 fn status_with_counts(
     inst: &Instance,
     counts: Option<&std::collections::BTreeMap<String, store::Progress>>,
@@ -3596,6 +3647,7 @@ fn status_with_counts(
                 state: not_created(member),
                 rule: None,
                 activity: None,
+                remote_control_url: None,
                 detail: None,
                 vendor_version: None,
                 trust_accepted: None,
@@ -3650,6 +3702,7 @@ fn status_with_counts(
             start: member.start,
             rule: None,
             activity: None,
+            remote_control_url: None,
             detail: None,
             vendor_version: meta.members.get(id).and_then(|m| m.vendor_version.clone()),
             trust_accepted: std::fs::read_to_string(state.member_dir(id).join("trust-accepted"))
@@ -3664,6 +3717,11 @@ fn status_with_counts(
                 row.state = "exited".into();
                 row.detail = w.dead_status.map(|s| format!("status {s}"));
             } else {
+                if member.vendor == Vendor::Claude {
+                    row.remote_control_url = recorded_session(state, id)
+                        .as_deref()
+                        .and_then(claude_remote_control_url);
+                }
                 let screen = tmux.capture(&session, id);
                 match rules::load(member.vendor) {
                     Ok(rules) => {
@@ -3729,6 +3787,7 @@ fn status_with_counts(
             state: "stopped".into(),
             rule: None,
             activity: None,
+            remote_control_url: None,
             detail: None,
             vendor_version: None,
             trust_accepted: None,
@@ -3806,6 +3865,7 @@ fn status_with_counts(
                 },
                 rule: None,
                 activity: None,
+                remote_control_url: None,
                 detail: None,
                 vendor_version: None,
                 trust_accepted: None,
@@ -3864,6 +3924,7 @@ fn status_with_counts(
                 .into(),
                 rule: None,
                 activity: None,
+                remote_control_url: None,
                 detail: error.clone(),
                 vendor_version: None,
                 trust_accepted: None,
@@ -4034,7 +4095,14 @@ pub fn render_status_as(
         .collect();
     let names: BTreeMap<_, _> = rows
         .iter()
-        .map(|r| (status_key(r), status_name(r)))
+        .map(|r| {
+            let name = status_name(r);
+            let name = match (short, r.remote_control_url.as_deref()) {
+                (true, Some(url)) => format!("\x1b]8;;{url}\x1b\\{name}\x1b]8;;\x1b\\"),
+                _ => name,
+            };
+            (status_key(r), name)
+        })
         .collect();
     tree::render_named(header, &nodes, &plugins, colour, spin, short, |id| {
         names[id].clone()
@@ -4751,6 +4819,63 @@ mod tests {
     use super::*;
 
     #[test]
+    fn remote_control_parser_finds_a_valid_session() {
+        assert_eq!(
+            remote_control_url(r#"{"bridgeSessionId":"session_Example42","other":true}"#)
+                .as_deref(),
+            Some("https://claude.ai/code/session_Example42")
+        );
+        let longest = format!("session_{}", "a".repeat(120));
+        assert!(
+            remote_control_url(&serde_json::json!({"bridgeSessionId": longest}).to_string())
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn remote_control_parser_ignores_missing_or_changed_session_data() {
+        for text in [
+            "{}",
+            "{",
+            "null",
+            r#"{"bridgeSessionId":null}"#,
+            r#"{"bridgeSessionId":42}"#,
+        ] {
+            assert_eq!(remote_control_url(text), None, "{text:?}");
+        }
+        for text in [
+            r#"{"bridgeSessionId":"session_Example42"}"#,
+            r#"{"sessionId":null,"bridgeSessionId":"session_Example42"}"#,
+            r#"{"sessionId":42,"bridgeSessionId":"session_Example42"}"#,
+        ] {
+            assert_eq!(
+                remote_control_url_for_session(text, "example-session"),
+                None,
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_control_parser_rejects_hyperlink_injection_and_unbounded_ids() {
+        for id in [
+            "session_".into(),
+            "Example42".into(),
+            "session_a/b".into(),
+            "session_a b".into(),
+            "session_é".into(),
+            "session_a\x1b\\evil".into(),
+            format!("session_{}", "a".repeat(121)),
+        ] {
+            assert_eq!(
+                remote_control_url(&serde_json::json!({"bridgeSessionId": id}).to_string()),
+                None,
+                "{id:?}"
+            );
+        }
+    }
+
+    #[test]
     fn short_cells_use_the_vendor_mark() {
         let row = |vendor: &str, model: Option<&str>| StatusRow {
             name: "m".into(),
@@ -4767,6 +4892,7 @@ mod tests {
             state: "working".into(),
             rule: None,
             activity: Some("Review issues".into()),
+            remote_control_url: None,
             detail: None,
             vendor_version: None,
             trust_accepted: None,
@@ -4816,6 +4942,7 @@ mod tests {
             state: "idle".into(),
             rule: None,
             activity: None,
+            remote_control_url: None,
             detail: None,
             vendor_version: None,
             trust_accepted: None,
@@ -4855,6 +4982,7 @@ mod tests {
             state: state.into(),
             rule: None,
             activity: None,
+            remote_control_url: None,
             detail: None,
             vendor_version: None,
             trust_accepted: None,
@@ -4907,6 +5035,7 @@ mod tests {
                     state: state.into(),
                     rule: None,
                     activity: None,
+                    remote_control_url: None,
                     detail: None,
                     vendor_version: None,
                     trust_accepted: None,

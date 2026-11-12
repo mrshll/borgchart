@@ -1902,6 +1902,127 @@ fn a_member_resumes_its_recorded_session() {
 }
 
 #[test]
+fn remote_control_is_named_on_fresh_and_resumed_claude_launches_only() {
+    let env = Env::new();
+    env.role_extra("alpha", "    remote_control: true\n");
+    env.up();
+    let inst = env.instance().unwrap();
+    let address = format!("{inst}/{}", env.m("alpha"));
+    let check = |resumed: bool| {
+        let argv = latest_argv(&env, "alpha");
+        let remote = argv.iter().position(|a| a == "--remote-control").unwrap();
+        assert_eq!(argv[remote + 1], address);
+        let boundary = argv.iter().position(|a| a == "--").unwrap();
+        assert!(remote + 1 < boundary, "{argv:?}");
+        if resumed {
+            assert!(remote < argv.iter().position(|a| a == "--resume").unwrap());
+        }
+        for role in ["beta", "gamma"] {
+            assert!(
+                !latest_argv(&env, role)
+                    .iter()
+                    .any(|a| a == "--remote-control")
+            );
+        }
+    };
+    assert!(env.brg(&["start", "gamma"]).status.success());
+    env.wait_for("gamma idle", |e| e.state_of("gamma") == "idle");
+    check(false);
+    let session = wait_for_session(&env, "alpha");
+    assert!(env.brg(&["stop", "alpha"]).status.success());
+    assert!(env.brg(&["start", &address, "--resume"]).status.success());
+    env.wait_for("alpha resumed", |e| e.state_of("alpha") == "idle");
+    assert_resumed(&env, "alpha", &session);
+    check(true);
+}
+
+#[test]
+fn remote_control_status_finds_recorded_session_when_pane_pid_differs() {
+    let env = Env::new();
+    env.up();
+    let inst = env.instance().unwrap();
+    let pane_pid = |role: &str| {
+        env.tmux(&[
+            "display-message",
+            "-p",
+            "-t",
+            &format!("=brg-{inst}:={}", env.m(role)),
+            "#{pane_pid}",
+        ])
+        .trim()
+        .to_string()
+    };
+    // Discover the address even when Remote Control was enabled by hand.
+    let alpha_pid = pane_pid("alpha");
+    let beta_pid = pane_pid("beta");
+    let file_pid = alpha_pid
+        .parse::<u32>()
+        .unwrap()
+        .max(beta_pid.parse::<u32>().unwrap())
+        + 1;
+    let session = serde_json::json!({
+        "sessionId": wait_for_session(&env, "alpha"),
+        "pid": file_pid,
+        "bridgeSessionId": "session_Example42",
+    })
+    .to_string();
+    let session_path = format!("sessions/{file_pid}.json");
+    env.write(&format!("home/.claude/{session_path}"), &session);
+    let beta_session = serde_json::json!({
+        "sessionId": wait_for_session(&env, "beta"),
+        "pid": beta_pid.parse::<u32>().unwrap(),
+        "bridgeSessionId": "session_Example42",
+    })
+    .to_string();
+    env.write(
+        &format!("home/.claude/sessions/{beta_pid}.json"),
+        &beta_session,
+    );
+    let url = "https://claude.ai/code/session_Example42";
+    assert_eq!(status_of(&env, "alpha")["remote_control_url"], url);
+    assert!(status_of(&env, "beta")["remote_control_url"].is_null());
+    let piped = stdout(&env.brg(&["status"]));
+    assert!(!piped.contains('\x1b'));
+    let custom = env.path("claude-config");
+    let custom_status = || {
+        let out = env
+            .brg_cmd(&["status", "--json"])
+            .env("CLAUDE_CONFIG_DIR", &custom)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        serde_json::from_slice::<Vec<serde_json::Value>>(&out.stdout)
+            .unwrap()
+            .into_iter()
+            .find(|r| r["role"] == "alpha")
+            .unwrap()
+    };
+    assert!(custom_status()["remote_control_url"].is_null());
+    env.write("claude-config/sessions/ignored.txt", &session);
+    env.write(
+        "claude-config/sessions/oversized.json",
+        &format!("{session}{}", " ".repeat(64 * 1024)),
+    );
+    env.write("claude-config/sessions/broken.json", "{");
+    env.write("claude-config/sessions/other.json", &beta_session);
+    assert!(custom_status()["remote_control_url"].is_null());
+    env.write(&format!("claude-config/{session_path}"), &session);
+    assert_eq!(custom_status()["remote_control_url"], url);
+    fs::remove_file(env.path(&format!("home/.claude/{session_path}"))).unwrap();
+    fs::remove_file(env.path(&format!("home/.claude/sessions/{beta_pid}.json"))).unwrap();
+    assert!(status_of(&env, "alpha")["remote_control_url"].is_null());
+    assert_eq!(stdout(&env.brg(&["status"])), piped);
+    let recorded = env.path(&format!("state/{inst}/members/{}/session", env.m("alpha")));
+    let recorded_id = fs::read_to_string(&recorded).unwrap();
+    fs::remove_file(&recorded).unwrap();
+    assert!(custom_status()["remote_control_url"].is_null());
+    fs::write(recorded, recorded_id).unwrap();
+    assert_eq!(custom_status()["remote_control_url"], url);
+    assert!(env.brg(&["stop", "alpha"]).status.success());
+    assert!(custom_status()["remote_control_url"].is_null());
+}
+
+#[test]
 fn a_fresh_start_replaces_the_old_session() {
     let env = Env::new();
     env.up();
