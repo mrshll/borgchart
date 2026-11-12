@@ -203,26 +203,6 @@ fn a_damaged_start_record_blocks_a_repoint() {
 // --- 7. Moved folders ---
 
 #[test]
-fn repointing_at_a_retired_template_names_the_replacement() {
-    let env = Env::new();
-    let team = env.create("oncall", "work/a");
-    env.ok(&["stop", &team]);
-    env.team("old/oncall");
-    fs::rename(
-        env.path("old/oncall/template.yaml"),
-        env.path("old/oncall/team.yaml"),
-    )
-    .unwrap();
-    let before = env.registry();
-    let error = env.fails(&["start", &team, "--template", &env.folder("old/oncall")]);
-    assert!(
-        error.contains("team.yaml") && error.contains("template.yaml"),
-        "{error}"
-    );
-    assert_eq!(env.registry(), before);
-}
-
-#[test]
 fn a_moved_team_folder_is_re_pointed_after_a_full_stop() {
     let env = Env::new();
     let a = env.create("oncall", "work/a");

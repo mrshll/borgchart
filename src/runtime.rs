@@ -2738,12 +2738,6 @@ pub fn ls() -> Result<Vec<Listed>, String> {
             .join("\n")
     })?;
     let registry = registry::load()?;
-    for dir in crate::team::retired_folders(&config.teams) {
-        eprintln!("{}", crate::team::missing_template(&dir));
-    }
-    if let Some(hint) = crate::team::retired_default_catalog(&config.teams) {
-        eprintln!("{hint}");
-    }
     let listed = |id: &String, e: &registry::Entry| ListedInstance {
         instance: id.clone(),
         team: e.team.clone(),

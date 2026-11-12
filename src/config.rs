@@ -176,12 +176,7 @@ pub fn load_file(file: &Path, report: &mut Report) -> Option<Config> {
     let raw: ConfigRaw = match yaml::parse(&text) {
         Ok(r) => r,
         Err(e) => {
-            let message = if e.contains("unknown field `teams`") {
-                "`teams:` is no longer read; rename it to `templates:`".to_string()
-            } else {
-                e
-            };
-            report.error(Some(&file), message);
+            report.error(Some(&file), e);
             return None;
         }
     };

@@ -21,16 +21,7 @@ One store belongs to a whole team tree: its root team and every child team share
 | `records/<seq>.json` | Immutable messages, numbered from 1 without gaps; filenames use ten decimal digits |
 | `acks/<id>.json` | Recipient acknowledgements, such as `m1.json` |
 
-Only format-4 stores are supported. Earlier formats are refused without conversion. To cut over an existing tree:
-
-1. Settle every inbox and finish work that refers to old message IDs. Write handover notes in each team's notes folder; message IDs restart at `m1`.
-2. Stop the whole tree from its root, including its root lead.
-3. Move every old store, at the root and in its child teams, outside brg's state as archived history, or delete it. Leave an empty private `messages/` folder (0700) at the tree root, as for a newly created team. Keep notes, working folders and registry records.
-4. Upgrade brg for the whole tree.
-5. Start the root team. It creates the format-4 tree store and restores the child teams that were running.
-6. Send a new handover to the root lead, which briefs its child teams using new IDs.
-
-Unexpected entries are refused, including directories left by old sandboxes. brg performs no automatic cleanup. Only the root initializes storage; a child team refuses to start if its tree store is missing or damaged.
+Unexpected entries are refused. brg performs no automatic cleanup. Only the root initializes storage; a child team refuses to start if its tree store is missing or damaged.
 
 Start records are in brg's own files outside messages: `members/<member>/incarnation.json`, with history in `members/<member>/incarnations/<id>.json`. Routing uses the member/parent entries in `start.json`. A stopped or replaced start cannot act for the member. Publication and acknowledgement recheck this under the tree message lock. Incarnation changes use that same lock. Lock order is registry, lifecycle, then tree store; the typing lock is taken after releasing the store lock.
 
@@ -139,7 +130,7 @@ brg msg integrity-check --team dev-team-k3f9 --json
 
 ## Damage and status
 
-Only format-4 stores, records and acknowledgements are supported; earlier stores are refused, not migrated. A foreign format/root marker, unexpected layout, gap or unreadable record is damage: publication and acknowledgements refuse, and `msg integrity-check --team <any-team-in-the-tree>` reports why. Inbox can show readable messages with `store: incomplete`. Damage blocks starts throughout the tree; stop and liveness still work without reading messages. Checkouts are held only by running members or members whose stop is unknown; a stopped team holds none. New or empty storage may be initialised at the tree root.
+Only format-4 stores, records and acknowledgements are supported. A foreign format/root marker, unexpected layout, gap or unreadable record is damage: publication and acknowledgements refuse, and `msg integrity-check --team <any-team-in-the-tree>` reports why. Inbox can show readable messages with `store: incomplete`. Damage blocks starts throughout the tree; stop and liveness still work without reading messages. Checkouts are held only by running members or members whose stop is unknown; a stopped team holds none. New or empty storage may be initialised at the tree root.
 
 Delete needs `--force` for unacked messages to the team's kept members, unacked external replies at the root, or unreadable storage, after every member is positively stopped. Child team deletion checks open work and saves its tombstone under the tree store lock, so a concurrent publication is either counted or refused. Deleting a child team or member preserves its messages as readable history and removes them from pending-work counts. Deleting the root removes the store after all child teams have been deleted. Working folders are left alone.
 

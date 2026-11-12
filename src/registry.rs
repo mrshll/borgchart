@@ -344,17 +344,10 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Option<T>, Str
                 && schema != u64::from(SCHEMA)
             {
                 let dir = path.parent().unwrap_or(path);
-                return Err(if schema < u64::from(SCHEMA) {
-                    format!(
-                        "this state was written by an older brg: destroy it with that brg, or remove {}",
-                        dir.display()
-                    )
-                } else {
-                    format!(
-                        "this state uses schema {schema}; use a brg that reads it, or remove {}",
-                        dir.display()
-                    )
-                });
+                return Err(format!(
+                    "this state uses schema {schema}; use a brg that reads it, or remove {}",
+                    dir.display()
+                ));
             }
             serde_json::from_value(value)
                 .map(Some)

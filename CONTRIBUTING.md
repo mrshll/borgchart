@@ -16,6 +16,8 @@ The tests need `tmux`, and `py` needs `uv`. Before running only the department i
 
 ## Test tiers
 
+Test current behaviour only: this project has one user and no compatibility promise. Add no tests or code for retired names, old formats or migration refusals; see [AGENTS.md](AGENTS.md).
+
 | Tier | Command | What it runs | When |
 | --- | --- | --- | --- |
 | Fast | `.githooks/checks fast` | Every workspace member’s library tests (`cargo test --workspace --all-features --lib`) and core validation tests (`cargo test -p borgchart --features test-support --test validate`), which start no tmux and no other process. They run with recording stand-ins for `tmux`, `ps`, `sh`, `sleep`, `claude` and `codex` first on `PATH`, and the tier fails if any was started. | In CI. |
@@ -89,13 +91,11 @@ A team that works on this repository should use binaries and template files from
 make install
 ```
 
-This vocabulary cutover does not migrate state. Destroy existing trees with their original brg before installing this version, then create new teams from templates.
-
 This builds the workspace release binaries with `--locked`, installs `brg` and `brg-seat` into `$HOME/.local/share/brg/bin/`, and records `git rev-parse HEAD` in `$HOME/.local/share/brg/REVISION`. Each binary is copied to a temporary name beside its destination and renamed into place, so readers see a complete file and running processes keep their old inode. Linux builds use `tools/cargo-slot` when executable; other systems use cargo directly.
 
-`PREFIX` changes the parent of `brg/` (default `$HOME/.local/share`); `BINDIR` changes where the `brg` and `brg-seat` symlinks go (default `$HOME/.local/bin`). For example, `make install PREFIX="$HOME/apps" BINDIR="$HOME/bin"`. Use absolute paths. The links point directly at `$PREFIX/brg/bin/<name>` and are replaced with `ln -sfn`. Keep `BINDIR` on `PATH`. The old `borgchart` link is removed only if it points to `$PREFIX/brg/bin/borgchart`; unrelated links and files are left alone.
+`PREFIX` changes the parent of `brg/` (default `$HOME/.local/share`); `BINDIR` changes where the `brg` and `brg-seat` symlinks go (default `$HOME/.local/bin`). For example, `make install PREFIX="$HOME/apps" BINDIR="$HOME/bin"`. Use absolute paths. The links point directly at `$PREFIX/brg/bin/<name>` and are replaced with `ln -sfn`. Keep `BINDIR` on `PATH`.
 
-For later upgrades, run `make upgrade` from your own shell outside any member. It builds first, asks each tree with live members (including child teams) for its root leads' handover notes, waits for their replies and for working members to settle, then stops the trees, installs the built binaries and starts the trees fresh. A tree with live members but no live root lead is refused. `TIMEOUT=1800` bounds the handover and settling wait together in seconds; `FORCE=1` skips the handover messages, wait and working check, including for trees without live root leads. `DRY_RUN=1` prints the steps without sending messages or changing anything; `BRG` selects the installed binary (default `brg` on PATH). A build failure changes nothing; if installing fails after the stop, the trees are started again on whatever is installed. A destroy/create cutover stays manual.
+For later upgrades, run `make upgrade` from your own shell outside any member. It builds first, asks each tree with live members (including child teams) for its root leads' handover notes, waits for their replies and for working members to settle, then stops the trees, installs the built binaries and starts the trees fresh. A tree with live members but no live root lead is refused. `TIMEOUT=1800` bounds the handover and settling wait together in seconds; `FORCE=1` skips the handover messages, wait and working check, including for trees without live root leads. `DRY_RUN=1` prints the steps without sending messages or changing anything; `BRG` selects the installed binary (default `brg` on PATH). A build failure changes nothing; if installing fails after the stop, the trees are started again on whatever is installed.
 
 The installer leaves template files and brg's configuration alone. Set `templates:` in that configuration to point straight at a checkout's `templates/` folder, which follows whatever that checkout has checked out. You may list several catalogs:
 
