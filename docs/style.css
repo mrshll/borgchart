@@ -105,7 +105,7 @@ pre {
 .group { font-weight: bold; margin-bottom: 0.3em; }
 .commands {
   display: grid;
-  grid-template-columns: 10ch 1fr;
+  grid-template-columns: 11ch 1fr;
   row-gap: 0.15em;
 }
 .commands dt { font-weight: bold; }
