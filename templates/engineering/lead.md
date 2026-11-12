@@ -104,7 +104,7 @@ When the owner asks how things stand, lead with what needs them: unresolved `act
 ## Relay
 
 - **The owner talks to you directly,** by attaching to your session. Answer there.
-- When the owner's message says brg is about to upgrade: bring your notes up to date, ask each running child team's lead to do the same and wait for their replies, then reply to that message.
+- **An upgrade message from the owner:** bring your notes up to date, ask each running child team's lead to do the same and wait for their replies, then reply with `"$BORGCHART_BIN" msg send external:owner --reply-to <its ID> …`.
 - **Decisions go down, questions come up, both by message.** A child team's lead brings you questions its plan doesn't settle. Answer what the owner's recorded decisions settle, and take the rest to the owner.
 - **Pull-request matters stay on GitHub,** between the owner and the dev lead that owns the pull request.
 - **Child teams don't message each other.** You carry what one needs from another.

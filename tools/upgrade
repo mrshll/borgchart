@@ -50,7 +50,27 @@ def live(row: dict[str, Any]) -> bool:
 
 
 def wait_for_replies(pending: list[tuple[str, str, str]], deadline: float) -> bool:
+    def accept(team: str, records: list[dict[str, Any]]) -> None:
+        for record in records:
+            for item in list(pending):
+                tree, sender, sent = item
+                if (
+                    tree == team
+                    and record["from"] == sender
+                    and sent in record.get("reply_to", [])
+                ):
+                    data(run("msg", "ack", "--team", tree, record["id"], "--json"))
+                    pending.remove(item)
+                    say(f"replied: {sender} to {sent}")
+
+    def scan() -> None:
+        for team in dict.fromkeys(item[0] for item in pending):
+            accept(team, data(run("msg", "list", "--team", team, "--json"))["records"])
+
     while pending:
+        scan()
+        if not pending:
+            return True
         team = pending[0][0]
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -74,24 +94,36 @@ def wait_for_replies(pending: list[tuple[str, str, str]], deadline: float) -> bo
             if remaining > 86400:
                 continue
             break
-        records = data(result)["records"]
-        for record in records:
-            for item in list(pending):
-                tree, sender, sent = item
-                if (
-                    tree == team
-                    and record["from"] == sender
-                    and sent in record.get("reply_to", [])
-                ):
-                    data(run("msg", "ack", "--team", tree, record["id"], "--json"))
-                    pending.remove(item)
-                    say(f"replied: {sender} to {sent}")
+        accept(team, data(result)["records"])
+    scan()
     for tree, sender, sent in pending:
         say(
             f"timeout: {tree} awaiting {sender}; message was sent ({sent}) and is "
             f"not retracted; inspect with: {shlex.join([BRG, 'status', tree])}"
         )
     return not pending
+
+
+def outside_stop_set(rows: list[dict[str, Any]], trees: list[str]) -> bool:
+    members = [
+        f"{row['team']}/{row['member']}"
+        for row in rows
+        if live(row) and row["team"].split("/")[0] not in trees
+    ]
+    if members:
+        say(f"refused: live members outside the stop set: {', '.join(members)}; retry")
+    return bool(members)
+
+
+def make(*targets: str) -> bool:
+    say(f"{'build' if targets[-1] == 'build' else 'install'}: make {' '.join(targets)}")
+    return (
+        subprocess.run(
+            [*shlex.split(os.environ.get("MAKE") or "make"), "-C", str(ROOT), *targets],
+            check=False,
+        ).returncode
+        == 0
+    )
 
 
 def start(trees: list[str]) -> bool:
@@ -115,45 +147,75 @@ def main() -> int:
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("TIMEOUT must be a positive number of seconds")
     force = os.environ.get("FORCE") == "1"
-    dry_run = os.environ.get("DRY_RUN") == "1"
+    flags = os.environ.get("MAKEFLAGS", "").split()
+    dry_run = os.environ.get("DRY_RUN") == "1" or bool(
+        flags and not flags[0].startswith("--") and any(c in flags[0] for c in "ntq")
+    )
     rows = data(run("status", "--json"))
     leads: dict[str, list[str]] = {}
+    members: dict[str, list[str]] = {}
     for row in rows:
-        if live(row) and "/" not in row["team"] and not row.get("parent"):
-            leads.setdefault(row["team"], []).append(f"{row['team']}/{row['member']}")
-    trees = list(leads)
-    if dry_run:
-        for tree, senders in leads.items():
+        if live(row):
+            tree = row["team"].split("/")[0]
+            members.setdefault(tree, []).append(f"{row['team']}/{row['member']}")
+            if "/" not in row["team"] and not row.get("parent"):
+                leads.setdefault(tree, []).append(f"{row['team']}/{row['member']}")
+    trees = list(members)
+    if not force:
+        missing = [tree for tree in trees if tree not in leads]
+        for tree in missing:
             say(
-                f"dry-run: {tree}: send to {', '.join(senders)}, {'skip wait (FORCE=1)' if force else 'wait for replies and refuse working members'}, stop"
+                f"refused: {tree} has no live root lead; live members: {', '.join(members[tree])}; use FORCE=1 to stop anyway"
             )
-        say("dry-run: install with make install")
+        if missing:
+            return 1
+    if dry_run:
+        say("dry-run: build with make build")
+        for tree in trees:
+            handover = (
+                "skip handover (FORCE=1)"
+                if force
+                else f"send to {', '.join(leads[tree])}, wait for replies and idle members"
+            )
+            say(f"dry-run: {tree}: {handover}, stop")
+        say("dry-run: copy with make -o build install")
         for tree in trees:
             say(f"dry-run: start {tree} fresh")
         say(f"summary: dry-run; {len(trees)} tree(s); nothing changed")
         return 0
+    if not make("build"):
+        say("summary: build failed; nothing sent, stopped or installed")
+        return 1
     pending = []
     deadline = time.monotonic() + timeout
-    for tree, senders in leads.items():
-        for sender in senders:
-            sent = data(run("msg", "send", sender, HANDOVER, "--json"))["id"]
-            pending.append((tree, sender, sent))
-            say(f"sent: {sender} ({sent})")
-    if pending and not force:
+    if not force:
+        for tree, senders in leads.items():
+            for sender in senders:
+                sent = data(run("msg", "send", sender, HANDOVER, "--json"))["id"]
+                pending.append((tree, sender, sent))
+                say(f"sent: {sender} ({sent})")
         if not wait_for_replies(pending, deadline):
             say("summary: handover timed out; nothing stopped or installed")
             return 1
+    while True:
+        rows = data(run("status", "--json"))
+        if outside_stop_set(rows, trees):
+            return 1
+        if force:
+            break
         working = [
             f"{row['team']}/{row['member']}"
-            for row in data(run("status", "--json"))
-            if live(row)
-            and row["team"].split("/")[0] in leads
-            and row["state"] == "working"
+            for row in rows
+            if live(row) and row["state"] == "working"
         ]
-        if working:
+        if not working:
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             say(f"refused: working members: {', '.join(working)}; wait or use FORCE=1")
             say("summary: nothing stopped or installed")
             return 1
+        time.sleep(min(2, remaining))
     stopped = []
     for tree in trees:
         say(f"stopping: {tree}")
@@ -168,25 +230,22 @@ def main() -> int:
             )
             return 1
         stopped.append(tree)
-    say("install: make install")
     try:
-        installed = (
-            subprocess.run(
-                [
-                    *shlex.split(os.environ.get("MAKE") or "make"),
-                    "-C",
-                    str(ROOT),
-                    "install",
-                ],
-                check=False,
-            ).returncode
-            == 0
-        )
+        rows = data(run("status", "--json"))
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError):
+        start(stopped)
+        raise
+    if outside_stop_set(rows, trees):
+        start(stopped)
+        return 1
+    try:
+        # The release build succeeded before handover; install only copies.
+        installed = make("-o", "build", "install")
     except OSError as error:
         say(f"failed: install: {error}")
         installed = False
     if not installed:
-        say("failed: install; starting stopped trees again with the old binary")
+        say("failed: copy; starting stopped trees again on whatever is installed")
     restarted = start(stopped)
     say(
         f"summary: {'upgraded' if installed and restarted else 'failed'}; {len(stopped)} tree(s) stopped"
