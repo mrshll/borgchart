@@ -189,6 +189,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "brg-checks"
+version = "0.0.0"
+dependencies = [
+ "borgchart",
+ "clap",
+ "regex",
+ "serde",
+ "serde-saphyr",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "brg-seat"
 version = "0.0.0"
 dependencies = [

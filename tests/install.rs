@@ -15,7 +15,7 @@ fn install_links_the_current_binaries() {
     .unwrap();
     fs::create_dir_all(root.join("target/release")).unwrap();
     // Prebuilt stand-ins let the real install recipe run without a release build.
-    for name in ["brg", "brg-seat", "brg-slack"] {
+    for name in ["brg", "brg-seat", "brg-slack", "brg-checks"] {
         fs::write(root.join("target/release").join(name), name).unwrap();
     }
     let prefix = root.join("prefix");
@@ -52,7 +52,7 @@ fn install_links_the_current_binaries() {
         .output()
         .unwrap();
     assert!(out.status.success(), "{out:?}");
-    for name in ["brg", "brg-seat", "brg-slack"] {
+    for name in ["brg", "brg-seat", "brg-slack", "brg-checks"] {
         assert_eq!(fs::read_to_string(bindir.join(name)).unwrap(), name);
     }
 }

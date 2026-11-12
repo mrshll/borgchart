@@ -14,6 +14,7 @@ Template files declare `roles:`; each role keeps up to `max` members (default 1)
 cargo install --git https://github.com/mrshll/borgchart --locked --bin brg borgchart
 cargo install --git https://github.com/mrshll/borgchart --locked brg-seat
 cargo install --git https://github.com/mrshll/borgchart --locked brg-slack
+cargo install --git https://github.com/mrshll/borgchart --locked brg-checks
 ```
 
 This needs Rust 1.89 or newer and tmux 3.2 or newer, plus the `claude` and/or `codex` CLIs. Building the Slack plugin also needs a C compiler for TLS. Nothing is published to crates.io yet.
@@ -23,4 +24,4 @@ From a checkout, `make install` replaces the binaries; configure template catalo
 For tab completion of commands, teams and members, see [completion](docs/cli.md) (`BRG_COMPLETE=fish brg | source`).
 
 
-Seating and [Slack](plugins/slack/README.md) are optional Rust workspace plugins, declared by teams that need them. To install all three binaries and configure template catalogs, follow [installing from a checkout](CONTRIBUTING.md#installing-from-a-checkout). `cargo install --path .` installs only core; the plugins are `cargo install --path plugins/seat` and `cargo install --path plugins/slack`.
+Seating, [Slack](plugins/slack/README.md) and [checks](plugins/checks/README.md) are optional Rust workspace plugins, declared by teams that need them. To install all four binaries and configure template catalogs, follow [installing from a checkout](CONTRIBUTING.md#installing-from-a-checkout). `cargo install --path .` installs only core; the plugins are `cargo install --path plugins/seat`, `cargo install --path plugins/slack` and `cargo install --path plugins/checks`.

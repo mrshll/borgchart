@@ -1,0 +1,5 @@
+#!/bin/sh
+# Demonstration bus: show the notice without contacting a team.
+for arg do notice=$arg; done
+printf '%s\n' "$notice" > "$CHECKS_SAMPLE_NOTICE"
+printf '{"id":"m100","message":"sample notice committed"}\n'
