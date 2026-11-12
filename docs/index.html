@@ -80,11 +80,30 @@
 
 <h2>SEE ALSO</h2>
 <p><a href="https://github.com/mrshll/borgchart">github.com/mrshll/borgchart</a>, the source and issues</p>
-<p><a href="https://github.com/mrshll/borgchart/blob/main/docs/concepts.md">concepts</a>, <a href="https://github.com/mrshll/borgchart/blob/main/docs/format.md">team format</a>, <a href="https://github.com/mrshll/borgchart/blob/main/docs/cli.md">commands</a>, <a href="https://github.com/mrshll/borgchart/blob/main/docs/bus.md">message bus</a>, <a href="https://github.com/mrshll/borgchart/blob/main/docs/teams.md">defining a team</a></p>
+<p><a href="https://github.com/mrshll/borgchart/blob/main/docs/concepts.md">concepts</a>, <a href="https://github.com/mrshll/borgchart/blob/main/docs/format.md">template format</a>, <a href="https://github.com/mrshll/borgchart/blob/main/docs/cli.md">commands</a>, <a href="https://github.com/mrshll/borgchart/blob/main/docs/bus.md">message bus</a>, <a href="https://github.com/mrshll/borgchart/blob/main/docs/teams.md">defining a team template</a></p>
+
+<hr>
+<!-- The template explorer: the repository's own team templates, from
+     teams.js (generated from templates/ by tests/site_teams.rs); explorer.js
+     draws it. -->
+<section aria-label="The files that define a team template">
+<div class="explorer">
+<div>
+<p class="prompt"><span class="faded">$</span> tree templates</p>
+<pre id="team-tree" class="tree">The templates' files show here; they need JavaScript.</pre>
+</div>
+<div hidden>
+<p id="team-cat" class="prompt"></p>
+<pre id="team-file" class="file" role="region" tabindex="0"></pre>
+</div>
+</div>
+</section>
 
 <p class="prompt"><span class="faded">$</span> <span class="cursor">&nbsp;</span></p>
 
 </main>
 <script src="status.js"></script>
+<script src="teams.js"></script>
+<script src="explorer.js"></script>
 </body>
 </html>
