@@ -103,8 +103,8 @@ pre {
   .title span:nth-child(2) { display: none; }
 }
 
-/* The team explorer at the foot: a `tree` of the team files beside the
-   chosen file; the tree above the file on a narrow screen. */
+/* The template explorer at the foot: a `tree` of the template files
+   beside the chosen file; the tree above the file on a narrow screen. */
 hr {
   border: 0;
   border-top: 1px solid var(--faded);

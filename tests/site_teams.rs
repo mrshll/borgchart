@@ -1,18 +1,18 @@
-//! The site's team explorer (`docs/index.html`) shows the repository's own
-//! team files from `docs/teams.js`. GitHub Pages serves `docs/` with no build
-//! step, so that file is checked in; this test rebuilds it from the team
-//! folders and fails when the two differ, so a change to a team reaches the
-//! site in the same pull request.
+//! The site's template explorer (`docs/index.html`) shows the repository's
+//! own team template files from `docs/teams.js`. GitHub Pages serves `docs/`
+//! with no build step, so that file is checked in; this test rebuilds it from
+//! the template folders and fails when the two differ, so a change to a
+//! template reaches the site in the same pull request.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// The folder the team files are read from, as the site shows their paths.
-const SOURCE: &str = "teams";
+/// The folder the template files are read from, as the site shows their paths.
+const SOURCE: &str = "templates";
 /// The folders the explorer lists, under `SOURCE`, in the order shown.
 const FOLDERS: &[&str] = &["engineering", "dev-team", "shared/includes"];
 /// The file the explorer opens on, under `SOURCE`.
-const START: &str = "engineering/team.yaml";
+const START: &str = "engineering/template.yaml";
 /// The generated file, and the command that rewrites it.
 const OUTPUT: &str = "docs/teams.js";
 const UPDATE: &str = "BRG_UPDATE_SITE=1 tools/cargo-slot cargo test --test site_teams";
@@ -21,7 +21,7 @@ fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// The YAML and Markdown files of one folder: the team file first, then
+/// The YAML and Markdown files of one folder: the template file first, then
 /// the prompts by name.
 fn files(folder: &Path) -> Vec<PathBuf> {
     let mut found: Vec<PathBuf> = fs::read_dir(folder)
@@ -68,7 +68,7 @@ fn generated() -> String {
 }
 
 #[test]
-fn the_sites_team_files_match_the_team_folders() {
+fn the_sites_template_files_match_the_template_folders() {
     let want = generated();
     let path = root().join(OUTPUT);
     if std::env::var_os("BRG_UPDATE_SITE").is_some() {

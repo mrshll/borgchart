@@ -1,7 +1,7 @@
-// The team explorer at the foot of the page: the repository's own team
-// files, listed like `tree` on the left, the chosen one shown on the right.
-// The files come from teams.js, which tests/site_teams.rs generates from the
-// team folders; it also names the file to open on.
+// The template explorer at the foot of the page: the repository's own team
+// template files, listed like `tree` on the left, the chosen one shown on the
+// right. The files come from teams.js, which tests/site_teams.rs generates
+// from the template folders; it also names the file to open on.
 "use strict";
 
 (function () {
