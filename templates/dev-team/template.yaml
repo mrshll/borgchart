@@ -1,4 +1,4 @@
-# A development template: a lead and four helper roles it starts on demand. The
+# A development team: a lead and four helper roles it starts on demand. The
 # lead, reviewer, researcher and monitor work in the instance's folder, a
 # checkout of the repository. Each implementer copy works in its own git
 # worktree, which brg adds from that checkout when it creates the copy. It

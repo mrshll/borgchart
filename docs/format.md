@@ -1,4 +1,4 @@
-# Team and configuration format
+# Template and configuration format
 
 A **team template** is a folder you can share: its roles (under `roles:`), what each one is told, which plugin programs they may use, and their shared message bus. **brg's configuration** (`config.yaml`) holds what belongs to you rather than to a template: auth, folder trust, where template names are looked up, shared plugins and tmux. An **instance** is a template running in one working folder, given at `brg create <template> <folder>` ([concepts](concepts.md)).
 

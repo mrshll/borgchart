@@ -1912,11 +1912,7 @@ fn repoint(inst: &mut Instance, team: &Path) -> Result<(), String> {
         .canonicalize()
         .map_err(|_| format!("{} does not exist", team.display()))?;
     if !dir.join(crate::team::TEAM_FILE).is_file() {
-        return Err(format!(
-            "{} is not a template folder (no {} in it)",
-            dir.display(),
-            crate::team::TEAM_FILE
-        ));
+        return Err(crate::team::missing_template(&dir));
     }
     let name = crate::team::team_name(&dir);
     if name != inst.record.team {
@@ -2738,6 +2734,12 @@ pub fn ls() -> Result<Vec<Listed>, String> {
             .join("\n")
     })?;
     let registry = registry::load()?;
+    for dir in crate::team::retired_folders(&config.teams) {
+        eprintln!("{}", crate::team::missing_template(&dir));
+    }
+    if let Some(hint) = crate::team::retired_default_catalog(&config.teams) {
+        eprintln!("{hint}");
+    }
     let listed = |id: &String, e: &registry::Entry| ListedInstance {
         instance: id.clone(),
         team: e.team.clone(),

@@ -112,7 +112,7 @@ enum Command {
     Create {
         /// `<template>` (a name, or a path starting with `/`, `./`, `../` or
         /// `~/`), or `<instance>/<role>`.
-        #[arg(value_name = "template", add = crate::complete::teams())]
+        #[arg(add = crate::complete::teams())]
         target: String,
         /// The instance's working folder, for a template: usually the repository
         /// it works on. It must exist. Default: the current folder.
@@ -220,7 +220,7 @@ enum Command {
         #[arg(add = crate::complete::instances())]
         instance: Option<String>,
     },
-    /// List the secrets a team's plugins need, and whether each is set.
+    /// List the secrets a template's plugins need, and whether each is set.
     ///
     /// It checks your environment, prints no values and writes nothing.
     Secrets {
@@ -246,7 +246,7 @@ enum Command {
     /// messages. A role with no member shows only its state; its `--json` row
     /// also gives its vendor and model.
     ///
-    /// On a terminal, state precedes vendor/model or team. A summary band above
+    /// On a terminal, state precedes vendor/model or template. A summary band above
     /// the tree counts working and idle members, rows needing
     /// you and unacked messages. Painted output uses a filled red state label
     /// for attention and a gold ◆ for running teams. Working marks spin in

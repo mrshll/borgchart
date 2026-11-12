@@ -149,10 +149,12 @@ fn shipped_roles_and_docs_do_not_instruct_removed_commands() {
             for entry in std::fs::read_dir(path).unwrap() {
                 check(&entry.unwrap().path());
             }
-        } else if matches!(
-            path.extension().and_then(|e| e.to_str()),
-            Some("html" | "js")
-        ) {
+        } else if path.starts_with(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs"))
+            && matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("html" | "js")
+            )
+        {
             // The website owns its generated surface separately.
         } else if let Ok(text) = std::fs::read_to_string(path) {
             for removed in [
@@ -170,6 +172,8 @@ fn shipped_roles_and_docs_do_not_instruct_removed_commands() {
                 "\"$BORGCHART_BIN\" ls",
                 "\"$BORGCHART_BIN\" secret",
                 "\"$BORGCHART_BIN\" reset",
+                "team folder",
+                "team's files",
                 "team.yaml",
                 "start --team",
                 "teams/",

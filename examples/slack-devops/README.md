@@ -34,7 +34,7 @@ What the lead can't do: look at systems. It is a smart auto-responder that ackno
    ```
 
 5. **Export the bot token** in the shell you start from, e.g. `export SLACK_BOT_TOKEN=<your-bot-token>`, or start brg under your secret manager's `run`. Never write it into a file: brg stores no secrets. `brg secrets ./examples/slack-devops` says whether it is set.
-6. **Check and start** an instance, in a folder of its own outside this checkout (the agents are `locked`, so their folder can't hold the team's files):
+6. **Check and start** an instance, in a folder of its own outside this checkout (the agents are `locked`, so their folder can't hold the template's files):
 
    ```sh
    brg validate ./examples/slack-devops
@@ -60,7 +60,7 @@ What the lead can't do: look at systems. It is a smart auto-responder that ackno
 
 ## Running in `vendor` posture
 
-To let the lead use your own vendor settings (e.g. Claude's auto mode) and tools beyond `slackbot`, set `posture: vendor` on the lead in your copy of `template.yaml`. The team marks the lead `untrusted_input`, so `brg validate` will also ask you to add `accept_risk: true` to it. Only do this for a channel you trust: anyone who can post there can then try to steer an agent that has a shell and your credentials.
+To let the lead use your own vendor settings (e.g. Claude's auto mode) and tools beyond `slackbot`, set `posture: vendor` on the lead in your copy of `template.yaml`. The template marks the lead `untrusted_input`, so `brg validate` will also ask you to add `accept_risk: true` to it. Only do this for a channel you trust: anyone who can post there can then try to steer an agent that has a shell and your credentials.
 
 ## Tests
 

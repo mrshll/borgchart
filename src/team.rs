@@ -15,7 +15,7 @@ use crate::yaml;
 
 pub const TEAM_FILE: &str = "template.yaml";
 
-fn missing_template(dir: &Path) -> String {
+pub(crate) fn missing_template(dir: &Path) -> String {
     if dir.join("team.yaml").is_file() {
         format!(
             "{} has team.yaml; brg now reads template.yaml (rename it, and a role's `team:` key to `template:`)",
@@ -201,10 +201,9 @@ pub struct Team {
     /// Canonical catalog include directory, captured during validation.
     pub catalog_includes: Option<PathBuf>,
     pub default_vendor: Vendor,
-    /// Optional alert settings; every template has a coordination bus.
+    /// Optional alert settings; every team has a coordination bus.
     pub bus: Option<BusConfig>,
     pub roles: BTreeMap<String, Role>,
-    #[serde(rename = "template_roles")]
     pub team_roles: BTreeMap<String, TeamRole>,
     pub plugins: BTreeMap<String, Plugin>,
 }
@@ -251,6 +250,42 @@ pub fn list(search: &[PathBuf]) -> Vec<(String, PathBuf)> {
     out
 }
 
+/// Retired catalog entries, kept separate so completion remains quiet.
+pub(crate) fn retired_folders(search: &[PathBuf]) -> Vec<PathBuf> {
+    let mut folders = Vec::new();
+    for root in search {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let dir = entry.path();
+            if dir.join("team.yaml").is_file() && !dir.join(TEAM_FILE).is_file() {
+                let dir = dir.canonicalize().unwrap_or(dir);
+                if !folders.contains(&dir) {
+                    folders.push(dir);
+                }
+            }
+        }
+    }
+    folders.sort();
+    folders
+}
+
+/// Explain the old default catalog only when the default search path is used.
+pub(crate) fn retired_default_catalog(search: &[PathBuf]) -> Option<String> {
+    let defaults = crate::config::Config::default().teams;
+    if search != defaults {
+        return None;
+    }
+    let old = defaults[0].with_file_name("teams");
+    old.is_dir().then(|| {
+        format!(
+            "{} is no longer read; rename it to templates",
+            old.display()
+        )
+    })
+}
+
 /// Find a template: a path (see [`is_path`]) to its folder, or a name looked up
 /// in every search path. Two folders with the name are refused, listing
 /// both; brg never picks the first.
@@ -273,6 +308,12 @@ pub fn find(arg: &str, search: &[PathBuf]) -> Result<PathBuf, String> {
             "`{arg}` is not a template's name; for a folder, write `./{arg}`"
         ));
     }
+    if let Some(dir) = retired_folders(search)
+        .into_iter()
+        .find(|dir| team_name(dir) == arg)
+    {
+        return Err(missing_template(&dir));
+    }
     let matches: Vec<PathBuf> = list(search)
         .into_iter()
         .filter(|(name, _)| name == arg)
@@ -281,15 +322,11 @@ pub fn find(arg: &str, search: &[PathBuf]) -> Result<PathBuf, String> {
     match matches.as_slice() {
         [one] => Ok(one.clone()),
         [] => {
-            if let Some(dir) = search
-                .iter()
-                .map(|root| root.join(arg))
-                .find(|dir| dir.join("team.yaml").is_file())
-            {
-                return Err(missing_template(&dir));
-            }
+            let hint = retired_default_catalog(search)
+                .map(|hint| format!("; {hint}"))
+                .unwrap_or_default();
             Err(format!(
-                "no template `{arg}` in {}; for a folder, give its path (`./{arg}`)",
+                "no template `{arg}` in {}; for a folder, give its path (`./{arg}`){hint}",
                 if search.is_empty() {
                     "the search paths (none are set)".to_string()
                 } else {
@@ -572,8 +609,12 @@ pub(crate) fn load_with(
     let raw: TeamFileRaw = match yaml::parse(&text) {
         Ok(raw) => raw,
         Err(e) => {
-            let message = if e.contains("unknown field `team`") {
-                "a role's `team:` key is no longer read; rename it to `template:`".to_string()
+            // The parser names the visitor's allowed fields, but carries no key path.
+            // This prefix identifies RoleRaw rather than a plugin or top-level error.
+            let message = if e.contains("unknown field `team`")
+                && e.contains("expected one of prompt, template,")
+            {
+                format!("{e}; a role's `team:` key is no longer read; rename it to `template:`")
             } else {
                 e
             };

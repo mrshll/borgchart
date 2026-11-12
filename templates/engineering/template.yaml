@@ -1,7 +1,7 @@
 # The team an owner's engineering runs under, at the root of a tree
-# of templates: a root lead that runs the engineering effort, with dev teams,
+# of teams: a root lead that runs the engineering effort, with dev teams,
 # design panels, researchers and monitors as its roles. Dev teams and
-# design panels are child templates: `create` makes a copy stopped, the lead
+# design panels are child teams: `create` makes a copy stopped, the lead
 # checks seating, then starts it.
 #
 # The instance's folder is the repository, or a plain folder of clones: the
