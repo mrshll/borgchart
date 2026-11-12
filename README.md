@@ -11,7 +11,7 @@ Team files declare `roles:`; each role keeps up to `max` members (default 1), ru
 ## Install
 
 ```sh
-cargo install --git https://github.com/mrshll/borgchart --locked borgchart
+cargo install --git https://github.com/mrshll/borgchart --locked --bin brg borgchart
 cargo install --git https://github.com/mrshll/borgchart --locked brg-seat
 ```
 

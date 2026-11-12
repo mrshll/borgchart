@@ -124,6 +124,8 @@ struct RoleRaw {
     start: Option<bool>,
     #[serde(default)]
     interactive: bool,
+    #[serde(default)]
+    remote_control: bool,
     max: Option<usize>,
     posture: Option<String>,
     #[serde(default)]
@@ -324,6 +326,8 @@ pub struct Role {
     pub start: bool,
     /// Inbox-only delivery, recorded at each member's start.
     pub interactive: bool,
+    /// Start Claude Remote Control with the member's full address as its name.
+    pub remote_control: bool,
     /// Kept members, running or stopped, allowed for this role.
     pub max: usize,
     pub posture: Posture,
@@ -1086,6 +1090,7 @@ fn load_role(
         parent: m.parent.clone(),
         start: m.start.unwrap_or(true),
         interactive: m.interactive,
+        remote_control: m.remote_control,
         max,
         posture,
         untrusted_input: m.untrusted_input,

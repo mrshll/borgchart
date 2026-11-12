@@ -1,5 +1,5 @@
 //! What members are started with and who may act on an instance: writable
-//! folders by posture, API keys and secrets, `brg secret`, the notes
+//! folders by posture, API keys and secrets, `brg secrets`, the notes
 //! `create` prints about a folder's project settings, and instance
 //! selection for bus commands.
 //!
@@ -297,11 +297,11 @@ fn login_passes_no_key_and_api_key_only_the_members_own() {
 }
 
 #[test]
-fn brg_secret_lists_the_names_and_whether_each_is_set() {
+fn brg_secrets_lists_the_names_and_whether_each_is_set() {
     let env = Env::new();
     with_pager(&env);
     let before = every_file(&env).len();
-    let out = env.ok(&["secret", "oncall"]);
+    let out = env.ok(&["secrets", "oncall"]);
     let text = stdout(&out);
     assert!(text.contains("pager: PAGER_TOKEN"), "{text}");
     assert!(text.contains("not set"), "{text}");
@@ -309,7 +309,7 @@ fn brg_secret_lists_the_names_and_whether_each_is_set() {
         !text.contains("PAGER_ROOM"),
         "plain values aren't secrets: {text}"
     );
-    let out = keyed(&env, &["secret", "oncall", "--json"]);
+    let out = keyed(&env, &["secrets", "oncall", "--json"]);
     assert!(out.status.success(), "{}", both(&out));
     assert!(!both(&out).contains(PAGER), "{}", both(&out));
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -362,7 +362,7 @@ fn a_member_acts_only_on_its_own_instance() {
     // Another instance: refused, for reads too.
     for args in [
         vec!["msg", "list", "--json", "--instance", b.as_str()],
-        vec!["msg", "check", "--instance", b.as_str()],
+        vec!["msg", "integrity-check", "--instance", b.as_str()],
     ] {
         let out = env.as_member(&lead, 0, &args);
         assert!(!out.status.success(), "{args:?}: {}", both(&out));
@@ -432,15 +432,15 @@ fn outside_callers_name_the_instance_and_a_stopped_one_can_be_inspected() {
     env.ok(&["msg", "list", "--member", &lead, "--instance", &a]);
     let err = env.fails(&["msg", "list", "--member", &lead]);
     assert!(err.contains("--instance") && err.contains(&a), "{err}");
-    let err = env.fails(&["msg", "check"]);
+    let err = env.fails(&["msg", "integrity-check"]);
     assert!(err.contains("--instance"), "{err}");
     // A role's name isn't a member.
     let err = env.fails(&["msg", "list", "--member", "lead", "--instance", &a]);
     assert!(err.contains(&lead), "{err}");
     env.ok(&["stop", &a]);
     for args in [
-        vec!["msg", "check", "--instance", a.as_str()],
-        vec!["msg", "check", "--instance", a.as_str()],
+        vec!["msg", "integrity-check", "--instance", a.as_str()],
+        vec!["msg", "integrity-check", "--instance", a.as_str()],
         vec![
             "msg",
             "list",

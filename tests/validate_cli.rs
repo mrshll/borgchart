@@ -1,5 +1,5 @@
-//! `brg validate` and `borgchart validate` as programs: JSON output and exit
-//! codes. They run the binaries, so they are not in the fast tier.
+//! `brg validate` as a program: JSON output and exit codes.
+//! It runs the binary, so it is not in the fast tier.
 
 mod common;
 mod team_fixture;
@@ -199,7 +199,7 @@ fn cli_reports_json_and_exit_codes() {
     );
 
     f.edit("team.yaml", "parent: lead", "parent: boss");
-    let bad = common::command(env!("CARGO_BIN_EXE_borgchart"))
+    let bad = common::command(env!("CARGO_BIN_EXE_brg"))
         .arg("validate")
         .arg(f.dir.path())
         .env("BORGCHART_CONFIG", f.path("config.yaml"))

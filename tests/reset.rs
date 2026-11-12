@@ -1,4 +1,4 @@
-//! `brg reset <root>`: stop a whole tree and forget it, so `brg create`
+//! `brg destroy <root>`: stop a whole tree and forget it, so `brg create`
 //! starts it fresh; and what it refuses.
 //!
 //! Run with `cargo test --features test-support`.
@@ -71,7 +71,7 @@ fn registered(env: &Env) -> Vec<String> {
 }
 
 #[test]
-fn reset_stops_and_forgets_a_tree_so_create_starts_it_fresh() {
+fn destroy_stops_and_forgets_a_tree_so_create_starts_it_fresh() {
     let env = tree_env();
     let root = env.create("oncall", "work/a");
     let lead = env.member(&root, "lead");
@@ -93,10 +93,10 @@ fn reset_stops_and_forgets_a_tree_so_create_starts_it_fresh() {
         .unwrap()
         .to_string();
 
-    let out = env.ok(&["reset", &root]);
+    let out = env.ok(&["destroy", &root]);
     let text = stdout(&out);
 
-    assert!(text.starts_with(&format!("resetting {root}:")), "{text}");
+    assert!(text.starts_with(&format!("destroying {root}:")), "{text}");
     assert_eq!(registered(&env), std::slice::from_ref(&other), "{text}");
     assert!(!env.path(&format!("state/{root}")).exists(), "{text}");
     let sessions = env.tmux(&["list-sessions", "-F", "#{session_name}"]);
@@ -145,21 +145,21 @@ fn reset_stops_and_forgets_a_tree_so_create_starts_it_fresh() {
 }
 
 #[test]
-fn reset_refuses_members_copies_and_trees_it_cannot_confirm_stopped() {
+fn destroy_refuses_members_copies_and_trees_it_cannot_confirm_stopped() {
     let env = tree_env();
     let root = env.create("oncall", "work/a");
     let lead = env.member(&root, "lead");
     let (copy, _) = started_copy(&env, &root);
     let before = registered(&env);
 
-    // Inside a member: the reset would stop its own caller.
+    // Inside a member: destroy would stop its own caller.
     env.wait_for("lead start record", || !env.starts(&lead).is_empty());
     let vars: BTreeMap<String, String> =
         serde_json::from_value(env.starts(&lead)[0]["env"].clone()).unwrap();
     let inside = common::command(env!("CARGO_BIN_EXE_brg"))
         .env_clear()
         .envs(vars)
-        .args(["reset", &root])
+        .args(["destroy", &root])
         .output()
         .unwrap();
     assert!(!inside.status.success(), "{}", both(&inside));
@@ -170,7 +170,7 @@ fn reset_refuses_members_copies_and_trees_it_cannot_confirm_stopped() {
     );
 
     // A copy is not a tree's root.
-    assert!(env.fails(&["reset", &copy]).contains("root"));
+    assert!(env.fails(&["destroy", &copy]).contains("root"));
 
     // A member whose stop brg can't confirm.
     let copy_lead = env.member(&copy, "lead");
@@ -180,8 +180,8 @@ fn reset_refuses_members_copies_and_trees_it_cannot_confirm_stopped() {
     let original = fs::read(&incarnation).unwrap();
     fs::write(&incarnation, "unreadable start record").unwrap();
     env.tmux(&["new-session", "-d", "-s", "sentinel", "sleep", "60"]);
-    // Reset's stop is what refuses here, naming the member it can't confirm.
-    let refused = env.fails(&["reset", &root]);
+    // Destroy's stop is what refuses here, naming the member it can't confirm.
+    let refused = env.fails(&["destroy", &root]);
     assert!(refused.contains(&copy_lead), "{refused}");
 
     assert_eq!(registered(&env), before);
@@ -192,7 +192,7 @@ fn reset_refuses_members_copies_and_trees_it_cannot_confirm_stopped() {
 }
 
 #[test]
-fn reset_removes_clean_worktrees_in_the_tree_and_keeps_the_root_checkout() {
+fn destroy_removes_clean_worktrees_in_the_tree_and_keeps_the_root_checkout() {
     let env = tree_env();
     let lead = env.path("work/a");
     let root = env.create("oncall", "work/a");
@@ -204,7 +204,7 @@ fn reset_removes_clean_worktrees_in_the_tree_and_keeps_the_root_checkout() {
     let busy = env.worktree(&format!("{root}/{helper}"));
     fs::write(busy.join("draft.txt"), "work").unwrap();
 
-    let text = stdout(&env.ok(&["reset", &root]));
+    let text = stdout(&env.ok(&["destroy", &root]));
 
     assert!(!copy_folder.exists(), "{text}");
     assert!(busy.join("draft.txt").is_file(), "{text}");

@@ -267,7 +267,7 @@ fn ack_refresh_catches_up_the_locked_tail_before_validating_acks() {
     let inbox: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(inbox["records"].as_array().unwrap().len(), 1);
     assert_eq!(inbox["records"][0]["id"], "m3");
-    env.ok(&["msg", "check", "--instance", &instance, "--json"]);
+    env.ok(&["msg", "integrity-check", "--instance", &instance, "--json"]);
     env.ok(&["stop", &instance]);
 }
 

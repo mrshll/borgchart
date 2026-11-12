@@ -72,7 +72,7 @@ devteam-k3f9  team ~/.config/borgchart/teams/devteam · folder ~/work/project
 
 - **`create`** makes a new instance in that folder, with a suffixed ID; run it twice and you have two. Every team has durable messages.
 - **Per role** in `team.yaml`: `posture`, extra vendor `args` and `worktree: true` for members that each need their own checkout. Standing rules go in the team's own files; context for one piece of work goes to the lead in a message.
-- **Secrets:** brg stores none. They come from your environment by name when you run `brg create` or `brg start`; `brg secret devteam` lists which are set.
+- **Secrets:** brg stores none. They come from your environment by name when you run `brg create` or `brg start`; `brg secrets devteam` lists which are set.
 
 ## Commands
 
@@ -85,9 +85,9 @@ A small top level for people. `brg --help` and `brg <command> --help` give the f
 | `brg start <instance>[/<member>]`, `brg stop <instance>[/<member>]` | Bring it back, or stop it |
 | `brg delete <instance>[/<member>] [--force]` | Remove a stopped instance or member. Unread messages require `--force`; running or unknown liveness, or a member with kept children, is always refused. A deleted member's ID stays issued. |
 | `brg status [instance] [--json \| -w \| -i]` | The live tree: who is idle, working or blocked, with positive unacked message counts. JSON includes `member`, `role`, `parent` (a member ID), `start_id` (the current incarnation, when recorded), and `unacked`, including zero with a readable bus. An unreadable store omits counts and adds a check note. |
-| `brg ls` | Your teams, each with its instances |
+| `brg templates` | Your teams, each with its instances |
 | `brg attach <instance>/<member>`, `brg logs <instance>/<member>` | Watch a member |
-| `brg msg send [--external NAME] TARGET TEXT [--reply-to ID]` | Record a message, then optionally type it; outside callers must name an external sender; `-` reads stdin |
+| `brg msg send [--external NAME] TARGET TEXT [--reply-to ID]` | Record a message, then optionally type it; outside callers without team context default to `external:owner`; `-` reads stdin |
 | `brg msg …` | Durable messages and store health, below |
 
 **Messages**, mostly used by members:
@@ -98,13 +98,13 @@ A small top level for people. `brg --help` and `brg <command> --help` give the f
 | `brg msg read ID [--json]` | Read one message, including an acknowledged one |
 | `brg msg ack ID… [--external NAME] [--json]` | Acknowledge messages addressed to you |
 | `brg msg wait [--external NAME] [--timeout SECONDS] [--full] [--json]` | Wait for your inbox: new messages at once, existing ones after 60 seconds if still unacked; timeout 60–86400, default 86400. The 60 s floor matches the loop guard on every nonzero exit except fenced, including timeout |
-| `brg msg check [--json]` | Report gaps and unreadable files without writing |
+| `brg msg integrity-check [--json]` | Report gaps and unreadable files without writing |
 
-**Addressing.** `devteam-k3f9/lead-q8m3`. Inside a member, a bare member ID means its own instance; everywhere else the instance is named in full ([concepts](concepts.md#names-and-ids)). Only `create` takes a role name. Member commands and messages refuse a role name, listing its kept members or naming `brg create <instance>/<role>` when it has none. Bus commands take `--instance ID` outside a member. An outside caller, for example a person's script or a coordinating agent, adds `--external NAME` (refused inside a member) and is answered at `external:NAME`.
+**Addressing.** `devteam-k3f9/lead-q8m3`. Inside a member, a bare member ID means its own instance; everywhere else the instance is named in full ([concepts](concepts.md#names-and-ids)). Only `create` takes a role name. Member commands and messages refuse a role name, listing its kept members or naming `brg create <instance>/<role>` when it has none. Bus commands take `--instance ID` outside a member. Without team context, an outside caller defaults to `external:owner` for send, list, ack and wait; `--external NAME` overrides it (refused inside a member), with replies at `external:NAME`. Instance-only plugin processes must still name `--external NAME` to send, ack or wait.
 
 ## How members talk
 
-- **`msg send`** writes a durable message, then may type its tagged envelope, including mid-turn. Members send to their parent or children; only root members of the tree's root instance also send to outside callers. Outside callers must pass `--external NAME`. Across a copy's parent edge, members use full `instance/member` addresses; the tree shares one store and message IDs, with the same typed and locked delivery rules across edges. Other cross-instance sends, including between sibling copies, are refused.
+- **`msg send`** writes a durable message, then may type its tagged envelope, including mid-turn. Members send to their parent or children; only root members of the tree's root instance also send to outside callers. Outside callers without team context default to `external:owner`; `--external NAME` overrides it. Across a copy's parent edge, members use full `instance/member` addresses; the tree shares one store and message IDs, with the same typed and locked delivery rules across edges. Other cross-instance sends, including between sibling copies, are refused.
 - **`interactive: true`** roles are inbox-only even with `--allow-unknown`; false is the default. The setting is frozen per start and invalid on locked or nested team roles. Ordinary recipients explicitly ack when taking responsibility; typing does not ack. Treat a duplicate ID from typed delivery and msg wait as the same work. Locked records require no ack and give no new permissions or inbox recovery.
 - **Stored success is success.** An ordinary send returns 0 once committed, even when input is suppressed or uncertain. Never republish it automatically. Locked postcommit typing failure returns nonzero with its ID; retries may duplicate history and input.
 - **Work is prose.** The lead writes a brief file, sends a message naming it and starts the helper. The helper reads `msg list --full`, acks once it takes responsibility, writes its report atomically and replies naming it with `reply_to` the brief message. The lead verifies the report, diff and checks itself, stops the helper, then checks status shows it stopped before reusing the checkout. One writer per checkout and one piece of work per helper are team rules. Progress and delegation live in pull request descriptions and comments.
@@ -115,7 +115,7 @@ By each brief's existing deadline, check ordinary untyped records' ack/status. S
 
 ## Secrets
 
-Decided: brg stores no secrets. A plugin's secrets come from the environment `brg create` or `brg start` runs in (for example under your password manager's `run`), go only to that plugin's 0600 file, and are removed at `brg stop`. `brg secret <team>` lists the names the plugins need and whether each is set, without values. 0600 keeps other users out, not the members: a member that isn't `locked` could read the file while it exists.
+Decided: brg stores no secrets. A plugin's secrets come from the environment `brg create` or `brg start` runs in (for example under your password manager's `run`), go only to that plugin's 0600 file, and are removed at `brg stop`. `brg secrets <team>` lists the names the plugins need and whether each is set, without values. 0600 keeps other users out, not the members: a member that isn't `locked` could read the file while it exists.
 
 ## Roles with several copies
 

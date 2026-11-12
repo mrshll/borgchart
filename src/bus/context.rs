@@ -1,5 +1,6 @@
 //! Who is calling: a member (from its launch environment), an outside caller
-//! naming itself with `--external`, or an operator with neither.
+//! using `owner` by default or naming itself with `--external`, or an
+//! instance-only plugin with no outside identity.
 //!
 //! This prevents mistakes, not spoofing: anything running as the same user
 //! can set these variables.
@@ -15,6 +16,14 @@ pub const ENV_MEMBER: &str = "BORGCHART_MEMBER";
 /// A unique ID for one start of one member.
 pub const ENV_INCARNATION: &str = "BORGCHART_INCARNATION";
 
+const MEMBER_ONLY_ENV: [&str; 5] = [
+    ENV_MEMBER,
+    ENV_INCARNATION,
+    crate::exec::ENV_ROLE,
+    crate::exec::ENV_NOTES,
+    "BORGCHART_PARENT",
+];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Caller {
     Member {
@@ -24,7 +33,7 @@ pub enum Caller {
     External {
         name: String,
     },
-    /// No member context and no `--external`: may read, not publish.
+    /// Instance-only context and no `--external`: may read, not publish.
     Operator,
 }
 
@@ -34,7 +43,7 @@ pub enum Caller {
 pub enum Actor {
     /// A member, from its launch context.
     Member { member: String, incarnation: String },
-    /// An outside caller that named itself with `--external`.
+    /// An outside caller, defaulting to `owner` without team context.
     External { name: String },
 }
 
@@ -54,7 +63,9 @@ pub fn instance_from(
     // instance alone (a plugin process) is not a member context.
     let set = |k: &str| get(k).is_some_and(|v| !v.is_empty());
     let parts = [ENV_MEMBER, ENV_INCARNATION];
-    if parts.iter().any(|k| set(k)) && !(parts.iter().all(|k| set(k)) && set(ENV_INSTANCE)) {
+    if MEMBER_ONLY_ENV.iter().any(|k| set(k))
+        && !(parts.iter().all(|k| set(k)) && set(ENV_INSTANCE))
+    {
         return Err(Failure::new(
             Code::Refused,
             format!(
@@ -91,7 +102,10 @@ pub fn caller_from(
     let member = get(ENV_MEMBER).filter(|v| !v.is_empty());
     let incarnation = get(ENV_INCARNATION).filter(|v| !v.is_empty());
     let instance = get(ENV_INSTANCE).filter(|v| !v.is_empty());
-    if member.is_some() || incarnation.is_some() {
+    if MEMBER_ONLY_ENV
+        .iter()
+        .any(|k| get(k).is_some_and(|v| !v.is_empty()))
+    {
         if external.is_some() {
             return Err(Failure::new(
                 Code::Refused,
@@ -119,6 +133,9 @@ pub fn caller_from(
             Code::Usage,
             format!("`--external {name}`: names match [a-z][a-z0-9_-]{{0,31}}"),
         )),
+        None if instance.is_none() => Ok(Caller::External {
+            name: "owner".into(),
+        }),
         None => Ok(Caller::Operator),
     }
 }
@@ -189,7 +206,34 @@ mod tests {
     }
 
     #[test]
-    fn external_and_operator() {
+    fn member_launch_variables_without_identity_are_refused() {
+        for key in [
+            crate::exec::ENV_ROLE,
+            crate::exec::ENV_NOTES,
+            "BORGCHART_PARENT",
+        ] {
+            for instance in ["", "oncall-2a3b"] {
+                let pairs = [(key, "member-context"), (ENV_INSTANCE, instance)];
+                let e = env(&pairs);
+                assert_eq!(caller_from(None, &e).unwrap_err().code, Code::Refused);
+                assert_eq!(
+                    instance_from(Some("oncall-2a3b"), &e).unwrap_err().code,
+                    Code::Refused
+                );
+            }
+            let pairs = [(key, "")];
+            let empty = env(&pairs);
+            assert_eq!(
+                caller_from(None, &empty).unwrap(),
+                Caller::External {
+                    name: "owner".into()
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn external_default_does_not_apply_in_a_plugin_context() {
         let e = env(&[]);
         assert_eq!(
             caller_from(Some("supervisor"), &e).unwrap(),
@@ -197,7 +241,14 @@ mod tests {
                 name: "supervisor".into()
             }
         );
-        assert_eq!(caller_from(None, &e).unwrap(), Caller::Operator);
+        assert_eq!(
+            caller_from(None, &e).unwrap(),
+            Caller::External {
+                name: "owner".into()
+            }
+        );
+        let plugin = env(&[(ENV_INSTANCE, "oncall-2a3b")]);
+        assert_eq!(caller_from(None, &plugin).unwrap(), Caller::Operator);
         assert_eq!(
             caller_from(Some("Bad Name"), &e).unwrap_err().code,
             Code::Usage
