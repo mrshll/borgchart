@@ -36,7 +36,8 @@ body { margin: 0; }
 main {
   max-width: 100ch;
   margin: 0 auto;
-  padding: 2rem 16px 3rem;
+  /* As much room above the status tree as below it (.stack). */
+  padding: 2.9rem 16px 3rem;
 }
 
 /* The status tree holds the room of its largest frame (a hidden copy
@@ -109,7 +110,6 @@ pre {
 
 @media (max-width: 40rem) {
   html { font-size: 14px; }
-  main { padding-top: 1rem; }
   .screen { font-size: min(1rem, calc(100cqw / 31)); }
   h2 ~ p:not(.prompt), h2 ~ pre, h2 ~ dl { padding-left: 3ch; }
   .title span:nth-child(2) { display: none; }
