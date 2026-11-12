@@ -95,6 +95,8 @@ This builds the workspace release binaries with `--locked`, installs `brg` and `
 
 `PREFIX` changes the parent of `brg/` (default `$HOME/.local/share`); `BINDIR` changes where the `brg` and `brg-seat` symlinks go (default `$HOME/.local/bin`). For example, `make install PREFIX="$HOME/apps" BINDIR="$HOME/bin"`. Use absolute paths. The links point directly at `$PREFIX/brg/bin/<name>` and are replaced with `ln -sfn`. Keep `BINDIR` on `PATH`. The old `borgchart` link is removed only if it points to `$PREFIX/brg/bin/borgchart`; unrelated links and files are left alone.
 
+For later upgrades, run `make upgrade` from your own shell outside any member. It builds first, asks each tree with live members (including child teams) for its root leads' handover notes, waits for their replies and for working members to settle, then stops the trees, installs the built binaries and starts the trees fresh. A tree with live members but no live root lead is refused. `TIMEOUT=1800` bounds the handover and settling wait together in seconds; `FORCE=1` skips the handover messages, wait and working check, including for trees without live root leads. `DRY_RUN=1` prints the steps without sending messages or changing anything; `BRG` selects the installed binary (default `brg` on PATH). A build failure changes nothing; if installing fails after the stop, the trees are started again on whatever is installed. A destroy/create cutover stays manual.
+
 The installer leaves template files and brg's configuration alone. Set `templates:` in that configuration to point straight at a checkout's `templates/` folder, which follows whatever that checkout has checked out. You may list several catalogs:
 
 ```text
