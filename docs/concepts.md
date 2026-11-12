@@ -72,7 +72,7 @@ There's no `up`. `create` always makes something new; `start`, `stop` and `delet
 | `brg create` | `create <team> <folder>` makes a new instance working in that folder (the current folder by default), starts it, and prints its ID and tree. `<team>` is a team's name or a path to its folder. Run it twice and you have two instances. | `create <instance>/<role>` makes a new member of that role and starts it. `create` takes only a team or a role, never a member. It's refused past `max`; for a `max: 1` role whose member already exists, it points to `start`. |
 | `brg start` | Brings the instance to what should be running. That's the `start: true` roles and the members that were running when it was last stopped. A `start: true` role whose member was deleted gets a fresh member. Members already running are left alone. Members that start use current files and configuration. It takes no folder. | Starts that member with a new start. If it's already running, it says so and changes nothing. A deleted ID is refused. |
 | `brg stop` | Stops every member. On a stopped instance, it says so and changes nothing. | Stops that member; the same on a stopped one. |
-| `brg delete` | Removes a stopped instance: its notes, state and registration. Copy messages stay as history in the tree store; root deletion removes that store. It's refused while anything runs. Unacked messages, or messages it cannot read, are listed and need `--force`. | Removes a stopped member. Unacked messages are listed with a count and require `--force`; running or unknown liveness is always refused. Kept children, running or stopped, also prevent deletion, even with `--force`: their full addresses are listed; delete them first. Its ID stays issued. Immutable messages remain as history; unread ones to a deleted member stop counting as open work. |
+| `brg delete` | Removes a stopped instance: its notes, state and registration. Copy messages stay as history in the tree store; root deletion removes that store. It's refused while anything runs. Unread messages, or messages it cannot read, are listed and need `--force`. | Removes a stopped member. Unread messages are listed with a count and require `--force`; running or unknown liveness is always refused. Kept children, running or stopped, also prevent deletion, even with `--force`: their full addresses are listed; delete them first. Its ID stays issued. Immutable messages remain as history; unread ones to a deleted member stop counting as open work. |
 
 **Restarting** is `stop` then `start`. That's also how changed files are applied.
 
@@ -81,9 +81,9 @@ There's no `up`. `create` always makes something new; `start`, `stop` and `delet
 **A team, a path or a role.** A path starts with `/`, `./`, `../` or `~/`. Any other argument to `create` is a team's name when it has no `/`, and `<instance>/<role>` when it has one. So `brg create ./dev-team ~/work/x` runs the folder `./dev-team`, and `brg create teams/dev-team` is refused ("no instance `teams`; for a folder, write `./teams/dev-team`").
 
 **Also:**
-- `attach`, `logs` and `send` take a member address.
+- `attach`, `logs` and `msg send` take a member address.
 - `brg ls` lists the teams in the search paths, each with its instances, running or stopped.
-- `brg status` shows the tree and each member's unread (unacked) count, including in `-i` and `--json`.
+- `brg status` shows the tree and each member's unacked count, including in `-i` and `--json`.
 - `brg validate <team>` checks the team folder and the global configuration.
 
 ## Names and IDs
@@ -105,9 +105,9 @@ There's no `up`. `create` always makes something new; `start`, `stop` and `delet
 
 Two folders with the same name can both run. Their instances are told apart by their suffixes, and `brg ls` shows each one's folder.
 
-**Leaving the instance out.** Inside a member, an address without an instance means that member's own instance, so a lead writes `implementer-x7k2`. Everywhere else the full instance ID is needed (`dev-team-k3f9/implementer-x7k2`, `brg start dev-team-k3f9`). There are no other shortcuts for now: brg never infers an instance from a team's name or from which instances are running. Message, inbox and bus commands take the instance as `--instance`; inside a member it's always the member's own.
+**Leaving the instance out.** Inside a member, an address without an instance means that member's own instance, so a lead writes `implementer-x7k2`. Everywhere else the full instance ID is needed (`dev-team-k3f9/implementer-x7k2`, `brg start dev-team-k3f9`). There are no other shortcuts for now: brg never infers an instance from a team's name or from which instances are running. `msg` commands other than `msg send` take the instance as `--instance`; inside a member it's always the member's own.
 
-**Members are always named in full.** Commands that act on a member (`attach`, `send`, `stop`), and messages, take its full ID (`lead-q8m3`). A role name there is refused, listing the role's members. There are no shortcuts for now.
+**Members are always named in full.** Commands that act on a member (`attach`, `msg send`, `stop`), and messages, take its full ID (`lead-q8m3`). A role name there is refused, listing the role's members. There are no shortcuts for now.
 
 **Parents are agent roles.** `parent: lead` names an agent role, and a member's parent is the member filling that role. So a parent role must have one member: `validate` refuses a `parent:` that names a team role or a role with `max > 1`. The same goes for a plugin's `delivers_to:`.
 
@@ -147,9 +147,9 @@ dev-team-k3f9                       team ~/.config/borgchart/teams/dev-team/ · 
 - **Tree lines:**
   - one line per member;
   - a role with no kept member gets `not created (start: false)` or `not created (start: true)`, following its `start` setting, or a dim `on demand (none created)` for `max > 1`. A created member that isn't running shows on its own line as `stopped`;
-  - positive unread message counts appear beside members, also in `-i`; a zero adds nothing to the tree;
+  - positive unacked message counts appear beside members, also in `-i`; a zero adds nothing to the tree;
   - copies nest under their parent member, each with its full instance path.
-- **`--json` member rows:** `instance`, `team`, `member`, `role`, `parent` (a member ID), `start_id` (the current incarnation, when recorded), and the existing fields. A stop retains `start_id`; restarting changes it. With a readable bus, `unread` gives each kept member's unacked count, including zero. Without a bus it is absent; if the store cannot be read, counts are absent and status adds a short note. Deleted members have no rows. Plugin-process rows keep `kind: plugin` and their name.
+- **`--json` member rows:** `instance`, `team`, `member`, `role`, `parent` (a member ID), `start_id` (the current incarnation, when recorded), and the existing fields. A stop retains `start_id`; restarting changes it. With a readable bus, `unacked` gives each kept member's unacked count, including zero. Without a bus it is absent; if the store cannot be read, counts are absent and status adds a short note. Deleted members have no rows. Plugin-process rows keep `kind: plugin` and their name.
 
 ## Environment variables
 
@@ -171,5 +171,5 @@ Every `BORGCHART_*` variable that a member, plugin or test can see:
 | `BORGCHART_TMUX_TMPDIR` | members, plugins, tests | where that server keeps its socket; keeps test servers private |
 | `BORGCHART_STATE_HOME` | the caller, tests | brg's state folder, holding every instance's state folder |
 | `BORGCHART_GATE_WAIT_MS` | the caller, tests | how long a start waits for a `locked` member's gate |
-| `BORGCHART_WAIT_MIN_MS`, `BORGCHART_WAIT_TIMEOUT_MS` | tests (test builds only) | shorten the inbox wait's minimum and timeout |
+| `BORGCHART_WAIT_MIN_MS`, `BORGCHART_WAIT_TIMEOUT_MS` | tests (test builds only) | shorten `msg wait`'s minimum and timeout |
 | `BORGCHART_QUALIFY`, `…_VENDORS`, `…_SUBMIT` | the manual vendor qualification test | turn that test on and pick its vendors |

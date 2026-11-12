@@ -1,4 +1,4 @@
-//! Plain-message round trips, the one wait and unread status counts.
+//! Plain-message round trips, the one wait and unacked status counts.
 #![cfg(feature = "test-support")]
 
 mod common;
@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 
 fn publish(env: &Env, instance: &str, draft: &Value) -> Output {
     let target = format!("{instance}/{}", draft["to"].as_str().unwrap());
-    let mut command = env.cmd(&["send", &target, "-", "--external", "ops", "--json"]);
+    let mut command = env.cmd(&["msg", "send", &target, "-", "--external", "ops", "--json"]);
     if let Some(refs) = draft["reply_to"].as_array() {
         for reference in refs {
             command.args(["--reply-to", reference.as_str().unwrap()]);
@@ -64,7 +64,7 @@ fn waiter(env: &Env, instance: &str, id: &str) -> Command {
         env,
         instance,
         id,
-        &["inbox", "wait", "--timeout", "60", "--json", "--full"],
+        &["msg", "wait", "--timeout", "60", "--json", "--full"],
     );
     cmd.env("BORGCHART_WAIT_MIN_MS", "700")
         .env("BORGCHART_WAIT_TIMEOUT_MS", "1400")
@@ -95,7 +95,8 @@ fn plain_message_round_trip_and_missing_reference() {
     assert_eq!(out["id"], "m1");
     let inbox: Value = serde_json::from_slice(
         &env.ok(&[
-            "inbox",
+            "msg",
+            "list",
             "--instance",
             &instance,
             "--member",
@@ -127,7 +128,8 @@ fn plain_message_round_trip_and_missing_reference() {
     assert!(ack.status.success(), "{}", both(&ack));
     let inbox: Value = serde_json::from_slice(
         &env.ok(&[
-            "inbox",
+            "msg",
+            "list",
             "--instance",
             &instance,
             "--member",
@@ -165,7 +167,8 @@ fn identical_publishes_are_two_messages_and_inbox_has_no_pages() {
     }
     let inbox: Value = serde_json::from_slice(
         &env.ok(&[
-            "inbox",
+            "msg",
+            "list",
             "--member",
             &lead,
             "--instance",
@@ -264,7 +267,7 @@ fn ack_refresh_catches_up_the_locked_tail_before_validating_acks() {
     let inbox: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(inbox["records"].as_array().unwrap().len(), 1);
     assert_eq!(inbox["records"][0]["id"], "m3");
-    env.ok(&["bus", "check", "--instance", &instance, "--json"]);
+    env.ok(&["msg", "check", "--instance", &instance, "--json"]);
     env.ok(&["stop", &instance]);
 }
 
@@ -279,7 +282,8 @@ fn existing_messages_wait_for_the_minimum_and_match_inbox_output() {
     assert!(out.status.success(), "{}", both(&out));
     assert!(start.elapsed() >= Duration::from_millis(700));
     let expected = env.ok(&[
-        "inbox",
+        "msg",
+        "list",
         "--instance",
         &instance,
         "--member",
@@ -316,9 +320,25 @@ fn existing_messages_wait_for_the_minimum_and_match_inbox_output() {
 #[test]
 fn wait_errors_and_usage_errors_obey_the_minimum() {
     let env = Env::new();
+    let start = Instant::now();
+    let out = env
+        .cmd(&["msg", "send", "x/y", "wait"])
+        .env("BORGCHART_WAIT_MIN_MS", "5000")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3), "{}", both(&out));
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "failed send waited the wait minimum: {}",
+        both(&out)
+    );
     for args in [
-        vec!["inbox", "wait", "--timeout", "60"],
-        vec!["inbox", "wait", "--timeout", "bad"],
+        vec!["msg", "wait", "--timeout", "60"],
+        vec!["msg", "wait", "--timeout", "bad"],
+        vec!["msg", "wait", "--bogus"],
+        vec!["msg", "--instance", "missing", "wait", "--bogus"],
+        vec!["msg", "--instance=missing", "wait", "--bogus"],
+        vec!["inbox", "wait"],
     ] {
         let start = Instant::now();
         let out = env
@@ -327,11 +347,26 @@ fn wait_errors_and_usage_errors_obey_the_minimum() {
             .output()
             .unwrap();
         assert!(!out.status.success());
+        if args[0] == "inbox" {
+            assert_eq!(out.status.code(), Some(2), "{}", both(&out));
+        }
         assert!(
             start.elapsed() >= Duration::from_millis(700),
             "{}",
             both(&out)
         );
+    }
+}
+
+#[test]
+fn send_refuses_instance_instead_of_ignoring_it() {
+    let env = Env::new();
+    for args in [
+        vec!["msg", "--instance", "other", "send", "x/y", "hello"],
+        vec!["msg", "send", "--instance", "other", "x/y", "hello"],
+    ] {
+        let out = env.cmd(&args).output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", both(&out));
     }
 }
 
@@ -392,24 +427,28 @@ fn status_shows_unacked_counts_and_survives_store_damage() {
     send(&env, &instance, &lead, "two");
     send(&env, &instance, &helper, "three");
     let rows = env.rows(&instance);
+    assert!(
+        rows.iter().all(|row| row.get("unread").is_none()),
+        "{rows:?}"
+    );
     assert_eq!(
-        rows.iter().find(|r| r["member"] == lead).unwrap()["unread"],
+        rows.iter().find(|r| r["member"] == lead).unwrap()["unacked"],
         2
     );
     assert_eq!(
-        rows.iter().find(|r| r["member"] == helper).unwrap()["unread"],
+        rows.iter().find(|r| r["member"] == helper).unwrap()["unacked"],
         1
     );
     let text = stdout(&env.ok(&["status", &instance]));
     assert!(
-        text.contains("2 unread") && text.contains("1 unread"),
+        text.contains("2 unacked") && text.contains("1 unacked"),
         "{text}"
     );
     let out = member(&env, &instance, &lead, &["msg", "ack", "m1", "m2"])
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", both(&out));
-    assert_eq!(env.row(&instance, "lead")["unread"], 0);
+    assert_eq!(env.row(&instance, "lead")["unacked"], 0);
     fs::write(
         env.path(&format!("state/{instance}/messages/store.json")),
         "bad",
@@ -417,17 +456,17 @@ fn status_shows_unacked_counts_and_survives_store_damage() {
     .unwrap();
     let text = stdout(&env.ok(&["status", &instance]));
     assert!(text.contains("messages unavailable"), "{text}");
-    assert!(env.row(&instance, "lead").get("unread").is_none());
+    assert!(env.row(&instance, "lead").get("unacked").is_none());
     env.ok(&["stop", &instance]);
 
     // Bus storage is present even without explicit bus settings.
     let env = Env::new();
     env.write("teams/oncall/team.yaml", &TEAM.replace("bus: {}\n", ""));
     let instance = env.create("oncall", "work/a");
-    assert_eq!(env.row(&instance, "lead")["unread"], 0);
+    assert_eq!(env.row(&instance, "lead")["unacked"], 0);
     let text = stdout(&env.ok(&["status", &instance]));
     assert!(
-        !text.contains("unread") && !text.contains("messages unavailable"),
+        !text.contains("unacked") && !text.contains("messages unavailable"),
         "{text}"
     );
     env.ok(&["stop", &instance]);
@@ -459,5 +498,25 @@ fn a_damaged_store_and_an_unreadable_next_record_wait_before_erroring() {
         assert_eq!(out.status.code(), Some(7), "{}", both(&out));
         assert!(start.elapsed() >= Duration::from_millis(700));
         env.ok(&["stop", &instance]);
+    }
+}
+
+#[test]
+fn wait_help_does_not_back_off() {
+    let env = Env::new();
+    for (command, code) in [("msg", 0), ("inbox", 2)] {
+        for flag in ["--help", "-h"] {
+            let start = Instant::now();
+            let out = env
+                .cmd(&[command, "wait", flag])
+                .env("BORGCHART_WAIT_MIN_MS", "5000")
+                .output()
+                .unwrap();
+            assert_eq!(out.status.code(), Some(code), "{}", both(&out));
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "help waited its minimum: {command} wait {flag}"
+            );
+        }
     }
 }

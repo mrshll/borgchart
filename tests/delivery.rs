@@ -33,7 +33,8 @@ impl Tree {
         env.ok(&["create", &format!("{parent}/dev")]);
         let parent_member = env.member(&parent, "lead");
         env.ok(&[
-            "inbox",
+            "msg",
+            "list",
             "--instance",
             &parent,
             "--member",
@@ -93,9 +94,9 @@ impl Tree {
         value(self.send(child, &to, body, reply_to))
     }
 
-    /// `brg send TO - --json` as the parent's or the child's root, body on stdin.
+    /// `brg msg send TO - --json` as the parent's or the child's root, body on stdin.
     fn send(&self, child: bool, to: &str, body: &str, reply_to: &[&str]) -> Output {
-        let mut cmd = self.member_cmd(child, &["send", to, "-", "--json"]);
+        let mut cmd = self.member_cmd(child, &["msg", "send", to, "-", "--json"]);
         for reference in reply_to {
             cmd.args(["--reply-to", reference]);
         }
@@ -116,7 +117,7 @@ impl Tree {
 
     fn inbox(&self, child: bool) -> Value {
         value(
-            self.member_cmd(child, &["inbox", "--full", "--json"])
+            self.member_cmd(child, &["msg", "list", "--full", "--json"])
                 .output()
                 .unwrap(),
         )
@@ -187,7 +188,8 @@ fn parent_edge_round_trip_preserves_ids_and_plain_reply_references() {
         tree.member_cmd(
             true,
             &[
-                "inbox",
+                "msg",
+                "list",
                 "--member",
                 &format!("{}/{}", tree.parent, tree.parent_member),
                 "--json",
@@ -216,7 +218,7 @@ fn concurrent_publishers_in_two_instances_share_contiguous_ids() {
             format!("{}/{}", tree.child, tree.child_member)
         };
         processes.push(
-            tree.member_cmd(child, &["send", &to, "Concurrent task", "--json"])
+            tree.member_cmd(child, &["msg", "send", &to, "Concurrent task", "--json"])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
@@ -232,7 +234,7 @@ fn concurrent_publishers_in_two_instances_share_contiguous_ids() {
     for instance in [&tree.parent, &tree.child] {
         let checked = value(
             tree.env
-                .ok(&["bus", "check", "--instance", instance, "--json"]),
+                .ok(&["msg", "check", "--instance", instance, "--json"]),
         );
         assert_eq!(checked["records"], 6);
     }
@@ -267,7 +269,7 @@ fn routing_allows_parent_edges_but_refuses_siblings_cousins_and_deleted_ancestor
         let (instance, member) = from.rsplit_once('/').unwrap();
         let start = tree.env.starts(member).last().unwrap().clone();
         tree.env
-            .cmd(&["send", to, "Routing check", "--json"])
+            .cmd(&["msg", "send", to, "Routing check", "--json"])
             .env("BORGCHART_INSTANCE", instance)
             .env("BORGCHART_MEMBER", member)
             .env(
@@ -280,7 +282,8 @@ fn routing_allows_parent_edges_but_refuses_siblings_cousins_and_deleted_ancestor
     for (from, to) in [(&parent, &local_child), (&local_child, &parent)] {
         let sent = value(send(from, to));
         let inbox = value(tree.env.ok(&[
-            "inbox",
+            "msg",
+            "list",
             "--instance",
             &tree.parent,
             "--member",
@@ -328,7 +331,8 @@ fn routing_allows_parent_edges_but_refuses_siblings_cousins_and_deleted_ancestor
         let out = publish_to(&tree, true, &format!("{receiver}/{member}"));
         assert_eq!(out.status.code(), Some(5), "{}", both(&out));
         let inbox = value(tree.env.ok(&[
-            "inbox",
+            "msg",
+            "list",
             "--instance",
             receiver,
             "--member",
@@ -349,6 +353,7 @@ fn routing_allows_parent_edges_but_refuses_siblings_cousins_and_deleted_ancestor
     record["copies"][copy]["deleted"] = json!(true);
     fs::write(&record_path, record.to_string()).unwrap();
     let refused = tree.env.brg(&[
+        "msg",
         "send",
         &leaves[0],
         "Deleted ancestor",
@@ -360,7 +365,7 @@ fn routing_allows_parent_edges_but_refuses_siblings_cousins_and_deleted_ancestor
     assert_eq!(refused.status.code(), Some(5), "{}", both(&refused));
     let checked = value(
         tree.env
-            .ok(&["bus", "check", "--instance", &tree.parent, "--json"]),
+            .ok(&["msg", "check", "--instance", &tree.parent, "--json"]),
     );
     assert_eq!(checked["records"], 2, "refused routes must not publish");
 }
@@ -385,6 +390,7 @@ fn a_copy_non_root_cannot_bypass_its_root_in_either_direction() {
         .member_cmd(
             true,
             &[
+                "msg",
                 "send",
                 &format!("{}/{}", tree.parent, tree.parent_member),
                 "Escalation",
@@ -401,7 +407,8 @@ fn a_copy_non_root_cannot_bypass_its_root_in_either_direction() {
     assert_eq!(out.status.code(), Some(5), "{}", both(&out));
     assert!(tree.inbox(false)["records"].as_array().unwrap().is_empty());
     let inbox = value(tree.env.ok(&[
-        "inbox",
+        "msg",
+        "list",
         "--instance",
         &tree.child,
         "--member",
@@ -418,7 +425,8 @@ fn only_the_tree_root_can_publish_to_an_external_caller() {
     assert_eq!(refused.status.code(), Some(5), "{}", both(&refused));
     value(publish_to(&tree, false, "external:ops"));
     let outside = value(tree.env.ok(&[
-        "inbox",
+        "msg",
+        "list",
         "--instance",
         &tree.parent,
         "--external",
@@ -495,7 +503,7 @@ fn a_child_publish_wakes_a_parent_already_waiting() {
     let waiting = tree
         .member_cmd(
             false,
-            &["inbox", "wait", "--timeout", "60", "--full", "--json"],
+            &["msg", "wait", "--timeout", "60", "--full", "--json"],
         )
         .env("BORGCHART_TEST_WAIT_READY", &ready)
         .stdout(Stdio::piped())
@@ -518,6 +526,7 @@ fn stopped_and_restarted_copy_sessions_cannot_send_ack_or_wait() {
         let mut send = tree.member_cmd(
             true,
             &[
+                "msg",
                 "send",
                 &format!("{}/{}", tree.parent, tree.parent_member),
                 "Stale report",
@@ -525,7 +534,7 @@ fn stopped_and_restarted_copy_sessions_cannot_send_ack_or_wait() {
             ],
         );
         let mut ack = tree.member_cmd(true, &["msg", "ack", id, "--json"]);
-        let mut wait = tree.member_cmd(true, &["inbox", "wait", "--timeout", "60", "--json"]);
+        let mut wait = tree.member_cmd(true, &["msg", "wait", "--timeout", "60", "--json"]);
         tree.env.ok(&["stop", &tree.child]);
         if restart {
             tree.env.ok(&["start", &tree.child]);
@@ -549,6 +558,7 @@ fn a_copy_restart_fences_a_publish_waiting_for_the_tree_lock() {
         .member_cmd(
             true,
             &[
+                "msg",
                 "send",
                 &format!("{}/{}", tree.parent, tree.parent_member),
                 "Old session",
@@ -579,6 +589,7 @@ fn stopping_a_copy_waits_for_a_publication_already_authorized_in_the_tree() {
         .member_cmd(
             true,
             &[
+                "msg",
                 "send",
                 &format!("{}/{}", tree.parent, tree.parent_member),
                 "Final report",
@@ -655,6 +666,7 @@ fn copy_delete_and_publish_cannot_orphan_a_message() {
             .member_cmd(
                 false,
                 &[
+                    "msg",
                     "send",
                     &format!("{}/{}", tree.child, tree.child_member),
                     "Concurrent task",
@@ -704,7 +716,7 @@ fn copy_delete_and_publish_cannot_orphan_a_message() {
         assert!(!out.status.success(), "{}", both(&out));
         let checked = value(
             tree.env
-                .ok(&["bus", "check", "--instance", &tree.parent, "--json"]),
+                .ok(&["msg", "check", "--instance", &tree.parent, "--json"]),
         );
         assert_eq!(checked["records"], 0);
     }
@@ -737,6 +749,7 @@ fn cross_edge_relays_are_refused_before_publication() {
         .member_cmd(
             true,
             &[
+                "msg",
                 "send",
                 &format!("{}/{}", tree.parent, tree.parent_member),
                 "Relayed",

@@ -131,7 +131,7 @@ if [ "$scenario" = approval ]; then
 fi
 
 nonce_word() { # the nonce from the inbox, read without marking it shown
-  "$BORGCHART_BIN" inbox --member "$BORGCHART_MEMBER" --full | grep -o 'nonce [0-9a-z]*' | tail -1 | cut -d' ' -f2
+  "$BORGCHART_BIN" msg list --member "$BORGCHART_MEMBER" --full | grep -o 'nonce [0-9a-z]*' | tail -1 | cut -d' ' -f2
 }
 
 reply() { say "● REPLY $(printf '%s' "$1" | rev)"; draw idle; }
@@ -145,9 +145,9 @@ if [ "$member" = waiter ]; then
       forever ;;
     foreground)
       draw working
-      "$BORGCHART_BIN" inbox wait --timeout 600 >"$out" 2>&1 ;;
+      "$BORGCHART_BIN" msg wait --timeout 600 >"$out" 2>&1 ;;
     early-turn|same-poll)
-      BORGCHART_INCARNATION=not-this-one "$BORGCHART_BIN" inbox wait >"$out" 2>&1 &
+      BORGCHART_INCARNATION=not-this-one "$BORGCHART_BIN" msg wait >"$out" 2>&1 &
       decoy=$!
       say "● ARMED"
       draw idle
@@ -164,7 +164,7 @@ if [ "$member" = waiter ]; then
       [ "$scenario" = early-turn ] && reply "$(nonce_word)"
       forever ;;
     *)
-      "$BORGCHART_BIN" inbox wait --timeout 600 >"$out" 2>&1 &
+      "$BORGCHART_BIN" msg wait --timeout 600 >"$out" 2>&1 &
       say "● ARMED"
       draw idle
       wait $! ;;

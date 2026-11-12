@@ -487,6 +487,7 @@ fn department_and_copy_share_a_store_without_bus_opt_in() {
     env.ok(&["start", &child]);
     let lead = env.member(&child, "lead");
     env.ok(&[
+        "msg",
         "send",
         &format!("{child}/{lead}"),
         "Copy task",
@@ -495,7 +496,7 @@ fn department_and_copy_share_a_store_without_bus_opt_in() {
     ]);
     for instance in [&dept, &child] {
         let checked: serde_json::Value = serde_json::from_slice(
-            &env.ok(&["bus", "check", "--instance", instance, "--json"])
+            &env.ok(&["msg", "check", "--instance", instance, "--json"])
                 .stdout,
         )
         .unwrap();

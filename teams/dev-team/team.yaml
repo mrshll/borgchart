@@ -23,7 +23,7 @@ roles:
     plugins: {seat: [route]}
     prompt: orchestrator.md
     interactive: true
-    vendor: claude      # inbox-only lead; Claude uses a background inbox wait
+    vendor: claude      # inbox-only lead; Claude uses a background msg wait
     start: true
   implementer:
     prompt: implementer.md

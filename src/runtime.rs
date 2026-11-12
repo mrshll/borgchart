@@ -1,5 +1,5 @@
 //! The tmux runtime: `create`, `start`, `stop`, `delete`, `status`, `ls`,
-//! `attach`, `logs` and `send`, on instances and their members.
+//! `attach`, `logs` and `msg send`, on instances and their members.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::IsTerminal;
@@ -1118,7 +1118,7 @@ fn start_members(
             }
             match reading.map(|r| r.state) {
                 // Left for a person, never answered here; a `locked` member's
-                // gate must still report in afterwards (`send` checks).
+                // gate must still report in afterwards (`msg send` checks).
                 Some(State::Blocked) if is_trust => {
                     append(
                         &mut outcomes,
@@ -1240,7 +1240,7 @@ pub fn header_as(inst: &Instance, short: bool) -> String {
 }
 
 /// `path` with a leading `home` written `~`.
-fn tilde(path: &std::path::Path, home: Option<&std::path::Path>) -> String {
+pub(crate) fn tilde(path: &std::path::Path, home: Option<&std::path::Path>) -> String {
     // A home of `/`, or an empty one, would shorten every path.
     match home
         .filter(|h| h.parent().is_some())
@@ -3451,7 +3451,7 @@ pub struct StatusRow {
     pub liveness: Option<Liveness>,
     /// Unacked messages; absent when the instance has no readable bus.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub unread: Option<usize>,
+    pub unacked: Option<usize>,
     /// A copy's running members, excluding members of its own copies.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub running: Option<usize>,
@@ -3548,7 +3548,7 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
             }
             Err(_) => (
                 None,
-                Some("messages unavailable; brg bus check".to_string()),
+                Some("messages unavailable; brg msg check".to_string()),
             ),
         }
     };
@@ -3653,7 +3653,7 @@ fn status_with_counts(
                 trust_accepted: None,
                 worktree: None,
                 liveness: None,
-                unread: None,
+                unacked: None,
                 running: None,
                 expected_running: false,
                 start: member.start,
@@ -3696,7 +3696,7 @@ fn status_with_counts(
                 Posture::Locked => "locked".into(),
             }),
             state: if ran { STOPPED } else { NOT_STARTED }.into(),
-            unread: counts.map(|all| all.get(&inst.at(id)).copied().unwrap_or_default().unread),
+            unacked: counts.map(|all| all.get(&inst.at(id)).copied().unwrap_or_default().unread),
             running: None,
             expected_running: false,
             start: member.start,
@@ -3749,7 +3749,7 @@ fn status_with_counts(
                         row.state = "gate-inactive".into();
                     }
                 }
-                // Nothing is typed into it (`send`, the wake, folder trust)
+                // Nothing is typed into it (`msg send`, the wake, folder trust)
                 // until it leaves copy mode.
                 if w.in_mode {
                     details.push(format!(
@@ -3792,7 +3792,7 @@ fn status_with_counts(
             vendor_version: None,
             trust_accepted: None,
             worktree: None,
-            unread: None,
+            unacked: None,
             running: None,
             expected_running: false,
             start: false,
@@ -3871,7 +3871,7 @@ fn status_with_counts(
                 trust_accepted: None,
                 worktree: None,
                 liveness: None,
-                unread: None,
+                unacked: None,
                 running: None,
                 expected_running: false,
                 start: false,
@@ -3932,7 +3932,7 @@ fn status_with_counts(
                     .worktree
                     .then(|| crate::worktree::path(&full_id).display().to_string()),
                 liveness: None,
-                unread: None,
+                unacked: None,
                 running: error.is_none().then_some(running),
                 expected_running: false,
                 start: false,
@@ -4042,8 +4042,8 @@ pub fn status_cells(r: &StatusRow, short: bool) -> Vec<String> {
         detail.extend(r.activity.clone());
     }
     detail.extend(r.detail.clone());
-    if let Some(unread) = r.unread.filter(|&n| n > 0) {
-        detail.push(format!("{unread} unread"));
+    if let Some(unacked) = r.unacked.filter(|&n| n > 0) {
+        detail.push(format!("{unacked} unacked"));
     }
     let vendor = r.vendor.as_deref().unwrap_or("-");
     vec![
@@ -4242,7 +4242,7 @@ pub fn status_look(r: &StatusRow) -> tree::Look {
 
 /// The terminal summary, in parts: how many members are working and
 /// idle, how many rows need a person (the alert tone), and
-/// unread messages. Counts of zero are left out; with nothing to count, it
+/// unacked messages. Counts of zero are left out; with nothing to count, it
 /// says so.
 pub fn summary_parts(rows: &[StatusRow]) -> Vec<(String, tree::Tone)> {
     use tree::Tone;
@@ -4253,7 +4253,7 @@ pub fn summary_parts(rows: &[StatusRow]) -> Vec<(String, tree::Tone)> {
         .iter()
         .filter(|r| status_look(r).tone == tree::Tone::Alert)
         .count();
-    let unread: usize = members().filter_map(|r| r.unread).sum();
+    let unacked: usize = members().filter_map(|r| r.unacked).sum();
     let mut parts = Vec::new();
     if working > 0 {
         parts.push((format!("● {working} working"), Tone::Busy));
@@ -4264,8 +4264,8 @@ pub fn summary_parts(rows: &[StatusRow]) -> Vec<(String, tree::Tone)> {
     if need > 0 {
         parts.push((format!("! {need} need you"), Tone::Alert));
     }
-    if unread > 0 {
-        parts.push((format!("{unread} unread"), Tone::Faded));
+    if unacked > 0 {
+        parts.push((format!("{unacked} unacked"), Tone::Faded));
     }
     if parts.is_empty() {
         parts.push(("nothing running".into(), Tone::Faded));
@@ -4316,7 +4316,7 @@ fn paint_summary(parts: &[(String, tree::Tone)], colour: bool) -> String {
         .join("  ")
 }
 
-/// Why `send` refused, with its exit code.
+/// Why `msg send` refused, with its exit code.
 #[derive(Debug, PartialEq, Eq)]
 pub enum SendError {
     Usage(String),
@@ -4353,7 +4353,7 @@ impl SendError {
     }
 }
 
-/// Text checks `send` makes before touching the member.
+/// Text checks `msg send` makes before touching the member.
 pub fn check_text(text: &str) -> Result<(), SendError> {
     if text.trim().is_empty() {
         return Err(SendError::Usage("nothing to send".into()));
@@ -4675,7 +4675,7 @@ fn send_snapshot(
         }
         State::Unknown if !force => {
             return Err(SendError::Refused(
-                "recipient state is unknown; --force permits the state check only".into(),
+                "recipient state is unknown; --allow-unknown permits the state check only".into(),
             ));
         }
         _ => {}
@@ -4898,7 +4898,7 @@ mod tests {
             trust_accepted: None,
             worktree: None,
             liveness: None,
-            unread: Some(2),
+            unacked: Some(2),
             running: None,
             expected_running: false,
             start: true,
@@ -4907,11 +4907,11 @@ mod tests {
         let claude = row("claude", Some("opus high"));
         assert_eq!(
             cells(&claude, true),
-            "§ opus high|working|Review issues; 2 unread"
+            "§ opus high|working|Review issues; 2 unacked"
         );
         assert_eq!(
             cells(&claude, false),
-            "claude opus high|working|Review issues; 2 unread"
+            "claude opus high|working|Review issues; 2 unacked"
         );
         let codex = row("codex", None);
         assert!(cells(&codex, true).starts_with("Λ|"));
@@ -4922,7 +4922,7 @@ mod tests {
         // An idle member's topic is its last one: not shown.
         let mut idle = claude.clone();
         idle.state = "idle".into();
-        assert_eq!(cells(&idle, true), "§ opus high|idle|2 unread");
+        assert_eq!(cells(&idle, true), "§ opus high|idle|2 unacked");
     }
 
     #[test]
@@ -4948,7 +4948,7 @@ mod tests {
             trust_accepted: None,
             worktree: Some("/srv/example/worktrees/team.m".into()),
             liveness: None,
-            unread: Some(1),
+            unacked: Some(1),
             running: None,
             expected_running: false,
             start: true,
@@ -4960,14 +4960,14 @@ mod tests {
             ..member.clone()
         };
         for short in [true, false] {
-            assert_eq!(status_cells(&member, short)[2], "1 unread");
+            assert_eq!(status_cells(&member, short)[2], "1 unacked");
             assert_eq!(status_cells(&copy, short)[1..], ["2 running", "note"]);
         }
     }
 
     #[test]
     fn summary_counts_what_needs_a_glance() {
-        let row = |kind: &'static str, state: &str, unread: Option<usize>| StatusRow {
+        let row = |kind: &'static str, state: &str, unacked: Option<usize>| StatusRow {
             name: "m".into(),
             kind,
             instance: "i".into(),
@@ -4988,7 +4988,7 @@ mod tests {
             trust_accepted: None,
             worktree: None,
             liveness: None,
-            unread,
+            unacked,
             running: None,
             expected_running: false,
             start: true,
@@ -5003,7 +5003,7 @@ mod tests {
         ];
         assert_eq!(
             summary(&rows, false),
-            "● 2 working  · 1 idle  ! 2 need you  3 unread"
+            "● 2 working  · 1 idle  ! 2 need you  3 unacked"
         );
         // Only what needs a person is bold red.
         let painted = summary(&rows, true);
@@ -5041,7 +5041,7 @@ mod tests {
                     trust_accepted: None,
                     worktree: None,
                     liveness: None,
-                    unread: None,
+                    unacked: None,
                     running: None,
                     expected_running: false,
                     start: false,

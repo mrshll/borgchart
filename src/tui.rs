@@ -760,7 +760,7 @@ mod tests {
                 trust_accepted: None,
                 worktree: None,
                 liveness: None,
-                unread: None,
+                unacked: None,
                 running: None,
                 expected_running: false,
                 start: true,

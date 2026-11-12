@@ -179,7 +179,7 @@ impl Env {
     /// The tests act on the team's one instance, and name members by role
     /// (each role has one member): `start` creates the instance the first
     /// time and starts it after, `start <role>` creates or starts its
-    /// member, `stop [<role>]`, `status`, `logs`, `attach` and `send` go to
+    /// member, `stop [<role>]`, `status`, `logs`, `attach` and `msg send` go to
     /// the instance.
     fn translate(&self, args: &[&str]) -> Vec<String> {
         let inst = self.instance();
@@ -230,8 +230,13 @@ impl Env {
                 v.extend(own(rest));
                 v
             }
-            [cmd @ ("logs" | "attach" | "send"), role, rest @ ..] => {
-                let mut v = vec![cmd.to_string(), at(role)];
+            [cmd @ ("logs" | "attach"), role, rest @ ..]
+            | ["msg", cmd @ "send", role, rest @ ..] => {
+                let mut v = if *cmd == "send" {
+                    vec!["msg".to_string(), cmd.to_string(), at(role)]
+                } else {
+                    vec![cmd.to_string(), at(role)]
+                };
                 v.extend(own(rest));
                 v
             }
@@ -1458,6 +1463,7 @@ fn detach_children(env: &Env, member: &str, strays: &mut Strays) -> [u32; 2] {
     );
     let script = env.path(&format!("detached/{member}.sh"));
     env.ok(&[
+        "msg",
         "send",
         member,
         &format!("tool sh {}", script.display()),
@@ -1690,7 +1696,7 @@ fn a_plugin_command_may_not_hide_brg() {
         &TEAM
             .replace(
                 "read: pager read <id>",
-                "read: pager read <id>\n      run: brg send <id>",
+                "read: pager read <id>\n      run: brg msg send <id>",
             )
             .replace("plugins: {pager: [read]}", "plugins: {pager: [read, run]}"),
     );

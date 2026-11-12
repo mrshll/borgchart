@@ -93,6 +93,10 @@ fn validate_into(
         return (report, None);
     };
     let validated = Validated { team, config };
+    // Configuration warnings once, first: the team tree is checked per team.
+    if let Some(user) = &validated.config.tmux_user_config {
+        check_user_tmux_config(user, validated.config.file.as_deref(), &mut report);
+    }
     check_team_tree(&validated, ancestors, recursive, &mut report);
     if report.has_errors() {
         return (report, None);
@@ -179,10 +183,6 @@ fn cross_check(v: &Validated, report: &mut Report) {
     if let Some(bus) = &v.team.bus {
         check_bus(v, bus, team_file, report);
     }
-    if let Some(user) = &v.config.tmux_user_config {
-        check_user_tmux_config(user, config_file, report);
-    }
-
     // Shared plugins need the configuration's plugins_dir.
     for plugin in v.team.plugins.values() {
         if let Some(PluginLocation::Shared(shared)) = &plugin.location {

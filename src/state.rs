@@ -170,7 +170,7 @@ impl StateDir {
     }
 }
 
-/// Facts written at a start and read by `status`, `send`, shims and the gate.
+/// Facts written at a start and read by `status`, `msg send`, shims and the gate.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Meta {
     pub team_dir: PathBuf,

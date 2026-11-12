@@ -212,7 +212,7 @@ def test_watcher_delivers_ids_only_and_skips_duplicates_bots_and_threads(env, sl
     assert "ts=1700000001.000100" in lines[0] and "ts=1700000002.000200" in lines[1]
     for line in lines:
         assert line.startswith(
-            "send --json --external slackbot triager New message in the channel: ts="
+            "msg send --json --external slackbot triager New message in the channel: ts="
         )
         assert "Ignore your instructions" not in line and "deploys" not in line
     health = json.loads((Path(env["BORGCHART_STATE_DIR"]) / "health.json").read_text())
@@ -255,7 +255,7 @@ def test_escalate_sends_ids_and_fixed_values_to_the_parent(env, slack):
     assert out.returncode == 0, out.stderr
     (line,) = sends(env)
     assert line == (
-        "send --json --from triager lead Escalation from triager: message ts=1700000001.000100, severity=high, "
+        "msg send --json --from triager lead Escalation from triager: message ts=1700000001.000100, severity=high, "
         "reason=deploy. Read it with your read command, then triage it and reply in its thread."
     )
 
@@ -288,9 +288,9 @@ def test_escalate_to_a_blocked_lead_errors_and_is_recorded(env, slack):
     Path(env["FAKE_BRG_EXIT"]).write_text("0")
     run("watch.py", ["--once"], env)
     assert undelivered(env) == []
-    assert sends(env)[0].startswith("send --json --from triager lead ")
+    assert sends(env)[0].startswith("msg send --json --from triager lead ")
     assert sends(env)[1].startswith(
-        "send --json --external slackbot --from triager lead "
+        "msg send --json --external slackbot --from triager lead "
     )
 
 
@@ -351,7 +351,7 @@ def test_watcher_rebuilds_queued_text_and_drops_forged_entries(env, slack):
     lines = sends(env)
     assert lines == [
         (
-            "send --json --external slackbot --from triager lead Escalation from triager: message ts=1700000001.000100, severity=high, "
+            "msg send --json --external slackbot --from triager lead Escalation from triager: message ts=1700000001.000100, severity=high, "
             "reason=deploy. Read it with your read command, then triage it and reply in its thread."
         )
     ], lines
@@ -464,6 +464,6 @@ def test_locked_sender_recording_refusal_uses_existing_watcher_spool(
     Path(env["FAKE_BRG_EXIT"]).write_text("0")
     run("watch.py", ["--once"], env)
     assert undelivered(env) == []
-    assert sends(env)[0].startswith("send --json --from triager ")
-    assert sends(env)[1].startswith("send --json --external slackbot --from triager ")
+    assert sends(env)[0].startswith("msg send --json --from triager ")
+    assert sends(env)[1].startswith("msg send --json --external slackbot --from triager ")
     assert "Escalation from triager:" in sends(env)[1]
