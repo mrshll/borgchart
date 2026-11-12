@@ -1,7 +1,161 @@
 //! Resolve create-time choices against the current role and its vendor pins.
 
 use crate::config::Auth;
-use crate::team::{EFFORTS, Model, Role, Vendor};
+use crate::team::{EFFORTS, Model, Posture, Role, Vendor};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+/// Only choices explicitly supplied at create; other values follow the template.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Overrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vendor: Option<Vendor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+}
+
+impl Overrides {
+    pub fn is_empty(&self) -> bool {
+        self.vendor.is_none() && self.model.is_none() && self.effort.is_none()
+    }
+
+    /// The later layer replaces only keys it supplies.
+    pub fn merge(&self, later: &Self) -> Self {
+        Self {
+            vendor: later.vendor.or(self.vendor),
+            model: later.model.clone().or_else(|| self.model.clone()),
+            effort: later.effort.clone().or_else(|| self.effort.clone()),
+        }
+    }
+
+    pub fn resolve(&self, role: &Role, auth: Auth) -> Result<Role, String> {
+        apply(
+            role,
+            self.vendor,
+            self.model.as_deref(),
+            self.effort.as_deref(),
+            auth,
+        )
+    }
+
+    pub fn keys(&self) -> Vec<&str> {
+        [
+            ("vendor", self.vendor.is_some()),
+            ("model", self.model.is_some()),
+            ("effort", self.effort.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(key, set)| set.then_some(key))
+        .collect()
+    }
+}
+
+/// Parse bare agent choices or choices addressed to a child template role.
+pub fn parse(values: &[String]) -> Result<BTreeMap<String, Overrides>, String> {
+    let mut choices = BTreeMap::<String, Overrides>::new();
+    for value in values.iter().flat_map(|v| v.split(',')) {
+        let (address, value) = value.split_once('=').ok_or_else(|| {
+            format!("`{value}` needs a key and value: --set [<role>.]<key>=<value>")
+        })?;
+        if address.starts_with('.') {
+            return Err("give a role before `.` or use a bare key for one agent".into());
+        }
+        let (role, key) = address.split_once('.').unwrap_or(("", address));
+        let choice = choices.entry(role.to_string()).or_default();
+        if choice.keys().contains(&key) {
+            return Err(format!("`{address}` is set twice; supply each key once"));
+        }
+        match key {
+            "vendor" => {
+                choice.vendor = Some(match value {
+                    "claude" => Vendor::Claude,
+                    "codex" => Vendor::Codex,
+                    _ => return Err("choose a vendor: claude, codex".into()),
+                })
+            }
+            "model" => {
+                check_model(value)?;
+                choice.model = Some(value.into());
+            }
+            "effort" if EFFORTS.contains(&value) => choice.effort = Some(value.into()),
+            "effort" => return Err(format!("choose an effort: {}", EFFORTS.join(", "))),
+            _ => {
+                return Err(format!(
+                    "unknown key `{key}`; settable: vendor, model, effort"
+                ));
+            }
+        }
+    }
+    Ok(choices)
+}
+
+fn check_model(model: &str) -> Result<(), String> {
+    if model.is_empty() || model.chars().any(char::is_whitespace) || model.starts_with('-') {
+        Err("give a nonempty model name without whitespace or a leading `-`".into())
+    } else {
+        Ok(())
+    }
+}
+
+/// Check the address and resolve every named role before create touches disk.
+pub fn child_choices(
+    values: &[String],
+    role_name: &str,
+    child: &crate::validate::Validated,
+) -> Result<BTreeMap<String, Overrides>, String> {
+    let choices = parse(values)?;
+    for (role, choice) in &choices {
+        if role.is_empty() {
+            return Err(format!(
+                "`{role_name}` is a team role; say which of its roles: `--set lead.vendor=codex` (roles of `{}`: {})",
+                child.team.name,
+                child
+                    .team
+                    .roles
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if child.team.team_roles.contains_key(role) {
+            return Err(format!(
+                "`{role}` is a team role of `{}`; choices reach agent roles one level down",
+                child.team.name
+            ));
+        }
+        let agent = child.team.roles.get(role).ok_or_else(|| {
+            format!(
+                "unknown role `{role}`; roles of `{}`: {}",
+                child.team.name,
+                child
+                    .team
+                    .roles
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })?;
+        choice.resolve(agent, child.auth())?;
+    }
+    Ok(choices)
+}
+
+/// Bare choices for one new agent, checked before issuing its ID.
+pub fn agent_choice(values: &[String], target: &str) -> Result<Overrides, String> {
+    let mut choices = parse(values)?;
+    if let Some((role, choice)) = choices.iter().find(|(role, _)| !role.is_empty()) {
+        let key = choice.keys()[0];
+        return Err(format!(
+            "`{role}.{key}` names a role, but `{target}` is one agent; write `{key}=<value>`"
+        ));
+    }
+    Ok(choices.remove("").unwrap_or_default())
+}
 
 /// Resolve optional choices, refusing settings that cannot run with the vendor.
 pub fn apply(
@@ -15,21 +169,21 @@ pub fn apply(
     resolved.vendor = vendor.unwrap_or(role.vendor);
     let refuse = |message: &str| format!("role `{}`: {message}", role.id);
     if resolved.vendor != role.vendor {
-        if !role.args.is_empty() {
-            return Err(refuse(
-                "remove its vendor-specific `args` before choosing another vendor",
-            ));
+        for (key, set) in [
+            ("args", !role.args.is_empty()),
+            ("connectors", !role.connectors.is_empty()),
+            ("remote_control", role.remote_control),
+            ("posture: locked", role.posture == Posture::Locked),
+        ] {
+            if set {
+                return Err(format!(
+                    "role `{}` sets `{key}`, which is written for {}, so it can't run on {}; keep its vendor (model and effort can still be set) or use a role without `{key}`",
+                    role.id,
+                    role.vendor.as_str(),
+                    resolved.vendor.as_str()
+                ));
+            }
         }
-        if !role.connectors.is_empty() {
-            return Err(refuse(
-                "remove its vendor-specific `connectors` before choosing another vendor",
-            ));
-        }
-    }
-    if role.remote_control && resolved.vendor != Vendor::Claude {
-        return Err(refuse(
-            "Remote Control needs Claude; choose Claude or remove `remote_control`",
-        ));
     }
     if auth == Auth::ApiKey && resolved.vendor == Vendor::Claude && !role.connectors.is_empty() {
         return Err(refuse(
@@ -42,17 +196,25 @@ pub fn apply(
         return Err(refuse(&format!("choose an effort: {}", EFFORTS.join(", "))));
     }
     resolved.model = match model {
-        Some(name) if !name.trim().is_empty() => Some(Model {
-            name: name.to_string(),
-            effort: effort.map(str::to_string),
-        }),
-        Some(_) => return Err(refuse("give a nonempty model name")),
+        Some(name) => {
+            check_model(name).map_err(|e| refuse(&e))?;
+            Some(Model {
+                name: name.to_string(),
+                effort: effort.map(str::to_string).or_else(|| {
+                    role.pins
+                        .get(&resolved.vendor)
+                        .and_then(|m| m.effort.clone())
+                }),
+            })
+        }
         None => role.pins.get(&resolved.vendor).cloned(),
     };
     if resolved.model.is_none() && (resolved.vendor != role.vendor || effort.is_some()) {
         return Err(refuse(&format!(
-            "add a `models.{}` pin or provide a model",
-            resolved.vendor.as_str()
+            "pins no {} model (`models.{}` in {}.md); add `model=<name>`",
+            resolved.vendor.as_str(),
+            resolved.vendor.as_str(),
+            role.id
         )));
     }
     if let Some(effort) = effort
@@ -98,7 +260,7 @@ mod tests {
     }
 
     #[test]
-    fn model_replacement_drops_pinned_effort_unless_given() {
+    fn model_replacement_keeps_vendor_pin_effort_unless_given() {
         let role = role();
         for vendor in [None, Some(Vendor::Codex)] {
             for effort in [None, Some("high")] {
@@ -107,7 +269,15 @@ mod tests {
                     resolved.model,
                     Some(Model {
                         name: "custom".into(),
-                        effort: effort.map(str::to_string)
+                        effort: Some(
+                            effort
+                                .unwrap_or(if vendor == Some(Vendor::Codex) {
+                                    "medium"
+                                } else {
+                                    "low"
+                                })
+                                .into()
+                        )
                     })
                 );
             }
@@ -197,8 +367,8 @@ mod tests {
     }
 
     #[test]
-    fn empty_model_is_refused() {
-        for model in ["", "   "] {
+    fn invalid_model_argument_is_refused() {
+        for model in ["", "   ", "two words", "-option"] {
             assert!(apply(&role(), None, Some(model), None, Auth::Login).is_err());
         }
     }
@@ -210,5 +380,59 @@ mod tests {
         role.model = None;
         assert!(apply(&role, None, None, Some("high"), Auth::Login).is_err());
         assert!(apply(&role, None, Some("custom"), Some("high"), Auth::Login).is_ok());
+    }
+    #[test]
+    fn locked_vendor_change_is_refused_but_model_choice_is_allowed() {
+        let mut role = role();
+        role.posture = Posture::Locked;
+        assert!(apply(&role, Some(Vendor::Codex), None, None, Auth::Login).is_err());
+        assert!(apply(&role, None, Some("custom"), None, Auth::Login).is_ok());
+    }
+
+    #[test]
+    fn parser_preserves_model_dots_and_refuses_invalid_or_duplicate_choices() {
+        let choices = parse(&[
+            "lead.vendor=codex,lead.model=gpt-6.1-sol".into(),
+            "lead.effort=high".into(),
+        ])
+        .unwrap();
+        assert_eq!(choices["lead"].model.as_deref(), Some("gpt-6.1-sol"));
+        for value in [
+            "vendor",
+            "vendor=unknown",
+            "model=",
+            "model=-bad",
+            "model=two words",
+            "effort=extreme",
+            "extra=x",
+            "vendor=codex,vendor=claude",
+            "lead.model=x,lead.model=y",
+            "lead.worker.vendor=codex",
+            ".vendor=codex",
+        ] {
+            assert!(parse(&[value.into()]).is_err(), "{value}");
+        }
+    }
+
+    #[test]
+    fn member_layer_replaces_only_explicit_keys() {
+        let team = Overrides {
+            vendor: Some(Vendor::Codex),
+            model: Some("team-model".into()),
+            effort: Some("medium".into()),
+        };
+        let member = Overrides {
+            model: Some("member-model".into()),
+            ..Overrides::default()
+        };
+        let resolved = team.merge(&member).resolve(&role(), Auth::Login).unwrap();
+        assert_eq!(resolved.vendor, Vendor::Codex);
+        assert_eq!(
+            resolved.model,
+            Some(Model {
+                name: "member-model".into(),
+                effort: Some("medium".into())
+            })
+        );
     }
 }

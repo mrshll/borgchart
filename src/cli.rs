@@ -132,6 +132,11 @@ enum Command {
         /// team or another ID's suffix.
         #[arg(long)]
         name: Option<String>,
+        /// Choose vendor, model or effort at create (repeatable; comma lists allowed).
+        /// Agent role: --set vendor=codex. Team role: --set lead.vendor=codex.
+        /// Other keys follow the current template at every start.
+        #[arg(long = "set", value_name = "[ROLE.]KEY=VALUE")]
+        choices: Vec<String>,
     },
     /// Bring a team to what should be running, or start one member.
     ///
@@ -451,9 +456,15 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
             branch,
             repo,
             name,
+            choices,
         } => {
             let team_like = crate::team::is_path(&target) || !target.contains('/');
-            let result = if team_like && name.is_some() {
+            let result = if team_like && !choices.is_empty() {
+                Err(
+                    "`--set` is for a role: brg create <team>/<role> --set [<role>.]<key>=<value>"
+                        .into(),
+                )
+            } else if team_like && name.is_some() {
                 Err(
                     "`--name` names a new member or child team, not a top-level team: brg create <team>/<role> --name <name>"
                         .to_string(),
@@ -480,6 +491,7 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
                         name.as_deref(),
                         branch.as_deref(),
                         repo.as_deref(),
+                        &choices,
                     ),
                     Ok((inst, Target::Member(m))) => Err(format!(
                         "`create` takes a role, not a member; `{m}` exists already: brg start {}",

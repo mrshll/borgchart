@@ -399,10 +399,11 @@ fn draw(
             match r.kind {
                 "member" | "team" => {}
                 // A role with no kept member shows its creation state.
-                "role" => {
+                "role" if r.overrides.is_empty() => {
                     cols.insert(0, String::new());
                     cols.push(String::new());
                 }
+                "role" => {}
                 _ => cols.insert(0, String::new()),
             }
             let [vendor, state, detail] = <[String; 3]>::try_from(cols).unwrap_or_default();
@@ -746,6 +747,8 @@ mod tests {
                 role: None,
                 vendor: Some(vendor.into()),
                 model: None,
+                effort: None,
+                overrides: Default::default(),
                 parent: None,
                 posture: None,
                 state: "working".into(),
@@ -765,5 +768,79 @@ mod tests {
             let style = super::state_style(&row, true);
             assert_eq!(style.fg, Some(super::rgb(super::tree::palette::BUSY)));
         }
+    }
+    #[test]
+    fn interactive_empty_role_keeps_its_choice_and_creation_state() {
+        let role = super::StatusRow {
+            name: "worker".into(),
+            kind: "role",
+            instance: "i".into(),
+            team: "t".into(),
+            member: None,
+            start_id: None,
+            role: Some("worker".into()),
+            vendor: Some("codex".into()),
+            model: Some("example-model".into()),
+            effort: Some("medium".into()),
+            overrides: crate::overrides::Overrides {
+                vendor: Some(crate::team::Vendor::Codex),
+                ..Default::default()
+            },
+            parent: None,
+            posture: Some("vendor".into()),
+            state: crate::runtime::ON_DEMAND.into(),
+            rule: None,
+            activity: None,
+            remote_control_url: None,
+            detail: None,
+            vendor_version: None,
+            trust_accepted: None,
+            worktree: None,
+            liveness: None,
+            unacked: None,
+            running: None,
+            expected_running: false,
+            start: false,
+        };
+        let inst = crate::address::Instance {
+            id: "i".into(),
+            state: crate::state::StateDir::from_root(std::path::Path::new("/example/state/i")),
+            record: serde_json::from_value(serde_json::json!({
+                "schema": 1, "id": "i", "template": "t", "template_dir": "/example/template",
+                "folder": "/example/work", "created_at": "2026-01-01T00:00:00Z", "members": {}
+            }))
+            .unwrap(),
+        };
+        let sections = [super::Section {
+            inst,
+            header: "t".into(),
+            rows: vec![role],
+        }];
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 12)).unwrap();
+        terminal
+            .draw(|f| {
+                super::draw(
+                    f,
+                    "t",
+                    &sections,
+                    false,
+                    &mut super::TableState::default(),
+                    "",
+                    None,
+                    false,
+                    None,
+                )
+            })
+            .unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(screen.contains("Λ example-model medium"), "{screen}");
+        assert!(screen.contains(crate::runtime::ON_DEMAND), "{screen}");
     }
 }

@@ -121,6 +121,8 @@ You read each new message in the channel and decide whether it needs the lead.
   - Only the member's own vendor needs an entry; without one, the vendor's default model is used (with a warning).
   - Every supplied vendor pin is checked, including the other vendor's pin.
   - Model names are passed to the vendor unchanged.
+- **Create-time choices:** `brg create <team>/<agent-role> --set vendor=codex,model=example-model,effort=medium` replaces only the keys given. A child team takes role-prefixed keys, such as `--set lead.vendor=codex`. A vendor-only choice selects its pin; model alone keeps the pin's effort; effort alone keeps the model. Vendor changes on roles with `args`, `connectors`, `remote_control` or `posture: locked` are refused.
+  - `team.json` stores only explicit keys: an optional `overrides` object on an issued member, or a map from role to overrides on a child team's record. Empty choices are omitted. Start, resume and status resolve the template, then team choices, then member choices, key by key. Edits to pins apply on the next start unless that key was explicitly chosen. An invalid stored choice refuses start; delete it and create it again.
 - **The body** is the member's standing instruction, sent as its opening prompt.
 - **Includes:** a line that is exactly `{{includes/<stem>}}` is replaced by `<includes>/<stem>.md`. Includes are one level deep: an included file can't include another.
 - **Another template's role file:** a line that is exactly `{{templates/<template>/<role>}}` is replaced by the body of that role's file. Its includes resolve in its own template, and its frontmatter is left out.

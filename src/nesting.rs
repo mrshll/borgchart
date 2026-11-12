@@ -6,7 +6,6 @@ use std::path::Path;
 use crate::address::{self, Instance};
 use crate::registry;
 use crate::runtime::UpOutcome;
-use crate::team::TeamRole;
 use crate::validate::Validated;
 
 /// All kept child teams below a team, deepest first. The caller holds the
@@ -66,10 +65,11 @@ pub fn create(
     v: &Validated,
     role_name: &str,
     name: Option<&str>,
-    role: &TeamRole,
     branch: Option<&str>,
     start: Option<&crate::worktree::Start>,
+    overrides: std::collections::BTreeMap<String, crate::overrides::Overrides>,
 ) -> Result<UpOutcome, String> {
+    let role = &v.team.team_roles[role_name];
     let lock = registry::lock()?;
     inst.reload()?;
     check_not_stopping(&inst)?;
@@ -96,6 +96,20 @@ pub fn create(
         ));
     }
     crate::team::find(&role.name, &v.config.teams)?;
+    let child = validate_child(&inst, &role.dir)?;
+    let mut choices = String::new();
+    for (name, choice) in &overrides {
+        let agent = child.team.roles.get(name).ok_or_else(|| {
+            format!("unknown role `{name}`; check the child template before creating it again")
+        })?;
+        let resolved = choice.resolve(agent, child.auth())?;
+        choices.push_str(&format!(
+            " · {name}: {} (set: {})",
+            crate::tree::vendor_model(&resolved),
+            choice.keys().join(", ")
+        ));
+    }
+
     let id = inst
         .record
         .issue_copy(role_name, name, |id| crate::runtime::is_role(v, id))?;
@@ -110,7 +124,6 @@ pub fn create(
         &inst.id,
         &[("the child team".into(), folder.clone())],
     )?;
-    validate_child(&inst, &role.dir)?;
     // Reserve the ID before touching disk: a failed creation cannot reuse it.
     inst.record
         .copies
@@ -131,14 +144,14 @@ pub fn create(
             ));
         }
     }
-    registry::create_copy(&lock, &full_id, &role.dir, &folder, parent)?;
+    registry::create_copy(&lock, &full_id, &role.dir, &folder, parent, overrides)?;
     let issued = inst.record.copies.get_mut(&id).expect("issued child team");
     issued.deleted = false;
     issued.cwd = Some(folder.clone());
     lock.save_instance(&inst.state, &inst.record)?;
     Ok(UpOutcome {
         tree: format!(
-            "{full_id}  folder {}{} · stopped\n",
+            "{full_id}  folder {}{} · stopped{choices}\n",
             folder.display(),
             start.map(|s| s.detail()).unwrap_or_default()
         ),
