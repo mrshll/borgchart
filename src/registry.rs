@@ -615,7 +615,7 @@ mod tests {
     }
 
     #[test]
-    fn named_ids_are_issued_once_in_the_instance() {
+    fn named_ids_are_issued_once_in_the_team() {
         let mut r = InstanceRecord {
             schema: SCHEMA,
             id: "t-2222".into(),

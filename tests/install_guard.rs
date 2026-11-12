@@ -2,12 +2,12 @@
 #![cfg(feature = "test-support")]
 
 mod common;
-mod instance_env;
+mod team_env;
 
 use std::fs;
 use std::os::unix::fs::symlink;
 
-use instance_env::*;
+use team_env::*;
 
 #[test]
 fn starting_a_sibling_does_not_reparent_a_running_child() {
@@ -242,7 +242,7 @@ fn changed_role_and_auth_apply_to_new_starts_without_restarting_siblings() {
 }
 
 #[test]
-fn changed_child_team_is_used_by_new_copies_while_parent_runs() {
+fn changed_child_template_is_used_by_new_child_teams_while_parent_runs() {
     let env = Env::new();
     catalog(&env, "templates");
     let inst = env.create("oncall", "work/a");
@@ -280,7 +280,7 @@ fn changed_child_team_is_used_by_new_copies_while_parent_runs() {
 }
 
 #[test]
-fn damaged_start_record_still_refuses_copy_creation() {
+fn damaged_start_record_still_refuses_child_team_creation() {
     let env = Env::new();
     catalog(&env, "templates");
     let inst = env.create("oncall", "work/a");

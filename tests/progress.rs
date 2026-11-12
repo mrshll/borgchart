@@ -1,12 +1,12 @@
 //! The single reader shared by inbox and status.
 #![cfg(feature = "test-support")]
 mod common;
-mod instance_env;
+mod team_env;
 
 use borgchart::bus::store;
 use borgchart::state::StateDir;
-use instance_env::*;
 use serde_json::json;
+use team_env::*;
 
 #[test]
 fn progress_counts_every_recipient_and_keeps_sequence_extrema_after_acks() {

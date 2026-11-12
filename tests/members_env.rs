@@ -7,14 +7,14 @@
 #![cfg(feature = "test-support")]
 
 mod common;
-mod instance_env;
+mod team_env;
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::process::Output;
 
-use instance_env::*;
 use serde_json::{Value, json};
+use team_env::*;
 
 fn first_word(text: &str) -> String {
     text.split_whitespace()
@@ -349,7 +349,7 @@ fn create_notes_project_settings_auto_trust_will_load() {
 // --- 12. Team selection ---
 
 #[test]
-fn a_member_acts_only_on_its_own_instance() {
+fn a_member_acts_only_on_its_own_team() {
     let env = Env::new();
     let a = env.create("oncall", "work/a");
     let b = env.create("oncall", "work/b");
@@ -422,7 +422,7 @@ fn partial_and_stale_member_contexts_are_refused() {
 }
 
 #[test]
-fn outside_callers_name_the_instance_and_a_stopped_one_can_be_inspected() {
+fn outside_callers_name_the_team_and_a_stopped_one_can_be_inspected() {
     let env = Env::new();
     let a = env.create("oncall", "work/a");
     let lead = env.member(&a, "lead");

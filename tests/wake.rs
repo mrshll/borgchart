@@ -1072,7 +1072,7 @@ fn an_ack_file_for_a_locked_record_is_corrupt_not_consumption() {
 }
 
 #[test]
-fn cross_edge_sends_type_and_preflight_locked_recipients_in_their_own_instance() {
+fn cross_edge_sends_type_and_preflight_locked_recipients_in_their_own_team() {
     use serde_json::{Value, json};
     for (locked, to_child) in [(false, false), (true, false), (false, true)] {
         let e = Env::new(Vendor::Claude);

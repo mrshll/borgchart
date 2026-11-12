@@ -5,12 +5,12 @@
 #![cfg(feature = "test-support")]
 
 mod common;
-mod instance_env;
+mod team_env;
 
 use std::fs;
 
-use instance_env::*;
 use serde_json::json;
+use team_env::*;
 
 fn first_word(text: &str) -> String {
     text.split_whitespace()
@@ -85,7 +85,7 @@ fn two_concurrent_creates_on_one_folder_one_wins() {
 // --- 11. Bypasses ---
 
 #[test]
-fn a_stopped_instance_cant_start_into_a_folder_another_holds() {
+fn a_stopped_team_cant_start_into_a_folder_another_holds() {
     let env = Env::new();
     let a = env.create("oncall", "work/a");
     env.ok(&["stop", &a]);
@@ -479,7 +479,7 @@ fn a_relative_config_path_reaches_members_resolved() {
 }
 
 #[test]
-fn a_failed_create_never_takes_back_an_instance_started_meanwhile() {
+fn a_failed_create_never_takes_back_a_team_started_meanwhile() {
     let env = Env::new();
     let long = env.path(&format!("t{}", "x".repeat(120)));
     fs::create_dir_all(&long).unwrap();

@@ -2,13 +2,13 @@
 #![cfg(feature = "test-support")]
 
 mod common;
-mod instance_env;
+mod team_env;
 
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-use instance_env::*;
+use team_env::*;
 
 fn department() -> Env {
     let env = Env::new();
@@ -70,7 +70,7 @@ fn child_lead(env: &Env, instance: &str, args: &[&str]) -> Command {
 }
 
 #[test]
-fn declaring_team_roles_fences_first_copy_creation_during_stop() {
+fn declaring_team_roles_fences_first_child_team_creation_during_stop() {
     let env = department();
     let dept = env.create("oncall", "work/a");
     let gate = env.path("stop-gate");
@@ -95,7 +95,7 @@ fn declaring_team_roles_fences_first_copy_creation_during_stop() {
 }
 
 #[test]
-fn stopping_department_refuses_child_create_and_start() {
+fn stopping_parent_team_refuses_child_create_and_start() {
     let env = department();
     let dept = env.create("oncall", "work/a");
     let (dev, _) = prepared_copy(&env, &dept, "dev");
@@ -335,7 +335,7 @@ fn surviving_process_blocks_stop(nested: bool) {
 }
 
 #[test]
-fn full_start_does_not_revive_independently_stopped_copy_or_descendants() {
+fn full_start_does_not_revive_independently_stopped_child_team_or_descendants() {
     let env = department();
     let dept = env.create("oncall", "work/a");
     let (dev, _) = prepared_copy(&env, &dept, "dev");
@@ -361,7 +361,7 @@ fn full_start_does_not_revive_independently_stopped_copy_or_descendants() {
 }
 
 #[test]
-fn full_start_skips_running_copy_validation_but_checks_stopped_restores() {
+fn full_start_skips_running_child_team_validation_but_checks_stopped_restores() {
     let env = department();
     let dept = env.create("oncall", "work/a");
     let (dev, folder) = prepared_copy(&env, &dept, "dev");
@@ -394,7 +394,7 @@ fn full_start_skips_running_copy_validation_but_checks_stopped_restores() {
 }
 
 #[test]
-fn unreadable_copy_does_not_hide_status_or_block_stopping_readable_instances() {
+fn unreadable_child_team_does_not_hide_status_or_block_stopping_readable_teams() {
     for damage in ["record", "missing-record", "state"] {
         let env = department();
         let dept = env.create("oncall", "work/a");
@@ -452,7 +452,7 @@ fn unreadable_copy_does_not_hide_status_or_block_stopping_readable_instances() {
 }
 
 #[test]
-fn failed_copy_delete_preserves_registered_state() {
+fn failed_child_team_delete_preserves_registered_state() {
     let env = department();
     let dept = env.create("oncall", "work/a");
     let (dev, _) = prepared_copy(&env, &dept, "dev");
@@ -470,7 +470,7 @@ fn failed_copy_delete_preserves_registered_state() {
 }
 
 #[test]
-fn full_start_restores_only_previously_running_copies_at_depth_three() {
+fn full_start_restores_only_previously_running_child_teams_at_depth_three() {
     let env = department();
     let dept = env.create("oncall", "work/a");
     let (dev, _) = prepared_copy(&env, &dept, "dev");
@@ -507,7 +507,7 @@ fn full_start_restores_only_previously_running_copies_at_depth_three() {
 }
 
 #[test]
-fn running_panel_is_restored_without_starting_its_stopped_enclosing_copy() {
+fn running_panel_is_restored_without_starting_its_stopped_enclosing_child_team() {
     let env = department();
     let dept = env.create("oncall", "work/a");
     let (dev, _) = prepared_copy(&env, &dept, "dev");
@@ -526,7 +526,7 @@ fn running_panel_is_restored_without_starting_its_stopped_enclosing_copy() {
 }
 
 #[test]
-fn copy_start_failure_does_not_hide_successful_siblings() {
+fn child_team_start_failure_does_not_hide_successful_siblings() {
     let env = department();
     let dept = env.create("oncall", "work/a");
     let (broken, broken_folder) = prepared_copy(&env, &dept, "dev");
@@ -548,7 +548,7 @@ fn copy_start_failure_does_not_hide_successful_siblings() {
 }
 
 #[test]
-fn member_delete_preserves_kept_copies_even_with_force() {
+fn member_delete_preserves_kept_child_teams_even_with_force() {
     let env = department();
     let dept = env.create("oncall", "work/a");
     let (dev, folder) = prepared_copy(&env, &dept, "dev");
@@ -576,7 +576,7 @@ fn member_delete_preserves_kept_copies_even_with_force() {
 }
 
 #[test]
-fn recursive_member_stop_reuses_nested_copy_cascades() {
+fn recursive_member_stop_reuses_nested_child_team_cascades() {
     let env = department();
     let dept = env.create("oncall", "work/a");
     let (dev, _) = prepared_copy(&env, &dept, "dev");
@@ -625,7 +625,7 @@ fn recursive_member_stop_reuses_nested_copy_cascades() {
 }
 
 #[test]
-fn recursive_stop_checks_copy_sockets_before_stopping_any_member() {
+fn recursive_stop_checks_child_team_sockets_before_stopping_any_member() {
     let env = department();
     let team = env.path("templates/oncall/template.yaml");
     let mut text = fs::read_to_string(&team).unwrap();
@@ -656,7 +656,7 @@ fn recursive_stop_checks_copy_sockets_before_stopping_any_member() {
 }
 
 #[test]
-fn a_failed_member_stop_does_not_fence_a_copy_the_walk_has_not_reached() {
+fn a_failed_member_stop_does_not_fence_a_child_team_the_walk_has_not_reached() {
     let env = department();
     let team = env.path("templates/oncall/template.yaml");
     let mut text = fs::read_to_string(&team).unwrap();
@@ -685,7 +685,7 @@ fn a_failed_member_stop_does_not_fence_a_copy_the_walk_has_not_reached() {
 }
 
 #[test]
-fn a_full_resume_resumes_restored_copies() {
+fn a_full_resume_resumes_restored_child_teams() {
     let env = department();
     let dept = env.create("oncall", "work/a");
     let (dev, _) = prepared_copy(&env, &dept, "dev");

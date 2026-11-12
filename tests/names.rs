@@ -5,11 +5,11 @@
 #![cfg(feature = "test-support")]
 
 mod common;
-mod instance_env;
+mod team_env;
 
 use std::fs;
 
-use instance_env::*;
+use team_env::*;
 
 /// The test team with `helper`, an agent role, and `dev`, a team role,
 /// each in its own worktree.
@@ -48,7 +48,7 @@ fn names_env() -> (Env, String) {
 }
 
 #[test]
-fn a_name_is_the_id_of_the_member_or_copy_and_is_never_reissued() {
+fn a_name_is_the_id_of_the_member_or_child_team_and_is_never_reissued() {
     let (env, inst) = names_env();
     let member = format!("{inst}/helper-rounding-fix");
     let out = stdout(&env.ok(&[
@@ -109,7 +109,7 @@ fn names_that_do_not_fit_are_refused_before_anything_is_issued() {
 }
 
 #[test]
-fn a_named_copy_whose_worktree_fails_keeps_its_name_free() {
+fn a_named_child_team_whose_worktree_fails_keeps_its_name_free() {
     let (env, inst) = names_env();
     git(&env.path("work/a"), &["branch", "fix-rounding"]);
     let dev = format!("{inst}/dev");

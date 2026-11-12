@@ -6,14 +6,14 @@
 
 mod common;
 
-mod instance_env;
+mod team_env;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant, SystemTime};
 
-use instance_env::*;
+use team_env::*;
 
 /// The candidates brg prints for `words`, the last being the word under
 /// the cursor: one per line, without fish's help column. A completion must
@@ -88,7 +88,7 @@ roles:
 "#;
 
 #[test]
-fn completion_offers_instances_kept_members_and_teams() {
+fn completion_offers_teams_kept_members_and_templates() {
     let env = Env::new();
     env.write("templates/oncall/template.yaml", DEPARTMENT);
     env.team("templates/dev");

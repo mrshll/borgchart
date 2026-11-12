@@ -2070,7 +2070,7 @@ fn resume_refuses_a_running_member() {
 }
 
 #[test]
-fn a_whole_instance_resumes() {
+fn a_whole_team_resumes() {
     let env = Env::new();
     env.up();
     let inst = env.instance().unwrap();

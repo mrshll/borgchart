@@ -2,15 +2,15 @@
 #![cfg(feature = "test-support")]
 
 mod common;
-mod instance_env;
+mod team_env;
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use instance_env::*;
 use serde_json::{Value, json};
+use team_env::*;
 
 fn bytes(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     fn visit(root: &Path, path: &Path, out: &mut BTreeMap<PathBuf, Vec<u8>>) {
@@ -286,7 +286,7 @@ fn damaged_store(case: &str) {
 }
 
 #[test]
-fn a_store_for_another_instance_is_refused_without_writes() {
+fn a_store_for_another_team_is_refused_without_writes() {
     damaged_store("foreign");
 }
 #[test]

@@ -6,13 +6,13 @@
 
 mod common;
 
-mod instance_env;
+mod team_env;
 
 use std::collections::BTreeMap;
 use std::fs;
 
-use instance_env::*;
 use serde_json::{Value, json};
+use team_env::*;
 
 /// The test team with `helper` and `dev`, a team role whose child teams use the
 /// `dev` template, each in its own worktree.
@@ -145,7 +145,7 @@ fn destroy_stops_and_forgets_a_tree_so_create_starts_it_fresh() {
 }
 
 #[test]
-fn destroy_refuses_members_copies_and_trees_it_cannot_confirm_stopped() {
+fn destroy_refuses_members_child_teams_and_trees_it_cannot_confirm_stopped() {
     let env = tree_env();
     let root = env.create("oncall", "work/a");
     let lead = env.member(&root, "lead");

@@ -91,7 +91,7 @@ fn heartbeat_health() {
 // Catches: a crash loop that never parks, parking that never clears, and
 // parking that the same brg clears just by restarting.
 #[test]
-fn a_crash_loop_parks_until_the_instance_starts_or_brg_changes() {
+fn a_crash_loop_parks_until_the_team_starts_or_brg_changes() {
     let (_tmp, dir) = folder();
     let held = lock(&dir);
     let start = |now, binary| restart::count_start(&held, &dir, &LIMITS, now, binary).unwrap();
@@ -116,7 +116,7 @@ fn a_crash_loop_parks_until_the_instance_starts_or_brg_changes() {
 // must wait for the state lock, which the test holds to stop each one
 // between its read and its write.
 #[test]
-fn an_instance_start_never_interleaves_with_counting_a_start() {
+fn a_team_start_never_interleaves_with_counting_a_start() {
     let (_tmp, dir) = folder();
     let held = lock(&dir);
     restart::count_start(&held, &dir, &LIMITS, t(0), "a").unwrap();

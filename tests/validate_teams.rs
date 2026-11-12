@@ -2,12 +2,12 @@
 #![cfg(feature = "test-support")]
 
 mod common;
-mod instance_env;
+mod team_env;
 
 use std::fs;
 use std::path::PathBuf;
 
-use instance_env::*;
+use team_env::*;
 
 fn department() -> (Env, String) {
     let env = Env::new();
@@ -94,27 +94,27 @@ fn broken_subteam_during_department_command(command: &str) {
 }
 
 #[test]
-fn broken_subteam_does_not_block_department_status() {
+fn broken_child_template_does_not_block_parent_team_status() {
     broken_subteam_during_department_command("status");
 }
 
 #[test]
-fn broken_subteam_does_not_block_department_agent_creation() {
+fn broken_child_template_does_not_block_parent_team_agent_creation() {
     broken_subteam_during_department_command("agent creation");
 }
 
 #[test]
-fn broken_subteam_does_not_block_department_member_start() {
+fn broken_child_template_does_not_block_parent_team_member_start() {
     broken_subteam_during_department_command("member start");
 }
 
 #[test]
-fn broken_subteam_does_not_block_department_full_start() {
+fn broken_child_template_does_not_block_parent_team_full_start() {
     broken_subteam_during_department_command("full start");
 }
 
 #[test]
-fn broken_subteam_still_blocks_copy_creation_and_start() {
+fn broken_child_template_still_blocks_child_team_creation_and_start() {
     let (env, dept) = department();
     let (child, _) = copy(&env, &dept);
     let team = env.path("templates/dev/template.yaml");
@@ -174,12 +174,12 @@ fn missing_subteam_during_department_commands(remove_folder: bool) {
 }
 
 #[test]
-fn missing_subteam_folder_does_not_block_department_commands() {
+fn missing_child_template_folder_does_not_block_parent_team_commands() {
     missing_subteam_during_department_commands(true);
 }
 
 #[test]
-fn missing_subteam_yaml_does_not_block_department_commands() {
+fn missing_child_template_yaml_does_not_block_parent_team_commands() {
     missing_subteam_during_department_commands(false);
 }
 
@@ -290,17 +290,17 @@ fn missing_running_subteam_during_status_and_stop(remove_folder: bool) {
 }
 
 #[test]
-fn missing_running_subteam_folder_keeps_status_and_stop_usable() {
+fn missing_running_child_team_template_folder_keeps_status_and_stop_usable() {
     missing_running_subteam_during_status_and_stop(true);
 }
 
 #[test]
-fn missing_running_subteam_yaml_keeps_status_and_stop_usable() {
+fn missing_running_child_team_template_yaml_keeps_status_and_stop_usable() {
     missing_running_subteam_during_status_and_stop(false);
 }
 
 #[test]
-fn changed_subteam_reaches_only_members_that_restart() {
+fn changed_child_template_reaches_only_members_that_restart() {
     let (env, dept) = department();
     let (first, _) = copy(&env, &dept);
     let (peer, _) = copy(&env, &dept);
@@ -344,7 +344,7 @@ fn changed_subteam_reaches_only_members_that_restart() {
 }
 
 #[test]
-fn moved_copy_team_folder_errors_without_rebinding_to_a_same_named_team() {
+fn moved_child_template_folder_errors_without_rebinding_to_a_same_named_template() {
     let (env, dept) = department();
     let (child, _) = copy(&env, &dept);
     env.ok(&["start", &child]);
@@ -365,7 +365,7 @@ fn moved_copy_team_folder_errors_without_rebinding_to_a_same_named_team() {
 }
 
 #[test]
-fn changed_team_path_resolution_reaches_new_copies_without_restart() {
+fn changed_template_path_resolution_reaches_new_child_teams_without_restart() {
     let (env, dept) = department();
     env.ok(&["stop", &dept]);
     env.ok(&["start", &dept]);
@@ -433,7 +433,7 @@ fn move_ancestor_within_copy(env: &Env, dept: &str) {
 }
 
 #[test]
-fn create_refuses_a_subteam_edited_to_contain_its_actual_ancestor() {
+fn create_refuses_a_child_template_edited_to_contain_its_actual_ancestor() {
     let (env, dept) = department();
     let (child, _) = copy(&env, &dept);
     move_ancestor_within_copy(&env, &dept);
@@ -444,7 +444,7 @@ fn create_refuses_a_subteam_edited_to_contain_its_actual_ancestor() {
 }
 
 #[test]
-fn full_start_refuses_a_subteam_edited_to_contain_its_actual_ancestor() {
+fn full_start_refuses_a_child_template_edited_to_contain_its_actual_ancestor() {
     let (env, dept) = department();
     let (child, _) = copy(&env, &dept);
     env.ok(&["start", &child]);
@@ -487,7 +487,7 @@ fn interactive_is_not_an_option_on_nested_team_roles() {
 }
 
 #[test]
-fn department_and_copy_share_a_store_without_bus_opt_in() {
+fn parent_team_and_child_team_share_a_store_without_bus_opt_in() {
     let (env, dept) = department();
     let (child, _) = copy(&env, &dept);
     env.ok(&["start", &child]);
@@ -531,7 +531,7 @@ fn missing_named_child_blocks_fresh_start_without_losing_status_or_stop() {
 }
 
 #[test]
-fn ambiguous_catalog_does_not_block_status_but_refuses_new_copies() {
+fn ambiguous_catalog_does_not_block_status_but_refuses_new_child_teams() {
     let (env, dept) = department();
     env.team("other/dev");
     env.write(
@@ -570,7 +570,7 @@ fn unclean_restart_refuses_missing_named_child() {
 }
 
 #[test]
-fn unstarted_copy_keeps_missing_member_creation_hint() {
+fn unstarted_child_team_keeps_missing_member_creation_hint() {
     let (env, dept) = department();
     env.team("templates/design");
     let team = env.path("templates/dev/template.yaml");

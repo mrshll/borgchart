@@ -249,7 +249,7 @@ fn team_roles_refuse_automatic_start_before_preparation() {
 }
 
 #[test]
-fn team_roles_refuse_zero_copy_limits() {
+fn team_roles_refuse_zero_child_team_limits() {
     let f = nested_team();
     f.edit("template.yaml", "template: dev", "template: dev, max: 0");
     expect_error(&f, "`max` must be at least 1");
@@ -307,7 +307,7 @@ fn nested_teams_need_no_bus_opt_in_at_any_depth() {
 }
 
 #[test]
-fn validate_reports_subteam_errors_at_the_subteam_file() {
+fn validate_reports_child_template_errors_at_the_child_template_file() {
     let f = nested_team();
     f.write(
         "templates/dev/template.yaml",
@@ -322,7 +322,7 @@ fn validate_reports_subteam_errors_at_the_subteam_file() {
 }
 
 #[test]
-fn copy_limits_refuse_zero() {
+fn member_limits_refuse_zero() {
     for (max, worktree, accepted) in [
         (-1, true, false),
         (0, true, false),
@@ -353,7 +353,7 @@ fn copy_limits_refuse_zero() {
 }
 
 #[test]
-fn parents_and_plugin_delivery_cannot_choose_between_copies() {
+fn parents_and_plugin_delivery_cannot_choose_between_members() {
     for target in ["lead", "triager"] {
         let f = Fixture::new();
         f.edit(
