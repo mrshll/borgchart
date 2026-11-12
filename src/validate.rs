@@ -51,7 +51,7 @@ pub fn validate(team_dir: &Path) -> (Report, Option<Validated>) {
     validate_against(team_dir, &[])
 }
 
-/// Validate a copy's current template files against its actual, recorded
+/// Validate a child team's current template files against its actual, recorded
 /// ancestor folders, including after an explicit template-folder move.
 pub fn validate_against(team_dir: &Path, ancestors: &[PathBuf]) -> (Report, Option<Validated>) {
     let mut report = Report::default();
@@ -61,8 +61,8 @@ pub fn validate_against(team_dir: &Path, ancestors: &[PathBuf]) -> (Report, Opti
     validate_into(team_dir, config, report, ancestors, None)
 }
 
-/// Validate only the declaring instance's files. Referenced templates are
-/// checked separately when a copy is created or started.
+/// Validate only the declaring team's files. Referenced templates are
+/// checked separately when a child team is created or started.
 pub(crate) fn validate_own(
     team_dir: &Path,
     frozen: &std::collections::BTreeMap<String, PathBuf>,

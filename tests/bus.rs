@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 #[cfg(feature = "test-support")]
 mod common;
 
-/// The instance, as messages name it.
+/// The team, as messages name it.
 const TEAM: &str = "oncall-2a3b";
 
 struct Fixture {
@@ -54,12 +54,12 @@ impl Fixture {
     fn root(&self) -> PathBuf {
         self.dir.path().join("state")
     }
-    /// The instance's message storage: `<state>/<instance>/messages/`.
+    /// The team's message storage: `<state>/<team>/messages/`.
     fn store_dir(&self) -> PathBuf {
         self.root().join(TEAM).join("messages")
     }
 
-    /// The instance in the registry, with its members by bare names.
+    /// The team in the registry, with its members by bare names.
     fn register(&self) {
         let members: BTreeMap<&str, Value> = ["lead", "helper", "helper2", "sub"]
             .iter()
@@ -552,7 +552,7 @@ fn caller_context_is_checked() {
         None,
     );
     assert_eq!(out.code, 4);
-    // An instance-only plugin process can't silently publish as the owner.
+    // A team-only plugin process can't silently publish as the owner.
     let mut cmd = f.command(
         &As::Operator,
         &["msg", "send", "oncall-2a3b/lead", "x", "--json"],
@@ -563,7 +563,7 @@ fn caller_context_is_checked() {
     let mut cmd = f.command(&As::Operator, &["msg", "ack", "m1", "--json"]);
     let out = cmd.env("BORGCHART_MEMBER", "lead").output().unwrap();
     assert_eq!(out.status.code(), Some(4));
-    // Instance-only plugins still need to name an inbox.
+    // Team-only plugins still need to name an inbox.
     let mut cmd = f.command(&As::Operator, &["msg", "list", "--json"]);
     let out = output(cmd.env("BORGCHART_TEAM", TEAM).output().unwrap());
     assert_eq!(out.code, 2, "{:?}", out.json);
@@ -928,7 +928,7 @@ fn damaged_storage_errors_name_the_team_not_paths() {
     assert_eq!(out.code, 5, "{:?}", out.json);
     assert_eq!(
         out.json["message"],
-        "instance `oncall-2a3b`'s message storage can't be used: its messages folder is writable by group or others"
+        "team `oncall-2a3b`'s message storage can't be used: its messages folder is writable by group or others"
     );
     let text = h.brg(
         &As::Operator,
@@ -958,7 +958,7 @@ fn storage_without_identity_is_damaged_not_new() {
         assert_eq!(out.code, 7, "{args:?}: {:?}", out.json);
         let msg = out.json["message"].as_str().unwrap();
         assert!(
-            msg.starts_with("instance `oncall-2a3b`'s message storage is damaged"),
+            msg.starts_with("team `oncall-2a3b`'s message storage is damaged"),
             "{msg}"
         );
     }
@@ -1023,7 +1023,7 @@ fn a_team_not_started_yet_is_not_configured() {
         );
         assert_eq!(
             out.json["message"],
-            "instance `oncall-2a3b` has no messages: it has not started"
+            "team `oncall-2a3b` has no messages: it has not started"
         );
     }
     assert_eq!(f.tree(), before, "nothing created");

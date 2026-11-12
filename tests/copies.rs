@@ -1,4 +1,4 @@
-//! Copy limits, parent authority and checkout separation through the CLI.
+//! Child team limits, parent authority and checkout separation through the CLI.
 #![cfg(feature = "test-support")]
 
 mod common;
@@ -102,7 +102,7 @@ fn copies_get_their_own_worktrees_and_keep_slots_without_filling_max() {
         let folder = env.worktree(&format!("{inst}/{id}"));
         assert!(folder.join(".git").is_file(), "{}", folder.display());
         assert_eq!(git(&folder, &["rev-parse", "HEAD"]), head);
-        env.wait_for("copy idle", || !env.starts(id).is_empty());
+        env.wait_for("child team idle", || !env.starts(id).is_empty());
         assert_eq!(
             env.starts(id)[0]["cwd"],
             folder.canonicalize().unwrap().display().to_string()
@@ -160,7 +160,7 @@ fn copies_without_a_worktree_share_the_instance_folder() {
     let second = env.copy(&inst);
     let folder = env.path("work/a").canonicalize().unwrap();
     for id in [&first, &second] {
-        env.wait_for("copy started", || !env.starts(id).is_empty());
+        env.wait_for("child team started", || !env.starts(id).is_empty());
         assert_eq!(env.starts(id)[0]["cwd"], folder.display().to_string());
     }
     env.ok(&["stop", &inst]);
@@ -252,7 +252,7 @@ fn a_copy_whose_worktree_is_gone_does_not_start() {
     assert!(err.contains("is gone"), "{err}");
     let second = env.copy(&inst);
     assert_ne!(first, second);
-    env.wait_for("second copy idle", || !env.starts(&second).is_empty());
+    env.wait_for("second child team idle", || !env.starts(&second).is_empty());
     assert_eq!(env.copies(&inst).len(), 2);
     env.ok(&["stop", &inst]);
 }
@@ -901,7 +901,7 @@ fn derived_members_inherit_the_copy_commit_even_after_the_remote_moves() {
     let folder = env.worktree(&copy);
     git(
         &folder,
-        &["commit", "-q", "--allow-empty", "-m", "copy work"],
+        &["commit", "-q", "--allow-empty", "-m", "child team work"],
     );
     let tip = git(&folder, &["rev-parse", "HEAD"]);
     let gadgets = env.path("work/a/gadgets");
@@ -916,7 +916,7 @@ fn derived_members_inherit_the_copy_commit_even_after_the_remote_moves() {
         ],
     );
     git(&gadgets, &["push", "-q", "origin", "main"]);
-    // Rewriting the copy's git file must not redirect the inherited HEAD.
+    // Rewriting the child team's git file must not redirect the inherited HEAD.
     fs::write(
         folder.join(".git"),
         format!("gitdir: {}\n", gadgets.join(".git").display()),

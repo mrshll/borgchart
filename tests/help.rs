@@ -70,7 +70,7 @@ fn top_level_help_groups_one_line_summaries_and_leaves_details_to_commands() {
         let text = String::from_utf8(out.stdout).unwrap();
         for heading in [
             "Team templates:",
-            "Instances and members:",
+            "Teams and members:",
             "Messages:",
             "Cleanup:",
         ] {

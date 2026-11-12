@@ -17,7 +17,7 @@ pub fn conflicts_with_member_id(name: &str, is_role: impl Fn(&str) -> bool) -> b
     crate::registry::split_id(name).is_some_and(|(base, _)| is_role(base))
 }
 
-/// Member and instance IDs: like [`is_valid_id`], up to 40 characters, so
+/// Member and team IDs: like [`is_valid_id`], up to 40 characters, so
 /// a 32-character role or team name with its `-<suffix>` fits.
 pub fn is_valid_member_id(name: &str) -> bool {
     let mut chars = name.chars();

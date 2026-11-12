@@ -1,19 +1,19 @@
-//! Addresses: `[instance/]member` and `[instance/]<role>`, resolved to an
-//! instance plus a member or a role.
+//! Addresses: `[team/]member` and `[team/]<role>`, resolved to an
+//! team plus a member or a role.
 //!
 //! Members always carry a suffix (`implementer-x7k2`), so a bare name is a
 //! role. IDs are parsed from the right, so roles and teams with `-` in their
-//! names work. The instance can be left out only inside a member, where it
+//! names work. The team can be left out only inside a member, where it
 //! comes from `BORGCHART_TEAM`; everywhere else it is named in full. brg
-//! never infers one from a template's name or from which instances run.
+//! never infers one from a template's name or from which teams run.
 
 use crate::registry::{self, InstanceRecord};
 use crate::state::StateDir;
 
-/// Set in every member's and plugin's environment: its instance.
+/// Set in every member's and plugin's environment: its team.
 pub const ENV_INSTANCE: &str = "BORGCHART_TEAM";
 
-/// One registered instance, with its record.
+/// One registered team, with its record.
 #[derive(Debug, Clone)]
 pub struct Instance {
     pub id: String,
@@ -28,16 +28,16 @@ impl Instance {
         Ok(())
     }
 
-    /// `instance/name`, for messages.
+    /// `team/name`, for messages.
     pub fn at(&self, name: &str) -> String {
         format!("{}/{name}", self.id)
     }
 }
 
-/// What an address names inside its instance.
+/// What an address names inside its team.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
-    /// The instance itself.
+    /// The team itself.
     Instance,
     /// A member, by its full ID.
     Member(String),
@@ -45,24 +45,24 @@ pub enum Target {
     Role(String),
 }
 
-/// The caller's own instance, when it runs inside a member.
+/// The caller's own team, when it runs inside a member.
 pub fn own() -> Option<String> {
     std::env::var(ENV_INSTANCE).ok().filter(|v| !v.is_empty())
 }
 
-/// Every registered instance's ID, for messages.
+/// Every registered team's ID, for messages.
 pub fn known() -> String {
     let ids: Vec<String> = registry::load()
         .map(|r| r.instances.keys().cloned().collect())
         .unwrap_or_default();
     if ids.is_empty() {
-        "there are no instances; create one with `brg create <template> <folder>`".into()
+        "there are no teams; create one with `brg create <template> <folder>`".into()
     } else {
-        format!("instances: {}", ids.join(", "))
+        format!("teams: {}", ids.join(", "))
     }
 }
 
-/// Every top-level instance, read now. Status nests copies beneath these.
+/// Every top-level team, read now. Status nests child teams beneath these.
 pub fn every() -> Result<Vec<Instance>, String> {
     let registry = registry::load()?;
     Ok(registry
@@ -73,12 +73,12 @@ pub fn every() -> Result<Vec<Instance>, String> {
         .collect())
 }
 
-/// The registered instance `id`. The error says what to write instead when
+/// The registered team `id`. The error says what to write instead when
 /// `id` is a template's name, a member or a path.
 pub fn instance(id: &str) -> Result<Instance, String> {
     if !id.split('/').all(crate::names::is_valid_member_id) {
         return Err(format!(
-            "`{id}` has an invalid address segment; use instance and member IDs"
+            "`{id}` has an invalid address segment; use team and member IDs"
         ));
     }
     let registry = registry::load()?;
@@ -100,25 +100,25 @@ pub fn instance(id: &str) -> Result<Instance, String> {
     if !of_team.is_empty() {
         let list: Vec<&str> = of_team.iter().map(|s| s.as_str()).collect();
         return Err(format!(
-            "`{id}` is a template, not an instance; name one of its instances in full: {}",
+            "`{id}` is a template, not a team; name one of its teams in full: {}",
             list.join(", ")
         ));
     }
     if id.contains('-') {
         return Err(format!(
-            "no instance `{id}`. A member is named with its instance outside a member: `<instance>/{id}`; {}",
+            "no team `{id}`. A member is named with its team outside a member: `<team>/{id}`; {}",
             known()
         ));
     }
-    Err(format!("no instance `{id}`; {}", known()))
+    Err(format!("no team `{id}`; {}", known()))
 }
 
-/// Parse an argument naming an instance, or something in one: `instance`,
-/// `instance/name`, or, inside a member, a bare `name` of its own instance.
+/// Parse an argument naming a team, or something in one: `team`,
+/// `team/name`, or, inside a member, a bare `name` of its own team.
 pub fn resolve(arg: &str) -> Result<(Instance, Target), String> {
     if !arg.split('/').all(crate::names::is_valid_member_id) {
         return Err(format!(
-            "`{arg}` has an invalid address segment; use instance and member IDs"
+            "`{arg}` has an invalid address segment; use team and member IDs"
         ));
     }
     if arg.contains('/') {
@@ -152,24 +152,24 @@ pub fn resolve(arg: &str) -> Result<(Instance, Target), String> {
                 .map(|(id, _)| inst.at(id))
                 .collect();
             return Err(format!(
-                "`{prefix}` has no copy `{missing}`; {}",
+                "`{prefix}` has no child team `{missing}`; {}",
                 if kept.is_empty() {
                     format!(
-                        "it has no kept copies; create one with brg create {prefix}/<team-role>"
+                        "it has no kept child teams; create one with brg create {prefix}/<team-role>"
                     )
                 } else {
-                    format!("its kept copies: {}", kept.join(", "))
+                    format!("its kept child teams: {}", kept.join(", "))
                 }
             ));
         }
         return Err(format!(
-            "no instance prefix for `{arg}`; {}. For a folder, write `./{arg}`",
+            "no team prefix for `{arg}`; {}. For a folder, write `./{arg}`",
             known()
         ));
     }
     if let Some(own) = own() {
-        let inst = instance(&own)
-            .map_err(|e| format!("this member's instance `{own}` can't be used: {e}"))?;
+        let inst =
+            instance(&own).map_err(|e| format!("this member's team `{own}` can't be used: {e}"))?;
         if arg == inst.id {
             return Ok((inst, Target::Instance));
         }
@@ -193,7 +193,7 @@ fn target(inst: &Instance, name: &str) -> Target {
     }
 }
 
-/// `name` must be one of the instance's members. A role's name is refused,
+/// `name` must be one of the team's members. A role's name is refused,
 /// listing the role's members.
 pub fn member(inst: &Instance, name: &str) -> Result<String, String> {
     if let Some(issued) = inst.record.members.get(name) {
@@ -240,7 +240,7 @@ pub fn member(inst: &Instance, name: &str) -> Result<String, String> {
     }
     let all: Vec<&String> = inst.record.kept_members().map(|(id, _)| id).collect();
     Err(format!(
-        "no member `{name}` in instance `{}`; {}",
+        "no member `{name}` in team `{}`; {}",
         inst.id,
         if all.is_empty() {
             "it has no members".to_string()
@@ -256,7 +256,7 @@ pub fn member(inst: &Instance, name: &str) -> Result<String, String> {
     ))
 }
 
-/// The members of the instance, for messages: `a, b` or `none`.
+/// The members of the team, for messages: `a, b` or `none`.
 pub fn members_list(inst: &Instance) -> String {
     let all: Vec<&str> = inst
         .record

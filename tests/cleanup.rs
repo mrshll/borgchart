@@ -1,4 +1,4 @@
-//! `brg cleanup`: what it removes for deleted members and copies, what it
+//! `brg cleanup`: what it removes for deleted members and child teams, what it
 //! leaves, and where it stops.
 //!
 //! Run with `cargo test --features test-support`.
@@ -12,7 +12,7 @@ use std::fs;
 
 use instance_env::*;
 
-/// The test team with `helper` and `dev`, a team role whose copies run
+/// The test team with `helper` and `dev`, a team role whose child teams run
 /// the `dev` team, each in its own worktree.
 const TEAM_WITH_WORKTREES: &str = r#"
 bus: {}
@@ -86,7 +86,7 @@ fn left_clean(env: &Env, inst: &str) -> (String, std::path::PathBuf) {
     (id, leaf)
 }
 
-/// A stopped dev copy of `inst`, deleted again: its ID.
+/// A stopped dev team of `inst`, deleted again: its ID.
 fn deleted_copy(env: &Env, inst: &str) -> String {
     let out = env.ok(&["create", &format!("{inst}/dev")]);
     let copy = stdout(&out).split_whitespace().next().unwrap().to_string();
@@ -212,7 +212,7 @@ fn cleanup_removes_leftover_state_and_nothing_else_in_the_state_folder() {
         fs::write(dir.join("x"), "x").unwrap();
     }
 
-    // With an instance, the unregistered instance's state stays.
+    // With a team, the unregistered team's state stays.
     env.ok(&["cleanup", &inst]);
     assert!(!leftovers[0].exists());
     assert!(!state.join(&copy).exists());

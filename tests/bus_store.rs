@@ -1,4 +1,4 @@
-//! The instance's one message store and the checks made before a start.
+//! The team's one message store and the checks made before a start.
 #![cfg(feature = "test-support")]
 
 mod common;
@@ -252,10 +252,7 @@ fn changed_files_require_every_previous_member_positively_stopped() {
     let before = bytes(&state);
     let err = env.fails(&["start", &instance]);
     assert!(err.contains(&helper) && err.contains("can't tell"), "{err}");
-    assert!(
-        bytes(&state) == before,
-        "refused start changed instance state"
-    );
+    assert!(bytes(&state) == before, "refused start changed team state");
 }
 
 fn damaged_store(case: &str) {

@@ -97,7 +97,7 @@ roles:
         fs::write(&path, text.replace(&entry, &format!("{entry}{lines}"))).unwrap();
     }
 
-    /// The instance, once created.
+    /// The team, once created.
     fn instance(&self) -> Option<String> {
         let reg: serde_json::Value =
             serde_json::from_slice(&fs::read(self.path("state/registry.json")).ok()?).ok()?;
@@ -123,10 +123,10 @@ roles:
             .unwrap_or_else(|| panic!("no member of `{role}` yet"))
     }
 
-    /// The tests act on the team's one instance, working in `work`, and
-    /// name members by role: `start` creates the instance the first time,
+    /// The tests act on the team's one team, working in `work`, and
+    /// name members by role: `start` creates the team the first time,
     /// `start <role>` creates or starts its member, and `stop`, `status`,
-    /// `logs` and `msg send` (with `--from`) go to the instance.
+    /// `logs` and `msg send` (with `--from`) go to the team.
     fn translate(&self, args: &[&str]) -> Vec<String> {
         let inst = self.instance();
         let at = |name: &str| match (&inst, self.member_id(name)) {
@@ -415,7 +415,7 @@ fn up_status_send_logs_down() {
     assert!(stdout(&logs).contains("hello there"), "{}", stdout(&logs));
 
     let table = env.brg(&["status"]);
-    // The instance's tree under its header line, then plugin processes.
+    // The team's tree under its header line, then plugin processes.
     let text = stdout(&table);
     let inst = env.instance().unwrap();
     assert!(text.starts_with(&format!("{inst}  template ")), "{text}");

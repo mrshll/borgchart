@@ -153,7 +153,7 @@ impl Run {
         serde_json::from_slice(&fs::read(self.dir.path().join(rel)).ok()?).ok()
     }
 
-    /// The example's one instance, once created.
+    /// The example's one team, once created.
     fn instance(&self) -> Option<String> {
         let reg = self.read("state/registry.json")?;
         reg["teams"].as_object()?.keys().next().cloned()
@@ -172,7 +172,7 @@ impl Run {
         found.unwrap_or_else(|| role.to_string())
     }
 
-    /// `start` creates the instance (working in `work`); `stop`, `status`,
+    /// `start` creates the team (working in `work`); `stop`, `status`,
     /// `msg send` and `logs` go to it, with members named by role.
     fn translate(&self, args: &[&str]) -> Vec<String> {
         let inst = self.instance().unwrap_or_default();

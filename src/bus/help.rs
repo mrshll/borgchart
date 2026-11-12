@@ -1,12 +1,12 @@
 //! The bus help pages use the implementation's limits and exit codes.
 
 pub fn root() -> String {
-    "Teams and instances:
-  `brg create <template> <folder>` starts an instance. `start`, `stop`, `delete`
-  and `status` act on it; members are addressed as <instance>/<member>.
+    "Templates and teams:
+  `brg create <template> <folder>` starts a team. `start`, `stop`, `delete`
+  and `status` act on it; members are addressed as <team>/<member>.
 
 Inside a member:
-  Call the brg that started you as \"$BORGCHART_BIN\". Your instance and
+  Call the brg that started you as \"$BORGCHART_BIN\". Your team and
   identity come from your environment. Read next:
     \"$BORGCHART_BIN\" msg send --help
     \"$BORGCHART_BIN\" msg list --help
@@ -21,10 +21,10 @@ bodies. --member ID reads another member's inbox; --external NAME reads that
 outside recipient's inbox. Without team context (BORGCHART_TEAM,
 BORGCHART_MEMBER, BORGCHART_INCARNATION, BORGCHART_ROLE, BORGCHART_NOTES and
 BORGCHART_PARENT all unset or empty), the inbox defaults to external:owner.
-Instance-only plugins must name an inbox. Outside a member, pass --team ID.
+Team-only plugins must name an inbox. Outside a member, pass --team ID.
 
 The tree shares one store and one set of message IDs. --member accepts a full
-address anywhere in the tree, or a bare ID in your own or --team instance.
+address anywhere in the tree, or a bare ID in your own or the team named by --team.
 Reading never acknowledges. Use `msg read ID` for an older message and
 `msg ack ID...` once you have taken messages on, then `msg wait`.
 Progress and reports belong in your notes and GitHub.
@@ -41,7 +41,7 @@ pub fn wait() -> String {
     "Waits for your own inbox, or external:NAME with --external NAME.
 Without team context (BORGCHART_TEAM, BORGCHART_MEMBER,
 BORGCHART_INCARNATION, BORGCHART_ROLE, BORGCHART_NOTES and BORGCHART_PARENT
-all unset or empty), defaults to external:owner. Instance-only plugins must
+all unset or empty), defaults to external:owner. Team-only plugins must
 name --external NAME.
 --timeout is 60-86400 seconds, default 86400. --full includes message bodies;
 --json prints the same inbox object as `brg msg list --json`.
@@ -70,14 +70,14 @@ pub fn send() -> String {
         "Without team context (BORGCHART_TEAM, BORGCHART_MEMBER,
 BORGCHART_INCARNATION, BORGCHART_ROLE, BORGCHART_NOTES and BORGCHART_PARENT
 all unset or empty), outside callers default to external:owner; --external NAME
-overrides it. Instance-only plugins must name --external NAME. Members use their
-launch identity and may send only to their parent or children. Across a copy's
-parent edge, name the full instance/member address (a copy's roots find their
+overrides it. Team-only plugins must name --external NAME. Members use their
+launch identity and may send only to their parent or children. Across a child team's
+parent edge, name the full team/member address (a child team's roots find their
 parent's in BORGCHART_PARENT). The tree shares one store and message IDs; typed
 and locked delivery work across edges too. Only root members of the tree's root
-instance may address external:NAME. --from asserts a parent route within one
-instance, not authorship. --reply-to takes plain existing IDs such as m1.
-This command takes no --team; name the target as <instance>/<member>.
+team may address external:NAME. --from asserts a parent route within one
+team, not authorship. --reply-to takes plain existing IDs such as m1.
+This command takes no --team; name the target as <team>/<member>.
 
 Ordinary messages commit before optional typing. Exit 0 means committed even
 when delivery is stored or uncertain; never automatically republish. Interactive

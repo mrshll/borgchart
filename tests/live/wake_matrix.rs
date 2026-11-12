@@ -249,7 +249,7 @@ fn direct_vendor_brg_cannot_fall_back_to_inherited_defaults() {
         ("BORGCHART_TMUX_SOCKET".into(), "borgchart".into()),
         ("BORGCHART_TMUX_TMPDIR".into(), poison.display().to_string()),
         ("BORGCHART_MEMBER".into(), "foreign-member".into()),
-        ("BORGCHART_TEAM".into(), "foreign-instance".into()),
+        ("BORGCHART_TEAM".into(), "foreign-team".into()),
         ("BORGCHART_BIN".into(), fake_brg.display().to_string()),
         ("TMUX".into(), "/tmp/tmux-1000/borgchart,1,0".into()),
     ]);

@@ -1,4 +1,4 @@
-//! The shared environment for the instance tests: a team in a search path
+//! The shared environment for the team tests: a team in a search path
 //! of a test configuration, fake agents, a private state home and tmux.
 #![allow(dead_code)]
 
@@ -18,7 +18,7 @@ pub struct Env {
     pub socket: String,
 }
 
-/// `lead` starts with the instance; `helper` (its child) and `scout` (a
+/// `lead` starts with the team; `helper` (its child) and `scout` (a
 /// second root) are created on demand.
 pub const TEAM: &str = r#"
 bus: {}
@@ -62,7 +62,7 @@ impl Env {
         env
     }
 
-    /// A copy of the test team at `rel`.
+    /// A child team of the test team at `rel`.
     pub fn team(&self, rel: &str) {
         self.write(&format!("{rel}/template.yaml"), TEAM);
         for (role, model) in [
@@ -138,7 +138,7 @@ impl Env {
         both(&out)
     }
 
-    /// `brg create <template> <folder>`; the new instance's ID.
+    /// `brg create <template> <folder>`; the new team's ID.
     pub fn create(&self, team: &str, folder: &str) -> String {
         let out = self.ok(&["create", team, &self.path(folder).display().to_string()]);
         let id = stdout(&out)
@@ -295,7 +295,7 @@ impl Env {
         dir
     }
 
-    /// Where brg puts the worktree of the member or copy at `address`.
+    /// Where brg puts the worktree of the member or child team at `address`.
     pub fn worktree(&self, address: &str) -> PathBuf {
         self.path("state-worktrees").join(address.replace('/', "."))
     }

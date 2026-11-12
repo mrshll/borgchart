@@ -622,7 +622,7 @@ fn stopping_a_copy_waits_for_a_publication_already_authorized_in_the_tree() {
 #[test]
 fn deleting_a_copy_preserves_history_without_leaving_pending_work() {
     let tree = Tree::new();
-    let sent = tree.publish(false, "Copy task", &[]);
+    let sent = tree.publish(false, "Child team task", &[]);
     let id = sent["id"].as_str().unwrap();
     tree.env.ok(&["stop", &tree.child]);
     let refused = tree.env.fails(&["delete", &tree.child]);
@@ -632,7 +632,7 @@ fn deleting_a_copy_preserves_history_without_leaving_pending_work() {
         tree.env
             .ok(&["msg", "read", id, "--team", &tree.parent, "--json"]),
     );
-    assert_eq!(read["record"]["body"], "Copy task");
+    assert_eq!(read["record"]["body"], "Child team task");
     assert_eq!(
         read["record"]["to"],
         format!("{}/{}", tree.child, tree.child_member)
@@ -730,7 +730,10 @@ fn a_copy_cannot_initialize_or_ignore_a_damaged_tree_store() {
         let out = tree.env.brg(&["start", &tree.child]);
         assert!(!out.status.success(), "{}", both(&out));
         if damage == "missing" {
-            assert!(!store.exists(), "a copy must not initialize the root store");
+            assert!(
+                !store.exists(),
+                "a child team must not initialize the root store"
+            );
         }
     }
 }

@@ -2,7 +2,7 @@
 //! dev team and design panel: the catalog guide's deployment
 //! validate, the member files expand and stay generic, one message round
 //! works with `fake-agent` members, the department lead seats a panel, and the
-//! department lead starts a dev copy.
+//! department lead starts a dev team.
 
 mod common;
 
@@ -34,7 +34,7 @@ fn dev_team() -> PathBuf {
 }
 
 /// The ```yaml blocks of CONTRIBUTING.md: the configuration a
-/// reader copies.
+/// reader child teams.
 fn readme_configs() -> Vec<String> {
     let text = fs::read_to_string(catalog().join("../CONTRIBUTING.md")).unwrap();
     let mut blocks = Vec::new();
@@ -48,7 +48,7 @@ fn readme_configs() -> Vec<String> {
     blocks
 }
 
-/// The guide's commands that start with `prefix`, as a reader copies them
+/// The guide's commands that start with `prefix`, as a reader child teams them
 /// (each inside backticks).
 fn readme_commands(prefix: &str) -> Vec<String> {
     let text = fs::read_to_string(catalog().join("../CONTRIBUTING.md")).unwrap();
@@ -60,9 +60,9 @@ fn readme_commands(prefix: &str) -> Vec<String> {
         .collect()
 }
 
-/// As CONTRIBUTING.md sets it up: a pinned copy of the complete teams catalog
+/// As CONTRIBUTING.md sets it up: a pinned child team of the complete teams catalog
 /// in `dir/pinned/templates`, where brg resolves names; and its configuration
-/// in `dir/config.yaml`. The instance's folder is `dir/work`, a checkout
+/// in `dir/config.yaml`. The team's folder is `dir/work`, a checkout
 /// with one baseline commit pushed to a local remote.
 fn setup(dir: &Path, text: &str) -> PathBuf {
     let origin = dir.join("origin.git").display().to_string();
@@ -146,7 +146,7 @@ fn validate(dir: &Path, config: &Path, team: &str) -> Output {
         .unwrap()
 }
 
-/// What a reader copies from the guide works as written: the teams
+/// What a reader child teams from the guide works as written: the teams
 /// validate by its catalog paths, with no errors and no warnings.
 #[test]
 fn the_readme_configuration_validates_cleanly() {
@@ -522,7 +522,7 @@ mod round {
             serde_json::from_slice(&fs::read(self.path(rel)).ok()?).ok()
         }
 
-        /// The instance of `team`, once created.
+        /// The team of `team`, once created.
         fn instance_of(&self, team: &str) -> Option<String> {
             let reg = self.read("state/registry.json")?;
             reg["teams"]
@@ -532,13 +532,12 @@ mod round {
                 .map(|(id, _)| id.clone())
         }
 
-        /// The dev team's instance.
+        /// The dev team's team.
         fn inst(&self) -> String {
-            self.instance_of("dev-team")
-                .expect("the dev team's instance")
+            self.instance_of("dev-team").expect("the dev team's team")
         }
 
-        /// The member of `role` in `instance`.
+        /// The member of `role` in `team`.
         fn member_in(&self, instance: &str, role: &str) -> String {
             let rec = self
                 .read(&format!("state/{instance}/team.json"))
@@ -652,8 +651,8 @@ mod round {
             self.run_in(role, name, &script);
         }
 
-        /// Create the dev team's instance in `work/`, by name, from the
-        /// pinned copy.
+        /// Create the dev team's team in `work/`, by name, from the
+        /// pinned child team.
         fn create(&self) -> String {
             let folder = self.path("work").display().to_string();
             let out = self.ok(&["create", "dev-team", &folder]);
@@ -688,7 +687,7 @@ mod round {
         }
     }
 
-    /// Extract executable examples, not copies of their argv in the test.
+    /// Extract executable examples, not child teams of their argv in the test.
     fn documented(text: &str, prefix: &str) -> String {
         for block in text.split("```sh\n").skip(1) {
             let script = block.split("```").next().unwrap().trim();
@@ -889,11 +888,11 @@ mod round {
         team.ok(&["stop", &team.inst()]);
     }
 
-    /// The department lead seats a design panel as a nested copy with the steps
+    /// The department lead seats a design panel as a nested child team with the steps
     /// lead.md gives, from inside the lead: `create` of its
-    /// `design` role makes the copy stopped in the lead's own checkout, the
-    /// lead checks seating for each designer, starts the copy, exchanges
-    /// files in the copy's notes folder, then stops and deletes the copy.
+    /// `design` role makes the child team stopped in the lead's own checkout, the
+    /// lead checks seating for each designer, starts the child team, exchanges
+    /// files in the child team's notes folder, then stops and deletes the child team.
     #[test]
     fn the_lead_seats_the_design_panel_as_a_nested_copy() {
         let team = new_team("design");
@@ -906,7 +905,7 @@ mod round {
         ]);
         let inst = team
             .instance_of("engineering")
-            .expect("the department's instance");
+            .expect("the department's team");
         let lead = team.member_in(&inst, "lead");
         let rule = member_body(&department().join("lead.md"));
         let lead_idle = || {
@@ -969,21 +968,21 @@ mod round {
         let fill = |command: String| {
             command
                 .replace("<folder>", &team.path("work").display().to_string())
-                .replace("<copy folder>", &folder.display().to_string())
-                .replace("<copy ID>", &panel)
-                .replace("<copy>", &copy)
+                .replace("<child team folder>", &folder.display().to_string())
+                .replace("<child-team-id>", &panel)
+                .replace("<child-team>", &copy)
                 .replace("<baseline>", &baseline)
         };
         let work = folder.clone();
         assert_eq!(git_in(&work, &["rev-parse", "HEAD"]), baseline);
 
-        // Seating: each designer's vendor and model, from the copy's status,
+        // Seating: each designer's vendor and model, from the child team's status,
         // checked through the granted seating plugin and the isolated fake vendor protocols.
         let (listed, code) = run(
             "panel-roles",
             &fill(documented(
                 &rule,
-                "\"$BORGCHART_BIN\" status <copy ID> --json",
+                "\"$BORGCHART_BIN\" status <child-team-id> --json",
             )),
         );
         assert_eq!(code, 0, "{listed}");
@@ -1035,7 +1034,7 @@ mod round {
         }
         let notes = notes.unwrap();
 
-        // The design directory, as the lead works it out, is the copy's
+        // The design directory, as the lead works it out, is the child team's
         // notes folder.
         let (dir, code) = run(
             "panel-notes",
@@ -1131,7 +1130,7 @@ mod round {
         first().unwrap()
     }
 
-    /// The opening prompt of `member` in `instance`: its expanded role file.
+    /// The opening prompt of `member` in `team`: its expanded role file.
     fn prompt_of(team: &Team, instance: &str, member: &str) -> String {
         let log = team.path(&format!("home/fake-agent/{member}.jsonl"));
         let start = first_start(team, &format!("{member} started"), &log);
@@ -1147,8 +1146,8 @@ mod round {
     }
 
     /// The department's own steps, run from inside its lead as lead.md
-    /// gives them: `create` of `dev` makes a stopped copy, the
-    /// copy gets its own worktree on a new branch, the lead checks seating
+    /// gives them: `create` of `dev` makes a stopped child team, the
+    /// child team gets its own worktree on a new branch, the lead checks seating
     /// and starts it, and the dev lead's parent is the department lead.
     /// Every launched member gets the common rules; only the dev lead gets
     /// the dev-only ones.
@@ -1167,7 +1166,7 @@ mod round {
         ]);
         let dept = team
             .instance_of("engineering")
-            .expect("the department's instance");
+            .expect("the department's team");
         let dept_lead = team.member_in(&dept, "lead");
         let meta = team.read(&format!("state/{dept}/start.json")).unwrap();
         assert_eq!(meta["members"][&dept_lead]["interactive"], true);
@@ -1239,15 +1238,15 @@ mod round {
         let fill = |command: String| {
             command
                 .replace("<folder>", &team.path("work").display().to_string())
-                .replace("<copy folder>", &folder.display().to_string())
-                .replace("<copy ID>", &copy_id)
-                .replace("<copy>", &copy)
+                .replace("<child team folder>", &folder.display().to_string())
+                .replace("<child-team-id>", &copy_id)
+                .replace("<child-team>", &copy)
                 .replace("<branch>", "example/work")
         };
         let lead_row = rows(&copy_id)
             .into_iter()
             .find(|r| r["role"] == "lead")
-            .expect("the copy's lead role");
+            .expect("the child team's lead role");
         let route = documented(&rule, "brg-seat route <vendor> <model>")
             .replace("<vendor>", lead_row["vendor"].as_str().unwrap())
             .replace(

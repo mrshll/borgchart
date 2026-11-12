@@ -1,10 +1,10 @@
-//! Checkouts: the folders members of other instances hold, and the check a
+//! Checkouts: the folders members of other teams hold, and the check a
 //! member start makes against them.
 //!
-//! A folder is held by another instance's member while that member runs,
+//! A folder is held by another team's member while that member runs,
 //! or while brg can't tell that it stopped (`unknown` liveness).
-//! Members of one tree (an instance and its copies) may share a folder, as
-//! a copy without `worktree: true` shares its parent's; the check is across
+//! Members of one tree (a team and its child teams) may share a folder, as
+//! a child team without `worktree: true` shares its parent's; the check is across
 //! trees only. Folders are compared with symlinks resolved: the same,
 //! inside, or around counts. The caller holds the registry lock from the
 //! check until its members' windows run, so two starts can't both win.
@@ -16,7 +16,7 @@ use crate::lifecycle::Liveness;
 use crate::paths::overlaps;
 use crate::registry;
 
-/// One folder another instance holds, and why.
+/// One folder another team holds, and why.
 #[derive(Debug, Clone)]
 pub struct Held {
     pub instance: String,
@@ -24,7 +24,7 @@ pub struct Held {
     pub why: String,
 }
 
-/// Every folder held by an instance outside `except`'s tree. Called with
+/// Every folder held by a team outside `except`'s tree. Called with
 /// the registry lock held.
 pub fn held(_lock: &registry::Lock, except: &str) -> Result<Vec<Held>, String> {
     let registry = registry::load()?;
@@ -88,7 +88,7 @@ pub fn held(_lock: &registry::Lock, except: &str) -> Result<Vec<Held>, String> {
 }
 
 /// The checkout reservation: refuse if any of `wanted` (member, folder) is
-/// the same as, inside or around a folder another instance holds. Called
+/// the same as, inside or around a folder another team holds. Called
 /// with the registry lock held; the caller records the folders it starts
 /// in before releasing it.
 pub fn reserve(
@@ -102,7 +102,7 @@ pub fn reserve(
         for h in &held {
             if overlaps(folder, &h.folder) {
                 clashes.push(format!(
-                    "{member}'s folder {} overlaps {} of instance `{}` ({})",
+                    "{member}'s folder {} overlaps {} of team `{}` ({})",
                     folder.display(),
                     h.folder.display(),
                     h.instance,
@@ -116,18 +116,14 @@ pub fn reserve(
         Ok(())
     } else {
         Err(format!(
-            "another instance holds this folder, so nothing was started:\n  {}",
+            "another team holds this folder, so nothing was started:\n  {}",
             clashes.join("\n  ")
         ))
     }
 }
 
-/// Whether `folder` overlaps another instance's held folder (for `create`,
+/// Whether `folder` overlaps another team's held folder (for `create`,
 /// before anything is registered).
 pub fn check_folder(lock: &registry::Lock, folder: &Path) -> Result<(), String> {
-    reserve(
-        lock,
-        "",
-        &[("the instance".to_string(), folder.to_path_buf())],
-    )
+    reserve(lock, "", &[("the team".to_string(), folder.to_path_buf())])
 }

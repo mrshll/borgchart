@@ -34,18 +34,18 @@ What the lead can't do: look at systems. It is a smart auto-responder that ackno
    ```
 
 5. **Export the bot token** in the shell you start from, e.g. `export SLACK_BOT_TOKEN=<your-bot-token>`, or start brg under your secret manager's `run`. Never write it into a file: brg stores no secrets. `brg secrets ./examples/slack-devops` says whether it is set.
-6. **Check and start** an instance, in a folder of its own outside this checkout (the agents are `locked`, so their folder can't hold the template's files):
+6. **Check and start** a team, in a folder of its own outside this checkout (the agents are `locked`, so their folder can't hold the template's files):
 
    ```sh
    brg validate ./examples/slack-devops
    mkdir -p ~/work/oncall
-   brg create ./examples/slack-devops ~/work/oncall   # prints the instance's ID, e.g. slack-devops-k3f9
+   brg create ./examples/slack-devops ~/work/oncall   # prints the team's ID, e.g. slack-devops-k3f9
    brg status slack-devops-k3f9
    ```
 
 ### First run
 
-- **Folder trust:** Claude asks once per folder whether you trust it. For these `locked` agents, brg answers it for the instance's folder by itself (`auto_trust: false` in brg's configuration turns that off; then run `brg attach slack-devops-k3f9/<member>` once and answer it yourself). Until it's answered, the agent gets no input, and messages wait in the queue.
+- **Folder trust:** Claude asks once per folder whether you trust it. For these `locked` agents, brg answers it for the team's folder by itself (`auto_trust: false` in brg's configuration turns that off; then run `brg attach slack-devops-k3f9/<member>` once and answer it yourself). Until it's answered, the agent gets no input, and messages wait in the queue.
 - **API key:** with `auth: api_key`, Claude may ask once whether to use the key. The start then reports the agent stopped, because its gate didn't report in. Answer that prompt in a plain `claude` session first, or use `auth: login`.
 
 `brg attach slack-devops-k3f9/<member>` shows a live session (`brg status` lists the members' IDs). Detach with your tmux prefix, then `d`. `brg stop slack-devops-k3f9` stops everything and removes the private file that held the token; `brg start slack-devops-k3f9` brings it back.

@@ -1,4 +1,4 @@
-//! Instances and the four verbs: `create`, `start`, `stop`, `delete`, with
+//! Teams and the four verbs: `create`, `start`, `stop`, `delete`, with
 //! `templates`, `status` and addressing. Teams are found by name in the search
 //! paths of a test configuration (`BORGCHART_CONFIG`) or by path. Real tmux
 //! on a private per-test socket, with `fake-agent` standing in for `claude`
@@ -343,7 +343,7 @@ fn create_twice_makes_two_instances_with_suffixed_members() {
     let lead_b = env.member(&b, "lead");
     assert!(well_formed(&lead_a, "lead"), "{lead_a}");
     assert!(well_formed(&lead_b, "lead"), "{lead_b}");
-    // The member's own ID reaches it, with its instance and role.
+    // The member's own ID reaches it, with its team and role.
     let start = &env.starts(&lead_a)[0];
     assert_eq!(start["env"]["BORGCHART_MEMBER"], lead_a);
     assert_eq!(start["env"]["BORGCHART_TEAM"], a);
@@ -368,7 +368,7 @@ fn create_twice_makes_two_instances_with_suffixed_members() {
     let err = env.fails(&["logs", &format!("{a}/lead")]);
     assert!(err.contains(&lead_a), "{err}");
     assert_eq!(env.state_of(&a, "lead"), "idle", "nothing was stopped");
-    // The tmux session is `brg-<instance>`.
+    // The tmux session is `brg-<team>`.
     assert!(
         env.tmux(&["list-sessions", "-F", "#{session_name}"])
             .contains(&format!("brg-{a}"))
@@ -603,7 +603,7 @@ fn delete_needs_a_stop_and_force_for_unacked_messages_and_keeps_the_folder() {
         "mine\n"
     );
     let err = env.fails(&["status", &inst]);
-    assert!(err.contains("no instance"), "{err}");
+    assert!(err.contains("no team"), "{err}");
 }
 
 // --- 8. Addressing ---
@@ -613,16 +613,16 @@ fn addresses_name_the_instance_in_full_outside_a_member() {
     let env = Env::new();
     let inst = env.create("oncall", "work/a");
     let lead = env.member(&inst, "lead");
-    // Outside a member, a member needs its instance, even with one running.
+    // Outside a member, a member needs its team, even with one running.
     let err = env.fails(&["logs", &lead]);
-    assert!(err.contains(&format!("<instance>/{lead}")), "{err}");
-    // A team's name where an instance is expected.
+    assert!(err.contains(&format!("<team>/{lead}")), "{err}");
+    // A team's name where a team is expected.
     let err = env.fails(&["status", "oncall"]);
     assert!(
         err.contains("is a template") && err.contains(&inst),
         "{err}"
     );
-    // Inside a member, the instance comes from BORGCHART_TEAM.
+    // Inside a member, the team comes from BORGCHART_TEAM.
     let out = env
         .cmd(&["logs", &lead])
         .env("BORGCHART_TEAM", &inst)
@@ -634,7 +634,7 @@ fn addresses_name_the_instance_in_full_outside_a_member() {
     assert!(err.contains("--team") && err.contains(&inst), "{err}");
     env.ok(&["msg", "list", "--external", "ops", "--team", &inst]);
     env.ok(&["msg", "integrity-check", "--team", &inst]);
-    // An instance isn't a recipient; nor is a role.
+    // A team isn't a recipient; nor is a role.
     for to in [inst.as_str(), "lead"] {
         let out = env.publish(&inst, &json!({"to": to, "body": "hi"}));
         assert!(!out.status.success(), "{}", both(&out));
@@ -649,7 +649,7 @@ fn addresses_name_the_instance_in_full_outside_a_member() {
             .any(|l| l.contains("helper") && l.contains("not created (start: false)")),
         "{text}"
     );
-    // Bare `status` shows every instance.
+    // Bare `status` shows every team.
     let b = env.create("oncall", "work/b");
     let all = stdout(&env.ok(&["status"]));
     assert!(all.contains(&inst) && all.contains(&b), "{all}");
@@ -657,7 +657,7 @@ fn addresses_name_the_instance_in_full_outside_a_member() {
     env.ok(&["stop", &b]);
 }
 
-/// `brg status [<instance>] -w --interval 1`, its output collected as it
+/// `brg status [<team>] -w --interval 1`, its output collected as it
 /// comes: one screen per refresh.
 struct Watch {
     child: std::process::Child,
@@ -725,14 +725,14 @@ fn status_w_with_no_instance_follows_every_instance() {
         watch
             .screens()
             .iter()
-            .any(|s| s.contains("there are no instances"))
+            .any(|s| s.contains("there are no teams"))
     });
     let seen = watch.screens().len();
     env.wait_for("another refresh", || watch.screens().len() > seen);
     assert!(watch.running(), "{}", watch.dump());
     let a = env.create("oncall", "work/a");
     let b = env.create("oncall", "work/b");
-    env.wait_for("a refresh showing both instances", || {
+    env.wait_for("a refresh showing both teams", || {
         watch
             .screens()
             .iter()
@@ -904,7 +904,7 @@ fn plain_plugin_values_come_from_the_team() {
     fs::create_dir_all(env.path("templates/oncall/plugins/pager")).unwrap();
     script(
         &env.path("templates/oncall/plugins/pager/pager"),
-        "#!/bin/sh\necho \"room=$PAGER_ROOM token_len=${#PAGER_TOKEN} instance=$BORGCHART_TEAM\" >> \"$BORGCHART_STATE_DIR/calls.log\"\n",
+        "#!/bin/sh\necho \"room=$PAGER_ROOM token_len=${#PAGER_TOKEN} team=$BORGCHART_TEAM\" >> \"$BORGCHART_STATE_DIR/calls.log\"\n",
     );
     // The secret must come from the environment.
     let err = env.fails(&[
@@ -947,7 +947,7 @@ fn plain_plugin_values_come_from_the_team() {
         fs::read_to_string(env.path(&format!("state/{inst}/plugins/pager/calls.log"))).unwrap();
     assert_eq!(
         log.trim(),
-        format!("room=R0000EXAMPLE token_len=12 instance={inst}")
+        format!("room=R0000EXAMPLE token_len=12 team={inst}")
     );
     env.ok(&["stop", &inst]);
 }
@@ -982,7 +982,7 @@ fn a_roles_args_come_from_the_team_and_members_work_in_its_folder() {
         "{start}"
     );
     env.ok(&["stop", &inst]);
-    // `cwd` is gone: members work in the instance's folder or a worktree.
+    // `cwd` is gone: members work in the team's folder or a worktree.
     env.write(
         "templates/oncall/template.yaml",
         &TEAM.replace(

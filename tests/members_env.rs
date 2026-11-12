@@ -1,6 +1,6 @@
-//! What members are started with and who may act on an instance: writable
+//! What members are started with and who may act on a team: writable
 //! folders by posture, API keys and secrets, `brg secrets`, the notes
-//! `create` prints about a folder's project settings, and instance
+//! `create` prints about a folder's project settings, and team
 //! selection for bus commands.
 //!
 //! Run with `cargo test --features test-support`.
@@ -273,7 +273,7 @@ fn login_passes_no_key_and_api_key_only_the_members_own() {
             assert!(!e.to_string().contains(PAGER), "{e}");
         }
         // Nothing prints a value, and only the plugin's 0600 file holds its
-        // secret while the instance runs.
+        // secret while the team runs.
         assert!(!both(&out).contains(ANTHROPIC) && !both(&out).contains(OPENAI));
         let status = both(&env.ok(&["status", &a, "--json"]));
         for v in [ANTHROPIC, OPENAI, PAGER] {
@@ -346,7 +346,7 @@ fn create_notes_project_settings_auto_trust_will_load() {
     env.ok(&["stop", &first_word(&stdout(&out))]);
 }
 
-// --- 12. Instance selection ---
+// --- 12. Team selection ---
 
 #[test]
 fn a_member_acts_only_on_its_own_instance() {
@@ -354,12 +354,12 @@ fn a_member_acts_only_on_its_own_instance() {
     let a = env.create("oncall", "work/a");
     let b = env.create("oncall", "work/b");
     let lead = env.member(&a, "lead");
-    // Its own instance by default, and by name.
+    // Its own team by default, and by name.
     let out = env.as_member(&lead, 0, &["msg", "list", "--json"]);
     assert!(out.status.success(), "{}", both(&out));
     let out = env.as_member(&lead, 0, &["msg", "list", "--json", "--team", &a]);
     assert!(out.status.success(), "{}", both(&out));
-    // Another instance: refused, for reads too.
+    // Another team: refused, for reads too.
     for args in [
         vec!["msg", "list", "--json", "--team", b.as_str()],
         vec!["msg", "integrity-check", "--team", b.as_str()],
@@ -367,7 +367,7 @@ fn a_member_acts_only_on_its_own_instance() {
         let out = env.as_member(&lead, 0, &args);
         assert!(!out.status.success(), "{args:?}: {}", both(&out));
         assert!(
-            both(&out).contains(&format!("can't act on instance `{b}`")),
+            both(&out).contains(&format!("can't act on team `{b}`")),
             "{}",
             both(&out)
         );

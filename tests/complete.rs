@@ -67,7 +67,7 @@ fn snapshot(root: &Path) -> BTreeMap<PathBuf, (u64, SystemTime)> {
     out
 }
 
-/// The test team plus `dev`, a team role whose copies run the `dev` team.
+/// The test team plus `dev`, a team role whose child teams run the `dev` team.
 const DEPARTMENT: &str = r#"
 bus: {}
 roles:
@@ -108,7 +108,7 @@ fn completion_offers_instances_kept_members_and_teams() {
     let out = env.ok(&["create", &format!("{inst}/dev")]);
     let copy = stdout(&out).split_whitespace().next().unwrap().to_string();
     env.ok(&["start", &copy]);
-    env.wait_for("copy lead", || !env.member(&copy, "lead").is_empty());
+    env.wait_for("child team lead", || !env.member(&copy, "lead").is_empty());
     let copy_lead = env.member(&copy, "lead");
 
     let targets = complete(&env, &["stop", ""]);
@@ -130,7 +130,7 @@ fn completion_offers_instances_kept_members_and_teams() {
     assert!(members.contains(&format!("{inst}/{lead}")), "{members:?}");
     assert!(
         !members.contains(&inst),
-        "an instance offered as a member: {members:?}"
+        "a team offered as a member: {members:?}"
     );
 
     let instances = complete(&env, &["msg", "list", "--team", ""]);
@@ -142,7 +142,7 @@ fn completion_offers_instances_kept_members_and_teams() {
     );
     assert!(
         !instances.iter().any(|i| i.contains(&lead)),
-        "a member offered as an instance: {instances:?}"
+        "a member offered as a team: {instances:?}"
     );
 
     assert!(complete(&env, &["create", ""]).contains(&"oncall".to_string()));

@@ -24,7 +24,7 @@ pub enum MsgCommand {
     /// It is typed in only for a non-interactive recipient.
     #[command(after_long_help = crate::bus::help::send())]
     Send {
-        /// The member to type into: `<instance>/<member>`.
+        /// The member to type into: `<team>/<member>`.
         #[arg(add = crate::complete::members())]
         member: String,
         /// The text (several words are joined with spaces).
@@ -90,7 +90,7 @@ pub enum MsgCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Check the instance's message storage. Never writes.
+    /// Check the team's message storage. Never writes.
     IntegrityCheck {
         /// Print the report as JSON.
         #[arg(long)]
@@ -147,7 +147,7 @@ pub(crate) fn finish(json: bool, result: Result<Output, Failure>) -> ExitCode {
     }
 }
 
-/// Open the message storage of the instance the caller names (`--team`)
+/// Open the message storage of the team the caller names (`--team`)
 /// or, inside a member, its own.
 pub(crate) fn open_bus(instance: Option<&str>) -> Result<Bus, Failure> {
     let id = context::instance(instance)?;
@@ -169,7 +169,7 @@ pub fn msg(instance: Option<&str>, command: MsgCommand, started: Instant) -> Exi
             let result = (|| {
                 if instance.is_some() {
                     return Err(runtime::SendError::Usage(
-                        "`msg send` takes no --team; name the target as <instance>/<member>".into(),
+                        "`msg send` takes no --team; name the target as <team>/<member>".into(),
                     ));
                 }
                 let mut text = text.join(" ");

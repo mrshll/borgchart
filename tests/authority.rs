@@ -1,4 +1,4 @@
-//! Member lifecycle authority follows recorded parent edges across copies.
+//! Member lifecycle authority follows recorded parent edges across child teams.
 #![cfg(feature = "test-support")]
 
 mod common;
@@ -94,7 +94,7 @@ fn members_cannot_create_independent_bus_instances() {
     assert!(!out.status.success(), "{}", both(&out));
     let error = both(&out);
     assert!(error.contains("ask a person"), "{error}");
-    assert!(error.contains("brg create <instance>/<role>"), "{error}");
+    assert!(error.contains("brg create <team>/<role>"), "{error}");
     assert_eq!(env.registry(), before);
     env.ok(&["stop", &dept]);
 }
@@ -141,7 +141,7 @@ fn copy_from_output(env: &Env, out: &Output) -> (String, PathBuf) {
         .iter()
         .flat_map(|team| team["teams"].as_array().unwrap())
         .find(|copy| copy["team"] == id)
-        .unwrap_or_else(|| panic!("copy {id}: {listed}\n{}", both(out)));
+        .unwrap_or_else(|| panic!("child team {id}: {listed}\n{}", both(out)));
     let folder = PathBuf::from(copy["folder"].as_str().unwrap());
     assert_eq!(copy["running"], false);
     (id, folder)
@@ -246,7 +246,9 @@ fn lifecycle_refuses_targets_outside_recorded_subtrees() {
     let second = prepared_copy(&env, &dept, "dev");
     for copy in [&first, &second] {
         env.ok(&["start", copy]);
-        env.wait_for("copy lead idle", || env.state_of(copy, "lead") == "idle");
+        env.wait_for("child team lead idle", || {
+            env.state_of(copy, "lead") == "idle"
+        });
     }
     env.ok(&["create", &format!("{first}/helper")]);
     env.wait_for("helper idle", || env.state_of(&first, "helper") == "idle");

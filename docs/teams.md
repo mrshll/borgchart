@@ -1,6 +1,6 @@
 # Defining a brg team template
 
-Templates, instances, roles, copies up to `max`, teams as members and the four verbs (`create`, `start`, `stop`, `delete`) work today. [concepts.md](concepts.md) records the design; [format.md](format.md) describes the shipped format. Items marked **Open** are not decided yet. For command syntax, `brg … --help` is the authority; the tables below are a short summary.
+Templates, teams, roles, child teams up to `max`, teams as members and the four verbs (`create`, `start`, `stop`, `delete`) work today. [concepts.md](concepts.md) records the design; [format.md](format.md) describes the shipped format. Items marked **Open** are not decided yet. For command syntax, `brg … --help` is the authority; the tables below are a short summary.
 
 ## The files
 
@@ -15,7 +15,7 @@ devteam/
 └── includes/base.md   # shared text, pulled in with {{includes/base}}
 ```
 
-The template folder is shareable: it says nothing about one machine or one project. What belongs to you (auth, trust, where templates are found) is in brg's configuration, `~/.config/borgchart/config.yaml`; the folder an instance works in is given at `brg create devteam <folder>`.
+The template folder is shareable: it says nothing about one machine or one project. What belongs to you (auth, trust, where templates are found) is in brg's configuration, `~/.config/borgchart/config.yaml`; the folder a team works in is given at `brg create devteam <folder>`.
 
 ### `template.yaml`
 
@@ -30,7 +30,7 @@ roles:
     prompt: implementer.md
     vendor: codex
     parent: lead
-    start: false                       # the lead creates it when there's work: brg create <instance>/implementer
+    start: false                       # the lead creates it when there's work: brg create <team>/implementer
   reviewer:
     prompt: reviewer.md
     vendor: claude
@@ -60,7 +60,7 @@ You are the implementer on a development team. The lead assigns you one bounded 
 - **Includes:** one level deep.
 - **Another template's role file:** a line `{{templates/<template>/<role>}}` takes that role's instruction body wholesale, so a private template can reuse a shared lead and add its own lines ([format](format.md#reusing-a-shared-template)).
 
-### Instances
+### Teams
 
 ```
 $ brg create devteam ~/work/project
@@ -70,7 +70,7 @@ devteam-k3f9  template ~/.config/borgchart/templates/devteam · folder ~/work/pr
    └─ reviewer          not created (start: false)
 ```
 
-- **`create`** makes a new instance in that folder, with a suffixed ID; run it twice and you have two. Every team has durable messages.
+- **`create`** makes a new team in that folder, with a suffixed ID; run it twice and you have two. Every team has durable messages.
 - **Per role** in `template.yaml`: `posture`, extra vendor `args` and `worktree: true` for members that each need their own checkout. Standing rules go in the template's own files; context for one piece of work goes to the lead in a message.
 - **Secrets:** brg stores none. They come from your environment by name when you run `brg create` or `brg start`; `brg secrets devteam` lists which are set.
 
@@ -81,12 +81,12 @@ A small top level for people. `brg --help` and `brg <command> --help` give the f
 | Command | What it does |
 | --- | --- |
 | `brg validate <template>` | Check everything without starting anything |
-| `brg create <template> <folder>`, `brg create <instance>/<role>` | Make a new instance, or a role's member, and start it. Prints the tree with each member's model and what happened. |
-| `brg start <instance>[/<member>]`, `brg stop <instance>[/<member>]` | Bring it back, or stop it |
-| `brg delete <instance>[/<member>] [--force]` | Remove a stopped instance or member. Unread messages require `--force`; running or unknown liveness, or a member with kept children, is always refused. A deleted member's ID stays issued. |
-| `brg status [instance] [--json \| -w \| -i]` | The live tree: who is idle, working or blocked, with positive unacked message counts. JSON includes `member`, `role`, `parent` (a member ID), `start_id` (the current incarnation, when recorded), and `unacked`, including zero with a readable bus. An unreadable store omits counts and adds a check note. |
-| `brg templates` | Your templates, each with its instances |
-| `brg attach <instance>/<member>`, `brg logs <instance>/<member>` | Watch a member |
+| `brg create <template> <folder>`, `brg create <team>/<role>` | Make a new team, or a role's member, and start it. Prints the tree with each member's model and what happened. |
+| `brg start <team>[/<member>]`, `brg stop <team>[/<member>]` | Bring it back, or stop it |
+| `brg delete <team>[/<member>] [--force]` | Remove a stopped team or member. Unread messages require `--force`; running or unknown liveness, or a member with kept children, is always refused. A deleted member's ID stays issued. |
+| `brg status [team] [--json \| -w \| -i]` | The live tree: who is idle, working or blocked, with positive unacked message counts. JSON includes `member`, `role`, `parent` (a member ID), `start_id` (the current incarnation, when recorded), and `unacked`, including zero with a readable bus. An unreadable store omits counts and adds a check note. |
+| `brg templates` | Your templates, each with its teams |
+| `brg attach <team>/<member>`, `brg logs <team>/<member>` | Watch a member |
 | `brg msg send [--external NAME] TARGET TEXT [--reply-to ID]` | Record a message, then optionally type it; outside callers without team context default to `external:owner`; `-` reads stdin |
 | `brg msg …` | Durable messages and store health, below |
 
@@ -100,11 +100,11 @@ A small top level for people. `brg --help` and `brg <command> --help` give the f
 | `brg msg wait [--external NAME] [--timeout SECONDS] [--full] [--json]` | Wait for your inbox: new messages at once, existing ones after 60 seconds if still unacked; timeout 60–86400, default 86400. The 60 s floor matches the loop guard on every nonzero exit except fenced, including timeout |
 | `brg msg integrity-check [--json]` | Report gaps and unreadable files without writing |
 
-**Addressing.** `devteam-k3f9/lead-q8m3`. Inside a member, a bare member ID means its own instance; everywhere else the instance is named in full ([concepts](concepts.md#names-and-ids)). Only `create` takes a role name. Member commands and messages refuse a role name, listing its kept members or naming `brg create <instance>/<role>` when it has none. Bus commands take `--team ID` outside a member. Without team context, an outside caller defaults to `external:owner` for send, list, ack and wait; `--external NAME` overrides it (refused inside a member), with replies at `external:NAME`. Instance-only plugin processes must still name `--external NAME` to send, ack or wait.
+**Addressing.** `devteam-k3f9/lead-q8m3`. Inside a member, a bare member ID means its own team; everywhere else the team is named in full ([concepts](concepts.md#names-and-ids)). Only `create` takes a role name. Member commands and messages refuse a role name, listing its kept members or naming `brg create <team>/<role>` when it has none. Bus commands take `--team ID` outside a member. Without team context, an outside caller defaults to `external:owner` for send, list, ack and wait; `--external NAME` overrides it (refused inside a member), with replies at `external:NAME`. Team-only plugin processes must still name `--external NAME` to send, ack or wait.
 
 ## How members talk
 
-- **`msg send`** writes a durable message, then may type its tagged envelope, including mid-turn. Members send to their parent or children; only root members of the tree's root instance also send to outside callers. Outside callers without team context default to `external:owner`; `--external NAME` overrides it. Across a copy's parent edge, members use full `instance/member` addresses; the tree shares one store and message IDs, with the same typed and locked delivery rules across edges. Other cross-instance sends, including between sibling copies, are refused.
+- **`msg send`** writes a durable message, then may type its tagged envelope, including mid-turn. Members send to their parent or children; only root members of the tree's root team also send to outside callers. Outside callers without team context default to `external:owner`; `--external NAME` overrides it. Across a child team's parent edge, members use full `team/member` addresses; the tree shares one store and message IDs, with the same typed and locked delivery rules across edges. Other cross-team sends, including between sibling child teams, are refused.
 - **`interactive: true`** roles are inbox-only even with `--allow-unknown`; false is the default. The setting is frozen per start and invalid on locked or nested team roles. Ordinary recipients explicitly ack when taking responsibility; typing does not ack. Treat a duplicate ID from typed delivery and msg wait as the same work. Locked records require no ack and give no new permissions or inbox recovery.
 - **Stored success is success.** An ordinary send returns 0 once committed, even when input is suppressed or uncertain. Never republish it automatically. Locked postcommit typing failure returns nonzero with its ID; retries may duplicate history and input.
 - **Work is prose.** The lead writes a brief file, sends a message naming it and starts the helper. The helper reads `msg list --full`, acks once it takes responsibility, writes its report atomically and replies naming it with `reply_to` the brief message. The lead verifies the report, diff and checks itself, stops the helper, then checks status shows it stopped before reusing the checkout. One writer per checkout and one piece of work per helper are team rules. Progress and delegation live in pull request descriptions and comments.
@@ -117,7 +117,7 @@ By each brief's existing deadline, check ordinary untyped records' ack/status. S
 
 Decided: brg stores no secrets. A plugin's secrets come from the environment `brg create` or `brg start` runs in (for example under your password manager's `run`), go only to that plugin's 0600 file, and are removed at `brg stop`. `brg secrets <template>` lists the names the plugins need and whether each is set, without values. 0600 keeps other users out, not the members: a member that isn't `locked` could read the file while it exists.
 
-## Roles with several copies
+## Roles with several members
 
 Some roles are needed as work appears, sometimes several at once: three implementers on three tasks:
 
@@ -127,12 +127,12 @@ roles:
     prompt: implementer.md
     parent: lead
     start: false
-    max: 3                             # up to three kept copies, running or stopped
-    worktree: true                     # optional; each copy gets its own git worktree
+    max: 3                             # up to three kept members, running or stopped
+    worktree: true                     # optional; each member gets its own git worktree
 ```
 
-- **Starting a copy.** Each `brg create <instance>/implementer` starts one new copy, with its own suffixed ID. Past `max` it's refused, listing all kept copies, stopped ones included. For `max: 1`, the refusal points to `start`. Each copy gets the same role file and its own name; with `worktree: true`, its own worktree too.
-- **The tree** shows every kept copy with its state and unacked count. A `max > 1` role with no kept members gets one dim line:
+- **Starting a member.** Each `brg create <team>/implementer` starts one new member, with its own suffixed ID. Past `max` it's refused, listing all kept members, stopped ones included. For `max: 1`, the refusal points to `start`. Each member gets the same role file and its own name; with `worktree: true`, its own worktree too.
+- **The tree** shows every kept member with its state and unacked count. A `max > 1` role with no kept members gets one dim line:
 
   ```
   devteam-k3f9
@@ -146,13 +146,13 @@ roles:
      └─ implementer  on demand (none created)
   ```
 
-  Ended copies stay in the tree as stopped members until deleted.
-- **Addressing.** `devteam-k3f9/implementer-x7k2` reaches one copy. A bare `implementer` is always refused where a member is expected, listing the kept members or naming `create` when it has none.
+  Ended members stay in the tree as stopped members until deleted.
+- **Addressing.** `devteam-k3f9/implementer-x7k2` reaches one member. A bare `implementer` is always refused where a member is expected, listing the kept members or naming `create` when it has none.
 - **Messages go to a member.** The lead chooses a full member ID; there is no role queue.
 
-- **Parents.** `parent:` and a plugin's `delivers_to:` require a `max: 1` agent role. A person may manage anything; a member at its latest running start may create, start, stop or delete anything below it along recorded parent edges, including members and copies at every depth. The caller's start is checked in its own instance under the registry lock. Members cannot manage themselves, ancestors, siblings or independent instances, and a copy's roots cannot manage their own copy or each other. Stopped, replaced and incomplete starts are refused. Creating a child requires a kept parent member.
-- **Folders.** Members work in the instance's folder, usually the repository. With `worktree: true`, brg adds each new member or copy its own git worktree from that folder when it issues it (`create`, or a full `start` that gives a `start: true` role a new member), detached at the folder's `HEAD`, or on a new branch with `brg create <instance>/<role> --branch <name>`. Worktrees live beside brg's state folder, at `~/.local/state/borgchart-worktrees/<address>` (with `/` written as `.`); the command that adds one names it, and `status --json` gives it as `worktree`. `delete` removes a clean one, refuses one with uncommitted work or commits on no remote, and with `--force` leaves it as it is. Members without a worktree share the folder; the team's instructions still enforce one writer per checkout.
-- **Taking work and attention** remain team rules. The lead chooses a member, gives it one brief, tracks its reply and checks its deadline. An ended copy remains addressable with unacked counts until deleted; the lead can restart it with `brg start <instance>/<member>`.
+- **Parents.** `parent:` and a plugin's `delivers_to:` require a `max: 1` agent role. A person may manage anything; a member at its latest running start may create, start, stop or delete anything below it along recorded parent edges, including members and members at every depth. The caller's start is checked in its own team under the registry lock. Members cannot manage themselves, ancestors, siblings or independent teams, and a member's roots cannot manage their own member or each other. Stopped, replaced and incomplete starts are refused. Creating a child requires a kept parent member.
+- **Folders.** Members work in the team's folder, usually the repository. With `worktree: true`, brg adds each new member or member its own git worktree from that folder when it issues it (`create`, or a full `start` that gives a `start: true` role a new member), detached at the folder's `HEAD`, or on a new branch with `brg create <team>/<role> --branch <name>`. Worktrees live beside brg's state folder, at `~/.local/state/borgchart-worktrees/<address>` (with `/` written as `.`); the command that adds one names it, and `status --json` gives it as `worktree`. `delete` removes a clean one, refuses one with uncommitted work or commits on no remote, and with `--force` leaves it as it is. Members without a worktree share the folder; the team's instructions still enforce one writer per checkout.
+- **Taking work and attention** remain team rules. The lead chooses a member, gives it one brief, tracks its reply and checks its deadline. An ended member remains addressable with unacked counts until deleted; the lead can restart it with `brg start <team>/<member>`.
 
 ## Teams as members
 
@@ -166,17 +166,17 @@ roles:
   design: {template: dev-design-team, parent: lead, start: false, max: 2}
 ```
 
-- **A team role's member is a copy:** a nested instance of the sub-team, with its own members, notes and state, working in its own worktree (`worktree: true`) or in its parent's folder. Members that start read the copy's current template files.
+- **A team role's member is a child team:** a nested team of the sub-team, with its own members, notes and state, working in its own worktree (`worktree: true`) or in its parent's folder. Members that start read the child team's current template files.
 - **`template:` names another template:** `template: dev-team` resolves through the configured template directories, exactly like `brg create dev-team`. Missing or ambiguous names fail validation. There is no same-installation restriction or nested-path compatibility. Templates can be siblings while runtime working folders and addresses still nest. A template also runs independently with `brg create dev-team` in a checkout.
-- **New copies use the current catalog.** Existing copies retain their recorded source folders. Missing referenced definitions remain tolerable for observing/stopping running instances, but validation, copy creation and a fresh full start refuse them.
-- **Copies are created stopped.** `brg create <instance>/dev` makes the copy and, for `worktree: true`, its worktree; it prints its ID and folder and starts nothing. `brg start <instance>/<copy>` starts the copy's `start: true` roles. A tree's instances may share folders, so the checkout check is between trees.
-- **Addresses nest:** `<instance>/<copy>/<member>`, for example `engineering-h4k2/dev-a7k2/lead-c4nd`. A copy's instance ID is its full path. A target resolves by the longest registered instance prefix, then a member, a role or nothing. A copy's top members (those with no parent role) get their parent's full address in `BORGCHART_PARENT`.
-- **Escalation follows `parent:` one level at a time.** A copy's top members hang under the member of the team role's `parent`. Only the root writes to `external:NAME`; a child team's lead writes to its parent. Siblings don't message each other: their parent carries what one needs from another.
-- **Authority is the whole subtree.** A member, at its latest running start, may create, start, stop or delete anything below it along recorded parent edges, at any depth: its child members, the copies under it, and their members and copies. Never itself, its ancestors, its siblings or their subtrees, so a copy's top member can't stop or delete its own copy. A person may act on anything.
-- **Stopping cascades.** `stop` of a copy or of the root's instance stops members deepest first, marking the copy `stopping` so nothing new is created or started inside it meanwhile; a later `stop` finishes an interrupted one. `start` brings back the copies that were running. `delete` of an instance with kept copies is refused, listing them.
+- **New child teams use the current catalog.** Existing child teams retain their recorded source folders. Missing referenced definitions remain tolerable for observing/stopping running teams, but validation, child team creation and a fresh full start refuse them.
+- **Child teams are created stopped.** `brg create <team>/dev` makes the child team and, for `worktree: true`, its worktree; it prints its ID and folder and starts nothing. `brg start <team>/<child-team>` starts the child team's `start: true` roles. A tree's teams may share folders, so the checkout check is between trees.
+- **Addresses nest:** `<team>/<child-team>/<member>`, for example `engineering-h4k2/dev-a7k2/lead-c4nd`. A child team's ID is its full path. A target resolves by the longest registered team prefix, then a member, a role or nothing. A child team's top members (those with no parent role) get their parent's full address in `BORGCHART_PARENT`.
+- **Escalation follows `parent:` one level at a time.** A child team's top members hang under the member of the team role's `parent`. Only the root writes to `external:NAME`; a child team's lead writes to its parent. Siblings don't message each other: their parent carries what one needs from another.
+- **Authority is the whole subtree.** A member, at its latest running start, may create, start, stop or delete anything below it along recorded parent edges, at any depth: its child members, the child teams under it, and their members and child teams. Never itself, its ancestors, its siblings or their subtrees, so a child team's top member can't stop or delete its own child team. A person may act on anything.
+- **Stopping cascades.** `stop` of a child team or of the root's team stops members deepest first, marking the child team `stopping` so nothing new is created or started inside it meanwhile; a later `stop` finishes an interrupted one. `start` brings back the child teams that were running. `delete` of a team with kept child teams is refused, listing them.
 - **Cycles are refused,** a team containing itself directly or not, at `validate` and again at `create` and a full restart. There's no depth limit. Every runtime tree shares one message store; no bus opt-in is needed.
 - **Check seating before each launch.** The lead lists the launches caused by each `create` or `start` and runs `brg-seat route <vendor> <model>` for each. The [seating plugin](../plugins/seat/README.md) answers `go` or `wait` from subscription quota. Unknown or failed usage is wait, never another vendor or model. The launch commands do not run this check automatically.
-- **One tree store:** messages across copy edges use full member addresses and plain tree-wide reply IDs. Copy deletion preserves history and checks unacked messages to its members under the tree lock; deleted recipients no longer count as pending work.
+- **One tree store:** messages across child team edges use full member addresses and plain tree-wide reply IDs. Child team deletion preserves history and checks unacked messages to its members under the tree lock; deleted recipients no longer count as pending work.
 
 ## What you never see
 
@@ -187,14 +187,14 @@ roles:
   brg: the tree's message store at `devteam-k3f9` uses an earlier format; follow the cutover in docs/bus.md#storage (move the old store aside, leave an empty private `messages/` folder, then start the root)
   ```
 
-  brg refuses to start any instance in that tree, names the root that owns the store, and points to the [cutover steps](bus.md#storage).
+  brg refuses to start any team in that tree, names the root that owns the store, and points to the [cutover steps](bus.md#storage).
 
 - **Configuration changes** reach members when they next start, without stopping their running siblings.
 
 ## Limits
 
 - **Trusted, same-user operation.** Members can reach each other's terminals; nothing isolates them.
-- **A reboot stops every instance.** brg refuses a state folder under `/tmp`, so messages survive it.
+- **A reboot stops every team.** brg refuses a state folder under `/tmp`, so messages survive it.
 - **`locked` members can't use messages yet.**
 
 ## Open

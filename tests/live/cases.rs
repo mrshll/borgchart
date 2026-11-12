@@ -44,7 +44,7 @@ pub struct Team<'w> {
     pub dir: PathBuf,
     /// brg's configuration for this case (`auto_trust`).
     pub config: PathBuf,
-    /// The instance's working folder.
+    /// The team's working folder.
     cwd: PathBuf,
     /// The role; its member's ID is learned once `create` registers it.
     role: String,
@@ -109,7 +109,7 @@ impl<'w> Team<'w> {
         }
     }
 
-    /// The instance and member, from brg's registry once `create` has
+    /// The team and member, from brg's registry once `create` has
     /// registered them (it does so before starting anything).
     fn ids(&self) -> Option<(String, String)> {
         if let Some(ids) = self.ids.get() {
@@ -135,7 +135,7 @@ impl<'w> Team<'w> {
         self.ids.get().cloned()
     }
 
-    /// The instance's ID (empty until it is registered).
+    /// The team's ID (empty until it is registered).
     pub fn instance(&self) -> String {
         self.ids().map(|i| i.0).unwrap_or_default()
     }

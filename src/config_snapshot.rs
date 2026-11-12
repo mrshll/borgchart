@@ -1,11 +1,11 @@
-//! The configuration bytes recorded at an instance's start.
+//! The configuration bytes recorded at a team's start.
 
 use crate::validate::Validated;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
-/// A digest of the instance's configuration inputs, computed from their bytes
+/// A digest of the team's configuration inputs, computed from their bytes
 /// (not from brg's internal types, so a compatible brg upgrade computes the
 /// same digest for the same files).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -21,7 +21,7 @@ pub struct ConfigSnapshot {
     /// folder when this snapshot was taken).
     pub inputs: BTreeMap<String, String>,
     /// Recorded canonical sources, used to observe and manage the declaring
-    /// instance when a referenced template is unavailable in the current catalog.
+    /// team when a referenced template is unavailable in the current catalog.
     #[serde(rename = "template_dirs")]
     pub team_dirs: BTreeMap<String, std::path::PathBuf>,
 }
