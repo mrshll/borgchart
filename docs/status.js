@@ -92,9 +92,6 @@
     { tree: lead("working", "Check the work", done()) },
     { tree: lead("idle", "", done()), say: "The pull request is ready for your review." },
   ];
-  // The still frame for reduced motion: the grown tree mid-run, every
-  // member in it and some at work.
-  const STILL = 6;
   const last = SCENE.length - 1;
 
   // src/runtime.rs status_look, for the states the scene uses.
@@ -252,11 +249,10 @@
   out.previousElementSibling.innerHTML = frame(last, null, new Date());
   talk.previousElementSibling.innerHTML = session(request, request.length, true, last);
 
-  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-    out.innerHTML = frame(STILL, null, new Date());
-    talk.innerHTML = session(request, request.length, true, STILL);
-    return;
-  }
+  // With reduced motion the story still plays, without continuous motion:
+  // the request appears whole, the tree steps on the 2 s beat, and nothing
+  // spins.
+  const calm = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   // When each key lands: an unhurried, slightly uneven pace, with a breath
   // after punctuation. A fixed seed keeps every run the same.
@@ -265,7 +261,7 @@
   const keys = [];
   let at = TYPE_AFTER_MS;
   let prev = "";
-  for (const ch of request) {
+  for (const ch of calm ? "" : request) {
     at += KEY_MS + rand() * 40 + (/[.,]/.test(prev) ? 380 : 0);
     keys.push(at);
     prev = ch;
@@ -292,15 +288,17 @@
       refreshed = new Date();
     }
     const step = read < firstRead ? 0 : Math.min(last, 1 + Math.floor((read - firstRead) / STEP_MS));
-    const html = frame(step, Math.floor(t / SPIN_MS), refreshed);
+    const html = frame(step, calm ? null : Math.floor(t / SPIN_MS), refreshed);
     if (html !== shownTree) out.innerHTML = shownTree = html;
-    let typed = 0;
+    let typed = calm ? request.length : 0;
     while (typed < keys.length && keys[typed] <= t) typed++;
     const said = session(request, typed, t >= sendAt, step);
     if (said !== shownTalk) talk.innerHTML = shownTalk = said;
     // Wake for whatever changes next: a key, the send, or the spinner's
-    // 500 ms tick (which the refreshes and steps fall on too).
-    let next = (Math.floor(t / SPIN_MS) + 1) * SPIN_MS;
+    // 500 ms tick (which the refreshes and steps fall on too); with reduced
+    // motion, the send or the next refresh.
+    const tick = calm ? REFRESH_MS : SPIN_MS;
+    let next = (Math.floor(t / tick) + 1) * tick;
     if (typed < keys.length) next = Math.min(next, keys[typed]);
     else if (t < sendAt) next = Math.min(next, sendAt);
     setTimeout(draw, Math.max(10, next - t));
