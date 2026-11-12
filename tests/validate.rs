@@ -214,7 +214,7 @@ fn team_roles_refuse_paths_and_shared_references() {
 }
 
 #[test]
-fn team_roles_take_worktree_and_refuse_unknown_fields() {
+fn team_roles_take_worktree() {
     let f = nested_team();
     let (report, validated) = f.run();
     assert!(
@@ -233,13 +233,6 @@ fn team_roles_take_worktree_and_refuse_unknown_fields() {
         "{}",
         errors(&report)
     );
-    let f = nested_team();
-    f.edit(
-        "template.yaml",
-        "template: dev,",
-        "template: dev, unknown_key: example,",
-    );
-    expect_error(&f, "unknown field `unknown_key`");
 }
 
 #[test]

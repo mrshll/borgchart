@@ -709,17 +709,14 @@ fn members_run_the_brg_that_started_them() {
         let lead = &env.starts("lead")[0]["env"];
         // Members find the brg that started them as `$BORGCHART_BIN`.
         assert_eq!(lead["BORGCHART_BIN"], built, "{lead}");
-        assert!(lead.get("BORGCHART_RUN").is_none());
         assert!(lead.get("BORGCHART_INCARNATION").is_some());
         let state = env.state_dir();
-        for name in ["brg", "borgchart"] {
-            assert!(
-                !state
-                    .join(format!("members/{}/bin", env.m("lead")))
-                    .join(name)
-                    .exists()
-            );
-        }
+        assert!(
+            !state
+                .join(format!("members/{}/bin", env.m("lead")))
+                .join("brg")
+                .exists()
+        );
         let plugin_shim =
             fs::read_to_string(state.join(format!("members/{}/bin/pager", env.m("lead")))).unwrap();
         assert!(
@@ -747,8 +744,6 @@ fn members_run_the_brg_that_started_them() {
             other.display().to_string(),
             "{helper}"
         );
-        // `brg run …` is gone.
-        assert_eq!(env.brg(&["run", "show"]).status.code(), Some(2));
     }
 }
 

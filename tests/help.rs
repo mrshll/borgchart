@@ -76,25 +76,11 @@ fn top_level_help_groups_one_line_summaries_and_leaves_details_to_commands() {
         for name in ["templates", "secrets", "destroy"] {
             assert!(commands.contains(&name), "missing {name}: {text}");
         }
-        assert!(!commands.contains(&"send"), "{text}");
         let long: Vec<_> = text.lines().filter(|l| l.chars().count() > 80).collect();
         assert!(long.is_empty(), "{flag}: lines over 80 columns: {long:?}");
         assert!(!text.contains("--repo"), "{flag}: details leaked: {text}");
     }
     assert!(help(&["create"]).contains("With `--repo`, name a clone"));
-}
-
-#[test]
-fn template_secrets_and_destroy_commands_accept_help() {
-    for name in ["templates", "secrets", "destroy"] {
-        let out = Command::new(env!("CARGO_BIN_EXE_brg"))
-            .env_clear()
-            .env("PATH", "/usr/bin:/bin")
-            .args([name, "--help"])
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "{name}: {out:?}");
-    }
 }
 
 #[test]

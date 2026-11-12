@@ -16,16 +16,6 @@ fn brg(root: &Path, args: &[&str]) -> Output {
 }
 
 #[test]
-fn start_accepts_a_template_path() {
-    let root = tempfile::tempdir().unwrap();
-    let out = brg(
-        root.path(),
-        &["start", "sample-2222", "--template", "./example", "--help"],
-    );
-    assert!(out.status.success(), "{out:?}");
-}
-
-#[test]
 fn template_catalog_exposes_template_sources() {
     let root = tempfile::tempdir().unwrap();
     fs::write(

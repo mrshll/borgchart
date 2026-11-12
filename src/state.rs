@@ -234,9 +234,7 @@ pub fn read_meta(state: &StateDir) -> Result<Option<Meta>, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
     };
-    let value: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-    serde_json::from_value(value)
+    serde_json::from_str(&text)
         .map(Some)
         .map_err(|e| format!("cannot read {}: {e}", path.display()))
 }

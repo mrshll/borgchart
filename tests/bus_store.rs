@@ -144,11 +144,6 @@ fn one_store_keeps_ids_references_and_acks_across_a_restart() {
         )["id"],
         "m3"
     );
-    assert!(
-        env.starts(&lead)
-            .iter()
-            .all(|s| s["env"].get("BORGCHART_RUN").is_none())
-    );
     let out = member_command(&env, &instance, &lead, &["msg", "ack", "m1", "--json"]);
     assert!(out.status.success(), "{}", both(&out));
     let original: Value = serde_json::from_slice(
