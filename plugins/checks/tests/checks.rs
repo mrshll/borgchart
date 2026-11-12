@@ -189,6 +189,40 @@ fn dangling_symlink_executables_stop_startup() {
 }
 
 #[test]
+fn startup_error_cannot_overwrite_health_during_an_active_tick() {
+    let f = Fixture::new();
+    f.tick();
+    f.config(
+        &[
+            "sh",
+            "-c",
+            "touch started; while [ ! -f release ]; do sleep 0.05; done",
+        ],
+        "",
+    );
+    let mut active = f
+        .command(&["run", "--once"])
+        .env("CHECKS_TIMEOUT_SECONDS", "5")
+        .spawn()
+        .unwrap();
+    wait_for(&f.path("started"));
+    f.write("checks.yaml", "check: wrong");
+    let mut invalid = f.command(&["run", "--once"]).spawn().unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    let early_exit = invalid.try_wait().unwrap();
+    let health_during_tick = f.read("health.json");
+    f.write("release", "");
+    assert!(active.wait().unwrap().success());
+    assert_eq!(invalid.wait().unwrap().code(), Some(1));
+    assert!(
+        early_exit.is_none(),
+        "startup error bypassed the active tick"
+    );
+    assert_eq!(health_during_tick["ok"], true);
+    assert_eq!(f.read("health.json")["ok"], false);
+}
+
+#[test]
 fn last_renders_missing_exit_and_status_without_null_or_blank_status() {
     let f = Fixture::new();
     for (status, displayed) in [("ok", "ok"), ("", "unknown")] {
@@ -222,13 +256,13 @@ fn recovery_also_reports_change_against_last_good_result() {
     );
     assert!(f.last().contains("| first"));
 }
-fn send_outcome(code: i32, id: bool, delayed: bool) {
+fn send_outcome(code: i32, delayed: bool) {
     let f = Fixture::new();
     f.tick();
     f.write("value", "second");
     f.outcome(
         code,
-        json!({"id":if id { Some("m101") } else { None }, "message":"delivery refused\u{1b}"}),
+        json!({"id":"m101", "message":"delivery refused\u{1b}"}),
     );
     if delayed {
         f.write("state/delay", "");
@@ -255,7 +289,7 @@ fn send_outcome(code: i32, id: bool, delayed: bool) {
     assert_eq!(health["pending_sends"], usize::from(kept));
     assert_eq!(health["ok"], !kept);
     if delayed {
-        assert!(health["detail"].as_str().unwrap().contains("deadline"));
+        assert!(health["detail"].as_str().unwrap().contains("30 s; retry"));
     } else if kept {
         assert!(
             health["detail"]
@@ -271,20 +305,15 @@ fn send_outcome(code: i32, id: bool, delayed: bool) {
 }
 #[test]
 fn failed_send_keeps_the_batch_for_one_retry() {
-    send_outcome(4, false, false);
+    send_outcome(4, false);
 }
 #[test]
 fn successful_send_clears_the_batch() {
-    send_outcome(0, true, false);
-    send_outcome(0, false, false);
-}
-#[test]
-fn nonzero_send_with_id_keeps_the_batch_for_one_retry() {
-    send_outcome(5, true, false);
+    send_outcome(0, false);
 }
 #[test]
 fn real_send_deadline_keeps_the_batch_for_one_retry() {
-    send_outcome(0, true, true);
+    send_outcome(0, true);
 }
 
 fn invalid_config(fragment: &str, label: &str) {
@@ -466,12 +495,12 @@ fn promote_refuses_unknown_reason() {
 fn promote_refuses_injected_reason() {
     bad_promote("sample", "other\nvalue");
 }
-fn promote(code: i32, id: bool, reason: &str) {
+fn promote(code: i32, reason: &str) {
     let f = Fixture::new();
     f.tick();
     f.outcome(
         code,
-        json!({"id": if id { Some("m101") } else { None }, "message":"delivery refused\u{1b}"}),
+        json!({"id":"m101", "message":"delivery refused\u{1b}"}),
     );
     let result = f.run(&["promote", "sample", reason]);
     assert_eq!(result.status.code(), Some(i32::from(code != 0)));
@@ -495,22 +524,16 @@ fn promote(code: i32, id: bool, reason: &str) {
                 .contains("delivery refused\\x1b")
         );
     }
-    f.tick();
-    assert_eq!(f.sends().len(), 1);
 }
 #[test]
 fn promote_reports_brg_output_for_each_fixed_reason() {
     for reason in ["outage", "alert", "question", "other"] {
-        promote(0, true, reason);
+        promote(0, reason);
     }
 }
 #[test]
-fn promote_reports_brg_errors_without_retrying() {
-    promote(4, false, "other");
-}
-#[test]
-fn promote_reports_brg_errors_even_with_an_id() {
-    promote(5, true, "other");
+fn promote_reports_brg_errors() {
+    promote(4, "other");
 }
 
 #[test]

@@ -22,30 +22,25 @@ pub fn notice(batch: &[String]) -> String {
         batch.join("\n")
     )
 }
-fn deliver(state: &mut Snapshot, store: &plugin::State) -> Result<String, String> {
+fn deliver(state: &mut Snapshot) -> String {
     if state.pending.is_empty() {
-        return Ok(String::new());
+        return String::new();
     }
     let target = std::env::var("BORGCHART_DELIVER_TO").unwrap_or_default();
     if !config::matches("[a-z][a-z0-9_-]{0,79}(?:/[a-z][a-z0-9_-]{0,79})*", &target) {
-        return Ok("set BORGCHART_DELIVER_TO to the intake member's ID".into());
+        return "set BORGCHART_DELIVER_TO to the intake member's ID".into();
     }
     let batch = &state.pending[..state.pending.len().min(6)];
-    Ok(
-        match plugin::send("checks", &target, &notice(batch), None) {
-            Ok(_) => {
-                state.pending.drain(..batch.len());
-                state
-                    .save(store)
-                    .map_err(|_| "cannot save plugin state; check permissions")?;
-                String::new()
-            }
-            Err(message) => format!(
-                "delivery failed: {}; batch kept for the next tick",
-                one_line(&message)
-            ),
-        },
-    )
+    match plugin::send("checks", &target, &notice(batch), None) {
+        Ok(_) => {
+            state.pending.drain(..batch.len());
+            String::new()
+        }
+        Err(message) => format!(
+            "delivery failed: {}; batch kept for the next tick",
+            one_line(&message)
+        ),
+    }
 }
 fn collect(check: &Check, state: &mut Snapshot, timeout: Duration) {
     let last_run = borgchart::bus::time::utc_now();
@@ -115,6 +110,7 @@ pub fn run(store: &plugin::State, once: bool) -> Result<(), String> {
         Ok::<_, String>((checks, timeout))
     };
     let (checks, timeout) = setup().inspect_err(|e| {
+        let _lock = store.lock();
         let _ = Snapshot::read(store).health(store, &one_line(e));
     })?;
     let names: BTreeSet<_> = checks.iter().map(|c| c.name.clone()).collect();
@@ -139,10 +135,7 @@ pub fn run(store: &plugin::State, once: bool) -> Result<(), String> {
                         .map_err(|_| "cannot save plugin state; check permissions")?;
                 }
             }
-            state
-                .save(store)
-                .map_err(|_| "cannot save plugin state; check permissions")?;
-            let detail = deliver(&mut state, store)?;
+            let detail = deliver(&mut state);
             state
                 .save(store)
                 .and_then(|_| state.health(store, &detail))
