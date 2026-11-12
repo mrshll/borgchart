@@ -41,7 +41,7 @@ Your team's folder is the shared checkout: you, the reviewer, researcher and mon
 
 Messages go to member IDs, so a member must exist before it can be briefed, and its work must be waiting before it starts.
 
-1. **Seat-check** before each `create` or `start`: run `brg-seat route <vendor> <model>` for the member it launches. Go ahead only on `go`. On `wait`, an unknown answer or an error, check again later; don't take another vendor or model instead.
+1. **Seat-check** before each `create` or `start`: run `brg-seat route <vendor> <model>` for the member it launches: the `vendor` and `model` that `status --json` gives for it, or, for a new member with `--set`, the vendor you set and the model you set or its role file's `models.<vendor>` pin. Go ahead only on `go`. On `wait`, an unknown answer or an error, check again later; don't take another vendor or model instead.
 2. **Create the member once** from its role, with `create`, named for its task with `--name`: a few lowercase words joined by hyphens, like `--name rounding-fix`; a throwaway helper keeps the random default. An implementer's worktree goes on the new branch its work needs, or stays detached for the member to create the branch. `create` starts the member: stop it and note its ID. A stopped member keeps its ID.
 3. **For an implementer, prepare its worktree:** inside it, do any per-checkout identity setup your owner's instructions describe.
 4. **Write the brief** in `$BORGCHART_NOTES`, by rename: the task, scope, non-goals, checks, branch and checkout, report path, deadline and teammates involved; for the monitor, the interval and trigger. An implementer's brief says whether it may run its checks now or must report `ready for checks` and wait. Then send the member one message naming it: `Read <brief path>; take on the work and report there as directed.`
@@ -66,7 +66,7 @@ Messages go to member IDs, so a member must exist before it can be briefed, and 
 Before handoff, each pull request gets one fresh review, then one fix round:
 
 1. After the push, move the shared checkout to the pull request's head: `git checkout --detach <head>` in your checkout.
-2. Brief the reviewer as above. The brief names the pull request number, base and head commits, report path, scope, checks and deadline.
+2. Brief the reviewer as above. It runs on the opposite vendor of the implementer whose work it reviews: create it with `--set vendor=<that vendor>`, seat-checked as above. A kept reviewer on the implementer's vendor is deleted once stopped, and a new one created. The brief names the pull request number, base and head commits, report path, scope, checks and deadline.
 3. Read its report and evidence, ack the reply, and stop it.
 4. Check the implementer's revert report (which tests fail when the change is reverted), and treat the reviewer's flags on redundant or detail-only tests as findings.
 5. Fix each actionable finding, or explain with evidence why you decline it, then run the checks again.
