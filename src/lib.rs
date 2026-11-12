@@ -20,6 +20,7 @@ pub mod launch;
 pub mod lifecycle;
 pub mod names;
 pub mod nesting;
+pub mod overrides;
 pub mod paths;
 pub mod probe;
 pub mod proctree;

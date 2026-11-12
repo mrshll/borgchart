@@ -119,6 +119,7 @@ You read each new message in the channel and decide whether it needs the lead.
 - **`models`** maps a vendor to `"<model>"` or `"<model> <effort>"`.
   - The effort is one of `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.
   - Only the member's own vendor needs an entry; without one, the vendor's default model is used (with a warning).
+  - Every supplied vendor pin is checked, including the other vendor's pin.
   - Model names are passed to the vendor unchanged.
 - **The body** is the member's standing instruction, sent as its opening prompt.
 - **Includes:** a line that is exactly `{{includes/<stem>}}` is replaced by `<includes>/<stem>.md`. Includes are one level deep: an included file can't include another.
