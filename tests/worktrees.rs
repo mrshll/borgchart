@@ -2,13 +2,13 @@
 #![cfg(feature = "test-support")]
 
 mod common;
-mod instance_env;
+mod team_env;
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::process::Output;
 
-use instance_env::*;
+use team_env::*;
 
 impl Env {
     fn role_extra(&self, role: &str, lines: &str) {
@@ -79,7 +79,7 @@ fn copies_env(max: usize) -> Env {
 }
 
 #[test]
-fn copies_get_their_own_worktrees_and_keep_slots_without_filling_max() {
+fn members_get_their_own_worktrees_and_keep_slots_without_filling_max() {
     let env = copies_env(2);
     let inst = env.create("oncall", "work/a");
     assert!(env.copies(&inst).is_empty());
@@ -151,7 +151,7 @@ fn copies_get_their_own_worktrees_and_keep_slots_without_filling_max() {
 }
 
 #[test]
-fn copies_without_a_worktree_share_the_instance_folder() {
+fn members_without_a_worktree_share_the_team_folder() {
     let env = Env::new();
     env.role_extra("helper", "    max: 2\n");
     env.ok(&["validate", "oncall"]);
@@ -172,7 +172,7 @@ fn copies_without_a_worktree_share_the_instance_folder() {
 }
 
 #[test]
-fn a_worktree_copy_needs_a_git_repository() {
+fn a_worktree_member_needs_a_git_repository() {
     let env = Env::new();
     env.role_extra("helper", "    max: 2\n    worktree: true\n");
     let inst = env.create("oncall", "work/a");
@@ -242,7 +242,7 @@ fn concurrent_creates_cannot_take_the_same_last_slot() {
 }
 
 #[test]
-fn a_copy_whose_worktree_is_gone_does_not_start() {
+fn a_member_whose_worktree_is_gone_does_not_start() {
     let env = copies_env(2);
     let inst = env.create("oncall", "work/a");
     let first = env.copy(&inst);
@@ -295,7 +295,7 @@ fn create_and_a_full_start_name_the_worktrees_they_add() {
 }
 
 #[test]
-fn refused_replacement_starts_do_not_leave_unkept_copy_folders() {
+fn refused_replacement_starts_do_not_leave_unkept_member_folders() {
     let env = copies_env(2);
     let path = env.path("templates/oncall/template.yaml");
     fs::write(
@@ -448,7 +448,7 @@ fn only_the_latest_parent_start_can_manage_children() {
 }
 
 #[test]
-fn start_true_copies_keep_members_when_max_is_lowered() {
+fn start_true_roles_keep_members_when_max_is_lowered() {
     let env = copies_env(3);
     let path = env.path("templates/oncall/template.yaml");
     let text = fs::read_to_string(&path)
@@ -820,7 +820,7 @@ fn worktree_deletion_preserves_root_repository_git_errors() {
 }
 
 #[test]
-fn repo_copies_fetch_the_default_without_changing_dirty_clones_and_delete_without_force() {
+fn repo_child_teams_fetch_the_default_without_changing_dirty_clones_and_delete_without_force() {
     for default in ["main", "master"] {
         let env = repositories_env(default);
         let widgets = env.path("work/a/widgets");
@@ -893,7 +893,7 @@ fn repo_selection_uses_the_renamed_remote_default_instead_of_stale_origin_head()
 }
 
 #[test]
-fn derived_members_inherit_the_copy_commit_even_after_the_remote_moves() {
+fn derived_members_inherit_the_child_team_commit_even_after_the_remote_moves() {
     let env = repositories_env("main");
     let inst = env.create("oncall", "work/a");
     let copy = repo_copy(&env, &inst, "widgets", Some("topic"));

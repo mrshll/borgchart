@@ -2,15 +2,15 @@
 #![cfg(feature = "test-support")]
 
 mod common;
-mod instance_env;
+mod team_env;
 
-use instance_env::*;
 use serde_json::{Value, json};
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
+use team_env::*;
 
 struct Tree {
     env: Env,
@@ -208,7 +208,7 @@ fn parent_edge_round_trip_preserves_ids_and_plain_reply_references() {
 }
 
 #[test]
-fn concurrent_publishers_in_two_instances_share_contiguous_ids() {
+fn concurrent_publishers_in_two_teams_share_contiguous_ids() {
     let tree = Tree::new();
     let mut processes = Vec::new();
     for child in [false, true, false, true, false, true] {
@@ -364,7 +364,7 @@ fn routing_allows_parent_edges_but_refuses_siblings_cousins_and_deleted_ancestor
 
 // Coverage only: publish-time routing already enforces the root boundary.
 #[test]
-fn a_copy_non_root_cannot_bypass_its_root_in_either_direction() {
+fn a_child_team_non_root_cannot_bypass_its_root_in_either_direction() {
     let tree = Tree::new();
     tree.env.ok(&["create", &format!("{}/helper", tree.child)]);
     let helper = tree.env.member(&tree.child, "helper");
@@ -510,7 +510,7 @@ fn a_child_publish_wakes_a_parent_already_waiting() {
 }
 
 #[test]
-fn stopped_and_restarted_copy_sessions_cannot_send_ack_or_wait() {
+fn stopped_and_restarted_child_team_sessions_cannot_send_ack_or_wait() {
     let tree = Tree::new();
     let sent = tree.publish(false, "Child task", &[]);
     let id = sent["id"].as_str().unwrap();
@@ -543,7 +543,7 @@ fn stopped_and_restarted_copy_sessions_cannot_send_ack_or_wait() {
 }
 
 #[test]
-fn a_copy_restart_fences_a_publish_waiting_for_the_tree_lock() {
+fn a_child_team_restart_fences_a_publish_waiting_for_the_tree_lock() {
     let tree = Tree::new();
     let gate = tree.env.path("publish-pause");
     let publishing = tree
@@ -574,7 +574,7 @@ fn a_copy_restart_fences_a_publish_waiting_for_the_tree_lock() {
 }
 
 #[test]
-fn stopping_a_copy_waits_for_a_publication_already_authorized_in_the_tree() {
+fn stopping_a_child_team_waits_for_a_publication_already_authorized_in_the_tree() {
     let tree = Tree::new();
     let gate = tree.env.path("commit-pause");
     let publishing = tree
@@ -620,7 +620,7 @@ fn stopping_a_copy_waits_for_a_publication_already_authorized_in_the_tree() {
 }
 
 #[test]
-fn deleting_a_copy_preserves_history_without_leaving_pending_work() {
+fn deleting_a_child_team_preserves_history_without_leaving_pending_work() {
     let tree = Tree::new();
     let sent = tree.publish(false, "Child team task", &[]);
     let id = sent["id"].as_str().unwrap();
@@ -649,7 +649,7 @@ fn deleting_a_copy_preserves_history_without_leaving_pending_work() {
 }
 
 #[test]
-fn copy_delete_and_publish_cannot_orphan_a_message() {
+fn child_team_delete_and_publish_cannot_orphan_a_message() {
     for delete_holds_lock in [false, true] {
         let tree = Tree::new();
         tree.env.ok(&["stop", &tree.child]);
@@ -716,7 +716,7 @@ fn copy_delete_and_publish_cannot_orphan_a_message() {
 }
 
 #[test]
-fn a_copy_cannot_initialize_or_ignore_a_damaged_tree_store() {
+fn a_child_team_cannot_initialize_or_ignore_a_damaged_tree_store() {
     for damage in ["missing", "record"] {
         let tree = Tree::new();
         tree.publish(false, "Durable task", &[]);

@@ -2,7 +2,7 @@
 #![cfg(feature = "test-support")]
 
 mod common;
-mod instance_env;
+mod team_env;
 
 use std::fs;
 use std::io::Write;
@@ -10,8 +10,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-use instance_env::*;
 use serde_json::{Value, json};
+use team_env::*;
 
 fn publish(env: &Env, instance: &str, draft: &Value) -> Output {
     let target = format!("{instance}/{}", draft["to"].as_str().unwrap());
@@ -318,7 +318,7 @@ fn wait_errors_and_usage_errors_obey_the_minimum() {
 }
 
 #[test]
-fn send_refuses_instance_instead_of_ignoring_it() {
+fn send_refuses_an_unknown_flag() {
     let env = Env::new();
     for args in [
         vec!["msg", "--team", "other", "send", "x/y", "hello"],

@@ -6,11 +6,11 @@
 
 mod common;
 
-mod instance_env;
+mod team_env;
 
 use std::fs;
 
-use instance_env::*;
+use team_env::*;
 
 /// The test team with `helper` and `dev`, a team role whose child teams use
 /// the `dev` template, each in its own worktree.
@@ -228,7 +228,7 @@ fn cleanup_removes_leftover_state_and_nothing_else_in_the_state_folder() {
 }
 
 #[test]
-fn cleanup_of_an_instance_touches_nothing_outside_it() {
+fn cleanup_of_a_team_touches_nothing_outside_it() {
     let env = worktrees_env();
     let a = env.create("oncall", "work/a");
     let b = env.create("oncall", "work/b");
@@ -244,7 +244,7 @@ fn cleanup_of_an_instance_touches_nothing_outside_it() {
 }
 
 #[test]
-fn cleanup_keeps_a_worktree_another_instance_works_in() {
+fn cleanup_keeps_a_worktree_another_team_works_in() {
     let env = worktrees_env();
     let a = env.create("oncall", "work/a");
     let (_, leaf) = left_clean(&env, &a);

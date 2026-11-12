@@ -181,7 +181,7 @@ fn the_readme_configuration_validates_cleanly() {
 /// The department validates from its folder, with the guide's
 /// configuration, cleanly.
 #[test]
-fn the_department_validates_cleanly() {
+fn the_parent_template_validates_cleanly() {
     let dir = tempfile::tempdir().unwrap();
     let config = setup(dir.path(), &readme_configs()[0]);
     let out = validate(dir.path(), &config, "engineering");
@@ -895,7 +895,7 @@ mod round {
     /// lead checks seating for each designer, starts the child team, exchanges
     /// files in the child team's notes folder, then stops and deletes the child team.
     #[test]
-    fn the_lead_seats_the_design_panel_as_a_nested_copy() {
+    fn the_lead_seats_the_design_panel_as_a_nested_child_team() {
         let team = new_team("design");
         let repo = team.path("work");
         let baseline = git_in(&repo, &["rev-parse", "HEAD"]);
@@ -1153,7 +1153,7 @@ mod round {
     /// Every launched member gets the common rules; only the dev lead gets
     /// the dev-only ones.
     #[test]
-    fn the_department_lead_starts_a_dev_copy_with_its_documented_steps() {
+    fn the_parent_team_lead_starts_a_dev_child_team_with_its_documented_steps() {
         let team = new_team("dept");
         let checkout = team.path("work");
 

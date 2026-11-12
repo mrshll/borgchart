@@ -512,7 +512,7 @@ fn status_prints_the_same_tree_with_live_states() {
 }
 
 #[test]
-fn status_without_instances_says_so() {
+fn status_without_teams_says_so() {
     let env = Env::new(true);
     let out = env.ok(&["status"]);
     assert!(
@@ -1218,7 +1218,7 @@ fn boot_evidence_is_conservative_when_the_server_is_unreachable() {
 }
 
 #[test]
-fn an_old_boot_releases_the_instance_before_an_explicit_stop() {
+fn an_old_boot_releases_the_team_before_an_explicit_stop() {
     let env = Env::new(true);
     env.up();
     let file = env.incarnation_file("lead");

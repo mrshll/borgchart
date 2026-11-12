@@ -54,7 +54,7 @@ fn nested_plugin_errors_highlight_the_state_instead_of_the_detail() {
 }
 
 #[test]
-fn team_diamonds_identify_running_copies_without_hiding_copy_failures() {
+fn team_diamonds_identify_running_child_teams_without_hiding_child_team_failures() {
     let mut rows = [
         member("lead", None),
         StatusRow {

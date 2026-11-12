@@ -1,12 +1,12 @@
-//! A department's child teams are prepared before launch, even at depth three.
+//! A parent team's child teams are prepared before launch, even at depth three.
 #![cfg(feature = "test-support")]
 
 mod common;
-mod instance_env;
+mod team_env;
 
 use std::fs;
 
-use instance_env::*;
+use team_env::*;
 
 fn create_copy(env: &Env, parent: &str, role: &str) -> (String, std::path::PathBuf) {
     let before = env.registry();
@@ -49,7 +49,7 @@ fn department() -> Env {
 }
 
 #[test]
-fn nested_addresses_start_and_stop_only_the_named_copy_or_member() {
+fn nested_addresses_start_and_stop_only_the_named_child_team_or_member() {
     let env = department();
     env.write(
         "templates/dev/template.yaml",
@@ -166,7 +166,7 @@ fn invalid_address_segments_are_refused_before_reading_the_registry() {
 }
 
 #[test]
-fn underscore_team_names_create_addressable_instances() {
+fn underscore_team_names_create_addressable_teams() {
     let env = Env::new();
     env.team("templates/_scratch");
     let out = env.ok(&[
@@ -185,7 +185,7 @@ fn underscore_team_names_create_addressable_instances() {
 }
 
 #[test]
-fn missing_nested_copy_reports_kept_alternatives() {
+fn missing_nested_child_team_reports_kept_alternatives() {
     let env = department();
     let dept = env.create("oncall", "work/a");
     let (copy, _) = create_copy(&env, &dept, "dev");
@@ -210,7 +210,7 @@ fn missing_nested_copy_reports_kept_alternatives() {
 }
 
 #[test]
-fn status_nests_copies_once_with_full_paths_and_states() {
+fn status_nests_child_teams_once_with_full_paths_and_states() {
     let env = department();
     let dev_team = env.path("templates/dev/template.yaml");
     fs::write(
@@ -322,7 +322,7 @@ fn status_nests_copies_once_with_full_paths_and_states() {
 }
 
 #[test]
-fn nested_status_screens_keep_healthy_members_visible_when_a_copy_becomes_unreadable() {
+fn nested_status_screens_keep_healthy_members_visible_when_a_child_team_becomes_unreadable() {
     let env = department();
     let dept = env.create("oncall", "work/a");
     let (copy, folder) = create_copy(&env, &dept, "dev");
@@ -494,7 +494,7 @@ fn nested_status_screens_keep_healthy_members_visible_when_a_copy_becomes_unread
 }
 
 #[test]
-fn team_copies_share_the_tree_store_and_keep_separate_slots_until_deleted() {
+fn child_teams_share_the_tree_store_and_keep_separate_slots_until_deleted() {
     let env = department();
     let dept = env.create("oncall", "work/a");
     let (first, first_folder) = create_copy(&env, &dept, "dev");
@@ -570,7 +570,7 @@ fn team_copies_share_the_tree_store_and_keep_separate_slots_until_deleted() {
 }
 
 #[test]
-fn depth_three_copies_wait_for_preparation_and_cascade_before_parent_deletion() {
+fn depth_three_child_teams_wait_for_preparation_and_cascade_before_parent_deletion() {
     let env = Env::new();
     env.write(
         "templates/oncall/template.yaml",
@@ -690,7 +690,7 @@ fn depth_three_copies_wait_for_preparation_and_cascade_before_parent_deletion() 
 }
 
 #[test]
-fn worktrees_in_a_copy_never_follow_the_copys_rewritten_git_file() {
+fn worktrees_in_a_child_team_never_follow_the_child_teams_rewritten_git_file() {
     // Catches: brg running git through a child team's member-writable `.git`
     // file when it adds or removes worktrees inside that child team.
     let env = department();

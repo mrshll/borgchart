@@ -9,14 +9,14 @@
 
 mod common;
 
-mod instance_env;
+mod team_env;
 
 use std::fs;
 use std::process::Command;
 use std::time::Duration;
 
-use instance_env::*;
 use serde_json::{Value, json};
+use team_env::*;
 
 #[test]
 fn starting_repairs_an_unresolved_parent_so_recursive_stop_reaches_the_child() {
@@ -334,7 +334,7 @@ fn role_addresses_never_choose_a_member_and_status_tracks_each_start() {
 // --- 1. IDs ---
 
 #[test]
-fn create_twice_makes_two_instances_with_suffixed_members() {
+fn create_twice_makes_two_teams_with_suffixed_members() {
     let env = Env::new();
     let a = env.create("oncall", "work/a");
     let b = env.create("oncall", "work/b");
@@ -378,7 +378,7 @@ fn create_twice_makes_two_instances_with_suffixed_members() {
 }
 
 #[test]
-fn a_deleted_instances_suffix_is_never_issued_again() {
+fn a_deleted_teams_suffix_is_never_issued_again() {
     let env = Env::new();
     let seeded = |args: &[&str]| {
         let out = env
@@ -541,7 +541,7 @@ fn full_start_leaves_a_stopped_member_with_unacked_messages_stopped() {
 }
 
 #[test]
-fn stop_on_a_stopped_instance_or_member_is_a_no_op() {
+fn stop_on_a_stopped_team_or_member_is_a_no_op() {
     let env = Env::new();
     let inst = env.create("oncall", "work/a");
     let lead = env.member(&inst, "lead");
@@ -609,7 +609,7 @@ fn delete_needs_a_stop_and_force_for_unacked_messages_and_keeps_the_folder() {
 // --- 8. Addressing ---
 
 #[test]
-fn addresses_name_the_instance_in_full_outside_a_member() {
+fn addresses_name_the_team_in_full_outside_a_member() {
     let env = Env::new();
     let inst = env.create("oncall", "work/a");
     let lead = env.member(&inst, "lead");
@@ -718,7 +718,7 @@ impl Drop for Watch {
 }
 
 #[test]
-fn status_w_with_no_instance_follows_every_instance() {
+fn status_w_with_no_team_follows_every_team() {
     let env = Env::new();
     let mut watch = Watch::start(&env, None);
     env.wait_for("a screen saying there are none", || {
@@ -745,7 +745,7 @@ fn status_w_with_no_instance_follows_every_instance() {
 }
 
 #[test]
-fn status_w_with_an_instance_shows_only_that_instance() {
+fn status_w_with_a_team_shows_only_that_team() {
     let env = Env::new();
     let a = env.create("oncall", "work/a");
     let b = env.create("oncall", "work/b");

@@ -2,13 +2,13 @@
 #![cfg(feature = "test-support")]
 
 mod common;
-mod instance_env;
+mod team_env;
 
 use std::collections::BTreeMap;
 use std::fs;
 
-use instance_env::*;
 use serde_json::Value;
+use team_env::*;
 
 #[test]
 fn member_team_environment_selects_messages() {

@@ -262,7 +262,7 @@ fn status_i_attaches_detaches_and_quits() {
 }
 
 #[test]
-fn bare_status_i_shows_every_instance_and_attaches_in_the_selected_one() {
+fn bare_status_i_shows_every_team_and_attaches_in_the_selected_one() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     let write = |rel: &str, text: &str| {
@@ -388,7 +388,7 @@ fn bare_status_i_shows_every_instance_and_attaches_in_the_selected_one() {
 }
 
 #[test]
-fn bare_status_i_with_no_instances_says_so_until_one_is_created() {
+fn bare_status_i_with_no_teams_says_so_until_one_is_created() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     let write = |rel: &str, text: &str| {

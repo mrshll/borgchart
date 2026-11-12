@@ -2,13 +2,13 @@
 #![cfg(feature = "test-support")]
 
 mod common;
-mod instance_env;
+mod team_env;
 
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
-use instance_env::*;
+use team_env::*;
 
 fn department() -> Env {
     let env = Env::new();
@@ -83,7 +83,7 @@ fn member_refused(env: &Env, inst: &str, role: &str, args: &[&str]) {
 }
 
 #[test]
-fn members_cannot_create_independent_bus_instances() {
+fn members_cannot_create_independent_bus_teams() {
     let env = department();
     let dept = env.create("oncall", "work/a");
     let before = env.registry();
@@ -120,7 +120,7 @@ fn members_cannot_create_independent_teams_without_bus_settings() {
 }
 
 #[test]
-fn people_can_create_independent_bus_instances() {
+fn people_can_create_independent_bus_teams() {
     let env = department();
     let dept = env.create("oncall", "work/a");
     let other = env.create("oncall", "work/b");
@@ -173,7 +173,7 @@ fn prepared_copy(env: &Env, parent: &str, role: &str) -> String {
 }
 
 #[test]
-fn ancestors_manage_copies_and_members_at_every_depth() {
+fn ancestors_manage_child_teams_and_members_at_every_depth() {
     let env = department();
     let dept = env.create("oncall", "work/a");
     let dev = prepared_copy(&env, &dept, "dev");
@@ -386,7 +386,7 @@ fn stopped_replaced_and_partial_starts_cannot_manage_subtrees() {
 }
 
 #[test]
-fn recorded_copy_parents_survive_live_team_edits() {
+fn recorded_child_team_parents_survive_live_team_edits() {
     let env = department();
     let dept = env.create("oncall", "work/a");
     env.ok(&["create", &format!("{dept}/scout")]);
@@ -413,7 +413,7 @@ fn recorded_copy_parents_survive_live_team_edits() {
 }
 
 #[test]
-fn ancestors_manage_grandchildren_within_one_instance() {
+fn ancestors_manage_grandchildren_within_one_team() {
     let env = department();
     let team = env.path("templates/oncall/template.yaml");
     let original = fs::read_to_string(&team).unwrap();
@@ -491,7 +491,7 @@ fn parent_restart_racing_agent_create_refuses_the_old_start() {
 }
 
 #[test]
-fn parent_restart_racing_team_copy_create_refuses_the_old_start() {
+fn parent_restart_racing_child_team_create_refuses_the_old_start() {
     restart_racing_create_refuses_the_old_start("dev");
 }
 

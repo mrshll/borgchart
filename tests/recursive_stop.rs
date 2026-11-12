@@ -2,9 +2,9 @@
 #![cfg(feature = "test-support")]
 
 mod common;
-mod instance_env;
+mod team_env;
 
-use instance_env::*;
+use team_env::*;
 
 fn tree() -> (Env, String) {
     let env = Env::new();
@@ -222,7 +222,7 @@ fn an_unconfirmed_child_stop_keeps_its_ancestors_running() {
 }
 
 #[test]
-fn recursive_failure_advice_does_not_expand_the_stop_to_the_instance() {
+fn recursive_failure_advice_does_not_expand_the_stop_to_the_team() {
     let (env, inst) = tree();
     let target = format!("{inst}/{}", env.member(&inst, "helper"));
     let out = env
