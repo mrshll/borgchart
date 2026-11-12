@@ -3,7 +3,8 @@
 // that grows and shrinks on its own. Dev teams, design panels, researchers
 // and monitors come and go, their members turn working and idle, and
 // finished ones stop and are deleted, only as the repository's own team
-// templates allow (teams/engineering, teams/dev-team, teams/dev-design-team).
+// templates allow (templates/engineering, templates/dev-team,
+// templates/dev-design-team).
 //
 // Taken from the code, so re-check it there when the look changes:
 //   marks, tones and spinner frames  src/tree.rs (state_mark, Tone, ink, painted)
@@ -25,31 +26,31 @@
 
   const HEADER = ["engineering-56uw", "folder ~/workspace/borgchart"];
 
-  // A member: its name, vendor mark and model, and state. A copy (a nested
-  // team): its name, its team, and its members. The page leaves out the
+  // A member: its name, vendor mark and model, and state. A child team: its
+  // name, its template, and its members. The page leaves out the
   // activity brg prints in the details column; only the root's unacked
   // count is shown there.
   const m = (name, model, state, children) => ({
     kind: "member", name, model, state, detail: "", children: children || [],
   });
-  // brg counts a copy's own members that are running (not stopped and not
-  // yet started) at any depth inside it, but not inside deeper copies.
+  // brg counts a child team's own members that are running (not stopped and
+  // not yet started) at any depth inside it, but not inside deeper child teams.
   const live = (nodes) => nodes.reduce((n, k) =>
-    k.kind === "copy" ? n : n + (k.state === "working" || k.state === "idle" ? 1 : 0) + live(k.children), 0);
-  const copy = (name, team, children) => ({
-    kind: "copy", name, team, children, get running() { return live(this.children); },
+    k.kind === "child" ? n : n + (k.state === "working" || k.state === "idle" ? 1 : 0) + live(k.children), 0);
+  const childTeam = (name, template, children) => ({
+    kind: "child", name, template, children, get running() { return live(this.children); },
   });
 
   // Each role's vendor mark and model, from the templates' front matter.
   const MODEL = {
-    root: "§ fable low", // teams/engineering lead
-    researcher: "Λ gpt-6.1-terra medium", // teams/engineering researcher (codex)
-    monitor: "§ sonnet low", // teams/engineering monitor
-    lead: "§ opus high", // teams/dev-team lead (orchestrator.md)
-    implementer: "Λ gpt-6.1-sol high", // teams/dev-team implementer (codex)
-    reviewer: "§ opus high", // teams/dev-team reviewer
-    designerClaude: "§ fable medium", // teams/dev-design-team designer-claude
-    designerCodex: "Λ gpt-6-astra high", // teams/dev-design-team designer-codex
+    root: "§ fable low", // templates/engineering lead
+    researcher: "Λ gpt-6.1-terra medium", // templates/engineering researcher (codex)
+    monitor: "§ sonnet low", // templates/engineering monitor
+    lead: "§ opus high", // templates/dev-team lead (orchestrator.md)
+    implementer: "Λ gpt-6.1-sol high", // templates/dev-team implementer (codex)
+    reviewer: "§ opus high", // templates/dev-team reviewer
+    designerClaude: "§ fable medium", // templates/dev-design-team designer-claude
+    designerCodex: "Λ gpt-6-astra high", // templates/dev-design-team designer-codex
   };
   // What the root lead gives out, as `brg create --name` would name it:
   // a dev team's task, with the short word its implementer and reviewer
@@ -78,7 +79,7 @@
   // brg's random suffix; everything the root lead creates is named for its
   // task (`<role>-<name>`, lowercase words, at most 24 characters, and here
   // at most 26 for the whole ID, so the tree stays within WIDEST). brg
-  // never issues an ID twice in an instance, so a root task that has been
+  // never issues an ID twice in a team, so a root task that has been
   // used is used up: then two tasks join (dev-website-cleanup), and only
   // after hours of all of those would one come round again, never while
   // its namesake is still in the tree.
@@ -107,7 +108,7 @@
   }
 
   // The root lead, and the units under it. A unit is one child of the root
-  // (a copy, a researcher or a monitor), told as a generator: each `yield`
+  // (a child team, a researcher or a monitor), told as a generator: each `yield`
   // follows one visible change and says how many refreshes to hold it.
   // Every member lives through the states brg prints, in order: not started,
   // idle, working and idle for a few rounds, stopped for a while, deleted.
@@ -164,13 +165,13 @@
 
   // A dev team: created stopped, its lead started, then an implementer
   // (sometimes two) and a reviewer one at a time. On the way out the
-  // helpers stop first, then the lead, and the stopped copy waits a few
-  // refreshes before it is deleted. The copy is its own instance, so its
-  // members' names are its own.
+  // helpers stop first, then the lead, and the stopped child team waits a
+  // few refreshes before it is deleted. The child team is its own team, so
+  // its members' names are its own.
   function* devTeam(team) {
     const name = named("dev", TASKS.dev.map(([task]) => task));
     const [, word] = TASKS.dev.find(([task]) => name === `dev-${task}` || name.startsWith(`dev-${task}-`));
-    team.node = copy(name, "dev-team", []);
+    team.node = childTeam(name, "dev-team", []);
     const lead = member(suffixed("lead"), MODEL.lead);
     yield* join(team.node, lead);
     yield* rounds(lead, 1, 2);
@@ -201,7 +202,7 @@
   // A design panel: started with its two designers, one per vendor, each
   // drafting its own proposal.
   function* designPanel(team) {
-    team.node = copy(named("design", TASKS.design), "dev-design-team", []);
+    team.node = childTeam(named("design", TASKS.design), "dev-design-team", []);
     const a = member(suffixed("designer-claude"), MODEL.designerClaude);
     const b = member(suffixed("designer-codex"), MODEL.designerCodex);
     yield* join(team.node, a);
@@ -287,7 +288,7 @@
 
   // src/runtime.rs status_look, for the states the scene uses.
   function look(node) {
-    if (node.kind === "copy") {
+    if (node.kind === "child") {
       return node.running > 0 ? { mark: "◆", tone: "team" } : { mark: null, tone: "faded" };
     }
     if (node.state === "working") return { mark: "●", tone: "busy" };
@@ -309,10 +310,10 @@
     return out;
   }
 
-  // State first, then vendor/model or team, then details (status_cells).
+  // State first, then vendor/model or template, then details (status_cells).
   function cols(node) {
-    return node.kind === "copy"
-      ? [node.running + " running", node.team, ""]
+    return node.kind === "child"
+      ? [node.running + " running", node.template, ""]
       : [node.state, node.model, node.detail];
   }
 
