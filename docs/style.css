@@ -36,8 +36,29 @@ body { margin: 0; }
 main {
   max-width: 100ch;
   margin: 0 auto;
-  padding: 2rem 16px 3rem;
+  padding: 0 16px 3rem;
 }
+
+/* The hero: the status tree and the session beside it, half each, wider
+   than the man page below; one above the other on a narrow screen. */
+.hero {
+  max-width: 170ch;
+  margin: 0 auto;
+  padding: 2rem 16px 1.45em;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 4ch;
+}
+.pane { container-type: inline-size; }
+/* A pane holds the room of its largest frame (a hidden copy beneath), so
+   the page stays put while the tree grows. */
+.stack { display: grid; grid-template-columns: minmax(0, 1fr); }
+.stack > * { grid-area: 1 / 1; }
+.ghost { visibility: hidden; }
+.session p { margin: 0 0 0.7em; }
+.said { padding-left: 2ch; text-indent: -2ch; }
+.reply { padding-left: 2ch; }
+.whole { white-space: nowrap; }
 
 p, dl, pre { margin: 0 0 1.45em; }
 h2 {
@@ -66,13 +87,13 @@ pre {
 }
 .prompt { margin-bottom: 0.4em; }
 
-/* The status tree: sized so the name, state and model columns of the
-   scene's widest line (56 columns) fit a phone's width; the details
-   scroll inside the box, as a terminal with wrapping off cuts them. */
+/* The status tree: sized so the scene's widest line (79 columns) fits its
+   pane, or on a phone the name, state and vendor mark; the rest scrolls
+   inside the box, as a terminal with wrapping off cuts it. */
 .screen {
-  font-size: min(1rem, calc((100vw - 32px) / 34));
+  font-size: min(1rem, calc(100cqw / 49));
   line-height: 1.25;
-  margin-bottom: 2.9em;
+  margin: 0;
 }
 
 .title {
@@ -96,9 +117,13 @@ pre {
   background: var(--ink);
 }
 
+@media (max-width: 60rem) {
+  .hero { grid-template-columns: minmax(0, 1fr); gap: 1.45em; }
+}
 @media (max-width: 40rem) {
   html { font-size: 14px; }
-  main { padding-top: 1rem; }
+  .hero { padding-top: 1rem; }
+  .screen { font-size: min(1rem, calc(100cqw / 29)); }
   h2 ~ p:not(.prompt), h2 ~ pre, h2 ~ dl { padding-left: 3ch; }
   .title span:nth-child(2) { display: none; }
 }

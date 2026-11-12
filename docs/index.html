@@ -1,7 +1,8 @@
 <!doctype html>
 <!-- borgchart.ai. GitHub Pages serves docs/ on main as it is (CNAME,
      .nojekyll; no build step). The animated tree is status.js, whose header
-     names the brg source it copies; the palette is style.css; the command
+     names the brg source it copies and holds the scene; the request typed
+     beside it is in this file, below; the palette is style.css; the command
      text is the COMMANDS section below. -->
 <html lang="en">
 <head>
@@ -12,10 +13,24 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<main>
-
+<header class="hero">
+<section class="pane">
 <p class="prompt"><span class="faded">$</span> brg status -w</p>
-<pre id="status" class="screen" role="img" aria-label="An animated brg status tree of a fictional team">brg status -w draws a live tree of the team here; it needs JavaScript.</pre>
+<div class="stack">
+<pre class="screen ghost" aria-hidden="true"></pre>
+<pre id="status" class="screen" role="img" aria-label="An animated brg status tree of a fictional team, growing as its lead takes on a request">brg status -w draws a live tree of the team here; it needs JavaScript.</pre>
+</div>
+</section>
+<section class="pane">
+<p class="prompt"><span class="faded">$</span> brg attach lamp-eng-x7k2/lead-q8m3</p>
+<div class="stack session">
+<div class="ghost" aria-hidden="true"></div>
+<!-- The request typed to the lead: fictional; status.js types it out. -->
+<div id="session"><p class="said"><span class="faded">›</span> <span id="request">We need a one-page site for the lighthouse project that reads like --help output, with a live status tree front and centre. Plan it, start a dev team, and bring me a pull request I can review.</span></p></div>
+</div>
+</section>
+</header>
+<main>
 
 <p class="prompt"><span class="faded">$</span> man brg</p>
 
@@ -28,7 +43,7 @@
 <p><b>brg</b> &lt;COMMAND&gt; [OPTIONS]</p>
 
 <h2>DESCRIPTION</h2>
-<p>Describe each role's model and standing task in a team folder, then <b>brg create</b> &lt;team&gt; &lt;folder&gt; starts an instance of it working in that folder. <b>brg status</b> shows who is alive, what they are doing and their unread message counts; <b>brg attach</b> drops you into a member's live session; <b>brg stop</b> stops it all, and <b>brg start</b> brings it back.</p>
+<p>Describe each role's model and standing task in a team folder, then <b>brg create</b> &lt;team&gt; &lt;folder&gt; starts an instance of it working in that folder. <b>brg status</b> shows who is alive, what they are doing and their unacked message counts; <b>brg attach</b> drops you into a member's live session; <b>brg stop</b> stops it all, and <b>brg start</b> brings it back.</p>
 <p>Members are <b>claude</b> and <b>codex</b> sessions on a private tmux server. They talk over a message bus of durable plain messages and acknowledgements, and a team can be a member of another team.</p>
 <p>Early, and expected to change.</p>
 
@@ -63,10 +78,7 @@
 </dl>
 <p class="group">Messages</p>
 <dl class="commands">
-<dt>send</dt><dd>Store a message for its recipient, and type it in when safe</dd>
-<dt>inbox</dt><dd>List the unacknowledged messages addressed to you, oldest first</dd>
-<dt>msg</dt><dd>Read and acknowledge bus records</dd>
-<dt>bus</dt><dd>Check the tree's message storage</dd>
+<dt>msg</dt><dd>Send, list, read, acknowledge, wait for and check messages</dd>
 </dl>
 <p class="group">Cleanup</p>
 <dl class="commands">

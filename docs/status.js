@@ -1,5 +1,6 @@
-// The animated `brg status -w` on the front page: a fixed fictional team,
-// drawn the way brg draws a terminal tree, stepping through a run.
+// The front page's hero: a request typed to a team's lead on the right, and
+// on the left the team's `brg status -w`, growing as the lead takes it on.
+// A fixed fictional team, drawn the way brg draws a terminal tree.
 //
 // Taken from the code, so re-check it there when the look changes:
 //   marks, tones and spinner frames  src/tree.rs (state_mark, Tone, ink, painted)
@@ -13,8 +14,11 @@
 (function () {
   const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
   const SPIN_MS = 500;
-  const REFRESH_TICKS = 4; // `status -w` reads again every 2 s
-  const STEP_TICKS = 8; // each step of the scene lasts two refreshes
+  const REFRESH_MS = 2000; // `status -w` reads again every 2 s
+  const STEP_MS = 4000; // each step of the scene lasts two refreshes
+  const TYPE_AFTER_MS = 2500; // the tree shows alone before typing starts
+  const SEND_AFTER_MS = 1000; // a pause between the last key and Enter
+  const HOLD_MS = 12000; // the grown tree rests before the scene restarts
 
   const HEADER = ["lamp-eng-x7k2", "folder ~/src/lighthouse"];
 
@@ -23,76 +27,71 @@
   const m = (name, model, state, detail, children) => ({
     kind: "member", name, model, state, detail: detail || "", children: children || [],
   });
-  // brg counts a copy's members that are not stopped as running.
+  // brg counts a copy's own members that are not stopped as running, at
+  // any depth inside it but not inside deeper copies.
+  const live = (nodes) => nodes.reduce((n, k) =>
+    k.kind === "copy" ? n : n + (k.state !== "stopped" ? 1 : 0) + live(k.children), 0);
   const copy = (name, team, children) => ({
-    kind: "copy", name, team, children,
-    running: children.filter((k) => k.state !== "stopped").length,
+    kind: "copy", name, team, children, running: live(children),
   });
 
   const OPUS = "§ opus high";
   const SONNET = "§ sonnet medium";
-  const SOL = "Λ gpt-6.1-sol high";
-  const TERRA = "Λ gpt-6.1-terra low";
+  const SOL = "Λ gpt-6.1 high";
 
-  // The scene, one tree per step: a lead plans, its implementer builds, a
-  // design panel sketches, the reviewer stops at a prompt for a person, and
-  // the work comes back for the next piece.
-  const SCENE = [
-    m("lead-q8m3", OPUS, "working", "Read the fog-horn brief", [
-      m("researcher-f2g7", TERRA, "stopped"),
-    ]),
-    m("lead-q8m3", OPUS, "working", "Plan the fog-horn schedule", [
-      m("implementer-b3n7", SOL, "working", "Add the fog-horn schedule"),
-      m("researcher-f2g7", TERRA, "working", "Compare tide-table sources"),
-    ]),
-    m("lead-q8m3", OPUS, "idle", "", [
-      m("implementer-b3n7", SOL, "working", "Add the fog-horn schedule"),
-      copy("map-design", "design-panel", [
-        m("designer-a8e2", OPUS, "working", "Sketch the keeper's log view"),
-        m("designer-n6y4", SOL, "working", "Sketch the keeper's log view"),
-      ]),
-      m("researcher-f2g7", TERRA, "idle", "1 unread"),
-    ]),
-    m("lead-q8m3", OPUS, "working", "Merge the design notes", [
-      m("implementer-b3n7", SOL, "idle", "1 unread"),
-      copy("map-design", "design-panel", [
-        m("designer-a8e2", OPUS, "working", "Write up the log view"),
-        m("designer-n6y4", SOL, "idle"),
-      ]),
-      m("reviewer-t4s9", SONNET, "working", "Review the fog-horn schedule"),
-      m("researcher-f2g7", TERRA, "stopped"),
-    ]),
-    m("lead-q8m3", OPUS, "idle", "", [
-      m("implementer-b3n7", SOL, "idle"),
-      copy("map-design", "design-panel", [
-        m("designer-a8e2", OPUS, "working", "Write up the log view"),
-        m("designer-n6y4", SOL, "idle"),
-      ]),
-      m("reviewer-t4s9", SONNET, "blocked", "Review the fog-horn schedule"),
-      m("researcher-f2g7", TERRA, "stopped"),
-    ]),
-    m("lead-q8m3", OPUS, "idle", "2 unread", [
-      m("implementer-b3n7", SOL, "idle"),
-      copy("map-design", "design-panel", [
-        m("designer-a8e2", OPUS, "stopped"),
-        m("designer-n6y4", SOL, "stopped"),
-      ]),
-      m("reviewer-t4s9", SONNET, "working", "Review the fog-horn schedule"),
-      m("researcher-f2g7", TERRA, "stopped"),
-    ]),
-    m("lead-q8m3", OPUS, "working", "Answer the review", [
-      m("implementer-b3n7", SOL, "working", "Fix the lens rotation test"),
-      m("reviewer-t4s9", SONNET, "idle"),
-      m("researcher-f2g7", TERRA, "stopped"),
-    ]),
-    m("lead-q8m3", OPUS, "working", "Hand off the fog-horn schedule", [
-      m("implementer-b3n7", SOL, "stopped"),
-      m("reviewer-t4s9", SONNET, "stopped"),
-      m("researcher-f2g7", TERRA, "stopped"),
-    ]),
+  // The root lead, and the dev team it starts: a copy whose one root is
+  // its own lead, with the implementer and reviewer under that lead, as in
+  // teams/dev-team.
+  const lead = (state, detail, kids) => m("lead-q8m3", OPUS, state, detail, kids);
+  const dev = (state, detail, kids) => [
+    copy("dev-k2m8", "dev-team", [m("lead-c4nd", OPUS, state, detail, kids)]),
   ];
-  // The still frame for reduced motion: the step that shows every tone.
-  const STILL = 4;
+  const builder = (state, detail) => m("implementer-h7p2", SOL, state, detail);
+  const checker = (state, detail) => m("reviewer-w9d3", SONNET, state, detail);
+  const done = () => dev("idle", "", [builder("idle"), checker("idle")]);
+
+  // The scene, one tree per step. The first shows while the request is
+  // typed; the rest follow its sending, each with what the lead says then.
+  // The lead plans and starts a dev team, whose lead brings in an
+  // implementer and then a reviewer, and the pull request comes back up.
+  const SCENE = [
+    { tree: lead("idle") },
+    { tree: lead("working", "Read the request") },
+    {
+      tree: lead("working", "Plan the site"),
+      say: "Planning it: a dev team builds the page, and a reviewer checks it before it comes to you.",
+    },
+    {
+      tree: lead("idle", "", dev("working", "Read the brief")),
+      say: "Started dev-k2m8 on it.",
+    },
+    { tree: lead("idle", "", dev("working", "Plan the page", [builder("working", "Build the tree")])) },
+    { tree: lead("idle", "", dev("idle", "", [builder("working", "Write the man page")])) },
+    {
+      tree: lead("idle", "", dev("working", "Start a review", [
+        builder("idle"),
+        checker("working", "Review the page"),
+      ])),
+    },
+    {
+      tree: lead("idle", "", dev("idle", "", [
+        builder("working", "Fix the phone view"),
+        checker("idle"),
+      ])),
+    },
+    {
+      tree: lead("idle", "", dev("working", "Write the handoff", [
+        builder("idle"),
+        checker("idle"),
+      ])),
+    },
+    { tree: lead("idle", "1 unacked", done()) },
+    { tree: lead("working", "Check the handoff", done()) },
+    { tree: lead("idle", "", done()), say: "The pull request is ready for your review." },
+  ];
+  // The still frame for reduced motion: the grown tree mid-run, every
+  // member in it and some at work.
+  const STILL = 6;
 
   // src/runtime.rs status_look, for the states the scene uses.
   function look(node) {
@@ -185,31 +184,29 @@
     return cells(rows).map((row, i) => painted(ordered[i].prefix, row, look(ordered[i].node)));
   }
 
-  // src/runtime.rs summary_band: attention first, then working, idle, unread.
+  // src/runtime.rs summary_band: attention first, then working, idle, unacked.
   function band(root) {
     const all = order(root, "", true, []).map((o) => o.node);
     const members = all.filter((n) => n.kind === "member");
     const working = members.filter((n) => n.state === "working").length;
     const idle = members.filter((n) => n.state === "idle").length;
     const need = all.filter((n) => look(n).tone === "alert").length;
-    const unread = members.reduce((sum, n) => {
-      const hit = /(\d+) unread/.exec(n.detail);
+    const unacked = members.reduce((sum, n) => {
+      const hit = /(\d+) unacked/.exec(n.detail);
       return sum + (hit ? Number(hit[1]) : 0);
     }, 0);
     const parts = [];
     if (need) parts.push(`<span class="b alert chip"> ! ${need} need you </span>`);
     if (working) parts.push(`<span class="b busy">● ${working} working</span>`);
     if (idle) parts.push(`<span class="faded">· ${idle} idle</span>`);
-    if (unread) parts.push(`<span class="faded">${unread} unread</span>`);
+    if (unacked) parts.push(`<span class="faded">${unacked} unacked</span>`);
     return `<span class="b">borgchart</span>    ` + parts.join("  ");
   }
 
-  function clock(date) {
-    return date.toISOString().slice(11, 19);
-  }
+  const clock = (date) => date.toISOString().slice(11, 19);
 
   function frame(step, spin, refreshed) {
-    const root = SCENE[step];
+    const root = SCENE[step].tree;
     return [
       band(root),
       "",
@@ -220,20 +217,73 @@
     ].join("\n");
   }
 
+  // The session beside the tree: the request as far as it is typed, then,
+  // once sent, what the lead has said so far and a fresh prompt.
+  const CURSOR = '<span class="cursor">&nbsp;</span>';
+  // Hyphenated words (one-page, --help) wrap whole, as a terminal would.
+  const words = (text) => esc(text).replace(/\S*-\S*/g, '<span class="whole">$&</span>');
+  function session(request, typed, sent, step) {
+    const said = `<p class="said"><span class="faded">›</span> ${words(request.slice(0, typed))}${sent ? "" : CURSOR}</p>`;
+    if (!sent) return said;
+    const replies = SCENE.slice(1, step + 1)
+      .filter((s) => s.say)
+      .map((s) => `<p class="reply">${esc(s.say)}</p>`);
+    return [said, ...replies, `<p class="said"><span class="faded">›</span> ${CURSOR}</p>`].join("");
+  }
+
   const out = document.getElementById("status");
-  if (!out) return;
-  const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  if (still) {
+  const talk = document.getElementById("session");
+  const typedText = document.getElementById("request");
+  if (!out || !talk || !typedText) return;
+  const request = typedText.textContent.trim().replace(/\s+/g, " ");
+  talk.setAttribute("role", "img");
+  talk.setAttribute("aria-label", "Someone types a request to the team's lead: " + request);
+
+  // Hold the room the largest frame and the whole session need, so the page
+  // doesn't move as the tree grows and the lead answers.
+  const last = SCENE.length - 1;
+  const roomy = SCENE.reduce((best, s, i) => (tree(s.tree, null).length > tree(SCENE[best].tree, null).length ? i : best), 0);
+  out.previousElementSibling.innerHTML = frame(roomy, null, new Date());
+  talk.previousElementSibling.innerHTML = session(request, request.length, true, last);
+
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
     out.innerHTML = frame(STILL, null, new Date());
+    talk.innerHTML = session(request, request.length, true, STILL);
     return;
   }
-  let tick = 0;
-  let refreshed = new Date();
+
+  // When each key lands: an unhurried, slightly uneven pace, with a breath
+  // after punctuation. A fixed seed keeps every run the same.
+  let seed = 7;
+  const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const keys = [];
+  let at = TYPE_AFTER_MS;
+  for (const ch of request) {
+    at += 55 + rand() * 45 + (/[.,]/.test(ch) ? 380 : 0);
+    keys.push(at);
+  }
+  const sendAt = at + SEND_AFTER_MS;
+  // The tree changes only when `status -w` reads again, on its 2 s beat.
+  const firstRead = Math.ceil(sendAt / REFRESH_MS) * REFRESH_MS;
+  const cycle = firstRead + (last - 1) * STEP_MS + HOLD_MS;
+
+  let start = Date.now();
+  let shownTree = "", shownTalk = "";
   const draw = () => {
-    if (tick % REFRESH_TICKS === 0) refreshed = new Date();
-    out.innerHTML = frame(Math.floor(tick / STEP_TICKS) % SCENE.length, tick, refreshed);
-    tick++;
+    let t = Date.now() - start;
+    if (t >= cycle) {
+      start += cycle * Math.floor(t / cycle);
+      t = Date.now() - start;
+    }
+    const read = Math.floor(t / REFRESH_MS) * REFRESH_MS;
+    const step = read < firstRead ? 0 : Math.min(last, 1 + Math.floor((read - firstRead) / STEP_MS));
+    const html = frame(step, Math.floor(t / SPIN_MS), new Date(Date.now() - (t - read)));
+    if (html !== shownTree) out.innerHTML = shownTree = html;
+    let typed = 0;
+    while (typed < keys.length && keys[typed] <= t) typed++;
+    const said = session(request, typed, t >= sendAt, step);
+    if (said !== shownTalk) talk.innerHTML = shownTalk = said;
   };
   draw();
-  setInterval(draw, SPIN_MS);
+  setInterval(draw, 50);
 })();
