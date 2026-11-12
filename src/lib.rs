@@ -1,4 +1,4 @@
-//! borgchart internals, used by `brg` and `brg-seat`.
+//! borgchart internals, used by `brg` and its workspace plugins.
 //!
 //! This crate is not a public library: nothing here is promised stable.
 
@@ -21,6 +21,7 @@ pub mod lifecycle;
 pub mod names;
 pub mod nesting;
 pub mod paths;
+pub mod plugin;
 pub mod probe;
 pub mod proctree;
 pub mod registry;
