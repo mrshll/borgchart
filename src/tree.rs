@@ -202,7 +202,7 @@ fn cells(rows: &[Vec<String>]) -> Vec<Vec<String>> {
     let mut widths = vec![0; n];
     for row in rows {
         for (i, c) in row.iter().enumerate() {
-            widths[i] = widths[i].max(c.chars().count());
+            widths[i] = widths[i].max(visible_width(c));
         }
     }
     rows.iter()
@@ -216,13 +216,26 @@ fn cells(rows: &[Vec<String>]) -> Vec<Vec<String>> {
                     }
                     cell.push_str(c);
                     if i + 1 < n {
-                        cell.extend(std::iter::repeat_n(' ', widths[i] - c.chars().count()));
+                        cell.extend(std::iter::repeat_n(' ', widths[i] - visible_width(c)));
                     }
                     cell
                 })
                 .collect()
         })
         .collect()
+}
+
+/// OSC 8 hyperlinks enclose visible names but take no terminal columns.
+fn visible_width(mut text: &str) -> usize {
+    let mut width = 0;
+    while let Some((before, control)) = text.split_once("\x1b]8;;") {
+        let Some((_, after)) = control.split_once("\x1b\\") else {
+            break;
+        };
+        width += before.chars().count();
+        text = after;
+    }
+    width + text.chars().count()
 }
 
 /// Plain lines: the cells joined, trailing blanks dropped.

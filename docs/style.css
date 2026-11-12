@@ -1,0 +1,104 @@
+/* A page that reads as terminal output, in brg's tones (src/tree.rs
+   `palette`). A terminal can't know its background, so brg picks tones
+   that clear 3:1 on both; this page knows its own, so each scheme
+   darkens or lightens the tones that fall short of 4.5:1 on it. */
+:root {
+  --bg: #fbfbf8;
+  --ink: #1d1f24;
+  --busy: #17767c;   /* brg #1f939a */
+  --team: #85651f;   /* brg #a9812a */
+  --alert: #c04a4a;
+  --faded: #6b6e7b;  /* brg #8a8d9a */
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #121418;
+    --ink: #d9dbe0;
+    --busy: #1f939a;
+    --team: #a9812a;
+    --alert: #d96262; /* brg #c04a4a */
+    --faded: #8a8d9a;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace;
+  font-size: 15px;
+  line-height: 1.45;
+  -webkit-text-size-adjust: 100%;
+}
+body { margin: 0; }
+main {
+  max-width: 100ch;
+  margin: 0 auto;
+  padding: 2rem 16px 3rem;
+}
+
+p, dl, pre { margin: 0 0 1.45em; }
+h2 {
+  font-size: inherit;
+  font-weight: bold;
+  margin: 0;
+}
+/* Man-page body: indented under its heading. */
+h2 ~ p:not(.prompt), h2 ~ pre, h2 ~ dl { padding-left: 7ch; }
+
+b, .b { font-weight: bold; }
+.busy { color: var(--busy); }
+.team { color: var(--team); }
+.alert { color: var(--alert); }
+.faded { color: var(--faded); }
+/* Reverse video: the alert label is filled with its colour. */
+.chip { background: var(--alert); color: var(--bg); }
+
+code { font: inherit; white-space: nowrap; }
+a { color: inherit; text-underline-offset: 0.2em; }
+
+pre {
+  font: inherit;
+  white-space: pre;
+  overflow-x: auto;
+}
+.prompt { margin-bottom: 0.4em; }
+
+/* The status tree: sized so the name, state and model columns of the
+   scene's widest line (56 columns) fit a phone's width; the details
+   scroll inside the box, as a terminal with wrapping off cuts them. */
+.screen {
+  font-size: min(1rem, calc((100vw - 32px) / 34));
+  line-height: 1.25;
+  margin-bottom: 2.9em;
+}
+
+.title {
+  display: flex;
+  justify-content: space-between;
+  gap: 2ch;
+}
+
+.group { font-weight: bold; margin-bottom: 0.3em; }
+.commands {
+  display: grid;
+  grid-template-columns: 10ch 1fr;
+  row-gap: 0.15em;
+}
+.commands dt { font-weight: bold; }
+.commands dd { margin: 0; }
+
+.cursor {
+  display: inline-block;
+  width: 1ch;
+  background: var(--ink);
+}
+
+@media (max-width: 40rem) {
+  html { font-size: 14px; }
+  main { padding-top: 1rem; }
+  h2 ~ p:not(.prompt), h2 ~ pre, h2 ~ dl { padding-left: 3ch; }
+  .title span:nth-child(2) { display: none; }
+}
