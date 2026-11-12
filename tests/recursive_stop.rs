@@ -8,7 +8,7 @@ use instance_env::*;
 
 fn tree() -> (Env, String) {
     let env = Env::new();
-    env.write("teams/oncall/team.yaml", "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead}\n  leaf: {prompt: helper.md, parent: helper}\n  scout: {prompt: scout.md, parent: lead}\n");
+    env.write("templates/oncall/template.yaml", "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead}\n  leaf: {prompt: helper.md, parent: helper}\n  scout: {prompt: scout.md, parent: lead}\n");
     let inst = env.create("oncall", "work/a");
     (env, inst)
 }
@@ -48,7 +48,7 @@ fn as_member(env: &Env, inst: &str, role: &str, args: &[&str]) -> std::process::
     let vars = &starts.last().unwrap()["env"];
     let mut cmd = env.cmd(args);
     for key in [
-        "BORGCHART_INSTANCE",
+        "BORGCHART_TEAM",
         "BORGCHART_MEMBER",
         "BORGCHART_INCARNATION",
     ] {
@@ -137,7 +137,7 @@ fn recursive_stop_removes_every_target_from_the_restore_snapshot() {
     let leaf = env.member(&inst, "leaf");
     env.ok(&["stop", "-r", &format!("{inst}/{helper}")]);
     let record: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(env.path(&format!("state/{inst}/instance.json"))).unwrap(),
+        &std::fs::read(env.path(&format!("state/{inst}/team.json"))).unwrap(),
     )
     .unwrap();
     let restore = record["running_at_stop"].as_array().unwrap();
@@ -149,7 +149,7 @@ fn recursive_stop_removes_every_target_from_the_restore_snapshot() {
 #[test]
 fn recursive_walk_uses_recorded_parents_after_team_file_changes() {
     let (env, inst) = tree();
-    let team = env.path("teams/oncall/team.yaml");
+    let team = env.path("templates/oncall/template.yaml");
     let changed = std::fs::read_to_string(&team)
         .unwrap()
         .replace("parent: helper", "parent: lead");

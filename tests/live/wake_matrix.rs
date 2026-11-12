@@ -91,7 +91,7 @@ fn direct_run_env(
     std::fs::create_dir_all(&xdg_state).unwrap();
     env.insert("XDG_STATE_HOME".into(), xdg_state.display().to_string());
     std::fs::create_dir_all(&state).unwrap();
-    std::fs::write(&config, "schema: 1\nteams: []\nauto_trust: false\n").unwrap();
+    std::fs::write(&config, "schema: 1\ntemplates: []\nauto_trust: false\n").unwrap();
     let bin = std::path::Path::new(env!("CARGO_BIN_EXE_brg"));
     let path = format!(
         "{}:{}",
@@ -133,7 +133,7 @@ fn write_context_probe(keep: &std::path::Path, env: &BTreeMap<String, String>) {
     }
     for key in [
         "BORGCHART_MEMBER",
-        "BORGCHART_INSTANCE",
+        "BORGCHART_TEAM",
         "BORGCHART_STATE_DIR",
         "BORGCHART_ROLE",
         "BORGCHART_NOTES",
@@ -249,7 +249,7 @@ fn direct_vendor_brg_cannot_fall_back_to_inherited_defaults() {
         ("BORGCHART_TMUX_SOCKET".into(), "borgchart".into()),
         ("BORGCHART_TMUX_TMPDIR".into(), poison.display().to_string()),
         ("BORGCHART_MEMBER".into(), "foreign-member".into()),
-        ("BORGCHART_INSTANCE".into(), "foreign-instance".into()),
+        ("BORGCHART_TEAM".into(), "foreign-team".into()),
         ("BORGCHART_BIN".into(), fake_brg.display().to_string()),
         ("TMUX".into(), "/tmp/tmux-1000/borgchart,1,0".into()),
     ]);

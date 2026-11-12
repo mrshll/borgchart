@@ -1,24 +1,24 @@
-//! `brg cleanup [<instance>]`: remove what brg left behind for members and
-//! copies that no longer exist.
+//! `brg cleanup [<team>]`: remove what brg left behind for members and
+//! child teams that no longer exist.
 //!
 //! brg removes only what it can find from its own records, never anything
 //! matched by name alone:
 //! - **Worktrees it added**: the git worktree of each deleted member and
-//!   copy of a `worktree: true` role, at its fixed place beside brg's state
+//!   child team of a `worktree: true` role, at its fixed place beside brg's state
 //!   folder ([`crate::worktree::path`]). It is removed with `git worktree
 //!   remove` when it is clean: nothing modified, staged or untracked, and no
 //!   commit that no remote-tracking ref reaches, and when no registered
-//!   instance, kept member or copy works at or inside it. A worktree with work
+//!   team, kept member or child team works at or inside it. A worktree with work
 //!   in it is listed and kept; a worktree git can't check fails the run.
-//! - **State of deleted members and copies** inside a registered instance's
+//! - **State of deleted members and child teams** inside a registered team's
 //!   state folder, as an interrupted `delete` leaves it.
-//! - **Unregistered instance state** in brg's state folder: a folder named
-//!   for an instance ID brg issued, with no registered instance (without an
-//!   instance argument only).
+//! - **Unregistered team state** in brg's state folder: a folder named
+//!   for a team ID brg issued, with no registered team (without a
+//!   team argument only).
 //!
-//! Work folders, kept members' and copies' folders, repositories, other
+//! Work folders, kept members' and child teams' folders, repositories, other
 //! worktrees and messages are never touched. `brg destroy` applies
-//! the same folder rules to every member and copy of the tree it forgets
+//! the same folder rules to every member and child team of the tree it forgets
 //! ([`tree_folders`]).
 
 use std::path::{Path, PathBuf};
@@ -52,7 +52,7 @@ impl Outcome {
     }
 }
 
-/// Clean up under `only` and its copies, or everywhere.
+/// Clean up under `only` and its child teams, or everywhere.
 pub fn cleanup(only: Option<&Instance>) -> Result<Outcome, String> {
     let lock = registry::lock()?;
     let registry = lock.load()?;
@@ -81,8 +81,8 @@ pub fn cleanup(only: Option<&Instance>) -> Result<Outcome, String> {
     Ok(out)
 }
 
-/// Every folder a registered instance (of those `counts`) works in: its own
-/// folder and its kept members' and copies' folders. No leaf holding one is
+/// Every folder a registered team (of those `counts`) works in: its own
+/// folder and its kept members' and child teams' folders. No leaf holding one is
 /// removed.
 fn held(registry: &registry::Registry, counts: impl Fn(&str) -> bool) -> Vec<PathBuf> {
     let mut held = Vec::new();
@@ -101,8 +101,8 @@ fn held(registry: &registry::Registry, counts: impl Fn(&str) -> bool) -> Vec<Pat
 }
 
 /// `destroy`'s folder pass over a tree about to be forgotten, deepest first:
-/// every member's and copy's worktree, kept or deleted, by the same rules as
-/// cleanup. Folders that instances outside the tree work in stay protected.
+/// every member's and child team's worktree, kept or deleted, by the same rules as
+/// cleanup. Folders that teams outside the tree work in stay protected.
 pub(crate) fn tree_folders(tree: &[Instance], registry: &registry::Registry) -> Outcome {
     let mut out = Outcome::default();
     let held = held(registry, |id| !tree.iter().any(|inst| inst.id == id));
@@ -112,7 +112,7 @@ pub(crate) fn tree_folders(tree: &[Instance], registry: &registry::Registry) -> 
         for (id, kind) in members
             .into_iter()
             .map(|(id, _)| (id, "member"))
-            .chain(copies.into_iter().map(|(id, _)| (id, "copy")))
+            .chain(copies.into_iter().map(|(id, _)| (id, "child team")))
         {
             worktree(
                 root_of(registry, inst),
@@ -126,7 +126,7 @@ pub(crate) fn tree_folders(tree: &[Instance], registry: &registry::Registry) -> 
     out
 }
 
-/// One registered instance: its deleted members' and copies' folders and
+/// One registered team: its deleted members' and child teams' folders and
 /// state.
 fn instance(inst: &Instance, registry: &registry::Registry, held: &[PathBuf], out: &mut Outcome) {
     let _state_lock = match lifecycle::lock_state(&inst.state) {
@@ -147,7 +147,7 @@ fn instance(inst: &Instance, registry: &registry::Registry, held: &[PathBuf], ou
         worktree(root_of(registry, inst), &inst.at(id), held, &what, out);
     }
     for (id, _) in &deleted_copies {
-        let what = format!("deleted copy {}", inst.at(id));
+        let what = format!("deleted child team {}", inst.at(id));
         worktree(root_of(registry, inst), &inst.at(id), held, &what, out);
     }
     for (id, _) in &deleted_members {
@@ -165,12 +165,12 @@ fn instance(inst: &Instance, registry: &registry::Registry, held: &[PathBuf], ou
         }
     }
     for (id, _) in &deleted_copies {
-        let what = format!("state of deleted copy {}", inst.at(id));
+        let what = format!("state of deleted child team {}", inst.at(id));
         remove_state(&StateDir::new(&inst.at(id)).root, &what, out);
     }
 }
 
-/// The folder of the top instance of `inst`'s tree, as registered.
+/// The folder of the top team of `inst`'s tree, as registered.
 /// `None` when it isn't registered: then no worktree in the tree is touched.
 fn root_of<'a>(registry: &'a registry::Registry, inst: &Instance) -> Option<&'a Path> {
     let root = inst.id.split('/').next().unwrap_or_default();
@@ -202,7 +202,7 @@ fn issued<'a>(
     found
 }
 
-/// Remove the worktree brg added for the member or copy at `address`, in the
+/// Remove the worktree brg added for the member or child team at `address`, in the
 /// tree whose top folder is `root`, if
 /// it is there, clean, and nobody works in it; otherwise say why it stays.
 fn worktree(root: Option<&Path>, address: &str, held: &[PathBuf], what: &str, out: &mut Outcome) {
@@ -212,7 +212,7 @@ fn worktree(root: Option<&Path>, address: &str, held: &[PathBuf], what: &str, ou
     }
     let Some(root) = root else {
         return out.error(format!(
-            "can't check git worktree {}, so it was left as it is ({what}): its tree's top instance isn't registered",
+            "can't check git worktree {}, so it was left as it is ({what}): its tree's top team isn't registered",
             dir.display()
         ));
     };
@@ -223,7 +223,7 @@ fn worktree(root: Option<&Path>, address: &str, held: &[PathBuf], what: &str, ou
     {
         return out.kept(
             &dir,
-            &format!("an instance, kept member or copy works there ({what})"),
+            &format!("a team, kept member or child team works there ({what})"),
         );
     }
     match crate::worktree::unsaved(root, &dir) {
@@ -427,7 +427,7 @@ fn remove_state(path: &Path, what: &str, out: &mut Outcome) {
     }
 }
 
-/// State folders in brg's state folder named for an instance ID brg
+/// State folders in brg's state folder named for a team ID brg
 /// issued that is no longer registered.
 fn unregistered(registry: &registry::Registry, out: &mut Outcome) {
     let home = state::state_home();
@@ -448,7 +448,7 @@ fn unregistered(registry: &registry::Registry, out: &mut Outcome) {
         {
             remove_state(
                 &entry.path(),
-                &format!("state of unregistered instance {name}"),
+                &format!("state of unregistered team {name}"),
                 out,
             );
         }

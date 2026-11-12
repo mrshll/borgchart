@@ -14,8 +14,8 @@ use std::fs;
 use instance_env::*;
 use serde_json::{Value, json};
 
-/// The test team with `helper` and `dev`, a team role whose copies run the
-/// `dev` team, each in its own worktree.
+/// The test team with `helper` and `dev`, a team role whose child teams use the
+/// `dev` template, each in its own worktree.
 const TREE: &str = r#"
 bus: {}
 roles:
@@ -29,7 +29,7 @@ roles:
     max: 2
     worktree: true
   dev:
-    team: dev
+    template: dev
     parent: lead
     start: false
     max: 2
@@ -38,10 +38,10 @@ roles:
 
 fn tree_env() -> Env {
     let env = Env::new();
-    env.write("teams/oncall/team.yaml", TREE);
-    env.team("teams/dev");
+    env.write("templates/oncall/template.yaml", TREE);
+    env.team("templates/dev");
     env.write(
-        "teams/dev/team.yaml",
+        "templates/dev/template.yaml",
         "bus: {}\nroles:\n  lead: {prompt: lead.md}\n",
     );
     fs::remove_dir(env.path("work/a")).unwrap();
@@ -49,20 +49,20 @@ fn tree_env() -> Env {
     env
 }
 
-/// A started dev copy of `root`: its ID and folder.
+/// A started dev child team of `root`: its ID and folder.
 fn started_copy(env: &Env, root: &str) -> (String, std::path::PathBuf) {
     let out = env.ok(&["create", &format!("{root}/dev")]);
     let copy = stdout(&out).split_whitespace().next().unwrap().to_string();
     let folder = env.worktree(&copy);
     env.ok(&["start", &copy]);
-    env.wait_for("copy lead", || !env.member(&copy, "lead").is_empty());
+    env.wait_for("child team lead", || !env.member(&copy, "lead").is_empty());
     (copy, folder)
 }
 
 fn registered(env: &Env) -> Vec<String> {
     let registry: Value =
         serde_json::from_slice(&fs::read(env.path("state/registry.json")).unwrap()).unwrap();
-    registry["instances"]
+    registry["teams"]
         .as_object()
         .unwrap()
         .keys()
@@ -122,7 +122,7 @@ fn destroy_stops_and_forgets_a_tree_so_create_starts_it_fresh() {
     );
     assert!(spare_folder.join(".git").is_file(), "{text}");
     assert!(
-        text.contains(&format!("left {}: an instance", spare_folder.display())),
+        text.contains(&format!("left {}: a team", spare_folder.display())),
         "{text}"
     );
 
@@ -169,7 +169,7 @@ fn destroy_refuses_members_copies_and_trees_it_cannot_confirm_stopped() {
         both(&inside)
     );
 
-    // A copy is not a tree's root.
+    // A child team is not a tree's root.
     assert!(env.fails(&["destroy", &copy]).contains("root"));
 
     // A member whose stop brg can't confirm.
@@ -185,7 +185,7 @@ fn destroy_refuses_members_copies_and_trees_it_cannot_confirm_stopped() {
     assert!(refused.contains(&copy_lead), "{refused}");
 
     assert_eq!(registered(&env), before);
-    assert!(env.path(&format!("state/{root}/instance.json")).is_file());
+    assert!(env.path(&format!("state/{root}/team.json")).is_file());
     fs::write(incarnation, original).unwrap();
     env.ok(&["stop", &root]);
     env.tmux(&["kill-session", "-t", "=sentinel"]);
@@ -196,7 +196,7 @@ fn destroy_removes_clean_worktrees_in_the_tree_and_keeps_the_root_checkout() {
     let env = tree_env();
     let lead = env.path("work/a");
     let root = env.create("oncall", "work/a");
-    // A copy whose worktree is clean.
+    // A child team whose worktree is clean.
     let (_, copy_folder) = started_copy(&env, &root);
     // A helper whose worktree holds untracked work.
     env.ok(&["create", &format!("{root}/helper")]);

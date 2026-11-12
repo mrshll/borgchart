@@ -388,7 +388,7 @@ pub fn member_launch(
                 argv.extend(["--settings".into(), settings_path.display().to_string()]);
                 settings = Some(claude_session_settings(brg, state, member_id));
             }
-            // `vendor` posture: the instance's messages and notes, as
+            // `vendor` posture: the team's messages and notes, as
             // added folders, unless the role's own args add folders.
             if posture == Posture::Vendor
                 && !extra_args

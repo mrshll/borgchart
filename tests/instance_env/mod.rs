@@ -1,4 +1,4 @@
-//! The shared environment for the instance tests: a team in a search path
+//! The shared environment for the team tests: a team in a search path
 //! of a test configuration, fake agents, a private state home and tmux.
 #![allow(dead_code)]
 
@@ -18,7 +18,7 @@ pub struct Env {
     pub socket: String,
 }
 
-/// `lead` starts with the instance; `helper` (its child) and `scout` (a
+/// `lead` starts with the team; `helper` (its child) and `scout` (a
 /// second root) are created on demand.
 pub const TEAM: &str = r#"
 bus: {}
@@ -57,14 +57,14 @@ impl Env {
         fs::create_dir_all(env.path("home")).unwrap();
         fs::create_dir_all(env.path("work/a")).unwrap();
         fs::create_dir_all(env.path("work/b")).unwrap();
-        env.team("teams/oncall");
+        env.team("templates/oncall");
         env.config("");
         env
     }
 
-    /// A copy of the test team at `rel`.
+    /// A copy of the test template at `rel`.
     pub fn team(&self, rel: &str) {
-        self.write(&format!("{rel}/team.yaml"), TEAM);
+        self.write(&format!("{rel}/template.yaml"), TEAM);
         for (role, model) in [
             ("lead", "claude: opus high"),
             ("helper", "codex: example-model"),
@@ -82,8 +82,8 @@ impl Env {
         self.write(
             "config.yaml",
             &format!(
-                "schema: 1\nteams: [{}]\n{extra}",
-                self.path("teams").display()
+                "schema: 1\ntemplates: [{}]\n{extra}",
+                self.path("templates").display()
             ),
         );
     }
@@ -138,7 +138,7 @@ impl Env {
         both(&out)
     }
 
-    /// `brg create <team> <folder>`; the new instance's ID.
+    /// `brg create <template> <folder>`; the new team's ID.
     pub fn create(&self, team: &str, folder: &str) -> String {
         let out = self.ok(&["create", team, &self.path(folder).display().to_string()]);
         let id = stdout(&out)
@@ -295,7 +295,7 @@ impl Env {
         dir
     }
 
-    /// Where brg puts the worktree of the member or copy at `address`.
+    /// Where brg puts the worktree of the member or child team at `address`.
     pub fn worktree(&self, address: &str) -> PathBuf {
         self.path("state-worktrees").join(address.replace('/', "."))
     }

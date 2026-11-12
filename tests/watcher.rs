@@ -149,7 +149,7 @@ fn an_instance_start_never_interleaves_with_counting_a_start() {
     let order = [finished.recv().unwrap(), finished.recv().unwrap()];
     let begin = counting.join().unwrap();
     starting.join().unwrap();
-    // Whichever ran first, the instance start wins over the crash count:
+    // Whichever ran first, the team start wins over the crash count:
     // either it cleared the parking after, or the count started afresh.
     assert!(
         restart::parked(&dir).unwrap().is_none(),

@@ -1,4 +1,4 @@
-//! Instances and the four verbs: `create`, `start`, `stop`, `delete`, with
+//! Teams and the four verbs: `create`, `start`, `stop`, `delete`, with
 //! `templates`, `status` and addressing. Teams are found by name in the search
 //! paths of a test configuration (`BORGCHART_CONFIG`) or by path. Real tmux
 //! on a private per-test socket, with `fake-agent` standing in for `claude`
@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 fn starting_repairs_an_unresolved_parent_so_recursive_stop_reaches_the_child() {
     let env = Env::new();
     env.write(
-        "teams/oncall/team.yaml",
+        "templates/oncall/template.yaml",
         &TEAM
             .replace("prompt: lead.md", "prompt: lead.md\n    start: false")
             .replace("    start: false\n  scout:", "    start: true\n  scout:"),
@@ -64,7 +64,7 @@ fn stopped_parents_cannot_be_deleted_before_their_kept_children() {
         assert_eq!(env.member(&inst, "helper"), child);
     }
 
-    env.write("teams/oncall/team.yaml", "roles: [");
+    env.write("templates/oncall/template.yaml", "roles: [");
     for force in [false, true] {
         let mut args = vec!["delete", &parent_address];
         if force {
@@ -73,7 +73,7 @@ fn stopped_parents_cannot_be_deleted_before_their_kept_children() {
         let refusal = env.fails(&args);
         assert!(refusal.contains(&child_address), "{refusal}");
     }
-    env.write("teams/oncall/team.yaml", TEAM);
+    env.write("templates/oncall/template.yaml", TEAM);
     assert_eq!(env.member(&inst, "lead"), parent);
     assert_eq!(env.member(&inst, "helper"), child);
 
@@ -170,10 +170,10 @@ fn members_with_unloadable_teams_and_incomplete_parent_records_cannot_be_deleted
             meta["members"].as_object_mut().unwrap().remove(&child);
             fs::write(&start_file, serde_json::to_vec(&meta).unwrap()).unwrap();
         }
-        env.write("teams/oncall/team.yaml", "roles: [");
+        env.write("templates/oncall/template.yaml", "roles: [");
         env.fails(&["delete", &format!("{inst}/{parent}"), "--force"]);
         fs::write(&start_file, start).unwrap();
-        env.write("teams/oncall/team.yaml", TEAM);
+        env.write("templates/oncall/template.yaml", TEAM);
         assert_eq!(env.member(&inst, "lead"), parent);
         assert_eq!(env.member(&inst, "helper"), child);
         env.ok(&["delete", &format!("{inst}/{child}")]);
@@ -201,7 +201,10 @@ fn members_with_unknown_liveness_cannot_be_deleted() {
 #[test]
 fn members_can_be_deleted_without_a_message_bus() {
     let env = Env::new();
-    env.write("teams/oncall/team.yaml", &TEAM.replace("bus: {}\n", ""));
+    env.write(
+        "templates/oncall/template.yaml",
+        &TEAM.replace("bus: {}\n", ""),
+    );
     let inst = env.create("oncall", "work/a");
     let lead = env.member(&inst, "lead");
     env.ok(&["stop", &inst]);
@@ -240,7 +243,7 @@ fn publish_refusals_only_suggest_declared_role_addresses() {
 fn role_addresses_never_choose_a_member_and_status_tracks_each_start() {
     let env = Env::new();
     env.write(
-        "teams/oncall/team.yaml",
+        "templates/oncall/template.yaml",
         &TEAM.replace("prompt: lead.md", "prompt: lead.md\n    start: false"),
     );
     let out = env.ok(&[
@@ -259,7 +262,7 @@ fn role_addresses_never_choose_a_member_and_status_tracks_each_start() {
         );
     }
     env.ok(&["delete", &empty]);
-    env.write("teams/oncall/team.yaml", TEAM);
+    env.write("templates/oncall/template.yaml", TEAM);
     let inst = env.create("oncall", "work/a");
     let lead = env.member(&inst, "lead");
     for command in ["start", "stop", "attach", "logs", "delete", "send"] {
@@ -340,10 +343,10 @@ fn create_twice_makes_two_instances_with_suffixed_members() {
     let lead_b = env.member(&b, "lead");
     assert!(well_formed(&lead_a, "lead"), "{lead_a}");
     assert!(well_formed(&lead_b, "lead"), "{lead_b}");
-    // The member's own ID reaches it, with its instance and role.
+    // The member's own ID reaches it, with its team and role.
     let start = &env.starts(&lead_a)[0];
     assert_eq!(start["env"]["BORGCHART_MEMBER"], lead_a);
-    assert_eq!(start["env"]["BORGCHART_INSTANCE"], a);
+    assert_eq!(start["env"]["BORGCHART_TEAM"], a);
     assert_eq!(start["env"]["BORGCHART_ROLE"], "lead");
     assert!(
         start["env"]["BORGCHART_NOTES"]
@@ -365,7 +368,7 @@ fn create_twice_makes_two_instances_with_suffixed_members() {
     let err = env.fails(&["logs", &format!("{a}/lead")]);
     assert!(err.contains(&lead_a), "{err}");
     assert_eq!(env.state_of(&a, "lead"), "idle", "nothing was stopped");
-    // The tmux session is `brg-<instance>`.
+    // The tmux session is `brg-<team>`.
     assert!(
         env.tmux(&["list-sessions", "-F", "#{session_name}"])
             .contains(&format!("brg-{a}"))
@@ -412,29 +415,32 @@ fn a_deleted_instances_suffix_is_never_issued_again() {
 fn teams_are_found_by_name_or_by_path() {
     let env = Env::new();
     // By path, from the current folder and absolute.
-    let out = env.ok(&["validate", "./teams/oncall"]);
+    let out = env.ok(&["validate", "./templates/oncall"]);
     assert!(stdout(&out).starts_with("ok:"), "{}", both(&out));
-    env.ok(&["validate", &env.path("teams/oncall").display().to_string()]);
+    env.ok(&[
+        "validate",
+        &env.path("templates/oncall").display().to_string(),
+    ]);
     env.ok(&["validate", "oncall"]);
     // A path without `./` is refused with the hint.
-    let err = env.fails(&["create", "teams/oncall", "work/a"]);
-    assert!(err.contains("./teams/oncall"), "{err}");
-    let err = env.fails(&["validate", "teams/oncall"]);
-    assert!(err.contains("./teams/oncall"), "{err}");
+    let err = env.fails(&["create", "templates/oncall", "work/a"]);
+    assert!(err.contains("./templates/oncall"), "{err}");
+    let err = env.fails(&["validate", "templates/oncall"]);
+    assert!(err.contains("./templates/oncall"), "{err}");
     // A name in two search paths is refused, listing both.
     env.team("more/oncall");
     env.write(
         "config.yaml",
         &format!(
-            "schema: 1\nteams: [{}, {}]\n",
-            env.path("teams").display(),
+            "schema: 1\ntemplates: [{}, {}]\n",
+            env.path("templates").display(),
             env.path("more").display()
         ),
     );
     let err = env.fails(&["create", "oncall", "work/a"]);
     assert!(
         err.contains(
-            &env.path("teams/oncall")
+            &env.path("templates/oncall")
                 .canonicalize()
                 .unwrap()
                 .display()
@@ -449,7 +455,7 @@ fn teams_are_found_by_name_or_by_path() {
         "{err}"
     );
     // Two folders with the same name both run, by path.
-    let a = stdout(&env.ok(&["create", "./teams/oncall", "work/a"]))
+    let a = stdout(&env.ok(&["create", "./templates/oncall", "work/a"]))
         .split_whitespace()
         .next()
         .unwrap()
@@ -464,7 +470,7 @@ fn teams_are_found_by_name_or_by_path() {
     let teams: Vec<&Value> = ls.as_array().unwrap().iter().collect();
     assert_eq!(teams.len(), 2, "{ls}");
     for t in &teams {
-        assert_eq!(t["instances"].as_array().unwrap().len(), 1, "{ls}");
+        assert_eq!(t["teams"].as_array().unwrap().len(), 1, "{ls}");
     }
     env.ok(&["stop", &a]);
     env.ok(&["stop", &b]);
@@ -477,7 +483,7 @@ fn create_needs_an_existing_folder() {
     assert!(err.contains("folder"), "{err}");
     let err = env.fails(&["create", "oncall", "work/missing"]);
     assert!(err.contains("does not exist"), "{err}");
-    assert!(!env.path("state/registry.json").exists() || env.registry()["instances"] == json!({}));
+    assert!(!env.path("state/registry.json").exists() || env.registry()["teams"] == json!({}));
 }
 
 // --- 3, 4, 10. start, stop and create of a member ---
@@ -528,15 +534,7 @@ fn full_start_leaves_a_stopped_member_with_unacked_messages_stopped() {
     env.wait_for("lead idle", || env.state_of(&inst, "lead") == "idle");
     assert_eq!(env.state_of(&inst, "scout"), "stopped");
     assert_eq!(env.starts(&scout).len(), 1);
-    let inbox = env.ok(&[
-        "msg",
-        "list",
-        "--member",
-        &scout,
-        "--instance",
-        &inst,
-        "--json",
-    ]);
+    let inbox = env.ok(&["msg", "list", "--member", &scout, "--team", &inst, "--json"]);
     let inbox: Value = serde_json::from_slice(&inbox.stdout).unwrap();
     assert_eq!(inbox["records"][0]["id"], "m1");
     env.ok(&["stop", &inst]);
@@ -599,13 +597,13 @@ fn delete_needs_a_stop_and_force_for_unacked_messages_and_keeps_the_folder() {
     assert!(env.path(&format!("state/{inst}")).is_dir());
     env.ok(&["delete", &inst, "--force"]);
     assert!(!env.path(&format!("state/{inst}")).exists());
-    assert!(env.registry()["instances"].get(&inst).is_none());
+    assert!(env.registry()["teams"].get(&inst).is_none());
     assert_eq!(
         fs::read_to_string(env.path("work/a/keep.txt")).unwrap(),
         "mine\n"
     );
     let err = env.fails(&["status", &inst]);
-    assert!(err.contains("no instance"), "{err}");
+    assert!(err.contains("no team"), "{err}");
 }
 
 // --- 8. Addressing ---
@@ -615,25 +613,28 @@ fn addresses_name_the_instance_in_full_outside_a_member() {
     let env = Env::new();
     let inst = env.create("oncall", "work/a");
     let lead = env.member(&inst, "lead");
-    // Outside a member, a member needs its instance, even with one running.
+    // Outside a member, a member needs its team, even with one running.
     let err = env.fails(&["logs", &lead]);
-    assert!(err.contains(&format!("<instance>/{lead}")), "{err}");
-    // A team's name where an instance is expected.
+    assert!(err.contains(&format!("<team>/{lead}")), "{err}");
+    // A template's name where a team ID is expected.
     let err = env.fails(&["status", "oncall"]);
-    assert!(err.contains("is a team") && err.contains(&inst), "{err}");
-    // Inside a member, the instance comes from BORGCHART_INSTANCE.
+    assert!(
+        err.contains("is a template") && err.contains(&inst),
+        "{err}"
+    );
+    // Inside a member, the team comes from BORGCHART_TEAM.
     let out = env
         .cmd(&["logs", &lead])
-        .env("BORGCHART_INSTANCE", &inst)
+        .env("BORGCHART_TEAM", &inst)
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", both(&out));
-    // Bus commands take `--instance`, required outside a member.
+    // Bus commands take `--team`, required outside a member.
     let err = env.fails(&["msg", "list", "--external", "ops"]);
-    assert!(err.contains("--instance") && err.contains(&inst), "{err}");
-    env.ok(&["msg", "list", "--external", "ops", "--instance", &inst]);
-    env.ok(&["msg", "integrity-check", "--instance", &inst]);
-    // An instance isn't a recipient; nor is a role.
+    assert!(err.contains("--team") && err.contains(&inst), "{err}");
+    env.ok(&["msg", "list", "--external", "ops", "--team", &inst]);
+    env.ok(&["msg", "integrity-check", "--team", &inst]);
+    // A team isn't a recipient; nor is a role.
     for to in [inst.as_str(), "lead"] {
         let out = env.publish(&inst, &json!({"to": to, "body": "hi"}));
         assert!(!out.status.success(), "{}", both(&out));
@@ -648,7 +649,7 @@ fn addresses_name_the_instance_in_full_outside_a_member() {
             .any(|l| l.contains("helper") && l.contains("not created (start: false)")),
         "{text}"
     );
-    // Bare `status` shows every instance.
+    // Bare `status` shows every team.
     let b = env.create("oncall", "work/b");
     let all = stdout(&env.ok(&["status"]));
     assert!(all.contains(&inst) && all.contains(&b), "{all}");
@@ -656,7 +657,7 @@ fn addresses_name_the_instance_in_full_outside_a_member() {
     env.ok(&["stop", &b]);
 }
 
-/// `brg status [<instance>] -w --interval 1`, its output collected as it
+/// `brg status [<team>] -w --interval 1`, its output collected as it
 /// comes: one screen per refresh.
 struct Watch {
     child: std::process::Child,
@@ -724,14 +725,14 @@ fn status_w_with_no_instance_follows_every_instance() {
         watch
             .screens()
             .iter()
-            .any(|s| s.contains("there are no instances"))
+            .any(|s| s.contains("there are no teams"))
     });
     let seen = watch.screens().len();
     env.wait_for("another refresh", || watch.screens().len() > seen);
     assert!(watch.running(), "{}", watch.dump());
     let a = env.create("oncall", "work/a");
     let b = env.create("oncall", "work/b");
-    env.wait_for("a refresh showing both instances", || {
+    env.wait_for("a refresh showing both teams", || {
         watch
             .screens()
             .iter()
@@ -768,7 +769,7 @@ fn auth_comes_from_the_configuration_and_a_missing_file_means_login() {
     let out = env
         .cmd(&[
             "create",
-            "./teams/oncall",
+            "./templates/oncall",
             &env.path("work/a").display().to_string(),
         ])
         .env("BORGCHART_CONFIG", env.path("missing.yaml"))
@@ -894,16 +895,16 @@ fn tmux_user_config_comes_from_the_configuration_and_a_change_is_reported() {
 fn plain_plugin_values_come_from_the_team() {
     let env = Env::new();
     env.write(
-        "teams/oncall/team.yaml",
+        "templates/oncall/template.yaml",
         &TEAM.replace(
             "roles:\n  lead:\n    prompt: lead.md\n",
             "plugins:\n  pager:\n    path: plugins/pager\n    env:\n      PAGER_ROOM: R0000EXAMPLE\n      PAGER_TOKEN:\n    actions:\n      read: pager read <id>\nroles:\n  lead:\n    prompt: lead.md\n    plugins: {pager: [read]}\n",
         ),
     );
-    fs::create_dir_all(env.path("teams/oncall/plugins/pager")).unwrap();
+    fs::create_dir_all(env.path("templates/oncall/plugins/pager")).unwrap();
     script(
-        &env.path("teams/oncall/plugins/pager/pager"),
-        "#!/bin/sh\necho \"room=$PAGER_ROOM token_len=${#PAGER_TOKEN} instance=$BORGCHART_INSTANCE\" >> \"$BORGCHART_STATE_DIR/calls.log\"\n",
+        &env.path("templates/oncall/plugins/pager/pager"),
+        "#!/bin/sh\necho \"room=$PAGER_ROOM token_len=${#PAGER_TOKEN} team=$BORGCHART_TEAM\" >> \"$BORGCHART_STATE_DIR/calls.log\"\n",
     );
     // The secret must come from the environment.
     let err = env.fails(&[
@@ -946,7 +947,7 @@ fn plain_plugin_values_come_from_the_team() {
         fs::read_to_string(env.path(&format!("state/{inst}/plugins/pager/calls.log"))).unwrap();
     assert_eq!(
         log.trim(),
-        format!("room=R0000EXAMPLE token_len=12 instance={inst}")
+        format!("room=R0000EXAMPLE token_len=12 team={inst}")
     );
     env.ok(&["stop", &inst]);
 }
@@ -955,7 +956,7 @@ fn plain_plugin_values_come_from_the_team() {
 fn a_roles_args_come_from_the_team_and_members_work_in_its_folder() {
     let env = Env::new();
     env.write(
-        "teams/oncall/team.yaml",
+        "templates/oncall/template.yaml",
         &TEAM.replace(
             "  lead:\n    prompt: lead.md\n",
             "  lead:\n    prompt: lead.md\n    args: [--example-flag]\n",
@@ -981,9 +982,9 @@ fn a_roles_args_come_from_the_team_and_members_work_in_its_folder() {
         "{start}"
     );
     env.ok(&["stop", &inst]);
-    // `cwd` is gone: members work in the instance's folder or a worktree.
+    // `cwd` is gone: members work in the team's folder or a worktree.
     env.write(
-        "teams/oncall/team.yaml",
+        "templates/oncall/template.yaml",
         &TEAM.replace(
             "  lead:\n    prompt: lead.md\n",
             "  lead:\n    prompt: lead.md\n    cwd: sub\n",

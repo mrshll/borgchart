@@ -1,4 +1,4 @@
-//! `create <instance>/<role> --name`: member and copy IDs that say what
+//! `create <team>/<role> --name`: member and child team IDs that say what
 //! each one is for.
 //!
 //! Run with `cargo test --features test-support`.
@@ -26,7 +26,7 @@ roles:
     max: 2
     worktree: true
   dev:
-    team: dev
+    template: dev
     parent: lead
     start: false
     max: 2
@@ -35,10 +35,10 @@ roles:
 
 fn names_env() -> (Env, String) {
     let env = Env::new();
-    env.write("teams/oncall/team.yaml", TEAM);
-    env.team("teams/dev");
+    env.write("templates/oncall/template.yaml", TEAM);
+    env.team("templates/dev");
     env.write(
-        "teams/dev/team.yaml",
+        "templates/dev/template.yaml",
         "bus: {}\nroles:\n  lead: {prompt: lead.md}\n",
     );
     fs::remove_dir(env.path("work/a")).unwrap();
@@ -98,7 +98,7 @@ fn names_that_do_not_fit_are_refused_before_anything_is_issued() {
     let err = env.fails(&["create", &format!("{inst}/helper"), "--name", "Rounding"]);
     assert!(err.contains("lowercase"), "{err}");
     let err = env.fails(&["create", "oncall", "work/b", "--name", "widgets"]);
-    assert!(err.contains("<instance>/<role> --name"), "{err}");
+    assert!(err.contains("<team>/<role> --name"), "{err}");
     assert_eq!(env.registry(), before);
     assert!(
         env.rows(&inst)

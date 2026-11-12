@@ -153,16 +153,16 @@ impl Run {
         serde_json::from_slice(&fs::read(self.dir.path().join(rel)).ok()?).ok()
     }
 
-    /// The example's one instance, once created.
+    /// The example's one team, once created.
     fn instance(&self) -> Option<String> {
         let reg = self.read("state/registry.json")?;
-        reg["instances"].as_object()?.keys().next().cloned()
+        reg["teams"].as_object()?.keys().next().cloned()
     }
 
     /// The member of `role`, or the name as it is (a plugin process).
     fn member(&self, role: &str) -> String {
         let found = self.instance().and_then(|inst| {
-            let rec = self.read(&format!("state/{inst}/instance.json"))?;
+            let rec = self.read(&format!("state/{inst}/team.json"))?;
             rec["members"]
                 .as_object()?
                 .iter()
@@ -172,7 +172,7 @@ impl Run {
         found.unwrap_or_else(|| role.to_string())
     }
 
-    /// `start` creates the instance (working in `work`); `stop`, `status`,
+    /// `start` creates the team (working in `work`); `stop`, `status`,
     /// `msg send` and `logs` go to it, with members named by role.
     fn translate(&self, args: &[&str]) -> Vec<String> {
         let inst = self.instance().unwrap_or_default();
@@ -260,7 +260,7 @@ fn slack_round_trip_through_the_example_team() {
     }
 
     // Point the plugin at the fake API (tests only), and poll quickly.
-    let team_yaml = fs::read_to_string(team.join("team.yaml")).unwrap();
+    let team_yaml = fs::read_to_string(team.join("template.yaml")).unwrap();
     let channel = "      SLACK_CHANNEL_ID: C0000EXAMPLE";
     assert!(team_yaml.contains(channel), "{team_yaml}");
     let team_yaml = team_yaml.replacen(
@@ -271,7 +271,7 @@ fn slack_round_trip_through_the_example_team() {
         ),
         1,
     );
-    fs::write(team.join("team.yaml"), team_yaml).unwrap();
+    fs::write(team.join("template.yaml"), team_yaml).unwrap();
     fs::create_dir_all(dir.path().join("work")).unwrap();
 
     let bin = dir.path().join("bin");

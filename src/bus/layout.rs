@@ -35,10 +35,10 @@ impl StorePaths {
     /// Recognise the store before reading any messages. An absent or empty
     /// directory is new; every other layout needs our exact identity.
     pub fn validate(&self, instance: &str) -> Result<bool, String> {
-        let root = instance.split('/').next().expect("instance ID");
+        let root = instance.split('/').next().expect("team ID");
         let damaged = |detail: &str| {
             format!(
-                "instance `{instance}`'s message storage is damaged: {detail}; repair it by hand, or create a new instance (`brg create`)"
+                "team `{instance}`'s message storage is damaged: {detail}; repair it by hand, or create a new team (`brg create`)"
             )
         };
         match std::fs::symlink_metadata(&self.root) {
@@ -93,7 +93,7 @@ impl StorePaths {
         Ok(true)
     }
 
-    /// Called under the root instance's lifecycle lock, after every start check.
+    /// Called under the root team's lifecycle lock, after every start check.
     /// An absent or empty directory may be initialised; other unrecognised
     /// layouts are refused.
     pub fn initialize(&self, state: &StateDir) -> Result<(), String> {
@@ -101,9 +101,7 @@ impl StorePaths {
             return Ok(());
         }
         if state.id.contains('/') {
-            return Err(
-                "the tree's message store is missing; start the root instance first".into(),
-            );
+            return Err("the tree's message store is missing; start the root team first".into());
         }
         fsx::ensure_private_tree(&state.root, &self.root)
             .map_err(|e| format!("cannot create message storage: {e}"))?;
@@ -121,7 +119,7 @@ impl StorePaths {
         self.root.clone()
     }
 
-    /// Publication lock, taken after the instance's lifecycle lock when both apply.
+    /// Publication lock, taken after the team's lifecycle lock when both apply.
     pub fn bus_lock(&self) -> PathBuf {
         self.root.join("lock")
     }

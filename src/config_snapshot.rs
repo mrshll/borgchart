@@ -1,11 +1,11 @@
-//! The configuration bytes recorded at an instance's start.
+//! The configuration bytes recorded at a team's start.
 
 use crate::validate::Validated;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
-/// A digest of the instance's configuration inputs, computed from their bytes
+/// A digest of the team's configuration inputs, computed from their bytes
 /// (not from brg's internal types, so a compatible brg upgrade computes the
 /// same digest for the same files).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -13,15 +13,16 @@ use std::collections::BTreeMap;
 pub struct ConfigSnapshot {
     pub version: u32,
     pub digest: String,
-    /// Input name → SHA-256: `team.yaml`, `members/<role>/prompt` (the
+    /// Input name → SHA-256: `template.yaml`, `members/<role>/prompt` (the
     /// role file), `members/<role>/instruction` (its body with includes
     /// expanded), and the global settings that reach members:
     /// `config/auth`, `config/auto_trust` and `config/plugins/<name>` (where
-    /// a shared plugin resolves), plus `teams/<role>` (the resolved source
+    /// a shared plugin resolves), plus `templates/<role>` (the resolved source
     /// folder when this snapshot was taken).
     pub inputs: BTreeMap<String, String>,
     /// Recorded canonical sources, used to observe and manage the declaring
-    /// instance when a referenced team is unavailable in the current catalog.
+    /// team when a referenced template is unavailable in the current catalog.
+    #[serde(rename = "template_dirs")]
     pub team_dirs: BTreeMap<String, std::path::PathBuf>,
 }
 
@@ -69,7 +70,7 @@ impl Validated {
         }
         for (id, role) in &self.team.team_roles {
             inputs.insert(
-                format!("teams/{id}"),
+                format!("templates/{id}"),
                 sha256_hex(role.dir.as_os_str().as_encoded_bytes()),
             );
         }

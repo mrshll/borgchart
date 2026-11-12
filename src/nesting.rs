@@ -1,4 +1,4 @@
-//! Team-role copies: stopped nested instances, each working in its own git
+//! Child teams: stopped nested teams, each working in its own git
 //! worktree (`worktree: true`) or in its parent's folder.
 
 use std::path::Path;
@@ -9,7 +9,7 @@ use crate::runtime::UpOutcome;
 use crate::team::TeamRole;
 use crate::validate::Validated;
 
-/// All kept copies below an instance, deepest first. The caller holds the
+/// All kept child teams below a team, deepest first. The caller holds the
 /// registry lock when using this list for a lifecycle change.
 pub fn descendants(inst: &Instance) -> Result<Vec<Descendant>, String> {
     let prefix = format!("{}/", inst.id);
@@ -27,13 +27,13 @@ pub fn descendants(inst: &Instance) -> Result<Vec<Descendant>, String> {
     Ok(copies)
 }
 
-/// A registered copy, including one whose state cannot currently be read.
+/// A registered child team, including one whose state cannot currently be read.
 pub struct Descendant {
     pub id: String,
     pub instance: Result<Instance, String>,
 }
 
-/// The outermost unfinished cascade enclosing this instance, if any.
+/// The outermost unfinished cascade enclosing this team, if any.
 pub fn stopping_ancestor(inst: &Instance) -> Result<Option<String>, String> {
     let mut id = String::new();
     for segment in inst.id.split('/') {
@@ -52,14 +52,14 @@ pub fn stopping_ancestor(inst: &Instance) -> Result<Option<String>, String> {
 pub fn check_not_stopping(inst: &Instance) -> Result<(), String> {
     if let Some(id) = stopping_ancestor(inst)? {
         return Err(format!(
-            "instance `{id}` is stopping; finish its cascade first: brg stop {id}"
+            "team `{id}` is stopping; finish its cascade first: brg stop {id}"
         ));
     }
     Ok(())
 }
 
-/// Make a copy's registration, and its worktree for a `worktree: true` role
-/// (detached at the instance folder's `HEAD`, or on a new `branch`), without
+/// Make a child team's registration, and its worktree for a `worktree: true` role
+/// (detached at the working folder's `HEAD`, or on a new `branch`), without
 /// starting any member.
 pub fn create(
     mut inst: Instance,
@@ -89,7 +89,7 @@ pub fn create(
         .collect();
     if kept.len() >= role.max {
         return Err(format!(
-            "role `{role_name}` has {} kept copies (max: {}): {}; delete a stopped copy before creating another",
+            "role `{role_name}` has {} kept child teams (max: {}): {}; delete a stopped child team before creating another",
             kept.len(),
             role.max,
             kept.join(", ")
@@ -105,13 +105,17 @@ pub fn create(
     } else {
         inst.record.folder.clone()
     };
-    crate::checkouts::reserve(&lock, &inst.id, &[("the copy".into(), folder.clone())])?;
+    crate::checkouts::reserve(
+        &lock,
+        &inst.id,
+        &[("the child team".into(), folder.clone())],
+    )?;
     validate_child(&inst, &role.dir)?;
     // Reserve the ID before touching disk: a failed creation cannot reuse it.
     inst.record
         .copies
         .get_mut(&id)
-        .expect("issued copy")
+        .expect("issued child team")
         .deleted = true;
     lock.save_instance(&inst.state, &inst.record)?;
     if role.worktree {
@@ -122,11 +126,13 @@ pub fn create(
                 inst.record.copies.remove(&id);
                 lock.save_instance(&inst.state, &inst.record)?;
             }
-            return Err(format!("copy `{full_id}` needs its own worktree: {e}"));
+            return Err(format!(
+                "child team `{full_id}` needs its own worktree: {e}"
+            ));
         }
     }
     registry::create_copy(&lock, &full_id, &role.dir, &folder, parent)?;
-    let issued = inst.record.copies.get_mut(&id).expect("issued copy");
+    let issued = inst.record.copies.get_mut(&id).expect("issued child team");
     issued.deleted = false;
     issued.cwd = Some(folder.clone());
     lock.save_instance(&inst.state, &inst.record)?;
@@ -141,7 +147,7 @@ pub fn create(
     })
 }
 
-/// Validate a child against its declaring instance and every kept ancestor.
+/// Validate a child against its declaring team and every kept ancestor.
 /// The caller holds the registry lock, so explicit repointing cannot race it.
 pub fn validate_child(parent: &Instance, dir: &Path) -> Result<Validated, String> {
     let mut ancestors = Vec::new();
@@ -149,7 +155,7 @@ pub fn validate_child(parent: &Instance, dir: &Path) -> Result<Validated, String
     loop {
         let folder = current.record.team_dir.canonicalize().map_err(|_| {
             format!(
-                "`{}`'s team folder is gone; restore it before creating or starting a copy",
+                "`{}`'s template folder is gone; restore it before creating or starting a child team",
                 current.id
             )
         })?;

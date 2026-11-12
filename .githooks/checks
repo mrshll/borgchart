@@ -40,7 +40,7 @@ sweep() {
 }
 
 [ "$#" -gt 0 ] || set -- fmt clippy test py
-# Inside a team member, BORGCHART_* names that member's real instance and
+# Inside a team member, BORGCHART_* names that member's real team and
 # message storage, and inside a git hook GIT_DIR names this repository. The
 # tests run with them pointing nowhere, so a test that forgets to clear them
 # fails instead of writing into the team or the repository. (No value holds
@@ -50,7 +50,7 @@ nowhere="GIT_DIR=/nonexistent/caller-repo/.git
   BORGCHART_CONFIG=/nonexistent/caller-team/config.yaml
   BORGCHART_STATE_HOME=/nonexistent/caller-team/state
   BORGCHART_STATE_DIR=/nonexistent/caller-team/member-state
-  BORGCHART_INSTANCE=caller-team-2222
+  BORGCHART_TEAM=caller-team-2222
   BORGCHART_MEMBER=caller-member-2222
   BORGCHART_ROLE=caller-member
   BORGCHART_NOTES=/nonexistent/caller-team/notes

@@ -20,7 +20,7 @@ pub struct ExecSpec {
 }
 
 /// The plugin's secret and non-secret values, kept in a 0600 file for the
-/// shims while the instance runs.
+/// shims while the team runs.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct PluginEnv {
     pub env: BTreeMap<String, String>,
@@ -81,7 +81,7 @@ pub fn run_main(
     };
     let Some(meta) = meta else {
         return fail(format!(
-            "instance `{}` isn't running (no state); start it with `brg start {}`",
+            "team `{}` isn't running (no state); start it with `brg start {}`",
             state.id, state.id
         ));
     };
@@ -152,7 +152,7 @@ pub fn run_main(
 
 /// Set for members and plugin actions: the member's role.
 pub const ENV_ROLE: &str = "BORGCHART_ROLE";
-/// Set for members: the instance's notes folder.
+/// Set for members: the team's notes folder.
 pub const ENV_NOTES: &str = "BORGCHART_NOTES";
 
 /// The `BORGCHART_*` variables a plugin program sees.

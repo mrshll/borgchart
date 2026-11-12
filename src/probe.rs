@@ -83,7 +83,7 @@ pub fn probe(v: &Validated, report: &mut Report) {
         if member.connectors.is_empty() {
             continue;
         }
-        // The instance's folder isn't known here: ask from the team folder.
+        // The team's folder isn't known here: ask from the template folder.
         let cwd = v.team.dir.clone();
         match list(member.vendor, &cwd) {
             Ok(names) => {

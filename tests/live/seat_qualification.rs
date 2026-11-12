@@ -80,9 +80,9 @@ fn vendor_codex_seating_probe() {
             bus: false,
         },
     );
-    let yaml = fs::read_to_string(t.dir.join("team.yaml")).unwrap();
+    let yaml = fs::read_to_string(t.dir.join("template.yaml")).unwrap();
     fs::write(
-        t.dir.join("team.yaml"),
+        t.dir.join("template.yaml"),
         format!(
             "plugins:\n  seat:\n    actions:\n      route: brg-seat route <vendor> <model>\n{}",
             yaml.replace("    prompt:", "    plugins: {seat: [route]}\n    prompt:")
@@ -108,8 +108,8 @@ blocked() {{ echo "BLOCKED_context_$1"; exit 78; }}
 [ "${{BORGCHART_TMUX_SOCKET-}}" = {socket} ] || blocked socket
 [ "${{BORGCHART_ROLE-}}" = seatprobe ] || blocked role
 [ -n "${{BORGCHART_INCARNATION-}}" ] || blocked incarnation
-case "${{BORGCHART_INSTANCE-}}/${{BORGCHART_MEMBER-}}" in *..*|/*|*/|*/*/*) blocked identity;; esac
-shim="$BORGCHART_STATE_HOME/$BORGCHART_INSTANCE/members/$BORGCHART_MEMBER/bin/brg-seat"
+case "${{BORGCHART_TEAM-}}/${{BORGCHART_MEMBER-}}" in *..*|/*|*/|*/*/*) blocked identity;; esac
+shim="$BORGCHART_STATE_HOME/$BORGCHART_TEAM/members/$BORGCHART_MEMBER/bin/brg-seat"
 [ "$(command -v brg-seat)" = "$shim" ] || blocked shim
 (umask 077; : > "$XDG_CACHE_HOME/permission-probe") || blocked cache_unwritable
 /bin/rm "$XDG_CACHE_HOME/permission-probe"

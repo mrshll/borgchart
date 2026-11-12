@@ -1,4 +1,4 @@
-//! Persisted cascades fence new work and restore only the copies that ran.
+//! Persisted cascades fence new work and restore only the child teams that ran.
 #![cfg(feature = "test-support")]
 
 mod common;
@@ -13,17 +13,17 @@ use instance_env::*;
 fn department() -> Env {
     let env = Env::new();
     env.write(
-        "teams/oncall/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  dev: {team: dev, parent: lead, start: false, max: 4, worktree: true}\n",
+        "templates/oncall/template.yaml",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  dev: {template: dev, parent: lead, start: false, max: 4, worktree: true}\n",
     );
-    env.team("teams/dev");
+    env.team("templates/dev");
     env.write(
-        "teams/dev/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead, start: false}\n  scout: {prompt: scout.md, start: false}\n  design: {team: design, parent: lead, start: false, max: 2}\n",
+        "templates/dev/template.yaml",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead, start: false}\n  scout: {prompt: scout.md, start: false}\n  design: {template: design, parent: lead, start: false, max: 2}\n",
     );
-    env.team("teams/design");
+    env.team("templates/design");
     env.write(
-        "teams/design/team.yaml",
+        "templates/design/template.yaml",
         "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead, start: false}\n",
     );
     fs::remove_dir(env.path("work/a")).unwrap();
@@ -35,7 +35,7 @@ fn prepared_copy(env: &Env, parent: &str, role: &str) -> (String, PathBuf) {
     let out = env.ok(&["create", &format!("{parent}/{role}")]);
     let id = stdout(&out).split_whitespace().next().unwrap().to_string();
     let record: serde_json::Value =
-        serde_json::from_slice(&fs::read(env.path(&format!("state/{id}/instance.json"))).unwrap())
+        serde_json::from_slice(&fs::read(env.path(&format!("state/{id}/team.json"))).unwrap())
             .unwrap();
     let folder = PathBuf::from(record["folder"].as_str().unwrap());
     (id, folder)
@@ -49,7 +49,7 @@ fn start(env: &Env, instance: &str) {
 fn own_row(env: &Env, instance: &str, role: &str) -> serde_json::Value {
     env.rows(instance)
         .into_iter()
-        .find(|row| row["instance"] == instance && row["role"] == role && row["kind"] != "copy")
+        .find(|row| row["team"] == instance && row["role"] == role && row["kind"] != "team")
         .unwrap()
 }
 
@@ -60,7 +60,7 @@ fn child_lead(env: &Env, instance: &str, args: &[&str]) -> Command {
     let vars = &starts.last().unwrap()["env"];
     let mut cmd = env.cmd(args);
     for name in [
-        "BORGCHART_INSTANCE",
+        "BORGCHART_TEAM",
         "BORGCHART_MEMBER",
         "BORGCHART_INCARNATION",
     ] {
@@ -115,9 +115,11 @@ fn stopping_department_refuses_child_create_and_start() {
     env.wait_for("cascade marks persisted", || {
         gate.with_extension("waiting").exists()
     });
-    assert!(env.rows(&dept).iter().any(|row| {
-        row["instance"] == dev && row["kind"] == "copy" && row["state"] == "stopping"
-    }));
+    assert!(
+        env.rows(&dept).iter().any(|row| {
+            row["team"] == dev && row["kind"] == "team" && row["state"] == "stopping"
+        })
+    );
     assert!(stdout(&env.ok(&["status", &dept])).contains("stopping"));
     // An already-finished descendant still inherits its enclosing stop.
     env.ok(&["stop", &panel]);
@@ -180,7 +182,7 @@ fn interrupted_cascade_holds_folders_and_resumes_before_start() {
     assert!(refused.contains(&dept), "{refused}");
     env.ok(&["stop", &dept]);
     start(&env, &dept);
-    env.wait_for("copy restored after interrupted stop", || {
+    env.wait_for("child team restored after interrupted stop", || {
         env.state_of(&dev, "lead") == "idle"
     });
     env.ok(&["stop", &dept]);
@@ -214,7 +216,7 @@ fn unknown_liveness_keeps_cascade_stopping_until_stop_can_confirm_it() {
     fs::write(incarnation, original).unwrap();
     env.ok(&["stop", &dept]);
     start(&env, &dept);
-    env.wait_for("copy restored after liveness recovered", || {
+    env.wait_for("child team restored after liveness recovered", || {
         env.state_of(&dev, "lead") == "idle"
     });
     env.ok(&["stop", &dept]);
@@ -246,7 +248,7 @@ fn ordinary_full_stop_fences_start_until_retried() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    env.wait_for("ordinary instance marked stopping", || {
+    env.wait_for("ordinary team marked stopping", || {
         gate.with_extension("waiting").exists()
     });
     stop.kill().unwrap();
@@ -366,10 +368,12 @@ fn full_start_skips_running_copy_validation_but_checks_stopped_restores() {
     start(&env, &dev);
     env.ok(&["stop", &dept]);
     start(&env, &dept);
-    env.wait_for("copy restored", || env.state_of(&dev, "lead") == "idle");
+    env.wait_for("child team restored", || {
+        env.state_of(&dev, "lead") == "idle"
+    });
     let lead = env.member(&dev, "lead");
     let before = env.starts(&lead).len();
-    let path = env.path("teams/dev/lead.md");
+    let path = env.path("templates/dev/lead.md");
     let prompt = fs::read_to_string(&path).unwrap();
     fs::write(
         &path,
@@ -380,7 +384,7 @@ fn full_start_skips_running_copy_validation_but_checks_stopped_restores() {
     assert_eq!(env.starts(&lead).len(), before);
     assert_eq!(env.state_of(&dev, "lead"), "idle");
     // The restore list stays useful for later full starts, and stopped
-    // copies still go through their normal folder and configuration checks.
+    // child teams still go through their normal folder and configuration checks.
     env.ok(&["stop", &dept]);
     fs::remove_dir_all(&folder).unwrap();
     let refused = env.fails(&["start", &dept]);
@@ -400,27 +404,27 @@ fn unreadable_copy_does_not_hide_status_or_block_stopping_readable_instances() {
         start(&env, &peer);
         let (panel, _) = prepared_copy(&env, &dev, "design");
         let path = match damage {
-            "record" | "missing-record" => env.path(&format!("state/{panel}/instance.json")),
+            "record" | "missing-record" => env.path(&format!("state/{panel}/team.json")),
             "state" => env.path(&format!("state/{panel}")),
             _ => unreachable!(),
         };
-        let moved = env.path("moved-copy-data");
+        let moved = env.path("moved-child-team-data");
         fs::rename(&path, &moved).unwrap();
         if damage == "record" {
-            fs::write(&path, "unreadable instance record").unwrap();
+            fs::write(&path, "unreadable team record").unwrap();
         }
         for args in [vec!["status", &dept, "--json"], vec!["status", "--json"]] {
             let out = env.ok(&args);
             let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
             assert!(
                 rows.iter()
-                    .any(|r| r["instance"] == dept && r["kind"] == "member")
+                    .any(|r| r["team"] == dept && r["kind"] == "member")
             );
             assert!(
                 rows.iter()
-                    .any(|r| r["instance"] == dev && r["kind"] == "member")
+                    .any(|r| r["team"] == dev && r["kind"] == "member")
             );
-            let row = rows.iter().find(|r| r["instance"] == panel).unwrap();
+            let row = rows.iter().find(|r| r["team"] == panel).unwrap();
             assert_eq!(row["state"], "unreadable", "{damage}: {rows:?}");
             assert!(!row["detail"].as_str().unwrap().is_empty());
         }
@@ -453,15 +457,15 @@ fn failed_copy_delete_preserves_registered_state() {
     let dept = env.create("oncall", "work/a");
     let (dev, _) = prepared_copy(&env, &dept, "dev");
     env.ok(&["stop", &dept]);
-    let parent = env.path(&format!("state/{dept}/instance.json"));
+    let parent = env.path(&format!("state/{dept}/team.json"));
     let original = fs::read(&parent).unwrap();
     fs::write(&parent, "unreadable parent record").unwrap();
     env.fails(&["delete", &dev, "--force"]);
-    assert!(!env.registry()["instances"][&dev].is_null());
-    assert!(env.path(&format!("state/{dev}/instance.json")).is_file());
+    assert!(!env.registry()["teams"][&dev].is_null());
+    assert!(env.path(&format!("state/{dev}/team.json")).is_file());
     fs::write(parent, original).unwrap();
     env.ok(&["delete", &dev, "--force"]);
-    assert!(env.registry()["instances"][&dev].is_null());
+    assert!(env.registry()["teams"][&dev].is_null());
     assert!(!env.path(&format!("state/{dev}")).exists());
 }
 
@@ -513,9 +517,10 @@ fn running_panel_is_restored_without_starting_its_stopped_enclosing_copy() {
     start(&env, &panel);
     env.ok(&["stop", &dept]);
     start(&env, &dept);
-    env.wait_for("panel restored through stopped enclosing copy", || {
-        env.state_of(&panel, "lead") == "idle"
-    });
+    env.wait_for(
+        "panel restored through stopped enclosing child team",
+        || env.state_of(&panel, "lead") == "idle",
+    );
     assert_eq!(own_row(&env, &dev, "lead")["state"], "stopped");
     env.ok(&["stop", &dept]);
 }
@@ -534,7 +539,7 @@ fn copy_start_failure_does_not_hide_successful_siblings() {
     let out = env.brg(&["start", &dept]);
     assert!(!out.status.success(), "{}", both(&out));
     assert!(both(&out).contains(&broken), "{}", both(&out));
-    env.wait_for("healthy copy restored", || {
+    env.wait_for("healthy child team restored", || {
         env.state_of(&healthy, "lead") == "idle"
     });
     assert_eq!(env.state_of(&dept, "lead"), "idle");
@@ -557,14 +562,17 @@ fn member_delete_preserves_kept_copies_even_with_force() {
             }
             let refused = env.fails(&args);
             assert!(refused.contains(&dev), "{refused}");
-            assert!(env.path(&format!("state/{dev}/instance.json")).is_file());
+            assert!(env.path(&format!("state/{dev}/team.json")).is_file());
             env.ok(&["status", &dev]);
         }
     }
     env.ok(&["delete", &dev]);
     env.ok(&["delete", &lead]);
     env.ok(&["delete", &dept]);
-    assert!(!folder.exists(), "delete leaves the copy's clean worktree");
+    assert!(
+        !folder.exists(),
+        "delete leaves the child team's clean worktree"
+    );
 }
 
 #[test]
@@ -606,7 +614,7 @@ fn recursive_member_stop_reuses_nested_copy_cascades() {
     );
     for inst in [&dev, &panel] {
         let record: serde_json::Value = serde_json::from_slice(
-            &fs::read(env.path(&format!("state/{inst}/instance.json"))).unwrap(),
+            &fs::read(env.path(&format!("state/{inst}/team.json"))).unwrap(),
         )
         .unwrap();
         assert_ne!(record["stopping"], true);
@@ -619,7 +627,7 @@ fn recursive_member_stop_reuses_nested_copy_cascades() {
 #[test]
 fn recursive_stop_checks_copy_sockets_before_stopping_any_member() {
     let env = department();
-    let team = env.path("teams/oncall/team.yaml");
+    let team = env.path("templates/oncall/template.yaml");
     let mut text = fs::read_to_string(&team).unwrap();
     text.push_str("  helper: {prompt: helper.md, parent: lead}\n");
     fs::write(team, text).unwrap();
@@ -640,7 +648,7 @@ fn recursive_stop_checks_copy_sockets_before_stopping_any_member() {
     assert_eq!(env.row(&dept, "lead")["liveness"], "alive");
     assert_eq!(own_row(&env, &dept, "helper")["liveness"], "alive");
     let record: serde_json::Value =
-        serde_json::from_slice(&fs::read(env.path(&format!("state/{dev}/instance.json"))).unwrap())
+        serde_json::from_slice(&fs::read(env.path(&format!("state/{dev}/team.json"))).unwrap())
             .unwrap();
     assert_ne!(record["stopping"], true);
     fs::write(path, original).unwrap();
@@ -650,7 +658,7 @@ fn recursive_stop_checks_copy_sockets_before_stopping_any_member() {
 #[test]
 fn a_failed_member_stop_does_not_fence_a_copy_the_walk_has_not_reached() {
     let env = department();
-    let team = env.path("teams/oncall/team.yaml");
+    let team = env.path("templates/oncall/template.yaml");
     let mut text = fs::read_to_string(&team).unwrap();
     text.push_str("  helper: {prompt: helper.md, parent: lead}\n");
     fs::write(team, text).unwrap();
@@ -667,9 +675,9 @@ fn a_failed_member_stop_does_not_fence_a_copy_the_walk_has_not_reached() {
     let target = format!("{dept}/{}", env.member(&dept, "lead"));
     env.fails(&["stop", "-r", &target]);
     let record: serde_json::Value =
-        serde_json::from_slice(&fs::read(env.path(&format!("state/{dev}/instance.json"))).unwrap())
+        serde_json::from_slice(&fs::read(env.path(&format!("state/{dev}/team.json"))).unwrap())
             .unwrap();
-    assert_ne!(record["stopping"], true, "unreached copy was fenced");
+    assert_ne!(record["stopping"], true, "unreached child team was fenced");
     assert_eq!(env.row(&dev, "lead")["liveness"], "alive");
     fs::write(path, original).unwrap();
     env.ok(&["stop", "-r", &target]);
@@ -684,11 +692,11 @@ fn a_full_resume_resumes_restored_copies() {
     start(&env, &dev);
     let lead = env.member(&dev, "lead");
     let session = env.path(&format!("state/{dev}/members/{lead}/session"));
-    env.wait_for("copy lead's session recorded", || session.exists());
+    env.wait_for("child team lead's session recorded", || session.exists());
     let id = fs::read_to_string(&session).unwrap().trim().to_string();
     env.ok(&["stop", &dept]);
     env.ok(&["start", &dept, "--resume"]);
-    env.wait_for("copy lead restored", || {
+    env.wait_for("child team lead restored", || {
         env.state_of(&dev, "lead") == "idle"
     });
     let starts = env.starts(&lead);

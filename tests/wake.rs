@@ -817,20 +817,20 @@ impl Env {
         let folder = self.dir.path();
         write(
             &folder.join("registry.json"),
-            json!({"schema":1,"instances":{"state":{
-            "team":"sample","team_dir":folder,"folder":folder,"created_at":"2026-11-09T00:00:00Z"
+            json!({"schema":2,"teams":{"state":{
+            "template":"sample","template_dir":folder,"folder":folder,"created_at":"2026-11-09T00:00:00Z"
         }},"issued":{}}),
         );
         write(
             &self.state.instance_file(),
-            json!({"schema":1,"id":"state","team":"sample",
-            "team_dir":folder,"folder":folder,"created_at":"2026-11-09T00:00:00Z","members":{"m":{"role":"worker"}}}),
+            json!({"schema":2,"id":"state","template":"sample",
+            "template_dir":folder,"folder":folder,"created_at":"2026-11-09T00:00:00Z","members":{"m":{"role":"worker"}}}),
         );
         write(
             &self.state.meta_file(),
-            json!({"team_dir":folder,"folder":folder,
+            json!({"template_dir":folder,"folder":folder,
             "brg":env!("CARGO_BIN_EXE_brg"),
-            "config":{"version":1,"digest":"00","inputs":{},"team_dirs":{}},
+            "config":{"version":1,"digest":"00","inputs":{},"template_dirs":{}},
             "socket":"brg-wake-test","windows_started":true,
             "base_env":{},"plugins":{},"members":{"m":{
                 "role":"worker","vendor":vendor.as_str(),"posture":if locked {"locked"} else {"vendor"},
@@ -1085,17 +1085,17 @@ fn cross_edge_sends_type_and_preflight_locked_recipients_in_their_own_instance()
         };
         let registry_path = e.dir.path().join("registry.json");
         let mut registry = read(&registry_path);
-        registry["instances"]["state/copy"] = registry["instances"]["state"].clone();
+        registry["teams"]["state/copy"] = registry["teams"]["state"].clone();
         write(&registry_path, registry);
         let mut root = read(&e.state.instance_file());
-        root["copies"] = json!({"copy": {"role": "dev"}});
+        root["child_teams"] = json!({"copy": {"role": "dev"}});
         write(&e.state.instance_file(), root.clone());
         let child = e.state.root.join("copy");
         root["id"] = json!("state/copy");
         root["parent"] = json!("state/m");
         root["members"] = json!({"lead": {"role": "lead"}});
-        root["copies"] = json!({});
-        write(&child.join("instance.json"), root);
+        root["child_teams"] = json!({});
+        write(&child.join("team.json"), root);
         let mut meta = read(&e.state.meta_file());
         let mut member = meta["members"]["m"].clone();
         member["parent"] = json!("state/m");
@@ -1132,7 +1132,7 @@ fn cross_edge_sends_type_and_preflight_locked_recipients_in_their_own_instance()
                 .env("HOME", e.dir.path())
                 .env("BORGCHART_STATE_HOME", e.dir.path())
                 .env(
-                    "BORGCHART_INSTANCE",
+                    "BORGCHART_TEAM",
                     if to_child { "state" } else { "state/copy" },
                 )
                 .env("BORGCHART_MEMBER", if to_child { "m" } else { "lead" })

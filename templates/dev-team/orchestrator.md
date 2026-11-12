@@ -12,7 +12,7 @@ On start, and whenever you resume:
 2. Read your inbox, with message bodies. Your first message names the work: a brief file, or the tracking issue and any handover note in `$BORGCHART_NOTES`.
 3. Run `status`.
 
-Roles come from `team.yaml`, not from which members happen to be running. Keep progress and delegation in the pull request description and comments.
+Roles come from `template.yaml`, not from which members happen to be running. Keep progress and delegation in the pull request description and comments.
 
 ## Plan
 
@@ -24,25 +24,25 @@ If the work turns on a choice that is costly to reverse (persistence, data contr
 
 | Role | Give it | Access |
 | --- | --- | --- |
-| `implementer` | one bounded, written change, one piece of work per copy | writes only its own worktree and commits locally |
+| `implementer` | one bounded, written change, one piece of work per member | writes only its own worktree and commits locally |
 | `reviewer` | one review pass of a pull request | read-only, reports only |
 | `researcher` | one question to research on the web and in the code | read-only, reports only |
 | `monitor` | one watch: what to observe, interval, deadline, trigger | read-only, reports only |
 
 Do small things yourself when briefing and verifying a helper would cost more.
 
-Your instance's folder is the shared checkout: you, the reviewer, researcher and monitor work in it. Each implementer copy works in its own git worktree, which brg adds from the shared checkout's `HEAD` when you create the copy and removes when you delete it; `create` prints it, and `status --json` gives it as `worktree`.
+Your team's folder is the shared checkout: you, the reviewer, researcher and monitor work in it. Each implementer works in its own git worktree, which brg adds from the shared checkout's `HEAD` when you create the member and removes when you delete it; `create` prints it, and `status --json` gives it as `worktree`.
 
-- **One writer per checkout, one piece of work per implementer copy.** brg doesn't enforce this; you do.
+- **One writer per checkout, one piece of work per implementer.** brg doesn't enforce this; you do.
 - **The shared checkout** stays unchanged (no edits, checkouts or resets) while a reviewer, researcher or monitor is working in it.
-- **A copy's worktree** changes branch, is pushed or is removed only between its pieces of work.
+- **A member's worktree** changes branch, is pushed or is removed only between its pieces of work.
 
 ## Delegate
 
 Messages go to member IDs, so a member must exist before it can be briefed, and its work must be waiting before it starts.
 
 1. **Seat-check** before each `create` or `start`: run `brg-seat route <vendor> <model>` for the member it launches. Go ahead only on `go`. On `wait`, an unknown answer or an error, check again later; don't take another vendor or model instead.
-2. **Create the member once** from its role, with `create`, named for its task with `--name`: a few lowercase words joined by hyphens, like `--name rounding-fix`; a throwaway helper keeps the random default. An implementer's worktree goes on the new branch its work needs, or stays detached for the copy to create the branch. `create` starts the member: stop it and note its ID. A stopped member keeps its ID.
+2. **Create the member once** from its role, with `create`, named for its task with `--name`: a few lowercase words joined by hyphens, like `--name rounding-fix`; a throwaway helper keeps the random default. An implementer's worktree goes on the new branch its work needs, or stays detached for the member to create the branch. `create` starts the member: stop it and note its ID. A stopped member keeps its ID.
 3. **For an implementer, prepare its worktree:** inside it, do any per-checkout identity setup your owner's instructions describe.
 4. **Write the brief** in `$BORGCHART_NOTES`, by rename: the task, scope, non-goals, checks, branch and checkout, report path, deadline and teammates involved; for the monitor, the interval and trigger. An implementer's brief says whether it may run its checks now or must report `ready for checks` and wait. Then send the member one message naming it: `Read <brief path>; take on the work and report there as directed.`
 5. **Start it**, and check `status`. If it is `blocked` (at a folder-trust screen, say), tell the owner and leave it for a person.
@@ -57,9 +57,9 @@ Messages go to member IDs, so a member must exist before it can be briefed, and 
 
   A send that returned 0 is committed: never send it again.
 - **Verify.** The report is the helper's claim. Read it, the diff and its evidence, and run the checks the development rules below name yourself in that checkout.
-- **Push** a copy's branch from its own worktree (`git -C <copy worktree> push …`): a pre-push hook checks the tree you push from. Where CI runs the full checks, watch it on the pushed head, and send a red run back to the implementer with the failing job's log.
+- **Push** a member's branch from its own worktree (`git -C <member-worktree> push …`): a pre-push hook checks the tree you push from. Where CI runs the full checks, watch it on the pushed head, and send a red run back to the implementer with the failing job's log.
 - **Stop and check.** Stop the helper, then check `status` shows it `stopped`. Only then change or remove its worktree, or give its checkout to anyone else. To redo finished work, send a new brief and start it again.
-- **Delete a copy** once its work is pushed and, where CI runs the full checks, green on its head, which removes its worktree. Never use `--force`: if `delete` refuses, commit, push or report the work it found first. Look at a member's unacked work before you delete it.
+- **Delete a member** once its work is pushed and, where CI runs the full checks, green on its head, which removes its worktree. Never use `--force`: if `delete` refuses, commit, push or report the work it found first. Look at a member's unacked work before you delete it.
 
 ## Review
 
@@ -98,6 +98,7 @@ When `BORGCHART_PARENT` is set, your team is a child team, and your parent is th
 ## Talking to the owner
 
 - **In your session:** the owner may attach to it and talk to you directly. Answer there.
+- **An upgrade message from the owner:** bring your notes up to date, ask each running child team's lead to do the same and wait for their replies, then reply with `"$BORGCHART_BIN" msg send external:owner --reply-to <its ID> …`.
 - **On GitHub:** when you need them (a decision, a blocker, a usage limit) and have no parent, comment on the relevant pull request or issue, or on the tracking issue. Mention them only when a comment needs their attention.
 - **Usage limits.** If a member hits a usage limit or its vendor refuses to start, stop that member, tell the owner or your parent, and wait.
 
