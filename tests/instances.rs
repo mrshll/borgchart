@@ -97,7 +97,7 @@ fn deleted_members_cannot_restart_or_receive_work_and_ids_are_never_reused() {
     env.ok(&["stop", &inst]);
     let refused = env.fails(&["delete", &address]);
     assert_eq!(env.member(&inst, "lead"), lead);
-    assert_eq!(env.row(&inst, "lead")["unread"], 1);
+    assert_eq!(env.row(&inst, "lead")["unacked"], 1);
     assert!(
         refused.contains(message["id"].as_str().unwrap()),
         "{refused}"
@@ -113,7 +113,7 @@ fn deleted_members_cannot_restart_or_receive_work_and_ids_are_never_reused() {
     env.ok(&["start", &inst]);
     let replacement = env.member(&inst, "lead");
     assert_ne!(replacement, lead);
-    assert_eq!(env.row(&inst, "lead")["unread"], 0);
+    assert_eq!(env.row(&inst, "lead")["unacked"], 0);
     // A child can't be created while its parent role has no member (#73), so
     // it comes after the replacement.
     env.ok(&["create", &format!("{inst}/helper")]);
@@ -121,6 +121,7 @@ fn deleted_members_cannot_restart_or_receive_work_and_ids_are_never_reused() {
     assert_eq!(env.row(&inst, "helper")["parent"], replacement);
     env.wait_for("replacement idle", || env.state_of(&inst, "lead") == "idle");
     env.ok(&[
+        "msg",
         "send",
         "--external",
         "ops",
@@ -264,7 +265,14 @@ fn role_addresses_never_choose_a_member_and_status_tracks_each_start() {
     for command in ["start", "stop", "attach", "logs", "delete", "send"] {
         let address = format!("{inst}/helper");
         let args = if command == "send" {
-            vec![command, address.as_str(), "hello", "--external", "ops"]
+            vec![
+                "msg",
+                command,
+                address.as_str(),
+                "hello",
+                "--external",
+                "ops",
+            ]
         } else {
             vec![command, address.as_str()]
         };
@@ -292,7 +300,7 @@ fn role_addresses_never_choose_a_member_and_status_tracks_each_start() {
     assert!(both(&out).contains(&helper), "{}", both(&out));
     let out = env.publish(&inst, &json!({"to": helper, "body": "Review the sample."}));
     assert!(out.status.success(), "{}", both(&out));
-    env.ok(&["send", &address, "hello", "--external", "ops"]);
+    env.ok(&["msg", "send", &address, "hello", "--external", "ops"]);
     for stopped in [false, true] {
         if stopped {
             env.ok(&["stop", &address]);
@@ -300,7 +308,7 @@ fn role_addresses_never_choose_a_member_and_status_tracks_each_start() {
         for command in ["stop", "send"] {
             let role = format!("{inst}/helper");
             let args = if command == "send" {
-                vec![command, role.as_str(), "hello", "--external", "ops"]
+                vec!["msg", command, role.as_str(), "hello", "--external", "ops"]
             } else {
                 vec![command, role.as_str()]
             };
@@ -312,7 +320,7 @@ fn role_addresses_never_choose_a_member_and_status_tracks_each_start() {
         let row = env.row(&inst, "helper");
         assert_eq!(row["start_id"], start_id);
         assert_eq!(row["member"], helper);
-        assert_eq!(row["unread"], 2);
+        assert_eq!(row["unacked"], 2);
     }
     env.ok(&["start", &address]);
     assert_eq!(env.member(&inst, "helper"), helper);
@@ -520,7 +528,15 @@ fn full_start_leaves_a_stopped_member_with_unacked_messages_stopped() {
     env.wait_for("lead idle", || env.state_of(&inst, "lead") == "idle");
     assert_eq!(env.state_of(&inst, "scout"), "stopped");
     assert_eq!(env.starts(&scout).len(), 1);
-    let inbox = env.ok(&["inbox", "--member", &scout, "--instance", &inst, "--json"]);
+    let inbox = env.ok(&[
+        "msg",
+        "list",
+        "--member",
+        &scout,
+        "--instance",
+        &inst,
+        "--json",
+    ]);
     let inbox: Value = serde_json::from_slice(&inbox.stdout).unwrap();
     assert_eq!(inbox["records"][0]["id"], "m1");
     env.ok(&["stop", &inst]);
@@ -613,10 +629,10 @@ fn addresses_name_the_instance_in_full_outside_a_member() {
         .unwrap();
     assert!(out.status.success(), "{}", both(&out));
     // Bus commands take `--instance`, required outside a member.
-    let err = env.fails(&["inbox", "--external", "ops"]);
+    let err = env.fails(&["msg", "list", "--external", "ops"]);
     assert!(err.contains("--instance") && err.contains(&inst), "{err}");
-    env.ok(&["inbox", "--external", "ops", "--instance", &inst]);
-    env.ok(&["bus", "check", "--instance", &inst]);
+    env.ok(&["msg", "list", "--external", "ops", "--instance", &inst]);
+    env.ok(&["msg", "check", "--instance", &inst]);
     // An instance isn't a recipient; nor is a role.
     for to in [inst.as_str(), "lead"] {
         let out = env.publish(&inst, &json!({"to": to, "body": "hi"}));

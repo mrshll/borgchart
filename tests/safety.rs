@@ -220,7 +220,7 @@ fn a_moved_team_folder_is_re_pointed_after_a_full_stop() {
     env.ok(&["start", &a, "--team", &moved]);
     env.wait_for("lead idle", || env.state_of(&a, "lead") == "idle");
     assert_eq!(env.member(&a, "lead"), lead, "the same instance and member");
-    let inbox = stdout(&env.ok(&["inbox", "--member", &lead, "--instance", &a, "--full"]));
+    let inbox = stdout(&env.ok(&["msg", "list", "--member", &lead, "--instance", &a, "--full"]));
     assert!(inbox.contains("keep me"), "{inbox}");
     env.ok(&["stop", &a]);
 }
@@ -404,9 +404,16 @@ fn a_partial_member_context_is_refused_for_reads_too() {
         ("BORGCHART_INCARNATION", "x.1.abcd"),
     ] {
         for args in [
-            vec!["bus", "check", "--instance", b.as_str()],
+            vec!["msg", "check", "--instance", b.as_str()],
             vec!["msg", "read", "m1", "--instance", b.as_str()],
-            vec!["inbox", "--member", lead.as_str(), "--instance", a.as_str()],
+            vec![
+                "msg",
+                "list",
+                "--member",
+                lead.as_str(),
+                "--instance",
+                a.as_str(),
+            ],
         ] {
             let out = env.cmd(&args).env(var, value).output().unwrap();
             assert!(!out.status.success(), "{var} {args:?}: {}", both(&out));
@@ -419,7 +426,7 @@ fn a_partial_member_context_is_refused_for_reads_too() {
     }
     // A plugin process has only its instance: that still works.
     let out = env
-        .cmd(&["bus", "check"])
+        .cmd(&["msg", "check"])
         .env("BORGCHART_INSTANCE", &a)
         .output()
         .unwrap();

@@ -45,6 +45,6 @@
 
                                                                                                      [38;5;246mtmux detected · scroll with PgUp/PgDn · or add 'set -g mouse on' to ~/.tmux.conf for wheel scroll[39m
 [38;5;244m───[39m [2mHistory 1/1[0m [38;5;244m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-[39m❯ brg: new records in your inbox. Run `brg inbox` at your next stopping point.
+[39m❯ brg: new records in your inbox. Run `brg msg list` at your next stopping point.
 [38;5;244m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 [39m  [38;5;246m-- INSERT --[39m [38;5;220m⏵⏵ auto mode on[38;5;246m (shift+tab to cycle)[39m

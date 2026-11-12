@@ -109,6 +109,7 @@ fn catalog_change_allows_joins(flip_symlink: bool) {
     let note = format!("state/{inst}/notes/draft.txt");
     env.write(&note, "unfinished draft\n");
     let sent = env.ok(&[
+        "msg",
         "send",
         &format!("{inst}/{root_lead}"),
         "Keep the draft",
@@ -223,12 +224,13 @@ fn changed_role_and_auth_apply_to_new_starts_without_restarting_siblings() {
             .is_none()
     );
     let out = env.ok(&[
+        "msg",
         "send",
         &format!("{inst}/{helper}"),
         "Review the checklist",
         "--external",
         "ops",
-        "--force",
+        "--allow-unknown",
         "--json",
     ]);
     let sent: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();

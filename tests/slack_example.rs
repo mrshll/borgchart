@@ -173,7 +173,7 @@ impl Run {
     }
 
     /// `start` creates the instance (working in `work`); `stop`, `status`,
-    /// `send` and `logs` go to it, with members named by role.
+    /// `msg send` and `logs` go to it, with members named by role.
     fn translate(&self, args: &[&str]) -> Vec<String> {
         let inst = self.instance().unwrap_or_default();
         let mut v: Vec<String> = args.iter().map(|a| a.to_string()).collect();
@@ -187,7 +187,8 @@ impl Run {
             }
             ["stop"] => v.push(inst),
             ["status", ..] => v.insert(1, inst),
-            ["send" | "logs", name, ..] => v[1] = format!("{inst}/{}", self.member(name)),
+            ["logs", name, ..] => v[1] = format!("{inst}/{}", self.member(name)),
+            ["msg", "send", name, ..] => v[2] = format!("{inst}/{}", self.member(name)),
             _ => {}
         }
         v
@@ -315,7 +316,7 @@ fn slack_round_trip_through_the_example_team() {
     // The triager escalates the urgent one (a real triager would decide this).
     let cmd = format!("tool slackbot escalate {urgent} high deploy");
     assert!(
-        run.brg(&["send", "triager", &cmd, "--external", "test"])
+        run.brg(&["msg", "send", "triager", &cmd, "--external", "test"])
             .status
             .success()
     );
@@ -331,7 +332,7 @@ fn slack_round_trip_through_the_example_team() {
     // The lead replies in the thread.
     let cmd = format!("tool slackbot reply {urgent} 'Looking into the failing deploys now'");
     assert!(
-        run.brg(&["send", "lead", &cmd, "--external", "test"])
+        run.brg(&["msg", "send", "lead", &cmd, "--external", "test"])
             .status
             .success()
     );
@@ -344,7 +345,7 @@ fn slack_round_trip_through_the_example_team() {
     // The triager can't reply: `reply` isn't granted to it.
     let cmd = format!("tool slackbot reply {urgent} 'sneaky'");
     assert!(
-        run.brg(&["send", "triager", &cmd, "--external", "test"])
+        run.brg(&["msg", "send", "triager", &cmd, "--external", "test"])
             .status
             .success()
     );

@@ -149,7 +149,7 @@ def state_dir() -> Path:
 
 
 def brg_send(member: str, text: str, sender: str | None = None) -> tuple[int, str]:
-    """Hand `text` (IDs and fixed values only) to a member with `brg send`.
+    """Hand `text` (IDs and fixed values only) to a member with `brg msg send`.
 
     Member actions retain their fenced identity. The watcher is external:slackbot;
     `sender` only checks the parent route, never changes the record author.
@@ -157,7 +157,7 @@ def brg_send(member: str, text: str, sender: str | None = None) -> tuple[int, st
     Never raises: a failure comes back as a non-zero code.
     """
     brg = os.environ.get("BORGCHART_BIN", "brg")
-    args = [brg, "send", "--json"]
+    args = [brg, "msg", "send", "--json"]
     if not os.environ.get("BORGCHART_MEMBER"):
         args += ["--external", "slackbot"]
     if sender:
@@ -171,7 +171,7 @@ def brg_send(member: str, text: str, sender: str | None = None) -> tuple[int, st
             check=False,
         )
     except subprocess.TimeoutExpired:
-        return 124, "brg send timed out"
+        return 124, "brg msg send timed out"
     except OSError as e:
         return 127, f"cannot run brg: {e}"
     message = proc.stdout.strip() or proc.stderr.strip()

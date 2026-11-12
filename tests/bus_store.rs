@@ -108,7 +108,7 @@ fn unexpected_entries_are_not_accepted_as_codex_masks() {
             "unknown" => fs::create_dir(store.join(".sandbox")).unwrap(),
             _ => unreachable!(),
         }
-        let inbox = member_command(&env, &instance, &lead, &["inbox", "--json"]);
+        let inbox = member_command(&env, &instance, &lead, &["msg", "list", "--json"]);
         let publish = env.publish(&instance, &json!({"to": lead, "body": "Do not publish."}));
         let ack = member_command(
             &env,
@@ -210,7 +210,7 @@ fn changed_roles_keep_the_store_and_replies_to_removed_members() {
         &env,
         &instance,
         &helper,
-        &["send", "external:ops", "new root", "--json"],
+        &["msg", "send", "external:ops", "new root", "--json"],
     );
     assert!(out.status.success(), "{}", both(&out));
     let record: Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -301,7 +301,7 @@ fn damaged_store(case: &str) {
     } else {
         assert!(err.contains("damaged"), "{err}");
     }
-    let check = env.brg(&["bus", "check", "--instance", &instance, "--json"]);
+    let check = env.brg(&["msg", "check", "--instance", &instance, "--json"]);
     assert!(!check.status.success(), "{}", both(&check));
     let out = env.publish(&instance, &json!({"to": lead, "body": "refuse me"}));
     assert!(!out.status.success(), "{}", both(&out));
@@ -367,7 +367,7 @@ fn joining_locked_member_cannot_abandon_unacked_ordinary_work() {
     let out = env.brg(&["start", &format!("{instance}/{scout}")]);
     assert!(!out.status.success(), "{}", both(&out));
     assert_eq!(env.starts(&scout).len(), 1);
-    assert_eq!(env.row(&instance, "scout")["unread"], 1);
+    assert_eq!(env.row(&instance, "scout")["unacked"], 1);
     env.ok(&["stop", &instance]);
 }
 

@@ -7,8 +7,8 @@ Your parent is the lead recorded as your parent in `status`; send only to it, ev
 - **Wait for an answer, in this order:**
   1. Ack everything you have taken on, including any answer you have handled.
   2. Arm one wait the way your vendor allows:
-     - **Codex:** run it in the **foreground**: `"$BORGCHART_BIN" inbox wait --timeout 600 --full`. Nothing wakes you from a background command.
-     - **Claude:** run it with your Bash tool in **background** mode: `"$BORGCHART_BIN" inbox wait --full`; its exit wakes you.
+     - **Codex:** run it in the **foreground**: `"$BORGCHART_BIN" msg wait --timeout 600 --full`. Nothing wakes you from a background command.
+     - **Claude:** run it with your Bash tool in **background** mode: `"$BORGCHART_BIN" msg wait --full`; its exit wakes you.
   3. The wait prints your inbox, with bodies: read it, act and ack before waiting again. On exit 9, wait again. On exit 8 (`fenced`), your session ended or was replaced: tell the lead and stop waiting.
 
   Wait only for your own answer; never sleep or poll for anything else.

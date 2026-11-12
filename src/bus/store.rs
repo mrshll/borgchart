@@ -430,7 +430,7 @@ impl Snapshot {
             Some(first) => Err(Failure::new(
                 Code::Corrupt,
                 format!(
-                    "the store is corrupt ({first}{}); mutations are stopped. `brg bus check` lists the problems",
+                    "the store is corrupt ({first}{}); mutations are stopped. `brg msg check` lists the problems",
                     if self.problems.len() > 1 {
                         format!(", and {} more", self.problems.len() - 1)
                     } else {
@@ -699,7 +699,7 @@ pub fn publish(bus: &Bus, caller: &Caller, draft_bytes: &[u8]) -> Result<Record,
         Written::Created => Ok(rec),
         Written::Exists => Err(Failure::new(
             Code::Corrupt,
-            "the next record already exists; `brg bus check` lists the problems",
+            "the next record already exists; `brg msg check` lists the problems",
         )),
     }
 }

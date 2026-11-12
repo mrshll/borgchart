@@ -155,6 +155,7 @@ fn status_i_attaches_detaches_and_quits() {
             .env("BORGCHART_STATE_HOME", root.join("state"))
             .env("BORGCHART_CONFIG", root.join("home/config.yaml"))
             .args([
+                "msg",
                 "send",
                 &format!("{instance}/{alpha}"),
                 "pending",
@@ -168,7 +169,7 @@ fn status_i_attaches_detaches_and_quits() {
     tmux(&private, &outer, &["send-keys", "-t", "=o:", "r"]);
     wait(
         "unread messages in status -i",
-        || screen().contains("2 unread"),
+        || screen().contains("2 unacked"),
         dump,
     );
 

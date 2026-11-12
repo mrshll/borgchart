@@ -355,14 +355,14 @@ fn a_member_acts_only_on_its_own_instance() {
     let b = env.create("oncall", "work/b");
     let lead = env.member(&a, "lead");
     // Its own instance by default, and by name.
-    let out = env.as_member(&lead, 0, &["inbox", "--json"]);
+    let out = env.as_member(&lead, 0, &["msg", "list", "--json"]);
     assert!(out.status.success(), "{}", both(&out));
-    let out = env.as_member(&lead, 0, &["inbox", "--json", "--instance", &a]);
+    let out = env.as_member(&lead, 0, &["msg", "list", "--json", "--instance", &a]);
     assert!(out.status.success(), "{}", both(&out));
     // Another instance: refused, for reads too.
     for args in [
-        vec!["inbox", "--json", "--instance", b.as_str()],
-        vec!["bus", "check", "--instance", b.as_str()],
+        vec!["msg", "list", "--json", "--instance", b.as_str()],
+        vec!["msg", "check", "--instance", b.as_str()],
     ] {
         let out = env.as_member(&lead, 0, &args);
         assert!(!out.status.success(), "{args:?}: {}", both(&out));
@@ -376,7 +376,14 @@ fn a_member_acts_only_on_its_own_instance() {
     let out = env.as_member(
         &lead,
         0,
-        &["send", &format!("{b}/lead"), "hello", "--external", "ops"],
+        &[
+            "msg",
+            "send",
+            &format!("{b}/lead"),
+            "hello",
+            "--external",
+            "ops",
+        ],
     );
     assert!(!out.status.success(), "{}", both(&out));
     env.ok(&["stop", &a]);
@@ -394,7 +401,7 @@ fn partial_and_stale_member_contexts_are_refused() {
     let out = common::command(env!("CARGO_BIN_EXE_brg"))
         .env_clear()
         .envs(&start)
-        .args(["inbox", "--json"])
+        .args(["msg", "list", "--json"])
         .output()
         .unwrap();
     assert!(!out.status.success(), "{}", both(&out));
@@ -407,9 +414,9 @@ fn partial_and_stale_member_contexts_are_refused() {
     env.ok(&["stop", &a]);
     env.ok(&["start", &a]);
     env.wait_for("lead idle", || env.state_of(&a, "lead") == "idle");
-    let out = env.as_member(&lead, 0, &["inbox", "--json"]);
+    let out = env.as_member(&lead, 0, &["msg", "list", "--json"]);
     assert_eq!(out.status.code(), Some(8), "{}", both(&out));
-    let out = env.as_member(&lead, 1, &["inbox", "--json"]);
+    let out = env.as_member(&lead, 1, &["msg", "list", "--json"]);
     assert!(out.status.success(), "{}", both(&out));
     env.ok(&["stop", &a]);
 }
@@ -422,19 +429,26 @@ fn outside_callers_name_the_instance_and_a_stopped_one_can_be_inspected() {
     let out = env.publish(&a, &json!({"to": lead, "body": "hi"}));
     assert!(out.status.success(), "{}", both(&out));
     // An operator reads a member's inbox; without `--instance`, refused.
-    env.ok(&["inbox", "--member", &lead, "--instance", &a]);
-    let err = env.fails(&["inbox", "--member", &lead]);
+    env.ok(&["msg", "list", "--member", &lead, "--instance", &a]);
+    let err = env.fails(&["msg", "list", "--member", &lead]);
     assert!(err.contains("--instance") && err.contains(&a), "{err}");
-    let err = env.fails(&["bus", "check"]);
+    let err = env.fails(&["msg", "check"]);
     assert!(err.contains("--instance"), "{err}");
     // A role's name isn't a member.
-    let err = env.fails(&["inbox", "--member", "lead", "--instance", &a]);
+    let err = env.fails(&["msg", "list", "--member", "lead", "--instance", &a]);
     assert!(err.contains(&lead), "{err}");
     env.ok(&["stop", &a]);
     for args in [
-        vec!["bus", "check", "--instance", a.as_str()],
-        vec!["bus", "check", "--instance", a.as_str()],
-        vec!["inbox", "--member", lead.as_str(), "--instance", a.as_str()],
+        vec!["msg", "check", "--instance", a.as_str()],
+        vec!["msg", "check", "--instance", a.as_str()],
+        vec![
+            "msg",
+            "list",
+            "--member",
+            lead.as_str(),
+            "--instance",
+            a.as_str(),
+        ],
     ] {
         env.ok(&args);
     }
@@ -498,7 +512,7 @@ fn plugin_actions_preserve_and_fence_the_launch_incarnation() {
     let env = Env::new();
     with_pager(&env);
     fs::write(env.path("teams/oncall/plugins/pager/pager"),
-        "#!/bin/sh\nif [ \"${1-}\" = send ]; then exec \"$BORGCHART_BIN\" send external:ops hello --json; fi\nprintf '%s\\n' \"$BORGCHART_INSTANCE\" \"$BORGCHART_MEMBER\" \"$BORGCHART_INCARNATION\"\n").unwrap();
+        "#!/bin/sh\nif [ \"${1-}\" = send ]; then exec \"$BORGCHART_BIN\" msg send external:ops hello --json; fi\nprintf '%s\\n' \"$BORGCHART_INSTANCE\" \"$BORGCHART_MEMBER\" \"$BORGCHART_INCARNATION\"\n").unwrap();
     let out = keyed(&env, &["create", "oncall", &env.folder("work/a")]);
     assert!(out.status.success(), "{}", both(&out));
     let instance = first_word(&stdout(&out));

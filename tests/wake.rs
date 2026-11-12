@@ -195,22 +195,22 @@ fn vim_modes_are_read() {
 #[test]
 fn only_the_exact_reminder_passes_the_enter_check() {
     let holds = |v, s: &str, g| composer::view(v, s, g).unwrap().holds(REMINDER);
-    assert!(holds(Vendor::Claude, claude("reminder"), at(200, 78, 47)));
+    assert!(holds(Vendor::Claude, claude("reminder"), at(200, 81, 47)));
     // Wrapped by Claude in a 60-column pane: `next` could not have fitted.
     assert!(holds(
         Vendor::Claude,
         claude("reminder-wrapped"),
         at(60, 22, 47)
     ));
-    assert!(holds(Vendor::Codex, codex("reminder"), at(200, 78, 46)));
+    assert!(holds(Vendor::Codex, codex("reminder"), at(200, 81, 46)));
     assert!(holds(
         Vendor::Codex,
         codex("reminder-wrapped"),
         at(60, 22, 46)
     ));
     // A trailing typed space only shows in the cursor.
-    assert!(!holds(Vendor::Claude, claude("reminder"), at(200, 79, 47)));
-    assert!(!holds(Vendor::Codex, codex("reminder"), at(200, 79, 46)));
+    assert!(!holds(Vendor::Claude, claude("reminder"), at(200, 82, 47)));
+    assert!(!holds(Vendor::Codex, codex("reminder"), at(200, 82, 46)));
     // Without geometry nothing passes.
     assert!(
         !composer::view(Vendor::Codex, codex("reminder"), None)
@@ -219,13 +219,13 @@ fn only_the_exact_reminder_passes_the_enter_check() {
     );
     for name in ["reminder-extra", "draft", "empty", "history-up"] {
         assert!(
-            !holds(Vendor::Codex, codex(name), at(200, 84, 46)),
+            !holds(Vendor::Codex, codex(name), at(200, 87, 46)),
             "codex {name}"
         );
     }
     for name in ["reminder-extra", "draft", "empty", "working", "multiline"] {
         assert!(
-            !holds(Vendor::Claude, claude(name), at(200, 84, 47)),
+            !holds(Vendor::Claude, claude(name), at(200, 87, 47)),
             "claude {name}"
         );
     }
@@ -233,7 +233,7 @@ fn only_the_exact_reminder_passes_the_enter_check() {
 
 #[test]
 fn changed_reminders_fail_the_enter_check() {
-    let joined = REMINDER.replace("brg inbox", "brginbox");
+    let joined = REMINDER.replace("brg msg list", "brginbox");
     let doubled = REMINDER.replace("Run ", "Run  ");
     let leading = format!(" {REMINDER}");
     for (vendor, screen, row) in [
@@ -344,7 +344,7 @@ fn pre_paste_decisions_on_real_screens() {
         wake::before_enter(
             Vendor::Codex,
             &x,
-            &snap(t, codex("reminder"), at(200, 78, 46))
+            &snap(t, codex("reminder"), at(200, 81, 46))
         ),
         None
     );
@@ -352,12 +352,12 @@ fn pre_paste_decisions_on_real_screens() {
         wake::before_enter(
             Vendor::Codex,
             &x,
-            &snap(t, codex("reminder-extra"), at(200, 84, 46))
+            &snap(t, codex("reminder-extra"), at(200, 87, 46))
         )
         .is_some()
     );
     // The reminder is in the box, but copy mode would catch the Enter.
-    let mut s = snap(t, codex("reminder"), at(200, 78, 46));
+    let mut s = snap(t, codex("reminder"), at(200, 81, 46));
     s.in_mode = true;
     assert!(wake::before_enter(Vendor::Codex, &x, &s).is_some());
     // The title can lag; the working line alone (either bullet) says busy.
@@ -380,7 +380,7 @@ fn only_a_seen_empty_box_confirms_a_submission() {
     assert!(ok(Vendor::Claude, claude("empty"), at(200, 2, 47)).is_ok());
     assert!(ok(Vendor::Claude, claude("working"), at(200, 2, 47)).is_ok());
     assert!(ok(Vendor::Codex, codex("working"), at(200, 2, 46)).is_ok());
-    assert!(ok(Vendor::Claude, claude("reminder"), at(200, 78, 47)).is_err());
+    assert!(ok(Vendor::Claude, claude("reminder"), at(200, 81, 47)).is_err());
     assert!(ok(Vendor::Claude, claude("multiline"), None).is_err());
     assert!(ok(Vendor::Claude, claude("small"), at(100, 2, 9)).is_err());
     assert!(ok(Vendor::Claude, screen!("claude-permission.txt"), None).is_err());
@@ -861,7 +861,15 @@ impl Env {
             .env("HOME", self.dir.path())
             .env("BORGCHART_STATE_HOME", self.dir.path())
             .env("BORGCHART_CONFIG", self.dir.path().join("unused.yaml"))
-            .args(["send", "state/m", text, "--external", "test", "--json"])
+            .args([
+                "msg",
+                "send",
+                "state/m",
+                text,
+                "--external",
+                "test",
+                "--json",
+            ])
             .args(extra);
         self.private.brg_env(&mut cmd, &self.socket);
         let out = cmd.output().unwrap();
@@ -906,7 +914,7 @@ fn unified_send_preserves_drafts_and_skips_unverifiable_and_interactive_messages
         if draft {
             e.keys(&["draft"]);
         }
-        let (code, out) = e.send_message(&text, &["--force"]);
+        let (code, out) = e.send_message(&text, &["--allow-unknown"]);
         assert_eq!(code, 0, "{out}");
         assert_eq!(out["delivery"], "stored", "{out}");
         assert!(e.events("paste").is_empty());
@@ -954,11 +962,11 @@ fn unified_send_rechecks_dialogs_after_paste_and_reports_locked_uncertainty() {
 }
 
 #[test]
-fn locked_dialog_is_refused_before_recording_even_with_force() {
+fn locked_dialog_is_refused_before_recording_even_with_allow_unknown() {
     let e = Env::new(Vendor::Claude);
     e.send_setup(Vendor::Claude, true, false);
     e.control("mode=dialog");
-    let (code, out) = e.send_message("hello", &["--force"]);
+    let (code, out) = e.send_message("hello", &["--allow-unknown"]);
     assert_eq!(code, 4, "{out}");
     assert!(out.get("id").is_none());
     let bus = borgchart::bus::store::open(&e.state).unwrap();
@@ -1133,6 +1141,7 @@ fn cross_edge_sends_type_and_preflight_locked_recipients_in_their_own_instance()
                     if to_child { "m-1" } else { "lead-1" },
                 )
                 .args([
+                    "msg",
                     "send",
                     if to_child {
                         "state/copy/lead"

@@ -12,7 +12,7 @@
 #
 # The lead is Claude in `vendor` posture. Codex vendor members also have
 # full host access and no tool approvals. The inbox-only lead
-# uses a background inbox wait.
+# uses a background msg wait.
 default: claude
 includes: catalog:shared/includes
 

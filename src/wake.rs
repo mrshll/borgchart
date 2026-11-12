@@ -35,7 +35,7 @@ use crate::tmux::{self, Tmux};
 
 /// The only text the wake ever types. It carries no payload.
 pub const REMINDER: &str =
-    "brg: new records in your inbox. Run `brg inbox` at your next stopping point.";
+    "brg: new records in your inbox. Run `brg msg list` at your next stopping point.";
 
 /// How long to wait for the member's send lock.
 const LOCK_WAIT: Duration = Duration::from_secs(2);

@@ -75,7 +75,7 @@ pub struct WindowInfo {
 }
 
 /// A pane in a tmux mode (copy mode, view mode) sends keys to the mode, not
-/// the program, though a paste still reaches the program. `send`, folder-trust
+/// the program, though a paste still reaches the program. `msg send`, folder-trust
 /// answering and the wake all refuse to type into one; this reads the
 /// `#{pane_in_mode}` field they all fetch.
 pub fn in_mode(pane_in_mode: &str) -> bool {

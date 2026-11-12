@@ -1,5 +1,5 @@
 //! Exit codes and JSON results for the bus command family. These are their
-//! own codes; they are not the same as `brg send`'s.
+//! own codes; they are not the same as `brg msg send`'s.
 
 use serde::Serialize;
 use serde_json::{Value, json};

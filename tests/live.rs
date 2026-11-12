@@ -72,7 +72,7 @@ fn send_midturn_probe() {
 }
 
 #[test]
-#[ignore = "real isolated Claude background inbox wait; set BORGCHART_LIVE=1"]
+#[ignore = "real isolated Claude background msg wait; set BORGCHART_LIVE=1"]
 fn claude_background_inbox_probe() {
     if std::env::var("BORGCHART_LIVE").as_deref() != Ok("1") {
         return;

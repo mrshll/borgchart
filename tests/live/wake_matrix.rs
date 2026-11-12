@@ -379,7 +379,7 @@ fn direct_vendor_brg_cannot_fall_back_to_inherited_defaults() {
     let tmux = Tmux::on_socket(&socket, &conf, env);
     let script = keep.path().join("vendor.sh");
     let output = keep.path().join("result");
-    std::fs::write(&script, format!("#!/bin/sh\n{{ command -v brg; brg status --json; printf 'status=%s\\n' \"$?\"; brg inbox; printf 'inbox=%s\\n' \"$?\"; printf 'socket=%s\\nstate=%s\\nmember=%s\\n' \"$BORGCHART_TMUX_SOCKET\" \"$BORGCHART_STATE_HOME\" \"${{BORGCHART_MEMBER-unset}}\"; }} >{} 2>&1\n", borgchart::state::shell_quote(&output.display().to_string()))).unwrap();
+    std::fs::write(&script, format!("#!/bin/sh\n{{ command -v brg; brg status --json; printf 'status=%s\\n' \"$?\"; brg msg list; printf 'inbox=%s\\n' \"$?\"; printf 'socket=%s\\nstate=%s\\nmember=%s\\n' \"$BORGCHART_TMUX_SOCKET\" \"$BORGCHART_STATE_HOME\" \"${{BORGCHART_MEMBER-unset}}\"; }} >{} 2>&1\n", borgchart::state::shell_quote(&output.display().to_string()))).unwrap();
     tmux.ok(&[
         "new-session",
         "-d",
@@ -1187,7 +1187,7 @@ pub fn qualify(vendor: Vendor, version: Option<String>, submit: bool) -> (Vec<[S
     run.keys(&["-l", " "]);
     run.enter_case("reminder + a typed space", "withheld");
     run.start(200, 50);
-    run.paste(&REMINDER.replace("brg inbox", "brginbox"));
+    run.paste(&REMINDER.replace("brg msg list", "brginbox"));
     run.enter_case("reminder with a space removed", "withheld");
     run.start(60, 50);
     run.paste(REMINDER);
