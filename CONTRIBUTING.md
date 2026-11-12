@@ -91,6 +91,13 @@ make install
 
 This vocabulary cutover does not migrate state. Destroy existing trees with their original brg before installing this version, then create new teams from templates.
 
+For later upgrades, run `make upgrade` from your own shell outside any member.
+It asks each running tree's root leads to update handover notes, waits for their replies,
+refuses while members are working, then stops the trees, installs and starts them fresh.
+`TIMEOUT=1800` bounds the handover wait in seconds; `FORCE=1` skips the wait and working check.
+`DRY_RUN=1` prints the steps without sending messages or changing anything; `BRG` selects the installed binary (default `brg` on PATH).
+If installation fails, it starts the stopped trees again with the old binary. A destroy/create cutover stays manual.
+
 This builds the workspace release binaries with `--locked`, installs `brg` and `brg-seat` into `$HOME/.local/share/brg/bin/`, and records `git rev-parse HEAD` in `$HOME/.local/share/brg/REVISION`. Each binary is copied to a temporary name beside its destination and renamed into place, so readers see a complete file and running processes keep their old inode. Linux builds use `tools/cargo-slot` when executable; other systems use cargo directly.
 
 `PREFIX` changes the parent of `brg/` (default `$HOME/.local/share`); `BINDIR` changes where the `brg` and `brg-seat` symlinks go (default `$HOME/.local/bin`). For example, `make install PREFIX="$HOME/apps" BINDIR="$HOME/bin"`. Use absolute paths. The links point directly at `$PREFIX/brg/bin/<name>` and are replaced with `ln -sfn`. Keep `BINDIR` on `PATH`. The old `borgchart` link is removed only if it points to `$PREFIX/brg/bin/borgchart`; unrelated links and files are left alone.

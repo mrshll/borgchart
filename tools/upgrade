@@ -1,0 +1,203 @@
+#!/usr/bin/env -S uv run --script --quiet
+# /// script
+# requires-python = ">=3.11"
+# ///
+"""Collect handovers, stop running trees, install brg, and start them fresh."""
+
+import json
+import math
+import os
+import shlex
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+HANDOVER = (
+    "brg upgrade: this tree will be stopped and started fresh. Update your notes "
+    "so a fresh start can resume, ask your child teams to do the same and wait "
+    "for them, then reply to this message."
+)
+ROOT = Path(__file__).resolve().parent.parent
+BRG = os.environ.get("BRG") or "brg"
+
+
+def say(message: str) -> None:
+    print(message, flush=True)
+
+
+def run(*args: str, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [BRG, *args], capture_output=True, text=True, check=False, timeout=timeout
+    )
+
+
+def data(result: subprocess.CompletedProcess[str]) -> Any:
+    if result.returncode:
+        raise RuntimeError(
+            result.stderr.strip() or result.stdout.strip() or "brg failed"
+        )
+    return json.loads(result.stdout)
+
+
+def live(row: dict[str, Any]) -> bool:
+    return (
+        row["kind"] == "member"
+        and row["state"] not in ("stopped", "not started", "exited")
+        and row.get("liveness") != "gone"
+    )
+
+
+def wait_for_replies(pending: list[tuple[str, str, str]], deadline: float) -> bool:
+    while pending:
+        team = pending[0][0]
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            # msg wait accepts at least 60 seconds; bound the process by our
+            # remaining global deadline even when less than 60 seconds remain.
+            result = run(
+                "msg",
+                "wait",
+                "--team",
+                team,
+                "--json",
+                "--timeout",
+                str(max(60, min(86400, math.ceil(remaining)))),
+                timeout=remaining,
+            )
+        except subprocess.TimeoutExpired:
+            break
+        if result.returncode == 9:
+            if remaining > 86400:
+                continue
+            break
+        records = data(result)["records"]
+        for record in records:
+            for item in list(pending):
+                tree, sender, sent = item
+                if (
+                    tree == team
+                    and record["from"] == sender
+                    and sent in record.get("reply_to", [])
+                ):
+                    data(run("msg", "ack", "--team", tree, record["id"], "--json"))
+                    pending.remove(item)
+                    say(f"replied: {sender} to {sent}")
+    for tree, sender, sent in pending:
+        say(
+            f"timeout: {tree} awaiting {sender}; message was sent ({sent}) and is "
+            f"not retracted; inspect with: {shlex.join([BRG, 'status', tree])}"
+        )
+    return not pending
+
+
+def start(trees: list[str]) -> bool:
+    ok = True
+    for tree in trees:
+        result = run("start", tree)
+        say(f"{'started' if result.returncode == 0 else 'failed'}: {tree}")
+        if result.returncode:
+            say(result.stderr.strip() or result.stdout.strip())
+            ok = False
+    return ok
+
+
+def main() -> int:
+    if any(
+        os.environ.get(f"BORGCHART_{key}")
+        for key in ("TEAM", "MEMBER", "INCARNATION", "ROLE", "NOTES", "PARENT")
+    ):
+        raise RuntimeError("run make upgrade from your own shell, outside any member")
+    timeout = float(os.environ.get("TIMEOUT") or "1800")
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("TIMEOUT must be a positive number of seconds")
+    force = os.environ.get("FORCE") == "1"
+    dry_run = os.environ.get("DRY_RUN") == "1"
+    rows = data(run("status", "--json"))
+    leads: dict[str, list[str]] = {}
+    for row in rows:
+        if live(row) and "/" not in row["team"] and not row.get("parent"):
+            leads.setdefault(row["team"], []).append(f"{row['team']}/{row['member']}")
+    trees = list(leads)
+    if dry_run:
+        for tree, senders in leads.items():
+            say(
+                f"dry-run: {tree}: send to {', '.join(senders)}, {'skip wait (FORCE=1)' if force else 'wait for replies and refuse working members'}, stop"
+            )
+        say("dry-run: install with make install")
+        for tree in trees:
+            say(f"dry-run: start {tree} fresh")
+        say(f"summary: dry-run; {len(trees)} tree(s); nothing changed")
+        return 0
+    pending = []
+    deadline = time.monotonic() + timeout
+    for tree, senders in leads.items():
+        for sender in senders:
+            sent = data(run("msg", "send", sender, HANDOVER, "--json"))["id"]
+            pending.append((tree, sender, sent))
+            say(f"sent: {sender} ({sent})")
+    if pending and not force:
+        if not wait_for_replies(pending, deadline):
+            say("summary: handover timed out; nothing stopped or installed")
+            return 1
+        working = [
+            f"{row['team']}/{row['member']}"
+            for row in data(run("status", "--json"))
+            if live(row)
+            and row["team"].split("/")[0] in leads
+            and row["state"] == "working"
+        ]
+        if working:
+            say(f"refused: working members: {', '.join(working)}; wait or use FORCE=1")
+            say("summary: nothing stopped or installed")
+            return 1
+    stopped = []
+    for tree in trees:
+        say(f"stopping: {tree}")
+        result = run("stop", tree)
+        if result.returncode:
+            say(
+                f"failed: stop {tree}: {result.stderr.strip() or result.stdout.strip()}"
+            )
+            start(stopped)
+            say(
+                "summary: stop failed; install skipped; inspect tree status before retrying"
+            )
+            return 1
+        stopped.append(tree)
+    say("install: make install")
+    try:
+        installed = (
+            subprocess.run(
+                [
+                    *shlex.split(os.environ.get("MAKE") or "make"),
+                    "-C",
+                    str(ROOT),
+                    "install",
+                ],
+                check=False,
+            ).returncode
+            == 0
+        )
+    except OSError as error:
+        say(f"failed: install: {error}")
+        installed = False
+    if not installed:
+        say("failed: install; starting stopped trees again with the old binary")
+    restarted = start(stopped)
+    say(
+        f"summary: {'upgraded' if installed and restarted else 'failed'}; {len(stopped)} tree(s) stopped"
+    )
+    return 0 if installed and restarted else 1
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError) as error:
+        say(f"failed: {error}")
+        say("summary: upgrade aborted; inspect tree status before retrying")
+        sys.exit(1)

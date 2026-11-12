@@ -98,6 +98,7 @@ When `BORGCHART_PARENT` is set, your team is a child team, and your parent is th
 ## Talking to the owner
 
 - **In your session:** the owner may attach to it and talk to you directly. Answer there.
+- When the owner's message says brg is about to upgrade: bring your notes up to date, ask each running child team's lead to do the same and wait for their replies, then reply to that message.
 - **On GitHub:** when you need them (a decision, a blocker, a usage limit) and have no parent, comment on the relevant pull request or issue, or on the tracking issue. Mention them only when a comment needs their attention.
 - **Usage limits.** If a member hits a usage limit or its vendor refuses to start, stop that member, tell the owner or your parent, and wait.
 
