@@ -69,7 +69,7 @@ impl Fixture {
             &self.root().join("registry.json"),
             &json!({
                 "schema": 2,
-                "instances": {TEAM: {
+                "teams": {TEAM: {
                     "template": "oncall", "template_dir": self.dir.path().join("oncall"),
                     "folder": self.dir.path().join("work"), "created_at": "2026-11-05T19:00:00.000Z",
                 }},
@@ -77,7 +77,7 @@ impl Fixture {
             }),
         );
         self.write_private(
-            &self.root().join(TEAM).join("instance.json"),
+            &self.root().join(TEAM).join("team.json"),
             &json!({
                 "schema": 2, "id": TEAM, "template": "oncall",
                 "template_dir": self.dir.path().join("oncall"),
@@ -158,7 +158,7 @@ impl Fixture {
             .env("BORGCHART_CONFIG", self.dir.path().join("config.yaml"))
             .args(args);
         if !args.starts_with(&["msg", "send"]) {
-            cmd.args(["--instance", TEAM]);
+            cmd.args(["--team", TEAM]);
         }
         let (m, inc) = match who {
             As::Operator => {
@@ -169,7 +169,7 @@ impl Fixture {
             As::Member(m) => (m.to_string(), format!("{m}-1")),
             As::MemberWith(m, i) => (m.to_string(), i.to_string()),
         };
-        cmd.env("BORGCHART_INSTANCE", TEAM)
+        cmd.env("BORGCHART_TEAM", TEAM)
             .env("BORGCHART_MEMBER", m)
             .env("BORGCHART_INCARNATION", inc);
         cmd.env("BORGCHART_WAIT_MIN_MS", "20")
@@ -512,7 +512,7 @@ fn acks_are_idempotent_and_recipient_only() {
     );
     assert_eq!(ext.code, 4);
     let mut cmd = f.command(&As::Operator, &["msg", "ack", "m3", "--json"]);
-    let operator = output(cmd.env("BORGCHART_INSTANCE", TEAM).output().unwrap());
+    let operator = output(cmd.env("BORGCHART_TEAM", TEAM).output().unwrap());
     assert_eq!(operator.code, 4);
     let missing = f.brg(&As::Member("helper"), &["msg", "ack", "m9", "--json"], None);
     assert_eq!(missing.code, 10);
@@ -557,7 +557,7 @@ fn caller_context_is_checked() {
         &As::Operator,
         &["msg", "send", "oncall-2a3b/lead", "x", "--json"],
     );
-    let out = output(cmd.env("BORGCHART_INSTANCE", TEAM).output().unwrap());
+    let out = output(cmd.env("BORGCHART_TEAM", TEAM).output().unwrap());
     assert_eq!(out.code, 2, "{:?}", out.json);
     // A partial member context.
     let mut cmd = f.command(&As::Operator, &["msg", "ack", "m1", "--json"]);
@@ -565,7 +565,7 @@ fn caller_context_is_checked() {
     assert_eq!(out.status.code(), Some(4));
     // Instance-only plugins still need to name an inbox.
     let mut cmd = f.command(&As::Operator, &["msg", "list", "--json"]);
-    let out = output(cmd.env("BORGCHART_INSTANCE", TEAM).output().unwrap());
+    let out = output(cmd.env("BORGCHART_TEAM", TEAM).output().unwrap());
     assert_eq!(out.code, 2, "{:?}", out.json);
 
     let fenced = [

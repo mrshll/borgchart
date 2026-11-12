@@ -223,7 +223,7 @@ fn cleanup_removes_leftover_state_and_nothing_else_in_the_state_folder() {
     for dir in &strangers {
         assert!(dir.join("x").is_file(), "{} went", dir.display());
     }
-    assert!(state.join(&inst).join("instance.json").is_file());
+    assert!(state.join(&inst).join("team.json").is_file());
     env.ok(&["stop", &inst]);
 }
 

@@ -101,16 +101,15 @@ roles:
     fn instance(&self) -> Option<String> {
         let reg: serde_json::Value =
             serde_json::from_slice(&fs::read(self.path("state/registry.json")).ok()?).ok()?;
-        reg["instances"].as_object()?.keys().next().cloned()
+        reg["teams"].as_object()?.keys().next().cloned()
     }
 
     /// The member of `role`, once created.
     fn member_id(&self, role: &str) -> Option<String> {
         let inst = self.instance()?;
-        let rec: serde_json::Value = serde_json::from_slice(
-            &fs::read(self.path(&format!("state/{inst}/instance.json"))).ok()?,
-        )
-        .ok()?;
+        let rec: serde_json::Value =
+            serde_json::from_slice(&fs::read(self.path(&format!("state/{inst}/team.json"))).ok()?)
+                .ok()?;
         rec["members"]
             .as_object()?
             .iter()
@@ -1744,7 +1743,7 @@ fn plugin_send_without_external_author_is_refused_before_recording() {
     env.up();
     let output = env
         .brg_cmd(&["msg", "send", "beta", "not attributed"])
-        .env("BORGCHART_INSTANCE", env.instance().unwrap())
+        .env("BORGCHART_TEAM", env.instance().unwrap())
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(2));

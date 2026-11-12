@@ -36,19 +36,19 @@ fn member_cmd(env: &Env, inst: &str, role: &str, start: usize, args: &[&str]) ->
     env.wait_for("member launch recorded", || {
         env.starts(&member)
             .iter()
-            .filter(|record| record["env"]["BORGCHART_INSTANCE"] == inst)
+            .filter(|record| record["env"]["BORGCHART_TEAM"] == inst)
             .count()
             > start
     });
     let starts = env.starts(&member);
     let vars = &starts
         .iter()
-        .filter(|record| record["env"]["BORGCHART_INSTANCE"] == inst)
+        .filter(|record| record["env"]["BORGCHART_TEAM"] == inst)
         .nth(start)
         .unwrap()["env"];
     let mut cmd = env.cmd(args);
     for key in [
-        "BORGCHART_INSTANCE",
+        "BORGCHART_TEAM",
         "BORGCHART_MEMBER",
         "BORGCHART_INCARNATION",
     ] {
@@ -139,8 +139,8 @@ fn copy_from_output(env: &Env, out: &Output) -> (String, PathBuf) {
         .as_array()
         .unwrap()
         .iter()
-        .flat_map(|team| team["instances"].as_array().unwrap())
-        .find(|copy| copy["instance"] == id)
+        .flat_map(|team| team["teams"].as_array().unwrap())
+        .find(|copy| copy["team"] == id)
         .unwrap_or_else(|| panic!("copy {id}: {listed}\n{}", both(out)));
     let folder = PathBuf::from(copy["folder"].as_str().unwrap());
     assert_eq!(copy["running"], false);
@@ -207,7 +207,7 @@ fn ancestors_manage_copies_and_members_at_every_depth() {
     });
     member_ok(&env, &dept, "lead", &["stop", &dev]);
     member_ok(&env, &dept, "lead", &["delete", &dev]);
-    assert!(env.registry()["instances"][&dev].is_null());
+    assert!(env.registry()["teams"][&dev].is_null());
     env.ok(&["stop", &dept]);
 }
 
@@ -234,7 +234,7 @@ fn dev_leads_manage_their_helpers_and_panel() {
     member_ok(&env, &dev, "lead", &["start", &designer]);
     member_ok(&env, &dev, "lead", &["stop", &panel]);
     member_ok(&env, &dev, "lead", &["delete", &panel]);
-    assert!(env.registry()["instances"][&panel].is_null());
+    assert!(env.registry()["teams"][&panel].is_null());
     env.ok(&["stop", &dept]);
 }
 
@@ -353,7 +353,7 @@ fn stopped_replaced_and_partial_starts_cannot_manage_subtrees() {
     }
     fs::write(path, original).unwrap();
     for key in [
-        "BORGCHART_INSTANCE",
+        "BORGCHART_TEAM",
         "BORGCHART_MEMBER",
         "BORGCHART_INCARNATION",
     ] {
@@ -405,7 +405,7 @@ fn recorded_copy_parents_survive_live_team_edits() {
     assert_eq!(env.state_of(&dev, "lead"), "stopped");
     member_refused(&env, &dept, "scout", &["delete", &dev]);
     member_ok(&env, &dept, "lead", &["delete", &dev]);
-    assert!(env.registry()["instances"][&dev].is_null());
+    assert!(env.registry()["teams"][&dev].is_null());
     fs::write(team, original).unwrap();
     env.ok(&["stop", &dept]);
 }

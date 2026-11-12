@@ -120,12 +120,12 @@ impl<'w> Team<'w> {
             |p: PathBuf| -> Option<Value> { serde_json::from_slice(&std::fs::read(p).ok()?).ok() };
         let registry = read(state.join("registry.json"))?;
         let dir = self.dir.display().to_string();
-        let instance = registry["instances"]
+        let instance = registry["teams"]
             .as_object()?
             .iter()
             .find(|(_, e)| e["template_dir"] == dir.as_str())
             .map(|(id, _)| id.clone())?;
-        let record = read(state.join(&instance).join("instance.json"))?;
+        let record = read(state.join(&instance).join("team.json"))?;
         let member = record["members"]
             .as_object()?
             .iter()

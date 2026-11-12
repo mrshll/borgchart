@@ -357,12 +357,12 @@ fn a_member_acts_only_on_its_own_instance() {
     // Its own instance by default, and by name.
     let out = env.as_member(&lead, 0, &["msg", "list", "--json"]);
     assert!(out.status.success(), "{}", both(&out));
-    let out = env.as_member(&lead, 0, &["msg", "list", "--json", "--instance", &a]);
+    let out = env.as_member(&lead, 0, &["msg", "list", "--json", "--team", &a]);
     assert!(out.status.success(), "{}", both(&out));
     // Another instance: refused, for reads too.
     for args in [
-        vec!["msg", "list", "--json", "--instance", b.as_str()],
-        vec!["msg", "integrity-check", "--instance", b.as_str()],
+        vec!["msg", "list", "--json", "--team", b.as_str()],
+        vec!["msg", "integrity-check", "--team", b.as_str()],
     ] {
         let out = env.as_member(&lead, 0, &args);
         assert!(!out.status.success(), "{args:?}: {}", both(&out));
@@ -428,25 +428,25 @@ fn outside_callers_name_the_instance_and_a_stopped_one_can_be_inspected() {
     let lead = env.member(&a, "lead");
     let out = env.publish(&a, &json!({"to": lead, "body": "hi"}));
     assert!(out.status.success(), "{}", both(&out));
-    // An operator reads a member's inbox; without `--instance`, refused.
-    env.ok(&["msg", "list", "--member", &lead, "--instance", &a]);
+    // An operator reads a member's inbox; without `--team`, refused.
+    env.ok(&["msg", "list", "--member", &lead, "--team", &a]);
     let err = env.fails(&["msg", "list", "--member", &lead]);
-    assert!(err.contains("--instance") && err.contains(&a), "{err}");
+    assert!(err.contains("--team") && err.contains(&a), "{err}");
     let err = env.fails(&["msg", "integrity-check"]);
-    assert!(err.contains("--instance"), "{err}");
+    assert!(err.contains("--team"), "{err}");
     // A role's name isn't a member.
-    let err = env.fails(&["msg", "list", "--member", "lead", "--instance", &a]);
+    let err = env.fails(&["msg", "list", "--member", "lead", "--team", &a]);
     assert!(err.contains(&lead), "{err}");
     env.ok(&["stop", &a]);
     for args in [
-        vec!["msg", "integrity-check", "--instance", a.as_str()],
-        vec!["msg", "integrity-check", "--instance", a.as_str()],
+        vec!["msg", "integrity-check", "--team", a.as_str()],
+        vec!["msg", "integrity-check", "--team", a.as_str()],
         vec![
             "msg",
             "list",
             "--member",
             lead.as_str(),
-            "--instance",
+            "--team",
             a.as_str(),
         ],
     ] {
@@ -512,7 +512,7 @@ fn plugin_actions_preserve_and_fence_the_launch_incarnation() {
     let env = Env::new();
     with_pager(&env);
     fs::write(env.path("templates/oncall/plugins/pager/pager"),
-        "#!/bin/sh\nif [ \"${1-}\" = send ]; then exec \"$BORGCHART_BIN\" msg send external:ops hello --json; fi\nprintf '%s\\n' \"$BORGCHART_INSTANCE\" \"$BORGCHART_MEMBER\" \"$BORGCHART_INCARNATION\"\n").unwrap();
+        "#!/bin/sh\nif [ \"${1-}\" = send ]; then exec \"$BORGCHART_BIN\" msg send external:ops hello --json; fi\nprintf '%s\\n' \"$BORGCHART_TEAM\" \"$BORGCHART_MEMBER\" \"$BORGCHART_INCARNATION\"\n").unwrap();
     let out = keyed(&env, &["create", "oncall", &env.folder("work/a")]);
     assert!(out.status.success(), "{}", both(&out));
     let instance = first_word(&stdout(&out));
@@ -534,7 +534,7 @@ fn plugin_actions_preserve_and_fence_the_launch_incarnation() {
         ("BORGCHART_INCARNATION", "stale-1"),
         ("BORGCHART_INCARNATION", ""),
         ("BORGCHART_MEMBER", "another"),
-        ("BORGCHART_INSTANCE", "other-1234"),
+        ("BORGCHART_TEAM", "other-1234"),
     ] {
         let out = common::command(env!("CARGO_BIN_EXE_brg"))
             .env_clear()
@@ -554,7 +554,7 @@ fn plugin_actions_preserve_and_fence_the_launch_incarnation() {
     let out = env.as_member(&lead, 0, &send_args);
     assert!(out.status.success(), "{}", both(&out));
     let record: Value = serde_json::from_slice(
-        &env.ok(&["msg", "read", "m1", "--instance", &instance, "--json"])
+        &env.ok(&["msg", "read", "m1", "--team", &instance, "--json"])
             .stdout,
     )
     .unwrap();

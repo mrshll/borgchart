@@ -147,7 +147,7 @@ pub(crate) fn finish(json: bool, result: Result<Output, Failure>) -> ExitCode {
     }
 }
 
-/// Open the message storage of the instance the caller names (`--instance`)
+/// Open the message storage of the instance the caller names (`--team`)
 /// or, inside a member, its own.
 pub(crate) fn open_bus(instance: Option<&str>) -> Result<Bus, Failure> {
     let id = context::instance(instance)?;
@@ -169,8 +169,7 @@ pub fn msg(instance: Option<&str>, command: MsgCommand, started: Instant) -> Exi
             let result = (|| {
                 if instance.is_some() {
                     return Err(runtime::SendError::Usage(
-                        "`msg send` takes no --instance; name the target as <instance>/<member>"
-                            .into(),
+                        "`msg send` takes no --team; name the target as <instance>/<member>".into(),
                     ));
                 }
                 let mut text = text.join(" ");

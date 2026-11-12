@@ -156,13 +156,13 @@ impl Run {
     /// The example's one instance, once created.
     fn instance(&self) -> Option<String> {
         let reg = self.read("state/registry.json")?;
-        reg["instances"].as_object()?.keys().next().cloned()
+        reg["teams"].as_object()?.keys().next().cloned()
     }
 
     /// The member of `role`, or the name as it is (a plugin process).
     fn member(&self, role: &str) -> String {
         let found = self.instance().and_then(|inst| {
-            let rec = self.read(&format!("state/{inst}/instance.json"))?;
+            let rec = self.read(&format!("state/{inst}/team.json"))?;
             rec["members"]
                 .as_object()?
                 .iter()

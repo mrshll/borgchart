@@ -26,13 +26,11 @@ fn copy(env: &Env, dept: &str) -> (String, PathBuf) {
     let before = env.registry();
     env.ok(&["create", &format!("{dept}/dev")]);
     let registry = env.registry();
-    let (id, entry) = registry["instances"]
+    let (id, entry) = registry["teams"]
         .as_object()
         .unwrap()
         .iter()
-        .find(|(id, _)| {
-            id.starts_with(&format!("{dept}/dev-")) && before["instances"][*id].is_null()
-        })
+        .find(|(id, _)| id.starts_with(&format!("{dept}/dev-")) && before["teams"][*id].is_null())
         .unwrap();
     let folder = PathBuf::from(entry["folder"].as_str().unwrap());
     (id.clone(), folder)
@@ -42,12 +40,12 @@ fn latest_prompt(env: &Env, inst: &str, member: &str) -> String {
     env.wait_for("fake agent start", || {
         env.starts(member)
             .iter()
-            .any(|s| s["env"]["BORGCHART_INSTANCE"] == inst)
+            .any(|s| s["env"]["BORGCHART_TEAM"] == inst)
     });
     env.starts(member)
         .into_iter()
         .rev()
-        .find(|s| s["env"]["BORGCHART_INSTANCE"] == inst)
+        .find(|s| s["env"]["BORGCHART_TEAM"] == inst)
         .unwrap()["argv"]
         .to_string()
 }
@@ -233,7 +231,7 @@ fn missing_running_subteam_during_status_and_stop(remove_folder: bool) {
             assert!(
                 rows.iter().any(|row| {
                     row["kind"] == "member"
-                        && row["instance"] == *instance
+                        && row["team"] == *instance
                         && row["member"] == *member
                         && row["liveness"] == "alive"
                 }),
@@ -242,13 +240,13 @@ fn missing_running_subteam_during_status_and_stop(remove_folder: bool) {
         }
         assert!(
             rows.iter().any(|row| {
-                row["kind"] == "copy" && row["instance"] == *healthy && row["state"] == "running"
+                row["kind"] == "team" && row["team"] == *healthy && row["state"] == "running"
             }),
             "{args:?} hid the healthy copy: {rows:?}"
         );
         let row = rows
             .iter()
-            .find(|row| row["kind"] == "copy" && row["instance"] == *affected)
+            .find(|row| row["kind"] == "team" && row["team"] == *affected)
             .unwrap();
         assert_eq!(row["state"], "unreadable", "{args:?}: {rows:?}");
         detail = row["detail"].as_str().unwrap().to_string();
@@ -275,7 +273,7 @@ fn missing_running_subteam_during_status_and_stop(remove_folder: bool) {
         assert!(
             env.rows(&dept).iter().any(|row| {
                 row["kind"] == "member"
-                    && row["instance"] == *instance
+                    && row["team"] == *instance
                     && row["member"] == *member
                     && row["liveness"] == "gone"
             }),
@@ -326,7 +324,7 @@ fn changed_subteam_reaches_only_members_that_restart() {
     env.wait_for("restarted copy's agent", || {
         env.starts(&first_lead)
             .iter()
-            .filter(|s| s["env"]["BORGCHART_INSTANCE"] == first)
+            .filter(|s| s["env"]["BORGCHART_TEAM"] == first)
             .count()
             == 2
     });
@@ -357,7 +355,7 @@ fn moved_copy_team_folder_errors_without_rebinding_to_a_same_named_team() {
     env.fails(&["start", &child]);
     let registry = env.registry();
     assert_eq!(
-        registry["instances"][&child]["template_dir"],
+        registry["teams"][&child]["template_dir"],
         original.display().to_string()
     );
     assert_eq!(env.starts(&lead).len(), starts);
@@ -396,7 +394,7 @@ fn changed_team_path_resolution_reaches_new_copies_without_restart() {
     env.ok(&["stop", &kept]);
     env.ok(&["start", &kept]);
     assert_eq!(
-        env.registry()["instances"][&kept]["template_dir"],
+        env.registry()["teams"][&kept]["template_dir"],
         env.path("templates/dev").display().to_string()
     );
     env.ok(&["stop", &dept]);
@@ -502,7 +500,7 @@ fn department_and_copy_share_a_store_without_bus_opt_in() {
     ]);
     for instance in [&dept, &child] {
         let checked: serde_json::Value = serde_json::from_slice(
-            &env.ok(&["msg", "integrity-check", "--instance", instance, "--json"])
+            &env.ok(&["msg", "integrity-check", "--team", instance, "--json"])
                 .stdout,
         )
         .unwrap();

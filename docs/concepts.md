@@ -105,7 +105,7 @@ There's no `up`. `create` always makes something new; `start`, `stop` and `delet
 
 Two folders with the same name can both run. Their instances are told apart by their suffixes, and `brg templates` shows each one's folder.
 
-**Leaving the instance out.** Inside a member, an address without an instance means that member's own instance, so a lead writes `implementer-x7k2`. Everywhere else the full instance ID is needed (`dev-team-k3f9/implementer-x7k2`, `brg start dev-team-k3f9`). There are no other shortcuts for now: brg never infers an instance from a template's name or from which instances are running. `msg` commands other than `msg send` take the instance as `--instance`; inside a member it's always the member's own.
+**Leaving the instance out.** Inside a member, an address without an instance means that member's own instance, so a lead writes `implementer-x7k2`. Everywhere else the full instance ID is needed (`dev-team-k3f9/implementer-x7k2`, `brg start dev-team-k3f9`). There are no other shortcuts for now: brg never infers an instance from a template's name or from which instances are running. `msg` commands other than `msg send` take the instance as `--team`; inside a member it's always the member's own.
 
 **Members are always named in full.** Commands that act on a member (`attach`, `msg send`, `stop`), and messages, take its full ID (`lead-q8m3`). A role name there is refused, listing the role's members. There are no shortcuts for now.
 
@@ -149,7 +149,7 @@ dev-team-k3f9                       template ~/.config/borgchart/templates/dev-t
   - a role with no kept member gets `not created (start: false)` or `not created (start: true)`, following its `start` setting, or a dim `on demand (none created)` for `max > 1`. A created member that isn't running shows on its own line as `stopped`;
   - positive unacked message counts appear beside members, also in `-i`; a zero adds nothing to the tree;
   - copies nest under their parent member, each with its full instance path.
-- **`--json` member rows:** `instance`, `template`, `member`, `role`, `parent` (a member ID), `start_id` (the current incarnation, when recorded), and the existing fields. A stop retains `start_id`; restarting changes it. With a readable bus, `unacked` gives each kept member's unacked count, including zero. Without a bus it is absent; if the store cannot be read, counts are absent and status adds a short note. Deleted members have no rows. Plugin-process rows keep `kind: plugin` and their name.
+- **`--json` member rows:** `team`, `template`, `member`, `role`, `parent` (a member ID), `start_id` (the current incarnation, when recorded), and the existing fields. A stop retains `start_id`; restarting changes it. With a readable bus, `unacked` gives each kept member's unacked count, including zero. Without a bus it is absent; if the store cannot be read, counts are absent and status adds a short note. Deleted members have no rows. Plugin-process rows keep `kind: plugin` and their name.
 
 ## Environment variables
 
@@ -157,7 +157,7 @@ Every `BORGCHART_*` variable that a member, plugin or test can see:
 
 | Name | Seen by | Meaning |
 | --- | --- | --- |
-| `BORGCHART_INSTANCE` | members, plugins, alert actions | the instance (`dev-team-k3f9`) |
+| `BORGCHART_TEAM` | members, plugins, alert actions | the instance (`dev-team-k3f9`) |
 | `BORGCHART_ROLE` | members, plugin actions | the role (`implementer`) |
 | `BORGCHART_MEMBER` | members, plugin actions | the member (`implementer-x7k2`) |
 | `BORGCHART_INCARNATION` | members | the member's current start ID; brg refuses a stopped or replaced start |

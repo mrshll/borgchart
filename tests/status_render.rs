@@ -58,7 +58,7 @@ fn team_diamonds_identify_running_copies_without_hiding_copy_failures() {
     let mut rows = [
         member("lead", None),
         StatusRow {
-            kind: "copy",
+            kind: "team",
             instance: "harbor-k3f9/design-j5v3".into(),
             vendor: None,
             model: None,

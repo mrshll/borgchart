@@ -108,8 +108,8 @@ blocked() {{ echo "BLOCKED_context_$1"; exit 78; }}
 [ "${{BORGCHART_TMUX_SOCKET-}}" = {socket} ] || blocked socket
 [ "${{BORGCHART_ROLE-}}" = seatprobe ] || blocked role
 [ -n "${{BORGCHART_INCARNATION-}}" ] || blocked incarnation
-case "${{BORGCHART_INSTANCE-}}/${{BORGCHART_MEMBER-}}" in *..*|/*|*/|*/*/*) blocked identity;; esac
-shim="$BORGCHART_STATE_HOME/$BORGCHART_INSTANCE/members/$BORGCHART_MEMBER/bin/brg-seat"
+case "${{BORGCHART_TEAM-}}/${{BORGCHART_MEMBER-}}" in *..*|/*|*/|*/*/*) blocked identity;; esac
+shim="$BORGCHART_STATE_HOME/$BORGCHART_TEAM/members/$BORGCHART_MEMBER/bin/brg-seat"
 [ "$(command -v brg-seat)" = "$shim" ] || blocked shim
 (umask 077; : > "$XDG_CACHE_HOME/permission-probe") || blocked cache_unwritable
 /bin/rm "$XDG_CACHE_HOME/permission-probe"

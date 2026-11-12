@@ -7,7 +7,7 @@
 //!   issued twice, even after `delete`.
 //! - `<state home>/registry.lock` is the one lock over the registry, suffix
 //!   issue, checkout reservation, and the lifecycle steps that need them.
-//! - `<state home>/<instance>/instance.json` is the instance's record: its
+//! - `<state home>/<instance>/team.json` is the instance's record: its
 //!   template folder, working folder, issued members, and the members that were
 //!   running at the last stop.
 //!
@@ -141,6 +141,7 @@ pub fn new_suffix(taken: impl Fn(&str) -> bool) -> Result<String, String> {
 #[serde(deny_unknown_fields)]
 pub struct Registry {
     pub schema: u32,
+    #[serde(rename = "teams")]
     pub instances: BTreeMap<String, Entry>,
     /// Every suffix issued for each team name, kept after `delete`.
     pub issued: BTreeMap<String, BTreeSet<String>>,
@@ -157,7 +158,7 @@ pub struct Entry {
     pub created_at: String,
 }
 
-/// `instance.json`: one instance's record.
+/// `team.json`: one instance's record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InstanceRecord {
@@ -174,6 +175,7 @@ pub struct InstanceRecord {
     pub members: BTreeMap<String, IssuedMember>,
     /// Team-role copies, including deleted IDs so their addresses are never reused.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(rename = "child_teams")]
     pub copies: BTreeMap<String, IssuedMember>,
     /// The full address of this copy's parent member in its declaring instance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -186,6 +188,7 @@ pub struct InstanceRecord {
     pub stopping: bool,
     /// Descendant copies running at the last full stop, by relative instance path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "child_teams_running_at_stop")]
     pub copies_running_at_stop: Option<BTreeSet<String>>,
 }
 

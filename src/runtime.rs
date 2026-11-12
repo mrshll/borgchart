@@ -2707,11 +2707,13 @@ pub struct Listed {
     pub team: Option<String>,
     #[serde(rename = "template_dir")]
     pub dir: Option<PathBuf>,
+    #[serde(rename = "teams")]
     pub instances: Vec<ListedInstance>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct ListedInstance {
+    #[serde(rename = "team")]
     pub instance: String,
     #[serde(rename = "template")]
     pub team: String,
@@ -2883,7 +2885,7 @@ pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> 
         match copy.instance {
             Ok(copy) => copies.push(copy),
             Err(error) => errors.push(format!(
-                "{}: {error}; restore its state folder and instance.json, then retry: brg stop {}",
+                "{}: {error}; restore its state folder and team.json, then retry: brg stop {}",
                 copy.id, inst.id
             )),
         }
@@ -3014,7 +3016,7 @@ fn member_stop_walk(
         let descendants = crate::nesting::descendants(root)?
             .into_iter()
             .map(|copy| copy.instance.map_err(|error| format!(
-                "{}: {error}; restore its state folder and instance.json, then retry: brg stop {}", copy.id, root.id)))
+                "{}: {error}; restore its state folder and team.json, then retry: brg stop {}", copy.id, root.id)))
             .collect::<Result<Vec<_>, _>>()?;
         walk.push(SubtreeStop::Copy {
             root: Box::new(root.clone()),
@@ -3048,7 +3050,7 @@ pub fn stop_recursive(inst: &Instance, member: &str) -> Result<Vec<String>, Stri
         .map(|(id, _)| {
             let copy = inst.at(id);
             address::instance(&copy).map_err(|error| format!(
-                "{copy}: {error}; restore its state folder and instance.json, then retry: brg stop -r {}", inst.at(member)))
+                "{copy}: {error}; restore its state folder and team.json, then retry: brg stop -r {}", inst.at(member)))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let mut walk = Vec::new();
@@ -3410,8 +3412,9 @@ pub struct StatusRow {
     /// The local member or copy ID, a role with nothing created yet, or
     /// a plugin's name.
     pub name: String,
-    /// `member`, `role` (no member or copy yet), `copy` or `plugin`.
+    /// `member`, `role` (no member or child team yet), `team` or `plugin`.
     pub kind: &'static str,
+    #[serde(rename = "team")]
     pub instance: String,
     /// The template's name.
     #[serde(rename = "template")]
@@ -3903,7 +3906,7 @@ fn status_with_counts(
                 .count();
             rows.push(StatusRow {
                 name: id.clone(),
-                kind: "copy",
+                kind: "team",
                 instance: full_id.clone(),
                 team: copy
                     .as_ref()
@@ -4026,7 +4029,7 @@ fn pending(dir: &Path) -> Option<String> {
 pub fn status_cells(r: &StatusRow, short: bool) -> Vec<String> {
     match r.kind {
         "member" => {}
-        "copy" => {
+        "team" => {
             return vec![
                 r.team.clone(),
                 if matches!(r.state.as_str(), "stopping" | "unreadable") {
@@ -4119,7 +4122,7 @@ pub fn render_status_as(
 /// A row's identity stays unique when local IDs repeat in different copies.
 pub fn status_key(row: &StatusRow) -> String {
     match row.kind {
-        "copy" => row.instance.clone(),
+        "team" => row.instance.clone(),
         "plugin" => format!("{}/plugin:{}", row.instance, row.name),
         _ => format!("{}/{}", row.instance, row.name),
     }
@@ -4152,7 +4155,7 @@ fn status_nodes_as(rows: &[StatusRow], short: bool) -> Vec<tree::Node> {
                 }
                 if short {
                     match r.kind {
-                        "member" | "copy" | "plugin" => cols.swap(0, 1),
+                        "member" | "team" | "plugin" => cols.swap(0, 1),
                         "role" => {}
                         _ => cols.insert(1, String::new()),
                     }
@@ -4223,10 +4226,10 @@ pub fn status_look(r: &StatusRow) -> tree::Look {
             italic: true,
             ..faded
         },
-        ("copy", "unreadable") => look('◌', Tone::Odd),
-        ("copy", "stopping") => look('◌', Tone::Faded),
-        ("copy", _) if r.running.unwrap_or(0) > 0 => look('◆', Tone::Team),
-        ("copy", _) => faded,
+        ("team", "unreadable") => look('◌', Tone::Odd),
+        ("team", "stopping") => look('◌', Tone::Faded),
+        ("team", _) if r.running.unwrap_or(0) > 0 => look('◆', Tone::Team),
+        ("team", _) => faded,
         ("plugin", "alive")
             if r.detail
                 .as_deref()
@@ -4961,7 +4964,7 @@ mod tests {
             start: true,
         };
         let copy = StatusRow {
-            kind: "copy",
+            kind: "team",
             detail: Some("note".into()),
             running: Some(2),
             ..member.clone()
@@ -5075,9 +5078,9 @@ mod tests {
             row("role", "i", "boss", NOT_STARTING, None),
             row("member", "i", "orphan", "idle", Some("boss")),
             row("role", "i", "spare", NOT_STARTING, None),
-            row("copy", "i/sub", "sub", "0 running", Some("i/spare")),
+            row("team", "i/sub", "sub", "0 running", Some("i/spare")),
             row("plugin", "i", "watch", "alive", None),
-            row("copy", "i/dev", "dev", "1 running", Some("i/lead")),
+            row("team", "i/dev", "dev", "1 running", Some("i/lead")),
             row("member", "i/dev", "devlead", "working", Some("i/dev")),
             row("role", "i/dev", "reviewer", NOT_STARTING, Some("devlead")),
         ];

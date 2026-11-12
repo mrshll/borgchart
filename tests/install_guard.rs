@@ -100,7 +100,7 @@ fn catalog_change_allows_joins(flip_symlink: bool) {
     let scout = env
         .rows(&inst)
         .into_iter()
-        .find(|row| row["instance"] == inst && row["role"] == "scout")
+        .find(|row| row["team"] == inst && row["role"] == "scout")
         .unwrap()["member"]
         .as_str()
         .unwrap()
@@ -151,7 +151,7 @@ fn catalog_change_allows_joins(flip_symlink: bool) {
         fs::read_to_string(env.path(&note)).unwrap(),
         "unfinished draft\n"
     );
-    env.ok(&["msg", "read", message_id, "--instance", &inst]);
+    env.ok(&["msg", "read", message_id, "--team", &inst]);
     env.wait_for("new copy lead started", || {
         env.state_of(&next, "lead") == "idle"
     });

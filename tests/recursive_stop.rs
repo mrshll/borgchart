@@ -48,7 +48,7 @@ fn as_member(env: &Env, inst: &str, role: &str, args: &[&str]) -> std::process::
     let vars = &starts.last().unwrap()["env"];
     let mut cmd = env.cmd(args);
     for key in [
-        "BORGCHART_INSTANCE",
+        "BORGCHART_TEAM",
         "BORGCHART_MEMBER",
         "BORGCHART_INCARNATION",
     ] {
@@ -137,7 +137,7 @@ fn recursive_stop_removes_every_target_from_the_restore_snapshot() {
     let leaf = env.member(&inst, "leaf");
     env.ok(&["stop", "-r", &format!("{inst}/{helper}")]);
     let record: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(env.path(&format!("state/{inst}/instance.json"))).unwrap(),
+        &std::fs::read(env.path(&format!("state/{inst}/team.json"))).unwrap(),
     )
     .unwrap();
     let restore = record["running_at_stop"].as_array().unwrap();

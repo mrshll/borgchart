@@ -48,8 +48,8 @@ pub enum Actor {
 }
 
 /// The instance a bus command acts on: inside a member (or a plugin
-/// process), its own, and `--instance` may only repeat it; outside, the
-/// `--instance` given, which is required.
+/// process), its own, and `--team` may only repeat it; outside, the
+/// `--team` given, which is required.
 pub fn instance(flag: Option<&str>) -> Result<String, Failure> {
     instance_from(flag, |k| std::env::var(k).ok())
 }
@@ -83,7 +83,7 @@ pub fn instance_from(
         (None, None) => Err(Failure::new(
             Code::Usage,
             format!(
-                "name the instance with `--instance ID`; {}",
+                "name the instance with `--team ID`; {}",
                 crate::address::known()
             ),
         )),
