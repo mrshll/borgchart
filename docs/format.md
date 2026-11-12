@@ -3,7 +3,7 @@
 A **team template** is a folder you can share: its roles (under `roles:`), what each one is told, which plugin programs they may use, and their shared message bus. **brg's configuration** (`config.yaml`) holds what belongs to you rather than to a template: auth, folder trust, where template names are looked up, shared plugins and tmux. A **team** is a template running in one working folder, given at `brg create <template> <folder>` ([concepts](concepts.md)).
 
 ```
-examples/slack-devops/
+my-team/
 ├── template.yaml           # roles, plugins, bus
 ├── triager.md          # one Markdown role file per role
 ├── lead.md
@@ -149,7 +149,7 @@ A plugin is a plain script or program, in any language, that members run themsel
   - `path: plugins/<dir>`: a directory inside the template. It is also the programs' working directory.
   - `path: catalog:shared/<path>`: a shared plugin in the sibling catalog asset folder, confined as above.
   - `path: shared:<name>`: `<plugins_dir>/<name>`, where `plugins_dir` is set in brg's configuration. Where it resolves is frozen while a team runs.
-  - No `path`: the commands are whatever those names resolve to on `PATH` when the team starts.
+  - No `path`: the commands are whatever those names resolve to on `PATH` when the team starts. The plugin process runs in the template folder; actions run in the member's folder.
 - **`process`:** a long-running program, e.g. a watcher.
   - A full `brg start` (and `create`) starts it and `brg stop` stops it; it is not restarted.
   - It gets a small base environment plus the names in `env`, and `BORGCHART_DELIVER_TO` when `delivers_to` is set.

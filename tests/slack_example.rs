@@ -1,7 +1,7 @@
 //! End-to-end round trip for `examples/slack-devops` with a fake Slack API and
-//! `fake-agent` members: message → watcher → triager → escalate → lead → reply.
+//! `fake-agent` members: message → watcher → triager → promote → lead → reply.
 //!
-//! Needs tmux and uv. Run with `cargo test --features test-support`.
+//! Needs tmux and the workspace binaries. Run with `cargo test --features test-support`.
 #![cfg(feature = "test-support")]
 
 mod common;
@@ -9,7 +9,7 @@ mod common;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -105,21 +105,12 @@ fn copy_dir(from: &Path, to: &Path) {
     for entry in fs::read_dir(from).unwrap().flatten() {
         let path = entry.path();
         let name = entry.file_name();
-        if name == "__pycache__" || name == "tests" || name == ".pytest_cache" {
-            continue;
-        }
         if path.is_dir() {
             copy_dir(&path, &to.join(&name));
         } else {
             fs::copy(&path, to.join(&name)).unwrap();
         }
     }
-}
-
-fn which(name: &str) -> Option<PathBuf> {
-    std::env::split_paths(&std::env::var_os("PATH")?)
-        .map(|d| d.join(name))
-        .find(|p| p.is_file())
 }
 
 struct Run {
@@ -217,8 +208,8 @@ impl Run {
             std::thread::sleep(Duration::from_millis(200));
         }
         let status = String::from_utf8_lossy(&self.brg(&["status"]).stdout).to_string();
-        let logs = String::from_utf8_lossy(&self.brg(&["logs", "slackbot", "-n", "40"]).stdout)
-            .to_string();
+        let logs =
+            String::from_utf8_lossy(&self.brg(&["logs", "slack", "-n", "40"]).stdout).to_string();
         panic!(
             "timed out waiting for {what}\nstatus:\n{status}\nwatcher:\n{logs}\ntriager: {:?}\nlead: {:?}",
             self.submissions("triager"),
@@ -229,10 +220,6 @@ impl Run {
 
 #[test]
 fn slack_round_trip_through_the_example_team() {
-    let Some(uv) = which("uv") else {
-        eprintln!("skipping: uv is not on PATH");
-        return;
-    };
     let dir = tempfile::tempdir().unwrap();
     let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/slack-devops");
     let team = dir.path().join("team");
@@ -247,13 +234,7 @@ fn slack_round_trip_through_the_example_team() {
         + 5;
     let urgent = format!("{now}.000100");
     let chatter = format!("{}.000200", now + 1);
-    let slack = Arc::new(Mutex::new(Slack {
-        messages: vec![
-            serde_json::json!({"ts": urgent, "user": "U0ALICE", "text": "deploys are failing on main"}),
-            serde_json::json!({"ts": chatter, "user": "U0BOB", "text": "lunch?"}),
-        ],
-        posted: Vec::new(),
-    }));
+    let slack = Arc::new(Mutex::new(Slack::default()));
     {
         let slack = slack.clone();
         std::thread::spawn(move || serve(listener, slack));
@@ -266,8 +247,7 @@ fn slack_round_trip_through_the_example_team() {
     let team_yaml = team_yaml.replacen(
         channel,
         &format!(
-            "      SLACK_CHANNEL_ID: C0000EXAMPLE\n      SLACK_API_BASE: http://127.0.0.1:{port}/api\n      SLACK_POLL_SECONDS: '1'\n      UV_CACHE_DIR: {}",
-            dir.path().join("uv-cache").display()
+            "      SLACK_CHANNEL_ID: C0000EXAMPLE\n      SLACK_API_BASE: http://127.0.0.1:{port}/api\n      SLACK_POLL_SECONDS: '1'"
         ),
         1,
     );
@@ -276,13 +256,18 @@ fn slack_round_trip_through_the_example_team() {
 
     let bin = dir.path().join("bin");
     fs::create_dir_all(&bin).unwrap();
+    let plugin = Path::new(env!("CARGO_BIN_EXE_brg")).with_file_name("brg-slack");
+    assert!(
+        plugin.is_file(),
+        "build the workspace binaries before this test"
+    );
+    std::os::unix::fs::symlink(plugin, bin.join("brg-slack")).unwrap();
     std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_fake-agent"), bin.join("claude")).unwrap();
     fs::create_dir_all(dir.path().join("home")).unwrap();
     let tmux = crate::common::PrivateTmux::new();
     let path = tmux.path_with(&format!(
-        "{}:{}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
-        bin.display(),
-        uv.parent().unwrap().display()
+        "{}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+        bin.display()
     ));
     let run = Run {
         socket: tmux.socket("brg-slack-test"),
@@ -299,8 +284,23 @@ fn slack_round_trip_through_the_example_team() {
         String::from_utf8_lossy(&up.stderr)
     );
 
-    // The watcher hands both new messages to the triager, as IDs only.
-    run.wait("triager notified", || run.submissions("triager").len() >= 2);
+    // Wait for the first snapshot, which must not replay existing history.
+    run.wait("watcher initialized", || {
+        run.instance()
+            .and_then(|inst| run.read(&format!("state/{inst}/plugins/slack/health.json")))
+            .is_some_and(|health| health["ok"] == true)
+    });
+    slack.lock().unwrap().messages = vec![
+        serde_json::json!({"ts": urgent, "user": "U0000ALICE", "text": "deploys are failing on main"}),
+        serde_json::json!({"ts": chatter, "user": "U0000OTHER", "text": "lunch?"}),
+    ];
+
+    // The watcher hands both new messages to the triager in one ID-only batch.
+    run.wait("triager notified", || {
+        run.submissions("triager")
+            .iter()
+            .any(|notice| notice.contains(&format!("ts={urgent}")))
+    });
     let notes = run.submissions("triager");
     assert!(
         notes.iter().any(|n| n.contains(&format!("ts={urgent}"))),
@@ -313,24 +313,24 @@ fn slack_round_trip_through_the_example_team() {
         "{notes:?}"
     );
 
-    // The triager escalates the urgent one (a real triager would decide this).
-    let cmd = format!("tool slackbot escalate {urgent} high deploy");
+    // The triager promotes the urgent one (a real triager would decide this).
+    let cmd = format!("tool brg-slack promote {urgent} deploy");
     assert!(
         run.brg(&["msg", "send", "triager", &cmd, "--external", "test"])
             .status
             .success()
     );
-    run.wait("lead escalation", || {
+    run.wait("lead promotion", || {
         run.submissions("lead").iter().any(|s| {
             s.contains(&format!(
-                "Escalation from {}: message ts={urgent}, severity=high, reason=deploy",
+                "Slack promote from {}: ts={urgent} reason=deploy",
                 run.member("triager")
             ))
         })
     });
 
     // The lead replies in the thread.
-    let cmd = format!("tool slackbot reply {urgent} 'Looking into the failing deploys now'");
+    let cmd = format!("tool brg-slack reply {urgent} 'Looking into the failing deploys now'");
     assert!(
         run.brg(&["msg", "send", "lead", &cmd, "--external", "test"])
             .status
@@ -343,7 +343,7 @@ fn slack_round_trip_through_the_example_team() {
     assert_eq!(posted["text"], "Looking into the failing deploys now");
 
     // The triager can't reply: `reply` isn't granted to it.
-    let cmd = format!("tool slackbot reply {urgent} 'sneaky'");
+    let cmd = format!("tool brg-slack reply {urgent} 'sneaky'");
     assert!(
         run.brg(&["msg", "send", "triager", &cmd, "--external", "test"])
             .status
@@ -358,7 +358,7 @@ fn slack_round_trip_through_the_example_team() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|r| r["name"] == "slackbot")
+        .find(|r| r["name"] == "slack")
         .unwrap()
         .clone();
     assert_eq!(watcher["state"], "alive", "{watcher}");

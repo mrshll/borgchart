@@ -95,7 +95,7 @@ for check in "$@"; do
         exit 1
       fi
       ;;
-    py) run py uv run --no-project --with pytest==8.3.5 pytest -p no:cacheprovider examples/slack-devops/plugins/slackbot/tests tools/tests ;;
+    py) run py uv run --no-project --with pytest==8.3.5 pytest -p no:cacheprovider tools/tests ;;
     *)
       echo "checks: unknown check '$check' (use fmt, clippy, fast, test or py)" >&2
       exit 2
