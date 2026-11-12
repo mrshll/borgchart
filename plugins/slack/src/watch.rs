@@ -238,8 +238,8 @@ pub fn run(api: &Api, once: bool) -> Result<()> {
     loop {
         let state = match State::from_env() {
             Ok(state) => state,
-            Err(_) => {
-                eprintln!("cannot write health; check plugin state permissions");
+            Err(error) => {
+                eprintln!("{}", api::one_line(&Error::from(error).to_string()));
                 if once {
                     return Ok(());
                 }

@@ -81,6 +81,10 @@ brg supplies `BORGCHART_BIN`, `BORGCHART_STATE_DIR`, the resolved
 private channels. Install the app and invite the bot to each configured channel.
 Slack's app/token restrictions also apply to reading threads.
 
+`watch`, `status`, and promotion retries require `BORGCHART_STATE_DIR`. When
+running them directly, set it to a dedicated state directory. New directories
+are private; existing directory permissions are preserved.
+
 ## Delivery and limits
 
 Pending intake items are sent oldest first, one batch per poll, at most six

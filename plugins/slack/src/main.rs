@@ -121,16 +121,18 @@ fn main() {
             return;
         }
         Err(error) => {
-            eprintln!(
-                "{}; run brg-slack --help",
-                api::one_line(
-                    error
-                        .to_string()
-                        .lines()
-                        .next()
-                        .unwrap_or("invalid arguments")
-                )
-            );
+            let detail = if error.kind() == ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand {
+                "choose a command".into()
+            } else {
+                error
+                    .to_string()
+                    .lines()
+                    .take_while(|line| !line.is_empty() && !line.starts_with("Usage:"))
+                    .map(str::trim)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            eprintln!("{}; run brg-slack --help", api::one_line(&detail));
             std::process::exit(2);
         }
     };

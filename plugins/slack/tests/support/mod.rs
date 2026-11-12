@@ -139,7 +139,7 @@ impl Harness {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir(dir.path().join("state")).unwrap();
         let brg = dir.path().join("brg");
-        fs::write(&brg, "#!/bin/sh\nprintf '%s\\0' \"$@\" >> \"$HOME/sends\"\nprintf '\\0' >> \"$HOME/sends\"\n[ ! -f \"$HOME/delay\" ] || /bin/sleep 31\n/bin/cat \"$HOME/result\"\nexit \"$(/bin/cat \"$HOME/code\")\"\n").unwrap();
+        fs::write(&brg, "#!/bin/sh\nprintf '%s\\0' \"$@\" >> \"$HOME/sends\"\nprintf '\\0' >> \"$HOME/sends\"\n[ ! -f \"$HOME/delay\" ] || /bin/sleep 40\n/bin/cat \"$HOME/result\"\nexit \"$(/bin/cat \"$HOME/code\")\"\n").unwrap();
         fs::set_permissions(&brg, fs::Permissions::from_mode(0o700)).unwrap();
         fs::write(dir.path().join("code"), "0").unwrap();
         fs::write(dir.path().join("result"), "{}").unwrap();

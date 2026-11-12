@@ -1,10 +1,10 @@
 //! Shared plugin delivery, private state and framing for untrusted evidence.
-use crate::{bounded_process, bus::time, state};
+use crate::{bounded_process, bus::time};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -64,13 +64,19 @@ pub fn send(plugin: &str, target: &str, text: &str, from: Option<&str>) -> Outco
                 &output.stdout
             },
         ),
-        Err(bounded_process::Error::Deadline | bounded_process::Error::OutputLimit(_)) => {
-            Outcome::Uncertain { id: None }
+        Err(error) => classify_error(error),
+    }
+}
+fn classify_error(error: bounded_process::Error) -> Outcome {
+    match error {
+        // Only these spawn failures prove brg could not have committed a send.
+        bounded_process::Error::Io(io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied) => {
+            Outcome::Refused {
+                code: None,
+                message: "cannot run brg; check BORGCHART_BIN".into(),
+            }
         }
-        Err(_) => Outcome::Refused {
-            code: None,
-            message: "cannot run brg; check BORGCHART_BIN".into(),
-        },
+        _ => Outcome::Uncertain { id: None },
     }
 }
 
@@ -103,8 +109,11 @@ impl State {
     pub fn from_env() -> io::Result<Self> {
         let root = std::env::var_os("BORGCHART_STATE_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|| ".".into());
-        state::ensure_dir(&root)?;
+            .ok_or_else(|| io::Error::other("set BORGCHART_STATE_DIR or run this through brg"))?;
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&root)?;
         Ok(Self { root })
     }
     pub fn read_json<T: DeserializeOwned + Default>(&self, name: &str) -> T {
@@ -132,7 +141,7 @@ impl State {
         Ok(file)
     }
     pub fn lock(&self, name: &str) -> io::Result<File> {
-        let file = state::open_lock(&self.root.join(name))?;
+        let file = self.open(name, true, true)?;
         lock(&file)?;
         Ok(file)
     }
@@ -141,6 +150,7 @@ impl State {
         let tmp = self
             .root
             .join(format!(".{name}.{}.tmp", std::process::id()));
+        let _ = fs::remove_file(&tmp);
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -184,6 +194,25 @@ pub fn read_lines(file: &mut File) -> io::Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn post_spawn_io_failures_cannot_republish_a_possibly_committed_send() {
+        for kind in [io::ErrorKind::NotFound, io::ErrorKind::PermissionDenied] {
+            assert!(matches!(
+                classify_error(bounded_process::Error::Io(kind)),
+                Outcome::Refused { .. }
+            ));
+        }
+        for kind in [
+            io::ErrorKind::UnexpectedEof,
+            io::ErrorKind::BrokenPipe,
+            io::ErrorKind::Other,
+        ] {
+            assert_eq!(
+                classify_error(bounded_process::Error::Io(kind)),
+                Outcome::Uncertain { id: None }
+            );
+        }
+    }
     #[test]
     fn committed_and_uncertain_outcomes_cannot_be_retried_as_refusals() {
         for delivery in ["stored", "uncertain", "typed"] {

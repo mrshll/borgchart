@@ -97,6 +97,17 @@ pub fn allowed(message: &Value, own: &BTreeSet<String>, allow: &BTreeSet<String>
     }
 }
 
+fn retry_delay(header: Option<&str>) -> Duration {
+    let seconds = header
+        .unwrap_or("1")
+        .parse::<f64>()
+        .ok()
+        .filter(|v| v.is_finite())
+        .map(|v| v.clamp(0.0, 60.0))
+        .unwrap_or(5.0);
+    Duration::from_secs_f64(seconds)
+}
+
 pub struct Api {
     agent: ureq::Agent,
 }
@@ -155,19 +166,14 @@ impl Api {
             let mut response = response.map_err(|_| connectivity())?;
             let status = response.status().as_u16();
             if status == 429 && attempt < 3 {
-                let delay = response
-                    .headers()
-                    .get("Retry-After")
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("1");
-                let delay = delay
-                    .parse::<f64>()
-                    .ok()
-                    .filter(|v| v.is_finite())
-                    .map(|v| v.clamp(0.0, 60.0))
-                    .unwrap_or(5.0);
+                let delay = retry_delay(
+                    response
+                        .headers()
+                        .get("Retry-After")
+                        .and_then(|v| v.to_str().ok()),
+                );
                 drop(response);
-                std::thread::sleep(Duration::from_secs_f64(delay));
+                std::thread::sleep(delay);
                 continue;
             }
             if !(200..300).contains(&status) {
@@ -278,6 +284,22 @@ pub fn record_uncertain(state: &State) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retry_after_cannot_exceed_the_cap_or_use_invalid_delays() {
+        for (header, seconds) in [
+            (None, 1),
+            (Some("1e9"), 60),
+            (Some("-1"), 0),
+            (Some("nan"), 5),
+            (Some("Wed, 21 Oct 2015 07:28:00 GMT"), 5),
+        ] {
+            assert_eq!(
+                retry_delay(header),
+                Duration::from_secs(seconds),
+                "{header:?}"
+            );
+        }
+    }
     #[test]
     fn timestamp_validation_rejects_injection_and_out_of_range_precision() {
         for valid in [

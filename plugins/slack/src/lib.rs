@@ -29,7 +29,11 @@ impl fmt::Display for Error {
 }
 impl From<std::io::Error> for Error {
     fn from(_: std::io::Error) -> Self {
-        Self::failure("cannot access plugin state; check its permissions")
+        Self::failure(if std::env::var_os("BORGCHART_STATE_DIR").is_none() {
+            "set BORGCHART_STATE_DIR or run this through brg"
+        } else {
+            "cannot access plugin state; check its permissions"
+        })
     }
 }
 pub type Result<T> = std::result::Result<T, Error>;
