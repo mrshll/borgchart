@@ -48,6 +48,7 @@ Before each `create` or `start`, list the launches it will cause: a child team's
 Members run on their role's vendor and pinned model unless the owner names others for a piece of work ("a dev team with a Codex lead", "one Codex astra medium implementer"). Only then, choose them at `create`, with `--set`:
 - **A member of your own team:** `create <team>/<role> --set vendor=codex,model=gpt-6-astra,effort=medium`. Each key you leave out comes from the role file.
 - **A child team's roles:** `create <team>/dev --set lead.vendor=codex`. It covers that role's members in the child team, including ones its lead creates later.
+- **Not yet a Codex lead.** A Codex lead stops hearing its inbox after its first turn: its wait runs in the background, and nothing wakes it when that ends. If the owner asks for one, tell them so before choosing it.
 
 `create` refuses a role that can't run that way; tell the owner rather than choose something else. Record what the owner named, and for which work, in `work.md`: it covers that work only.
 
