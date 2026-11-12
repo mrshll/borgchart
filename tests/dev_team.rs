@@ -205,12 +205,27 @@ fn member_files(team: &str) -> Vec<PathBuf> {
     files
 }
 
+/// The includes a member file takes, directly or through the other
+/// template's role file it takes with `{{templates/<template>/<role>}}`.
 fn includes_of(file: &Path) -> Vec<String> {
     fs::read_to_string(file)
         .unwrap()
         .lines()
-        .filter_map(|l| l.strip_prefix("{{includes/")?.strip_suffix("}}"))
-        .map(str::to_string)
+        .flat_map(|l| {
+            if let Some(stem) = l
+                .strip_prefix("{{includes/")
+                .and_then(|l| l.strip_suffix("}}"))
+            {
+                return vec![stem.to_string()];
+            }
+            match l
+                .strip_prefix("{{templates/")
+                .and_then(|l| l.strip_suffix("}}"))
+            {
+                Some(role) => includes_of(&catalog().join(format!("{role}.md"))),
+                None => Vec::new(),
+            }
+        })
         .collect()
 }
 /// Includes resolve, don't nest, and each is shared: text used by one

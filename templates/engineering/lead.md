@@ -39,7 +39,7 @@ Your team's folder is a checkout of the repository, or a plain folder of clones,
 
 ## Seat before every launch
 
-Before each `create` or `start`, list the launches it will cause: a child team's `start: true` roles, the child teams and members a full `start` brings back, or the one member. For each, run `brg-seat route <vendor> <model>` with the vendor and model the launch will use. `"$BORGCHART_BIN" status <team-id> --json` gives them as `vendor` and `model` (the name, without its effort) for each member and role, and for each of a child team's roles before they have members, with any choices made at its create. For a new member created with `--set`, use the vendor you set, and the model you set or the role file's `models.<vendor>` pin.
+Before each `create` or `start`, list the launches it will cause: a child team's `start: true` roles, the child teams and members a full `start` brings back, or the one member. For each, run `brg-seat route <vendor> <model>` with the vendor and model the launch will use. `"$BORGCHART_BIN" status <child-team-id> --json` gives them as `vendor` and `model` (the name, without its effort) for each of a child team's roles before they have members, with any choices made at its create, and for each member once it has one. For a new member created with `--set`, use the vendor you set, and the model you set or the role file's `models.<vendor>` pin.
 - **`go`:** go ahead.
 - **`wait`, an unknown answer or an error:** don't launch, and don't launch on another vendor, model or effort instead. Record why, check again at the time it gives or at your next deadline check, and tell the owner when a workstream has waited long.
 
