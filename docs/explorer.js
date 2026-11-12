@@ -10,12 +10,13 @@
   const shown = document.getElementById("team-file");
   const cat = document.getElementById("team-cat");
   if (!data || !list || !shown || !cat) return;
+  shown.parentElement.hidden = false;
 
   const esc = (s) =>
     s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-  // Light colouring, line by line: YAML comments and Markdown front matter
-  // recede, keys and headings are bold, and so is **bold** text.
+  // Light colouring, line by line: YAML comments and a prompt's front
+  // matter recede; keys and headings are bold, and so is **bold** text.
   function yamlLine(line) {
     const hash = line.search(/(^|\s)#/);
     const body = hash < 0 ? line : line.slice(0, hash);
@@ -29,15 +30,12 @@
   function painted(path, text) {
     const lines = text.replace(/\n$/, "").split("\n");
     if (path.endsWith(".yaml")) return lines.map(yamlLine).join("\n");
-    // A prompt's front matter (its models) is YAML between --- lines.
+    // A prompt's front matter (its models) sits between --- lines.
     let front = lines[0] === "---";
     return lines.map((line, i) => {
-      if (front && i > 0 && line === "---") {
-        front = false;
-        return `<span class="faded">${esc(line)}</span>`;
-      }
-      if (front) return i === 0 ? `<span class="faded">${esc(line)}</span>` : yamlLine(line);
-      return markdownLine(line);
+      if (!front) return markdownLine(line);
+      if (i > 0 && line === "---") front = false;
+      return `<span class="faded">${esc(line)}</span>`;
     }).join("\n");
   }
 
@@ -52,14 +50,17 @@
   }
   const top = data.start.slice(0, data.start.indexOf("/") + 1);
 
-  // Drawn like `tree`: the furniture recedes, each file is a button.
+  // Drawn like `tree`: the furniture recedes (and is silent to screen
+  // readers), each file is a button named by its whole path.
+  const furniture = (s) => `<span class="faded" aria-hidden="true">${s}</span>`;
   const lines = [`<b>${esc(top)}</b>`];
   folders.forEach((group, i) => {
     const lastDir = i === folders.length - 1;
-    lines.push(`<span class="faded">${lastDir ? "└─ " : "├─ "}</span><b>${esc(group.dir.slice(top.length))}</b>`);
+    lines.push(furniture(lastDir ? "└─ " : "├─ ") + `<b>${esc(group.dir.slice(top.length))}</b>`);
     group.files.forEach((file, j) => {
       const fork = (lastDir ? "   " : "│  ") + (j === group.files.length - 1 ? "└─ " : "├─ ");
-      lines.push(`<span class="faded">${fork}</span><button type="button" class="leaf" data-path="${esc(file.path)}">${esc(file.name)}</button>`);
+      lines.push(furniture(fork) +
+        `<button type="button" class="leaf" data-path="${esc(file.path)}" aria-label="${esc(file.path)}">${esc(file.name)}</button>`);
     });
   });
   list.innerHTML = lines.join("\n");

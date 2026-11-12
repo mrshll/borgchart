@@ -18,7 +18,7 @@ The tests need `tmux`, and `py` needs `uv`. Before running only the department i
 
 | Tier | Command | What it runs | When |
 | --- | --- | --- | --- |
-| Fast | `.githooks/checks fast` | Every workspace member’s library tests (`cargo test --workspace --all-features --lib`) , core validation tests (`cargo test -p borgchart --features test-support --test validate`) and the site's team-files check (`--test site_teams`), which start no tmux and no other process. They run with recording stand-ins for `tmux`, `ps`, `sh`, `sleep`, `claude` and `codex` first on `PATH`, and the tier fails if any was started. | In CI. |
+| Fast | `.githooks/checks fast` | Every workspace member’s library tests (`cargo test --workspace --all-features --lib`), core validation tests (`cargo test -p borgchart --features test-support --test validate`) and the site's team-files check (`--test site_teams`), which start no tmux and no other process. They run with recording stand-ins for `tmux`, `ps`, `sh`, `sleep`, `claude` and `codex` first on `PATH`, and the tier fails if any was started. | In CI. |
 | Default | `.githooks/checks test` | Prebuilds workspace binaries, then runs all workspace tests with all features: real private tmux servers, with stand-ins for the vendor CLIs. | In CI. |
 | Live | `BORGCHART_LIVE=1 cargo test --locked --test live -- --ignored --nocapture --test-threads=1` | `tests/live.rs`: the real Claude Code and Codex CLIs, started by real `brg create`, locally only (below). | Before rebuilding a stable brg, and after updating Claude Code or Codex. |
 

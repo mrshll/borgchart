@@ -79,13 +79,16 @@
 <hr>
 <!-- The team explorer: the repository's own team files, from teams.js
      (generated from teams/ by tests/site_teams.rs); explorer.js draws it. -->
-<section class="define" aria-label="The files that define a team">
+<section aria-label="The files that define a team">
 <p><b>A team is a folder:</b> a YAML file that names its roles, and a Markdown prompt for each. These are the repository's own teams, file for file.</p>
 <div class="explorer">
+<div>
+<p class="prompt"><span class="faded">$</span> tree teams</p>
 <pre id="team-tree" class="tree">The team's files show here; they need JavaScript.</pre>
-<div class="viewer">
+</div>
+<div hidden>
 <p id="team-cat" class="prompt"></p>
-<pre id="team-file" class="file" tabindex="0"></pre>
+<pre id="team-file" class="file" role="region" tabindex="0"></pre>
 </div>
 </div>
 </section>

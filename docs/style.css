@@ -116,7 +116,7 @@ hr {
   gap: 3ch;
   margin-bottom: 2.9em;
 }
-.tree { margin: 0; }
+.tree { margin: 0; white-space: pre-wrap; }
 .leaf {
   font: inherit;
   color: inherit;

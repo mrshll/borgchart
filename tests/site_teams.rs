@@ -25,7 +25,12 @@ fn root() -> PathBuf {
 /// the prompts by name.
 fn files(folder: &Path) -> Vec<PathBuf> {
     let mut found: Vec<PathBuf> = fs::read_dir(folder)
-        .unwrap_or_else(|e| panic!("read {}: {e}", folder.display()))
+        .unwrap_or_else(|e| {
+            panic!(
+                "read {}: {e}; update SOURCE and FOLDERS in tests/site_teams.rs, then run {UPDATE}",
+                folder.display()
+            )
+        })
         .map(|entry| entry.unwrap().path())
         .filter(|p| p.is_file())
         .filter(|p| matches!(p.extension().and_then(|e| e.to_str()), Some("yaml" | "md")))
@@ -43,8 +48,9 @@ fn generated() -> String {
         for path in files(&source.join(folder)) {
             let text = fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-            let shown = Path::new(SOURCE).join(path.strip_prefix(&source).unwrap());
-            listed.push(serde_json::json!({ "path": shown.to_str().unwrap(), "text": text }));
+            let name = path.file_name().unwrap().to_str().unwrap();
+            let shown = format!("{SOURCE}/{folder}/{name}");
+            listed.push(serde_json::json!({ "path": shown, "text": text }));
         }
     }
     let start = format!("{SOURCE}/{START}");
