@@ -102,12 +102,6 @@ pre {
 .commands dt { font-weight: bold; }
 .commands dd { margin: 0; }
 
-.cursor {
-  display: inline-block;
-  width: 1ch;
-  background: var(--ink);
-}
-
 @media (max-width: 40rem) {
   html { font-size: 14px; }
   .screen { font-size: min(1rem, calc(100cqw / 31)); }
