@@ -16,7 +16,7 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Action {
-    /// Poll the channel and retry promotions
+    /// Poll the channel and send ID notices
     Watch {
         #[arg(long)]
         once: bool,
@@ -31,9 +31,7 @@ enum Action {
     React { ts: String, reaction: String },
     /// Reply in a thread
     Reply { thread_ts: String, text: String },
-    /// Post or update one status message
-    Status { text: String },
-    /// Page an explicitly allowed user
+    /// Page an explicitly allowed user in the configured channel
     Page { user_id: String, text: String },
 }
 fn field(message: &Value, key: &str) -> String {
@@ -104,7 +102,6 @@ fn run(action: Action) -> Result<()> {
         Action::Promote { ts, reason } => writes::promote(&ts, &reason),
         Action::React { ts, reaction } => writes::react(&api, &ts, &reaction),
         Action::Reply { thread_ts, text } => writes::reply(&api, &thread_ts, &text),
-        Action::Status { text } => writes::status(&api, &text),
         Action::Page { user_id, text } => writes::page(&api, &user_id, &text),
     }
 }

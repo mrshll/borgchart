@@ -3,41 +3,14 @@ use crate::{bounded_process, bus::time};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum Outcome {
-    Committed { id: Option<String> },
-    Uncertain { id: Option<String> },
-    Refused { code: Option<i32>, message: String },
-}
-fn classify(code: Option<i32>, output: &[u8]) -> Outcome {
-    let result: Value = serde_json::from_slice(output).unwrap_or(Value::Null);
-    let id = result["id"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned);
-    if code == Some(0) {
-        Outcome::Committed { id }
-    } else if code == Some(124) || id.is_some() {
-        Outcome::Uncertain { id }
-    } else {
-        Outcome::Refused {
-            code,
-            message: escape(
-                result["message"]
-                    .as_str()
-                    .unwrap_or("send failed; check brg"),
-            ),
-        }
-    }
-}
-/// A committed or uncertain send must never be automatically republished.
-pub fn send(plugin: &str, target: &str, text: &str, from: Option<&str>) -> Outcome {
+/// Send once: only brg exit 0 succeeds; callers decide when to retry errors.
+pub fn send(plugin: &str, target: &str, text: &str, from: Option<&str>) -> Result<String, String> {
     let mut command = Command::new(std::env::var_os("BORGCHART_BIN").unwrap_or("brg".into()));
     command.args(["msg", "send", "--json"]);
     if std::env::var("BORGCHART_MEMBER")
@@ -55,28 +28,28 @@ pub fn send(plugin: &str, target: &str, text: &str, from: Option<&str>) -> Outco
         stdout_bytes: 65536,
         stderr_bytes: 65536,
     };
-    match bounded_process::run(&mut command, None, limits) {
-        Ok(output) => classify(
-            output.status.code(),
-            if output.stdout.iter().all(u8::is_ascii_whitespace) {
-                &output.stderr
+    let output = bounded_process::run(&mut command, None, limits)
+        .map_err(|error| format!("cannot send with brg: {error}; check BORGCHART_BIN and retry"))?;
+    let bytes = if output.stdout.iter().all(u8::is_ascii_whitespace) {
+        &output.stderr
+    } else {
+        &output.stdout
+    };
+    let text = String::from_utf8_lossy(bytes);
+    if output.status.success() {
+        Ok(escape(text.trim()))
+    } else {
+        let result: Value = serde_json::from_slice(bytes).unwrap_or(Value::Null);
+        let message = result["message"].as_str().unwrap_or_else(|| {
+            if text.trim().is_empty() {
+                "send failed; check brg and retry"
             } else {
-                &output.stdout
-            },
-        ),
-        Err(error) => classify_error(error),
-    }
-}
-fn classify_error(error: bounded_process::Error) -> Outcome {
-    match error {
-        // Only these spawn failures prove brg could not have committed a send.
-        bounded_process::Error::Io(io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied) => {
-            Outcome::Refused {
-                code: None,
-                message: "cannot run brg; check BORGCHART_BIN".into(),
+                text.trim()
             }
-        }
-        _ => Outcome::Uncertain { id: None },
+        });
+        Err(escape(message)
+            .replace('\n', "\\x0a")
+            .replace('\t', "\\x09"))
     }
 }
 
@@ -101,7 +74,7 @@ pub fn frame(text: &str) -> String {
         .collect()
 }
 
-/// Files are opened without following symlinks; snapshots replace the link itself.
+/// Private plugin state with one lock and atomically replaced JSON snapshots.
 pub struct State {
     root: PathBuf,
 }
@@ -117,32 +90,22 @@ impl State {
         Ok(Self { root })
     }
     pub fn read_json<T: DeserializeOwned + Default>(&self, name: &str) -> T {
-        self.open(name, false, false)
+        File::open(self.root.join(name))
             .ok()
             .and_then(|file| serde_json::from_reader::<_, Value>(file).ok())
             .filter(Value::is_object)
             .and_then(|value| serde_json::from_value(value).ok())
             .unwrap_or_default()
     }
-    pub fn open(&self, name: &str, write: bool, create: bool) -> io::Result<File> {
+    pub fn lock(&self) -> io::Result<File> {
         let file = OpenOptions::new()
             .read(true)
-            .write(write)
-            .create(create)
+            .write(true)
+            .create(true)
             .truncate(false)
             .mode(0o600)
-            .custom_flags(
-                (rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits() as i32,
-            )
-            .open(self.root.join(name))?;
-        if !file.metadata()?.is_file() {
-            return Err(io::Error::other("state path is not a regular file"));
-        }
-        Ok(file)
-    }
-    pub fn lock(&self, name: &str) -> io::Result<File> {
-        let file = self.open(name, true, true)?;
-        lock(&file)?;
+            .open(self.root.join("plugin.lock"))?;
+        rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive)?;
         Ok(file)
     }
     pub fn write_json(&self, name: &str, value: &impl Serialize) -> io::Result<()> {
@@ -150,12 +113,11 @@ impl State {
         let tmp = self
             .root
             .join(format!(".{name}.{}.tmp", std::process::id()));
-        let _ = fs::remove_file(&tmp);
         let mut file = OpenOptions::new()
             .write(true)
-            .create_new(true)
+            .create(true)
+            .truncate(true)
             .mode(0o600)
-            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
             .open(&tmp)?;
         let result = (|| {
             serde_json::to_writer(&mut file, value)?;
@@ -166,83 +128,17 @@ impl State {
         let _ = fs::remove_file(tmp);
         result
     }
-    pub fn health(&self, ok: bool, detail: &str, extra: Value) -> io::Result<()> {
-        let mut value = json!({"ok":ok, "at":time::utc_now(), "detail":escape(detail)});
-        if let Some(fields) = extra.as_object() {
-            for (key, field) in fields {
-                if !matches!(key.as_str(), "ok" | "at" | "detail") {
-                    value[key] = field.clone();
-                }
-            }
-        }
-        self.write_json("health.json", &value)
+    pub fn health(&self, ok: bool, detail: &str) -> io::Result<()> {
+        self.write_json(
+            "health.json",
+            &json!({"ok":ok, "at":time::utc_now(), "detail":escape(detail)}),
+        )
     }
-}
-pub fn lock(file: &File) -> io::Result<()> {
-    rustix::fs::flock(file, rustix::fs::FlockOperation::LockExclusive).map_err(io::Error::from)
-}
-/// Decode a spool without exposing malformed bytes in diagnostics.
-pub fn read_lines(file: &mut File) -> io::Result<Vec<String>> {
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
-    Ok(String::from_utf8_lossy(&bytes)
-        .lines()
-        .map(str::to_owned)
-        .collect())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn post_spawn_io_failures_cannot_republish_a_possibly_committed_send() {
-        for kind in [io::ErrorKind::NotFound, io::ErrorKind::PermissionDenied] {
-            assert!(matches!(
-                classify_error(bounded_process::Error::Io(kind)),
-                Outcome::Refused { .. }
-            ));
-        }
-        for kind in [
-            io::ErrorKind::UnexpectedEof,
-            io::ErrorKind::BrokenPipe,
-            io::ErrorKind::Other,
-        ] {
-            assert_eq!(
-                classify_error(bounded_process::Error::Io(kind)),
-                Outcome::Uncertain { id: None }
-            );
-        }
-    }
-    #[test]
-    fn committed_and_uncertain_outcomes_cannot_be_retried_as_refusals() {
-        for delivery in ["stored", "uncertain", "typed"] {
-            assert!(matches!(
-                classify(Some(0), json!({"delivery":delivery}).to_string().as_bytes()),
-                Outcome::Committed { .. }
-            ));
-        }
-        assert_eq!(
-            classify(Some(5), br#"{"id":"m1"}"#),
-            Outcome::Uncertain {
-                id: Some("m1".into())
-            }
-        );
-        assert_eq!(
-            classify(Some(124), b"bad json"),
-            Outcome::Uncertain { id: None }
-        );
-        assert_eq!(
-            classify(Some(4), br#"{"message":"refused\u001b"}"#),
-            Outcome::Refused {
-                code: Some(4),
-                message: "refused\\x1b".into()
-            }
-        );
-        assert!(matches!(
-            classify(Some(5), b"not JSON"),
-            Outcome::Refused { .. }
-        ));
-    }
     #[test]
     fn framing_prevents_controls_and_forged_unprefixed_lines() {
         assert_eq!(

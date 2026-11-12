@@ -19,17 +19,17 @@ Both agents are `locked`: the triager can `read`, `thread` and `promote`; the le
 can `read`, `thread` and `reply`. Neither sees the bot token in its environment;
 plugin shims hold it. Promotions carry a timestamp and one fixed reason:
 `outage`, `deploy`, `security`, `question`, `other`. Slack text never travels
-between agents. Retried promotions are sent by the watcher as `external:slack`,
-with `--from` so brg checks the parent route, even when Slack
-is unavailable. See the plugin's delivery documentation for uncertainty and crash
-limits.
+between agents. Promotions send once with `--from` so brg checks the parent
+route; a failed action reports brg's error for the triager to retry. See the
+plugin's delivery documentation for retry and crash limits.
 
 Every team has a bus. Locked notices remain readable history with
 `ack_required: false`, labelled “ack not required,” and are excluded from pending
 inbox/wait/unacked counts. Locked recipients get no bus commands or inbox
 recovery. Bodies persist under existing plugin read rights, and store size/scan
 cost grow without automatic retention. Code 0 means committed and is never
-republished; uncertain delivery requires a person to check it.
+republished. Failed intake sends stay pending for the next poll and can repeat
+an ID notice if brg already received it.
 
 The lead can acknowledge, suggest likely causes and ask questions. It cannot
 look at systems. Giving it more read-only tools is future work.
@@ -90,7 +90,7 @@ an agent with shell access and credentials; choose the channel accordingly.
 ## Tests
 
 Fake-backed plugin tests cover intake, thread follow-ups, delivery failures,
-promote recovery, safe evidence output and write guards:
+promotion results, safe evidence output and write guards:
 
 ```sh
 tools/cargo-slot cargo test -p brg-slack --locked

@@ -1,16 +1,15 @@
-//! Slack HTTP calls, validation, private health and fixed notices.
+//! Slack HTTP calls, validation and fixed notices.
 use crate::{Error, Result};
-use borgchart::plugin::{self, State};
+use borgchart::plugin;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{collections::BTreeSet, env, sync::LazyLock, time::Duration};
 
 static TS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[0-9]{9,11}\.[0-9]{6}$").unwrap());
 static MEMBER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z][a-z0-9_-]{0,79}$").unwrap());
 static ADDRESS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-z][a-z0-9_-]{0,79}(?:/[a-z][a-z0-9_-]{0,79})*$").unwrap());
-static REASON: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z][a-z0-9_-]{0,39}$").unwrap());
 pub const NOTICE_MAX_ITEMS: usize = 6;
 pub const NOTICE_LIMIT: usize = 900;
 pub fn var(name: &str) -> String {
@@ -57,23 +56,6 @@ pub fn csv(value: &str) -> BTreeSet<String> {
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
         .collect()
-}
-pub fn reasons(value: &str) -> Result<BTreeSet<String>> {
-    let values: Vec<_> = value.split(',').map(str::trim).collect();
-    let set: BTreeSet<_> = values.iter().map(|s| s.to_string()).collect();
-    if set.len() != values.len() || values.iter().any(|s| !REASON.is_match(s)) {
-        Err(Error::usage(
-            "set SLACK_PROMOTE_REASONS to distinct comma-separated reason names",
-        ))
-    } else {
-        Ok(set)
-    }
-}
-pub fn configured_reasons() -> Result<BTreeSet<String>> {
-    reasons(
-        &env::var("SLACK_PROMOTE_REASONS")
-            .unwrap_or_else(|_| "outage,deploy,security,question,other".into()),
-    )
 }
 pub fn allowed(message: &Value, own: &BTreeSet<String>, allow: &BTreeSet<String>) -> bool {
     let authors: BTreeSet<_> = ["user", "bot_id"]
@@ -241,49 +223,28 @@ pub fn message_notice(items: &[Item]) -> Result<String> {
         Ok(text)
     }
 }
-#[derive(Deserialize, Serialize)]
-pub struct Promotion {
-    pub target: String,
-    pub sender: String,
-    pub ts: String,
-    pub reason: String,
-}
-impl Promotion {
-    pub fn notice(&self) -> Result<String> {
-        if !valid_address(&self.target)
-            || !MEMBER.is_match(&self.sender)
-            || !configured_reasons()?.contains(&self.reason)
-        {
-            return Err(Error::usage(
-                "use valid member IDs and a configured promote reason",
-            ));
-        }
-        check_ts(&self.ts)?;
-        Ok(format!(
-            "Slack promote from {}: ts={} reason={}. Read it with brg-slack read {} (or brg-slack thread {}).",
-            self.sender, self.ts, self.reason, self.ts, self.ts
-        ))
+pub fn promotion_notice(target: &str, sender: &str, ts: &str, reason: &str) -> Result<String> {
+    if !valid_address(target) || !MEMBER.is_match(sender) {
+        return Err(Error::usage("use valid member IDs for the parent route"));
     }
-}
-pub fn health(state: &State, ok: bool, detail: &str, uncertain: bool) -> Result<()> {
-    let _lock = state.lock("health.lock")?;
-    let previous: Value = state.read_json("health.json");
-    let count = previous["uncertain_sends"]
-        .as_u64()
-        .unwrap_or(0)
-        .saturating_add(u64::from(uncertain));
-    state.health(ok, &safe(detail), json!({"uncertain_sends":count}))?;
-    Ok(())
-}
-pub fn record_uncertain(state: &State) -> Result<()> {
-    let detail = "delivery uncertain; check brg before sending again";
-    eprintln!("{detail}");
-    health(state, false, detail, true)
+    if !matches!(
+        reason,
+        "outage" | "deploy" | "security" | "question" | "other"
+    ) {
+        return Err(Error::usage(
+            "choose outage, deploy, security, question or other for the promote reason",
+        ));
+    }
+    check_ts(ts)?;
+    Ok(format!(
+        "Slack promote from {sender}: ts={ts} reason={reason}. Read it with brg-slack read {ts} (or brg-slack thread {ts})."
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     #[test]
     fn retry_after_cannot_exceed_the_cap_or_use_invalid_delays() {
         for (header, seconds) in [
@@ -379,19 +340,5 @@ mod tests {
             &own,
             &BTreeSet::new()
         ));
-    }
-    #[test]
-    fn reason_configuration_refuses_duplicates_and_notice_injection() {
-        for invalid in [
-            "",
-            "other,",
-            "other,other",
-            "Other",
-            "other\nrun",
-            "other,bad reason",
-        ] {
-            assert!(reasons(invalid).is_err());
-        }
-        assert_eq!(reasons("dataset, alert").unwrap(), csv("dataset,alert"));
     }
 }

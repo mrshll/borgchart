@@ -22,7 +22,6 @@ pub struct Slack {
     pub calls: Vec<(String, Value, Instant)>,
     pub writes: Vec<(String, Value)>,
     pub rate_limit: Option<String>,
-    pub write_delay: Duration,
 }
 fn handle(mut stream: TcpStream, state: &Mutex<Slack>) -> std::io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(3)))?;
@@ -105,7 +104,6 @@ fn handle(mut stream: TcpStream, state: &Mutex<Slack>) -> std::io::Result<()> {
                 json!({"ok":true,"messages":messages})
             }
             _ => {
-                std::thread::sleep(s.write_delay);
                 s.writes.push((method.into(), params));
                 json!({"ok":true,"ts":"1700000099.000100"})
             }
@@ -168,7 +166,6 @@ impl Harness {
                 ("PATH", "/usr/bin:/bin".into()),
                 ("SLACK_BOT_TOKEN", TOKEN.into()),
                 ("SLACK_CHANNEL_ID", "C0000TEST".into()),
-                ("SLACK_STATUS_CHANNEL", "C0000STATUS".into()),
                 ("SLACK_API_BASE", format!("http://{addr}/api")),
                 ("BORGCHART_BIN", brg.display().to_string()),
                 (

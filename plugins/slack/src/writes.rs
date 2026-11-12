@@ -1,15 +1,12 @@
-//! Guarded replies, serialized status updates and explicitly allowlisted pages.
+//! Guarded replies, parent promotions and explicitly allowlisted pages.
 use crate::{
     Error, Result,
-    api::{self, Api, Promotion},
+    api::{self, Api},
 };
-use borgchart::plugin::{self, Outcome, State};
+use borgchart::plugin;
 use regex::Regex;
-use serde_json::{Value, json};
-use std::{
-    io::{Seek, SeekFrom, Write},
-    sync::LazyLock,
-};
+use serde_json::json;
+use std::sync::LazyLock;
 
 static GROUP: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)@(?:here|channel|everyone)\b").unwrap());
@@ -40,9 +37,6 @@ pub fn check_text(text: &str, limit: usize, token: &str) -> Result<()> {
     }
     Ok(())
 }
-fn status_channel() -> Result<String> {
-    api::required("SLACK_STATUS_CHANNEL", "posting status or pages")
-}
 pub fn reply(api: &Api, ts: &str, text: &str) -> Result<()> {
     api::check_ts(ts)?;
     check_text(text, 1500, &api::var("SLACK_BOT_TOKEN"))?;
@@ -54,43 +48,6 @@ pub fn reply(api: &Api, ts: &str, text: &str) -> Result<()> {
     println!("reply posted");
     Ok(())
 }
-pub fn status(api: &Api, text: &str) -> Result<()> {
-    check_text(text, 3000, &api::var("SLACK_BOT_TOKEN"))?;
-    let channel = status_channel()?;
-    let state = State::from_env()?;
-    let _lock = state.lock("status.lock")?;
-    let previous: Value = state.read_json("status.json");
-    let ts = previous["ts"].as_str().unwrap_or("");
-    if previous["channel"] == channel && api::valid_ts(ts) {
-        match api.call(
-            "chat.update",
-            json!({"channel":channel,"ts":ts,"text":text}),
-            true,
-        ) {
-            Ok(_) => {
-                println!("status updated");
-                return Ok(());
-            }
-            Err(error)
-                if error.to_string() == "chat.update: message_not_found; check Slack access" => {}
-            Err(error) => return Err(error),
-        }
-    }
-    let data = api.call(
-        "chat.postMessage",
-        json!({"channel":channel,"text":text}),
-        true,
-    )?;
-    let ts = data["ts"].as_str().unwrap_or("");
-    if !api::valid_ts(ts) {
-        return Err(Error::failure(
-            "missing status timestamp; check the status channel before retrying",
-        ));
-    }
-    state.write_json("status.json", &json!({"channel":channel,"ts":ts}))?;
-    println!("status posted");
-    Ok(())
-}
 pub fn page(api: &Api, user: &str, text: &str) -> Result<()> {
     if !USER.is_match(user) || !api::csv(&api::var("SLACK_PAGE_IDS")).contains(user) {
         return Err(Error::usage(
@@ -98,51 +55,23 @@ pub fn page(api: &Api, user: &str, text: &str) -> Result<()> {
         ));
     }
     check_text(text, 500, &api::var("SLACK_BOT_TOKEN"))?;
-    let channel = status_channel()?;
+    let channel = api.channel()?;
     api.call(
         "chat.postMessage",
         json!({"channel":channel,"text":format!("<@{user}> {text}")}),
         true,
     )
-    .map_err(|_| {
-        Error::failure("page may have been posted; check the status channel before retrying")
-    })?;
+    .map_err(|_| Error::failure("page may have been posted; check the channel before retrying"))?;
     println!("page posted");
     Ok(())
 }
 pub fn promote(ts: &str, reason: &str) -> Result<()> {
-    let entry = Promotion {
-        target: api::var("BORGCHART_PARENT"),
-        sender: api::var("BORGCHART_MEMBER"),
-        ts: ts.into(),
-        reason: reason.into(),
-    };
-    let notice = entry.notice()?;
-    match plugin::send("slack", &entry.target, &notice, Some(&entry.sender)) {
-        Outcome::Committed { .. } => {
-            println!("promoted");
-            Ok(())
-        }
-        Outcome::Uncertain { .. } => {
-            api::record_uncertain(&State::from_env()?)?;
-            Err(Error::failure(
-                "promotion uncertain; check brg before sending again",
-            ))
-        }
-        Outcome::Refused { .. } => {
-            let state = State::from_env()?;
-            let mut spool = state.open("undelivered.jsonl", true, true)?;
-            plugin::lock(&spool)?;
-            spool.seek(SeekFrom::End(0))?;
-            serde_json::to_writer(&mut spool, &entry)
-                .map_err(|_| Error::failure("cannot write retry spool; check plugin state"))?;
-            spool.write_all(b"\n")?;
-            spool.flush()?;
-            Err(Error::failure(
-                "promotion queued for delivery; check watcher health",
-            ))
-        }
-    }
+    let target = api::var("BORGCHART_PARENT");
+    let sender = api::var("BORGCHART_MEMBER");
+    let notice = api::promotion_notice(&target, &sender, ts, reason)?;
+    let output = plugin::send("slack", &target, &notice, Some(&sender)).map_err(Error::failure)?;
+    println!("{}", api::one_line(&output));
+    Ok(())
 }
 pub fn react(api: &Api, ts: &str, reaction: &str) -> Result<()> {
     api::check_ts(ts)?;
@@ -194,7 +123,7 @@ mod tests {
     }
     #[test]
     fn write_limits_count_unicode_characters_instead_of_bytes() {
-        for limit in [500, 1500, 3000] {
+        for limit in [500, 1500] {
             assert!(check_text(&"é".repeat(limit), limit, "").is_ok());
             assert!(check_text(&"é".repeat(limit + 1), limit, "").is_err());
         }

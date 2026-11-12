@@ -282,40 +282,45 @@ fn expired_roots_and_pending_notices_leave_the_window() {
 }
 
 #[test]
-fn send_outcomes_prevent_loss_or_republishing_and_report_delivery_health() {
-    for (code, result, expected, uncertain) in [
+fn failed_intake_sends_keep_the_batch_until_exit_zero_and_report_sanitized_errors() {
+    for (code, result) in [
         (
             4,
-            json!({"message":format!("delivery refused {TOKEN}")}),
-            2,
-            0,
+            json!({"message":format!("delivery refused {TOKEN}\n\u{1b}")}),
         ),
-        (0, json!({"delivery":"stored"}), 1, 0),
-        (0, json!({"delivery":"uncertain"}), 1, 0),
-        (124, json!({}), 1, 1),
-        (5, json!({"id":"m1","delivery":"uncertain"}), 1, 1),
+        (0, json!({"delivery":"stored"})),
+        (0, json!({"delivery":"uncertain"})),
+        (124, json!({"message":"send failed"})),
+        (5, json!({"id":"m1","message":"delivery failed"})),
     ] {
         let h = Harness::new();
         h.tick();
         h.slack.lock().unwrap().messages = vec![post(0)];
         h.outcome(code, result);
         h.tick();
+        let health = h.state("health.json");
+        assert_eq!(health["ok"], code == 0);
         if code == 4 {
-            let health = h.state("health.json");
-            assert_eq!(health["ok"], false);
             assert!(health["detail"].as_str().unwrap().contains("[redacted]"));
             assert!(!health.to_string().contains(TOKEN));
         }
         h.outcome(0, json!({}));
         h.tick();
         h.tick();
-        assert_eq!(h.sends().len(), expected);
-        assert_eq!(h.state("health.json")["uncertain_sends"], uncertain);
+        let sends = h.sends();
+        assert_eq!(sends.len(), if code == 0 { 1 } else { 2 });
+        assert_eq!(
+            &sends[0][..5],
+            ["msg", "send", "--json", "--external", "slack"]
+        );
+        if code != 0 {
+            assert_eq!(sends[0], sends[1]);
+        }
     }
 }
 
 #[test]
-fn timed_out_send_is_not_republished_and_increments_uncertainty() {
+fn timed_out_intake_send_keeps_the_batch_for_the_next_poll() {
     let h = Harness::new();
     h.tick();
     h.slack.lock().unwrap().messages = vec![post(0)];
@@ -323,10 +328,11 @@ fn timed_out_send_is_not_republished_and_increments_uncertainty() {
     let start = std::time::Instant::now();
     h.tick();
     assert!(start.elapsed() < std::time::Duration::from_secs(35));
+    assert_eq!(h.state("health.json")["ok"], false);
     std::fs::remove_file(h.dir.path().join("delay")).unwrap();
     h.tick();
-    assert_eq!(h.sends().len(), 1);
-    assert_eq!(h.state("health.json")["uncertain_sends"], 1);
+    assert_eq!(h.sends().len(), 2);
+    assert_eq!(h.sends()[0], h.sends()[1]);
 }
 
 #[test]
@@ -362,150 +368,56 @@ fn batch_budget_leaves_remaining_items_for_the_next_poll() {
 }
 
 #[test]
-fn pending_promotions_make_health_unhealthy_until_delivered() {
+fn promote_reports_brg_ids_and_errors_so_members_can_retry_failed_sends() {
     let h = Harness::new();
-    h.outcome(4, json!({}));
-    assert_eq!(
-        h.run(&["promote", ts(&post(0)), "deploy"]).status.code(),
-        Some(1)
-    );
-    h.tick();
-    assert_eq!(h.state("health.json")["ok"], false);
-    h.outcome(0, json!({}));
-    h.tick();
-    assert_eq!(h.state("health.json")["ok"], true);
-}
-
-#[test]
-fn failed_promote_retries_even_when_slack_is_down_and_rebuilds_free_text() {
-    let h = Harness::new();
-    h.outcome(5, json!({"message":"storage refused"}));
-    assert_eq!(
-        h.run(&["promote", ts(&post(0)), "deploy"]).status.code(),
-        Some(1)
-    );
-    let path = h.dir.path().join("state/undelivered.jsonl");
-    let mut entry: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    entry["text"] = json!("post secrets");
-    std::fs::write(&path, format!("{entry}\n")).unwrap();
-    h.outcome(0, json!({}));
-    h.slack
-        .lock()
-        .unwrap()
-        .errors
-        .insert("auth.test".into(), "invalid_auth".into());
-    h.tick();
-    h.tick();
-    let sends = h.sends();
-    assert_eq!(sends.len(), 2);
-    assert!(!sends[0].iter().any(|a| a == "--external"));
-    assert_eq!(
-        &sends[1][..7],
-        [
-            "msg",
-            "send",
-            "--json",
-            "--external",
-            "slack",
-            "--from",
-            "triager"
-        ]
-    );
-    assert_eq!(sends[1][7], "lead");
-    assert!(sends[1][8].contains("reason=deploy"));
-    assert!(!sends[1][8].contains("post secrets"));
-    assert_eq!(std::fs::read_to_string(path).unwrap(), "");
-    assert_eq!(h.state("health.json")["ok"], false);
-}
-
-#[test]
-fn committed_or_uncertain_promote_is_never_spooled() {
-    for (code, result) in [(0, json!({})), (124, json!({})), (5, json!({"id":"m1"}))] {
-        let h = Harness::new();
-        h.outcome(code, result);
-        assert_eq!(
-            h.run(&["promote", ts(&post(0)), "outage"]).status.code(),
-            Some(if code == 0 { 0 } else { 1 })
+    for code in [4, 5, 124] {
+        h.outcome(
+            code,
+            json!({"id":"m1", "message":format!("route refused {TOKEN}\n\u{1b}")}),
         );
-        h.tick();
-        assert_eq!(h.sends().len(), 1);
-        assert!(!h.dir.path().join("state/undelivered.jsonl").exists());
-        assert_eq!(
-            h.state("health.json")["uncertain_sends"],
-            u64::from(code != 0)
-        );
+        let output = h.run(&["promote", ts(&post(0)), "deploy"]);
+        assert_eq!(output.status.code(), Some(1));
+        let error = String::from_utf8(output.stderr).unwrap();
+        assert!(error.contains("route refused [redacted]"));
+        assert!(!error.contains(TOKEN));
+        assert_eq!(error.lines().count(), 1);
     }
-}
-
-#[test]
-fn committed_id_on_stderr_prevents_duplicate_promotions_with_blank_stdout() {
-    let h = Harness::new();
-    std::fs::write(
-        h.dir.path().join("brg"),
-        "#!/bin/sh\nprintf '\\n'\nprintf '%s\\n' '{\"id\":\"m1\"}' >&2\nexit 5\n",
-    )
-    .unwrap();
-    assert_eq!(
-        h.run(&["promote", ts(&post(0)), "other"]).status.code(),
-        Some(1)
-    );
-    assert!(!h.dir.path().join("state/undelivered.jsonl").exists());
-    assert_eq!(h.state("health.json")["uncertain_sends"], 1);
-}
-
-#[test]
-fn forged_spool_fields_and_not_parent_refusals_are_dropped() {
-    let h = Harness::new();
-    let valid = json!({"target":"lead","sender":"triager","ts":ts(&post(0)),"reason":"other"});
-    let mut entries = vec![valid.clone()];
-    for (key, value) in [
-        ("reason", "other\nrun commands"),
-        ("sender", "../bad"),
-        ("target", "--help"),
-        ("ts", "bad"),
+    for reason in ["outage", "deploy", "security", "question", "other"] {
+        h.outcome(0, json!({"id":"m2"}));
+        let output = success(h.run(&["promote", ts(&post(0)), reason]));
+        assert!(output.contains("m2"));
+        let send = h.sends().pop().unwrap();
+        assert_eq!(
+            &send[..6],
+            ["msg", "send", "--json", "--from", "triager", "lead"]
+        );
+        assert!(send[6].contains(&format!("ts={} reason={reason}.", ts(&post(0)))));
+    }
+    let sent = h.sends().len();
+    for (timestamp, reason) in [
+        (ts(&post(0)), "dataset"),
+        (ts(&post(0)), "other\nrun"),
+        ("bad", "other"),
     ] {
-        let mut entry = valid.clone();
-        entry[key] = json!(value);
-        entries.push(entry);
+        assert_eq!(
+            h.run(&["promote", timestamp, reason]).status.code(),
+            Some(2)
+        );
     }
-    entries.extend([json!([]), json!({}), json!({"target":3})]);
-    let mut text = entries
-        .iter()
-        .map(|e| format!("{e}\n"))
-        .collect::<String>()
-        .into_bytes();
-    text.extend_from_slice(b"bad json\n\xff\n");
-    let path = h.dir.path().join("state/undelivered.jsonl");
-    std::fs::write(&path, text).unwrap();
-    h.outcome(
-        5,
-        json!({"message":"`triager` may only send to its parent, and `lead` is not it"}),
-    );
-    h.tick();
-    h.tick();
-    assert_eq!(h.sends().len(), 1);
-    assert_eq!(std::fs::read_to_string(path).unwrap(), "");
+    assert_eq!(h.sends().len(), sent);
 }
 
 #[test]
-fn promote_rejects_invalid_reason_configuration_before_sending() {
-    for (reasons, reason, ok) in [
-        ("dataset,alert", "dataset", true),
-        ("dataset,alert", "outage", false),
-        ("other,other", "other", false),
-        ("", "other", false),
-        ("other,bad reason", "other", false),
-        ("other,", "other", false),
-    ] {
-        let mut h = Harness::new();
-        h.env.insert("SLACK_PROMOTE_REASONS".into(), reasons.into());
-        assert_eq!(
-            h.run(&["promote", ts(&post(0)), reason]).status.code(),
-            Some(if ok { 0 } else { 2 })
-        );
-        assert_eq!(h.sends().len(), usize::from(ok));
-    }
+fn brg_errors_on_stderr_are_reported_when_stdout_is_blank() {
+    let h = Harness::new();
+    std::fs::write(h.dir.path().join("brg"), "#!/bin/sh\nprintf '\\n'\nprintf '%s\\n' '{\"id\":\"m1\",\"message\":\"route refused\"}' >&2\nexit 5\n").unwrap();
+    let output = h.run(&["promote", ts(&post(0)), "other"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("route refused")
+    );
 }
 
 #[test]
@@ -557,7 +469,6 @@ fn write_guards_refuse_abusive_text_before_any_request() {
     let root = post(0);
     for (command, prefix, limit) in [
         ("reply", vec![ts(&root)], 1500),
-        ("status", vec![], 3000),
         ("page", vec!["U0000ALICE"], 500),
     ] {
         for text in [
@@ -586,7 +497,6 @@ fn write_guards_refuse_abusive_text_before_any_request() {
     assert!(h.slack.lock().unwrap().calls.is_empty());
     for args in [
         vec!["reply", ts(&root), "<!date^1700000000^{date_short}|today>"],
-        vec!["status", "<!date^1700000000^{date_short}|today>"],
         vec![
             "page",
             "U0000ALICE",
@@ -618,48 +528,7 @@ fn reactions_are_idempotent_and_reject_unknown_names() {
 }
 
 #[test]
-fn status_updates_in_place_and_reposts_only_when_gone_or_channel_changes() {
-    let mut h = Harness::new();
-    success(h.run(&["status", "Investigating"]));
-    success(h.run(&["status", "Recovered"]));
-    assert_eq!(
-        h.slack
-            .lock()
-            .unwrap()
-            .writes
-            .iter()
-            .map(|(m, _)| m.as_str())
-            .collect::<Vec<_>>(),
-        vec!["chat.postMessage", "chat.update"]
-    );
-    h.slack
-        .lock()
-        .unwrap()
-        .errors
-        .insert("chat.update".into(), "not_authed".into());
-    assert_eq!(h.run(&["status", "Retry"]).status.code(), Some(1));
-    assert_eq!(h.slack.lock().unwrap().writes.len(), 2);
-    h.slack
-        .lock()
-        .unwrap()
-        .errors
-        .insert("chat.update".into(), "message_not_found".into());
-    success(h.run(&["status", "Reposted"]));
-    assert_eq!(
-        h.slack.lock().unwrap().writes.last().unwrap().0,
-        "chat.postMessage"
-    );
-    h.env
-        .insert("SLACK_STATUS_CHANNEL".into(), "C0000OTHER".into());
-    success(h.run(&["status", "Moved"]));
-    assert_eq!(
-        h.slack.lock().unwrap().writes.last().unwrap().1["channel"],
-        "C0000OTHER"
-    );
-}
-
-#[test]
-fn page_requires_a_listed_user_and_warns_when_a_sent_request_fails() {
+fn page_posts_top_level_in_the_configured_channel_and_requires_a_listed_user() {
     let mut h = Harness::new();
     assert_eq!(
         h.run(&["page", "U0000ALICE", "Please check"]).status.code(),
@@ -675,7 +544,7 @@ fn page_requires_a_listed_user_and_warns_when_a_sent_request_fails() {
         h.slack.lock().unwrap().writes[0],
         (
             "chat.postMessage".into(),
-            json!({"channel":"C0000STATUS","text":"<@U0000ALICE> Please check"})
+            json!({"channel":"C0000TEST","text":"<@U0000ALICE> Please check"})
         )
     );
     h.slack
@@ -688,7 +557,7 @@ fn page_requires_a_listed_user_and_warns_when_a_sent_request_fails() {
     assert!(
         String::from_utf8(output.stderr)
             .unwrap()
-            .contains("check the status channel before retrying")
+            .contains("check the channel before retrying")
     );
 }
 
@@ -703,85 +572,19 @@ fn retry_after_delays_the_next_request() {
 }
 
 #[test]
-fn symlinked_state_files_never_read_or_overwrite_the_target() {
-    let h = Harness::new();
-    let victim = h.dir.path().join("victim");
-    std::fs::write(&victim, "keep me").unwrap();
-    for name in [
-        "cursor.json",
-        "health.json",
-        "status.json",
-        "undelivered.jsonl",
-    ] {
-        std::os::unix::fs::symlink(&victim, h.dir.path().join("state").join(name)).unwrap();
-    }
-    h.tick();
-    success(h.run(&["status", "Investigating"]));
-    h.outcome(4, json!({}));
-    assert_eq!(
-        h.run(&["promote", ts(&post(0)), "other"]).status.code(),
-        Some(1)
-    );
-    assert_eq!(std::fs::read_to_string(victim).unwrap(), "keep me");
-}
-
-#[test]
-fn symlinked_lock_files_are_not_followed_or_truncated() {
-    let h = Harness::new();
-    let victim = h.dir.path().join("victim");
-    std::fs::write(&victim, "keep me").unwrap();
-    std::os::unix::fs::symlink(&victim, h.dir.path().join("state/status.lock")).unwrap();
-    assert_eq!(h.run(&["status", "Investigating"]).status.code(), Some(1));
-    assert!(h.slack.lock().unwrap().writes.is_empty());
-    assert_eq!(std::fs::read_to_string(victim).unwrap(), "keep me");
-}
-
-#[test]
-fn stale_status_temp_cannot_overwrite_a_victim_or_duplicate_a_post() {
-    let h = Harness::new();
-    h.slack.lock().unwrap().write_delay = std::time::Duration::from_millis(200);
-    let victim = h.dir.path().join("victim");
-    std::fs::write(&victim, "keep me").unwrap();
-    let child = h
-        .command(&["status", "Investigating"])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let temp = h
-        .dir
-        .path()
-        .join(format!("state/.status.json.{}.tmp", child.id()));
-    std::os::unix::fs::symlink(&victim, temp).unwrap();
-    child.wait_with_output().unwrap();
-    assert_eq!(std::fs::read_to_string(victim).unwrap(), "keep me");
-    success(h.run(&["status", "Recovered"]));
-    assert_eq!(
-        h.slack
-            .lock()
-            .unwrap()
-            .writes
-            .iter()
-            .map(|(method, _)| method.as_str())
-            .collect::<Vec<_>>(),
-        vec!["chat.postMessage", "chat.update"]
-    );
-}
-
-#[test]
-fn status_without_state_directory_cannot_modify_the_working_directory() {
+fn watch_without_state_directory_cannot_modify_the_working_directory() {
     use std::os::unix::fs::PermissionsExt;
     let h = Harness::new();
     let cwd = h.dir.path().join("cwd");
     std::fs::create_dir(&cwd).unwrap();
     std::fs::set_permissions(&cwd, std::fs::Permissions::from_mode(0o755)).unwrap();
     let output = h
-        .command(&["status", "Investigating"])
+        .command(&["watch", "--once"])
         .env_remove("BORGCHART_STATE_DIR")
         .current_dir(&cwd)
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(1));
+    assert!(output.status.success());
     assert!(
         String::from_utf8(output.stderr)
             .unwrap()
@@ -796,12 +599,12 @@ fn status_without_state_directory_cannot_modify_the_working_directory() {
 }
 
 #[test]
-fn status_preserves_existing_state_directory_permissions() {
+fn watch_preserves_existing_state_directory_permissions() {
     use std::os::unix::fs::PermissionsExt;
     let h = Harness::new();
     let root = h.dir.path().join("state");
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
-    success(h.run(&["status", "Investigating"]));
+    h.tick();
     assert_eq!(
         std::fs::metadata(root).unwrap().permissions().mode() & 0o777,
         0o755
@@ -809,10 +612,10 @@ fn status_preserves_existing_state_directory_permissions() {
 }
 
 #[test]
-fn malformed_snapshots_recover_without_panicking_or_redirecting_status() {
+fn malformed_cursor_snapshots_establish_a_new_baseline() {
     for cursor in ["{bad json", "[true,{},[]]"] {
         let h = Harness::new();
-        for name in ["cursor.json", "health.json", "status.json"] {
+        for name in ["cursor.json", "health.json"] {
             std::fs::write(h.dir.path().join("state").join(name), "{bad json").unwrap();
         }
         std::fs::write(h.dir.path().join("state/cursor.json"), cursor).unwrap();
@@ -823,8 +626,6 @@ fn malformed_snapshots_recover_without_panicking_or_redirecting_status() {
             "malformed cursor must establish a new baseline"
         );
         assert_eq!(h.state("health.json")["ok"], true);
-        success(h.run(&["status", "Investigating"]));
-        assert_eq!(h.slack.lock().unwrap().writes[0].0, "chat.postMessage");
     }
 }
 
@@ -894,37 +695,8 @@ fn usage_errors_redact_secrets_and_stay_on_one_line() {
     assert_eq!(error.lines().count(), 1);
     let help = success(h.run(&["--help"]));
     for command in [
-        "watch", "read", "thread", "promote", "react", "reply", "status", "page",
+        "watch", "read", "thread", "promote", "react", "reply", "page",
     ] {
         assert!(help.contains(command));
     }
-}
-
-#[test]
-fn concurrent_status_calls_do_not_create_duplicate_messages() {
-    let h = Harness::new();
-    h.slack.lock().unwrap().write_delay = std::time::Duration::from_millis(100);
-    let children: Vec<_> = ["Investigating", "Recovered"]
-        .iter()
-        .map(|text| {
-            h.command(&["status", text])
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-                .unwrap()
-        })
-        .collect();
-    for child in children {
-        success(child.wait_with_output().unwrap());
-    }
-    assert_eq!(
-        h.slack
-            .lock()
-            .unwrap()
-            .writes
-            .iter()
-            .map(|(m, _)| m.as_str())
-            .collect::<Vec<_>>(),
-        vec!["chat.postMessage", "chat.update"]
-    );
 }
