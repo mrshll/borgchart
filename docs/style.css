@@ -102,3 +102,38 @@ pre {
   h2 ~ p:not(.prompt), h2 ~ pre, h2 ~ dl { padding-left: 3ch; }
   .title span:nth-child(2) { display: none; }
 }
+
+/* The team explorer at the foot: a `tree` of the team files beside the
+   chosen file; the tree above the file on a narrow screen. */
+hr {
+  border: 0;
+  border-top: 1px solid var(--faded);
+  margin: 2.9em 0 1.45em;
+}
+.explorer {
+  display: grid;
+  grid-template-columns: 24ch minmax(0, 1fr);
+  gap: 3ch;
+  margin-bottom: 2.9em;
+}
+.tree { margin: 0; }
+.leaf {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+.leaf:hover { text-decoration: underline; text-underline-offset: 0.2em; }
+.leaf[aria-current] { background: var(--ink); color: var(--bg); }
+.leaf:focus-visible, .file:focus-visible { outline: 2px solid var(--busy); outline-offset: 2px; }
+.file {
+  margin: 0;
+  height: min(36em, 70vh);
+  overflow: auto;
+}
+.file.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 48rem) {
+  .explorer { grid-template-columns: minmax(0, 1fr); gap: 1.45em; }
+}

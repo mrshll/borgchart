@@ -59,7 +59,7 @@ nowhere="GIT_DIR=/nonexistent/caller-repo/.git
   BORGCHART_TMUX_SOCKET=brg-caller-team
   BORGCHART_TMUX_TMPDIR=/nonexistent/caller-team/tmux"
 # The fast tier: the tests that start no tmux and no other process.
-fast_tests="--test validate"
+fast_tests="--test validate --test site_teams"
 for check in "$@"; do
   case $check in
     fmt) run fmt cargo fmt --all --check ;;

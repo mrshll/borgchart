@@ -76,9 +76,25 @@
 <p><a href="https://github.com/mrshll/borgchart">github.com/mrshll/borgchart</a>, the source and issues</p>
 <p><a href="https://github.com/mrshll/borgchart/blob/main/docs/concepts.md">concepts</a>, <a href="https://github.com/mrshll/borgchart/blob/main/docs/format.md">team format</a>, <a href="https://github.com/mrshll/borgchart/blob/main/docs/cli.md">commands</a>, <a href="https://github.com/mrshll/borgchart/blob/main/docs/bus.md">message bus</a>, <a href="https://github.com/mrshll/borgchart/blob/main/docs/teams.md">defining a team</a></p>
 
+<hr>
+<!-- The team explorer: the repository's own team files, from teams.js
+     (generated from teams/ by tests/site_teams.rs); explorer.js draws it. -->
+<section class="define" aria-label="The files that define a team">
+<p><b>A team is a folder:</b> a YAML file that names its roles, and a Markdown prompt for each. These are the repository's own teams, file for file.</p>
+<div class="explorer">
+<pre id="team-tree" class="tree">The team's files show here; they need JavaScript.</pre>
+<div class="viewer">
+<p id="team-cat" class="prompt"></p>
+<pre id="team-file" class="file" tabindex="0"></pre>
+</div>
+</div>
+</section>
+
 <p class="prompt"><span class="faded">$</span> <span class="cursor">&nbsp;</span></p>
 
 </main>
 <script src="status.js"></script>
+<script src="teams.js"></script>
+<script src="explorer.js"></script>
 </body>
 </html>
