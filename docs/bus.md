@@ -38,7 +38,7 @@ Directories must be real, owned by you and private (0700; files 0600). Immutable
 
 ## Callers and recipients
 
-Inside a member use `"$BORGCHART_BIN"`, the brg that started it. Its instance, member and start ID come from `BORGCHART_INSTANCE`, `BORGCHART_MEMBER` and `BORGCHART_INCARNATION`. Outside a member, `msg list`, `msg read`, `msg ack`, `msg wait` and `msg check` require `--instance ID`; inside one that option may only repeat its own instance. `msg send` takes the instance in its target address. Without team context, outside callers default to `external:owner`; `--external NAME` overrides it. Instance-only plugin processes must still name `--external NAME` to send, ack or wait.
+Inside a member use `"$BORGCHART_BIN"`, the brg that started it. Its instance, member and start ID come from `BORGCHART_INSTANCE`, `BORGCHART_MEMBER` and `BORGCHART_INCARNATION`. Outside a member, `msg list`, `msg read`, `msg ack`, `msg wait` and `msg integrity-check` require `--instance ID`; inside one that option may only repeat its own instance. `msg send` takes the instance in its target address. Without team context, outside callers default to `external:owner`; `--external NAME` overrides it. Instance-only plugin processes must still name `--external NAME` to send, ack or wait.
 
 Team context means any nonempty `BORGCHART_INSTANCE`, `BORGCHART_MEMBER`, `BORGCHART_INCARNATION`, `BORGCHART_ROLE`, `BORGCHART_NOTES` or `BORGCHART_PARENT`. Member variables without the complete instance, member and start identity are refused as incomplete member context, including when only role, notes or parent remains.
 
@@ -127,10 +127,10 @@ Repeating an ack returns `already` for that ID. Locked records have `ack_require
 
 Ack everything you've taken on, then arm one wait: Claude with its Bash tool in background mode, Codex in the foreground (`--timeout 600`). On exit 9 wait again. Leaving messages unacked wakes you about once a minute.
 
-**Check:** `brg msg check [--json]` reports gaps, unreadable files and stray temporaries, without writing.
+**Check:** `brg msg integrity-check [--json]` reports gaps, unreadable files and stray temporaries, without writing.
 
 ```sh
-brg msg check --instance dev-team-k3f9 --json
+brg msg integrity-check --instance dev-team-k3f9 --json
 ```
 
 ```json
@@ -139,7 +139,7 @@ brg msg check --instance dev-team-k3f9 --json
 
 ## Damage and status
 
-Only format-4 stores, records and acknowledgements are supported; earlier stores are refused, not migrated. A foreign format/root marker, unexpected layout, gap or unreadable record is damage: publication and acknowledgements refuse, and `msg check --instance <any-instance-in-the-tree>` reports why. Inbox can show readable messages with `store: incomplete`. Damage blocks starts throughout the tree; stop and liveness still work without reading messages. Checkouts are held only by running members or members whose stop is unknown; a stopped instance holds none. New or empty storage may be initialised at the tree root.
+Only format-4 stores, records and acknowledgements are supported; earlier stores are refused, not migrated. A foreign format/root marker, unexpected layout, gap or unreadable record is damage: publication and acknowledgements refuse, and `msg integrity-check --instance <any-instance-in-the-tree>` reports why. Inbox can show readable messages with `store: incomplete`. Damage blocks starts throughout the tree; stop and liveness still work without reading messages. Checkouts are held only by running members or members whose stop is unknown; a stopped instance holds none. New or empty storage may be initialised at the tree root.
 
 Delete needs `--force` for unacked messages to the instance's kept members, unacked external replies at the root, or unreadable storage, after every member is positively stopped. Copy deletion checks open work and saves its tombstone under the tree store lock, so a concurrent publication is either counted or refused. Deleting a copy or member preserves its messages as readable history and removes them from pending-work counts. Deleting the root removes the store after all copies have been deleted. Working folders are left alone.
 

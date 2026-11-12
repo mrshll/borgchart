@@ -3545,7 +3545,7 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
             }
             Err(_) => (
                 None,
-                Some("messages unavailable; brg msg check".to_string()),
+                Some("messages unavailable; brg msg integrity-check".to_string()),
             ),
         }
     };

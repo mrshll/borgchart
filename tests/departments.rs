@@ -517,7 +517,7 @@ fn team_copies_share_the_tree_store_and_keep_separate_slots_until_deleted() {
     for copy in [&first, &second] {
         env.ok(&["start", copy]);
         env.wait_for("copy lead idle", || env.state_of(copy, "lead") == "idle");
-        env.ok(&["msg", "check", "--instance", copy]);
+        env.ok(&["msg", "integrity-check", "--instance", copy]);
     }
     let first_lead = env.member(&first, "lead");
     let second_lead = env.member(&second, "lead");
@@ -643,7 +643,7 @@ fn depth_three_copies_wait_for_preparation_and_cascade_before_parent_deletion() 
             assert_eq!(state, env.path(&format!("state/{instance}")));
             assert!(notes.is_dir());
             assert_eq!(state.join("messages").is_dir(), instance == &dept);
-            env.ok(&["msg", "check", "--instance", instance]);
+            env.ok(&["msg", "integrity-check", "--instance", instance]);
             notes
         })
         .collect();

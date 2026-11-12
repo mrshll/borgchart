@@ -84,7 +84,7 @@ Follow the git rules below: an up-to-date description, then the owner's review r
    - **Claude:** `"$BORGCHART_BIN" msg wait --full` with your Bash tool in **background** mode; its exit wakes you.
    - **Codex:** `"$BORGCHART_BIN" msg wait --timeout 600 --full` in the **foreground**; nothing wakes you from a background command.
 3. **Exit 9** is a timeout: wait again.
-4. **Exit 8 (`fenced`)** means your session is no longer current: stop waiting and tell the owner. On any other error, wait at least 60 seconds, run `msg check`, and report the problem.
+4. **Exit 8 (`fenced`)** means your session is no longer current: stop waiting and tell the owner. On any other error, wait at least 60 seconds, run `msg integrity-check`, and report the problem.
 
 ## When your team has a parent
 

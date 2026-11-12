@@ -98,7 +98,7 @@ A small top level for people. `brg --help` and `brg <command> --help` give the f
 | `brg msg read ID [--json]` | Read one message, including an acknowledged one |
 | `brg msg ack ID… [--external NAME] [--json]` | Acknowledge messages addressed to you |
 | `brg msg wait [--external NAME] [--timeout SECONDS] [--full] [--json]` | Wait for your inbox: new messages at once, existing ones after 60 seconds if still unacked; timeout 60–86400, default 86400. The 60 s floor matches the loop guard on every nonzero exit except fenced, including timeout |
-| `brg msg check [--json]` | Report gaps and unreadable files without writing |
+| `brg msg integrity-check [--json]` | Report gaps and unreadable files without writing |
 
 **Addressing.** `devteam-k3f9/lead-q8m3`. Inside a member, a bare member ID means its own instance; everywhere else the instance is named in full ([concepts](concepts.md#names-and-ids)). Only `create` takes a role name. Member commands and messages refuse a role name, listing its kept members or naming `brg create <instance>/<role>` when it has none. Bus commands take `--instance ID` outside a member. Without team context, an outside caller defaults to `external:owner` for send, list, ack and wait; `--external NAME` overrides it (refused inside a member), with replies at `external:NAME`. Instance-only plugin processes must still name `--external NAME` to send, ack or wait.
 

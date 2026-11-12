@@ -632,7 +632,7 @@ fn addresses_name_the_instance_in_full_outside_a_member() {
     let err = env.fails(&["msg", "list", "--external", "ops"]);
     assert!(err.contains("--instance") && err.contains(&inst), "{err}");
     env.ok(&["msg", "list", "--external", "ops", "--instance", &inst]);
-    env.ok(&["msg", "check", "--instance", &inst]);
+    env.ok(&["msg", "integrity-check", "--instance", &inst]);
     // An instance isn't a recipient; nor is a role.
     for to in [inst.as_str(), "lead"] {
         let out = env.publish(&inst, &json!({"to": to, "body": "hi"}));

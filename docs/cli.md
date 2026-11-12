@@ -10,7 +10,7 @@ A **team** is a folder holding `team.yaml`; an **instance** is a team running in
 
 **Completion.** `BRG_COMPLETE=<shell> brg` prints the shell's registration (bash, zsh, fish, elvish or powershell). Load it when the shell starts, so it always matches the installed brg: in fish, put `BRG_COMPLETE=fish brg | source` in `~/.config/fish/completions/brg.fish`; in bash, `source <(BRG_COMPLETE=bash brg)` in `~/.bashrc`. On each tab press the shell runs brg with the same variable, and brg prints subcommands, flags, team names, instance IDs and `<instance>/<member>` addresses of kept members. It reads brg's records without a lock, so a tab press writes nothing and starts nothing. It uses `clap_complete`'s dynamic completion, which is outside semver; reload the shell after upgrading brg.
 
-`brg <command> --help` documents each command. The bus pages cover message submission and examples (`msg send --help`), all unacked messages (`msg list --help`), the one wait and its outcomes (`msg wait --help`), and store health (`msg check --help`).
+`brg <command> --help` documents each command. The bus pages cover message submission and examples (`msg send --help`), all unacked messages (`msg list --help`), the one wait and its outcomes (`msg wait --help`), and store health (`msg integrity-check --help`).
 
 | Command | What it does |
 | --- | --- |
@@ -37,7 +37,7 @@ A **team** is a folder holding `team.yaml`; an **instance** is a team running in
 | `brg msg wait [--external NAME] [--timeout SECONDS] [--full] [--json]` | One scan of the tree store, then incremental reads: new unacked messages return at once, existing messages after 60 seconds only if still unacked. Errors also wait at least 60 seconds; fenced/help/signals are exempt. Timeout 60–86400 seconds, default 86400, exits 9. A stopped/exited/replaced member exits 8 (`fenced`); stop waiting. Store lock attempts respect the deadline |
 | `brg msg read ID [--json]` | Show one message in full, including an acknowledged one |
 | `brg msg ack ID… [--external NAME] [--json]` | Acknowledge messages addressed to you; acking twice is a no-op |
-| `brg msg check [--json]` | Check the store for gaps, unreadable files and stray temporaries; never writes |
+| `brg msg integrity-check [--json]` | Check the store for gaps, unreadable files and stray temporaries; never writes |
 
 **Creating from a folder of clones.** Use one dev copy per repository; the root lead sequences copies:
 

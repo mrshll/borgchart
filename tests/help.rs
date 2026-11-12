@@ -37,7 +37,7 @@ fn send_help_describes_identity_references_and_committed_delivery() {
 #[test]
 fn msg_exposes_all_message_commands_without_publish() {
     let text = help(&["msg"]);
-    for name in ["send", "list", "read", "ack", "wait", "check"] {
+    for name in ["send", "list", "read", "ack", "wait", "integrity-check"] {
         assert!(
             text.lines()
                 .any(|line| line.split_whitespace().next() == Some(name)),
@@ -126,6 +126,7 @@ fn removed_message_commands_and_force_flag_are_refused() {
         vec!["inbox"],
         vec!["inbox", "wait"],
         vec!["bus", "check"],
+        vec!["msg", "check"],
         vec!["msg", "send", "someone", "hello", "--force"],
     ] {
         let out = Command::new(env!("CARGO_BIN_EXE_brg"))
@@ -151,6 +152,7 @@ fn shipped_roles_and_docs_do_not_instruct_removed_commands() {
             for removed in [
                 "inbox wait",
                 "bus check",
+                "msg check",
                 "\"$BORGCHART_BIN\" send",
                 "\"$BORGCHART_BIN\" inbox",
                 "brg inbox",

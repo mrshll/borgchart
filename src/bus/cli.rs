@@ -91,7 +91,7 @@ pub enum MsgCommand {
         json: bool,
     },
     /// Check the instance's message storage. Never writes.
-    Check {
+    IntegrityCheck {
         /// Print the report as JSON.
         #[arg(long)]
         json: bool,
@@ -243,7 +243,7 @@ pub fn msg(instance: Option<&str>, command: MsgCommand, started: Instant) -> Exi
             full,
             json,
         } => wait(instance, external, timeout, full, json, started),
-        MsgCommand::Check { json } => check(instance, json),
+        MsgCommand::IntegrityCheck { json } => check(instance, json),
         MsgCommand::Read { id, json } => finish(
             json,
             (|| {
@@ -336,7 +336,9 @@ fn inbox_output(t: &Target, page: &Inbox, snap: &store::Snapshot, full: bool) ->
         .collect();
     let mut text = String::new();
     if !snap.healthy() {
-        text.push_str("warning: the store is incomplete; `brg msg check` lists the problems\n");
+        text.push_str(
+            "warning: the store is incomplete; `brg msg integrity-check` lists the problems\n",
+        );
     }
     for r in &page.records {
         text.push_str(&render(r, snap.is_acked(r.seq), full));
