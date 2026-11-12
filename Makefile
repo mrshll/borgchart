@@ -1,9 +1,10 @@
-.PHONY: help build check test fmt lint clean install
+.PHONY: help build check test fmt lint clean install upgrade
 PREFIX ?= $(HOME)/.local/share
 BINDIR ?= $(HOME)/.local/bin
 
 help:
 	@echo 'build: release binaries; install: build, copy binaries, link into BINDIR'
+	@echo 'upgrade: build, collect handovers, stop trees, install, start fresh (TIMEOUT=1800; FORCE=1 skips handover and working check; DRY_RUN=1 previews)'
 	@echo 'check: quick checks; test: full checks; lint: clippy'
 	@echo 'fmt: format Rust; clean: remove build artifacts'
 
@@ -24,6 +25,9 @@ lint:
 
 clean:
 	cargo clean
+
+upgrade:
+	@MAKE="$(MAKE_COMMAND)" BRG="$(or $(BRG),brg)" TIMEOUT="$(TIMEOUT)" FORCE="$(FORCE)" DRY_RUN="$(DRY_RUN)" "$(abspath $(dir $(lastword $(MAKEFILE_LIST))))/tools/upgrade"
 
 install: build
 	mkdir -p "$(PREFIX)/brg/bin" "$(BINDIR)"

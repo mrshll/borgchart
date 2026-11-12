@@ -67,7 +67,7 @@ fn snapshot(root: &Path) -> BTreeMap<PathBuf, (u64, SystemTime)> {
     out
 }
 
-/// The test team plus `dev`, a team role whose copies run the `dev` team.
+/// The test team plus `dev`, a team role whose child teams use the `dev` template.
 const DEPARTMENT: &str = r#"
 bus: {}
 roles:
@@ -82,7 +82,7 @@ roles:
     prompt: scout.md
     start: false
   dev:
-    team: dev
+    template: dev
     parent: lead
     start: false
 "#;
@@ -90,10 +90,10 @@ roles:
 #[test]
 fn completion_offers_instances_kept_members_and_teams() {
     let env = Env::new();
-    env.write("teams/oncall/team.yaml", DEPARTMENT);
-    env.team("teams/dev");
+    env.write("templates/oncall/template.yaml", DEPARTMENT);
+    env.team("templates/dev");
     env.write(
-        "teams/dev/team.yaml",
+        "templates/dev/template.yaml",
         "bus: {}\nroles:\n  lead: {prompt: lead.md}\n",
     );
     std::fs::create_dir(env.path("work/a/lead")).unwrap();
@@ -108,7 +108,7 @@ fn completion_offers_instances_kept_members_and_teams() {
     let out = env.ok(&["create", &format!("{inst}/dev")]);
     let copy = stdout(&out).split_whitespace().next().unwrap().to_string();
     env.ok(&["start", &copy]);
-    env.wait_for("copy lead", || !env.member(&copy, "lead").is_empty());
+    env.wait_for("child team lead", || !env.member(&copy, "lead").is_empty());
     let copy_lead = env.member(&copy, "lead");
 
     let targets = complete(&env, &["stop", ""]);
@@ -130,10 +130,10 @@ fn completion_offers_instances_kept_members_and_teams() {
     assert!(members.contains(&format!("{inst}/{lead}")), "{members:?}");
     assert!(
         !members.contains(&inst),
-        "an instance offered as a member: {members:?}"
+        "a team offered as a member: {members:?}"
     );
 
-    let instances = complete(&env, &["msg", "list", "--instance", ""]);
+    let instances = complete(&env, &["msg", "list", "--team", ""]);
     assert!(instances.contains(&inst), "{instances:?}");
     let cleanup = complete(&env, &["cleanup", ""]);
     assert!(
@@ -142,11 +142,11 @@ fn completion_offers_instances_kept_members_and_teams() {
     );
     assert!(
         !instances.iter().any(|i| i.contains(&lead)),
-        "a member offered as an instance: {instances:?}"
+        "a member offered as a team: {instances:?}"
     );
 
     assert!(complete(&env, &["create", ""]).contains(&"oncall".to_string()));
-    assert_eq!(complete(&env, &["validate", "./te"]), ["./teams/"]);
+    assert_eq!(complete(&env, &["validate", "./te"]), ["./templates/"]);
     env.ok(&["stop", &inst]);
 }
 
@@ -162,7 +162,7 @@ fn completion_changes_nothing_and_never_waits() {
     lock.lock().unwrap();
     let before = snapshot(&state);
 
-    assert!(complete(&env, &["msg", "wait", "--instance", ""]).contains(&inst));
+    assert!(complete(&env, &["msg", "wait", "--team", ""]).contains(&inst));
     complete(&env, &["stop", ""]);
     complete(&env, &["attach", ""]);
     complete(&env, &["create", ""]);

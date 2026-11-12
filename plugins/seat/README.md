@@ -23,7 +23,7 @@ It asks the installed vendor CLI for subscription usage, using your existing log
 - **90%:** go, with a warning that stays until usage falls below 80%.
 - **Anything it can't establish** (denied, unknown model, missing or malformed data, no CLI, no login, no network, unwritable cache): wait.
 
-A relevant window is the shared one or the model's own. Retry advice names a reset time only when every relevant hard limit has one, and it is not a promise of access.
+A relevant window is the shared one or the model's own; haiku has no window of its own, so only the shared ones apply. Retry advice names a reset time only when every relevant hard limit has one, and it is not a promise of access.
 
 ## Declaring it
 
@@ -40,7 +40,7 @@ roles:
     plugins: {seat: [route]}
 ```
 
-The executable is found on the `PATH` the instance was created or fully started with, so install `brg-seat` beside the `brg` of the same revision and keep that directory first on `PATH` ([setup](../../CONTRIBUTING.md#running-the-engineering-teams)). A running instance keeps the `PATH` it captured; a full stop and start, from the root, picks up a new one.
+The executable is found on the `PATH` the team was created or fully started with, so install `brg-seat` beside the `brg` of the same revision and keep that directory first on `PATH` ([setup](../../CONTRIBUTING.md#running-the-engineering-teams)). A running team keeps the `PATH` it captured; a full stop and start, from the root, picks up a new one.
 
 Teams that use API keys leave the plugin out: a subscription reading can't authorize API spending.
 

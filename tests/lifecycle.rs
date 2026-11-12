@@ -49,7 +49,7 @@ const LEAD: &str = "---\nmodels:\n  claude: opus high\n---\nYou are the lead.\n"
 const HELPER: &str = "---\nmodels:\n  codex: example-model\n---\nYou are the helper.\n";
 
 impl Env {
-    /// A two-member team in a folder called `oncall`, its instance working
+    /// A two-member template in a folder called `oncall`, its team working
     /// in `work`; with `bus`, the team has `bus: {}`.
     fn new(bus: bool) -> Self {
         let dir = tempfile::tempdir().unwrap();
@@ -62,7 +62,7 @@ impl Env {
         std::os::unix::fs::symlink(fake, bin.join("claude")).unwrap();
         std::os::unix::fs::symlink(fake, bin.join("codex")).unwrap();
         fs::create_dir_all(env.path("home")).unwrap();
-        env.write("oncall/team.yaml", TEAM);
+        env.write("oncall/template.yaml", TEAM);
         env.write("oncall/lead.md", LEAD);
         env.write("oncall/helper.md", HELPER);
         env.script(
@@ -70,7 +70,7 @@ impl Env {
             "#!/bin/sh\necho \"pager $* member=$BORGCHART_MEMBER token_len=${#PAGER_TOKEN}\" >> \"$BORGCHART_STATE_DIR/calls.log\"\necho ok\n",
         );
         if bus {
-            env.write("oncall/team.yaml", &format!("bus: {{}}\n{TEAM}"));
+            env.write("oncall/template.yaml", &format!("bus: {{}}\n{TEAM}"));
         }
         fs::create_dir_all(env.path("work")).unwrap();
         env.write("config.yaml", "schema: 1\n");
@@ -122,20 +122,19 @@ impl Env {
         cmd
     }
 
-    /// The fixture's one instance, once created.
+    /// The fixture's one team, once created.
     fn instance(&self) -> Option<String> {
         let reg: Value =
             serde_json::from_slice(&fs::read(self.path("state/registry.json")).ok()?).ok()?;
-        reg["instances"].as_object()?.keys().next().cloned()
+        reg["teams"].as_object()?.keys().next().cloned()
     }
 
-    /// The member of `role` in the instance, once created.
+    /// The member of `role` in the team, once created.
     fn member_id(&self, role: &str) -> Option<String> {
         let inst = self.instance()?;
-        let rec: Value = serde_json::from_slice(
-            &fs::read(self.path(&format!("state/{inst}/instance.json"))).ok()?,
-        )
-        .ok()?;
+        let rec: Value =
+            serde_json::from_slice(&fs::read(self.path(&format!("state/{inst}/team.json"))).ok()?)
+                .ok()?;
         rec["members"]
             .as_object()?
             .iter()
@@ -149,12 +148,12 @@ impl Env {
             .unwrap_or_else(|| panic!("no member of `{role}` yet"))
     }
 
-    /// The instance (it must exist).
+    /// The team (it must exist).
     fn inst(&self) -> String {
-        self.instance().expect("an instance")
+        self.instance().expect("a team")
     }
 
-    /// Printed trees with the instance line as `oncall`, and member IDs as
+    /// Printed trees with the team line as `oncall`, and member IDs as
     /// their roles padded to the same width, so they compare exactly.
     fn shown(&self, text: &str) -> String {
         let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
@@ -176,11 +175,11 @@ impl Env {
             .join(format!("members/{}/incarnation.json", self.m(role)))
     }
 
-    /// The tests act on the team's one instance, and name members by role
-    /// (each role has one member): `start` creates the instance the first
+    /// The tests act on the fixture's one team, and name members by role
+    /// (each role has one member): `start` creates the team the first
     /// time and starts it after, `start <role>` creates or starts its
     /// member, `stop [<role>]`, `status`, `logs`, `attach` and `msg send` go to
-    /// the instance.
+    /// the team.
     fn translate(&self, args: &[&str]) -> Vec<String> {
         let inst = self.instance();
         let at = |role: &str| match (&inst, self.member_id(role)) {
@@ -323,14 +322,14 @@ impl Env {
         self.wait_for("helper idle", |e| e.state_of("helper") == "idle");
     }
 
-    /// The instance's message storage.
+    /// The team's message storage.
     fn store(&self) -> PathBuf {
         self.state_dir().join("messages")
     }
 
-    /// The instance's state folder.
+    /// The team's state folder.
     fn state_dir(&self) -> PathBuf {
-        self.path(&format!("state/{}", self.instance().expect("an instance")))
+        self.path(&format!("state/{}", self.instance().expect("a team")))
     }
 
     /// Every file under the state home, with its bytes.
@@ -458,7 +457,7 @@ fn up_prints_the_team_as_a_tree() {
     assert_eq!(
         header,
         format!(
-            "{}  team {} · folder {}",
+            "{}  template {} · folder {}",
             env.inst(),
             env.path("oncall").canonicalize().unwrap().display(),
             env.path("work").canonicalize().unwrap().display()
@@ -501,8 +500,8 @@ fn status_prints_the_same_tree_with_live_states() {
     assert_eq!(rows[0]["kind"], "member");
     assert_eq!(rows[0]["member"], env.m("lead"));
     assert_eq!(rows[0]["role"], "lead");
-    assert_eq!(rows[0]["instance"], env.inst());
-    assert_eq!(rows[0]["team"], "oncall");
+    assert_eq!(rows[0]["team"], env.inst());
+    assert_eq!(rows[0]["template"], "oncall");
     assert_eq!(rows[1]["kind"], "role");
     assert_eq!(rows[1]["parent"], env.m("lead"));
     assert_eq!(rows[0]["model"], "opus high");
@@ -517,7 +516,7 @@ fn status_without_instances_says_so() {
     let env = Env::new(true);
     let out = env.ok(&["status"]);
     assert!(
-        stdout(&out).contains("there are no instances"),
+        stdout(&out).contains("there are no teams"),
         "{}",
         both(&out)
     );
@@ -600,7 +599,7 @@ fn a_damaged_start_record_is_refused_not_read_as_not_running() {
         "the lead's window was stopped"
     );
 
-    // Listing every instance still works.
+    // Listing every team still works.
     let mut status = env.brg_cmd(&[]);
     let out = status.arg("status").output().unwrap();
     assert!(out.status.success(), "{}", both(&out));
@@ -863,7 +862,7 @@ fn a_lost_store_identity_is_not_a_first_start() {
     assert_eq!(out.status.code(), Some(1), "{}", both(&out));
     assert!(
         both(&out).contains(&format!(
-            "instance `{}`'s message storage is damaged",
+            "team `{}`'s message storage is damaged",
             env.inst()
         )),
         "{}",
@@ -1112,7 +1111,7 @@ fn a_previous_boot_stops_without_tmux_even_with_only_deferred_roles() {
                 "    prompt: lead.md\n    start: false\n",
             );
             env.write(
-                "oncall/team.yaml",
+                "oncall/template.yaml",
                 &format!("{}{team}", if bus { "bus: {}\n" } else { "" }),
             );
             env.ok(&["start"]);
@@ -1308,7 +1307,7 @@ fn down_on_a_team_that_never_started_says_not_running() {
     for bus in [false, true] {
         let env = Env::new(bus);
         env.write(
-            "oncall/team.yaml",
+            "oncall/template.yaml",
             &TEAM.replace(
                 "    prompt: lead.md\n",
                 "    prompt: lead.md\n    start: false\n",
@@ -1336,7 +1335,7 @@ fn an_up_that_cannot_see_the_server_does_not_make_down_say_not_running() {
     for bus in [false, true] {
         let env = Env::new(bus);
         env.write(
-            "oncall/team.yaml",
+            "oncall/template.yaml",
             &TEAM.replace(
                 "    prompt: lead.md\n",
                 "    prompt: lead.md\n    start: false\n",
@@ -1346,7 +1345,7 @@ fn an_up_that_cannot_see_the_server_does_not_make_down_say_not_running() {
         env.ok(&["start", "lead"]);
         env.wait_for("lead idle", |e| e.state_of("lead") == "idle");
         // A caller without tmux finds no session, so it starts the
-        // instance afresh, with nothing to start.
+        // team afresh, with nothing to start.
         let no_tmux = |args: &[&str]| {
             env.brg_cmd(args)
                 .env("PATH", env.path("bin"))
@@ -1371,7 +1370,7 @@ fn killed_plugin_only_server_does_not_wedge_stop_or_start() {
     for bus in [false, true] {
         let env = Env::new(bus);
         env.write(
-            "oncall/team.yaml",
+            "oncall/template.yaml",
             &TEAM
                 .replace(
                     "    prompt: lead.md\n",
@@ -1559,7 +1558,7 @@ fn pid_of(child: &std::process::Child) -> String {
 fn a_stale_gate_waiter_leaves_a_replacement_alone() {
     let env = Env::new(false);
     env.write(
-        "oncall/team.yaml",
+        "oncall/template.yaml",
         &TEAM.replace(
             "    prompt: lead.md\n",
             "    prompt: lead.md\n    posture: locked\n",
@@ -1692,7 +1691,7 @@ fn api_key_child_starts_take_the_key_from_the_caller() {
 fn a_plugin_command_may_not_hide_brg() {
     let env = Env::new(false);
     env.write(
-        "oncall/team.yaml",
+        "oncall/template.yaml",
         &TEAM
             .replace(
                 "read: pager read <id>",
@@ -1751,7 +1750,7 @@ fn changed_files_check_members_the_new_configuration_dropped() {
     fs::write(env.incarnation_file("helper"), unknown_helper(&env)).unwrap();
     // helper is removed from the team (and lead's file changes with it).
     env.write(
-        "oncall/team.yaml",
+        "oncall/template.yaml",
         &format!("bus: {{}}\n{}", TEAM.split("  helper:\n").next().unwrap()),
     );
     assert_changed_files_refused(&env, "helper");
@@ -1793,7 +1792,7 @@ fn a_lost_store_identity_is_damaged_storage() {
         assert_eq!(out.status.code(), Some(1), "{args:?}: {}", both(&out));
         assert!(
             both(&out).contains(&format!(
-                "instance `{}`'s message storage is damaged",
+                "team `{}`'s message storage is damaged",
                 env.inst()
             )),
             "{}",
@@ -1815,10 +1814,7 @@ fn storage_errors_name_the_team_not_its_files() {
     let out = env.brg(&["start"]);
     assert_eq!(out.status.code(), Some(1), "{}", both(&out));
     let text = both(&out);
-    assert!(
-        text.contains(&format!("instance `{}`", env.inst())),
-        "{text}"
-    );
+    assert!(text.contains(&format!("team `{}`", env.inst())), "{text}");
 
     assert!(
         !text.contains(&env.store().display().to_string()) && !text.contains("lifecycle.lock"),

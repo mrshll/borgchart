@@ -1,4 +1,4 @@
-//! Safety around instances: checkouts held across instances, brg's own
+//! Safety around teams: checkouts held across teams, brg's own
 //! state folder, changed files and storage that can't be read.
 //!
 //! Run with `cargo test --features test-support`.
@@ -35,7 +35,7 @@ fn only_running_members_hold_their_folder() {
     assert!(err.contains(&a) && err.contains("running there"), "{err}");
     env.ok(&["stop", &a]);
     let b = env.create("oncall", "work/a");
-    assert!(env.registry()["instances"].get(&a).is_some());
+    assert!(env.registry()["teams"].get(&a).is_some());
     env.ok(&["stop", &b]);
 }
 
@@ -50,7 +50,7 @@ fn stopped_members_with_unreadable_messages_hold_no_folder() {
     )
     .unwrap();
     let b = env.create("oncall", "work/a");
-    assert!(env.registry()["instances"].get(&a).is_some());
+    assert!(env.registry()["teams"].get(&a).is_some());
     env.ok(&["stop", &b]);
 }
 
@@ -127,11 +127,11 @@ fn killed_server_holds_checkout_until_full_stop_confirms_processes_gone() {
     env.ok(&["stop", &b]);
 }
 
-/// An instance `A` running in `work/a`, whose start.json is then
+/// A team `A` running in `work/a`, whose start.json is then
 /// damaged: brg can no longer read which tmux server runs it.
 fn damaged_start_record() -> (Env, String) {
     let env = Env::new();
-    env.write("teams/oncall/team.yaml", TEAM);
+    env.write("templates/oncall/template.yaml", TEAM);
     let a = env.create("oncall", "work/a");
     fs::write(
         env.path(&format!("state/{a}/start.json")),
@@ -152,7 +152,7 @@ fn a_damaged_start_record_keeps_the_reservation() {
     let (env, a) = damaged_start_record();
     let err = env.fails(&["create", "oncall", &env.folder("work/a")]);
     assert!(err.contains("start.json"), "{err}");
-    assert_eq!(env.registry()["instances"].as_object().unwrap().len(), 1);
+    assert_eq!(env.registry()["teams"].as_object().unwrap().len(), 1);
     assert!(lead_window_up(&env, &a));
 }
 
@@ -183,11 +183,11 @@ fn a_damaged_start_record_blocks_delete_even_with_force() {
 fn a_damaged_start_record_blocks_a_repoint() {
     let (env, a) = damaged_start_record();
     env.team("moved/oncall");
-    let record = env.path(&format!("state/{a}/instance.json"));
+    let record = env.path(&format!("state/{a}/team.json"));
     let before = (fs::read_to_string(&record).unwrap(), env.registry());
     let other = env.tmux.socket("brg-other");
     let out = env
-        .cmd(&["start", &a, "--team", &env.folder("moved/oncall")])
+        .cmd(&["start", &a, "--template", &env.folder("moved/oncall")])
         .env("BORGCHART_TMUX_SOCKET", &other)
         .output()
         .unwrap();
@@ -203,6 +203,26 @@ fn a_damaged_start_record_blocks_a_repoint() {
 // --- 7. Moved folders ---
 
 #[test]
+fn repointing_at_a_retired_template_names_the_replacement() {
+    let env = Env::new();
+    let team = env.create("oncall", "work/a");
+    env.ok(&["stop", &team]);
+    env.team("old/oncall");
+    fs::rename(
+        env.path("old/oncall/template.yaml"),
+        env.path("old/oncall/team.yaml"),
+    )
+    .unwrap();
+    let before = env.registry();
+    let error = env.fails(&["start", &team, "--template", &env.folder("old/oncall")]);
+    assert!(
+        error.contains("team.yaml") && error.contains("template.yaml"),
+        "{error}"
+    );
+    assert_eq!(env.registry(), before);
+}
+
+#[test]
 fn a_moved_team_folder_is_re_pointed_after_a_full_stop() {
     let env = Env::new();
     let a = env.create("oncall", "work/a");
@@ -210,17 +230,17 @@ fn a_moved_team_folder_is_re_pointed_after_a_full_stop() {
     let out = env.publish(&a, &json!({"to": lead, "body": "keep me"}));
     assert!(out.status.success(), "{}", both(&out));
     fs::create_dir_all(env.path("elsewhere")).unwrap();
-    fs::rename(env.path("teams/oncall"), env.path("elsewhere/oncall")).unwrap();
+    fs::rename(env.path("templates/oncall"), env.path("elsewhere/oncall")).unwrap();
     let moved = env.folder("elsewhere/oncall");
-    let err = env.fails(&["start", &a, "--team", &moved]);
+    let err = env.fails(&["start", &a, "--template", &moved]);
     assert!(err.contains(&format!("brg stop {a}")), "{err}");
     env.ok(&["stop", &a]);
     let err = env.fails(&["start", &a]);
-    assert!(err.contains("--team"), "{err}");
-    env.ok(&["start", &a, "--team", &moved]);
+    assert!(err.contains("--template"), "{err}");
+    env.ok(&["start", &a, "--template", &moved]);
     env.wait_for("lead idle", || env.state_of(&a, "lead") == "idle");
-    assert_eq!(env.member(&a, "lead"), lead, "the same instance and member");
-    let inbox = stdout(&env.ok(&["msg", "list", "--member", &lead, "--instance", &a, "--full"]));
+    assert_eq!(env.member(&a, "lead"), lead, "the same team and member");
+    let inbox = stdout(&env.ok(&["msg", "list", "--member", &lead, "--team", &a, "--full"]));
     assert!(inbox.contains("keep me"), "{inbox}");
     env.ok(&["stop", &a]);
 }
@@ -254,10 +274,10 @@ fn unread_messages_are_open_work_for_delete() {
         "{err}"
     );
     assert!(env.path(&format!("state/{a}")).is_dir());
-    assert!(env.registry()["instances"].get(&a).is_some());
+    assert!(env.registry()["teams"].get(&a).is_some());
     env.ok(&["delete", &a, "--force"]);
     assert!(!env.path(&format!("state/{a}")).exists());
-    assert!(env.registry()["instances"].get(&a).is_none());
+    assert!(env.registry()["teams"].get(&a).is_none());
 }
 
 #[test]
@@ -280,7 +300,7 @@ fn an_unreadable_store_still_stops_and_delete_needs_force() {
     env.ok(&["delete", &a, "--force"]);
 }
 
-// --- 14. brg's state folder and the team folder ---
+// --- 14. brg's state folder and the template folder ---
 
 #[test]
 fn a_working_folder_overlapping_brgs_state_is_refused() {
@@ -301,22 +321,22 @@ fn a_working_folder_overlapping_brgs_state_is_refused() {
 fn locked_members_cant_work_around_the_team_folder_and_vendor_ones_get_a_note() {
     let env = Env::new();
     // `vendor` posture: a note.
-    let out = env.ok(&["create", "oncall", &env.folder("teams")]);
-    assert!(stdout(&out).contains("team folder"), "{}", both(&out));
+    let out = env.ok(&["create", "oncall", &env.folder("templates")]);
+    assert!(stdout(&out).contains("template folder"), "{}", both(&out));
     let a = first_word(&stdout(&out));
     env.ok(&["stop", &a]);
     env.ok(&["delete", &a]);
-    // `locked`: refused because the working folder includes the team files.
+    // `locked`: refused because the working folder includes the template files.
     env.write(
-        "teams/oncall/team.yaml",
+        "templates/oncall/template.yaml",
         &TEAM.replace(
             "  lead:\n    prompt: lead.md\n",
             "  lead:\n    prompt: lead.md\n    posture: locked\n",
         ),
     );
-    let err = env.fails(&["create", "oncall", &env.folder("teams")]);
+    let err = env.fails(&["create", "oncall", &env.folder("templates")]);
     assert!(
-        err.contains("locked") && err.contains("team folder"),
+        err.contains("locked") && err.contains("template folder"),
         "{err}"
     );
 }
@@ -335,11 +355,11 @@ fn a_start_that_never_reached_tmux_leaves_nothing_held() {
             .output()
             .unwrap()
     };
-    // A first start: the new instance is taken back.
+    // A first start: the new team is taken back.
     let out = unusable(&["create", "oncall", &env.folder("work/a")]);
     assert!(!out.status.success(), "{}", both(&out));
-    assert_eq!(env.registry()["instances"], json!({}));
-    // A later start of an existing instance: stop and delete still work.
+    assert_eq!(env.registry()["teams"], json!({}));
+    // A later start of an existing team: stop and delete still work.
     let a = env.create("oncall", "work/a");
     env.ok(&["stop", &a]);
     let out = unusable(&["start", &a]);
@@ -404,14 +424,14 @@ fn a_partial_member_context_is_refused_for_reads_too() {
         ("BORGCHART_INCARNATION", "x.1.abcd"),
     ] {
         for args in [
-            vec!["msg", "integrity-check", "--instance", b.as_str()],
-            vec!["msg", "read", "m1", "--instance", b.as_str()],
+            vec!["msg", "integrity-check", "--team", b.as_str()],
+            vec!["msg", "read", "m1", "--team", b.as_str()],
             vec![
                 "msg",
                 "list",
                 "--member",
                 lead.as_str(),
-                "--instance",
+                "--team",
                 a.as_str(),
             ],
         ] {
@@ -424,10 +444,10 @@ fn a_partial_member_context_is_refused_for_reads_too() {
             );
         }
     }
-    // A plugin process has only its instance: that still works.
+    // A plugin process has only its team: that still works.
     let out = env
         .cmd(&["msg", "integrity-check"])
-        .env("BORGCHART_INSTANCE", &a)
+        .env("BORGCHART_TEAM", &a)
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", both(&out));
@@ -471,7 +491,7 @@ fn a_failed_create_never_takes_back_an_instance_started_meanwhile() {
     let long = env.path(&format!("t{}", "x".repeat(120)));
     fs::create_dir_all(&long).unwrap();
     let pause = env.path("rollback-pause");
-    // A create that can't reach tmux, paused before it takes its instance back.
+    // A create that can't reach tmux, paused before it takes its team back.
     let failing = env
         .cmd(&["create", "oncall", &env.folder("work/a")])
         .env("BORGCHART_TMUX_TMPDIR", &long)
@@ -482,10 +502,10 @@ fn a_failed_create_never_takes_back_an_instance_started_meanwhile() {
         .unwrap();
     let waiting = pause.with_extension("waiting");
     env.wait_for("the rollback to pause", || waiting.exists());
-    // Meanwhile someone starts the registered instance.
+    // Meanwhile someone starts the registered team.
     let reg: serde_json::Value =
         serde_json::from_slice(&fs::read(env.path("state/registry.json")).unwrap()).unwrap();
-    let a = reg["instances"]
+    let a = reg["teams"]
         .as_object()
         .unwrap()
         .keys()
@@ -496,9 +516,9 @@ fn a_failed_create_never_takes_back_an_instance_started_meanwhile() {
     fs::write(&pause, "").unwrap();
     let out = failing.wait_with_output().unwrap();
     assert!(!out.status.success(), "{}", both(&out));
-    // The started instance is still there, and still runs.
-    assert!(env.registry()["instances"].get(&a).is_some(), "taken back");
-    assert!(env.path(&format!("state/{a}/instance.json")).exists());
+    // The started team is still there, and still runs.
+    assert!(env.registry()["teams"].get(&a).is_some(), "taken back");
+    assert!(env.path(&format!("state/{a}/team.json")).exists());
     env.wait_for("lead idle", || env.state_of(&a, "lead") == "idle");
     env.ok(&["stop", &a]);
     env.tmux.clear_refused();

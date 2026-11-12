@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 #[cfg(feature = "test-support")]
 mod common;
 
-/// The instance, as messages name it.
+/// The team, as messages name it.
 const TEAM: &str = "oncall-2a3b";
 
 struct Fixture {
@@ -36,7 +36,7 @@ enum As {
 }
 
 impl Fixture {
-    /// A deployment with a bus and a started team: `lead` (the root) with
+    /// A deployment with a bus and a started template: `lead` (the root) with
     /// children `helper` and `helper2`, and `sub` under `helper`.
     fn new() -> Self {
         let f = Fixture {
@@ -54,12 +54,12 @@ impl Fixture {
     fn root(&self) -> PathBuf {
         self.dir.path().join("state")
     }
-    /// The instance's message storage: `<state>/<instance>/messages/`.
+    /// The team's message storage: `<state>/<team>/messages/`.
     fn store_dir(&self) -> PathBuf {
         self.root().join(TEAM).join("messages")
     }
 
-    /// The instance in the registry, with its members by bare names.
+    /// The team in the registry, with its members by bare names.
     fn register(&self) {
         let members: BTreeMap<&str, Value> = ["lead", "helper", "helper2", "sub"]
             .iter()
@@ -68,19 +68,19 @@ impl Fixture {
         self.write_private(
             &self.root().join("registry.json"),
             &json!({
-                "schema": 1,
-                "instances": {TEAM: {
-                    "team": "oncall", "team_dir": self.dir.path().join("oncall"),
+                "schema": 2,
+                "teams": {TEAM: {
+                    "template": "oncall", "template_dir": self.dir.path().join("oncall"),
                     "folder": self.dir.path().join("work"), "created_at": "2026-11-05T19:00:00.000Z",
                 }},
                 "issued": {"oncall": ["2a3b"]},
             }),
         );
         self.write_private(
-            &self.root().join(TEAM).join("instance.json"),
+            &self.root().join(TEAM).join("team.json"),
             &json!({
-                "schema": 1, "id": TEAM, "team": "oncall",
-                "team_dir": self.dir.path().join("oncall"),
+                "schema": 2, "id": TEAM, "template": "oncall",
+                "template_dir": self.dir.path().join("oncall"),
                 "folder": self.dir.path().join("work"),
                 "created_at": "2026-11-05T19:00:00.000Z",
                 "members": members,
@@ -102,8 +102,8 @@ impl Fixture {
             json!({"role": m, "vendor": "claude", "posture": "vendor", "interactive": false, "parent": p, "vendor_version": null, "started": true})
         )).collect();
         self.write_private(&self.root().join(TEAM).join("start.json"), &json!({
-            "team_dir": self.dir.path().join("oncall"), "folder": self.dir.path().join("work"),
-            "brg": env!("CARGO_BIN_EXE_brg"), "config": {"version": 1, "digest": "00", "inputs": {}, "team_dirs": {}},
+            "template_dir": self.dir.path().join("oncall"), "folder": self.dir.path().join("work"),
+            "brg": env!("CARGO_BIN_EXE_brg"), "config": {"version": 1, "digest": "00", "inputs": {}, "template_dirs": {}},
             "socket": "brg-bus-example", "windows_started": true,
             "base_env": {}, "members": members, "plugins": {},
         }));
@@ -158,7 +158,7 @@ impl Fixture {
             .env("BORGCHART_CONFIG", self.dir.path().join("config.yaml"))
             .args(args);
         if !args.starts_with(&["msg", "send"]) {
-            cmd.args(["--instance", TEAM]);
+            cmd.args(["--team", TEAM]);
         }
         let (m, inc) = match who {
             As::Operator => {
@@ -169,7 +169,7 @@ impl Fixture {
             As::Member(m) => (m.to_string(), format!("{m}-1")),
             As::MemberWith(m, i) => (m.to_string(), i.to_string()),
         };
-        cmd.env("BORGCHART_INSTANCE", TEAM)
+        cmd.env("BORGCHART_TEAM", TEAM)
             .env("BORGCHART_MEMBER", m)
             .env("BORGCHART_INCARNATION", inc);
         cmd.env("BORGCHART_WAIT_MIN_MS", "20")
@@ -512,7 +512,7 @@ fn acks_are_idempotent_and_recipient_only() {
     );
     assert_eq!(ext.code, 4);
     let mut cmd = f.command(&As::Operator, &["msg", "ack", "m3", "--json"]);
-    let operator = output(cmd.env("BORGCHART_INSTANCE", TEAM).output().unwrap());
+    let operator = output(cmd.env("BORGCHART_TEAM", TEAM).output().unwrap());
     assert_eq!(operator.code, 4);
     let missing = f.brg(&As::Member("helper"), &["msg", "ack", "m9", "--json"], None);
     assert_eq!(missing.code, 10);
@@ -552,20 +552,20 @@ fn caller_context_is_checked() {
         None,
     );
     assert_eq!(out.code, 4);
-    // An instance-only plugin process can't silently publish as the owner.
+    // A plugin process with only `BORGCHART_TEAM` set can't silently publish as the owner.
     let mut cmd = f.command(
         &As::Operator,
         &["msg", "send", "oncall-2a3b/lead", "x", "--json"],
     );
-    let out = output(cmd.env("BORGCHART_INSTANCE", TEAM).output().unwrap());
+    let out = output(cmd.env("BORGCHART_TEAM", TEAM).output().unwrap());
     assert_eq!(out.code, 2, "{:?}", out.json);
     // A partial member context.
     let mut cmd = f.command(&As::Operator, &["msg", "ack", "m1", "--json"]);
     let out = cmd.env("BORGCHART_MEMBER", "lead").output().unwrap();
     assert_eq!(out.status.code(), Some(4));
-    // Instance-only plugins still need to name an inbox.
+    // Plugin processes with only `BORGCHART_TEAM` set still need to name an inbox.
     let mut cmd = f.command(&As::Operator, &["msg", "list", "--json"]);
-    let out = output(cmd.env("BORGCHART_INSTANCE", TEAM).output().unwrap());
+    let out = output(cmd.env("BORGCHART_TEAM", TEAM).output().unwrap());
     assert_eq!(out.code, 2, "{:?}", out.json);
 
     let fenced = [
@@ -928,7 +928,7 @@ fn damaged_storage_errors_name_the_team_not_paths() {
     assert_eq!(out.code, 5, "{:?}", out.json);
     assert_eq!(
         out.json["message"],
-        "instance `oncall-2a3b`'s message storage can't be used: its messages folder is writable by group or others"
+        "team `oncall-2a3b`'s message storage can't be used: its messages folder is writable by group or others"
     );
     let text = h.brg(
         &As::Operator,
@@ -958,7 +958,7 @@ fn storage_without_identity_is_damaged_not_new() {
         assert_eq!(out.code, 7, "{args:?}: {:?}", out.json);
         let msg = out.json["message"].as_str().unwrap();
         assert!(
-            msg.starts_with("instance `oncall-2a3b`'s message storage is damaged"),
+            msg.starts_with("team `oncall-2a3b`'s message storage is damaged"),
             "{msg}"
         );
     }
@@ -1023,7 +1023,7 @@ fn a_team_not_started_yet_is_not_configured() {
         );
         assert_eq!(
             out.json["message"],
-            "instance `oncall-2a3b` has no messages: it has not started"
+            "team `oncall-2a3b` has no messages: it has not started"
         );
     }
     assert_eq!(f.tree(), before, "nothing created");

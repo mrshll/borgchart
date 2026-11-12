@@ -10,31 +10,31 @@ fn included_team() -> Fixture {
     let f = Fixture::new();
     f.write(
         "config.yaml",
-        "schema: 1\nteams: [./teams]\ntmux: {user_config: ./tmux.conf}\n",
+        "schema: 1\ntemplates: [./templates]\ntmux: {user_config: ./tmux.conf}\n",
     );
     f.write(
         "tmux.conf",
         "set-hook -g client-attached 'display-message hello'\n",
     );
     f.write(
-        "teams/dev-team/team.yaml",
-        "roles:\n  lead: {prompt: lead.md}\n  dev: {team: base-team, parent: lead}\n",
+        "templates/dev-team/template.yaml",
+        "roles:\n  lead: {prompt: lead.md}\n  dev: {template: base-team, parent: lead}\n",
     );
     f.write(
-        "teams/dev-team/lead.md",
-        "---\nmodels: {claude: opus}\n---\n{{includes/before}}\n{{teams/base-team/helper}}\n{{includes/after}}\n",
+        "templates/dev-team/lead.md",
+        "---\nmodels: {claude: opus}\n---\n{{includes/before}}\n{{templates/base-team/helper}}\n{{includes/after}}\n",
     );
-    f.write("teams/dev-team/includes/before.md", "Before.\n");
-    f.write("teams/dev-team/includes/after.md", "After.\n");
+    f.write("templates/dev-team/includes/before.md", "Before.\n");
+    f.write("templates/dev-team/includes/after.md", "After.\n");
     f.write(
-        "teams/base-team/team.yaml",
+        "templates/base-team/template.yaml",
         "includes: catalog:shared/includes\nroles: {helper: {prompt: helper.md}}\n",
     );
     f.write(
-        "teams/base-team/helper.md",
+        "templates/base-team/helper.md",
         "---\nmodels: {claude: sonnet}\n---\n{{includes/common}}\n",
     );
-    f.write("teams/shared/includes/common.md", "Common.\n");
+    f.write("templates/shared/includes/common.md", "Common.\n");
     f
 }
 
@@ -83,11 +83,11 @@ fn piped_sources_show_the_includer_hierarchy_and_home_paths_without_ansi() {
         stdout.contains(concat!(
             "\n\nRoles:\n",
             "  lead\n",
-            "    ~/teams/dev-team/lead.md\n",
-            "      ~/teams/dev-team/includes/before.md\n",
-            "      ~/teams/base-team/helper.md\n",
-            "        ~/teams/shared/includes/common.md\n",
-            "      ~/teams/dev-team/includes/after.md\n",
+            "    ~/templates/dev-team/lead.md\n",
+            "      ~/templates/dev-team/includes/before.md\n",
+            "      ~/templates/base-team/helper.md\n",
+            "        ~/templates/shared/includes/common.md\n",
+            "      ~/templates/dev-team/includes/after.md\n",
         )),
         "{stdout}"
     );
@@ -129,11 +129,11 @@ fn json_sources_stay_flat_and_absolute_without_new_fields() {
             "errors": [],
             "warnings": parsed["warnings"],
             "roles": {"lead": {"sources": [
-                f.path("teams/dev-team/lead.md"),
-                f.path("teams/dev-team/includes/before.md"),
-                f.path("teams/base-team/helper.md"),
-                f.path("teams/shared/includes/common.md"),
-                f.path("teams/dev-team/includes/after.md"),
+                f.path("templates/dev-team/lead.md"),
+                f.path("templates/dev-team/includes/before.md"),
+                f.path("templates/base-team/helper.md"),
+                f.path("templates/shared/includes/common.md"),
+                f.path("templates/dev-team/includes/after.md"),
             ]}},
         })
     );
@@ -142,7 +142,7 @@ fn json_sources_stay_flat_and_absolute_without_new_fields() {
 #[test]
 fn roles_load_and_a_role_may_not_hide_another_roles_member() {
     let f = Fixture::new();
-    f.write("team.yaml", "roles: {lead: {prompt: lead.md}}\n");
+    f.write("template.yaml", "roles: {lead: {prompt: lead.md}}\n");
     f.write("lead.md", "---\nmodels: {claude: opus}\n---\nLead.\n");
     let validate = || {
         common::command(env!("CARGO_BIN_EXE_brg"))
@@ -170,7 +170,7 @@ fn roles_load_and_a_role_may_not_hide_another_roles_member() {
         String::from_utf8_lossy(&out.stdout)
     );
     f.write(
-        "team.yaml",
+        "template.yaml",
         "roles: {lead: {prompt: lead.md}, lead-k3f9: {prompt: lead.md}}\n",
     );
     assert!(
@@ -198,7 +198,7 @@ fn cli_reports_json_and_exit_codes() {
         "its include is listed after it: {sources:?}"
     );
 
-    f.edit("team.yaml", "parent: lead", "parent: boss");
+    f.edit("template.yaml", "parent: lead", "parent: boss");
     let bad = common::command(env!("CARGO_BIN_EXE_brg"))
         .arg("validate")
         .arg(f.dir.path())

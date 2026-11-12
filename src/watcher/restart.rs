@@ -4,7 +4,7 @@
 //! watcher counts its own starts, under its [`Lock`] (a second watcher never
 //! gets that far, so it doesn't count). Too many unplanned starts within a
 //! window parks it: it stays alive, beats `parked`, and does no wakes.
-//! Parking clears when the instance is started again
+//! Parking clears when the team is started again
 //! ([`instance_started`]) or a different brg starts the watcher.
 //!
 //! A restart for a new installed brg is marked before the exit
@@ -132,7 +132,7 @@ pub fn parked(dir: &Path) -> Result<Option<String>, String> {
         .map(|p| p.reason))
 }
 
-/// The instance was started: forget the start history and any parking.
+/// The team was started: forget the start history and any parking.
 /// Called by the start command, which doesn't hold the watcher's lock;
 /// the state lock keeps it from interleaving with [`count_start`].
 pub fn instance_started(dir: &Path) -> Result<(), String> {

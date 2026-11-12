@@ -34,7 +34,7 @@ impl Env {
         std::os::unix::fs::symlink(fake, bin.join("codex")).unwrap();
         fs::create_dir_all(env.path("home")).unwrap();
         env.write(
-            "team/team.yaml",
+            "team/template.yaml",
             r#"
 plugins:
   pager:
@@ -88,29 +88,28 @@ roles:
         self.write("config.yaml", &format!("schema: 1\n{extra}"));
     }
 
-    /// Add `lines` to `role`'s entry in the team file.
+    /// Add `lines` to `role`'s entry in the template file.
     fn role_extra(&self, role: &str, lines: &str) {
-        let path = self.path("team/team.yaml");
+        let path = self.path("team/template.yaml");
         let text = fs::read_to_string(&path).unwrap();
         let entry = format!("  {role}:\n    prompt: {role}.md\n");
         assert!(text.contains(&entry), "{text}");
         fs::write(&path, text.replace(&entry, &format!("{entry}{lines}"))).unwrap();
     }
 
-    /// The instance, once created.
+    /// The team, once created.
     fn instance(&self) -> Option<String> {
         let reg: serde_json::Value =
             serde_json::from_slice(&fs::read(self.path("state/registry.json")).ok()?).ok()?;
-        reg["instances"].as_object()?.keys().next().cloned()
+        reg["teams"].as_object()?.keys().next().cloned()
     }
 
     /// The member of `role`, once created.
     fn member_id(&self, role: &str) -> Option<String> {
         let inst = self.instance()?;
-        let rec: serde_json::Value = serde_json::from_slice(
-            &fs::read(self.path(&format!("state/{inst}/instance.json"))).ok()?,
-        )
-        .ok()?;
+        let rec: serde_json::Value =
+            serde_json::from_slice(&fs::read(self.path(&format!("state/{inst}/team.json"))).ok()?)
+                .ok()?;
         rec["members"]
             .as_object()?
             .iter()
@@ -124,10 +123,10 @@ roles:
             .unwrap_or_else(|| panic!("no member of `{role}` yet"))
     }
 
-    /// The tests act on the team's one instance, working in `work`, and
-    /// name members by role: `start` creates the instance the first time,
+    /// The tests act on the fixture's one team, working in `work`, and
+    /// name members by role: `start` creates the team the first time,
     /// `start <role>` creates or starts its member, and `stop`, `status`,
-    /// `logs` and `msg send` (with `--from`) go to the instance.
+    /// `logs` and `msg send` (with `--from`) go to the team.
     fn translate(&self, args: &[&str]) -> Vec<String> {
         let inst = self.instance();
         let at = |name: &str| match (&inst, self.member_id(name)) {
@@ -416,10 +415,10 @@ fn up_status_send_logs_down() {
     assert!(stdout(&logs).contains("hello there"), "{}", stdout(&logs));
 
     let table = env.brg(&["status"]);
-    // The instance's tree under its header line, then plugin processes.
+    // The team's tree under its header line, then plugin processes.
     let text = stdout(&table);
     let inst = env.instance().unwrap();
-    assert!(text.starts_with(&format!("{inst}  team ")), "{text}");
+    assert!(text.starts_with(&format!("{inst}  template ")), "{text}");
     assert!(
         text.lines()
             .nth(1)
@@ -1744,7 +1743,7 @@ fn plugin_send_without_external_author_is_refused_before_recording() {
     env.up();
     let output = env
         .brg_cmd(&["msg", "send", "beta", "not attributed"])
-        .env("BORGCHART_INSTANCE", env.instance().unwrap())
+        .env("BORGCHART_TEAM", env.instance().unwrap())
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(2));
@@ -2101,9 +2100,9 @@ fn a_member_whose_vendor_changed_starts_fresh() {
     assert!(env.brg(&["stop"]).status.success());
     // Codex to Claude across a full stop: the Codex session can't be
     // handed to Claude.
-    let team = fs::read_to_string(env.path("team/team.yaml")).unwrap();
+    let team = fs::read_to_string(env.path("team/template.yaml")).unwrap();
     env.write(
-        "team/team.yaml",
+        "team/template.yaml",
         &team.replace("    vendor: codex\n", "    vendor: claude\n"),
     );
     env.write(

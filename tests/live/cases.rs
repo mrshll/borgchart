@@ -44,7 +44,7 @@ pub struct Team<'w> {
     pub dir: PathBuf,
     /// brg's configuration for this case (`auto_trust`).
     pub config: PathBuf,
-    /// The instance's working folder.
+    /// The team's working folder.
     cwd: PathBuf,
     /// The role; its member's ID is learned once `create` registers it.
     role: String,
@@ -68,7 +68,7 @@ impl<'w> Team<'w> {
         std::fs::create_dir_all(&dir).unwrap();
         let args = serde_json::to_string(s.args).unwrap();
         std::fs::write(
-            dir.join("team.yaml"),
+            dir.join("template.yaml"),
             format!(
                 "{bus}roles:\n  {m}:\n    prompt: {m}.md\n    vendor: {v}\n    args: {args}\n{posture}",
                 bus = if s.bus { "bus: {}\n" } else { "" },
@@ -91,7 +91,7 @@ impl<'w> Team<'w> {
         let config = dir.with_extension("yaml");
         std::fs::write(
             &config,
-            format!("schema: 1\nteams: []\nauto_trust: {}\n", s.auto_trust),
+            format!("schema: 1\ntemplates: []\nauto_trust: {}\n", s.auto_trust),
         )
         .unwrap();
         let vendor = match s.who {
@@ -109,7 +109,7 @@ impl<'w> Team<'w> {
         }
     }
 
-    /// The instance and member, from brg's registry once `create` has
+    /// The team and member, from brg's registry once `create` has
     /// registered them (it does so before starting anything).
     fn ids(&self) -> Option<(String, String)> {
         if let Some(ids) = self.ids.get() {
@@ -120,12 +120,12 @@ impl<'w> Team<'w> {
             |p: PathBuf| -> Option<Value> { serde_json::from_slice(&std::fs::read(p).ok()?).ok() };
         let registry = read(state.join("registry.json"))?;
         let dir = self.dir.display().to_string();
-        let instance = registry["instances"]
+        let instance = registry["teams"]
             .as_object()?
             .iter()
-            .find(|(_, e)| e["team_dir"] == dir.as_str())
+            .find(|(_, e)| e["template_dir"] == dir.as_str())
             .map(|(id, _)| id.clone())?;
-        let record = read(state.join(&instance).join("instance.json"))?;
+        let record = read(state.join(&instance).join("team.json"))?;
         let member = record["members"]
             .as_object()?
             .iter()
@@ -135,7 +135,7 @@ impl<'w> Team<'w> {
         self.ids.get().cloned()
     }
 
-    /// The instance's ID (empty until it is registered).
+    /// The team's ID (empty until it is registered).
     pub fn instance(&self) -> String {
         self.ids().map(|i| i.0).unwrap_or_default()
     }

@@ -1,4 +1,4 @@
-//! A department's copies are prepared before launch, even at depth three.
+//! A department's child teams are prepared before launch, even at depth three.
 #![cfg(feature = "test-support")]
 
 mod common;
@@ -17,17 +17,20 @@ fn create_copy(env: &Env, parent: &str, role: &str) -> (String, std::path::PathB
         .as_array()
         .unwrap()
         .iter()
-        .flat_map(|team| team["instances"].as_array().unwrap())
+        .flat_map(|team| team["teams"].as_array().unwrap())
         .find(|instance| {
-            instance["instance"].as_str().is_some_and(|id| {
-                id.starts_with(&format!("{parent}/{role}-")) && before["instances"][id].is_null()
+            instance["team"].as_str().is_some_and(|id| {
+                id.starts_with(&format!("{parent}/{role}-")) && before["teams"][id].is_null()
             })
         })
-        .expect("create must register the copy");
-    let id = copy["instance"].as_str().unwrap().to_string();
+        .expect("create must register the child team");
+    let id = copy["team"].as_str().unwrap().to_string();
     let folder = std::path::PathBuf::from(copy["folder"].as_str().unwrap());
     assert!(both(&output).contains(&folder.display().to_string()));
-    assert_eq!(copy["running"], false, "copies must wait for preparation");
+    assert_eq!(
+        copy["running"], false,
+        "child teams must wait for preparation"
+    );
     assert!(folder.is_dir());
     assert!(env.rows(&id).iter().all(|row| row["member"].is_null()));
     (id, folder)
@@ -36,10 +39,10 @@ fn create_copy(env: &Env, parent: &str, role: &str) -> (String, std::path::PathB
 fn department() -> Env {
     let env = Env::new();
     env.write(
-        "teams/oncall/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  dev: {team: dev, parent: lead, start: false, max: 2, worktree: true}\n",
+        "templates/oncall/template.yaml",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  dev: {template: dev, parent: lead, start: false, max: 2, worktree: true}\n",
     );
-    env.team("teams/dev");
+    env.team("templates/dev");
     fs::remove_dir(env.path("work/a")).unwrap();
     env.checkout("work/a");
     env
@@ -49,10 +52,10 @@ fn department() -> Env {
 fn nested_addresses_start_and_stop_only_the_named_copy_or_member() {
     let env = department();
     env.write(
-        "teams/dev/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead, start: false}\n  design: {team: design, parent: lead, start: false}\n",
+        "templates/dev/template.yaml",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead, start: false}\n  design: {template: design, parent: lead, start: false}\n",
     );
-    env.team("teams/design");
+    env.team("templates/design");
     let dept = env.create("oncall", "work/a");
     let (first, folder) = create_copy(&env, &dept, "dev");
     let (peer, peer_folder) = create_copy(&env, &dept, "dev");
@@ -62,12 +65,12 @@ fn nested_addresses_start_and_stop_only_the_named_copy_or_member() {
     let (panel, _) = create_copy(&env, &first, "design");
     env.ok(&["start", &panel]);
     env.ok(&["create", &format!("{first}/helper")]);
-    // Status includes descendants: pick this instance's own role, even
+    // Status includes descendants: pick this team's own role, even
     // when the panel has an uncreated role with the same name.
     let row = |instance: &str, role: &str| {
         env.rows(instance)
             .into_iter()
-            .find(|r| r["instance"] == instance && r["role"] == role)
+            .find(|r| r["team"] == instance && r["role"] == role)
             .unwrap()
     };
     let state_of =
@@ -148,7 +151,7 @@ fn invalid_address_segments_are_refused_before_reading_the_registry() {
             for inside in [false, true] {
                 let mut cmd = env.cmd(&[command, address]);
                 if inside {
-                    cmd.env("BORGCHART_INSTANCE", "oncall-2222");
+                    cmd.env("BORGCHART_TEAM", "oncall-2222");
                 }
                 let out = cmd.output().unwrap();
                 assert!(!out.status.success());
@@ -165,10 +168,10 @@ fn invalid_address_segments_are_refused_before_reading_the_registry() {
 #[test]
 fn underscore_team_names_create_addressable_instances() {
     let env = Env::new();
-    env.team("teams/_scratch");
+    env.team("templates/_scratch");
     let out = env.ok(&[
         "create",
-        "./teams/_scratch",
+        "./templates/_scratch",
         &env.path("work/a").display().to_string(),
     ]);
     let id = stdout(&out).split_whitespace().next().unwrap().to_string();
@@ -196,11 +199,11 @@ fn missing_nested_copy_reports_kept_alternatives() {
     );
     assert!(
         refused.contains(&copy),
-        "recovery must name a kept copy: {refused}"
+        "recovery must name a kept child team: {refused}"
     );
     assert!(
         !refused.contains(&unrelated),
-        "alternatives must belong to the matched instance: {refused}"
+        "alternatives must belong to the matched team: {refused}"
     );
     env.ok(&["stop", &dept]);
     env.ok(&["stop", &unrelated]);
@@ -209,18 +212,18 @@ fn missing_nested_copy_reports_kept_alternatives() {
 #[test]
 fn status_nests_copies_once_with_full_paths_and_states() {
     let env = department();
-    let dev_team = env.path("teams/dev/team.yaml");
+    let dev_team = env.path("templates/dev/template.yaml");
     fs::write(
         &dev_team,
         format!(
-            "{}  design: {{team: design, parent: lead, start: false}}\n",
+            "{}  design: {{template: design, parent: lead, start: false}}\n",
             fs::read_to_string(&dev_team).unwrap()
         ),
     )
     .unwrap();
-    env.team("teams/design");
-    let team = env.path("teams/oncall/team.yaml");
-    fs::write(&team, format!("{}  review: {{team: dev, parent: lead, start: false}}\n  research: {{team: dev, parent: lead, start: false, max: 2}}\n", fs::read_to_string(&team).unwrap())).unwrap();
+    env.team("templates/design");
+    let team = env.path("templates/oncall/template.yaml");
+    fs::write(&team, format!("{}  review: {{template: dev, parent: lead, start: false}}\n  research: {{template: dev, parent: lead, start: false, max: 2}}\n", fs::read_to_string(&team).unwrap())).unwrap();
     let dept = env.create("oncall", "work/a");
     let dept_lead = env.member(&dept, "lead");
     let rows = env.rows(&dept);
@@ -246,7 +249,7 @@ fn status_nests_copies_once_with_full_paths_and_states() {
     assert_eq!(
         lead,
         env.member(&second, "lead"),
-        "exercise repeated local IDs across copies"
+        "exercise repeated local IDs across child teams"
     );
     let (panel, _) = create_copy(&env, &first, "design");
     env.ok(&["start", &panel]);
@@ -256,14 +259,14 @@ fn status_nests_copies_once_with_full_paths_and_states() {
     for (copy, running) in [(&first, 0), (&second, 1)] {
         let index = rows
             .iter()
-            .position(|r| r["kind"] == "copy" && r["instance"] == *copy)
-            .expect("copy must appear under its parent");
+            .position(|r| r["kind"] == "team" && r["team"] == *copy)
+            .expect("child team must appear under its parent");
         assert_eq!(rows[index]["parent"], format!("{dept}/{dept_lead}"));
-        assert_eq!(rows[index]["team"], "dev");
+        assert_eq!(rows[index]["template"], "dev");
         assert_eq!(rows[index]["running"], running);
         let member_index = rows
             .iter()
-            .position(|r| r["instance"] == *copy && r["member"] == lead)
+            .position(|r| r["team"] == *copy && r["member"] == lead)
             .unwrap();
         assert!(member_index > index);
         assert_eq!(
@@ -275,18 +278,18 @@ fn status_nests_copies_once_with_full_paths_and_states() {
         serde_json::from_slice(&env.ok(&["status", "--json"]).stdout).unwrap();
     let panel_index = bare
         .iter()
-        .position(|r| r["kind"] == "copy" && r["instance"] == panel)
-        .expect("depth-three copy must be visible");
+        .position(|r| r["kind"] == "team" && r["team"] == panel)
+        .expect("depth-three child team must be visible");
     assert_eq!(bare[panel_index]["parent"], format!("{first}/{lead}"));
     assert!(
         bare.iter()
             .skip(panel_index + 1)
-            .any(|r| r["instance"] == panel && r["member"] == panel_lead)
+            .any(|r| r["team"] == panel && r["member"] == panel_lead)
     );
     for copy in [&first, &second] {
         assert_eq!(
             bare.iter()
-                .filter(|r| r["instance"] == *copy && r["member"] == lead)
+                .filter(|r| r["team"] == *copy && r["member"] == lead)
                 .count(),
             1,
             "a nested member must appear once"
@@ -299,7 +302,7 @@ fn status_nests_copies_once_with_full_paths_and_states() {
             assert!(
                 !text
                     .lines()
-                    .any(|line| line.starts_with(&format!("{copy}  team ")))
+                    .any(|line| line.starts_with(&format!("{copy}  template ")))
             );
             let name = copy.rsplit('/').next().unwrap();
             assert!(text.lines().any(|line| line.contains(name)
@@ -311,7 +314,7 @@ fn status_nests_copies_once_with_full_paths_and_states() {
     let rows = env.rows(&dept);
     assert_eq!(
         rows.iter()
-            .find(|r| r["kind"] == "copy" && r["instance"] == first)
+            .find(|r| r["kind"] == "team" && r["team"] == first)
             .unwrap()["running"],
         1
     );
@@ -405,9 +408,9 @@ fn nested_status_screens_keep_healthy_members_visible_when_a_copy_becomes_unread
             "{text}"
         );
         assert!(
-            !text.contains(&format!("{copy}  team "))
+            !text.contains(&format!("{copy}  template "))
                 && !text.contains(&format!("{copy}  folder ")),
-            "nested copy must not have a top-level header: {text}"
+            "nested child team must not have a top-level header: {text}"
         );
         assert!(
             text.lines().any(
@@ -415,17 +418,20 @@ fn nested_status_screens_keep_healthy_members_visible_when_a_copy_becomes_unread
             ),
             "{text}"
         );
-        let path = env.path(&format!("state/{peer}/instance.json"));
+        let path = env.path(&format!("state/{peer}/team.json"));
         let original = fs::read(&path).unwrap();
-        fs::write(&path, "unreadable copy record").unwrap();
-        env.wait_for("screen keeps healthy rows beside unreadable copy", || {
-            let text = screen();
-            text.contains("unreadable")
-                && text.contains(copy_name)
-                && text.lines().filter(|line| line.contains(&lead)).count() == 1
-        });
+        fs::write(&path, "unreadable child team record").unwrap();
+        env.wait_for(
+            "screen keeps healthy rows beside unreadable child team",
+            || {
+                let text = screen();
+                text.contains("unreadable")
+                    && text.contains(copy_name)
+                    && text.lines().filter(|line| line.contains(&lead)).count() == 1
+            },
+        );
         fs::write(&path, original).unwrap();
-        env.wait_for("screen recovers restored copy", || {
+        env.wait_for("screen recovers restored child team", || {
             screen().lines().filter(|line| line.contains(&lead)).count() == 2
         });
         if args.contains(&"-w") {
@@ -450,18 +456,18 @@ fn nested_status_screens_keep_healthy_members_visible_when_a_copy_becomes_unread
                 .collect();
             let selected = rows
                 .iter()
-                .position(|r| r["instance"] == copy && r["member"] == lead)
+                .position(|r| r["team"] == copy && r["member"] == lead)
                 .unwrap();
             let copy_index = rows
                 .iter()
-                .position(|r| r["kind"] == "copy" && r["instance"] == copy)
+                .position(|r| r["kind"] == "team" && r["team"] == copy)
                 .unwrap();
             let moves = copy_index + usize::from(!args.contains(&dept.as_str()));
             for _ in 0..moves {
                 keys(&["j"]);
             }
             keys(&["Enter"]);
-            env.wait_for("copy row refuses attach", || {
+            env.wait_for("child team row refuses attach", || {
                 screen().contains("select one of its members")
             });
             assert!(env.tmux(&["list-clients"]).trim().is_empty());
@@ -469,7 +475,7 @@ fn nested_status_screens_keep_healthy_members_visible_when_a_copy_becomes_unread
                 keys(&["j"]);
             }
             keys(&["Enter"]);
-            env.wait_for("attach in selected nested instance", || {
+            env.wait_for("attach in selected nested team", || {
                 env.tmux(&["list-clients", "-F", "#{session_name}"]).trim() == format!("brg-{copy}")
             });
             keys(&["C-b", "d"]);
@@ -516,14 +522,16 @@ fn team_copies_share_the_tree_store_and_keep_separate_slots_until_deleted() {
     );
     for copy in [&first, &second] {
         env.ok(&["start", copy]);
-        env.wait_for("copy lead idle", || env.state_of(copy, "lead") == "idle");
-        env.ok(&["msg", "integrity-check", "--instance", copy]);
+        env.wait_for("child team lead idle", || {
+            env.state_of(copy, "lead") == "idle"
+        });
+        env.ok(&["msg", "integrity-check", "--team", copy]);
     }
     let first_lead = env.member(&first, "lead");
     let second_lead = env.member(&second, "lead");
     let sent = env.publish(
         &first,
-        &serde_json::json!({"to": first_lead, "body": "Fictional copy task"}),
+        &serde_json::json!({"to": first_lead, "body": "Fictional child team task"}),
     );
     assert!(sent.status.success(), "{}", both(&sent));
     assert_eq!(env.row(&first, "lead")["unacked"], 1);
@@ -535,14 +543,14 @@ fn team_copies_share_the_tree_store_and_keep_separate_slots_until_deleted() {
         let starts: Vec<_> = env
             .starts(lead)
             .into_iter()
-            .filter(|start| start["env"]["BORGCHART_INSTANCE"] == *copy)
+            .filter(|start| start["env"]["BORGCHART_TEAM"] == *copy)
             .collect();
         assert_eq!(starts.len(), 1);
         assert_eq!(
             starts[0]["cwd"],
             folder.canonicalize().unwrap().display().to_string()
         );
-        assert_eq!(starts[0]["env"]["BORGCHART_INSTANCE"], *copy);
+        assert_eq!(starts[0]["env"]["BORGCHART_TEAM"], *copy);
         assert_eq!(
             starts[0]["env"]["BORGCHART_NOTES"],
             env.path(&format!("state/{copy}/notes"))
@@ -565,24 +573,24 @@ fn team_copies_share_the_tree_store_and_keep_separate_slots_until_deleted() {
 fn depth_three_copies_wait_for_preparation_and_cascade_before_parent_deletion() {
     let env = Env::new();
     env.write(
-        "teams/oncall/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md, start: true}\n  dev: {team: dev, parent: lead, start: false, max: 2, worktree: true}\n",
+        "templates/oncall/template.yaml",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md, start: true}\n  dev: {template: dev, parent: lead, start: false, max: 2, worktree: true}\n",
     );
     env.write(
-        "teams/dev/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md, start: true}\n  design: {team: design, parent: lead, start: false}\n",
+        "templates/dev/template.yaml",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md, start: true}\n  design: {template: design, parent: lead, start: false}\n",
     );
     env.write(
-        "teams/dev/lead.md",
+        "templates/dev/lead.md",
         "---\nmodels: {claude: opus high}\n---\nLead the fictional development team.\n",
     );
     env.write(
-        "teams/design/team.yaml",
+        "templates/design/template.yaml",
         "bus: {}\nroles:\n  amber: {prompt: amber.md, start: true}\n  violet: {prompt: violet.md, start: true}\n",
     );
     for role in ["amber", "violet"] {
         env.write(
-            &format!("teams/design/{role}.md"),
+            &format!("templates/design/{role}.md"),
             "---\nmodels: {claude: opus high}\n---\nReview the fictional design.\n",
         );
     }
@@ -605,7 +613,7 @@ fn depth_three_copies_wait_for_preparation_and_cascade_before_parent_deletion() 
         start["cwd"],
         dev_folder.canonicalize().unwrap().display().to_string()
     );
-    assert_eq!(start["env"]["BORGCHART_INSTANCE"], dev);
+    assert_eq!(start["env"]["BORGCHART_TEAM"], dev);
     assert_eq!(
         start["env"]["BORGCHART_PARENT"],
         format!("{dept}/{dept_lead}")
@@ -643,7 +651,7 @@ fn depth_three_copies_wait_for_preparation_and_cascade_before_parent_deletion() 
             assert_eq!(state, env.path(&format!("state/{instance}")));
             assert!(notes.is_dir());
             assert_eq!(state.join("messages").is_dir(), instance == &dept);
-            env.ok(&["msg", "integrity-check", "--instance", instance]);
+            env.ok(&["msg", "integrity-check", "--team", instance]);
             notes
         })
         .collect();
@@ -660,7 +668,7 @@ fn depth_three_copies_wait_for_preparation_and_cascade_before_parent_deletion() 
             assert_eq!(env.state_of(instance, role), "stopped");
         }
     }
-    // The cascade prints completion of each instance in the order it stops.
+    // The cascade prints completion of each team in the order it stops.
     let order: Vec<_> = stopped
         .lines()
         .filter_map(|line| line.strip_suffix(": stopped"))
@@ -676,18 +684,18 @@ fn depth_three_copies_wait_for_preparation_and_cascade_before_parent_deletion() 
     env.ok(&["delete", &dept]);
     let remaining = stdout(&env.ok(&["templates", "--json"]));
     assert!(!remaining.contains(&dept));
-    // The dev copy's clean worktree goes with it; the root checkout stays.
+    // The dev team's clean worktree goes with it; the root checkout stays.
     assert!(!dev_folder.exists());
     assert!(env.path("work/a/.git").is_dir());
 }
 
 #[test]
 fn worktrees_in_a_copy_never_follow_the_copys_rewritten_git_file() {
-    // Catches: brg running git through a copy's member-writable `.git`
-    // file when it adds or removes worktrees inside that copy.
+    // Catches: brg running git through a child team's member-writable `.git`
+    // file when it adds or removes worktrees inside that child team.
     let env = department();
     env.write(
-        "teams/dev/team.yaml",
+        "templates/dev/template.yaml",
         "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead, start: false, worktree: true}\n",
     );
     let dept = env.create("oncall", "work/a");

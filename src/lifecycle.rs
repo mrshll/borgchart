@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct Incarnation {
     pub member: String,
-    /// `[a-z0-9._-]`, unique within the instance.
+    /// `[a-z0-9._-]`, unique within the team.
     pub incarnation: String,
     pub started_at: String,
     /// The machine boot in which this start was launched, when available.
@@ -171,14 +171,14 @@ fn lock_file(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
-/// The instance's lifecycle lock in its state folder, held by `start`
+/// The team's lifecycle lock in its state folder, held by `start`
 /// and `stop` while they change anything.
 pub fn lock_state(state: &StateDir) -> Result<File, String> {
     let path = state.lifecycle_lock();
     lock_file(&path).map_err(|e| format!("cannot lock {}: {e}", path.display()))
 }
 
-/// The publication lock, taken after the instance's lifecycle lock.
+/// The publication lock, taken after the team's lifecycle lock.
 /// Without a store identity there are no publications to fence; leave it empty.
 pub(crate) fn lock_bus(state: &StateDir) -> Result<Option<File>, String> {
     let paths = StorePaths::new(state);
@@ -190,7 +190,7 @@ pub(crate) fn lock_bus(state: &StateDir) -> Result<Option<File>, String> {
         .map_err(|e| format!("cannot lock the team's messages: {e}"))
 }
 
-// --- the instance's message storage ---
+// --- the team's message storage ---
 
 fn write_json_replace<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let body = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
@@ -217,10 +217,7 @@ pub fn open_work(state: &StateDir) -> Result<OpenWork, String> {
     };
     let snap = store::snapshot(&bus).map_err(|f| f.message)?;
     if !snap.healthy() {
-        return Err(format!(
-            "instance `{}`'s messages are incomplete",
-            bus.instance
-        ));
+        return Err(format!("team `{}`'s messages are incomplete", bus.instance));
     }
     Ok(unacked_work(&bus, &snap, None))
 }
@@ -263,7 +260,7 @@ pub(crate) fn unacked_work(
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// A new incarnation ID for `member`, unique in the instance:
+/// A new incarnation ID for `member`, unique in the team:
 /// `<member>.<utc yyyymmddhhmmssmmm>.<4 hex>`.
 pub fn new_incarnation_id(state: &StateDir, member: &str) -> String {
     let current = load_incarnation(state, member)
@@ -350,7 +347,7 @@ impl Server {
         Server::Path(PathBuf::from(socket))
     }
 
-    /// The instance's server, as recorded at its start.
+    /// The team's server, as recorded at its start.
     pub fn of(meta: &Meta) -> Self {
         match &meta.socket_path {
             Some(path) => Server::Path(path.clone()),

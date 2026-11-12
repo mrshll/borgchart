@@ -36,7 +36,7 @@ pub fn wait_minimum() -> Duration {
     Duration::from_secs(MIN_WAIT_SECS)
 }
 
-/// An opened store and the routing recorded at the instance's latest start.
+/// An opened store and the routing recorded at the team's latest start.
 #[derive(Debug, Clone)]
 pub struct Bus {
     pub state: StateDir,
@@ -58,24 +58,21 @@ pub fn open(state: &StateDir) -> Result<Bus, Failure> {
     {
         return Err(Failure::new(
             Code::NotConfigured,
-            format!(
-                "instance `{}` has no messages: it has not started",
-                state.id
-            ),
+            format!("team `{}` has no messages: it has not started", state.id),
         ));
     }
     let mut meta = state::read_meta(state)
         .map_err(|e| Failure::new(Code::Corrupt, e))?
         .ok_or_else(|| {
             Failure::new(
-                // A newly created copy shares the store before issuing members.
+                // A newly created child team shares the store before issuing members.
                 if state.id.contains('/') && record.members.is_empty() {
                     Code::NotConfigured
                 } else {
                     Code::Corrupt
                 },
                 format!(
-                    "instance `{}` has no start record; start it before sending",
+                    "team `{}` has no start record; start it before sending",
                     state.id
                 ),
             )
@@ -91,13 +88,17 @@ pub fn open(state: &StateDir) -> Result<Bus, Failure> {
     })
 }
 
-/// Copy tombstones remain in their parents even after copy state is removed.
+/// Child team tombstones remain in their parents even after child team state is removed.
 fn check_kept_instance(state: &StateDir) -> Result<(), String> {
     let mut state = state.clone();
     while let Some((parent, copy)) = state.id.rsplit_once('/') {
         let parent = StateDir {
             id: parent.to_string(),
-            root: state.root.parent().expect("copy parent").to_path_buf(),
+            root: state
+                .root
+                .parent()
+                .expect("child team parent")
+                .to_path_buf(),
         };
         if crate::registry::read_instance(&parent)?
             .copies
@@ -105,7 +106,7 @@ fn check_kept_instance(state: &StateDir) -> Result<(), String> {
             .is_none_or(|copy| copy.deleted)
         {
             return Err(format!(
-                "instance `{}` was deleted; it cannot receive messages",
+                "team `{}` was deleted; it cannot receive messages",
                 state.id
             ));
         }
@@ -124,9 +125,9 @@ fn reason(e: &str, path: &Path) -> String {
         .unwrap_or_else(|| hide_paths(e, path.parent().unwrap_or(path), None))
 }
 
-/// `text` without the internal paths of a instance's storage: paths inside the
+/// `text` without the internal paths of a team's storage: paths inside the
 /// store become relative (`records`), the store itself "its messages
-/// folder", and the instance's directory "its folder".
+/// folder", and the team's directory "its folder".
 fn hide_paths(text: &str, store_root: &Path, team_dir: Option<&Path>) -> String {
     let root = store_root.display().to_string();
     let mut out = text
@@ -167,7 +168,7 @@ impl Bus {
         Ok((target, member.to_string()))
     }
 
-    /// The recorded parent, qualified within the member's own instance.
+    /// The recorded parent, qualified within the member's own team.
     pub fn parent(&self, member: &str) -> Option<String> {
         self.meta
             .members
@@ -183,7 +184,7 @@ impl Bus {
             })
     }
 
-    /// One rule for all parent edges, including edges into copies.
+    /// One rule for all parent edges, including edges into child teams.
     fn check_route(&self, actor: &Actor, to: &str) -> Result<Option<state::MemberMeta>, String> {
         match Recipient::parse(to).ok_or_else(|| format!("`{to}` is not a recipient"))? {
             Recipient::External(_) => match actor {
@@ -217,7 +218,7 @@ impl Bus {
         }
     }
 
-    /// `text` without this instance's internal storage paths.
+    /// `text` without this team's internal storage paths.
     fn hide_paths(&self, text: &str) -> String {
         hide_paths(text, &self.paths.root, Some(&self.state.root))
     }
@@ -257,7 +258,7 @@ fn fence_member(bus: &Bus, member: &str, incarnation: &str) -> Result<(), Failur
     let team = &bus.instance;
     let start = member_hint(bus, member);
     if !bus.meta.members.contains_key(member) {
-        return fenced(format!("`{member}` is not a member of instance `{team}`"));
+        return fenced(format!("`{member}` is not a member of team `{team}`"));
     }
     let current = lifecycle::load_incarnation(&bus.state, member).map_err(|e| {
         Failure::new(
@@ -293,7 +294,7 @@ fn lock_for_write(bus: &Bus) -> Result<(Bus, fs::File), Failure> {
         Failure::new(
             Code::Error,
             format!(
-                "instance `{}`'s message storage can't be used: {}",
+                "team `{}`'s message storage can't be used: {}",
                 fresh.instance,
                 fresh.hide_paths(&e.to_string())
             ),

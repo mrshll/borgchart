@@ -1,4 +1,4 @@
-//! The instance's one message store and the checks made before a start.
+//! The team's one message store and the checks made before a start.
 #![cfg(feature = "test-support")]
 
 mod common;
@@ -41,16 +41,13 @@ fn member_command(env: &Env, instance: &str, member: &str, args: &[&str]) -> std
     let start = env.starts(member).last().unwrap().clone();
     let mut command = env.cmd(args);
     for name in [
-        "BORGCHART_INSTANCE",
+        "BORGCHART_TEAM",
         "BORGCHART_MEMBER",
         "BORGCHART_INCARNATION",
     ] {
         command.env(name, start["env"][name].as_str().unwrap());
     }
-    command
-        .env("BORGCHART_INSTANCE", instance)
-        .output()
-        .unwrap()
+    command.env("BORGCHART_TEAM", instance).output().unwrap()
 }
 
 #[test]
@@ -155,7 +152,7 @@ fn one_store_keeps_ids_references_and_acks_across_a_restart() {
     let out = member_command(&env, &instance, &lead, &["msg", "ack", "m1", "--json"]);
     assert!(out.status.success(), "{}", both(&out));
     let original: Value = serde_json::from_slice(
-        &env.ok(&["msg", "read", "m1", "--instance", &instance, "--json"])
+        &env.ok(&["msg", "read", "m1", "--team", &instance, "--json"])
             .stdout,
     )
     .unwrap();
@@ -187,13 +184,13 @@ fn changed_roles_keep_the_store_and_replies_to_removed_members() {
     publish(&env, &instance, json!({"to": scout, "body": "keep this"}));
     env.ok(&["stop", &instance]);
     env.write(
-        "teams/oncall/team.yaml",
+        "templates/oncall/template.yaml",
         &TEAM
             .replace("    parent: lead\n", "")
             .replace("  scout:\n    prompt: scout.md\n    start: false\n", ""),
     );
     env.write(
-        "teams/oncall/lead.md",
+        "templates/oncall/lead.md",
         "---\nmodels: {claude: opus high}\n---\nThe lead, edited.\n",
     );
     env.ok(&["start", &instance]);
@@ -216,7 +213,7 @@ fn changed_roles_keep_the_store_and_replies_to_removed_members() {
     let record: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(record["id"], "m3");
     let old: Value = serde_json::from_slice(
-        &env.ok(&["msg", "read", "m1", "--instance", &instance, "--json"])
+        &env.ok(&["msg", "read", "m1", "--team", &instance, "--json"])
             .stdout,
     )
     .unwrap();
@@ -246,7 +243,7 @@ fn changed_files_require_every_previous_member_positively_stopped() {
         .unwrap();
     fs::write(current, json!({"member": helper, "incarnation": "helper.20261105000000000.abcd", "started_at": "2026-11-05T00:00:00Z"}).to_string()).unwrap();
     env.write(
-        "teams/oncall/team.yaml",
+        "templates/oncall/template.yaml",
         &TEAM.replace("    parent: lead\n", "").replace(
             "  scout:\n    prompt: scout.md\n    start: false",
             "  scout:\n    prompt: scout.md\n    start: true",
@@ -255,10 +252,7 @@ fn changed_files_require_every_previous_member_positively_stopped() {
     let before = bytes(&state);
     let err = env.fails(&["start", &instance]);
     assert!(err.contains(&helper) && err.contains("can't tell"), "{err}");
-    assert!(
-        bytes(&state) == before,
-        "refused start changed instance state"
-    );
+    assert!(bytes(&state) == before, "refused start changed team state");
 }
 
 fn damaged_store(case: &str) {
@@ -301,7 +295,7 @@ fn damaged_store(case: &str) {
     } else {
         assert!(err.contains("damaged"), "{err}");
     }
-    let check = env.brg(&["msg", "integrity-check", "--instance", &instance, "--json"]);
+    let check = env.brg(&["msg", "integrity-check", "--team", &instance, "--json"]);
     assert!(!check.status.success(), "{}", both(&check));
     let out = env.publish(&instance, &json!({"to": lead, "body": "refuse me"}));
     assert!(!out.status.success(), "{}", both(&out));
@@ -339,7 +333,7 @@ fn full_start_cannot_hide_unacked_work_on_a_kept_unstarted_locked_member() {
     env.ok(&["stop", &format!("{instance}/{scout}")]);
     env.ok(&["stop", &instance]);
     env.write(
-        "teams/oncall/team.yaml",
+        "templates/oncall/template.yaml",
         &TEAM.replace("prompt: scout.md", "prompt: scout.md\n    posture: locked"),
     );
     let out = env.brg(&["start", &instance]);
@@ -359,7 +353,7 @@ fn joining_locked_member_cannot_abandon_unacked_ordinary_work() {
     publish(&env, &instance, json!({"to":scout,"body":"ordinary work"}));
     env.ok(&["stop", &format!("{instance}/{scout}")]);
     env.write(
-        "teams/oncall/team.yaml",
+        "templates/oncall/template.yaml",
         &TEAM.replace("prompt: scout.md", "prompt: scout.md\n    posture: locked"),
     );
     // Starting a helper must not transition the stopped scout.
@@ -379,7 +373,7 @@ fn vendor_to_locked_requires_settling_ordinary_messages() {
     publish(&env, &instance, json!({"to":lead,"body":"ordinary work"}));
     env.ok(&["stop", &instance]);
     env.write(
-        "teams/oncall/team.yaml",
+        "templates/oncall/template.yaml",
         &TEAM.replace(
             "    prompt: lead.md",
             "    prompt: lead.md\n    posture: locked",
@@ -401,14 +395,14 @@ fn vendor_to_locked_requires_settling_ordinary_messages() {
         true
     );
     // Settle it under the vendor configuration, then the same transition succeeds.
-    env.write("teams/oncall/team.yaml", TEAM);
+    env.write("templates/oncall/template.yaml", TEAM);
     env.ok(&["start", &instance]);
     env.wait_for("new lead launch", || env.starts(&lead).len() >= 2);
     let ack = member_command(&env, &instance, &lead, &["msg", "ack", "m1", "--json"]);
     assert!(ack.status.success(), "{}", both(&ack));
     env.ok(&["stop", &instance]);
     env.write(
-        "teams/oncall/team.yaml",
+        "templates/oncall/template.yaml",
         &TEAM.replace(
             "    prompt: lead.md",
             "    prompt: lead.md\n    posture: locked",

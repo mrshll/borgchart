@@ -1,5 +1,5 @@
 //! The tmux runtime: `create`, `start`, `stop`, `delete`, `status`, `templates`,
-//! `attach`, `logs` and `msg send`, on instances and their members.
+//! `attach`, `logs` and `msg send`, on teams and their members.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::IsTerminal;
@@ -72,7 +72,7 @@ pub fn base_env() -> BTreeMap<String, String> {
             env.insert((*name).to_string(), value);
         }
     }
-    // A child instance must not capture its creator's member-only shims:
+    // A child team must not capture its creator's member-only shims:
     // those commands are fenced to that member, not to the child's members.
     if let (Some(path), Ok(instance), Ok(member)) = (
         env.get_mut("PATH"),
@@ -105,7 +105,7 @@ fn brg_path() -> PathBuf {
     std::env::current_exe().unwrap_or_else(|_| PathBuf::from("brg"))
 }
 
-/// The instance's tmux server: the socket path recorded at a start once
+/// The team's tmux server: the socket path recorded at a start once
 /// there is one, whatever the caller's tmux settings say; until then, the
 /// socket brg's settings name.
 fn tmux_for(state: &StateDir) -> Tmux {
@@ -302,7 +302,7 @@ fn api_keys(
 }
 
 /// Where a member starts: its own worktree for a `worktree: true` role,
-/// else the instance's folder. Either must exist.
+/// else the team's folder. Either must exist.
 fn member_cwd(inst: &Instance, role: &crate::team::Role, member: &str) -> Result<PathBuf, String> {
     let folder = &inst.record.folder;
     if role.worktree {
@@ -316,19 +316,19 @@ fn member_cwd(inst: &Instance, role: &crate::team::Role, member: &str) -> Result
     }
     folder.canonicalize().map_err(|_| {
         format!(
-            "the instance's working folder {} is gone; create a new instance for another folder",
+            "the team's working folder {} is gone; create a new team for another folder",
             folder.display()
         )
     })
 }
 
-/// Start `member_ids` of the instance, from validated files `v`. `full` is a
-/// start of the whole instance (its plugin processes too); otherwise one
+/// Start `member_ids` of the team, from validated files `v`. `full` is a
+/// start of the whole team (its plugin processes too); otherwise one
 /// member's start.
 ///
 /// Everything is checked before anything is written. Starting into a
-/// running instance (its session exists and its start record is there)
-/// reuses its base environment and plugin settings, and reads current team files.
+/// running team (its session exists and its start record is there)
+/// reuses its base environment and plugin settings, and reads current template files.
 /// Already-running members keep their launch settings. A bus keeps one store.
 /// The registry and lifecycle locks
 /// are held while files are written and windows started, and released before
@@ -435,14 +435,14 @@ fn start_members(
         if overlaps(cwd, &v.team.dir) {
             if v.posture(&member.id) == Posture::Locked {
                 return Err(format!(
-                    "{} is `locked`, and its folder {} overlaps the team folder {}, so it could change its own role files; give it a folder apart from the team. Nothing was started",
+                    "{} is `locked`, and its folder {} overlaps the template folder {}, so it could change its own role files; give it a folder apart from the template. Nothing was started",
                     inst.at(id),
                     cwd.display(),
                     v.team.dir.display()
                 ));
             }
             let note = format!(
-                "note: the team folder {} is inside the members' folder {}; they can change the team's files",
+                "note: the template folder {} is inside the members' folder {}; they can change the template's files",
                 v.team.dir.display(),
                 cwd.display()
             );
@@ -528,7 +528,7 @@ fn start_members(
     }
     let mut notes: Vec<String> = pre_notes;
     let user_config = v.config.tmux_user_config.as_ref().and_then(|u| u.resolve());
-    // The server reads its config once, when it starts, and every instance
+    // The server reads its config once, when it starts, and every team
     // on it shares it.
     let wanted = user_config
         .as_ref()
@@ -539,7 +539,7 @@ fn start_members(
         && loaded.trim() != wanted
     {
         notes.push(format!(
-            "brg's tmux server is already running {}, so `tmux.user_config` ({}) takes effect only once every instance on it is stopped and it starts again",
+            "brg's tmux server is already running {}, so `tmux.user_config` ({}) takes effect only once every team on it is stopped and it starts again",
             if loaded.trim().is_empty() {
                 "without your tmux config".to_string()
             } else {
@@ -616,8 +616,8 @@ fn start_members(
             meta
         }
     };
-    // Every member of the instance is known to the start record, including
-    // ones created since the instance started.
+    // Every member of the team is known to the start record, including
+    // ones created since the team started.
     let mut added = fresh;
     for (id, _) in record.kept_members() {
         if !meta.members.contains_key(id)
@@ -649,7 +649,7 @@ fn start_members(
     }
     let base = meta.base_env.clone();
     let tmux = Tmux::new(&state.tmux_conf(), base.clone());
-    // A running instance's server is the one recorded for it.
+    // A running team's server is the one recorded for it.
     let tmux = match &meta.socket_path {
         Some(path) => tmux.with_socket(&path.display().to_string()),
         None => tmux,
@@ -898,7 +898,7 @@ fn start_members(
         }
     }
 
-    // Plugin processes start with the whole instance.
+    // Plugin processes start with the whole team.
     if full {
         for (name, plugin) in &v.team.plugins {
             let window = format!("_{name}");
@@ -1212,11 +1212,10 @@ fn start_members(
     })
 }
 
-/// The first line of an instance's tree: its ID, team folder and working
+/// The first line of a team's tree: its ID, template folder and working
 /// folder. On a terminal, only the ID and the working folder, with the home
-/// folder as `~`: the team folder is long and rarely what a person looks
-/// for. Piped text keeps the whole line, so what a script reads never
-/// changes.
+/// folder as `~`: the template folder is long and rarely what a person looks
+/// for. Piped text keeps the whole line.
 pub fn header(inst: &Instance) -> String {
     header_as(inst, std::io::stdout().is_terminal())
 }
@@ -1231,7 +1230,7 @@ pub fn header_as(inst: &Instance, short: bool) -> String {
         )
     } else {
         format!(
-            "{}  team {} · folder {}",
+            "{}  template {} · folder {}",
             inst.id,
             inst.record.team_dir.display(),
             inst.record.folder.display()
@@ -1261,7 +1260,7 @@ fn not_created(role: &crate::team::Role) -> String {
     }
 }
 
-/// One node per member of the instance (each under its parent role's
+/// One node per member of the team (each under its parent role's
 /// member), and one per role with no member yet. `outcome` gives a member's
 /// last column.
 fn member_nodes(
@@ -1306,14 +1305,14 @@ fn member_nodes(
 }
 
 /// The folders every `vendor`-posture member may write: the tree's
-/// `messages/` and the instance's `notes/`, never brg's own files. Each must be a real
+/// `messages/` and the team's `notes/`, never brg's own files. Each must be a real
 /// folder (not a symlink), yours, and not writable by group or others, and
-/// resolve to exactly its own place in the instance's state folder: anything
+/// resolve to exactly its own place in the team's state folder: anything
 /// else, or any error finding out, refuses the start.
 fn shared_folders(state: &StateDir) -> Result<Vec<PathBuf>, String> {
     let refuse = |dir: &Path, why: String| {
         format!(
-            "the instance's {} folder {} {why}, so members can't be given it; nothing was started",
+            "the team's {} folder {} {why}, so members can't be given it; nothing was started",
             dir.file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default(),
@@ -1390,11 +1389,11 @@ fn check_tmux_tmpdir() -> Result<(), String> {
 }
 
 /// Refuse a member folder that is the same as, inside or around brg's state
-/// folder or the instance's own: Codex makes a member's folder writable.
+/// folder or the team's own: Codex makes a member's folder writable.
 fn check_state_overlap(folder: &Path, instance_state: &Path) -> Result<(), String> {
     for (what, dir) in [
         ("brg's state folder", state::state_home()),
-        ("the instance's state folder", instance_state.to_path_buf()),
+        ("the team's state folder", instance_state.to_path_buf()),
     ] {
         if overlaps(folder, &dir) {
             return Err(format!(
@@ -1407,7 +1406,7 @@ fn check_state_overlap(folder: &Path, instance_state: &Path) -> Result<(), Strin
     Ok(())
 }
 
-/// Validate a team folder, printing what validation found; `Err` on errors.
+/// Validate a template folder, printing what validation found; `Err` on errors.
 fn validate_printing(dir: &Path) -> Result<Validated, String> {
     let (report, validated) = validate(dir);
     for diag in &report.diags {
@@ -1417,7 +1416,7 @@ fn validate_printing(dir: &Path) -> Result<Validated, String> {
 }
 
 /// Checks a start would fail on, made before anything is registered: the
-/// secrets the plugins need (unless the instance runs, and so has its
+/// secrets the plugins need (unless the team runs, and so has its
 /// values already) and, with `auth: api_key`, the starting roles' keys.
 fn precheck(v: &Validated, roles: &[&crate::team::Role], secrets: bool) -> Result<(), String> {
     let (_, missing) = plugin_values(v);
@@ -1444,7 +1443,7 @@ fn precheck(v: &Validated, roles: &[&crate::team::Role], secrets: bool) -> Resul
     Ok(())
 }
 
-/// `brg create <team> <folder>`: a new instance of the instance working in
+/// `brg create <template> <folder>`: a new team from the template working in
 /// `folder`, with its `start: true` roles' members, started.
 pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
     let mut report = crate::diag::Report::default();
@@ -1458,7 +1457,7 @@ pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
     let dir = crate::team::find(team_arg, &config.teams)?;
     let v = validate_printing(&dir)?;
     if has_member_context() {
-        return Err("members cannot create an independent team; ask a person, or declare it as a team role and run brg create <instance>/<role>".into());
+        return Err("members cannot create an independent team; ask a person, or declare it as a team role and run brg create <team>/<role>".into());
     }
     let folder_path = match folder.strip_prefix("~/") {
         Some(rest) => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest),
@@ -1513,7 +1512,7 @@ pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
 }
 
 /// The tree leaves worktrees to `--json`, so whatever adds one names it
-/// after the tree: `<address>  folder <path>`, as `create` does for a copy.
+/// after the tree: `<address>  folder <path>`, as `create` does for a child team.
 fn name_worktrees(
     inst: &Instance,
     added: &[(String, PathBuf)],
@@ -1528,9 +1527,9 @@ fn name_worktrees(
 }
 
 /// After a `create` whose start failed before any window could start:
-/// remove the new instance again (its suffix stays issued). Decided under
+/// remove the new team again (its suffix stays issued). Decided under
 /// the registry lock, from what is true then: another start may have
-/// started the instance since this one failed.
+/// started the team since this one failed.
 fn unregister_if_never_started(inst: &Instance) {
     rollback_pause();
     let Ok(lock) = registry::lock() else { return };
@@ -1554,7 +1553,7 @@ fn unregister_if_never_started(inst: &Instance) {
 
 /// Test builds: `BORGCHART_TEST_ROLLBACK_PAUSE=<path>` makes a failed
 /// `create` write `<path>.waiting` and wait (up to 30 s) for `<path>` before
-/// it takes its instance back, so a test can start the instance meanwhile.
+/// it takes its team back, so a test can start the team meanwhile.
 #[cfg(feature = "test-support")]
 fn rollback_pause() {
     let Some(path) = std::env::var_os("BORGCHART_TEST_ROLLBACK_PAUSE").map(PathBuf::from) else {
@@ -1575,7 +1574,7 @@ pub(crate) fn is_role(v: &Validated, id: &str) -> bool {
     v.team.roles.contains_key(id) || v.team.team_roles.contains_key(id)
 }
 
-/// `brg create <instance>/<role>`: a new member of the role, started; with
+/// `brg create <team>/<role>`: a new member of the role, started; with
 /// `name`, its ID is `<role>-<name>`.
 pub fn create_member(
     mut inst: Instance,
@@ -1619,7 +1618,7 @@ pub fn create_member(
     }
     let Some(member) = v.team.roles.get(role) else {
         return Err(format!(
-            "instance `{}`'s team has no role `{role}`; its roles: {}",
+            "team `{}`'s template has no role `{role}`; its roles: {}",
             inst.id,
             v.team.roles.keys().cloned().collect::<Vec<_>>().join(", ")
         ));
@@ -1693,7 +1692,7 @@ fn create_authority_pause() {
 fn create_authority_pause() {}
 
 /// Add a new member's worktree, for a `worktree: true` role, from the
-/// instance's folder at its `HEAD` (detached, or on a new `branch`); an
+/// team's folder at its `HEAD` (detached, or on a new `branch`); an
 /// existing one is kept as is. The caller holds the registry lock. Returns
 /// the new worktree so an unkept member's failed start can remove it.
 fn create_worktree(
@@ -1816,7 +1815,7 @@ fn parent_address(inst: &Instance, parent: &str) -> String {
     }
 }
 
-/// A copy belongs below its recorded parent member, never below its roots.
+/// A child team belongs below its recorded parent member, never below its roots.
 fn check_instance_authority(inst: &Instance) -> Result<(), String> {
     if !has_member_context() {
         return Ok(());
@@ -1832,8 +1831,8 @@ fn check_subtree_authority(mut parent: Option<String>, target: &str) -> Result<(
     else {
         return Ok(());
     };
-    // Targets may cross instance boundaries; the caller's start is always
-    // checked in its own instance, never in the target's store.
+    // Targets may cross team boundaries; the caller's start is always
+    // checked in its own team, never in the target's store.
     let own = context::instance(None).map_err(|e| e.message)?;
     let caller = address::instance(&own)?;
     let current = lifecycle::load_incarnation(&caller.state, &member)?;
@@ -1873,9 +1872,11 @@ fn check_subtree_authority(mut parent: Option<String>, target: &str) -> Result<(
         if ancestor.record.role_of(member).is_none() {
             break;
         }
-        let meta = state::read_meta(&ancestor.state)?.ok_or_else(|| format!(
-            "instance `{instance}`'s start record cannot be read; ask a person to manage `{target}`"
-        ))?;
+        let meta = state::read_meta(&ancestor.state)?.ok_or_else(|| {
+            format!(
+                "team `{instance}`'s start record cannot be read; ask a person to manage `{target}`"
+            )
+        })?;
         let recorded = meta.members.get(member).ok_or_else(|| {
             format!("member `{address}` has no recorded parent; ask a person to manage `{target}`")
         })?;
@@ -1887,42 +1888,38 @@ fn check_subtree_authority(mut parent: Option<String>, target: &str) -> Result<(
     Err(refusal)
 }
 
-/// Refuse when the instance's start.json exists but can't be read: brg
+/// Refuse when the team's start.json exists but can't be read: brg
 /// can't tell which tmux server runs it, so it can't tell that it stopped.
 fn unreadable_start_record(inst: &Instance, consequence: &str) -> Result<(), String> {
     match state::read_meta(&inst.state) {
         Ok(_) => Ok(()),
         Err(e) => Err(format!(
-            "instance `{}`'s start record can't be read ({e}), so brg can't tell that it stopped; {consequence}",
+            "team `{}`'s start record can't be read ({e}), so brg can't tell that it stopped; {consequence}",
             inst.id
         )),
     }
 }
 
-/// Whether any member or plugin process of the instance has a live window
+/// Whether any member or plugin process of the team has a live window
 /// on the server its start recorded.
 pub fn is_running(inst: &Instance) -> bool {
     let tmux = tmux_for(&inst.state);
     tmux.windows(&inst.state.session()).iter().any(|w| !w.dead)
 }
 
-/// `brg start <instance> --team <path>`: point a stopped instance at its
-/// team folder's new place.
+/// `brg start <team> --template <path>`: point a stopped team at its
+/// template folder's new place.
 fn repoint(inst: &mut Instance, team: &Path) -> Result<(), String> {
     let dir = team
         .canonicalize()
         .map_err(|_| format!("{} does not exist", team.display()))?;
     if !dir.join(crate::team::TEAM_FILE).is_file() {
-        return Err(format!(
-            "{} is not a team folder (no {} in it)",
-            dir.display(),
-            crate::team::TEAM_FILE
-        ));
+        return Err(crate::team::missing_template(&dir));
     }
     let name = crate::team::team_name(&dir);
     if name != inst.record.team {
         return Err(format!(
-            "{} is team `{name}`, not instance `{}`'s team `{}`",
+            "{} is template `{name}`, not team `{}`'s template `{}`",
             dir.display(),
             inst.id,
             inst.record.team
@@ -1932,10 +1929,10 @@ fn repoint(inst: &mut Instance, team: &Path) -> Result<(), String> {
     inst.reload()?;
     crate::nesting::check_not_stopping(inst)?;
     check_instance_authority(inst)?;
-    unreadable_start_record(inst, "its team folder can't be changed")?;
+    unreadable_start_record(inst, "its template folder can't be changed")?;
     if is_running(inst) {
         return Err(format!(
-            "instance `{}` is running; a new team folder applies only from a full stop: brg stop {}",
+            "team `{}` is running; a new template folder applies only from a full stop: brg stop {}",
             inst.id, inst.id
         ));
     }
@@ -1983,7 +1980,7 @@ fn full_start_members(
             .filter(|w| !w.dead && inst.record.members.contains_key(&w.name))
             .map(|w| w.name.clone()),
     );
-    // Only members whose role is still in the instance.
+    // Only members whose role is still in the team.
     Ok(ids
         .into_iter()
         .filter(|id| {
@@ -1994,10 +1991,10 @@ fn full_start_members(
         .collect())
 }
 
-/// Why a start refuses an instance whose messages can't be read.
+/// Why a start refuses a team whose messages can't be read.
 fn unreadable_store(inst: &Instance, e: &str) -> String {
     format!(
-        "instance `{}`'s messages can't be read ({e}), so nothing was started; create a new instance instead (`brg create`), and send its open work again",
+        "team `{}`'s messages can't be read ({e}), so nothing was started; create a new team instead (`brg create`), and send its open work again",
         inst.id
     )
 }
@@ -2009,7 +2006,7 @@ fn recorded_session(state: &StateDir, member: &str) -> Option<String> {
     crate::gate::usable_session_id(id).then(|| id.to_string())
 }
 
-/// `brg start <instance>[/<member>] [--team <path>] [--resume]`.
+/// `brg start <team>[/<member>] [--template <path>] [--resume]`.
 pub fn start(
     inst: Instance,
     member: Option<&str>,
@@ -2029,7 +2026,8 @@ fn start_instance(
     if let Some(dir) = team {
         if member.is_some() {
             return Err(
-                "`--team` points the whole instance at a team folder; leave the member out".into(),
+                "`--template` points the whole team at a template folder; leave the member out"
+                    .into(),
             );
         }
         repoint(&mut inst, dir)?;
@@ -2037,7 +2035,7 @@ fn start_instance(
     let member = member.map(|m| address::member(&inst, m)).transpose()?;
     if !inst.record.team_dir.join(crate::team::TEAM_FILE).is_file() {
         return Err(format!(
-            "instance `{}`'s team folder {} is gone; if it moved, point the instance at it: brg start {} --team <path>",
+            "team `{}`'s template folder {} is gone; if it moved, point the team at it: brg start {} --template <path>",
             inst.id,
             inst.record.team_dir.display(),
             inst.id
@@ -2045,7 +2043,7 @@ fn start_instance(
     }
     if !inst.record.folder.is_dir() {
         return Err(format!(
-            "instance `{}`'s working folder {} is gone; create a new instance (`brg create`) for another folder",
+            "team `{}`'s working folder {} is gone; create a new team (`brg create`) for another folder",
             inst.id,
             inst.record.folder.display()
         ));
@@ -2175,7 +2173,7 @@ pub fn liveness_of(inst: &Instance) -> BTreeMap<String, Liveness> {
     out
 }
 
-/// `brg delete <instance>/<member>`: discard a stopped member's live state.
+/// `brg delete <team>/<member>`: discard a stopped member's live state.
 /// Its issued ID and immutable messages stay as history. Registry, lifecycle
 /// and publication locks cover the unread check and removal from routing.
 pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<String>, String> {
@@ -2195,7 +2193,7 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
         .collect();
     if !copies.is_empty() {
         return Err(format!(
-            "member `{}` has kept copies; delete them first:\n  {}",
+            "member `{}` has kept child teams; delete them first:\n  {}",
             inst.at(&id),
             copies.join("\n  ")
         ));
@@ -2252,7 +2250,7 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
         })
     {
         return Err(format!(
-            "brg can't tell whether member `{}` has kept children, so it can't be deleted, even with --force; restore its team and start the instance: brg start {} --team <path>",
+            "brg can't tell whether member `{}` has kept children, so it can't be deleted, even with --force; restore its template and start the team: brg start {} --template <path>",
             inst.at(&id),
             inst.id
         ));
@@ -2276,7 +2274,7 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
                 .join("\n  "),
             if recorded_only {
                 format!(
-                    "\nthe team file changed since the last start; brg start {} applies it",
+                    "\nthe template file changed since the last start; brg start {} applies it",
                     inst.id
                 )
             } else {
@@ -2367,7 +2365,7 @@ pub fn delete_member(mut inst: Instance, name: &str, force: bool) -> Result<Vec<
 }
 
 /// Before a delete, the worktrees brg added for `targets` (each its tree's
-/// top folder, and the member's or copy's address) that it can
+/// top folder, and the member's or child team's address) that it can
 /// remove afterwards. One with work in it (or that git can't check) refuses
 /// the delete, or with `force` stays where it is, which `lines` says.
 fn worktrees_to_remove(
@@ -2421,7 +2419,7 @@ fn remove_worktrees(worktrees: Vec<(PathBuf, PathBuf)>, lines: &mut Vec<String>)
     }
 }
 
-/// `brg delete <instance> [--force]`: remove a stopped instance's state
+/// `brg delete <team> [--force]`: remove a stopped team's state
 /// folder (messages, notes, brg's files) and its registration. Its working
 /// folder is never touched.
 pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
@@ -2432,7 +2430,7 @@ pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
     let copies = crate::nesting::descendants(&inst)?;
     if !copies.is_empty() {
         return Err(format!(
-            "instance `{}` has kept copies; delete them first:\n  {}",
+            "team `{}` has kept child teams; delete them first:\n  {}",
             inst.id,
             copies
                 .iter()
@@ -2453,7 +2451,7 @@ pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
         .collect();
     if !alive.is_empty() || is_running(&inst) {
         return Err(format!(
-            "instance `{}` is running{}; stop it first: brg stop {}",
+            "team `{}` is running{}; stop it first: brg stop {}",
             inst.id,
             if alive.is_empty() {
                 String::new()
@@ -2477,7 +2475,7 @@ pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
         .collect();
     if !unknown.is_empty() {
         return Err(format!(
-            "brg can't tell that {} of instance `{}` stopped, so it can't be deleted, even with --force; stop it again once its tmux server can be reached: brg stop {}",
+            "brg can't tell that {} of team `{}` stopped, so it can't be deleted, even with --force; stop it again once its tmux server can be reached: brg stop {}",
             unknown
                 .iter()
                 .map(|s| s.as_str())
@@ -2512,7 +2510,7 @@ pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
         Ok(work) if work.items.is_empty() || force => {}
         Ok(work) => {
             return Err(format!(
-                "instance `{}` holds open work; settle it, or delete it anyway with --force:\n  {}",
+                "team `{}` holds open work; settle it, or delete it anyway with --force:\n  {}",
                 inst.id,
                 work.items.join("\n  ")
             ));
@@ -2520,7 +2518,7 @@ pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
         Err(_) if force => {}
         Err(e) => {
             return Err(format!(
-                "instance `{}`'s messages can't be read ({e}), so its contents can't be inspected; delete it anyway with --force",
+                "team `{}`'s messages can't be read ({e}), so its contents can't be inspected; delete it anyway with --force",
                 inst.id
             ));
         }
@@ -2572,7 +2570,7 @@ pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
 }
 
 /// `brg destroy <root>`: stop the whole tree, then forget it: every
-/// registration and the root's state folder (all copies' state, notes and
+/// registration and the root's state folder (all child teams' state, notes and
 /// the tree's messages), and the clean worktrees brg added for it. No open
 /// work refuses it; anything brg can't confirm stopped does. The working
 /// folders, checkouts and other worktrees stay. `warn` gets
@@ -2588,12 +2586,12 @@ pub fn reset(inst: Instance, warn: impl FnOnce(String)) -> Result<crate::cleanup
     }
     if inst.id.contains('/') {
         return Err(format!(
-            "`{}` is a copy; destroy takes a tree's root. For a copy, use brg stop -r and brg delete",
+            "`{}` is a child team; destroy takes a tree's root. For a child team, use brg stop -r and brg delete",
             inst.id
         ));
     }
     warn(format!(
-        "destroying {}: this deletes its notes and messages and every copy's; copy anything you need from {} first",
+        "destroying {}: this deletes its notes and messages and every child team's; save anything you need from {} first",
         inst.id,
         inst.state.root.display()
     ));
@@ -2605,7 +2603,7 @@ pub fn reset(inst: Instance, warn: impl FnOnce(String)) -> Result<crate::cleanup
     for copy in crate::nesting::descendants(&root)? {
         tree.push(copy.instance.map_err(|e| {
             format!(
-                "copy `{}` can't be read ({e}); nothing was deleted. Restore it, then: brg destroy {}",
+                "child team `{}` can't be read ({e}); nothing was deleted. Restore it, then: brg destroy {}",
                 copy.id, root.id
             )
         })?);
@@ -2672,7 +2670,7 @@ pub fn reset(inst: Instance, warn: impl FnOnce(String)) -> Result<crate::cleanup
     Ok(out)
 }
 
-/// `brg secrets <team>`: each secret its plugins need (plugin, name), and
+/// `brg secrets <template>`: each secret its plugins need (plugin, name), and
 /// whether the caller's environment sets it. No value is read out.
 pub fn secrets(team: &str) -> Result<Vec<(String, String, bool)>, String> {
     let mut report = crate::diag::Report::default();
@@ -2703,27 +2701,33 @@ pub fn secrets(team: &str) -> Result<Vec<(String, String, bool)>, String> {
         .collect())
 }
 
-/// One team in `brg templates`, with its instances.
+/// One template in `brg templates`, with its teams.
 #[derive(Debug, Serialize)]
 pub struct Listed {
-    /// `None` for instances whose team is outside the search paths.
+    /// `None` for teams whose template is outside the search paths.
+    #[serde(rename = "template")]
     pub team: Option<String>,
+    #[serde(rename = "template_dir")]
     pub dir: Option<PathBuf>,
+    #[serde(rename = "teams")]
     pub instances: Vec<ListedInstance>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct ListedInstance {
+    #[serde(rename = "team")]
     pub instance: String,
+    #[serde(rename = "template")]
     pub team: String,
+    #[serde(rename = "template_dir")]
     pub team_dir: PathBuf,
     pub folder: PathBuf,
     pub running: bool,
     pub created_at: String,
 }
 
-/// `brg templates`: the teams in the search paths, each with its instances, then
-/// instances whose team is elsewhere.
+/// `brg templates`: the templates in the search paths, each with its teams, then
+/// teams whose template is elsewhere.
 pub fn ls() -> Result<Vec<Listed>, String> {
     let mut report = crate::diag::Report::default();
     let config = crate::config::load(&mut report).ok_or_else(|| {
@@ -2734,6 +2738,12 @@ pub fn ls() -> Result<Vec<Listed>, String> {
             .join("\n")
     })?;
     let registry = registry::load()?;
+    for dir in crate::team::retired_folders(&config.teams) {
+        eprintln!("{}", crate::team::missing_template(&dir));
+    }
+    if let Some(hint) = crate::team::retired_default_catalog(&config.teams) {
+        eprintln!("{hint}");
+    }
     let listed = |id: &String, e: &registry::Entry| ListedInstance {
         instance: id.clone(),
         team: e.team.clone(),
@@ -2782,10 +2792,10 @@ pub fn render_ls(listed: &[Listed]) -> String {
     for l in listed {
         match (&l.team, &l.dir) {
             (Some(name), Some(dir)) => out.push_str(&format!("{name}  {}\n", dir.display())),
-            _ => out.push_str("instances of teams outside the search paths\n"),
+            _ => out.push_str("teams of templates outside the search paths\n"),
         }
         if l.instances.is_empty() {
-            out.push_str("  (no instances)\n");
+            out.push_str("  (no teams)\n");
         }
         for i in &l.instances {
             out.push_str(&format!(
@@ -2794,7 +2804,7 @@ pub fn render_ls(listed: &[Listed]) -> String {
                 if i.running { "running" } else { "stopped" },
                 i.folder.display(),
                 if l.team.is_none() {
-                    format!("  team {}", i.team_dir.display())
+                    format!("  template {}", i.team_dir.display())
                 } else {
                     String::new()
                 }
@@ -2802,13 +2812,13 @@ pub fn render_ls(listed: &[Listed]) -> String {
         }
     }
     if out.is_empty() {
-        out.push_str("no teams in the search paths and no instances\n");
+        out.push_str("no templates in the search paths and no teams\n");
     }
     out
 }
 
 /// After a window failed to start: when `nothing_started` (a fresh start
-/// that created no window of the instance), the instance is as stopped as
+/// that created no window of the team), the team is as stopped as
 /// before, so `stop`, liveness and `delete` aren't left unsure of a server
 /// that never ran it.
 fn unrecord_windows(state: &StateDir, meta: &mut Meta, nothing_started: bool, before: bool) {
@@ -2853,7 +2863,7 @@ fn start_window(
         .map_err(|e| format!("cannot start `{window}`: {e}"))
 }
 
-/// `brg stop <instance>[/<member>]`.
+/// `brg stop <team>[/<member>]`.
 ///
 /// Works on the tmux server recorded at the start, refusing a caller whose
 /// `BORGCHART_TMUX_SOCKET` names another. Every full stop persists a cascade;
@@ -2877,7 +2887,7 @@ pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> 
         match copy.instance {
             Ok(copy) => copies.push(copy),
             Err(error) => errors.push(format!(
-                "{}: {error}; restore its state folder and instance.json, then retry: brg stop {}",
+                "{}: {error}; restore its state folder and team.json, then retry: brg stop {}",
                 copy.id, inst.id
             )),
         }
@@ -2907,13 +2917,13 @@ pub fn stop(inst: &Instance, only: Option<&str>) -> Result<Vec<String>, String> 
     }
 }
 
-/// Persist D1's copy cascade while the caller holds the registry lock.
+/// Persist D1's child team cascade while the caller holds the registry lock.
 fn mark_cascade(lock: &registry::Lock, inst: &Instance, copies: &[Instance]) -> Result<(), String> {
     for target in std::iter::once(inst).chain(copies.iter()) {
         check_stop_socket(target)?;
     }
     forget_copy_restore(lock, inst)?;
-    // Mark the enclosing instance first. Even an interruption while writing
+    // Mark the enclosing team first. Even an interruption while writing
     // descendant records fences the entire subtree through its ancestor.
     for target in std::iter::once(inst).chain(copies.iter().rev()) {
         mark_stopping(lock, target)?;
@@ -2921,7 +2931,7 @@ fn mark_cascade(lock: &registry::Lock, inst: &Instance, copies: &[Instance]) -> 
     Ok(())
 }
 
-/// Finish one persisted copy step. Plain full stops release the registry lock
+/// Finish one persisted child team step. Plain full stops release the registry lock
 /// between steps; recursive member stops keep it for their entire walk.
 fn finish_marked(
     lock: &registry::Lock,
@@ -2932,7 +2942,7 @@ fn finish_marked(
     errors: &mut Vec<String>,
 ) -> Result<(), String> {
     copy.reload()?;
-    // Another stop may have finished this instance while the lock was
+    // Another stop may have finished this team while the lock was
     // released. Never stop a new start after its cascade has finished.
     if !copy.record.stopping {
         return Ok(());
@@ -2962,14 +2972,14 @@ fn finish_marked(
         lock.save_instance(&copy.state, &copy.record)?;
     } else {
         errors.push(format!(
-            "instance `{}` is still stopping; finish its cascade: brg stop {}",
+            "team `{}` is still stopping; finish its cascade: brg stop {}",
             copy.id, root
         ));
     }
     Ok(())
 }
 
-/// One member stop or a complete existing D1 copy cascade.
+/// One member stop or a complete existing D1 child team cascade.
 enum SubtreeStop {
     Member(String),
     Copy {
@@ -2978,7 +2988,7 @@ enum SubtreeStop {
     },
 }
 
-/// Collect recorded parent edges, not roles from a possibly edited team file.
+/// Collect recorded parent edges, not roles from a possibly edited template file.
 fn member_stop_walk(
     inst: &Instance,
     meta: &Meta,
@@ -3008,7 +3018,7 @@ fn member_stop_walk(
         let descendants = crate::nesting::descendants(root)?
             .into_iter()
             .map(|copy| copy.instance.map_err(|error| format!(
-                "{}: {error}; restore its state folder and instance.json, then retry: brg stop {}", copy.id, root.id)))
+                "{}: {error}; restore its state folder and team.json, then retry: brg stop {}", copy.id, root.id)))
             .collect::<Result<Vec<_>, _>>()?;
         walk.push(SubtreeStop::Copy {
             root: Box::new(root.clone()),
@@ -3020,7 +3030,7 @@ fn member_stop_walk(
 }
 
 /// Stop a member and everything below it without allowing new children
-/// between steps. No instance state lock spans two nodes in this walk.
+/// between steps. No team state lock spans two nodes in this walk.
 pub fn stop_recursive(inst: &Instance, member: &str) -> Result<Vec<String>, String> {
     let lock = registry::lock()?;
     let mut inst = inst.clone();
@@ -3033,7 +3043,7 @@ pub fn stop_recursive(inst: &Instance, member: &str) -> Result<Vec<String>, Stri
         Some(member),
     )?;
     let meta = state::read_meta(&inst.state)?
-        .ok_or_else(|| format!("instance `{}`'s start record cannot be read", inst.id))?;
+        .ok_or_else(|| format!("team `{}`'s start record cannot be read", inst.id))?;
     let copies = inst
         .record
         .copies
@@ -3042,7 +3052,7 @@ pub fn stop_recursive(inst: &Instance, member: &str) -> Result<Vec<String>, Stri
         .map(|(id, _)| {
             let copy = inst.at(id);
             address::instance(&copy).map_err(|error| format!(
-                "{copy}: {error}; restore its state folder and instance.json, then retry: brg stop -r {}", inst.at(member)))
+                "{copy}: {error}; restore its state folder and team.json, then retry: brg stop -r {}", inst.at(member)))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let mut walk = Vec::new();
@@ -3127,7 +3137,7 @@ fn check_stop_socket(inst: &Instance) -> Result<(), String> {
         && name != state::tmux_socket()
     {
         return Err(format!(
-            "instance `{}` is on tmux socket `{name}`, not `{}`; stop it with BORGCHART_TMUX_SOCKET={name} brg stop {}. Nothing was changed",
+            "team `{}` is on tmux socket `{name}`, not `{}`; stop it with BORGCHART_TMUX_SOCKET={name} brg stop {}. Nothing was changed",
             inst.id,
             state::tmux_socket(),
             inst.id
@@ -3136,7 +3146,7 @@ fn check_stop_socket(inst: &Instance) -> Result<(), String> {
     Ok(())
 }
 
-/// An explicit copy stop removes its whole subtree from every ancestor's
+/// An explicit child team stop removes its whole subtree from every ancestor's
 /// restore snapshot. Called under the same registry lock as the stop marks.
 fn forget_copy_restore(lock: &registry::Lock, inst: &Instance) -> Result<(), String> {
     let mut id = inst.id.as_str();
@@ -3401,13 +3411,15 @@ fn stop_one(
 
 #[derive(Debug, Clone, Serialize)]
 pub struct StatusRow {
-    /// The local member or copy ID, a role with nothing created yet, or
+    /// The local member or child team ID, a role with nothing created yet, or
     /// a plugin's name.
     pub name: String,
-    /// `member`, `role` (no member or copy yet), `copy` or `plugin`.
+    /// `member`, `role` (no member or child team yet), `team` or `plugin`.
     pub kind: &'static str,
+    #[serde(rename = "team")]
     pub instance: String,
-    /// The instance's name.
+    /// The template's name.
+    #[serde(rename = "template")]
     pub team: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub member: Option<String>,
@@ -3420,8 +3432,8 @@ pub struct StatusRow {
     /// `"<model>"` or `"<model> <effort>"`, as declared.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// A local parent member ID, a copy's full parent address, or the
-    /// instance path that a nested root belongs to. Rows are in tree order.
+    /// A local parent member ID, a child team's full parent address, or the
+    /// team path that a nested root belongs to. Rows are in tree order.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
     pub posture: Option<String>,
@@ -3442,21 +3454,21 @@ pub struct StatusRow {
     /// The folder a start accepted Claude's trust dialog for, if it did.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trust_accepted: Option<String>,
-    /// The git worktree brg added for a `worktree: true` member or copy.
+    /// The git worktree brg added for a `worktree: true` member or child team.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree: Option<String>,
     /// Whether the member's current incarnation may still be
     /// running (`alive`, `gone` or `unknown`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub liveness: Option<Liveness>,
-    /// Unacked messages; absent when the instance has no readable bus.
+    /// Unacked messages; absent when the team has no readable bus.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unacked: Option<usize>,
-    /// A copy's running members, excluding members of its own copies.
+    /// A child team's running members, excluding members of its own child teams.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub running: Option<usize>,
     /// A `start: true` member that ran and is `stopped` while the rest of
-    /// the instance runs: it should be running.
+    /// the team runs: it should be running.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub expected_running: bool,
     /// The member's declared `start`.
@@ -3464,11 +3476,11 @@ pub struct StatusRow {
     pub start: bool,
 }
 
-/// A member's state when it has never started in the instance.
+/// A member's state when it has never started in the team.
 pub const NOT_STARTED: &str = "not started";
 /// A member's state when it ran and has ended.
 pub const STOPPED: &str = "stopped";
-/// A role that allows copies but has no kept member.
+/// A role that allows several members but has none kept.
 pub const ON_DEMAND: &str = "on demand (none created)";
 /// A `start: false` role with no member.
 pub const NOT_STARTING: &str = "not created (start: false)";
@@ -3492,11 +3504,11 @@ pub fn state_label(row: &StatusRow) -> String {
     }
 }
 
-/// Validate the instance's team folder, as recorded.
+/// Validate the team's template folder, as recorded.
 pub(crate) fn validated(inst: &Instance) -> Result<Validated, String> {
     if !inst.record.team_dir.join(crate::team::TEAM_FILE).is_file() {
         return Err(format!(
-            "instance `{}`'s team folder {} is gone; if it moved, point the instance at it after a full stop: brg start {} --team <path>",
+            "team `{}`'s template folder {} is gone; if it moved, point the team at it after a full stop: brg start {} --template <path>",
             inst.id,
             inst.record.team_dir.display(),
             inst.id
@@ -3518,7 +3530,7 @@ pub(crate) fn validated(inst: &Instance) -> Result<Validated, String> {
     })
 }
 
-/// One snapshot of the instance.
+/// One snapshot of the team.
 pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
     let (counts, bus_note) = {
         match crate::bus::store::open(&inst.state).and_then(|bus| {
@@ -3615,7 +3627,7 @@ fn status_with_counts(
     let windows = tmux.windows(&session);
     let meta = state::read_meta(state).ok().flatten().unwrap_or_default();
     let nodes = member_nodes(inst, &v, |_| String::new());
-    // The instance runs while any member has a live window; one stopped on
+    // The team runs while any member has a live window; one stopped on
     // purpose expects no one to be running.
     let team_running = windows
         .iter()
@@ -3896,7 +3908,7 @@ fn status_with_counts(
                 .count();
             rows.push(StatusRow {
                 name: id.clone(),
-                kind: "copy",
+                kind: "team",
                 instance: full_id.clone(),
                 team: copy
                     .as_ref()
@@ -4007,7 +4019,7 @@ fn pending(dir: &Path) -> Option<String> {
     (n > 0).then(|| format!("{n} undelivered"))
 }
 
-/// `brg status` as text: the instance's tree with each member's vendor, model,
+/// `brg status` as text: the team's tree with each member's vendor, model,
 /// state and details, then the plugin processes.
 /// The columns `status` and `status -i` show after a row's name: a
 /// member's vendor and model, state and details; a role with no member
@@ -4019,7 +4031,7 @@ fn pending(dir: &Path) -> Option<String> {
 pub fn status_cells(r: &StatusRow, short: bool) -> Vec<String> {
     match r.kind {
         "member" => {}
-        "copy" => {
+        "team" => {
             return vec![
                 r.team.clone(),
                 if matches!(r.state.as_str(), "stopping" | "unreadable") {
@@ -4109,10 +4121,10 @@ pub fn render_status_as(
     })
 }
 
-/// A row's identity stays unique when local IDs repeat in different copies.
+/// A row's identity stays unique when local IDs repeat in different child teams.
 pub fn status_key(row: &StatusRow) -> String {
     match row.kind {
-        "copy" => row.instance.clone(),
+        "team" => row.instance.clone(),
         "plugin" => format!("{}/plugin:{}", row.instance, row.name),
         _ => format!("{}/{}", row.instance, row.name),
     }
@@ -4145,7 +4157,7 @@ fn status_nodes_as(rows: &[StatusRow], short: bool) -> Vec<tree::Node> {
                 }
                 if short {
                     match r.kind {
-                        "member" | "copy" | "plugin" => cols.swap(0, 1),
+                        "member" | "team" | "plugin" => cols.swap(0, 1),
                         "role" => {}
                         _ => cols.insert(1, String::new()),
                     }
@@ -4216,10 +4228,10 @@ pub fn status_look(r: &StatusRow) -> tree::Look {
             italic: true,
             ..faded
         },
-        ("copy", "unreadable") => look('◌', Tone::Odd),
-        ("copy", "stopping") => look('◌', Tone::Faded),
-        ("copy", _) if r.running.unwrap_or(0) > 0 => look('◆', Tone::Team),
-        ("copy", _) => faded,
+        ("team", "unreadable") => look('◌', Tone::Odd),
+        ("team", "stopping") => look('◌', Tone::Faded),
+        ("team", _) if r.running.unwrap_or(0) > 0 => look('◆', Tone::Team),
+        ("team", _) => faded,
         ("plugin", "alive")
             if r.detail
                 .as_deref()
@@ -4290,7 +4302,7 @@ pub fn summary_band_parts(rows: &[StatusRow]) -> Vec<(String, tree::Tone)> {
     parts
 }
 
-/// One band for the entire terminal view, above all instance headers.
+/// One band for the entire terminal view, above all team headers.
 pub fn summary_band(rows: &[StatusRow], colour: bool) -> String {
     let brand = if colour {
         "\x1b[1mborgchart\x1b[0m"
@@ -4416,7 +4428,7 @@ pub fn send(
     let caller = context::caller(external).map_err(send_failure)?;
     if matches!(caller, context::Caller::Operator) {
         return Err(SendError::Usage(
-            "instance-only plugin senders must pass --external NAME".into(),
+            "a plugin process with no member identity must pass --external NAME to send".into(),
         ));
     }
     let own = context::instance(None)
@@ -4435,7 +4447,7 @@ pub fn send(
     }
     if from.is_some() && own != inst.id {
         return Err(SendError::Refused(
-            "--from applies only within one instance".into(),
+            "--from applies only within one team".into(),
         ));
     }
     let to = if matches!(Recipient::parse(recipient), Some(Recipient::External(_))) {
@@ -4718,7 +4730,7 @@ fn paste_send(
         return Err(SendError::Uncertain(format!("paste failed: {e}")));
     }
     // After paste, Unknown alone is expected when a vendor hides its idle footer.
-    // The exact composer check below and dialog/copy/pane checks still apply.
+    // The exact composer check below and dialog/copy-mode/pane checks still apply.
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
         let after = send_snapshot(tmux, state, member, pane, vendor, true, locked)
@@ -4754,7 +4766,7 @@ fn paste_send(
     }
 }
 
-/// `brg logs <instance>/<member>` (or a plugin process).
+/// `brg logs <team>/<member>` (or a plugin process).
 pub fn logs(inst: &Instance, name: &str, lines: usize) -> Result<String, String> {
     let session = inst.state.session();
     let tmux = tmux_for(&inst.state);
@@ -4796,7 +4808,7 @@ fn attach_command(inst: &Instance, name: &str) -> Result<Command, String> {
     Ok(cmd)
 }
 
-/// `brg attach <instance>/<member>`: replaces this process with a tmux client.
+/// `brg attach <team>/<member>`: replaces this process with a tmux client.
 pub fn attach(inst: &Instance, name: &str) -> Result<(), String> {
     let err = attach_command(inst, name)?.exec();
     Err(format!("cannot start tmux: {err}"))
@@ -4954,7 +4966,7 @@ mod tests {
             start: true,
         };
         let copy = StatusRow {
-            kind: "copy",
+            kind: "team",
             detail: Some("note".into()),
             running: Some(2),
             ..member.clone()
@@ -5059,7 +5071,7 @@ mod tests {
                 "not created (start: true)",
                 Some("lead"),
             ),
-            // So does a `start: true` role that allows copies and has none.
+            // So does a `start: true` role that allows several members and has none kept.
             StatusRow {
                 start: true,
                 ..row("role", "i", "pool", ON_DEMAND, Some("lead"))
@@ -5068,9 +5080,9 @@ mod tests {
             row("role", "i", "boss", NOT_STARTING, None),
             row("member", "i", "orphan", "idle", Some("boss")),
             row("role", "i", "spare", NOT_STARTING, None),
-            row("copy", "i/sub", "sub", "0 running", Some("i/spare")),
+            row("team", "i/sub", "sub", "0 running", Some("i/spare")),
             row("plugin", "i", "watch", "alive", None),
-            row("copy", "i/dev", "dev", "1 running", Some("i/lead")),
+            row("team", "i/dev", "dev", "1 running", Some("i/lead")),
             row("member", "i/dev", "devlead", "working", Some("i/dev")),
             row("role", "i/dev", "reviewer", NOT_STARTING, Some("devlead")),
         ];

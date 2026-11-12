@@ -393,7 +393,9 @@ fn normalize_inner(
                         .as_str()
                         .unwrap_or_default()
                         .to_lowercase();
-                    if matches!(model.as_str(), "fable" | "opus" | "sonnet")
+                    if model.starts_with("haiku") {
+                        s.unrecognized_constraint = true;
+                    } else if matches!(model.as_str(), "fable" | "opus" | "sonnet")
                         && !seen.contains(&model)
                     {
                         s.window(
@@ -449,6 +451,7 @@ pub fn assess(provider: Provider, model: &str, s: &Snapshot, now: SystemTime) ->
         return a;
     }
     let model = match provider {
+        Provider::Claude if model == "haiku" => "all",
         Provider::Claude if matches!(model, "opus" | "sonnet" | "fable") => model,
         Provider::Codex => match class(model) {
             Some(c) => c,
@@ -606,6 +609,86 @@ mod tests {
         assert!(!assess(Provider::Claude, "fable", &s, now()).available);
         assert!(!assess(Provider::Claude, "unknown", &s, now()).available);
         assert!(!assess(Provider::Codex, "astra", &s, now()).available);
+    }
+    #[test]
+    fn haiku_does_not_wait_below_shared_warning_threshold() {
+        for used in [0., 89.9] {
+            let mut data = claude(used);
+            data["rate_limits"]["seven_day"]["utilization"] = json!(used);
+            let s = normalize(Provider::Claude, &data, now(), None);
+            let a = assess(Provider::Claude, "haiku", &s, now());
+            assert!(a.available, "shared usage {used}");
+            assert!(a.warnings.is_empty(), "shared usage {used}");
+        }
+    }
+    #[test]
+    fn haiku_waits_when_either_shared_window_is_exhausted() {
+        for key in ["five_hour", "seven_day"] {
+            let mut data = claude(1.);
+            data["rate_limits"][key]["utilization"] = json!(100.);
+            let s = normalize(Provider::Claude, &data, now(), None);
+            assert!(
+                !assess(Provider::Claude, "haiku", &s, now()).available,
+                "{key}"
+            );
+        }
+    }
+    #[test]
+    fn haiku_is_not_blocked_by_other_model_windows() {
+        let mut data = claude(1.);
+        for key in ["seven_day_opus", "seven_day_sonnet"] {
+            data["rate_limits"][key] = json!({"utilization":100.});
+        }
+        data["rate_limits"]["limits"] = json!([{
+            "kind":"weekly_scoped","scope":{"model":{"display_name":"Fable"}},
+            "percent":100.,"is_active":true
+        }]);
+        let s = normalize(Provider::Claude, &data, now(), None);
+        let a = assess(Provider::Claude, "haiku", &s, now());
+        assert!(a.available);
+        assert!(a.warnings.is_empty());
+    }
+    #[test]
+    fn haiku_waits_when_model_scoped_contains_a_haiku_constraint() {
+        for (name, available) in [("Fable 5", true), ("Haiku", false), ("HAIKU 5", false)] {
+            let mut data = claude(1.);
+            data["rate_limits"]["model_scoped"] = json!([{
+                "display_name":name,"utilization":100.
+            }]);
+            let s = normalize(Provider::Claude, &data, now(), None);
+            assert_eq!(
+                assess(Provider::Claude, "haiku", &s, now()).available,
+                available,
+                "{name}"
+            );
+        }
+    }
+    #[test]
+    fn haiku_shared_warnings_are_held_until_usage_falls_below_eighty() {
+        for key in ["five_hour", "seven_day"] {
+            let mut data = claude(1.);
+            let mut previous = None;
+            for (used, warned) in [(90., true), (85., true), (79., false)] {
+                data["rate_limits"][key]["utilization"] = json!(used);
+                let s = normalize(Provider::Claude, &data, now(), previous.as_ref());
+                let a = assess(Provider::Claude, "haiku", &s, now());
+                assert!(a.available, "{key} {used}");
+                assert_eq!(!a.warnings.is_empty(), warned, "{key} {used}");
+                previous = Some(s);
+            }
+        }
+    }
+    #[test]
+    fn haiku_waits_for_a_shared_window_without_utilization() {
+        for key in ["five_hour", "seven_day"] {
+            let mut data = claude(1.);
+            data["rate_limits"][key]["utilization"] = Value::Null;
+            let s = normalize(Provider::Claude, &data, now(), None);
+            assert!(
+                !assess(Provider::Claude, "haiku", &s, now()).available,
+                "{key}"
+            );
+        }
     }
     #[test]
     fn reset_caps_freshness_and_naive_or_future_observations_refuse() {

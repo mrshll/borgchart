@@ -1,4 +1,4 @@
-//! Member lifecycle authority follows recorded parent edges across copies.
+//! Member lifecycle authority follows recorded parent edges across child teams.
 #![cfg(feature = "test-support")]
 
 mod common;
@@ -13,17 +13,17 @@ use instance_env::*;
 fn department() -> Env {
     let env = Env::new();
     env.write(
-        "teams/oncall/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead, start: false}\n  scout: {prompt: scout.md, start: false}\n  dev: {team: dev, parent: lead, start: false, max: 4}\n",
+        "templates/oncall/template.yaml",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead, start: false}\n  scout: {prompt: scout.md, start: false}\n  dev: {template: dev, parent: lead, start: false, max: 4}\n",
     );
-    env.team("teams/dev");
+    env.team("templates/dev");
     env.write(
-        "teams/dev/team.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead, start: false}\n  design: {team: design, parent: lead, start: false}\n",
+        "templates/dev/template.yaml",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  helper: {prompt: helper.md, parent: lead, start: false}\n  design: {template: design, parent: lead, start: false}\n",
     );
-    env.team("teams/design");
+    env.team("templates/design");
     env.write(
-        "teams/design/team.yaml",
+        "templates/design/template.yaml",
         "bus: {}\nroles:\n  lead: {prompt: lead.md}\n  scout: {prompt: scout.md}\n",
     );
     fs::create_dir(env.path("work/a/lead")).unwrap();
@@ -36,19 +36,19 @@ fn member_cmd(env: &Env, inst: &str, role: &str, start: usize, args: &[&str]) ->
     env.wait_for("member launch recorded", || {
         env.starts(&member)
             .iter()
-            .filter(|record| record["env"]["BORGCHART_INSTANCE"] == inst)
+            .filter(|record| record["env"]["BORGCHART_TEAM"] == inst)
             .count()
             > start
     });
     let starts = env.starts(&member);
     let vars = &starts
         .iter()
-        .filter(|record| record["env"]["BORGCHART_INSTANCE"] == inst)
+        .filter(|record| record["env"]["BORGCHART_TEAM"] == inst)
         .nth(start)
         .unwrap()["env"];
     let mut cmd = env.cmd(args);
     for key in [
-        "BORGCHART_INSTANCE",
+        "BORGCHART_TEAM",
         "BORGCHART_MEMBER",
         "BORGCHART_INCARNATION",
     ] {
@@ -94,7 +94,7 @@ fn members_cannot_create_independent_bus_instances() {
     assert!(!out.status.success(), "{}", both(&out));
     let error = both(&out);
     assert!(error.contains("ask a person"), "{error}");
-    assert!(error.contains("brg create <instance>/<role>"), "{error}");
+    assert!(error.contains("brg create <team>/<role>"), "{error}");
     assert_eq!(env.registry(), before);
     env.ok(&["stop", &dept]);
 }
@@ -103,9 +103,9 @@ fn members_cannot_create_independent_bus_instances() {
 fn members_cannot_create_independent_teams_without_bus_settings() {
     let env = department();
     let dept = env.create("oncall", "work/a");
-    env.team("teams/panel");
+    env.team("templates/panel");
     env.write(
-        "teams/panel/team.yaml",
+        "templates/panel/template.yaml",
         "roles: {lead: {prompt: lead.md}}\n",
     );
     let folder = env.path("work/b").display().to_string();
@@ -139,9 +139,9 @@ fn copy_from_output(env: &Env, out: &Output) -> (String, PathBuf) {
         .as_array()
         .unwrap()
         .iter()
-        .flat_map(|team| team["instances"].as_array().unwrap())
-        .find(|copy| copy["instance"] == id)
-        .unwrap_or_else(|| panic!("copy {id}: {listed}\n{}", both(out)));
+        .flat_map(|team| team["teams"].as_array().unwrap())
+        .find(|copy| copy["team"] == id)
+        .unwrap_or_else(|| panic!("child team {id}: {listed}\n{}", both(out)));
     let folder = PathBuf::from(copy["folder"].as_str().unwrap());
     assert_eq!(copy["running"], false);
     (id, folder)
@@ -207,7 +207,7 @@ fn ancestors_manage_copies_and_members_at_every_depth() {
     });
     member_ok(&env, &dept, "lead", &["stop", &dev]);
     member_ok(&env, &dept, "lead", &["delete", &dev]);
-    assert!(env.registry()["instances"][&dev].is_null());
+    assert!(env.registry()["teams"][&dev].is_null());
     env.ok(&["stop", &dept]);
 }
 
@@ -234,7 +234,7 @@ fn dev_leads_manage_their_helpers_and_panel() {
     member_ok(&env, &dev, "lead", &["start", &designer]);
     member_ok(&env, &dev, "lead", &["stop", &panel]);
     member_ok(&env, &dev, "lead", &["delete", &panel]);
-    assert!(env.registry()["instances"][&panel].is_null());
+    assert!(env.registry()["teams"][&panel].is_null());
     env.ok(&["stop", &dept]);
 }
 
@@ -246,7 +246,9 @@ fn lifecycle_refuses_targets_outside_recorded_subtrees() {
     let second = prepared_copy(&env, &dept, "dev");
     for copy in [&first, &second] {
         env.ok(&["start", copy]);
-        env.wait_for("copy lead idle", || env.state_of(copy, "lead") == "idle");
+        env.wait_for("child team lead idle", || {
+            env.state_of(copy, "lead") == "idle"
+        });
     }
     env.ok(&["create", &format!("{first}/helper")]);
     env.wait_for("helper idle", || env.state_of(&first, "helper") == "idle");
@@ -353,7 +355,7 @@ fn stopped_replaced_and_partial_starts_cannot_manage_subtrees() {
     }
     fs::write(path, original).unwrap();
     for key in [
-        "BORGCHART_INSTANCE",
+        "BORGCHART_TEAM",
         "BORGCHART_MEMBER",
         "BORGCHART_INCARNATION",
     ] {
@@ -392,7 +394,7 @@ fn recorded_copy_parents_survive_live_team_edits() {
     let dev = prepared_copy(&env, &dept, "dev");
     env.ok(&["start", &dev]);
     env.wait_for("dev lead idle", || env.state_of(&dev, "lead") == "idle");
-    let team = env.path("teams/oncall/team.yaml");
+    let team = env.path("templates/oncall/template.yaml");
     let original = fs::read_to_string(&team).unwrap();
     fs::write(
         &team,
@@ -405,7 +407,7 @@ fn recorded_copy_parents_survive_live_team_edits() {
     assert_eq!(env.state_of(&dev, "lead"), "stopped");
     member_refused(&env, &dept, "scout", &["delete", &dev]);
     member_ok(&env, &dept, "lead", &["delete", &dev]);
-    assert!(env.registry()["instances"][&dev].is_null());
+    assert!(env.registry()["teams"][&dev].is_null());
     fs::write(team, original).unwrap();
     env.ok(&["stop", &dept]);
 }
@@ -413,7 +415,7 @@ fn recorded_copy_parents_survive_live_team_edits() {
 #[test]
 fn ancestors_manage_grandchildren_within_one_instance() {
     let env = department();
-    let team = env.path("teams/oncall/team.yaml");
+    let team = env.path("templates/oncall/template.yaml");
     let original = fs::read_to_string(&team).unwrap();
     fs::write(
         &team,
