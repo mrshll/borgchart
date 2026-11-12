@@ -20,8 +20,8 @@
   const SPIN_MS = 500;
   const REFRESH_MS = 2000; // `status -w` reads again every 2 s
   const MAX_ROWS = 12; // the tree never has more rows than this, root included
-  const WIDEST = 81; // nor a line wider than this (the CSS fits it)
-  const WARM_BEATS = 12; // beats run before the first frame, so it opens on a tree
+  const WIDEST = 83; // nor a line wider than this (the CSS fits it)
+  const WARM_BEATS = 60; // beats run before the first frame, so it opens on a grown tree
 
   const HEADER = ["engineering-56uw", "folder ~/workspace/borgchart"];
 
@@ -32,10 +32,10 @@
   const m = (name, model, state, children) => ({
     kind: "member", name, model, state, detail: "", children: children || [],
   });
-  // brg counts a copy's own members that are not stopped as running, at
-  // any depth inside it but not inside deeper copies.
+  // brg counts a copy's own members that are running (not stopped and not
+  // yet started) at any depth inside it, but not inside deeper copies.
   const live = (nodes) => nodes.reduce((n, k) =>
-    k.kind === "copy" ? n : n + (k.state !== "stopped" ? 1 : 0) + live(k.children), 0);
+    k.kind === "copy" ? n : n + (k.state === "working" || k.state === "idle" ? 1 : 0) + live(k.children), 0);
   const copy = (name, team, children) => ({
     kind: "copy", name, team, children, get running() { return live(this.children); },
   });
@@ -84,6 +84,7 @@
   // its namesake is still in the tree.
   const ALPHABET = "23456789abcdefghjkmnpqrstuvwxyz";
   const issued = new Set(["lead-th8v"]);
+  let justGone = []; // deleted this refresh, so not reused in the same one
   function suffixed(role) {
     let id;
     do id = `${role}-` + Array.from({ length: 4 }, () => pick(ALPHABET)).join("");
@@ -97,7 +98,7 @@
     let names = free(tasks);
     if (!names.length) names = free(tasks.flatMap((a) => tasks.filter((b) => b !== a).map((b) => `${a}-${b}`)));
     if (!names.length) {
-      const inTree = new Set(root.children.map((n) => n.name));
+      const inTree = new Set(root.children.map((n) => n.name).concat(justGone));
       names = tasks.filter((n) => !inTree.has(`${role}-${n}`));
     }
     const id = `${role}-${pick(names)}`;
@@ -106,23 +107,53 @@
   }
 
   // The root lead, and the units under it. A unit is one child of the root
-  // (a copy, a researcher or a monitor) with the steps it still has to take;
-  // its rows are the most it can grow to, kept within MAX_ROWS.
+  // (a copy, a researcher or a monitor), told as a generator: each `yield`
+  // follows one visible change and says how many refreshes to hold it.
+  // Every member lives through the states brg prints, in order: not started,
+  // idle, working and idle for a few rounds, stopped for a while, deleted.
+  // A unit's rows are the most it can grow to, kept within MAX_ROWS.
   const root = m("lead-th8v", MODEL.root, "idle");
   let unacked = 0, busyUntil = 0, beatNo = 0;
   let units = [];
 
-  const work = (n) => { n.state = "working"; };
-  const rest = (n) => { n.state = "idle"; };
-  const stop = (n) => {
-    if (n.kind === "member") n.state = "stopped";
-    n.children.forEach(stop);
-  };
+  const between = (lo, hi) => lo + Math.floor(rand() * (hi - lo + 1));
   // The root lead starts something, then goes back to waiting; a unit that
   // reports back leaves it a message, which it reads before starting
   // anything new.
-  const rootWork = () => { work(root); busyUntil = beatNo + 1; };
+  const rootWork = () => { root.state = "working"; busyUntil = beatNo + 1; };
   const report = () => { unacked++; };
+
+  // A member turns working, then idle again, a few times.
+  function* rounds(n, lo, hi) {
+    for (let i = between(lo, hi); i > 0; i--) {
+      n.state = "working";
+      yield between(4, 8);
+      n.state = "idle";
+      yield between(1, 3);
+    }
+  }
+  // Two members at it together: one starts, then the other, and they
+  // finish one after the other.
+  function* together(a, b, lo, hi) {
+    for (let i = between(lo, hi); i > 0; i--) {
+      a.state = "working";
+      yield between(2, 4);
+      b.state = "working";
+      yield between(3, 6);
+      a.state = "idle";
+      yield between(1, 3);
+      b.state = "idle";
+      yield between(1, 3);
+    }
+  }
+  // A member joins under its parent: not started, then up and idle.
+  function* join(parent, n) {
+    parent.children.push(n);
+    yield 1;
+    n.state = "idle";
+    yield between(1, 2);
+  }
+  const member = (name, model) => m(name, model, "not started");
 
   const KINDS = {
     dev: { rows: 5, most: 2, make: devTeam },
@@ -131,85 +162,94 @@
     monitor: { rows: 1, most: 1, make: monitor },
   };
 
-  // A dev team: its lead plans, brings in an implementer (sometimes two),
-  // then a reviewer, hands off, and the copy is stopped and deleted. The
-  // copy is its own instance, so its members' names are its own.
-  function devTeam() {
+  // A dev team: created stopped, its lead started, then an implementer
+  // (sometimes two) and a reviewer one at a time. On the way out the
+  // helpers stop first, then the lead, and the stopped copy waits a few
+  // refreshes before it is deleted. The copy is its own instance, so its
+  // members' names are its own.
+  function* devTeam(team) {
     const name = named("dev", TASKS.dev.map(([task]) => task));
     const [, word] = TASKS.dev.find(([task]) => name === `dev-${task}` || name.startsWith(`dev-${task}-`));
-    const lead = m(suffixed("lead"), MODEL.lead, "working");
-    const team = copy(name, "dev-team", [lead]);
-    const builders = [];
-    const add = () => {
-      const b = m(builders.length ? "implementer-tests" : `implementer-${word}`, MODEL.implementer, "working");
-      builders.push(b);
-      lead.children.push(b);
-    };
-    const checker = m(`reviewer-${word}`, MODEL.reviewer, "working");
-    rootWork();
-    return { node: team, steps: [
-      () => { add(); rest(lead); },
-      () => (chance(0.5) ? add() : rest(builders[0])),
-      () => { builders.forEach(rest); work(lead); },
-      () => { rest(lead); lead.children.push(checker); },
-      () => { rest(checker); work(builders[0]); },
-      () => { rest(builders[0]); work(lead); },
-      () => { rest(lead); report(); },
-      () => stop(team),
-      null,
-    ] };
+    team.node = copy(name, "dev-team", []);
+    const lead = member(suffixed("lead"), MODEL.lead);
+    yield* join(team.node, lead);
+    yield* rounds(lead, 1, 2);
+    const helpers = [member(`implementer-${word}`, MODEL.implementer)];
+    yield* join(lead, helpers[0]);
+    yield* together(lead, helpers[0], 1, 1);
+    yield* rounds(helpers[0], 1, 2);
+    if (chance(0.5)) {
+      helpers.push(member("implementer-tests", MODEL.implementer));
+      yield* join(lead, helpers[1]);
+      yield* together(helpers[0], helpers[1], 1, 2);
+    }
+    yield* rounds(lead, 1, 1);
+    helpers.push(member(`reviewer-${word}`, MODEL.reviewer));
+    const checker = helpers[helpers.length - 1];
+    yield* join(lead, checker);
+    yield* together(checker, helpers[0], 1, 2);
+    yield* together(lead, checker, 1, 1);
+    report();
+    for (const h of helpers) {
+      h.state = "stopped";
+      yield between(1, 2);
+    }
+    lead.state = "stopped";
+    yield between(3, 5);
   }
 
-  // A design panel: two designers, one per vendor, each drafting its own
-  // proposal; both start with the panel.
-  function designPanel() {
-    const a = m(suffixed("designer-claude"), MODEL.designerClaude, "working");
-    const b = m(suffixed("designer-codex"), MODEL.designerCodex, "working");
-    const team = copy(named("design", TASKS.design), "dev-design-team", [a, b]);
-    rootWork();
-    return { node: team, steps: [
-      () => (chance(0.5) ? rest(a) : rest(b)),
-      () => { work(a); work(b); },
-      () => rest(b),
-      () => { rest(a); report(); },
-      () => stop(team),
-      null,
-    ] };
+  // A design panel: started with its two designers, one per vendor, each
+  // drafting its own proposal.
+  function* designPanel(team) {
+    team.node = copy(named("design", TASKS.design), "dev-design-team", []);
+    const a = member(suffixed("designer-claude"), MODEL.designerClaude);
+    const b = member(suffixed("designer-codex"), MODEL.designerCodex);
+    yield* join(team.node, a);
+    yield* join(team.node, b);
+    yield* together(a, b, 2, 3);
+    report();
+    a.state = "stopped";
+    yield between(1, 2);
+    b.state = "stopped";
+    yield between(3, 5);
   }
 
-  function researcher() {
-    const r = m(named("researcher", TASKS.researcher), MODEL.researcher, "working");
-    rootWork();
-    return { node: r, steps: [
-      () => rest(r),
-      () => work(r),
-      () => { rest(r); report(); },
-      () => stop(r),
-      null,
-    ] };
+  // A researcher looks something up and reports; a monitor watches for
+  // longer. Each stays stopped a while before it is deleted.
+  function* single(unit, role, tasks, model, lo, hi, reports) {
+    const n = member(named(role, tasks), model);
+    unit.node = n;
+    yield 1;
+    n.state = "idle";
+    yield between(1, 2);
+    yield* rounds(n, lo, hi);
+    if (reports) report();
+    n.state = "stopped";
+    yield between(3, 5);
+  }
+  function researcher(unit) {
+    return single(unit, "researcher", TASKS.researcher, MODEL.researcher, 2, 3, true);
+  }
+  function monitor(unit) {
+    return single(unit, "monitor", TASKS.monitor, MODEL.monitor, 4, 6, false);
   }
 
-  // A monitor watches for a while, waking now and then, before it stops.
-  function monitor() {
-    const w = m(named("monitor", TASKS.monitor), MODEL.monitor, "working");
-    rootWork();
-    const steps = [];
-    for (let i = 3 + Math.floor(rand() * 4); i > 0; i--) steps.push(() => rest(w), () => work(w));
-    steps.push(() => rest(w), () => stop(w), null);
-    return { node: w, steps };
-  }
-
-  // One `status -w` refresh: often nothing changes; otherwise one thing,
-  // now and then two. A unit's last step (null) deletes it. When nobody is
-  // working, a unit takes its next step, so the tree rarely sits still.
+  // One `status -w` refresh: often nothing changes; otherwise one row, now
+  // and then two. A unit changes only once it has held its last change
+  // long enough; when nobody is working, a unit that can move does.
   const busy = (n) => (n.state === "working" ? 1 : 0) + n.children.reduce((k, c) => k + busy(c), 0);
   function beat() {
     beatNo++;
-    if (root.state === "working" && beatNo > busyUntil) rest(root);
+    justGone = [];
+    if (root.state === "working" && beatNo > busyUntil) root.state = "idle";
+    for (const u of units) u.wait--;
     if (!units.length || !chance(0.3)) {
       for (let i = chance(0.2) ? 2 : 1; i > 0; i--) act();
     }
-    if (units.length && !busy(root)) advance(pick(units));
+    if (!busy(root)) {
+      const ready = units.filter((u) => u.wait <= 0);
+      if (ready.length) advance(pick(ready));
+    }
     root.detail = unacked ? `${unacked} unacked` : "";
   }
   function act() {
@@ -221,19 +261,25 @@
     const held = units.reduce((n, u) => n + KINDS[u.kind].rows, 1);
     const room = Object.keys(KINDS).filter((k) =>
       held + KINDS[k].rows <= MAX_ROWS && units.filter((u) => u.kind === k).length < KINDS[k].most);
-    if (!unacked && room.length && (units.length === 0 || chance(units.length < 3 ? 0.35 : 0.12))) {
+    if (!unacked && room.length && (units.length === 0 || chance(units.length < 2 ? 0.25 : 0.06))) {
       const kind = pick(room);
-      const unit = { kind, ...KINDS[kind].make() };
+      const unit = { kind, wait: 0 };
+      unit.story = KINDS[kind].make(unit);
       units.push(unit);
+      advance(unit);
       root.children.push(unit.node);
+      rootWork();
       return;
     }
-    if (units.length) advance(pick(units));
+    const ready = units.filter((u) => u.wait <= 0);
+    if (ready.length) advance(pick(ready));
   }
+  // The next change in a unit's story; at its end the unit is deleted.
   function advance(unit) {
-    const step = unit.steps.shift();
-    if (step) step();
+    const next = unit.story.next();
+    if (!next.done) unit.wait = next.value;
     else {
+      justGone.push(unit.node.name);
       units = units.filter((u) => u !== unit);
       root.children = root.children.filter((n) => n !== unit.node);
     }
