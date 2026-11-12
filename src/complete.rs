@@ -3,7 +3,7 @@
 //! variable and the words typed so far, and brg prints the candidates and
 //! exits before anything else runs.
 //!
-//! Candidates come from brg's records only (the registry, instance records
+//! Candidates come from brg's records only (the registry, team records
 //! and the configured template folders), read without a lock: a tab press
 //! writes nothing, takes no lock and starts no tmux.
 //!
@@ -32,12 +32,12 @@ pub fn complete(command: fn() -> clap::Command) {
         .complete();
 }
 
-/// Every registered instance, copies included.
+/// Every registered team, child teams included.
 pub fn instances() -> ArgValueCandidates {
     ArgValueCandidates::new(|| instance_candidates(false))
 }
 
-/// Every registered root instance (a tree's top, not a copy).
+/// Every registered root team (a tree's top, not a child team).
 pub fn roots() -> ArgValueCandidates {
     ArgValueCandidates::new(|| {
         instance_candidates(false)
@@ -47,12 +47,12 @@ pub fn roots() -> ArgValueCandidates {
     })
 }
 
-/// Every instance and every kept member, as `<instance>/<member>`.
+/// Every team and every kept member, as `<team>/<member>`.
 pub fn targets() -> ArgValueCandidates {
     ArgValueCandidates::new(|| instance_candidates(true))
 }
 
-/// Every kept member, as `<instance>/<member>`.
+/// Every kept member, as `<team>/<member>`.
 pub fn members() -> ArgValueCandidates {
     ArgValueCandidates::new(member_candidates)
 }

@@ -18,7 +18,7 @@
 //! - [`decide`]: the wake decision, a pure function over plain-value
 //!   observations of one member.
 //!
-//! Every function here takes the watcher's state folder (the instance's
+//! Every function here takes the watcher's state folder (the team's
 //! `watcher/`) as a path, and the time as a value. Its files are small JSON,
 //! replaced atomically and privately with [`crate::bus::fsx`]. Unlike
 //! records, they ignore fields they don't know, so a newer watcher's state

@@ -121,7 +121,7 @@ fn status_i_attaches_detaches_and_quits() {
                 l.contains("└─ ? beta")
                     && l.contains("Λ example-model low")
                     && l.contains("blocked (folder trust)")
-                    // `brg attach <instance>/<beta's member>`
+                    // `brg attach <team>/<beta's member>`
                     && l.contains("brg attach team-")
                     && l.contains("/beta-")
             }) && s.contains("plugin watcher")
@@ -334,11 +334,11 @@ fn bare_status_i_shows_every_instance_and_attaches_in_the_selected_one() {
             .and_then(|r| r["teams"].as_object().map(|m| m.keys().cloned().collect()))
             .unwrap_or_default()
     };
-    wait("two instances", || instances().len() == 2, dump);
+    wait("two teams", || instances().len() == 2, dump);
     let ids = instances();
-    // Each instance's header line, then its tree with alpha idle.
+    // Each team's header line, then its tree with alpha idle.
     wait(
-        "both instances on the screen",
+        "both teams on the screen",
         || {
             let s = screen();
             ids.iter().all(|id| s.contains(&format!("{id}  folder ")))
@@ -349,7 +349,7 @@ fn bare_status_i_shows_every_instance_and_attaches_in_the_selected_one() {
         },
         dump,
     );
-    // The instance whose header comes second.
+    // The team whose header comes second.
     let s = screen();
     let at = |id: &String| s.find(&format!("{id}  folder ")).unwrap();
     let second = ids.iter().max_by_key(|id| at(id)).unwrap().clone();
@@ -361,7 +361,7 @@ fn bare_status_i_shows_every_instance_and_attaches_in_the_selected_one() {
         &["send-keys", "-t", "=o:", "j", "j", "j", "Enter"],
     );
     wait(
-        "attached to the second instance's alpha",
+        "attached to the second team's alpha",
         || attached().trim() == format!("brg-{second}"),
         dump,
     );
@@ -456,13 +456,13 @@ fn bare_status_i_with_no_instances_says_so_until_one_is_created() {
     let dump = || format!("outer screen:\n{}", screen());
 
     wait(
-        "the screen saying there are no instances",
-        || screen().contains("there are no instances"),
+        "the screen saying there are no teams",
+        || screen().contains("there are no teams"),
         dump,
     );
     // Still there, and still running, after a refresh.
     std::thread::sleep(Duration::from_secs(3));
-    assert!(screen().contains("there are no instances"), "{}", dump());
+    assert!(screen().contains("there are no teams"), "{}", dump());
 
     let out = common::command(&create).output().unwrap();
     assert!(out.status.success(), "{out:?}");
@@ -472,10 +472,10 @@ fn bare_status_i_with_no_instances_says_so_until_one_is_created() {
         .unwrap()
         .to_string();
     wait(
-        "the new instance's header at a later refresh",
+        "the new team's header at a later refresh",
         || {
             let s = screen();
-            s.contains(&format!("{id}  folder ")) && !s.contains("there are no instances")
+            s.contains(&format!("{id}  folder ")) && !s.contains("there are no teams")
         },
         dump,
     );
@@ -784,7 +784,7 @@ fn watch_erases_old_rows_and_uses_synchronized_redraw_when_the_tree_shrinks() {
     assert!(out.status.success(), "{out:?}");
     let screen = || tmux(&private, &outer, &["capture-pane", "-p", "-t", "=o:"]);
     wait(
-        "both instances",
+        "both teams",
         || screen().contains(&old) && screen().contains(&new),
         screen,
     );

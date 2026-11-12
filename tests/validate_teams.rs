@@ -1,4 +1,4 @@
-//! Copies read current source files, with actual ancestry checked.
+//! Child teams read current source files, with actual ancestry checked.
 #![cfg(feature = "test-support")]
 
 mod common;
@@ -151,7 +151,7 @@ fn missing_subteam_during_department_commands(remove_folder: bool) {
     } else {
         fs::rename(subteam.join("template.yaml"), &saved).unwrap();
     }
-    // The declaring instance may still create and manage its own agents.
+    // The declaring team may still create and manage its own agents.
     env.ok(&["create", &format!("{dept}/helper")]);
     env.ok(&["start", &dept]);
     env.ok(&["stop", &format!("{dept}/{lead}")]);
@@ -200,7 +200,9 @@ fn missing_running_subteam_during_status_and_stop(remove_folder: bool) {
         let out = env.ok(&["create", &format!("{dept}/{role}")]);
         let id = stdout(&out).split_whitespace().next().unwrap().to_string();
         env.ok(&["start", &id]);
-        env.wait_for("copy lead idle", || env.state_of(&id, "lead") == "idle");
+        env.wait_for("child team lead idle", || {
+            env.state_of(&id, "lead") == "idle"
+        });
         copies.push(id);
     }
     let affected = &copies[0];
@@ -242,7 +244,7 @@ fn missing_running_subteam_during_status_and_stop(remove_folder: bool) {
             rows.iter().any(|row| {
                 row["kind"] == "team" && row["team"] == *healthy && row["state"] == "running"
             }),
-            "{args:?} hid the healthy copy: {rows:?}"
+            "{args:?} hid the healthy child team: {rows:?}"
         );
         let row = rows
             .iter()
@@ -280,7 +282,7 @@ fn missing_running_subteam_during_status_and_stop(remove_folder: bool) {
             "stop left {instance}/{member} running"
         );
     }
-    // Restoring the source makes the affected copy readable again and lets
+    // Restoring the source makes the affected child team readable again and lets
     // status confirm that its running member was stopped too.
     fs::rename(saved, missing).unwrap();
     assert_eq!(env.row(affected, "lead")["member"], affected_lead);
@@ -302,7 +304,7 @@ fn changed_subteam_reaches_only_members_that_restart() {
     let (env, dept) = department();
     let (first, _) = copy(&env, &dept);
     let (peer, _) = copy(&env, &dept);
-    // Changes after create still reach a copy at its first start.
+    // Changes after create still reach a child team at its first start.
     env.write(
         "templates/dev/lead.md",
         "---\nmodels: {claude: opus}\n---\nRelease amber.\n",
@@ -321,7 +323,7 @@ fn changed_subteam_reaches_only_members_that_restart() {
     env.ok(&["start", &first]);
     env.ok(&["stop", &format!("{first}/{first_lead}")]);
     env.ok(&["start", &format!("{first}/{first_lead}")]);
-    env.wait_for("restarted copy's agent", || {
+    env.wait_for("restarted child team's agent", || {
         env.starts(&first_lead)
             .iter()
             .filter(|s| s["env"]["BORGCHART_TEAM"] == first)
@@ -332,7 +334,7 @@ fn changed_subteam_reaches_only_members_that_restart() {
     assert!(latest_prompt(&env, &peer, &peer_lead).contains("Release amber."));
     assert_eq!(env.state_of(&peer, "lead"), "idle");
     assert_eq!(env.state_of(&dept, "lead"), "idle");
-    // Neither copy restart required the department to restart. A new copy
+    // Neither child team restart required the department to restart. A new child team
     // also reads the sub-team's current files while the department runs.
     let (fresh, _) = copy(&env, &dept);
     env.ok(&["start", &fresh]);
@@ -389,7 +391,7 @@ fn changed_team_path_resolution_reaches_new_copies_without_restart() {
     env.ok(&["start", &fresh]);
     let lead = env.member(&fresh, "lead");
     assert!(latest_prompt(&env, &fresh, &lead).contains("Alternative team."));
-    // A kept copy keeps its recorded source, independently of the role's
+    // A kept child team keeps its recorded source, independently of the role's
     // current catalog target and of a later department restart.
     env.ok(&["stop", &kept]);
     env.ok(&["start", &kept]);
@@ -448,7 +450,7 @@ fn full_start_refuses_a_subteam_edited_to_contain_its_actual_ancestor() {
     env.ok(&["start", &child]);
     let lead = env.member(&child, "lead");
     move_ancestor_within_copy(&env, &dept);
-    env.wait_for("restored copy lead launch recorded", || {
+    env.wait_for("restored child team lead launch recorded", || {
         env.starts(&lead).len() == 2
     });
     let count = env.starts(&lead).len();
@@ -494,7 +496,7 @@ fn department_and_copy_share_a_store_without_bus_opt_in() {
         "msg",
         "send",
         &format!("{child}/{lead}"),
-        "Copy task",
+        "Child team task",
         "--external",
         "ops",
     ]);

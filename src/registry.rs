@@ -1,13 +1,13 @@
-//! The registry of instances, the suffixes that make instance and member
-//! IDs, and each instance's own record.
+//! The registry of teams, the suffixes that make team and member
+//! IDs, and each team's own record.
 //!
-//! - `<state home>/registry.json` lists every instance: its ID, its template's
+//! - `<state home>/registry.json` lists every team: its ID, its template's
 //!   name and folder, its working folder, and when it was created. It also
 //!   keeps every suffix ever issued for a team's name, so an ID is never
 //!   issued twice, even after `delete`.
 //! - `<state home>/registry.lock` is the one lock over the registry, suffix
 //!   issue, checkout reservation, and the lifecycle steps that need them.
-//! - `<state home>/<instance>/team.json` is the instance's record: its
+//! - `<state home>/<team>/team.json` is the team's record: its
 //!   template folder, working folder, issued members, and the members that were
 //!   running at the last stop.
 //!
@@ -158,7 +158,7 @@ pub struct Entry {
     pub created_at: String,
 }
 
-/// `team.json`: one instance's record.
+/// `team.json`: one team's record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InstanceRecord {
@@ -170,23 +170,23 @@ pub struct InstanceRecord {
     pub team_dir: PathBuf,
     pub folder: PathBuf,
     pub created_at: String,
-    /// Every member issued in this instance, by ID, with its role. A
-    /// member's ID is never issued again in the instance.
+    /// Every member issued in this team, by ID, with its role. A
+    /// member's ID is never issued again in the team.
     pub members: BTreeMap<String, IssuedMember>,
-    /// Team-role copies, including deleted IDs so their addresses are never reused.
+    /// Child teams, including deleted IDs so their addresses are never reused.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[serde(rename = "child_teams")]
     pub copies: BTreeMap<String, IssuedMember>,
-    /// The full address of this copy's parent member in its declaring instance.
+    /// The full address of this child team's parent member in its declaring team.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
-    /// The members running when the instance was last fully stopped.
+    /// The members running when the team was last fully stopped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub running_at_stop: Option<BTreeSet<String>>,
     /// A cascade is unfinished; starts and creates in this subtree are refused.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub stopping: bool,
-    /// Descendant copies running at the last full stop, by relative instance path.
+    /// Descendant child teams running at the last full stop, by relative team path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(rename = "child_teams_running_at_stop")]
     pub copies_running_at_stop: Option<BTreeSet<String>>,
@@ -205,7 +205,7 @@ pub struct IssuedMember {
 }
 
 impl InstanceRecord {
-    /// Members still kept in this instance, running or stopped.
+    /// Members still kept in this team, running or stopped.
     pub fn kept_members(&self) -> impl Iterator<Item = (&String, &IssuedMember)> {
         self.members.iter().filter(|(_, m)| !m.deleted)
     }
@@ -226,8 +226,8 @@ impl InstanceRecord {
             .map(|m| m.role.as_str())
     }
 
-    /// Issue a team-role copy, preserving its suffix after deletion:
-    /// `<role>-<name>` when named, else a random suffix no member or copy has.
+    /// Issue a child team of a team role, preserving its suffix after deletion:
+    /// `<role>-<name>` when named, else a random suffix no member or child team has.
     pub fn issue_copy(
         &mut self,
         role: &str,
@@ -258,7 +258,7 @@ impl InstanceRecord {
     }
 
     /// Issue a new member of `role`: `<role>-<name>` when named, else
-    /// `<role>-<suffix>`, never one this instance issued before.
+    /// `<role>-<suffix>`, never one this team issued before.
     pub fn issue_member(
         &mut self,
         role: &str,
@@ -290,8 +290,8 @@ impl InstanceRecord {
         Ok(id)
     }
 
-    /// `<role>-<name>`, if it is a valid ID that no role, member or copy of
-    /// this instance has or had, and `name` isn't another issued ID's suffix.
+    /// `<role>-<name>`, if it is a valid ID that no role, member or child team of
+    /// this team has or had, and `name` isn't another issued ID's suffix.
     pub fn named(
         &self,
         role: &str,
@@ -313,14 +313,14 @@ impl InstanceRecord {
         let mut issued = self.members.keys().chain(self.copies.keys());
         if issued.clone().any(|taken| *taken == id) {
             return Err(format!(
-                "`{id}` was issued before in this instance, and IDs are never reused, even after delete; choose another name"
+                "`{id}` was issued before in this team, and IDs are never reused, even after delete; choose another name"
             ));
         }
         if let Some(taken) =
             issued.find(|taken| split_id(taken).is_some_and(|(_, suffix)| suffix == name))
         {
             return Err(format!(
-                "`{name}` is the suffix of `{taken}` in this instance; choose a name that isn't another ID's suffix"
+                "`{name}` is the suffix of `{taken}` in this team; choose a name that isn't another ID's suffix"
             ));
         }
         Ok(id)
@@ -379,7 +379,7 @@ pub fn load() -> Result<Registry, String> {
 }
 
 /// The registry lock, held while it lives. Everything that changes the
-/// registry or an instance's record goes through it.
+/// registry or a team's record goes through it.
 pub struct Lock {
     _file: File,
 }
@@ -411,13 +411,12 @@ impl Lock {
     }
 }
 
-/// An instance's record, read without the lock.
+/// A team's record, read without the lock.
 pub fn read_instance(state: &StateDir) -> Result<InstanceRecord, String> {
-    read_json(&state.instance_file())?
-        .ok_or_else(|| format!("instance `{}` has no record", state.id))
+    read_json(&state.instance_file())?.ok_or_else(|| format!("team `{}` has no record", state.id))
 }
 
-/// Register a new instance of `team` (its name and folder) working in
+/// Register a new team from template `team` (its name and folder), working in
 /// `folder`: a fresh suffix, the registry entry, the state folder and its
 /// record. Called with the lock held.
 pub fn create(
@@ -452,7 +451,7 @@ pub fn create(
     register(lock, registry, record)
 }
 
-/// Register a stopped nested instance. Its ID was issued by the parent.
+/// Register a stopped nested team. Its ID was issued by the parent.
 pub fn create_copy(
     lock: &Lock,
     id: &str,
@@ -490,7 +489,7 @@ fn register(
     if registry.instances.contains_key(id) || state.root.exists() {
         lock.save(&registry)?;
         return Err(format!(
-            "{} already exists; try again with a new copy ID",
+            "{} already exists; try again with a new child team ID",
             state.root.display()
         ));
     }
@@ -657,7 +656,7 @@ mod tests {
             .issue_member("dev", Some("make-install"), no_roles)
             .unwrap_err();
         assert!(err.contains("issued before"), "{err}");
-        // A random suffix stays unique in the instance, so a name can't take one.
+        // A random suffix stays unique in the team, so a name can't take one.
         let lead = r.issue_member("lead", None, no_roles).unwrap();
         let suffix = split_id(&lead).unwrap().1.to_string();
         let err = r

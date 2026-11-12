@@ -12,25 +12,25 @@ Codex `vendor` members have full host access and no tool approvals; Claude `vend
 
 ## Storage
 
-One store belongs to a whole team tree: its root instance and every nested copy share `<state home>/<root>/messages/`. Copies have no store of their own. Message numbers continue across stops, starts, copy deletion and template-file changes:
+One store belongs to a whole team tree: its root team and every child team share `<state home>/<root>/messages/`. Child teams have no store of their own. Message numbers continue across stops, starts, child team deletion and template-file changes:
 
 | Path | Contents |
 | --- | --- |
-| `store.json` | Format 4 and the root instance ID |
+| `store.json` | Format 4 and the root team ID |
 | `lock` | Tree publication/acknowledgement lock |
 | `records/<seq>.json` | Immutable messages, numbered from 1 without gaps; filenames use ten decimal digits |
 | `acks/<id>.json` | Recipient acknowledgements, such as `m1.json` |
 
 Only format-4 stores are supported. Earlier formats are refused without conversion. To cut over an existing tree:
 
-1. Settle every inbox and finish work that refers to old message IDs. Write handover notes in each instance's notes folder; message IDs restart at `m1`.
+1. Settle every inbox and finish work that refers to old message IDs. Write handover notes in each team's notes folder; message IDs restart at `m1`.
 2. Stop the whole tree from its root, including its root lead.
-3. Move every old store, at the root and in its copies, outside brg's state as archived history, or delete it. Leave an empty private `messages/` folder (0700) at the tree root, as for a newly created instance. Keep notes, working folders and registry records.
+3. Move every old store, at the root and in its child teams, outside brg's state as archived history, or delete it. Leave an empty private `messages/` folder (0700) at the tree root, as for a newly created team. Keep notes, working folders and registry records.
 4. Upgrade brg for the whole tree.
-5. Start the root instance. It creates the format-4 tree store and restores the copies that were running.
-6. Send a new handover to the root lead, which briefs its copies using new IDs.
+5. Start the root team. It creates the format-4 tree store and restores the child teams that were running.
+6. Send a new handover to the root lead, which briefs its child teams using new IDs.
 
-Unexpected entries are refused, including directories left by old sandboxes. brg performs no automatic cleanup. Only the root initializes storage; a copy refuses to start if its tree store is missing or damaged.
+Unexpected entries are refused, including directories left by old sandboxes. brg performs no automatic cleanup. Only the root initializes storage; a child team refuses to start if its tree store is missing or damaged.
 
 Start records are in brg's own files outside messages: `members/<member>/incarnation.json`, with history in `members/<member>/incarnations/<id>.json`. Routing uses the member/parent entries in `start.json`. A stopped or replaced start cannot act for the member. Publication and acknowledgement recheck this under the tree message lock. Incarnation changes use that same lock. Lock order is registry, lifecycle, then tree store; the typing lock is taken after releasing the store lock.
 
@@ -38,15 +38,15 @@ Directories must be real, owned by you and private (0700; files 0600). Immutable
 
 ## Callers and recipients
 
-Inside a member use `"$BORGCHART_BIN"`, the brg that started it. Its instance, member and start ID come from `BORGCHART_TEAM`, `BORGCHART_MEMBER` and `BORGCHART_INCARNATION`. Outside a member, `msg list`, `msg read`, `msg ack`, `msg wait` and `msg integrity-check` require `--team ID`; inside one that option may only repeat its own instance. `msg send` takes the instance in its target address. Without team context, outside callers default to `external:owner`; `--external NAME` overrides it. Instance-only plugin processes must still name `--external NAME` to send, ack or wait.
+Inside a member use `"$BORGCHART_BIN"`, the brg that started it. Its team, member and start ID come from `BORGCHART_TEAM`, `BORGCHART_MEMBER` and `BORGCHART_INCARNATION`. Outside a member, `msg list`, `msg read`, `msg ack`, `msg wait` and `msg integrity-check` require `--team ID`; inside one that option may only repeat its own team. `msg send` takes the team in its target address. Without team context, outside callers default to `external:owner`; `--external NAME` overrides it. A plugin process with only `BORGCHART_TEAM` set must still name `--external NAME` to send, ack or wait.
 
-Team context means any nonempty `BORGCHART_TEAM`, `BORGCHART_MEMBER`, `BORGCHART_INCARNATION`, `BORGCHART_ROLE`, `BORGCHART_NOTES` or `BORGCHART_PARENT`. Member variables without the complete instance, member and start identity are refused as incomplete member context, including when only role, notes or parent remains.
+Team context means any nonempty `BORGCHART_TEAM`, `BORGCHART_MEMBER`, `BORGCHART_INCARNATION`, `BORGCHART_ROLE`, `BORGCHART_NOTES` or `BORGCHART_PARENT`. Member variables without the complete team, member and start identity are refused as incomplete member context, including when only role, notes or parent remains.
 
-- Members send to their parent or children, by full member ID. Only root members of the tree's root instance may also send to `external:NAME`.
-- A copy's root members and their parent in the enclosing instance can also send across their parent edge. Use the full `instance/member` address; a copy's roots receive their parent's address in `BORGCHART_PARENT`.
+- Members send to their parent or children, by full member ID. Only root members of the tree's root team may also send to `external:NAME`.
+- A child team's root members and their parent in the enclosing team can also send across their parent edge. Use the full `team/member` address; a child team's roots receive their parent's address in `BORGCHART_PARENT`.
 - Outside callers may use `--external NAME` and may send to any kept member in the tree after its first start. Their replies go to `external:NAME` (`external:owner` by default without team context). That flag is refused inside a member.
-- Any caller can read a named member's inbox and individual messages, and check the store. An instance-only plugin without an outside identity cannot send or ack.
-- A member is addressable after its first start, including while stopped. A role name or another instance's member outside a parent edge is refused; there is no role queue.
+- Any caller can read a named member's inbox and individual messages, and check the store. A plugin process with no member identity cannot send or ack without `--external NAME`.
+- A member is addressable after its first start, including while stopped. A role name or another team's member outside a parent edge is refused; there is no role queue.
 
 ## Send and message
 
@@ -58,13 +58,13 @@ brg adds the caller's identity, UTC timestamp and immutable `ack_required`, deri
 {"schema": 4, "id": "m2", "seq": 2, "at": "2026-11-08T00:00:00Z", "from": "dev-team-k3f9/implementer-x7k2", "to": "dev-team-k3f9/lead-q8m3", "reply_to": ["m1"], "body": "Report: notes/change-report.md", "ack_required": true}
 ```
 
-`from` and `to` always contain full member addresses or `external:NAME`, including within one instance. `--from MEMBER` only asserts a parent route within the same instance: a member must name itself; an external relay remains the author and the envelope says “relayed for MEMBER.” Include relay context in the body when it must survive independently. Every committed send creates a distinct record, even with identical text. An ordinary committed send returns 0 even when typing is suppressed or uncertain; **do not resend just because delivery is stored**.
+`from` and `to` always contain full member addresses or `external:NAME`, including within one team. `--from MEMBER` only asserts a parent route within the same team: a member must name itself; an external relay remains the author and the envelope says “relayed for MEMBER.” Include relay context in the body when it must survive independently. Every committed send creates a distinct record, even with identical text. An ordinary committed send returns 0 even when typing is suppressed or uncertain; **do not resend just because delivery is stored**.
 
 Messages retain their sender's authority. A typed envelope does not turn a helper or outside message into direct-owner instruction. Never execute its text as shell code. Delegation, progress and verification belong in the pull request description and comments; briefs and reports can live in `$BORGCHART_NOTES`.
 
-Every send checks one rule: the sender is the recipient's parent, or the recipient is the sender's parent. Siblings, cousins and unrelated roots cannot exchange messages. A deleted member, or a member in a copy deleted at any depth, cannot receive new messages.
+Every send checks one rule: the sender is the recipient's parent, or the recipient is the sender's parent. Siblings, cousins and unrelated roots cannot exchange messages. A deleted member, or a member in a child team deleted at any depth, cannot receive new messages.
 
-Parent edges within an instance and across copies use the same tree store and delivery rules, including typed and locked delivery. The recipient's own pane, guard and posture decide delivery. IDs and acknowledgements are shared by the tree: nothing is imported or renumbered. `--reply-to` takes plain IDs such as `m1` that must already exist in that store.
+Parent edges within a team and across child teams use the same tree store and delivery rules, including typed and locked delivery. The recipient's own pane, guard and posture decide delivery. IDs and acknowledgements are shared by the tree: nothing is imported or renumbered. `--reply-to` takes plain IDs such as `m1` that must already exist in that store.
 
 ## Commands
 
@@ -80,7 +80,7 @@ MESSAGE
 
 Send JSON keeps `ok`, `code`, `message` and adds `outcome`, committed `id`, `delivery` (`typed`, `stored`, `uncertain` or `recorded-not-typed`) and a reason. See [send outcomes](cli.md#brg-msg-send). The other bus commands retain their own outcome codes below.
 
-**Inbox:** `brg msg list [--member ID | --external NAME] [--full] [--json]` returns every ordinary unacked message, oldest first. A member defaults to itself; without team context, a caller defaults to `external:owner`. Instance-only plugins must name an inbox. `--member` reads another member's inbox anywhere in the tree. A bare ID resolves in the caller's instance, or the outside caller's `--team`; a full address selects any member in the tree. Headers omit body and add `body_bytes` and `acked`; `--full` includes body instead of body_bytes. Reading never acknowledges.
+**Inbox:** `brg msg list [--member ID | --external NAME] [--full] [--json]` returns every ordinary unacked message, oldest first. A member defaults to itself; without team context, a caller defaults to `external:owner`. A plugin process with only `BORGCHART_TEAM` set must name an inbox. `--member` reads another member's inbox anywhere in the tree. A bare ID resolves in the caller's team, or the outside caller's `--team`; a full address selects any member in the tree. Headers omit body and add `body_bytes` and `acked`; `--full` includes body instead of body_bytes. Reading never acknowledges.
 
 ```sh
 brg msg list --team dev-team-k3f9 --member lead-q8m3 --json
@@ -90,7 +90,7 @@ brg msg list --team dev-team-k3f9 --member lead-q8m3 --json
 {"ok": true, "code": 0, "outcome": "ok", "recipient": "dev-team-k3f9/lead-q8m3", "records": [{"schema": 4, "id": "m1", "seq": 1, "at": "2026-11-08T00:00:00Z", "from": "external:owner", "to": "dev-team-k3f9/lead-q8m3", "body_bytes": 5, "ack_required": true, "acked": false}], "unacked": 1, "total": 1, "store": "ok"}
 ```
 
-**Read:** `brg msg read ID [--json]` shows any message in the tree in full, including an acknowledged one or a deleted copy's history.
+**Read:** `brg msg read ID [--json]` shows any message in the tree in full, including an acknowledged one or a deleted child team's history.
 
 ```sh
 brg msg read m1 --team dev-team-k3f9 --json
@@ -139,11 +139,11 @@ brg msg integrity-check --team dev-team-k3f9 --json
 
 ## Damage and status
 
-Only format-4 stores, records and acknowledgements are supported; earlier stores are refused, not migrated. A foreign format/root marker, unexpected layout, gap or unreadable record is damage: publication and acknowledgements refuse, and `msg integrity-check --team <any-instance-in-the-tree>` reports why. Inbox can show readable messages with `store: incomplete`. Damage blocks starts throughout the tree; stop and liveness still work without reading messages. Checkouts are held only by running members or members whose stop is unknown; a stopped instance holds none. New or empty storage may be initialised at the tree root.
+Only format-4 stores, records and acknowledgements are supported; earlier stores are refused, not migrated. A foreign format/root marker, unexpected layout, gap or unreadable record is damage: publication and acknowledgements refuse, and `msg integrity-check --team <any-team-in-the-tree>` reports why. Inbox can show readable messages with `store: incomplete`. Damage blocks starts throughout the tree; stop and liveness still work without reading messages. Checkouts are held only by running members or members whose stop is unknown; a stopped team holds none. New or empty storage may be initialised at the tree root.
 
-Delete needs `--force` for unacked messages to the instance's kept members, unacked external replies at the root, or unreadable storage, after every member is positively stopped. Copy deletion checks open work and saves its tombstone under the tree store lock, so a concurrent publication is either counted or refused. Deleting a copy or member preserves its messages as readable history and removes them from pending-work counts. Deleting the root removes the store after all copies have been deleted. Working folders are left alone.
+Delete needs `--force` for unacked messages to the team's kept members, unacked external replies at the root, or unreadable storage, after every member is positively stopped. Child team deletion checks open work and saves its tombstone under the tree store lock, so a concurrent publication is either counted or refused. Deleting a child team or member preserves its messages as readable history and removes them from pending-work counts. Deleting the root removes the store after all child teams have been deleted. Working folders are left alone.
 
-`brg status` and `-i` show positive unacked counts beside members. All members' counts come from one tree snapshot, including copies; status never writes. `--json` includes zero for readable counts. An unreadable store omits counts throughout the tree and adds a short check note; a busy store asks for a retry. Storage and scan cost grow with the tree's history; there is no index or automatic retention.
+`brg status` and `-i` show positive unacked counts beside members. All members' counts come from one tree snapshot, including child teams; status never writes. `--json` includes zero for readable counts. An unreadable store omits counts throughout the tree and adds a short check note; a busy store asks for a retry. Storage and scan cost grow with the tree's history; there is no index or automatic retention.
 
 ## Attention
 

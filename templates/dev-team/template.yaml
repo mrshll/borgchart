@@ -1,10 +1,10 @@
 # A development team: a lead and four helper roles it starts on demand. The
-# lead, reviewer, researcher and monitor work in the instance's folder, a
-# checkout of the repository. Each implementer copy works in its own git
-# worktree, which brg adds from that checkout when it creates the copy. It
-# runs standalone (`brg create ./templates/dev-team` in a checkout) or as a child
+# lead, reviewer, researcher and monitor work in the team's folder, a
+# checkout of the repository. Each implementer works in its own git
+# worktree, which brg adds from that checkout when it creates the member.
+# This team runs standalone (`brg create ./templates/dev-team` in a checkout) or as a child
 # team, the `dev` role of the engineering team, where its folder is the
-# copy's worktree and its lead's parent is the root lead.
+# child team's worktree and its lead's parent is the root lead.
 #
 # Every member here uses `vendor` posture. Each member file names both vendors' models, so moving a
 # member to the other vendor is a change to its `vendor:` line here.

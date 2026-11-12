@@ -1,4 +1,4 @@
-//! A department's copies are prepared before launch, even at depth three.
+//! A department's child teams are prepared before launch, even at depth three.
 #![cfg(feature = "test-support")]
 
 mod common;
@@ -23,11 +23,14 @@ fn create_copy(env: &Env, parent: &str, role: &str) -> (String, std::path::PathB
                 id.starts_with(&format!("{parent}/{role}-")) && before["teams"][id].is_null()
             })
         })
-        .expect("create must register the copy");
+        .expect("create must register the child team");
     let id = copy["team"].as_str().unwrap().to_string();
     let folder = std::path::PathBuf::from(copy["folder"].as_str().unwrap());
     assert!(both(&output).contains(&folder.display().to_string()));
-    assert_eq!(copy["running"], false, "copies must wait for preparation");
+    assert_eq!(
+        copy["running"], false,
+        "child teams must wait for preparation"
+    );
     assert!(folder.is_dir());
     assert!(env.rows(&id).iter().all(|row| row["member"].is_null()));
     (id, folder)
@@ -62,7 +65,7 @@ fn nested_addresses_start_and_stop_only_the_named_copy_or_member() {
     let (panel, _) = create_copy(&env, &first, "design");
     env.ok(&["start", &panel]);
     env.ok(&["create", &format!("{first}/helper")]);
-    // Status includes descendants: pick this instance's own role, even
+    // Status includes descendants: pick this team's own role, even
     // when the panel has an uncreated role with the same name.
     let row = |instance: &str, role: &str| {
         env.rows(instance)
@@ -196,11 +199,11 @@ fn missing_nested_copy_reports_kept_alternatives() {
     );
     assert!(
         refused.contains(&copy),
-        "recovery must name a kept copy: {refused}"
+        "recovery must name a kept child team: {refused}"
     );
     assert!(
         !refused.contains(&unrelated),
-        "alternatives must belong to the matched instance: {refused}"
+        "alternatives must belong to the matched team: {refused}"
     );
     env.ok(&["stop", &dept]);
     env.ok(&["stop", &unrelated]);
@@ -246,7 +249,7 @@ fn status_nests_copies_once_with_full_paths_and_states() {
     assert_eq!(
         lead,
         env.member(&second, "lead"),
-        "exercise repeated local IDs across copies"
+        "exercise repeated local IDs across child teams"
     );
     let (panel, _) = create_copy(&env, &first, "design");
     env.ok(&["start", &panel]);
@@ -257,7 +260,7 @@ fn status_nests_copies_once_with_full_paths_and_states() {
         let index = rows
             .iter()
             .position(|r| r["kind"] == "team" && r["team"] == *copy)
-            .expect("copy must appear under its parent");
+            .expect("child team must appear under its parent");
         assert_eq!(rows[index]["parent"], format!("{dept}/{dept_lead}"));
         assert_eq!(rows[index]["template"], "dev");
         assert_eq!(rows[index]["running"], running);
@@ -276,7 +279,7 @@ fn status_nests_copies_once_with_full_paths_and_states() {
     let panel_index = bare
         .iter()
         .position(|r| r["kind"] == "team" && r["team"] == panel)
-        .expect("depth-three copy must be visible");
+        .expect("depth-three child team must be visible");
     assert_eq!(bare[panel_index]["parent"], format!("{first}/{lead}"));
     assert!(
         bare.iter()
@@ -407,7 +410,7 @@ fn nested_status_screens_keep_healthy_members_visible_when_a_copy_becomes_unread
         assert!(
             !text.contains(&format!("{copy}  template "))
                 && !text.contains(&format!("{copy}  folder ")),
-            "nested copy must not have a top-level header: {text}"
+            "nested child team must not have a top-level header: {text}"
         );
         assert!(
             text.lines().any(
@@ -417,15 +420,18 @@ fn nested_status_screens_keep_healthy_members_visible_when_a_copy_becomes_unread
         );
         let path = env.path(&format!("state/{peer}/team.json"));
         let original = fs::read(&path).unwrap();
-        fs::write(&path, "unreadable copy record").unwrap();
-        env.wait_for("screen keeps healthy rows beside unreadable copy", || {
-            let text = screen();
-            text.contains("unreadable")
-                && text.contains(copy_name)
-                && text.lines().filter(|line| line.contains(&lead)).count() == 1
-        });
+        fs::write(&path, "unreadable child team record").unwrap();
+        env.wait_for(
+            "screen keeps healthy rows beside unreadable child team",
+            || {
+                let text = screen();
+                text.contains("unreadable")
+                    && text.contains(copy_name)
+                    && text.lines().filter(|line| line.contains(&lead)).count() == 1
+            },
+        );
         fs::write(&path, original).unwrap();
-        env.wait_for("screen recovers restored copy", || {
+        env.wait_for("screen recovers restored child team", || {
             screen().lines().filter(|line| line.contains(&lead)).count() == 2
         });
         if args.contains(&"-w") {
@@ -461,7 +467,7 @@ fn nested_status_screens_keep_healthy_members_visible_when_a_copy_becomes_unread
                 keys(&["j"]);
             }
             keys(&["Enter"]);
-            env.wait_for("copy row refuses attach", || {
+            env.wait_for("child team row refuses attach", || {
                 screen().contains("select one of its members")
             });
             assert!(env.tmux(&["list-clients"]).trim().is_empty());
@@ -469,7 +475,7 @@ fn nested_status_screens_keep_healthy_members_visible_when_a_copy_becomes_unread
                 keys(&["j"]);
             }
             keys(&["Enter"]);
-            env.wait_for("attach in selected nested instance", || {
+            env.wait_for("attach in selected nested team", || {
                 env.tmux(&["list-clients", "-F", "#{session_name}"]).trim() == format!("brg-{copy}")
             });
             keys(&["C-b", "d"]);
@@ -516,14 +522,16 @@ fn team_copies_share_the_tree_store_and_keep_separate_slots_until_deleted() {
     );
     for copy in [&first, &second] {
         env.ok(&["start", copy]);
-        env.wait_for("copy lead idle", || env.state_of(copy, "lead") == "idle");
+        env.wait_for("child team lead idle", || {
+            env.state_of(copy, "lead") == "idle"
+        });
         env.ok(&["msg", "integrity-check", "--team", copy]);
     }
     let first_lead = env.member(&first, "lead");
     let second_lead = env.member(&second, "lead");
     let sent = env.publish(
         &first,
-        &serde_json::json!({"to": first_lead, "body": "Fictional copy task"}),
+        &serde_json::json!({"to": first_lead, "body": "Fictional child team task"}),
     );
     assert!(sent.status.success(), "{}", both(&sent));
     assert_eq!(env.row(&first, "lead")["unacked"], 1);
@@ -660,7 +668,7 @@ fn depth_three_copies_wait_for_preparation_and_cascade_before_parent_deletion() 
             assert_eq!(env.state_of(instance, role), "stopped");
         }
     }
-    // The cascade prints completion of each instance in the order it stops.
+    // The cascade prints completion of each team in the order it stops.
     let order: Vec<_> = stopped
         .lines()
         .filter_map(|line| line.strip_suffix(": stopped"))
@@ -676,15 +684,15 @@ fn depth_three_copies_wait_for_preparation_and_cascade_before_parent_deletion() 
     env.ok(&["delete", &dept]);
     let remaining = stdout(&env.ok(&["templates", "--json"]));
     assert!(!remaining.contains(&dept));
-    // The dev copy's clean worktree goes with it; the root checkout stays.
+    // The dev team's clean worktree goes with it; the root checkout stays.
     assert!(!dev_folder.exists());
     assert!(env.path("work/a/.git").is_dir());
 }
 
 #[test]
 fn worktrees_in_a_copy_never_follow_the_copys_rewritten_git_file() {
-    // Catches: brg running git through a copy's member-writable `.git`
-    // file when it adds or removes worktrees inside that copy.
+    // Catches: brg running git through a child team's member-writable `.git`
+    // file when it adds or removes worktrees inside that child team.
     let env = department();
     env.write(
         "templates/dev/template.yaml",

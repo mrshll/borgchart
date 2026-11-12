@@ -49,7 +49,7 @@ const LEAD: &str = "---\nmodels:\n  claude: opus high\n---\nYou are the lead.\n"
 const HELPER: &str = "---\nmodels:\n  codex: example-model\n---\nYou are the helper.\n";
 
 impl Env {
-    /// A two-member team in a folder called `oncall`, its instance working
+    /// A two-member template in a folder called `oncall`, its team working
     /// in `work`; with `bus`, the team has `bus: {}`.
     fn new(bus: bool) -> Self {
         let dir = tempfile::tempdir().unwrap();
@@ -122,14 +122,14 @@ impl Env {
         cmd
     }
 
-    /// The fixture's one instance, once created.
+    /// The fixture's one team, once created.
     fn instance(&self) -> Option<String> {
         let reg: Value =
             serde_json::from_slice(&fs::read(self.path("state/registry.json")).ok()?).ok()?;
         reg["teams"].as_object()?.keys().next().cloned()
     }
 
-    /// The member of `role` in the instance, once created.
+    /// The member of `role` in the team, once created.
     fn member_id(&self, role: &str) -> Option<String> {
         let inst = self.instance()?;
         let rec: Value =
@@ -148,12 +148,12 @@ impl Env {
             .unwrap_or_else(|| panic!("no member of `{role}` yet"))
     }
 
-    /// The instance (it must exist).
+    /// The team (it must exist).
     fn inst(&self) -> String {
-        self.instance().expect("an instance")
+        self.instance().expect("a team")
     }
 
-    /// Printed trees with the instance line as `oncall`, and member IDs as
+    /// Printed trees with the team line as `oncall`, and member IDs as
     /// their roles padded to the same width, so they compare exactly.
     fn shown(&self, text: &str) -> String {
         let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
@@ -175,11 +175,11 @@ impl Env {
             .join(format!("members/{}/incarnation.json", self.m(role)))
     }
 
-    /// The tests act on the team's one instance, and name members by role
-    /// (each role has one member): `start` creates the instance the first
+    /// The tests act on the fixture's one team, and name members by role
+    /// (each role has one member): `start` creates the team the first
     /// time and starts it after, `start <role>` creates or starts its
     /// member, `stop [<role>]`, `status`, `logs`, `attach` and `msg send` go to
-    /// the instance.
+    /// the team.
     fn translate(&self, args: &[&str]) -> Vec<String> {
         let inst = self.instance();
         let at = |role: &str| match (&inst, self.member_id(role)) {
@@ -322,14 +322,14 @@ impl Env {
         self.wait_for("helper idle", |e| e.state_of("helper") == "idle");
     }
 
-    /// The instance's message storage.
+    /// The team's message storage.
     fn store(&self) -> PathBuf {
         self.state_dir().join("messages")
     }
 
-    /// The instance's state folder.
+    /// The team's state folder.
     fn state_dir(&self) -> PathBuf {
-        self.path(&format!("state/{}", self.instance().expect("an instance")))
+        self.path(&format!("state/{}", self.instance().expect("a team")))
     }
 
     /// Every file under the state home, with its bytes.
@@ -516,7 +516,7 @@ fn status_without_instances_says_so() {
     let env = Env::new(true);
     let out = env.ok(&["status"]);
     assert!(
-        stdout(&out).contains("there are no instances"),
+        stdout(&out).contains("there are no teams"),
         "{}",
         both(&out)
     );
@@ -599,7 +599,7 @@ fn a_damaged_start_record_is_refused_not_read_as_not_running() {
         "the lead's window was stopped"
     );
 
-    // Listing every instance still works.
+    // Listing every team still works.
     let mut status = env.brg_cmd(&[]);
     let out = status.arg("status").output().unwrap();
     assert!(out.status.success(), "{}", both(&out));
@@ -862,7 +862,7 @@ fn a_lost_store_identity_is_not_a_first_start() {
     assert_eq!(out.status.code(), Some(1), "{}", both(&out));
     assert!(
         both(&out).contains(&format!(
-            "instance `{}`'s message storage is damaged",
+            "team `{}`'s message storage is damaged",
             env.inst()
         )),
         "{}",
@@ -1345,7 +1345,7 @@ fn an_up_that_cannot_see_the_server_does_not_make_down_say_not_running() {
         env.ok(&["start", "lead"]);
         env.wait_for("lead idle", |e| e.state_of("lead") == "idle");
         // A caller without tmux finds no session, so it starts the
-        // instance afresh, with nothing to start.
+        // team afresh, with nothing to start.
         let no_tmux = |args: &[&str]| {
             env.brg_cmd(args)
                 .env("PATH", env.path("bin"))
@@ -1792,7 +1792,7 @@ fn a_lost_store_identity_is_damaged_storage() {
         assert_eq!(out.status.code(), Some(1), "{args:?}: {}", both(&out));
         assert!(
             both(&out).contains(&format!(
-                "instance `{}`'s message storage is damaged",
+                "team `{}`'s message storage is damaged",
                 env.inst()
             )),
             "{}",
@@ -1814,10 +1814,7 @@ fn storage_errors_name_the_team_not_its_files() {
     let out = env.brg(&["start"]);
     assert_eq!(out.status.code(), Some(1), "{}", both(&out));
     let text = both(&out);
-    assert!(
-        text.contains(&format!("instance `{}`", env.inst())),
-        "{text}"
-    );
+    assert!(text.contains(&format!("team `{}`", env.inst())), "{text}");
 
     assert!(
         !text.contains(&env.store().display().to_string()) && !text.contains("lifecycle.lock"),

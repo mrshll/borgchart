@@ -1,6 +1,6 @@
 //! Who is calling: a member (from its launch environment), an outside caller
-//! using `owner` by default or naming itself with `--external`, or an
-//! instance-only plugin with no outside identity.
+//! using `owner` by default or naming itself with `--external`, or a plugin
+//! process with only `BORGCHART_TEAM` set and no outside identity.
 //!
 //! This prevents mistakes, not spoofing: anything running as the same user
 //! can set these variables.
@@ -33,7 +33,7 @@ pub enum Caller {
     External {
         name: String,
     },
-    /// Instance-only context and no `--external`: may read, not publish.
+    /// Only `BORGCHART_TEAM` set and no `--external`: may read, not publish.
     Operator,
 }
 
@@ -47,7 +47,7 @@ pub enum Actor {
     External { name: String },
 }
 
-/// The instance a bus command acts on: inside a member (or a plugin
+/// The team a bus command acts on: inside a member (or a plugin
 /// process), its own, and `--team` may only repeat it; outside, the
 /// `--team` given, which is required.
 pub fn instance(flag: Option<&str>) -> Result<String, Failure> {
@@ -60,7 +60,7 @@ pub fn instance_from(
 ) -> Result<String, Failure> {
     // A partial member context is refused before any store is chosen, for
     // reads as well as writes: it would otherwise act as an operator. An
-    // instance alone (a plugin process) is not a member context.
+    // Only `BORGCHART_TEAM` set (a plugin process) is not a member context.
     let set = |k: &str| get(k).is_some_and(|v| !v.is_empty());
     let parts = [ENV_MEMBER, ENV_INCARNATION];
     if MEMBER_ONLY_ENV.iter().any(|k| set(k))
@@ -76,14 +76,14 @@ pub fn instance_from(
     match (get(ENV_INSTANCE).filter(|v| !v.is_empty()), flag) {
         (Some(own), Some(other)) if other != own => Err(Failure::new(
             Code::Refused,
-            format!("this is a member of instance `{own}`; it can't act on instance `{other}`"),
+            format!("this is a member of team `{own}`; it can't act on team `{other}`"),
         )),
         (Some(own), _) => Ok(own),
         (None, Some(id)) => Ok(id.to_string()),
         (None, None) => Err(Failure::new(
             Code::Usage,
             format!(
-                "name the instance with `--team ID`; {}",
+                "name the team with `--team ID`; {}",
                 crate::address::known()
             ),
         )),

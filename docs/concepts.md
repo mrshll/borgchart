@@ -1,19 +1,19 @@
 # Concepts
 
-**Status: partly built.** Templates, instances, `roles:`, suffixed member IDs, copies up to `max`, member deletion and member status work today. Bus members may manage only their declared children, using their latest start ID. Teams as members (team roles whose members are child teams) share one message store per runtime tree.
+**Status: partly built.** Templates, teams, `roles:`, suffixed member IDs, members up to `max`, member deletion and member status work today. Bus members may manage only their declared children, using their latest start ID. Teams as members (team roles whose members are child teams) share one message store per runtime tree.
 
 ## Templates and what runs from them
 
 Each template noun has an active noun, created from it by `brg create`.
 
 Template folders and runtime working folders serve different purposes. A child
-copy keeps its own instance and shares the tree's message store, with its working folder nested
-under its parent instance, independently of where its team template is stored.
+team has its own members and shares the tree's message store, with its working folder nested
+under its parent team, independently of where its team template is stored.
 
 | Template | Active | Created by | Examples |
 | --- | --- | --- | --- |
-| **Team template**: a folder you can share, holding `template.yaml` and role files, with local or catalog-shared includes and plugins | **Instance**: the team running in one working folder, with its members, messages and notes | `brg create dev-team ~/work/x` | `dev-team-k3f9`, `dev-team-p7xm` |
-| **Role**: a named part in a template (a role file, a vendor, a parent, whether it starts with the instance, how many copies may run) | **Member**: one running agent filling the role | `brg create dev-team-k3f9/implementer` | `implementer-x7k2`, `lead-q8m3` |
+| **Team template**: a folder you can share, holding `template.yaml` and role files, with local or catalog-shared includes and plugins | **Team**: the template running in one working folder, with its members, messages and notes | `brg create dev-team ~/work/x` | `dev-team-k3f9`, `dev-team-p7xm` |
+| **Role**: a named part in a template (a role file, a vendor, a parent, whether it starts with the team, how many members may run) | **Member**: one running agent filling the role | `brg create dev-team-k3f9/implementer` | `implementer-x7k2`, `lead-q8m3` |
 
 - **Start:** one start of a member. It keeps today's unique start ID (incarnation); only a member's latest start may act as it.
 - **Unchanged:**
@@ -27,13 +27,13 @@ under its parent instance, independently of where its team template is stored.
   - whether the team uses the message bus, and its alert action (`bus:`);
   - each role's `posture`, its extra launch arguments (`args`, such as the researcher's `--search`), and whether each member works in its own git worktree (`worktree: true`);
   - plain plugin values, such as a channel ID.
-- **The instance's working folder** is given at `create` (the current folder by default) and recorded on the instance for its whole life: usually the repository the team works on. Members start there, or in their own worktree for a `worktree: true` role. It can't be the same as, inside or around brg's state folder, so a member's own folder never exposes brg's files; brg's worktrees live beside the state folder, never in it.
-- **The instance's state folder,** `~/.local/state/borgchart/<instance>/`, holds:
-  - `messages/` at the tree root only, shared by all copies;
+- **The team's working folder** is given at `create` (the current folder by default) and recorded on the team for its whole life: usually the repository the team works on. Members start there, or in their own worktree for a `worktree: true` role. It can't be the same as, inside or around brg's state folder, so a member's own folder never exposes brg's files; brg's worktrees live beside the state folder, never in it.
+- **The team's state folder,** `~/.local/state/borgchart/<team>/`, holds:
+  - `messages/` at the tree root only, shared by all child teams;
   - `notes/`, for members' reports and other files the members share (`$BORGCHART_NOTES`);
   - brg's own files.
 
-  Codex `vendor` members run with full host access and no tool approvals, including access to brg's state files. Claude `vendor` members get the tree's `messages/` and their instance's `notes/` as added folders. Locked members retain their gate and restricted launch settings.
+  Codex `vendor` members run with full host access and no tool approvals, including access to brg's state files. Claude `vendor` members get the tree's `messages/` and their team's `notes/` as added folders. Locked members retain their gate and restricted launch settings.
 
   `locked` members keep today's launch unchanged:
   - their gate;
@@ -47,14 +47,14 @@ under its parent instance, independently of where its team template is stored.
   ```yaml
   schema: 1
   auth: login                   # login (default) | api_key, for every member
-  auto_trust: true              # trust each instance's folder without a person
+  auto_trust: true              # trust each team's folder without a person
   templates:                    # where template names are looked up
     - ~/.config/borgchart/templates # the default
   plugins_dir: ~/borgchart-plugins   # where shared:<name> plugins live
   tmux: {user_config: true}     # load your own tmux config on brg's server (default: false)
   ```
 
-  It's the same for every team, for now. `tmux.user_config` keeps today's meaning: it's read when brg's tmux server starts, and a change applies once every instance on that server is stopped. A hosted brg would use `api_key` only.
+  It's the same for every team, for now. `tmux.user_config` keeps today's meaning: it's read when brg's tmux server starts, and a change applies once every team on that server is stopped. A hosted brg would use `api_key` only.
 - **Secrets** are never stored by brg, and never written in a file you edit. A secret's value comes from the environment of the shell that runs `create` or `start` (for example, under your password manager's `run`), as today.
   - `brg secrets <template>` lists the secret names the template's plugins need, and whether each is set in your environment. It stores and prints no values.
   - Members' windows start from a small base environment, so secrets don't reach them that way. The one exception is the vendor's own key: with `auth: api_key`, brg passes `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` to that vendor's members by name, and with `login` it passes neither. A plugin receives a secret only when its `env` names it: brg writes it to that plugin's private file (mode 0600), which the plugin's shims read, and removes the file at stop.
@@ -67,22 +67,22 @@ under its parent instance, independently of where its team template is stored.
 
 There's no `up`. `create` always makes something new; `start`, `stop` and `delete` are safe to repeat:
 
-| Command | On an instance | On a member |
+| Command | On a team | On a member |
 | --- | --- | --- |
-| `brg create` | `create <template> <folder>` makes a new instance working in that folder (the current folder by default), starts it, and prints its ID and tree. `<template>` is a template's name or a path to its folder. Run it twice and you have two instances. | `create <instance>/<role>` makes a new member of that role and starts it. `create` takes only a template or a role, never a member. It's refused past `max`; for a `max: 1` role whose member already exists, it points to `start`. |
-| `brg start` | Brings the instance to what should be running. That's the `start: true` roles and the members that were running when it was last stopped. A `start: true` role whose member was deleted gets a fresh member. Members already running are left alone. Members that start use current files and configuration. It takes no folder. | Starts that member with a new start. If it's already running, it says so and changes nothing. A deleted ID is refused. |
-| `brg stop` | Stops every member. On a stopped instance, it says so and changes nothing. | Stops that member; the same on a stopped one. |
-| `brg delete` | Removes a stopped instance: its notes, state and registration. Copy messages stay as history in the tree store; root deletion removes that store. It's refused while anything runs. Unread messages, or messages it cannot read, are listed and need `--force`. | Removes a stopped member. Unread messages are listed with a count and require `--force`; running or unknown liveness is always refused. Kept children, running or stopped, also prevent deletion, even with `--force`: their full addresses are listed; delete them first. Its ID stays issued. Immutable messages remain as history; unread ones to a deleted member stop counting as open work. |
+| `brg create` | `create <template> <folder>` makes a new team working in that folder (the current folder by default), starts it, and prints its ID and tree. `<template>` is a template's name or a path to its folder. Run it twice and you have two teams. | `create <team>/<role>` makes a new member of that role and starts it. `create` takes only a template or a role, never a member. It's refused past `max`; for a `max: 1` role whose member already exists, it points to `start`. |
+| `brg start` | Brings the team to what should be running. That's the `start: true` roles and the members that were running when it was last stopped. A `start: true` role whose member was deleted gets a fresh member. Members already running are left alone. Members that start use current files and configuration. It takes no folder. | Starts that member with a new start. If it's already running, it says so and changes nothing. A deleted ID is refused. |
+| `brg stop` | Stops every member. On a stopped team, it says so and changes nothing. | Stops that member; the same on a stopped one. |
+| `brg delete` | Removes a stopped team: its notes, state and registration. Child team messages stay as history in the tree store; root deletion removes that store. It's refused while anything runs. Unread messages, or messages it cannot read, are listed and need `--force`. | Removes a stopped member. Unread messages are listed with a count and require `--force`; running or unknown liveness is always refused. Kept children, running or stopped, also prevent deletion, even with `--force`: their full addresses are listed; delete them first. Its ID stays issued. Immutable messages remain as history; unread ones to a deleted member stop counting as open work. |
 
 **Restarting** is `stop` then `start`. That's also how changed files are applied.
 
-**Copies.** With a bus, member lifecycle commands require a person or the declared parent's latest running start. A replaced start, a sibling, the member itself or another instance's member is refused. Creating a child requires a kept parent member. No-bus teams and whole-instance commands keep their existing caller rules.
+**Members.** With a bus, member lifecycle commands require a person or the declared parent's latest running start. A replaced start, a sibling, the member itself or another team's member is refused. Creating a child requires a kept parent member. No-bus teams and whole-team commands keep their existing caller rules.
 
-**A template, a path or a role.** A path starts with `/`, `./`, `../` or `~/`. Any other argument to `create` is a template's name when it has no `/`, and `<instance>/<role>` when it has one. So `brg create ./dev-team ~/work/x` runs the folder `./dev-team`, and `brg create templates/dev-team` is refused ("no instance `templates`; for a folder, write `./templates/dev-team`").
+**A template, a path or a role.** A path starts with `/`, `./`, `../` or `~/`. Any other argument to `create` is a template's name when it has no `/`, and `<team>/<role>` when it has one. So `brg create ./dev-team ~/work/x` runs the folder `./dev-team`, and `brg create templates/dev-team` is refused ("no team `templates`; for a folder, write `./templates/dev-team`").
 
 **Also:**
 - `attach`, `logs` and `msg send` take a member address.
-- `brg templates` lists the templates in the search paths, each with its instances, running or stopped.
+- `brg templates` lists the templates in the search paths, each with its teams, running or stopped.
 - `brg status` shows the tree and each member's unacked count, including in `-i` and `--json`.
 - `brg validate <template>` checks the template folder and the global configuration.
 
@@ -91,11 +91,11 @@ There's no `up`. `create` always makes something new; `start`, `stop` and `delet
 | What | Name | Example |
 | --- | --- | --- |
 | Template | Its folder's name. There's no `name:` field. | `~/.config/borgchart/templates/dev-team/` is `dev-team` |
-| Instance | `<template>-<suffix>`. The suffix is four characters from `23456789abcdefghjkmnpqrstuvwxyz` (no `0 1 i l o`), random, checked against every instance brg has registered, and never reused. | `dev-team-k3f9` |
-| Member | `<role>-<suffix>`, with the same kind of suffix as instances, never reused within the instance | `lead-q8m3`, `implementer-x7k2` |
+| Team | `<template>-<suffix>`. The suffix is four characters from `23456789abcdefghjkmnpqrstuvwxyz` (no `0 1 i l o`), random, checked against every team brg has registered, and never reused. | `dev-team-k3f9` |
+| Member | `<role>-<suffix>`, with the same kind of suffix as teams, never reused within the team | `lead-q8m3`, `implementer-x7k2` |
 | Start | A unique ID for one start of a member (an incarnation), as today | `implementer-x7k2.20261108000000000.ab12` |
-| Member address | `[instance/]member` | `dev-team-k3f9/implementer-x7k2` |
-| Role address | `[instance/]<role>`, the bare role name. Only `create` takes it. Members always carry a suffix, so a bare name is never a member's ID. There's no role queue: messages go to members. | `dev-team-k3f9/implementer` |
+| Member address | `[team/]member` | `dev-team-k3f9/implementer-x7k2` |
+| Role address | `[team/]<role>`, the bare role name. Only `create` takes it. Members always carry a suffix, so a bare name is never a member's ID. There's no role queue: messages go to members. | `dev-team-k3f9/implementer` |
 | Message | `m<seq>`, unique within the tree | `m42` |
 
 **Finding a template by name.** brg looks in every folder under `templates:`. A template is a subfolder holding a `template.yaml`.
@@ -103,33 +103,33 @@ There's no `up`. `create` always makes something new; `start`, `stop` and `delet
 - Two or more: brg lists their paths and asks for one. It never picks the first.
 - A path always works, in or out of the search paths.
 
-Two folders with the same name can both run. Their instances are told apart by their suffixes, and `brg templates` shows each one's folder.
+Two folders with the same name can both run. Their teams are told apart by their suffixes, and `brg templates` shows each one's folder.
 
-**Leaving the instance out.** Inside a member, an address without an instance means that member's own instance, so a lead writes `implementer-x7k2`. Everywhere else the full instance ID is needed (`dev-team-k3f9/implementer-x7k2`, `brg start dev-team-k3f9`). There are no other shortcuts for now: brg never infers an instance from a template's name or from which instances are running. `msg` commands other than `msg send` take the instance as `--team`; inside a member it's always the member's own.
+**Leaving the team out.** Inside a member, an address without a team means that member's own team, so a lead writes `implementer-x7k2`. Everywhere else the full team ID is needed (`dev-team-k3f9/implementer-x7k2`, `brg start dev-team-k3f9`). There are no other shortcuts for now: brg never infers a team from a template's name or from which teams are running. `msg` commands other than `msg send` take the team as `--team`; inside a member it's always the member's own.
 
 **Members are always named in full.** Commands that act on a member (`attach`, `msg send`, `stop`), and messages, take its full ID (`lead-q8m3`). A role name there is refused, listing the role's members. There are no shortcuts for now.
 
 **Parents are agent roles.** `parent: lead` names an agent role, and a member's parent is the member filling that role. So a parent role must have one member: `validate` refuses a `parent:` that names a team role or a role with `max > 1`. The same goes for a plugin's `delivers_to:`.
 
-**Recipients.** A message goes to one kept, started member along a parent/child edge, or from a root member of the tree's root instance to `external:NAME`. An instance isn't a recipient: name a member in it. Across a copy edge, use its full member address. Siblings, cousins and independent roots cannot exchange messages. Every record carries full member addresses and a tree-wide message ID; replies reference plain IDs such as `m1`.
+**Recipients.** A message goes to one kept, started member along a parent/child edge, or from a root member of the tree's root team to `external:NAME`. A team isn't a recipient: name a member in it. Across a child team edge, use its full member address. Siblings, cousins and independent roots cannot exchange messages. Every record carries full member addresses and a tree-wide message ID; replies reference plain IDs such as `m1`.
 
-**Teams as members.** A role can be a team, referenced by name through the configured template directories (`template: dev-team`). Its members are copies (`dev-a7k2`): nested instances, each with its own members, notes and state, and a working folder inside its parent's. Teams form a tree: the member with no parent is the root. Addresses nest (`engineering-h4k2/dev-a7k2/lead-c4nd`), and a copy's instance ID is its full path. Copies are created stopped, prepared by their parent and then started. A member may act on its whole subtree, and `stop` cascades deepest first. [teams.md](teams.md#teams-as-members) has the rules, and [`engineering/`](../templates/engineering/) defines the runtime tree from sibling templates under `templates/`.
+**Teams as members.** A role can be a team, referenced by name through the configured template directories (`template: dev-team`). Its members are child teams (`dev-a7k2`): nested teams, each with its own members, notes and state, and a working folder inside its parent's. Teams form a tree: the member with no parent is the root. Addresses nest (`engineering-h4k2/dev-a7k2/lead-c4nd`), and a child team's ID is its full path. Child teams are created stopped, prepared by their parent and then started. A member may act on its whole subtree, and `stop` cascades deepest first. [teams.md](teams.md#teams-as-members) has the rules, and [`engineering/`](../templates/engineering/) defines the runtime tree from sibling templates under `templates/`.
 
 ## Lifetimes
 
-**An instance lives from `create` until `delete`.**
+**A team lives from `create` until `delete`.**
 - **Stopping and starting:** `stop` and `start` keep its ID, messages and notes, and its members keep their IDs.
 - **Members are kept:** a member exists from `create` until `delete`, running or stopped. `max` counts those members. A stopped member stays addressable and can be started again.
-- **Its template folder:** the instance records the folder's path, not its name, so a same-named template elsewhere never takes its place. If the folder moves, `start` refuses, and `start <instance> --template <new path>` points it there.
-- **Its working folder** is fixed at `create`. If it's gone, `start` refuses; create a new instance.
-- **Message store:** one per team tree, in the root instance's state folder. Message numbers continue across stops, starts and copy deletion. Earlier formats require the [manual cutover](bus.md#storage).
-- **Checkouts:** every operation that starts a member (`create`, `start`, `start --template`) checks its resolved working folder. It refuses if that folder is the same as, inside, or around a folder that another instance's member holds while running or while brg cannot tell it stopped. Members of one tree (an instance and its copies) may share a folder: a copy without `worktree: true` works in its parent's. Members work in the instance's folder unless their role sets `worktree: true`: then each member or copy gets its own git worktree from the instance's folder, which brg adds when it issues it (`create`, or a full `start` that gives a `start: true` role a new member), detached at the folder's `HEAD` or on `create --branch <name>`. It lives beside brg's state folder, at `~/.local/state/borgchart-worktrees/<address>` (with `/` written as `.`); the command that adds it names it, and `status --json` gives it as `worktree`. `delete` removes it when it is clean, refuses while it holds uncommitted work or commits on no remote, and with `--force` leaves it as it is. Starting an existing member never adds its worktree; one that is gone refuses the start. The checks, creation and reservation happen under one registry lock.
-- **A new message format:** brg refuses to start any instance whose tree store uses an earlier format, names the root that owns it, and points to the [cutover steps](bus.md#storage). `stop` and liveness never parse messages, so they still work on the old instance. A stopped instance holds no checkout; `delete` of unreadable messages needs `--force` ("its contents can't be inspected"). No storage generations are needed.
+- **Its template folder:** the team records the folder's path, not its name, so a same-named template elsewhere never takes its place. If the folder moves, `start` refuses, and `start <team> --template <new path>` points it there.
+- **Its working folder** is fixed at `create`. If it's gone, `start` refuses; create a new team.
+- **Message store:** one per team tree, in the root team's state folder. Message numbers continue across stops, starts and child team deletion. Earlier formats require the [manual cutover](bus.md#storage).
+- **Checkouts:** every operation that starts a member (`create`, `start`, `start --template`) checks its resolved working folder. It refuses if that folder is the same as, inside, or around a folder that another team's member holds while running or while brg cannot tell it stopped. Members of one tree (a team and its child teams) may share a folder: a child team without `worktree: true` works in its parent's. Members work in the team's folder unless their role sets `worktree: true`: then each member or child team gets its own git worktree from the team's folder, which brg adds when it issues it (`create`, or a full `start` that gives a `start: true` role a new member), detached at the folder's `HEAD` or on `create --branch <name>`. It lives beside brg's state folder, at `~/.local/state/borgchart-worktrees/<address>` (with `/` written as `.`); the command that adds it names it, and `status --json` gives it as `worktree`. `delete` removes it when it is clean, refuses while it holds uncommitted work or commits on no remote, and with `--force` leaves it as it is. Starting an existing member never adds its worktree; one that is gone refuses the start. The checks, creation and reservation happen under one registry lock.
+- **A new message format:** brg refuses to start any team whose tree store uses an earlier format, names the root that owns it, and points to the [cutover steps](bus.md#storage). `stop` and liveness never parse messages, so they still work on the old team. A stopped team holds no checkout; `delete` of unreadable messages needs `--force` ("its contents can't be inspected"). No storage generations are needed.
 - **Durability:** brg refuses a state folder under `/tmp` or any other path cleaned by age. Reads scan the store; there is no index or archiving.
 
-**One tree, several repositories.** The tree's working folder may be a plain folder of clones. Create one dev copy per repository with `brg create <root>/dev --repo widgets` and `brg create <root>/dev --repo gadgets`; the root lead sequences their work. Each name selects a real clone directly in the tree's top folder, with a real `.git` directory. Paths, symlinks, linked worktrees and bare repositories are refused. brg discovers origin's current default branch and fetches it before issuing the copy and before taking the registry lock; a missing or unreachable origin refuses creation. The worktree starts at that tip while the original clone keeps its branch, index and working files, including uncommitted work. `--branch` optionally creates a new branch at the same tip. An implementer created inside a copy without `--repo` starts from the copy's current committed `HEAD`, including commits made there. The repository is found afresh through Git's own worktree records for delete, cleanup and destroy, without a stored repository setting. While the root holds the plain folder, the checkout check also excludes independent running trees inside its clones.
+**One tree, several repositories.** The tree's working folder may be a plain folder of clones. Create one child team per repository with `brg create <root>/dev --repo widgets` and `brg create <root>/dev --repo gadgets`; the root lead sequences their work. Each name selects a real clone directly in the tree's top folder, with a real `.git` directory. Paths, symlinks, linked worktrees and bare repositories are refused. brg discovers origin's current default branch and fetches it before issuing the child team and before taking the registry lock; a missing or unreachable origin refuses creation. The worktree starts at that tip while the original clone keeps its branch, index and working files, including uncommitted work. `--branch` optionally creates a new branch at the same tip. An implementer created inside a child team without `--repo` starts from the child team's current committed `HEAD`, including commits made there. The repository is found afresh through Git's own worktree records for delete, cleanup and destroy, without a stored repository setting. While the root holds the plain folder, the checkout check also excludes independent running trees inside its clones.
 
-**Starts** keep today's IDs (incarnations), for fencing a replaced process, identifying its recorded tmux pane, liveness and stop. `BORGCHART_INCARNATION` is the current member start's ID, not a per-member number. Start records live in brg's own files outside messages. If their state is missing or unreadable, brg refuses to guess whether a member is stopped. Instance IDs are never reused, so a process left over from a deleted instance cannot act as a member of a new one.
+**Starts** keep today's IDs (incarnations), for fencing a replaced process, identifying its recorded tmux pane, liveness and stop. `BORGCHART_INCARNATION` is the current member start's ID, not a per-member number. Start records live in brg's own files outside messages. If their state is missing or unreadable, brg refuses to guess whether a member is stopped. Team IDs are never reused, so a process left over from a deleted team cannot act as a member of a new one.
 
 ## `brg status`
 
@@ -143,12 +143,12 @@ dev-team-k3f9                       template ~/.config/borgchart/templates/dev-t
    └─ researcher        not created (start: false)
 ```
 
-- **Header line:** the instance, then its template folder and working folder.
+- **Header line:** the team, then its template folder and working folder.
 - **Tree lines:**
   - one line per member;
   - a role with no kept member gets `not created (start: false)` or `not created (start: true)`, following its `start` setting, or a dim `on demand (none created)` for `max > 1`. A created member that isn't running shows on its own line as `stopped`;
   - positive unacked message counts appear beside members, also in `-i`; a zero adds nothing to the tree;
-  - copies nest under their parent member, each with its full instance path.
+  - child teams nest under their parent member, each with its full team path.
 - **`--json` member rows:** `team`, `template`, `member`, `role`, `parent` (a member ID), `start_id` (the current incarnation, when recorded), and the existing fields. A stop retains `start_id`; restarting changes it. With a readable bus, `unacked` gives each kept member's unacked count, including zero. Without a bus it is absent; if the store cannot be read, counts are absent and status adds a short note. Deleted members have no rows. Plugin-process rows keep `kind: plugin` and their name.
 
 ## Environment variables
@@ -157,19 +157,19 @@ Every `BORGCHART_*` variable that a member, plugin or test can see:
 
 | Name | Seen by | Meaning |
 | --- | --- | --- |
-| `BORGCHART_TEAM` | members, plugins, alert actions | the instance (`dev-team-k3f9`) |
+| `BORGCHART_TEAM` | members, plugins, alert actions | the team (`dev-team-k3f9`) |
 | `BORGCHART_ROLE` | members, plugin actions | the role (`implementer`) |
 | `BORGCHART_MEMBER` | members, plugin actions | the member (`implementer-x7k2`) |
 | `BORGCHART_INCARNATION` | members | the member's current start ID; brg refuses a stopped or replaced start |
-| `BORGCHART_NOTES` | members | the instance's notes folder |
+| `BORGCHART_NOTES` | members | the team's notes folder |
 | `BORGCHART_CONFIG` | the caller, members, tests | the global configuration file (default `~/.config/borgchart/config.yaml`); members get the caller's, so their own `brg create` finds the same templates |
 | `BORGCHART_BIN` | members, plugins | the brg that started them |
-| `BORGCHART_PARENT` | plugin actions; the members of a copy that have no parent role | the calling member's parent (a member); for a copy's top members, the full address of the member the copy belongs to |
+| `BORGCHART_PARENT` | plugin actions; the members of a child team that have no parent role | the calling member's parent (a member); for a child team's top members, the full address of the member the child team belongs to |
 | `BORGCHART_DELIVER_TO` | plugin processes | the member a process hands work to (its `delivers_to` role's only member) |
 | `BORGCHART_STATE_DIR` | plugins | the plugin's private folder |
-| `BORGCHART_TMUX_SOCKET` | members, plugins, tests | which tmux server runs the instance |
+| `BORGCHART_TMUX_SOCKET` | members, plugins, tests | which tmux server runs the team |
 | `BORGCHART_TMUX_TMPDIR` | members, plugins, tests | where that server keeps its socket; keeps test servers private |
-| `BORGCHART_STATE_HOME` | the caller, tests | brg's state folder, holding every instance's state folder |
+| `BORGCHART_STATE_HOME` | the caller, tests | brg's state folder, holding every team's state folder |
 | `BORGCHART_GATE_WAIT_MS` | the caller, tests | how long a start waits for a `locked` member's gate |
 | `BORGCHART_WAIT_MIN_MS`, `BORGCHART_WAIT_TIMEOUT_MS` | tests (test builds only) | shorten `msg wait`'s minimum and timeout |
 | `BORGCHART_QUALIFY`, `…_VENDORS`, `…_SUBMIT` | the manual vendor qualification test | turn that test on and pick its vendors |

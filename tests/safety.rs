@@ -1,4 +1,4 @@
-//! Safety around instances: checkouts held across instances, brg's own
+//! Safety around teams: checkouts held across teams, brg's own
 //! state folder, changed files and storage that can't be read.
 //!
 //! Run with `cargo test --features test-support`.
@@ -127,7 +127,7 @@ fn killed_server_holds_checkout_until_full_stop_confirms_processes_gone() {
     env.ok(&["stop", &b]);
 }
 
-/// An instance `A` running in `work/a`, whose start.json is then
+/// A team `A` running in `work/a`, whose start.json is then
 /// damaged: brg can no longer read which tmux server runs it.
 fn damaged_start_record() -> (Env, String) {
     let env = Env::new();
@@ -239,7 +239,7 @@ fn a_moved_team_folder_is_re_pointed_after_a_full_stop() {
     assert!(err.contains("--template"), "{err}");
     env.ok(&["start", &a, "--template", &moved]);
     env.wait_for("lead idle", || env.state_of(&a, "lead") == "idle");
-    assert_eq!(env.member(&a, "lead"), lead, "the same instance and member");
+    assert_eq!(env.member(&a, "lead"), lead, "the same team and member");
     let inbox = stdout(&env.ok(&["msg", "list", "--member", &lead, "--team", &a, "--full"]));
     assert!(inbox.contains("keep me"), "{inbox}");
     env.ok(&["stop", &a]);
@@ -355,11 +355,11 @@ fn a_start_that_never_reached_tmux_leaves_nothing_held() {
             .output()
             .unwrap()
     };
-    // A first start: the new instance is taken back.
+    // A first start: the new team is taken back.
     let out = unusable(&["create", "oncall", &env.folder("work/a")]);
     assert!(!out.status.success(), "{}", both(&out));
     assert_eq!(env.registry()["teams"], json!({}));
-    // A later start of an existing instance: stop and delete still work.
+    // A later start of an existing team: stop and delete still work.
     let a = env.create("oncall", "work/a");
     env.ok(&["stop", &a]);
     let out = unusable(&["start", &a]);
@@ -444,7 +444,7 @@ fn a_partial_member_context_is_refused_for_reads_too() {
             );
         }
     }
-    // A plugin process has only its instance: that still works.
+    // A plugin process has only its team: that still works.
     let out = env
         .cmd(&["msg", "integrity-check"])
         .env("BORGCHART_TEAM", &a)
@@ -491,7 +491,7 @@ fn a_failed_create_never_takes_back_an_instance_started_meanwhile() {
     let long = env.path(&format!("t{}", "x".repeat(120)));
     fs::create_dir_all(&long).unwrap();
     let pause = env.path("rollback-pause");
-    // A create that can't reach tmux, paused before it takes its instance back.
+    // A create that can't reach tmux, paused before it takes its team back.
     let failing = env
         .cmd(&["create", "oncall", &env.folder("work/a")])
         .env("BORGCHART_TMUX_TMPDIR", &long)
@@ -502,7 +502,7 @@ fn a_failed_create_never_takes_back_an_instance_started_meanwhile() {
         .unwrap();
     let waiting = pause.with_extension("waiting");
     env.wait_for("the rollback to pause", || waiting.exists());
-    // Meanwhile someone starts the registered instance.
+    // Meanwhile someone starts the registered team.
     let reg: serde_json::Value =
         serde_json::from_slice(&fs::read(env.path("state/registry.json")).unwrap()).unwrap();
     let a = reg["teams"]
@@ -516,7 +516,7 @@ fn a_failed_create_never_takes_back_an_instance_started_meanwhile() {
     fs::write(&pause, "").unwrap();
     let out = failing.wait_with_output().unwrap();
     assert!(!out.status.success(), "{}", both(&out));
-    // The started instance is still there, and still runs.
+    // The started team is still there, and still runs.
     assert!(env.registry()["teams"].get(&a).is_some(), "taken back");
     assert!(env.path(&format!("state/{a}/team.json")).exists());
     env.wait_for("lead idle", || env.state_of(&a, "lead") == "idle");

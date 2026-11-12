@@ -1,5 +1,5 @@
 //! `brg status -w` (a refreshing table) and `brg status -i` (an interactive
-//! screen), for one instance or, with none named, every instance.
+//! screen), for one team or, with none named, every team.
 
 use std::io::Write;
 use std::time::{Duration, Instant};
@@ -166,8 +166,8 @@ fn clock(epoch: u64) -> String {
     format!("{:02}:{:02}:{:02}", day / 3600, day % 3600 / 60, day % 60)
 }
 
-/// Every instance's header and tree, read again now, and all their rows; an
-/// instance whose status fails shows its error in its place.
+/// Every team's header and tree, read again now, and all their rows; a
+/// team whose status fails shows its error in its place.
 fn every_text() -> Result<(String, Vec<StatusRow>), String> {
     let all = address::every()?;
     if all.is_empty() {
@@ -187,15 +187,15 @@ fn every_text() -> Result<(String, Vec<StatusRow>), String> {
     Ok((text, every))
 }
 
-/// One instance on the `-i` screen: its header line and its rows.
+/// One team on the `-i` screen: its header line and its rows.
 struct Section {
     inst: Instance,
     header: String,
     rows: Vec<StatusRow>,
 }
 
-/// The named instance, or every instance read from the registry now. With
-/// every instance, one whose status fails shows its error as its header.
+/// The named team, or every team read from the registry now. With
+/// every team, one whose status fails shows its error as its header.
 /// `roles` keeps the rows of roles with no member that a terminal hides
 /// ([`runtime::hide_empty_roles`]).
 fn load(one: Option<&Instance>, roles: bool) -> Result<Vec<Section>, String> {
@@ -249,7 +249,7 @@ fn live_first(rows: Vec<StatusRow>) -> Vec<StatusRow> {
     out
 }
 
-/// A screen line by what it shows: its instance and, unless it is the
+/// A screen line by what it shows: its team and, unless it is the
 /// header line, its row's key.
 fn line_key(sections: &[Section], (s, r): (usize, Option<usize>)) -> (String, Option<String>) {
     let section = &sections[s];
@@ -286,7 +286,7 @@ fn reload(
 }
 
 /// The screen's lines: (section, row), where no row is the section's
-/// header line. One instance has no header lines: its header is the title.
+/// header line. One team has no header lines: its header is the title.
 fn entries(sections: &[Section], headers: bool) -> Vec<(usize, Option<usize>)> {
     let mut out = Vec::new();
     for (s, section) in sections.iter().enumerate() {
@@ -366,7 +366,7 @@ fn draw(
         Constraint::Length(2),
     ])
     .areas(frame.area());
-    // The same tree and columns as `brg status`, each instance's tree its own.
+    // The same tree and columns as `brg status`, each team's tree its own.
     let prefixes: Vec<std::collections::BTreeMap<String, String>> = sections
         .iter()
         .map(|section| {
@@ -496,7 +496,7 @@ fn draw(
     frame.render_stateful_widget(table, top, table_state);
     // Each visible header line across the whole row, as `brg status` prints it.
     let inner = top.inner(Margin::new(1, 1));
-    // Every instance, and there are none: say so, as `brg status` does.
+    // Every team, and there are none: say so, as `brg status` does.
     if let Some(note) = note {
         frame.render_widget(Paragraph::new(format!("  {note}")), inner);
     }
@@ -533,19 +533,19 @@ fn draw(
     );
 }
 
-/// `brg status -i`. With no instance, every instance, each under its
-/// header line; Enter attaches in the selected member's own instance.
+/// `brg status -i`. With no team, every team, each under its
+/// header line; Enter attaches in the selected member's own team.
 pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
     // The `a` key shows and hides roles with no member.
     let colour = tree::colour_wanted(true);
     let mut roles = false;
     let mut sections = load(one, roles)?;
     let headers = one.is_none();
-    // One instance: the same header line as `brg status` on a terminal (the
-    // instance and its working folder) as the title.
+    // One team: the same header line as `brg status` on a terminal (the
+    // team and its working folder) as the title.
     let title = match one {
         Some(inst) => runtime::header_as(inst, true),
-        None => "instances".to_string(),
+        None => "teams".to_string(),
     };
     let mut table_state = TableState::default().with_selected(Some(0));
     let mut message = String::new();
@@ -627,10 +627,7 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
                 };
                 let section = &sections[s];
                 let Some(row) = r.map(|r| &section.rows[r]) else {
-                    message = format!(
-                        "{} is an instance; select one of its members",
-                        section.inst.id
-                    );
+                    message = format!("{} is a team; select one of its members", section.inst.id);
                     continue;
                 };
                 if row.kind != "member" {

@@ -26,7 +26,7 @@ struct Cli {
 const GROUPS: &[(&str, &[&str])] = &[
     ("Team templates", &["templates", "validate", "secrets"]),
     (
-        "Instances and members",
+        "Teams and members",
         &[
             "create", "start", "stop", "delete", "status", "attach", "logs",
         ],
@@ -87,34 +87,34 @@ enum Command {
         #[arg(long)]
         probe: bool,
     },
-    /// Make an instance from a team template, or a member of a role.
+    /// Make a team from a team template, or a member of a role.
     ///
-    /// That is, an instance from a template working in a folder
+    /// That is, a team from a template working in a folder
     /// (`create <template> [folder]`, the current folder by default), or a member
-    /// of a role (`create <instance>/<role>`, up to its max of kept members).
-    /// Team-role copies are created stopped; start them with `brg start`.
-    /// Agent members and top-level instances are started. With a bus, a child role's parent role must have a member.
+    /// of a role (`create <team>/<role>`, up to its max of kept members).
+    /// Child teams are created stopped; start them with `brg start`.
+    /// Agent members and top-level teams are started. With a bus, a child role's parent role must have a member.
     /// For a role target with a bus, a member caller must be an ancestor,
-    /// using its latest running start in its own instance.
-    /// Members work in the instance's working folder. A `worktree: true` role's member or
-    /// copy gets its own git worktree from it instead, which brg adds when
+    /// using its latest running start in its own team.
+    /// Members work in the team's working folder. A `worktree: true` role's member or
+    /// child team gets its own git worktree from it instead, which brg adds when
     /// issuing it (create, or a full `start` that gives a `start: true` role
     /// a new member), detached at the folder's HEAD or on `--branch`.
     /// With `--repo`, name a clone directly in the tree's folder instead:
     /// fetch origin's default branch and start at its tip. The clone's
-    /// checkout stays as it is. Use one dev copy per repository; the root
-    /// lead sequences copies.
-    /// For a member or an instance, it prints the instance's tree as `status`
+    /// checkout stays as it is. Use one child team per repository; the root
+    /// lead sequences them.
+    /// For a member or a team, it prints the team's tree as `status`
     /// lays it out, with a new member's ID on its row, then a line with the
-    /// address and folder of each worktree it added; for a copy, one line
-    /// with the copy's ID and its folder (its worktree, for a `worktree: true`
+    /// address and folder of each worktree it added; for a child team, one line
+    /// with the child team's ID and its folder (its worktree, for a `worktree: true`
     /// role).
     Create {
         /// `<template>` (a name, or a path starting with `/`, `./`, `../` or
-        /// `~/`), or `<instance>/<role>`.
+        /// `~/`), or `<team>/<role>`.
         #[arg(add = crate::complete::teams())]
         target: String,
-        /// The instance's working folder, for a template: usually the repository
+        /// The team's working folder, for a template: usually the repository
         /// it works on. It must exist. Default: the current folder.
         #[arg(value_hint = clap::ValueHint::DirPath)]
         folder: Option<String>,
@@ -129,95 +129,95 @@ enum Command {
         /// For a role: make the new ID `<role>-<name>`, named for its task,
         /// instead of a random suffix: lowercase words joined by hyphens, at
         /// most 24 characters, never a role's name, an ID issued before in the
-        /// instance or another ID's suffix.
+        /// team or another ID's suffix.
         #[arg(long)]
         name: Option<String>,
     },
-    /// Bring an instance to what should be running, or start one member.
+    /// Bring a team to what should be running, or start one member.
     ///
-    /// Restore copies that ran at the last full stop, recursively. Finish
+    /// Restore child teams that ran at the last full stop, recursively. Finish
     /// an interrupted cascade with `stop` first. Reuse kept members; never
     /// fill a role to max. A worktree it adds for a new member is named after
     /// the tree. With a bus, a member caller may manage only its subtree,
     /// using its latest running start. Members that start use current files
     /// and configuration.
     Start {
-        /// `<instance>`, or `<instance>/<member>`.
+        /// `<team>`, or `<team>/<member>`.
         #[arg(add = crate::complete::targets())]
         target: String,
-        /// Point a stopped instance at its template folder's new place.
+        /// Point a stopped team at its template folder's new place.
         #[arg(long)]
         template: Option<PathBuf>,
         /// Reopen each member's last vendor session instead of starting a new
         /// conversation. A member started on its own needs a recorded session;
-        /// a whole instance starts fresh whoever has none. Restored copies
+        /// a whole team starts fresh whoever has none. Restored child teams
         /// resume too.
         #[arg(long)]
         resume: bool,
     },
-    /// Stop an instance and all its copies deepest first, or one member.
+    /// Stop a team and all its child teams deepest first, or one member.
     ///
     /// Every full stop persists `stopping` before the cascade, refusing create/start inside
-    /// it until every instance is certainly stopped. Run stop again to
+    /// it until every team is certainly stopped. Run stop again to
     /// finish an interrupted cascade. A second stop keeps who ran.
     /// If the server is gone, end any surviving recorded process and retry stop.
     /// For other server errors, fix access and retry stop.
     /// With a bus, a member caller may manage only its subtree, using its
-    /// latest running start. A copy's roots cannot stop their own copy.
+    /// latest running start. A child team's roots cannot stop their own child team.
     Stop {
-        /// `<instance>`, or `<instance>/<member>`.
+        /// `<team>`, or `<team>/<member>`.
         #[arg(add = crate::complete::targets())]
         target: String,
-        /// Stop the member's subtree deepest first, including copies. Members
+        /// Stop the member's subtree deepest first, including child teams. Members
         /// may target descendants, never themselves. Other lifecycle changes
-        /// wait until this walk finishes. An instance target already cascades.
+        /// wait until this walk finishes. A team target already cascades.
         #[arg(short = 'r', long)]
         recursive: bool,
     },
-    /// Remove a stopped instance, or a stopped member.
+    /// Remove a stopped team, or a stopped member.
     ///
     /// A deleted member's ID stays issued. With a bus, a member caller may
-    /// manage only its subtree, using its latest running start. A copy's roots
-    /// cannot delete their own copy.
+    /// manage only its subtree, using its latest running start. A child team's roots
+    /// cannot delete their own child team.
     /// Unread messages, and a worktree brg added that holds uncommitted or
-    /// untracked changes or commits on no remote, need --force; copy history
+    /// untracked changes or commits on no remote, need --force; child team history
     /// stays in the tree store.
     Delete {
-        /// `<instance>`, or `<instance>/<member>`. A bare role is refused.
+        /// `<team>`, or `<team>/<member>`. A bare role is refused.
         #[arg(add = crate::complete::targets())]
         target: String,
         /// Delete even with unread messages, unreadable message storage, or
         /// worktrees with work in them (those are left as they are; a clean
         /// worktree brg added is always removed). Running members, unknown
-        /// liveness and members with kept children or copies are always refused.
+        /// liveness and members with kept children or child teams are always refused.
         #[arg(long)]
         force: bool,
     },
     /// Stop a whole tree and delete its records, notes and messages.
     ///
     /// It stops the tree first, then deletes every registration, the root's
-    /// state folder (all copies' state, the notes and the tree's messages) and
-    /// the clean worktrees brg added for members and copies; copy any notes
+    /// state folder (all child teams' state, the notes and the tree's messages) and
+    /// the clean worktrees brg added for members and child teams; save any notes
     /// you need first. Open work never refuses it, and there is no prompt; it
     /// refuses if brg can't confirm every member stopped. Working folders,
     /// checkouts and other worktrees are left as they are, and `brg create`
     /// can start the tree fresh. Run it from your own shell, never inside a
     /// member.
     Destroy {
-        /// The tree's root instance (a copy is refused).
-        #[arg(add = crate::complete::roots())]
+        /// The tree's root team (a child team is refused).
+        #[arg(value_name = "TEAM", add = crate::complete::roots())]
         instance: String,
     },
-    /// Remove what brg left behind for deleted members and copies.
+    /// Remove what brg left behind for deleted members and child teams.
     ///
     /// That is the clean git worktrees it added for them, and their leftover
-    /// state. A worktree with work in it is listed and kept. Without an instance, also
-    /// remove the state of instance IDs brg issued that are no longer
-    /// registered. Work folders, kept members' and copies' worktrees, other
+    /// state. A worktree with work in it is listed and kept. Without a team, also
+    /// remove the state of team IDs brg issued that are no longer
+    /// registered. Work folders, kept members' and child teams' worktrees, other
     /// worktrees and messages are never touched.
     Cleanup {
-        /// Only this instance and its copies (default: every instance).
-        #[arg(add = crate::complete::instances())]
+        /// Only this team and its child teams (default: every team).
+        #[arg(value_name = "TEAM", add = crate::complete::instances())]
         instance: Option<String>,
     },
     /// List the secrets a template's plugins need, and whether each is set.
@@ -231,16 +231,16 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// List available team templates and their instances.
+    /// List available team templates and their teams.
     ///
     /// The templates found in the search paths (`templates:` in brg's configuration),
-    /// each with its instances, then instances of templates elsewhere.
+    /// each with its teams, then teams of templates elsewhere.
     Templates {
         /// Print the list as JSON.
         #[arg(long)]
         json: bool,
     },
-    /// Show an instance tree, or every top-level one, with nested copies.
+    /// Show a team tree, or every top-level one, with nested child teams.
     ///
     /// Each member's row shows its ID, vendor and model, state and any unacked
     /// messages. A role with no member shows only its state; its `--json` row
@@ -252,8 +252,8 @@ enum Command {
     /// for attention and a gold ◆ for running teams. Working marks spin in
     /// --watch and --interactive; NO_COLOR suppresses painting and motion.
     Status {
-        /// The instance (default: every top-level instance and its copies).
-        #[arg(add = crate::complete::instances())]
+        /// The team (default: every top-level team and its child teams).
+        #[arg(value_name = "TEAM", add = crate::complete::instances())]
         instance: Option<String>,
         /// Print the rows as JSON.
         #[arg(long, conflicts_with_all = ["watch", "interactive"])]
@@ -272,19 +272,19 @@ enum Command {
     ///
     /// brg's tmux server runs without your own tmux config unless brg's
     /// configuration sets `tmux.user_config`, and a change to it applies only
-    /// once every instance on brg's server has stopped and the server starts
+    /// once every team on brg's server has stopped and the server starts
     /// again. To keep your own bindings without a restart, attach from inside
     /// your own tmux. brg's prefix is then tmux's default, Ctrl-b (press it
     /// twice if your own prefix is Ctrl-b too).
     Attach {
-        /// The member: `<instance>/<member>`.
+        /// The member: `<team>/<member>`.
         #[arg(add = crate::complete::members())]
         member: String,
     },
     /// Show a member's or plugin's recent output.
     Logs {
-        /// The member (`<instance>/<member>`), or a plugin process
-        /// (`<instance>/_<plugin>`).
+        /// The member (`<team>/<member>`), or a plugin process
+        /// (`<team>/_<plugin>`).
         #[arg(add = crate::complete::members())]
         member: String,
         /// How many lines of history.
@@ -293,7 +293,7 @@ enum Command {
     },
     /// Send, list, read, acknowledge, wait for and check messages.
     Msg {
-        /// The instance (outside a member; inside one, only its own).
+        /// The team (outside a member; inside one, only its own).
         #[arg(long = "team", value_name = "TEAM", global = true, add = crate::complete::instances())]
         instance: Option<String>,
         #[command(subcommand)]
@@ -333,13 +333,13 @@ macro_rules! or_fail {
     };
 }
 
-/// An instance and one member or role in it, from `<instance>/<name>` (or,
+/// A team and one member or role in it, from `<team>/<name>` (or,
 /// inside a member, a bare name).
 fn instance_and_name(arg: &str) -> Result<(Instance, String), String> {
     match address::resolve(arg)? {
         (inst, Target::Member(m) | Target::Role(m)) => Ok((inst, m)),
         (inst, Target::Instance) => Err(format!(
-            "`{arg}` is an instance; name a member in it: {}/<member> (its members: {})",
+            "`{arg}` is a team; name a member in it: {}/<member> (its members: {})",
             inst.id,
             address::members_list(&inst)
         )),
@@ -352,7 +352,7 @@ pub(crate) fn send_target(arg: &str) -> Result<(Instance, String), runtime::Send
         .rsplit_once('/')
         .map_or((None, arg), |(i, n)| (Some(i), n));
     if instance.is_some_and(|id| !id.split('/').all(crate::names::is_valid_member_id)) {
-        return Err(Usage("invalid target instance syntax".into()));
+        return Err(Usage("invalid target team syntax".into()));
     }
     if name.starts_with("external:") {
         if crate::bus::record::Recipient::parse(name).is_none() {
@@ -361,14 +361,14 @@ pub(crate) fn send_target(arg: &str) -> Result<(Instance, String), runtime::Send
         let id = instance
             .map(str::to_string)
             .or_else(address::own)
-            .ok_or_else(|| Usage("name the target instance".into()))?;
+            .ok_or_else(|| Usage("name the target team".into()))?;
         return Ok((address::instance(&id).map_err(NotAlive)?, name.to_string()));
     }
     if !arg.split('/').all(crate::names::is_valid_member_id) {
         return Err(Usage("invalid target address syntax".into()));
     }
     if instance.is_none() && address::own().is_none() {
-        return Err(Usage("name the target instance".into()));
+        return Err(Usage("name the target team".into()));
     }
     instance_and_name(arg).map_err(NotAlive)
 }
@@ -463,7 +463,7 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
             let team_like = crate::team::is_path(&target) || !target.contains('/');
             let result = if team_like && name.is_some() {
                 Err(
-                    "`--name` names a new member or copy, not an instance: brg create <instance>/<role> --name <name>"
+                    "`--name` names a new member or child team, not a top-level team: brg create <team>/<role> --name <name>"
                         .to_string(),
                 )
             } else if team_like {
@@ -473,14 +473,14 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
                     .or(repo.as_ref().map(|_| "--repo"))
                 {
                     Some(flag) => Err(format!(
-                        "`{flag}` is for a role's new worktree: brg create <instance>/<role> {flag} <name>"
+                        "`{flag}` is for a role's new worktree: brg create <team>/<role> {flag} <name>"
                     )),
                     None => runtime::create(&target, folder.as_deref().unwrap_or(".")),
                 }
             } else {
                 match address::resolve(&target) {
                     Ok(_) if folder.is_some() => Err(format!(
-                        "`{target}` names a role, which takes no folder: its member works in the instance's folder"
+                        "`{target}` names a role, which takes no folder: its member works in the team's folder"
                     )),
                     Ok((inst, Target::Role(role))) => runtime::create_member(
                         inst,
@@ -494,7 +494,7 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
                         inst.at(&m)
                     )),
                     Ok((inst, Target::Instance)) => Err(format!(
-                        "`create` makes an instance from a template, or a member from `{}/<role>`",
+                        "`create` makes a team from a template, or a member from `{}/<role>`",
                         inst.id
                     )),
                     Err(e) => Err(e),
@@ -545,7 +545,7 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
                 (inst, Target::Instance) => inst,
                 (inst, _) => {
                     return fail(format!(
-                        "`destroy` takes a tree's root instance; `{instance}` is in instance `{}`",
+                        "`destroy` takes a tree's root team; `{instance}` is in team `{}`",
                         inst.id
                     ));
                 }
@@ -566,7 +566,7 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
                     (inst, Target::Instance) => Some(inst),
                     (inst, _) => {
                         return fail(format!(
-                            "`cleanup` takes an instance; `{id}` is in instance `{}`",
+                            "`cleanup` takes a team; `{id}` is in team `{}`",
                             inst.id
                         ));
                     }
@@ -624,7 +624,7 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
                     (inst, Target::Instance) => Some(inst),
                     (inst, _) => {
                         return fail(format!(
-                            "`status` takes an instance; `{id}` is in instance `{}`",
+                            "`status` takes a team; `{id}` is in team `{}`",
                             inst.id
                         ));
                     }

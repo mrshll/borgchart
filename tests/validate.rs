@@ -250,7 +250,7 @@ fn team_roles_refuse_automatic_start_before_preparation() {
         "template: dev",
         "template: dev, start: true",
     );
-    expect_error(&f, "create and prepare each copy before starting it");
+    expect_error(&f, "create and prepare each child team before starting it");
     f.edit("template.yaml", "start: true", "start: false");
     assert!(f.run().1.is_some());
 }

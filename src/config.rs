@@ -98,7 +98,7 @@ pub struct Config {
     /// The file it came from, when there is one.
     pub file: Option<PathBuf>,
     pub auth: Auth,
-    /// Trust each instance's folder without a person. Claude: brg answers its
+    /// Trust each team's folder without a person. Claude: brg answers its
     /// folder-trust dialog; `None` (the default) for `locked` members only,
     /// which ignore project settings; `Some(true)` for every member;
     /// `Some(false)` for none. Codex: session config, only with `Some(true)`

@@ -408,7 +408,7 @@ pub struct Role {
     /// Extra arguments for the vendor CLI.
     pub args: Vec<String>,
     /// Each member works in its own git worktree, which brg adds when it
-    /// issues the member; otherwise members work in the instance's working folder.
+    /// issues the member; otherwise members work in the team's working folder.
     pub worktree: bool,
 }
 
@@ -427,15 +427,15 @@ impl RoleSource {
     }
 }
 
-/// A role whose copies are nested instances, prepared before their first start.
+/// A role filled by child teams, prepared before their first start.
 #[derive(Debug, Clone, Serialize)]
 pub struct TeamRole {
     pub name: String,
     pub dir: PathBuf,
     pub parent: Option<String>,
     pub max: usize,
-    /// Each copy works in its own git worktree, which brg adds when it
-    /// creates the copy; otherwise copies work in this instance's working folder.
+    /// Each child team works in its own git worktree, which brg adds when it
+    /// creates the child team; otherwise child teams work in this team's working folder.
     pub worktree: bool,
 }
 
@@ -961,7 +961,7 @@ fn load_team_role(
             return Err("choose either `prompt` or `template`".into());
         }
         if role.start == Some(true) {
-            return Err("a team role must have `start: false` or omit `start`; create and prepare each copy before starting it".into());
+            return Err("a team role must have `start: false` or omit `start`; create and prepare each child team before starting it".into());
         }
         if path.is_empty()
             || path.contains(['/', ':', '\\'])

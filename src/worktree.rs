@@ -1,15 +1,15 @@
-//! Git worktrees brg adds for `worktree: true` roles, one per member or copy.
+//! Git worktrees brg adds for `worktree: true` roles, one per member or child team.
 //!
 //! Each lives at a fixed place beside brg's state folder (never inside it,
 //! where members could reach brg's own files): `<state>-worktrees/<address>`,
 //! with the address's `/` written as `.`, which no ID contains. brg adds it,
-//! detached at the instance folder's `HEAD` or on a new branch, when it issues the
-//! member or copy, and removes it on `delete` when it is clean. `create --repo`
+//! detached at the working folder's `HEAD` or on a new branch, when it issues the
+//! member or child team, and removes it on `delete` when it is clean. `create --repo`
 //! selects a clone directly in the tree's folder and fetches origin's default
 //! branch before taking the registry lock. Worktree ownership is found afresh
 //! in the root repository and those clones' own records, never through a
 //! member-writable `.git` file. No repository selection is stored.
-//! Use one dev copy per repository; the root lead sequences copies.
+//! Use one child team per repository; the root lead sequences them.
 
 use std::path::{Path, PathBuf};
 
@@ -159,18 +159,18 @@ fn in_home(folder: &Path) -> bool {
     folder.starts_with(&home) || resolved(folder).starts_with(resolved(&home))
 }
 
-/// The folder of the top instance of `address`'s tree.
+/// The folder of the top team of `address`'s tree.
 pub fn root_folder(address: &str) -> Result<PathBuf, String> {
     let root = address.split('/').next().unwrap_or_default();
     Ok(crate::address::instance(root)?.record.folder)
 }
 
-/// Where the worktree of the member or copy at `address` lives.
+/// Where the worktree of the member or child team at `address` lives.
 pub fn path(address: &str) -> PathBuf {
     home().join(address.replace('/', "."))
 }
 
-/// Add a worktree at `dir` at the `HEAD` of `from`, an instance's working folder in the
+/// Add a worktree at `dir` at the `HEAD` of `from`, a team's working folder in the
 /// tree whose top folder is `root`: detached, or on a new `branch`. git runs
 /// in the repository found through its own record ([`admin_dir`]), or the
 /// selected clone at its fetched commit when `start` is given.
@@ -224,9 +224,9 @@ pub fn add(
 
 /// The folder git keeps for the worktree at `dir`, found through the
 /// repository's own records of its worktrees. `root` is the folder of the
-/// tree's top instance, which a person chose. Search its repository and real
+/// tree's top team, which a person chose. Search its repository and real
 /// child clones. Never through a worktree's `.git` file, `dir`'s or
-/// a copy's, which members working there can rewrite.
+/// a child team's, which members working there can rewrite.
 pub fn admin_dir(root: &Path, dir: &Path) -> Result<(PathBuf, PathBuf), String> {
     let want = dir
         .canonicalize()

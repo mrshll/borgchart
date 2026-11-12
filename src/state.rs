@@ -1,4 +1,4 @@
-//! Where an instance's state lives, and the private files in it.
+//! Where a team's state lives, and the private files in it.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -15,11 +15,11 @@ pub const ENV_STATE_HOME: &str = "BORGCHART_STATE_HOME";
 pub const ENV_TMUX_SOCKET: &str = "BORGCHART_TMUX_SOCKET";
 /// The directory brg's tmux servers keep their sockets in, passed to tmux as
 /// `TMUX_TMPDIR`. brg never takes `TMUX_TMPDIR` itself from your environment:
-/// a member's own setting must not move its instance's server.
+/// a member's own setting must not move its team's server.
 pub const ENV_TMUX_TMPDIR: &str = "BORGCHART_TMUX_TMPDIR";
 pub const DEFAULT_SOCKET: &str = "borgchart";
 
-/// brg's state folder, holding the registry and every instance's state folder.
+/// brg's state folder, holding the registry and every team's state folder.
 pub fn state_home() -> PathBuf {
     if let Some(dir) = std::env::var_os(ENV_STATE_HOME) {
         return PathBuf::from(dir);
@@ -37,8 +37,8 @@ pub fn tmux_socket() -> String {
     std::env::var(ENV_TMUX_SOCKET).unwrap_or_else(|_| DEFAULT_SOCKET.to_string())
 }
 
-/// Whether `path` is somewhere cleaned by age (`/tmp`, `/var/tmp`), where an
-/// instance's messages could vanish. Test builds may use it.
+/// Whether `path` is somewhere cleaned by age (`/tmp`, `/var/tmp`), where a
+/// team's messages could vanish. Test builds may use it.
 pub fn age_cleaned(path: &Path) -> bool {
     let real = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     ["/tmp", "/var/tmp", "/private/tmp", "/private/var/tmp"]
@@ -54,17 +54,17 @@ pub fn check_state_home() -> Result<(), String> {
         return Ok(());
     }
     Err(format!(
-        "brg's state folder {} is under a folder cleaned by age, so instances' messages could vanish; set {ENV_STATE_HOME} to a lasting folder",
+        "brg's state folder {} is under a folder cleaned by age, so teams' messages could vanish; set {ENV_STATE_HOME} to a lasting folder",
         home.display()
     ))
 }
 
-/// How to restart an instance: stop it, then start it.
+/// How to restart a team: stop it, then start it.
 pub fn restart_hint(instance: &str) -> String {
     format!("brg stop {instance} && brg start {instance}")
 }
 
-/// Paths inside one instance's state folder, `<state home>/<instance>/`.
+/// Paths inside one team's state folder, `<state home>/<team>/`.
 #[derive(Debug, Clone)]
 pub struct StateDir {
     pub root: PathBuf,
@@ -98,11 +98,11 @@ impl StateDir {
         format!("brg-{}", self.id)
     }
 
-    /// The instance's record (`team.json`): see `registry`.
+    /// The team's record (`team.json`): see `registry`.
     pub fn instance_file(&self) -> PathBuf {
         self.root.join("team.json")
     }
-    /// The message store, shared by every instance in this tree.
+    /// The message store, shared by every team in this tree.
     pub fn messages_dir(&self) -> PathBuf {
         let mut root = self.root.clone();
         for _ in self.id.split('/').skip(1) {
@@ -158,7 +158,7 @@ impl StateDir {
     pub fn member_tmp(&self, member: &str) -> PathBuf {
         self.root.join("tmp").join(member)
     }
-    /// Held by `start` and `stop` while they change the instance.
+    /// Held by `start` and `stop` while they change the team.
     pub fn lifecycle_lock(&self) -> PathBuf {
         self.root.join("lifecycle.lock")
     }
@@ -175,27 +175,27 @@ impl StateDir {
 pub struct Meta {
     #[serde(rename = "template_dir")]
     pub team_dir: PathBuf,
-    /// The instance's working folder.
+    /// The team's working folder.
     pub folder: PathBuf,
-    /// The absolute path of the `brg` that started the instance (plugins
+    /// The absolute path of the `brg` that started the team (plugins
     /// get it as `BORGCHART_BIN`).
     pub brg: PathBuf,
-    /// The configuration the instance started with. Members started into
+    /// The configuration the team started with. Members started into
     /// it later must see the same.
     pub config: ConfigSnapshot,
-    /// The tmux socket name the instance was started on.
+    /// The tmux socket name the team was started on.
     pub socket: String,
     /// The tmux server's absolute socket path, read from tmux once the
     /// first window started. `stop` and liveness address the
     /// server by this, never by the caller's tmux environment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub socket_path: Option<PathBuf>,
-    /// Set by a `stop` that stopped the whole instance (or found it gone
+    /// Set by a `stop` that stopped the whole team (or found it gone
     /// on a server that answered); cleared by the next fresh start.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stopped_at: Option<String>,
     /// Whether a start may have started a window, and so a tmux server, since
-    /// the instance was last confirmed stopped: set before each start.
+    /// the team was last confirmed stopped: set before each start.
     /// `false` lets `stop` say a team whose server can't be reached isn't
     /// running.
     pub windows_started: bool,
@@ -213,7 +213,7 @@ pub struct MemberMeta {
     pub posture: String,
     pub parent: Option<String>,
     pub vendor_version: Option<String>,
-    /// Whether a start has started the member's window since the instance last
+    /// Whether a start has started the member's window since the team last
     /// started afresh. Incarnation records supply the current start identity.
     pub started: bool,
 }
@@ -225,7 +225,7 @@ pub struct PluginMeta {
     pub has_process: bool,
 }
 
-/// The instance's start record: `None` when nothing was recorded, an error
+/// The team's start record: `None` when nothing was recorded, an error
 /// when the file can't be read or parsed.
 pub fn read_meta(state: &StateDir) -> Result<Option<Meta>, String> {
     let path = state.meta_file();

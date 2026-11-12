@@ -1,4 +1,4 @@
-//! The team as a tree: a start and `brg status` print an instance's header line,
+//! The team as a tree: a start and `brg status` print a team's header line,
 //! then each member under its parent with aligned columns, then the
 //! plugin processes.
 //!
@@ -299,7 +299,7 @@ fn painted(
     trimmed.to_string()
 }
 
-/// The instance's tree, then one `plugin <name>` line per plugin process.
+/// The team's tree, then one `plugin <name>` line per plugin process.
 pub fn render(
     team: &str,
     nodes: &[Node],
@@ -361,7 +361,7 @@ pub fn render_named(
         })
         .collect();
     let mut out = if colour {
-        // The instance's ID leads; where it lives recedes.
+        // The team's ID leads; where it lives recedes.
         match team.split_once("  ") {
             Some((id, rest)) => {
                 format!("{BOLD}{id}{RESET}  {}\n", paint(rest, &fg(palette::FADED)))

@@ -40,7 +40,7 @@ roles:
     plugins: {seat: [route]}
 ```
 
-The executable is found on the `PATH` the instance was created or fully started with, so install `brg-seat` beside the `brg` of the same revision and keep that directory first on `PATH` ([setup](../../CONTRIBUTING.md#running-the-engineering-teams)). A running instance keeps the `PATH` it captured; a full stop and start, from the root, picks up a new one.
+The executable is found on the `PATH` the team was created or fully started with, so install `brg-seat` beside the `brg` of the same revision and keep that directory first on `PATH` ([setup](../../CONTRIBUTING.md#running-the-engineering-teams)). A running team keeps the `PATH` it captured; a full stop and start, from the root, picks up a new one.
 
 Teams that use API keys leave the plugin out: a subscription reading can't authorize API spending.
 
