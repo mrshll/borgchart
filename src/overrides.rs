@@ -64,6 +64,9 @@ pub fn parse(values: &[String]) -> Result<BTreeMap<String, Overrides>, String> {
             return Err("give a role before `.` or use a bare key for one agent".into());
         }
         let (role, key) = address.split_once('.').unwrap_or(("", address));
+        if key.contains('.') {
+            return Err("choices reach agent roles one level down: `<role>.<key>=<value>`".into());
+        }
         let choice = choices.entry(role.to_string()).or_default();
         if choice.keys().contains(&key) {
             return Err(format!("`{address}` is set twice; supply each key once"));
@@ -412,6 +415,16 @@ mod tests {
         ] {
             assert!(parse(&[value.into()]).is_err(), "{value}");
         }
+    }
+
+    #[test]
+    fn deeper_choice_paths_explain_the_one_level_limit() {
+        let error = parse(&["lead.worker.vendor=codex".into()]).unwrap_err();
+        assert!(
+            error.contains("choices reach agent roles one level down"),
+            "{error}"
+        );
+        assert!(error.contains("<role>.<key>=<value>"), "{error}");
     }
 
     #[test]

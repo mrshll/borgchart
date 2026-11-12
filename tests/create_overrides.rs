@@ -150,7 +150,12 @@ fn vendor_only_member_uses_edited_pin_at_next_start() {
             "prompt: worker.md, args: [--verbose],",
         ),
     );
-    env.fails(&["start", &address]);
+    let error = env.fails(&["start", &address]);
+    assert!(
+        error.contains(&format!("`{address}` was created with `vendor=codex`")),
+        "{error}"
+    );
+    assert!(error.contains(&format!("brg delete {address}")), "{error}");
     assert_eq!(env.starts("worker-sample").len(), 2);
     env.ok(&["stop", &parent]);
 }
@@ -171,21 +176,22 @@ fn invalid_choices_leave_records_and_worktrees_untouched() {
     let record = |id: &str| fs::read(env.path(&format!("state/{id}/team.json"))).unwrap();
     let before = (record(&parent), record(&child), env.registry());
     let worktrees = git(&env.path("work/repo"), &["worktree", "list", "--porcelain"]);
-    for (role, choice) in [
-        ("worker", "vendor=codex"),
-        ("worker", "worker.vendor=codex"),
-        ("dev", "vendor=codex"),
-        ("dev", "missing.vendor=codex"),
-        ("dev", "lead.vendor=codex,lead.vendor=claude"),
-        ("dev", "nested.vendor=codex"),
-        ("worker", "model=-bad"),
-        ("worker", "model=two words"),
-        ("worker", "unknown=value"),
-        ("worker", "effort=extreme"),
+    for (role, choice, refusal) in [
+        ("worker", "vendor=codex", "sets `args`"),
+        ("worker", "worker.vendor=codex", "is one agent"),
+        ("dev", "vendor=codex", "say which of its roles"),
+        ("dev", "missing.vendor=codex", "unknown role `missing`"),
+        ("dev", "lead.vendor=codex,lead.vendor=claude", "set twice"),
+        ("dev", "nested.vendor=codex", "`nested` is a team role"),
+        ("worker", "model=-bad", "leading `-`"),
+        ("worker", "model=two words", "without whitespace"),
+        ("worker", "unknown=value", "unknown key `unknown`"),
+        ("worker", "effort=extreme", "choose an effort"),
     ] {
         let team = if role == "dev" { &parent } else { &child };
         let error = env.fails(&["create", &format!("{team}/{role}"), "--set", choice]);
         println!("refused {choice}: {error}");
+        assert!(error.contains(refusal), "{choice}: {error}");
         assert_eq!((record(&parent), record(&child), env.registry()), before);
         assert_eq!(
             git(&env.path("work/repo"), &["worktree", "list", "--porcelain"]),
@@ -199,6 +205,270 @@ fn invalid_choices_leave_records_and_worktrees_untouched() {
         "--set",
         "model=custom",
     ]);
+    env.ok(&["stop", &parent]);
+}
+
+#[test]
+fn stale_member_choice_does_not_block_other_starts_or_creates() {
+    let (env, parent) = setup();
+    let template = fs::read_to_string(env.path("templates/child/template.yaml")).unwrap();
+    env.write(
+        "templates/child/template.yaml",
+        &template.replace(
+            "  nested:",
+            "  helper: {prompt: worker.md, parent: lead, max: 8, start: false}\n  nested:",
+        ),
+    );
+    let child = child(&env, &parent, &["--set", "worker.vendor=codex"]);
+    env.ok(&["start", &child]);
+    env.ok(&[
+        "create",
+        &format!("{child}/worker"),
+        "--name",
+        "stale",
+        "--set",
+        "vendor=codex",
+    ]);
+    env.ok(&[
+        "create",
+        &format!("{child}/worker"),
+        "--name",
+        "inherited",
+        "--set",
+        "model=custom",
+    ]);
+    env.ok(&[
+        "create",
+        &format!("{child}/worker"),
+        "--name",
+        "masked",
+        "--set",
+        "vendor=claude",
+    ]);
+    env.ok(&["create", &format!("{child}/helper"), "--name", "plain"]);
+    for id in [
+        "worker-stale",
+        "worker-inherited",
+        "worker-masked",
+        "helper-plain",
+    ] {
+        env.ok(&["stop", &format!("{child}/{id}")]);
+    }
+    let template = fs::read_to_string(env.path("templates/child/template.yaml")).unwrap();
+    env.write(
+        "templates/child/template.yaml",
+        &template.replace(
+            "prompt: worker.md, parent:",
+            "prompt: worker.md, args: [--verbose], parent:",
+        ),
+    );
+    let before = fs::read(env.path(&format!("state/{child}/team.json"))).unwrap();
+    let worktrees = git(&env.path("work/repo"), &["worktree", "list", "--porcelain"]);
+    let error = env.fails(&["create", &format!("{child}/worker"), "--name", "refused"]);
+    assert!(error.contains("sets `args`"), "{error}");
+    assert_eq!(
+        fs::read(env.path(&format!("state/{child}/team.json"))).unwrap(),
+        before
+    );
+    assert_eq!(
+        git(&env.path("work/repo"), &["worktree", "list", "--porcelain"]),
+        worktrees
+    );
+    env.ok(&["start", &format!("{child}/helper-plain")]);
+    launched(&env, "helper-plain", 2, "claude", "opus", "low");
+    env.ok(&["create", &format!("{child}/helper"), "--name", "fresh"]);
+    launched(&env, "helper-fresh", 1, "claude", "opus", "low");
+    env.ok(&["start", &format!("{child}/worker-masked")]);
+    launched(&env, "worker-masked", 2, "claude", "opus", "low");
+    env.ok(&["start", &child]);
+    let error = env.fails(&["start", &format!("{child}/worker-inherited")]);
+    assert!(
+        error.contains(&format!("`{child}` was created with `worker.vendor=codex`")),
+        "{error}"
+    );
+    assert!(error.contains(&format!("brg delete {child}")), "{error}");
+    let address = format!("{child}/worker-stale");
+    let error = env.fails(&["start", &address]);
+    assert!(
+        error.contains(&format!("`{address}` was created with `vendor=codex`")),
+        "{error}"
+    );
+    assert!(error.contains(&format!("brg delete {address}")), "{error}");
+    assert!(error.contains("Nothing was started"), "{error}");
+    assert!(!error.contains("keep its vendor"), "{error}");
+    assert_eq!(env.starts("worker-stale").len(), 1);
+    println!("stale member start: {error}");
+    env.ok(&["delete", &format!("{child}/worker-inherited")]);
+    let template = fs::read_to_string(env.path("templates/child/template.yaml")).unwrap();
+    env.write(
+        "templates/child/template.yaml",
+        &template.replace("start: false", "start: true"),
+    );
+    let error = env.fails(&["start", &child]);
+    assert!(error.contains(&format!("brg delete {address}")), "{error}");
+    env.ok(&["stop", &parent]);
+}
+
+#[test]
+fn stale_team_choice_refuses_full_start_before_issuing_or_adding_worktrees() {
+    let (env, parent) = setup();
+    let child = child(&env, &parent, &["--set", "worker.vendor=codex"]);
+    let template = fs::read_to_string(env.path("templates/child/template.yaml")).unwrap();
+    env.write(
+        "templates/child/template.yaml",
+        &template
+            .replace(
+                "lead: {prompt: lead.md}",
+                "lead: {prompt: lead.md, worktree: true}",
+            )
+            .replace(
+                "prompt: worker.md,",
+                "prompt: worker.md, args: [--verbose],",
+            )
+            .replace("start: false", "start: true"),
+    );
+    let real_git = common::command("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .unwrap();
+    let real_git = String::from_utf8(real_git.stdout).unwrap();
+    common::write_executable(
+        &env.path("bin/git"),
+        &format!(
+            "#!/bin/sh\nfor arg do\n  if test \"$arg\" = add; then echo add >> '{}'; fi\ndone\nexec '{}' \"$@\"\n",
+            env.path("worktree-adds").display(),
+            real_git.trim()
+        ),
+    );
+    let before = fs::read(env.path(&format!("state/{child}/team.json"))).unwrap();
+    let worktrees = git(&env.path("work/repo"), &["worktree", "list", "--porcelain"]);
+    let error = env.fails(&["start", &child]);
+    assert!(error.contains("sets `args`"), "{error}");
+    assert!(
+        !env.path("worktree-adds").exists(),
+        "a worktree was added before refusal"
+    );
+    assert_eq!(
+        fs::read(env.path(&format!("state/{child}/team.json"))).unwrap(),
+        before
+    );
+    assert_eq!(
+        git(&env.path("work/repo"), &["worktree", "list", "--porcelain"]),
+        worktrees
+    );
+    assert!(
+        error.contains(&format!("`{child}` was created with `worker.vendor=codex`")),
+        "{error}"
+    );
+    assert!(error.contains(&format!("brg delete {child}")), "{error}");
+    assert!(error.contains("Nothing was started"), "{error}");
+    println!("stale team start: {error}");
+    env.ok(&["stop", &parent]);
+}
+
+#[test]
+fn stale_choices_keep_status_rows_and_recorded_running_vendor() {
+    let (env, parent) = setup();
+    let child = child(&env, &parent, &["--set", "worker.vendor=codex"]);
+    env.ok(&["start", &child]);
+    env.ok(&[
+        "create",
+        &format!("{child}/worker"),
+        "--name",
+        "stale",
+        "--set",
+        "vendor=codex",
+    ]);
+    env.wait_for("worker idle", || env.state_of(&child, "worker") == "idle");
+    let template = fs::read_to_string(env.path("templates/child/template.yaml")).unwrap();
+    env.write(
+        "templates/child/template.yaml",
+        &template.replace(
+            "prompt: worker.md,",
+            "prompt: worker.md, args: [--verbose],",
+        ),
+    );
+    let row = env.row(&child, "worker");
+    assert_eq!(row["member"], "worker-stale");
+    assert_eq!(row["vendor"], "codex");
+    assert_eq!(row["model"], serde_json::Value::Null);
+    assert_eq!(row["effort"], serde_json::Value::Null);
+    assert_eq!(row["overrides"], json!({"vendor": "codex"}));
+    assert_eq!(row["state"], "idle");
+    assert!(
+        row["detail"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("brg delete {child}/worker-stale")),
+        "{row}"
+    );
+    assert!(
+        env.rows(&parent)
+            .iter()
+            .any(|r| r["team"] == child && r["member"] == "worker-stale" && r["state"] == "idle")
+    );
+    let text = stdout(&env.ok(&["status", &parent]));
+    assert!(text.contains("worker-stale"), "{text}");
+    assert!(
+        text.contains(&format!("brg delete {child}/worker-stale")),
+        "{text}"
+    );
+    println!("stale running member status: {row}");
+    env.ok(&["stop", &format!("{child}/worker-stale")]);
+    env.ok(&["delete", &format!("{child}/worker-stale")]);
+    let row = env.row(&child, "worker");
+    assert_eq!(row["kind"], "role");
+    assert_eq!(row["vendor"], serde_json::Value::Null);
+    assert_eq!(row["model"], serde_json::Value::Null);
+    assert_eq!(row["effort"], serde_json::Value::Null);
+    assert_eq!(row["overrides"], json!({"vendor": "codex"}));
+    assert!(
+        row["detail"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("brg delete {child}")),
+        "{row}"
+    );
+    assert!(
+        env.rows(&parent)
+            .iter()
+            .any(|r| r["team"] == child && r["kind"] == "role" && r["role"] == "worker")
+    );
+    env.ok(&["stop", &parent]);
+}
+
+#[test]
+fn invalid_child_choices_do_not_bypass_caller_authority() {
+    let (env, parent) = setup();
+    let child = child(&env, &parent, &[]);
+    env.ok(&["start", &child]);
+    let member = env.member(&child, "lead");
+    env.wait_for("child lead launch", || !env.starts(&member).is_empty());
+    let starts = env.starts(&member);
+    let identity = &starts[0]["env"];
+    let before = env.registry();
+    let out = env
+        .cmd(&[
+            "create",
+            &format!("{parent}/dev"),
+            "--set",
+            "missing.vendor=codex",
+        ])
+        .env("BORGCHART_TEAM", &child)
+        .env("BORGCHART_MEMBER", &member)
+        .env(
+            "BORGCHART_INCARNATION",
+            identity["BORGCHART_INCARNATION"].as_str().unwrap(),
+        )
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "{}", both(&out));
+    let error = both(&out);
+    assert!(
+        error.contains("outside `") && error.contains("'s subtree"),
+        "{error}"
+    );
+    assert_eq!(env.registry(), before);
     env.ok(&["stop", &parent]);
 }
 

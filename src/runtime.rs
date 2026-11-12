@@ -281,6 +281,28 @@ fn member_overrides(record: &registry::InstanceRecord, id: &str) -> crate::overr
         .merge(&member.overrides)
 }
 
+fn stored_choice_error(
+    error: &str,
+    target: &str,
+    role: Option<&str>,
+    choice: &crate::overrides::Overrides,
+) -> String {
+    let cause = error.split(';').next().unwrap_or(error);
+    let prefix = role.map(|role| format!("{role}.")).unwrap_or_default();
+    let keys = [
+        ("vendor", choice.vendor.map(|v| v.as_str())),
+        ("model", choice.model.as_deref()),
+        ("effort", choice.effort.as_deref()),
+    ]
+    .into_iter()
+    .filter_map(|(key, value)| value.map(|value| format!("{prefix}{key}={value}")))
+    .collect::<Vec<_>>()
+    .join(",");
+    format!(
+        "{cause}; `{target}` was created with `{keys}`: delete it and create it again (`brg delete {target}`). Nothing was started"
+    )
+}
+
 fn role_choice(
     v: &Validated,
     record: &registry::InstanceRecord,
@@ -291,13 +313,10 @@ fn role_choice(
         .roles
         .get(role)
         .ok_or_else(|| format!("role `{role}` is not in the team any more"))?;
-    record
-        .overrides
-        .get(role)
-        .cloned()
-        .unwrap_or_default()
+    let choice = record.overrides.get(role).cloned().unwrap_or_default();
+    choice
         .resolve(template, v.auth())
-        .map_err(|e| format!("{e}; delete it and create it again"))
+        .map_err(|e| stored_choice_error(&e, &record.id, Some(role), &choice))
 }
 
 /// One resolver for every consumer of an issued member's vendor and model.
@@ -312,7 +331,18 @@ fn member_role(
         .ok_or_else(|| format!("`{id}`'s role is not in the team any more"))?;
     member_overrides(record, id)
         .resolve(role, v.auth())
-        .map_err(|e| format!("{e}; delete it and create it again"))
+        .map_err(|e| {
+            let member = &record.members[id].overrides;
+            // Prefer the member when both layers independently fail. An inherited
+            // choice still belongs to the team, even when the member adds keys.
+            if (member.is_empty() || member.resolve(role, v.auth()).is_ok())
+                && let Some(team) = record.overrides.get(&role.id)
+                && team.resolve(role, v.auth()).is_err()
+            {
+                return stored_choice_error(&e, &record.id, Some(&role.id), team);
+            }
+            stored_choice_error(&e, &format!("{}/{id}", record.id), None, member)
+        })
 }
 
 /// With `auth: api_key`, each starting member's key, from your environment.
@@ -411,11 +441,16 @@ fn start_members(
     let team = inst.id.clone();
     let restart = state::restart_hint(&inst.id);
     let snapshot = v.config_snapshot();
-    let resolved: BTreeMap<String, crate::team::Role> = record
-        .kept_members()
-        .filter(|(_, m)| v.team.roles.contains_key(&m.role))
-        .map(|(id, _)| member_role(v, record, id).map(|role| (id.clone(), role)))
-        .collect::<Result<_, _>>()?;
+    let mut resolved = BTreeMap::new();
+    for (id, _) in record.kept_members() {
+        match member_role(v, record, id) {
+            Ok(role) => {
+                resolved.insert(id.clone(), role);
+            }
+            Err(error) if member_ids.contains(id) => return Err(error),
+            Err(_) => {}
+        }
+    }
     let role_of = |id: &str| -> Result<&crate::team::Role, String> {
         resolved
             .get(id)
@@ -1351,7 +1386,7 @@ fn member_nodes(
             nodes.push(tree::Node {
                 cols: vec![
                     // Deletion also uses this topology when a choice no longer resolves.
-                    // Status and start validate choices before displaying their values.
+                    // A stale choice must not hide the member's row.
                     member_role(v, &inst.record, &id)
                         .map(|member| tree::vendor_model(&member))
                         .unwrap_or_default(),
@@ -1672,9 +1707,13 @@ pub fn create_member(
         ));
     }
     if let Some(team_role) = v.team.team_roles.get(role) {
-        let child = crate::nesting::validate_child(&inst, &team_role.dir)?;
-        let overrides = crate::overrides::child_choices(choices, role, &child)?;
         check_parent_authority(&inst, role, Some(&v), None)?;
+        let overrides = if choices.is_empty() {
+            Default::default()
+        } else {
+            let child = crate::nesting::validate_child(&inst, &team_role.dir)?;
+            crate::overrides::child_choices(choices, role, &child)?
+        };
         create_authority_pause();
         let start = repo
             .map(|name| crate::worktree::fetch(&crate::worktree::root_folder(&inst.id)?, name))
@@ -2144,26 +2183,28 @@ fn start_instance(
     } else {
         check_instance_authority(&inst)?;
     }
-    // Validate stored choices before a full start can issue IDs or add worktrees.
-    // Removed roles follow the existing kept-member rule and are ignored.
-    for role in inst
-        .record
-        .overrides
-        .keys()
-        .filter(|r| v.team.roles.contains_key(*r))
-    {
-        role_choice(&v, &inst.record, role)?;
-    }
-    for (id, _) in inst
-        .record
-        .kept_members()
-        .filter(|(_, m)| v.team.roles.contains_key(&m.role))
-    {
-        member_role(&v, &inst.record, id)?;
-    }
     match member {
         Some(id) => start_members(lock, &inst, &v, vec![id], false, resume),
         None => {
+            // Check every role and kept member this full start brings back,
+            // before any role can issue an ID or add a worktree.
+            let windows = tmux_for(&inst.state).windows(&inst.state.session());
+            for (id, member) in inst.record.kept_members() {
+                if v.team.roles.get(&member.role).is_some_and(|role| {
+                    role.start
+                        || inst
+                            .record
+                            .running_at_stop
+                            .as_ref()
+                            .is_some_and(|set| set.contains(id))
+                        || windows.iter().any(|w| !w.dead && &w.name == id)
+                }) {
+                    member_role(&v, &inst.record, id)?;
+                }
+            }
+            for role in v.team.roles.values().filter(|role| role.start) {
+                role_choice(&v, &inst.record, &role.id)?;
+            }
             if let Some((parent, _)) = inst.id.rsplit_once('/') {
                 crate::nesting::validate_child(&address::instance(parent)?, &v.team.dir)?;
             }
@@ -3730,7 +3771,9 @@ fn status_with_counts(
         let id = &nodes[i].id;
         let Some(role) = inst.record.role_of(id) else {
             // A role with no member yet.
-            let member = &role_choice(&v, &inst.record, id)?;
+            let resolved = role_choice(&v, &inst.record, id);
+            let member = resolved.as_ref().unwrap_or(&v.team.roles[id]);
+            let choice = resolved.as_ref().ok();
             rows.push(StatusRow {
                 name: id.clone(),
                 kind: "role",
@@ -3739,9 +3782,13 @@ fn status_with_counts(
                 member: None,
                 start_id: None,
                 role: Some(id.clone()),
-                vendor: Some(member.vendor.as_str().into()),
-                model: member.model.as_ref().map(|m| m.name.clone()),
-                effort: member.model.as_ref().and_then(|m| m.effort.clone()),
+                vendor: choice.map(|m| m.vendor.as_str().into()),
+                model: choice
+                    .and_then(|m| m.model.as_ref())
+                    .map(|m| m.name.clone()),
+                effort: choice
+                    .and_then(|m| m.model.as_ref())
+                    .and_then(|m| m.effort.clone()),
                 overrides: inst.record.overrides.get(id).cloned().unwrap_or_default(),
                 parent: nodes[i].parent.clone(),
                 posture: Some(match member.posture {
@@ -3752,7 +3799,7 @@ fn status_with_counts(
                 rule: None,
                 activity: None,
                 remote_control_url: None,
-                detail: None,
+                detail: resolved.as_ref().err().cloned(),
                 vendor_version: None,
                 trust_accepted: None,
                 worktree: None,
@@ -3764,7 +3811,9 @@ fn status_with_counts(
             });
             continue;
         };
-        let member = &member_role(&v, &inst.record, id)?;
+        let resolved = member_role(&v, &inst.record, id);
+        let member = resolved.as_ref().unwrap_or(&v.team.roles[role]);
+        let choice = resolved.as_ref().ok();
         let posture = v.posture(role);
         // A current start record survives full stops and configuration changes.
         let incarnation = lifecycle::load_incarnation(state, id);
@@ -3784,9 +3833,15 @@ fn status_with_counts(
                 .and_then(|i| i.as_ref())
                 .map(|i| i.incarnation.clone()),
             role: Some(role.to_string()),
-            vendor: Some(member.vendor.as_str().into()),
-            model: member.model.as_ref().map(|m| m.name.clone()),
-            effort: member.model.as_ref().and_then(|m| m.effort.clone()),
+            vendor: choice
+                .map(|m| m.vendor.as_str().into())
+                .or_else(|| meta.members.get(id).map(|m| m.vendor.clone())),
+            model: choice
+                .and_then(|m| m.model.as_ref())
+                .map(|m| m.name.clone()),
+            effort: choice
+                .and_then(|m| m.model.as_ref())
+                .and_then(|m| m.effort.clone()),
             overrides: member_overrides(&inst.record, id),
             parent: nodes[i].parent.clone(),
             liveness: incarnation
@@ -3820,23 +3875,29 @@ fn status_with_counts(
                 row.state = "exited".into();
                 row.detail = w.dead_status.map(|s| format!("status {s}"));
             } else {
-                if member.vendor == Vendor::Claude {
+                let vendor = match row.vendor.as_deref() {
+                    Some("claude") => Some(Vendor::Claude),
+                    Some("codex") => Some(Vendor::Codex),
+                    _ => None,
+                };
+                if vendor == Some(Vendor::Claude) {
                     row.remote_control_url = recorded_session(state, id)
                         .as_deref()
                         .and_then(claude_remote_control_url);
                 }
                 let screen = tmux.capture(&session, id);
-                match rules::load(member.vendor) {
-                    Ok(rules) => {
+                match vendor.map(rules::load) {
+                    Some(Ok(rules)) => {
                         let reading = rules.read(&w.title, &screen);
                         row.state = reading.state.as_str().into();
                         row.rule = reading.rule;
                         row.activity = rules.activity(&w.title);
                     }
-                    Err(e) => {
+                    Some(Err(e)) => {
                         row.state = State::Unknown.as_str().into();
                         row.detail = Some(e);
                     }
+                    None => row.state = State::Unknown.as_str().into(),
                 }
                 let mut details: Vec<String> = row.detail.take().into_iter().collect();
                 // It waits for a person to answer it.
@@ -3867,6 +3928,12 @@ fn status_with_counts(
             }
         }
         row.expected_running = team_running && row.state == STOPPED && member.start;
+        if let Err(error) = resolved {
+            row.detail = Some(match row.detail.take() {
+                Some(detail) => format!("{error}; {detail}"),
+                None => error,
+            });
+        }
         rows.push(row);
     }
     for (name, plugin) in &v.team.plugins {
