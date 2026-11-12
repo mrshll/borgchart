@@ -24,7 +24,6 @@ pub struct Record {
 pub struct Snapshot {
     pub checks: BTreeMap<String, Record>,
     pub pending: Vec<String>,
-    pub uncertain_sends: u64,
 }
 impl Snapshot {
     pub fn read(store: &plugin::State) -> Self {
@@ -47,7 +46,6 @@ impl Snapshot {
                 .flatten()
                 .filter_map(|v| v.as_str().map(str::to_owned))
                 .collect(),
-            uncertain_sends: raw["uncertain_sends"].as_u64().unwrap_or(0),
         }
     }
     pub fn prune(&mut self, names: &BTreeSet<String>) {
@@ -76,8 +74,16 @@ impl Snapshot {
             .iter()
             .map(|(n, r)| (n, json!({"status":r.status,"last_run":r.last_run})))
             .collect();
-        store.health(detail.is_empty() && failing.is_empty(), &message,
-            json!({"uncertain_sends":self.uncertain_sends,"pending_sends":self.pending.len(),"checks":checks}))
+        store.write_json(
+            "health.json",
+            &json!({
+                "ok": detail.is_empty() && failing.is_empty(),
+                "at": borgchart::bus::time::utc_now(),
+                "detail": plugin::escape(&message),
+                "pending_sends": self.pending.len(),
+                "checks": checks,
+            }),
+        )
     }
 }
 pub fn valid_signal(line: &str, names: &BTreeSet<String>) -> bool {

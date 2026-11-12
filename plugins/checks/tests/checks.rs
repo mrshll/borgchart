@@ -240,8 +240,8 @@ fn send_outcome(code: i32, id: bool, delayed: bool) {
         let pending_during_send = f.read("checks.json")["pending"].as_array().unwrap().len();
         assert!(process.wait().unwrap().success());
         assert_eq!(
-            pending_during_send, 0,
-            "batch must be dequeued before sending"
+            pending_during_send, 1,
+            "batch must stay persisted until sending succeeds"
         );
     } else {
         f.tick();
@@ -250,13 +250,13 @@ fn send_outcome(code: i32, id: bool, delayed: bool) {
         assert!(before.elapsed() < Duration::from_secs(35));
         fs::remove_file(f.path("state/delay")).unwrap();
     }
-    let uncertain = (code != 0 && id) || delayed;
-    let kept = code != 0 && !id && !delayed;
+    let kept = code != 0 || delayed;
     let health = f.read("health.json");
     assert_eq!(health["pending_sends"], usize::from(kept));
-    assert_eq!(health["uncertain_sends"], usize::from(uncertain));
-    assert_eq!(health["ok"], code == 0 && !uncertain);
-    if kept {
+    assert_eq!(health["ok"], !kept);
+    if delayed {
+        assert!(health["detail"].as_str().unwrap().contains("deadline"));
+    } else if kept {
         assert!(
             health["detail"]
                 .as_str()
@@ -270,19 +270,20 @@ fn send_outcome(code: i32, id: bool, delayed: bool) {
     assert_eq!(f.sends().len(), 1 + usize::from(kept));
 }
 #[test]
-fn refused_send_keeps_the_batch_for_one_retry() {
+fn failed_send_keeps_the_batch_for_one_retry() {
     send_outcome(4, false, false);
 }
 #[test]
-fn committed_send_cannot_be_republished() {
+fn successful_send_clears_the_batch() {
     send_outcome(0, true, false);
+    send_outcome(0, false, false);
 }
 #[test]
-fn uncertain_committed_id_is_counted_without_retrying() {
+fn nonzero_send_with_id_keeps_the_batch_for_one_retry() {
     send_outcome(5, true, false);
 }
 #[test]
-fn real_send_deadline_drops_and_counts_uncertainty_without_retrying() {
+fn real_send_deadline_keeps_the_batch_for_one_retry() {
     send_outcome(0, true, true);
 }
 
@@ -446,45 +447,33 @@ fn batches_fit_locked_budget_and_keep_oldest_remaining_signals() {
     }
 }
 
-fn bad_promote(name: &str, reason: &str, reasons: &str) {
+fn bad_promote(name: &str, reason: &str) {
     let f = Fixture::new();
     f.tick();
-    let result = f
-        .command(&["promote", name, reason])
-        .env("CHECKS_PROMOTE_REASONS", reasons)
-        .output()
-        .unwrap();
+    let result = f.run(&["promote", name, reason]);
     assert_eq!(result.status.code(), Some(2));
     assert!(f.sends().is_empty());
 }
 #[test]
 fn promote_refuses_unknown_check() {
-    bad_promote("missing", "other", "other");
+    bad_promote("missing", "other");
 }
 #[test]
-fn promote_refuses_unconfigured_reason() {
-    bad_promote("sample", "bad", "other");
+fn promote_refuses_unknown_reason() {
+    bad_promote("sample", "bad");
 }
 #[test]
-fn promote_refuses_duplicate_reasons() {
-    bad_promote("sample", "other", "other,other");
+fn promote_refuses_injected_reason() {
+    bad_promote("sample", "other\nvalue");
 }
-#[test]
-fn promote_refuses_injected_reasons() {
-    bad_promote("sample", "other", "bad\nvalue");
-}
-fn promote(code: i32, id: bool) {
+fn promote(code: i32, id: bool, reason: &str) {
     let f = Fixture::new();
     f.tick();
     f.outcome(
         code,
         json!({"id": if id { Some("m101") } else { None }, "message":"delivery refused\u{1b}"}),
     );
-    let result = f
-        .command(&["promote", "sample", "custom"])
-        .env("CHECKS_PROMOTE_REASONS", "custom")
-        .output()
-        .unwrap();
+    let result = f.run(&["promote", "sample", reason]);
     assert_eq!(result.status.code(), Some(i32::from(code != 0)));
     let sends = f.sends();
     let args = &sends[0];
@@ -493,14 +482,11 @@ fn promote(code: i32, id: bool) {
         "reader-test"
     );
     assert_eq!(args[args.len() - 2], "lead-test");
-    assert!(args.last().unwrap().contains("reason=custom"));
+    assert!(args.last().unwrap().contains(&format!("reason={reason}")));
     if code == 0 {
-        assert_eq!(String::from_utf8(result.stdout).unwrap().trim(), "m101");
-    } else if id {
-        assert!(
-            String::from_utf8(result.stderr)
-                .unwrap()
-                .contains("may have been committed")
+        assert_eq!(
+            String::from_utf8(result.stdout).unwrap().trim(),
+            fs::read_to_string(f.path("state/outcome")).unwrap()
         );
     } else {
         assert!(
@@ -513,16 +499,18 @@ fn promote(code: i32, id: bool) {
     assert_eq!(f.sends().len(), 1);
 }
 #[test]
-fn promote_routes_committed_notice_to_parent() {
-    promote(0, true);
+fn promote_reports_brg_output_for_each_fixed_reason() {
+    for reason in ["outage", "alert", "question", "other"] {
+        promote(0, true, reason);
+    }
 }
 #[test]
-fn promote_reports_refusal_without_retrying() {
-    promote(4, false);
+fn promote_reports_brg_errors_without_retrying() {
+    promote(4, false, "other");
 }
 #[test]
-fn promote_reports_uncertainty_without_retrying() {
-    promote(5, true);
+fn promote_reports_brg_errors_even_with_an_id() {
+    promote(5, true, "other");
 }
 
 #[test]
@@ -554,23 +542,6 @@ fn relative_command_uses_template_folder_environment_and_prunes_removed_checks()
             .success()
     );
     assert_eq!(f.run(&["last", "sample"]).status.code(), Some(2));
-}
-
-#[test]
-fn state_symlinks_cannot_overwrite_or_expose_another_file() {
-    let f = Fixture::new();
-    let contents = json!({"checks":{"private":{"command":["printf","hidden"],"status":"ok","output":"hidden"}}}).to_string();
-    f.write("victim", &contents);
-    for name in ["checks.json", "health.json", "checks.lock"] {
-        std::os::unix::fs::symlink(f.path("victim"), f.path(&format!("state/{name}"))).unwrap();
-    }
-    assert!(
-        !String::from_utf8(f.run(&["last", "private"]).stdout)
-            .unwrap()
-            .contains("hidden")
-    );
-    assert_eq!(f.run(&["run", "--once"]).status.code(), Some(1));
-    assert_eq!(fs::read_to_string(f.path("victim")).unwrap(), contents);
 }
 
 #[test]

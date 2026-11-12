@@ -42,7 +42,6 @@ plugins:
     delivers_to: triager
     env:
       CHECKS_FILE: checks.yaml
-      CHECKS_PROMOTE_REASONS: outage,alert,question,other
     actions:
       last: brg-checks last <name>
       promote: brg-checks promote <name> <reason>
@@ -60,19 +59,19 @@ result. Restarting preserves the baseline, so a change while stopped wakes once.
 Pending signals are stored oldest first. Each tick sends one notice to
 `BORGCHART_DELIVER_TO` through the plugin message bus: at most six signal lines,
 900 UTF-8 bytes and eight wrapped lines at width 78, with a header of at most 76 characters.
-Exit 0 clears the batch. A definite send failure keeps it and marks health not ok
-with brg's sanitized error. A send timeout or nonzero result with a committed ID
-drops the batch and increments `uncertain_sends`; check brg before resending.
-Like `brg-slack`, the batch is removed before attempting delivery, so a crash
-during delivery can lose that notice rather than duplicate it.
+Exit 0 clears the batch. Any send error, including a timeout or a nonzero result
+with an ID, keeps it for the next tick and marks health not ok with brg's sanitized
+error. The batch stays persisted until delivery succeeds; an interrupted or failed
+send can produce a duplicate notice later.
 
 `BORGCHART_STATE_DIR` is required and holds locked, atomically replaced
-`checks.json`, plus `health.json`. File opens refuse symlinks. Newly created state
-folders are private; existing folder permissions are preserved. State retains the command, last run and
+`checks.json`, plus `health.json`, with one `plugin.lock`. Files are created 0600.
+Newly created state folders are private; existing folder permissions are preserved.
+State retains the command, last run and
 success times (UTC), status, exit code, `timeout` or `output-limit`, last stderr line (up to 500
 characters), current output, last good digest and previous distinct successful
 output. Removed checks and their queued signals are pruned at startup. After each
-check and tick, health reports `ok`, `at`, `detail`, `uncertain_sends`,
+check and tick, health reports `ok`, `at`, `detail`,
 `pending_sends`, and per-check `status` and `last_run`. A failing check, failed
 delivery or invalid configuration makes health not ok. Restart the process to
 reload a changed checks file.
@@ -85,13 +84,12 @@ Actions run in the calling member's folder and use the same state directory:
   the previous successful evidence is the last good output. Output lines start
   with `| ` and control characters are escaped. Unknown names exit 2 and list
   known checks.
-- `brg-checks promote <name> <reason>` sends the check ID and a configured reason
+- `brg-checks promote <name> <reason>` sends the check ID and a reason
   to `BORGCHART_PARENT` with `--from BORGCHART_MEMBER`, so brg checks the parent
-  route. `CHECKS_PROMOTE_REASONS` is a distinct comma-separated list of names
-  matching `[a-z][a-z0-9_-]{0,39}`, default `outage,alert,question,other`. Success
-  prints brg's ID and exits 0. Definite failure prints brg's error and exits 1.
-  Uncertainty exits 1 saying it may have been committed: check brg before
-  resending. Promote has no retry spool, so a locked Codex member can't promote.
+  route. Reasons are fixed: `outage`, `alert`, `question`, `other`. Success
+  prints brg's output, including its ID, and exits 0. Any failure prints brg's
+  error and exits 1; the member can retry. Promote has no retry spool, so a locked
+  Codex member can't promote.
 
 `brg-checks run --once` runs one tick, useful for testing. It exits nonzero for
 invalid startup configuration; check or delivery failures appear in health.

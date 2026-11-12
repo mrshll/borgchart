@@ -146,17 +146,6 @@ pub fn load() -> Result<Vec<Check>, String> {
         .map_err(|_| "checks file: cannot read YAML; fix CHECKS_FILE and retry")?;
     parse(&text)
 }
-pub fn reasons() -> Result<BTreeSet<String>, String> {
-    let text =
-        std::env::var("CHECKS_PROMOTE_REASONS").unwrap_or("outage,alert,question,other".into());
-    let values: Vec<_> = text.split(',').map(str::trim).collect();
-    let set: BTreeSet<_> = values.iter().map(|s| s.to_string()).collect();
-    if values.len() != set.len() || values.iter().any(|v| !matches("[a-z][a-z0-9_-]{0,39}", v)) {
-        return Err("set CHECKS_PROMOTE_REASONS to distinct comma-separated reason names".into());
-    }
-    Ok(set)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

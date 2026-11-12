@@ -1,5 +1,5 @@
 //! Run change-gated checks and read their evidence.
-use borgchart::plugin::{self, Outcome};
+use borgchart::plugin;
 use brg_checks::{config, run, state};
 use clap::{Parser, Subcommand, error::ErrorKind};
 use state::{Snapshot, one_line};
@@ -19,7 +19,7 @@ enum Action {
     },
     /// Read the latest and previous evidence without waiting for a check
     Last { name: String },
-    /// Send a check ID and configured reason to your parent
+    /// Send a check ID and reason (outage, alert, question, other) to your parent
     Promote { name: String, reason: String },
 }
 fn action(action: Action) -> Result<(), (i32, String)> {
@@ -49,8 +49,11 @@ fn action(action: Action) -> Result<(), (i32, String)> {
         )
     })?;
     if let Some(reason) = reason {
-        if !config::reasons().map_err(|e| (2, e))?.contains(&reason) {
-            return Err((2, "use a known check and configured promote reason".into()));
+        if !["outage", "alert", "question", "other"].contains(&reason.as_str()) {
+            return Err((
+                2,
+                "use a known check and reason: outage, alert, question, other".into(),
+            ));
         }
         let sender = std::env::var("BORGCHART_MEMBER").unwrap_or_default();
         let target = std::env::var("BORGCHART_PARENT").unwrap_or_default();
@@ -66,14 +69,8 @@ fn action(action: Action) -> Result<(), (i32, String)> {
             "Checks promote from {sender}: check={name} reason={reason}. Look with brg-checks last {name}."
         );
         match plugin::send("checks", &target, &text, Some(&sender)) {
-            Outcome::Committed { id } => println!("{}", id.unwrap_or_default()),
-            Outcome::Refused { message, .. } => return Err((1, message)),
-            Outcome::Uncertain { .. } => {
-                return Err((
-                    1,
-                    "send may have been committed; check brg before resending".into(),
-                ));
-            }
+            Ok(output) => println!("{output}"),
+            Err(message) => return Err((1, message)),
         }
     } else {
         println!("{}", plugin::UNTRUSTED_HEADER);

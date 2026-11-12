@@ -5,7 +5,7 @@ use crate::{
 };
 use borgchart::{
     bounded_process::{self, Error, Limits, Stream},
-    plugin::{self, Outcome},
+    plugin,
 };
 use serde_json::json;
 use std::{
@@ -30,24 +30,20 @@ fn deliver(state: &mut Snapshot, store: &plugin::State) -> Result<String, String
     if !config::matches("[a-z][a-z0-9_-]{0,79}(?:/[a-z][a-z0-9_-]{0,79})*", &target) {
         return Ok("set BORGCHART_DELIVER_TO to the intake member's ID".into());
     }
-    let batch: Vec<_> = state.pending.drain(..state.pending.len().min(6)).collect();
-    state
-        .save(store)
-        .map_err(|_| "cannot save plugin state; check permissions")?;
+    let batch = &state.pending[..state.pending.len().min(6)];
     Ok(
-        match plugin::send("checks", &target, &notice(&batch), None) {
-            Outcome::Committed { .. } => String::new(),
-            Outcome::Uncertain { .. } => {
-                state.uncertain_sends = state.uncertain_sends.saturating_add(1);
-                "delivery uncertain; check brg before resending".into()
+        match plugin::send("checks", &target, &notice(batch), None) {
+            Ok(_) => {
+                state.pending.drain(..batch.len());
+                state
+                    .save(store)
+                    .map_err(|_| "cannot save plugin state; check permissions")?;
+                String::new()
             }
-            Outcome::Refused { message, .. } => {
-                state.pending.splice(..0, batch);
-                format!(
-                    "delivery failed: {}; batch kept for the next tick",
-                    one_line(&message)
-                )
-            }
+            Err(message) => format!(
+                "delivery failed: {}; batch kept for the next tick",
+                one_line(&message)
+            ),
         },
     )
 }
@@ -126,7 +122,7 @@ pub fn run(store: &plugin::State, once: bool) -> Result<(), String> {
     loop {
         {
             let _lock = store
-                .lock("checks.lock")
+                .lock()
                 .map_err(|_| "cannot lock plugin state; check permissions")?;
             let mut state = Snapshot::read(store);
             state.prune(&names);
