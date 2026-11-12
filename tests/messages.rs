@@ -318,7 +318,7 @@ fn wait_errors_and_usage_errors_obey_the_minimum() {
 }
 
 #[test]
-fn send_refuses_an_unknown_flag() {
+fn send_refuses_a_team_flag() {
     let env = Env::new();
     for args in [
         vec!["msg", "--team", "other", "send", "x/y", "hello"],

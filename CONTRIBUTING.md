@@ -10,7 +10,7 @@ Four checks must pass before a change merges. CI runs the Rust checks on Linux f
 .githooks/checks fast         # the fast tier (below)
 ```
 
-The tests need `tmux`, and `py` needs `uv`. Before running only the `child_team_preparation` integration target, build its sibling plugin binary with `tools/cargo-slot cargo build --workspace --bins --all-features --locked`; `.githooks/checks test` does this automatically.
+The tests need `tmux`, and `py` needs `uv`. Before running only the `dev_team` integration target, build its sibling plugin binary with `tools/cargo-slot cargo build --workspace --bins --all-features --locked`; `.githooks/checks test` does this automatically.
 
 `make build` builds the release workspace binaries; `make fmt` formats Rust, `make lint` runs clippy, and `make clean` removes build artifacts. Run `make` for help; [installation](#installing-from-a-checkout) uses `make install`.
 

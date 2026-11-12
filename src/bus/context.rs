@@ -174,7 +174,7 @@ mod tests {
     }
 
     #[test]
-    fn the_instance_is_the_members_own() {
+    fn the_team_is_the_members_own() {
         let inside = env(&[(ENV_INSTANCE, "oncall-2a3b")]);
         assert_eq!(instance_from(None, &inside).unwrap(), "oncall-2a3b");
         assert_eq!(

@@ -1,4 +1,4 @@
-//! Child team limits, parent authority and checkout separation through the CLI.
+//! Member and child team limits, parent authority and worktree separation through the CLI.
 #![cfg(feature = "test-support")]
 
 mod common;
