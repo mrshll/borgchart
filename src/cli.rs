@@ -392,23 +392,15 @@ pub fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().collect();
     // Recognize the wait even when clap rejects its flags. Usage errors
     // must back off too, or a broken wait command can spin turns.
-    // Keep the removed `inbox wait` spelling here so old role text cannot spin.
     // Explicit help and external termination remain immediate.
     let mut tokens = args.iter().skip(1);
-    let waiting = if tokens
-        .next()
-        .is_some_and(|arg| arg == "msg" || arg == "inbox")
-    {
+    let waiting = if tokens.next().is_some_and(|arg| arg == "msg") {
         loop {
             match tokens.next() {
-                // Skip the removed spelling too so old role text cannot spin.
-                Some(arg) if arg == "--team" || arg == "--instance" => {
+                Some(arg) if arg == "--team" => {
                     tokens.next();
                 }
-                Some(arg)
-                    if arg.to_str().is_some_and(|s| {
-                        s.starts_with("--team=") || s.starts_with("--instance=")
-                    }) => {}
+                Some(arg) if arg.to_str().is_some_and(|s| s.starts_with("--team=")) => {}
                 Some(arg) => break arg == "wait",
                 None => break false,
             }

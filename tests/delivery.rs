@@ -475,7 +475,7 @@ fn missing_start_records_cannot_hide_open_work_from_delete() {
 fn stopping_without_a_tree_store_does_not_poison_the_next_root_start() {
     let tree = Tree::new();
     let store = tree.env.path(&format!("state/{}/messages", tree.parent));
-    fs::rename(&store, tree.env.path("old-messages")).unwrap();
+    fs::rename(&store, tree.env.path("saved-messages")).unwrap();
     fs::create_dir(&store).unwrap();
     fs::set_permissions(&store, fs::Permissions::from_mode(0o700)).unwrap();
     tree.env.ok(&["stop", &tree.child]);
