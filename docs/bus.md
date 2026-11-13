@@ -138,7 +138,7 @@ Delete needs `--force` for unacked messages to the team's kept members, unacked 
 
 ## Attention
 
-An ordinary send commits first, then rechecks the current incarnation and pane before optional typing. `interactive: true` is inbox-only, even with `--allow-unknown`; default false permits guarded typing. Existing drafts, copy mode and visible dialogs prevent input. The exact pasted composer is checked again before Enter. Mid-turn delivery may steer or join the current turn; it is not a guaranteed next turn. No guard eliminates the final-check/Enter race.
+An ordinary send commits first, then rechecks the current incarnation and pane before optional typing. `interactive: true` makes a Claude member inbox-only, even with `--allow-unknown`; default false permits guarded typing. A Codex member always gets guarded typing, since nothing wakes it when a background wait ends. Existing drafts, copy mode and visible dialogs prevent input. The exact pasted composer is checked again before Enter. Mid-turn delivery may steer or join the current turn; it is not a guaranteed next turn. No guard eliminates the final-check/Enter race.
 
 Typing never acknowledges ordinary work. Inbox waits and typing can deliver the same ID: ignore an already-acked duplicate, otherwise ack when taking responsibility. Keep one wait armed as above, especially for an interactive lead.
 

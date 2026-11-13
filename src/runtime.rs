@@ -4656,6 +4656,9 @@ pub fn send(
     } else {
         Vendor::Claude
     };
+    // Codex starts no turn when a background wait ends, so only a Claude
+    // member can be inbox-only.
+    let inbox_only = interactive && vendor == Vendor::Claude;
     let original = if target_meta.is_some() {
         lifecycle::load_incarnation(&inst.state, &to).map_err(SendError::Refused)?
     } else {
@@ -4720,7 +4723,7 @@ pub fn send(
         outcome.reason = "external inbox".into();
         return Ok(outcome);
     }
-    if interactive {
+    if inbox_only {
         outcome.reason = "interactive recipient".into();
         return Ok(outcome);
     }
@@ -4755,7 +4758,7 @@ pub fn send(
         if meta
             .members
             .get(&to)
-            .is_none_or(|m| m.interactive || (m.posture == "locked") != locked)
+            .is_none_or(|m| m.interactive != interactive || (m.posture == "locked") != locked)
         {
             return Err(SendError::Refused(
                 "recipient delivery posture changed after commit".into(),

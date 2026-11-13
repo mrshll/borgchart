@@ -84,7 +84,8 @@ This command takes no --team; name the target as <team>/<member>.
 
 Ordinary messages commit before optional typing. Exit 0 means committed even
 when delivery is stored or uncertain; never automatically republish. Interactive
-recipients are inbox-only even with --allow-unknown. Working recipients may
+Claude recipients are inbox-only even with --allow-unknown; Codex recipients
+are typed into either way. Working recipients may
 absorb input in the current turn. Typing never acknowledges: use `msg ack ID`
 when taking responsibility, and ignore an already-acked duplicate from
 `msg wait`.

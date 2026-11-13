@@ -997,6 +997,36 @@ fn unified_send_preserves_drafts_and_skips_unverifiable_and_interactive_messages
     }
 }
 
+/// Codex starts no turn when a background wait ends, so typing is the only
+/// way an idle Codex member hears a message: `interactive` doesn't stop it.
+#[test]
+fn interactive_codex_recipients_are_typed_into_but_drafts_still_stop_it() {
+    for draft in [false, true] {
+        let e = Env::new(Vendor::Codex);
+        e.send_setup(Vendor::Codex, false, true);
+        if draft {
+            e.keys(&["draft"]);
+        }
+        let (code, out) = e.send_message("hello", &[]);
+        assert_eq!(code, 0, "{out}");
+        if draft {
+            assert_eq!(out["delivery"], "stored", "{out}");
+            assert!(e.events("paste").is_empty());
+            assert!(e.screen().contains("draft"));
+        } else {
+            assert_eq!(out["delivery"], "typed", "{out}");
+            let submits = e.events("submit");
+            assert_eq!(submits.len(), 1, "{submits:?}");
+            assert!(
+                submits[0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("[brg m1 from external:test]\nhello")
+            );
+        }
+    }
+}
+
 #[test]
 fn unified_send_rechecks_dialogs_after_paste_and_reports_locked_uncertainty() {
     for locked in [false, true] {
