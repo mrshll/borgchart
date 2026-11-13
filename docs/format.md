@@ -121,7 +121,7 @@ You read each new message in the channel and decide whether it needs the lead.
   - Only the member's own vendor needs an entry; without one, the vendor's default model is used (with a warning).
   - Every supplied vendor pin is checked, including the other vendor's pin.
   - Model names are passed to the vendor unchanged.
-- **Create-time choices:** `brg create <team>/<agent-role> --set vendor=codex,model=example-model,effort=medium` replaces only the keys given. A child team takes role-prefixed keys, such as `--set lead.vendor=codex`. A vendor-only choice selects its pin; model alone keeps the pin's effort; effort alone keeps the model. Vendor changes on roles with `args`, `connectors`, `remote_control` or `posture: locked` are refused.
+- **Create-time choices:** `brg create <team>/<agent-role> --set vendor=codex,model=example-model,effort=medium` replaces only the keys given. A child team takes role-prefixed keys, such as `--set lead.vendor=codex`. A vendor-only choice selects its pin; model alone keeps the pin's effort; effort alone keeps the model. Vendor changes on roles with `args`, non-empty `connectors` or `remote_control` are refused. `posture: locked` and `connectors: []` work on either vendor.
   - `team.json` stores only explicit keys: an optional `overrides` object on an issued member, or a map from role to overrides on a child team's record. Empty choices are omitted. Start, resume and status resolve the template, then team choices, then member choices, key by key. Edits to pins apply on the next start unless that key was explicitly chosen. An invalid stored choice refuses the affected start and names the member or child team to delete and create again; unrelated starts and creates still work. Status retains the rows with the refusal in `detail`, the recorded vendor if any (null for an uncreated role), null model and effort, and the explicit `overrides`.
 - **The body** is the member's standing instruction, sent as its opening prompt.
 - **Includes:** a line that is exactly `{{includes/<stem>}}` is replaced by `<includes>/<stem>.md`. Includes are one level deep: an included file can't include another.
@@ -211,9 +211,12 @@ roles:
 ```
 
 - **Names:** use server names exactly as `claude mcp list` / `codex mcp list` print them.
+- **No connectors:** `connectors: []` starts with no MCP servers on either vendor, in either posture. Claude gets `--strict-mcp-config`. Codex gets `--disable apps --disable plugins` and an `enabled=false` override for every configured server, listed with `codex mcp list --json` in the member's folder and environment. If that bounded listing fails, that member is not started; fix the listing and retry. Codex server names must contain only ASCII letters, digits, `_` or `-`; other names prevent that member from starting, so rename them in Codex's config or drop `connectors: []`. With `connectors` absent, vendor settings apply; a locked Claude member without connectors still disables MCP, while locked Codex loads its configured servers and its gate denies their tools.
 - **Acting as you:** connector actions act as **you**, not as a bot. A connector that reads mail or messages is untrusted input.
 - **Auth:** Claude's own connectors need your login, so `auth: api_key` can't be used with members that declare them.
-- **Probing:** `brg validate --probe` asks each vendor CLI which servers are configured (`claude mcp list`, `codex mcp list --json`, run in the template folder), and warns about missing names. Listing health-checks, and so starts, your MCP servers, which is why it only runs when asked. Claude's list is parsed from its text output and may need updating across versions. It can't check that a connector is signed in, which account it acts as, or its scopes.
+- **Probing:** `brg validate --probe` asks each vendor CLI which servers are configured (`claude mcp list`, `codex mcp list --json`, run in the template folder), and warns about missing names. An empty connector list expects nothing and is skipped. Claude's listing health-checks, and so starts, your MCP servers; its list is parsed from text output and may need updating across versions. Codex's listing doesn't start stdio servers, but contacts HTTP servers to check their sign-in status; each unresponsive HTTP server can add a few seconds. Probing can't check which account a connector acts as, or its scopes.
+
+The start-time Codex listing receives brg's session trust override, but does not see the role's own `args`, such as `-c mcp_servers…` or `--profile`.
 
 ## `config.yaml`
 

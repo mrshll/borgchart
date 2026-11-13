@@ -336,6 +336,7 @@ pub fn member_launch(
     help: &BTreeMap<String, String>,
     settings_path: &Path,
     codex_trust: Option<&Path>,
+    codex_mcp_servers: &std::collections::BTreeSet<String>,
     shared: &[PathBuf],
     resume: Option<&str>,
 ) -> LaunchSpec {
@@ -382,15 +383,17 @@ pub fn member_launch(
                 if !allowed.is_empty() {
                     argv.extend(["--allowedTools".into(), allowed.join(",")]);
                 }
-                if member.connectors.is_empty() {
-                    argv.push("--strict-mcp-config".into());
-                }
                 argv.extend(["--settings".into(), settings_path.display().to_string()]);
                 settings = Some(claude_settings(brg, state, member_id));
                 gate = Some(rules);
             } else {
                 argv.extend(["--settings".into(), settings_path.display().to_string()]);
                 settings = Some(claude_session_settings(brg, state, member_id));
+            }
+            if member.connectors.is_empty()
+                && (member.connectors.declared || posture == Posture::Locked)
+            {
+                argv.push("--strict-mcp-config".into());
             }
             // `vendor` posture: the team's messages and notes, as
             // added folders, unless the role's own args add folders.
@@ -481,6 +484,17 @@ pub fn member_launch(
             }
             if let Some(dir) = codex_trust {
                 argv.extend(["-c".into(), codex_trust_config(dir)]);
+            }
+            if member.connectors.declared && member.connectors.is_empty() {
+                argv.extend([
+                    "--disable".into(),
+                    "apps".into(),
+                    "--disable".into(),
+                    "plugins".into(),
+                ]);
+                for server in codex_mcp_servers {
+                    argv.extend(["-c".into(), format!("mcp_servers.{server}.enabled=false")]);
+                }
             }
             argv.extend(extra_args);
             // `--` so a prompt that starts with `-` isn't read as an option.

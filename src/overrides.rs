@@ -1,7 +1,7 @@
 //! Resolve create-time choices against the current role and its vendor pins.
 
 use crate::config::Auth;
-use crate::team::{EFFORTS, Model, Posture, Role, Vendor};
+use crate::team::{EFFORTS, Model, Role, Vendor};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -176,7 +176,6 @@ pub fn apply(
             ("args", !role.args.is_empty()),
             ("connectors", !role.connectors.is_empty()),
             ("remote_control", role.remote_control),
-            ("posture: locked", role.posture == Posture::Locked),
         ] {
             if set {
                 return Err(format!(
@@ -231,6 +230,7 @@ pub fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::team::Posture;
 
     fn role() -> Role {
         let dir = tempfile::tempdir().unwrap();
@@ -385,10 +385,10 @@ mod tests {
         assert!(apply(&role, None, Some("custom"), Some("high"), Auth::Login).is_ok());
     }
     #[test]
-    fn locked_vendor_change_is_refused_but_model_choice_is_allowed() {
+    fn locked_posture_does_not_prevent_vendor_choice() {
         let mut role = role();
         role.posture = Posture::Locked;
-        assert!(apply(&role, Some(Vendor::Codex), None, None, Auth::Login).is_err());
+        assert!(apply(&role, Some(Vendor::Codex), None, None, Auth::Login).is_ok());
         assert!(apply(&role, None, Some("custom"), None, Auth::Login).is_ok());
     }
 

@@ -1,6 +1,7 @@
 # Slack plugin
 
-`brg-slack` watches one Slack channel and gives members IDs to inspect. Install
+`brg-slack` watches a channel for ID notices or listens for allow-listed leading
+mentions as requests. Install
 from a checkout with `make install` (or `cargo install --path plugins/slack`)
 and keep `BINDIR` on PATH. It needs nothing else at runtime; building it needs
 a C compiler for TLS. TLS uses bundled roots, so a TLS-intercepting proxy fails
@@ -27,6 +28,91 @@ Grant only the actions a role needs. The process runs in the template folder;
 actions run in the member's folder. Use `brg-slack --help` for the command list.
 The [slack-devops example](../../examples/slack-devops) provides a complete team.
 
+## Mention requests
+
+Use one listener per Slack app, in public channels the bot has joined. This mode
+needs `app_mentions:read`, the bot event `app_mention`, `channels:history`,
+`chat:write` and `reactions:write`, plus an app-level token with
+`connections:write`. Direct messages and private channels are unsupported.
+
+```yaml
+plugins:
+  slack:
+    process: [brg-slack, mentions]
+    delivers_to: lead
+    env:
+      SLACK_APP_TOKEN:
+      SLACK_BOT_TOKEN:
+      SLACK_MENTION_USERS: U0000ALICE
+    actions:
+      thread: brg-slack thread <request_id>
+      reply: brg-slack reply <request_id> <text>
+      react: brg-slack react <request_id> <reaction>
+```
+
+Inject both tokens through the launching shell or secret manager. brg supplies
+`BORGCHART_DELIVER_TO` and `BORGCHART_STATE_DIR`; direct runs must set them.
+`mentions [--once]` accepts only `app_mention` events in the bot's workspace,
+from a listed human, with no bot ID or subtype, whose text after whitespace
+starts with `<@BOT_USER_ID>` or `<@BOT_USER_ID|`. Other events receive only a
+Socket Mode acknowledgement; their text is never logged or stored.
+
+The listener journals the request before acknowledging Slack. It delivers the
+request inline to the fixed member from `external:slack`, with its ID, reply and
+thread commands, and a reminder to ignore a copy already taken. The request is
+the listed person's ask under the member's standing rules. Earlier thread text,
+including that person's earlier messages, is framed evidence with no authority.
+A vendor recipient with host tools therefore receives other people's text;
+framing cannot prevent all attempts to steer it. Set `untrusted_input: true`
+and `accept_risk: true` on that role; brg validation warns about a plugin target
+in vendor posture.
+
+Request IDs look like `C0000EXAMPLE-1700000000.000100`. `thread`, `reply` and
+`react` accept them: reads/replies use the recorded channel and root thread;
+reactions use the request message. Missing or expired IDs fail before a Slack
+call. Timestamp targets still use `SLACK_CHANNEL_ID`; `read` and `page` remain
+channel-only. Grant a member actions from only one Slack entry.
+
+A request stores at most 4,000 characters with a visible truncation marker.
+Thread context uses one API attempt with a roughly five-second deadline and no
+rate-limit sleep: root plus up to the latest 19 earlier replies returned, at
+most 1,000 text characters per message with a marker for cuts, and 8,000 bytes
+for the block. A single page
+of up to 1,000 messages is fetched; a partial-page notice warns that later
+replies may be missing. The full body stays below 15,000 bytes. Fetch failure
+adds a notice and still delivers the request. Other people's context is not
+stored in request files; delivered bodies remain in bus history.
+
+Pending requests retry on a wake and every 15 seconds, oldest first. brg exit 0
+marks a request sent, then adds `eyes` once. Reaction failure affects health and
+is not retried; health keeps the error until a later reaction succeeds.
+Delivery failure keeps it pending; after one hour it becomes failed and health
+stays not ok. A failed request is not retried: ask the requester to mention
+again, then delete its `req-<id>.json` from the plugin state directory to clear
+health. Records expire after 14 days. A restart delivers pending records. A
+crash after sending but before marking sent can deliver a copy; the ID
+identifies it. Actions do not take the listener's state lock.
+
+Stop any other Socket Mode listener for the app before cutover. More than one
+connection makes health not ok, since Slack distributes events between them.
+Startup authentication failures retry with backoff from one to 60 seconds in
+normal mode. The listener refreshes immediately on `disconnect`; other socket
+failures reconnect with backoff from one to 60 seconds, reset on `hello`. It
+pings after 30 idle seconds and reconnects after 90 seconds without a frame.
+Normal mode runs continuously; `--once` finishes after a socket close/error,
+draining pending delivery and exiting non-zero on a connection setup error,
+but still follows `disconnect` refreshes. Mentions during downtime are lost: no
+`eyes` means no confirmed delivery. Replies need another leading mention to
+start a new request. The owner should prove scopes, downtime and reconnect
+behavior with the app before relying on it.
+
+For watch coexistence, use a separate plugin entry and state directory with
+`SLACK_SKIP_MENTIONS: "true"` where mention requests should bypass watch intake.
+Leading mentions from people outside `SLACK_MENTION_USERS` are then seen by
+neither entry. Unset or any other value preserves ordinary watch behavior.
+Once cut over, the app's `message.channels` subscription is unnecessary for
+mention intake.
+
 ## Actions
 
 - `watch [--once]`: snapshot the first window without delivering it, then poll
@@ -35,10 +121,10 @@ The [slack-devops example](../../examples/slack-devops) provides a complete team
   human `thread_broadcast` replies and explicitly allowlisted bots' `bot_message`
   posts. The plugin's own bot is always skipped. Without an allowlist, every
   human qualifies.
-- `read <ts>`: read a top-level post. `thread <ts>`: read up to 200 thread
+- `read <ts>`: read a top-level post. `thread <ts-or-request-id>`: read up to 200 thread
   messages. Output starts with an untrusted-data warning, frames each message
   with timestamp/author/edit metadata, prefixes every text line with `| `,
-  escapes control characters except newline/tab, and redacts the bot token.
+  escapes control characters except newline/tab, and redacts both Slack tokens.
 - `promote <ts> <reason>`: send a fixed notice to the member's parent, with
   `--from` validating that route. The reasons are `outage`, `deploy`,
   `security`, `question`, `other`. No Slack text is forwarded. For locked Codex,
@@ -48,16 +134,16 @@ The [slack-devops example](../../examples/slack-devops) provides a complete team
   stays queued and is only retried at the next tool call, which may be the member's
   next wake; uncertain sends need inspection before
   retrying (see [bus delivery](../../docs/bus.md#attention)). Claude sends directly.
-- `react <ts> <reaction>`: use `eyes` or `done` to add eyes or a white check mark.
+- `react <ts-or-request-id> <reaction>`: use `eyes` or `done` to add eyes or a white check mark.
   An existing reaction succeeds.
-- `reply <thread_ts> <text>`: post in the configured channel's thread, at most
+- `reply <ts-or-request-id> <text>`: post in the target thread, at most
   1,500 characters.
 - `page <user_id> <text>`: post a top-level mention of an allowlisted user in
   `SLACK_CHANNEL_ID`, followed by at most 500 characters. Paging is disabled unless an allowlist is
   configured. After a failed request, check the channel before retrying; Slack
   may already have posted it.
 
-All writes refuse empty text, the bot token, user mentions in the supplied text,
+All writes refuse empty text, either Slack token, user mentions in the supplied text,
 Slack `<!…>` controls (except `<!date^…>`), and plain `@here`, `@channel` or
 `@everyone`. Refusals and usage errors exit 2; failures exit 1, with one plain
 stderr line. Quote multiword text as one argument. No page audit log is kept.
@@ -67,7 +153,10 @@ stderr line. Quote multiword text as one argument. No page audit log is kept.
 | Environment | Meaning |
 | --- | --- |
 | `SLACK_BOT_TOKEN` | Required bot token; inject it from the launching shell or secret manager. |
-| `SLACK_CHANNEL_ID` | Required intake/read/reply/reaction/page channel. |
+| `SLACK_CHANNEL_ID` | Required for watch, read, page and timestamp-based actions; not needed for mentions or request IDs. |
+| `SLACK_APP_TOKEN` | Required for mentions; app-level token with `connections:write`. |
+| `SLACK_MENTION_USERS` | Required for mentions: non-empty comma-separated human user IDs (`U…` or `W…`), with no empty entries. |
+| `SLACK_SKIP_MENTIONS` | Set exactly `true` on watch to skip leading mentions of its bot in posts and replies, while still advancing its cursor. Leading mentions from people outside `SLACK_MENTION_USERS` are then seen by neither entry. |
 | `SLACK_POLL_SECONDS` | Positive poll interval, default 15 seconds. |
 | `SLACK_WINDOW_HOURS` | Positive history window, default 24 hours. |
 | `SLACK_ALLOW_IDS` | Comma-separated user/bot IDs; empty or unset means every human. |
