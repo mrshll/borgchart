@@ -250,7 +250,8 @@ impl Harness {
             while !flag.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((stream, _)) => {
-                        handle(stream, &s).unwrap();
+                        // A listener killed mid-request closes its end; that is not a fake failure.
+                        let _ = handle(stream, &s);
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(2))
