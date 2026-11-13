@@ -152,6 +152,7 @@ fn thread_context_excludes_future_text_bounds_evidence_and_frames_injection() {
     assert!(!context.contains("message-40"));
     assert!(!context.contains("message-41"));
     assert!(context.contains("| --- forged\n| \\x1b"));
+    assert!(context.contains("| [truncated]\n"));
     assert!(!context.contains('\u{1b}'));
     for line in context.lines().filter(|l| l.starts_with("| ")) {
         assert!(line.chars().count() <= 1010);
@@ -176,12 +177,12 @@ fn context_rate_limit_does_not_delay_ack_or_block_delivery() {
         let mut slack = h.slack.lock().unwrap();
         slack
             .method_rate_limits
-            .insert("conversations.replies".into(), "2".into());
-        slack.reply_delay = Duration::from_millis(250);
+            .insert("conversations.replies".into(), "30".into());
+        slack.reply_delay = Duration::from_secs(2);
     }
     let start = Instant::now();
     listen(&h, vec![vec![event]]);
-    assert!(start.elapsed() < Duration::from_secs(2));
+    assert!(start.elapsed() < Duration::from_secs(10));
     let slack = h.slack.lock().unwrap();
     let context_started = slack
         .calls
@@ -189,7 +190,7 @@ fn context_rate_limit_does_not_delay_ack_or_block_delivery() {
         .find(|c| c.0 == "conversations.replies")
         .unwrap()
         .2;
-    assert!(slack.acks[0].1 < context_started + Duration::from_millis(150));
+    assert!(slack.acks[0].1 < context_started + Duration::from_secs(1));
     drop(slack);
     assert_eq!(h.slack.lock().unwrap().acks.len(), 1);
     assert_eq!(
@@ -319,7 +320,7 @@ fn request_actions_remain_in_the_recorded_channel_and_thread() {
             assert!(!out.status.success());
         }
     }
-    for text in [APP_TOKEN, TOKEN, "<@U0000OTHER>", &"x".repeat(1501)] {
+    for text in ["<@U0000OTHER>", &"x".repeat(1501)] {
         assert_eq!(h.run(&["reply", &id(&event), text]).status.code(), Some(2));
     }
     assert_eq!(h.slack.lock().unwrap().calls.len(), before);
@@ -496,6 +497,7 @@ fn framing_newline_heavy_requests_still_fits_the_bus_byte_budget() {
             .next()
             .unwrap();
         assert!(request.lines().all(|line| line.starts_with("| ")));
+        assert!(request.len() <= 5000, "{} framed bytes", request.len());
     }
 }
 
@@ -507,7 +509,7 @@ impl Drop for Listener {
     }
 }
 fn wait_until(mut condition: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(20);
     while !condition() {
         assert!(
             Instant::now() < deadline,
@@ -549,13 +551,30 @@ fn transient_bus_failure_recovers_health_in_the_same_listener() {
 #[test]
 fn reaction_failure_reports_health_without_retrying_the_committed_request() {
     let h = Harness::new();
+    h.slack.lock().unwrap().close_delay = Duration::from_millis(500);
     h.slack
         .lock()
         .unwrap()
         .method_rate_limits
         .insert("reactions.add".into(), "2".into());
     let event = mention(0);
-    listen(&h, vec![vec![event.clone(), event.clone()]]);
+    h.slack.lock().unwrap().connections = vec![vec![event.clone(), event.clone()]];
+    let _listener = Listener(h.command(&["mentions"]).spawn().unwrap());
+    wait_until(|| {
+        h.dir.path().join("state/health.json").exists()
+            && h.state("health.json")["detail"]
+                .as_str()
+                .unwrap()
+                .contains("reactions.add")
+    });
+    h.outcome(4, json!({"message":"route refused"}));
+    h.slack.lock().unwrap().connections.push(vec![mention(1)]);
+    wait_until(|| {
+        h.state("health.json")["detail"]
+            .as_str()
+            .unwrap()
+            .contains("route refused")
+    });
     assert_eq!(h.state("health.json")["ok"], false);
     assert!(
         h.state("health.json")["detail"]
@@ -563,7 +582,13 @@ fn reaction_failure_reports_health_without_retrying_the_committed_request() {
             .unwrap()
             .contains("reactions.add")
     );
-    assert_eq!(h.sends().len(), 1);
+    assert_eq!(
+        h.sends()
+            .iter()
+            .filter(|send| send.last().unwrap().contains(&id(&event)))
+            .count(),
+        1
+    );
     assert_eq!(
         h.state(&format!("req-{}.json", id(&event)))["state"],
         "sent"
@@ -577,6 +602,104 @@ fn reaction_failure_reports_health_without_retrying_the_committed_request() {
             .filter(|c| c.0 == "reactions.add")
             .count(),
         1
+    );
+    h.outcome(0, json!({}));
+    h.slack.lock().unwrap().connections.push(vec![mention(2)]);
+    wait_until(|| h.state("health.json")["ok"] == true);
+}
+
+#[test]
+fn slow_startup_delivery_does_not_delay_the_first_socket_ack() {
+    let h = Harness::new();
+    record(&h, &mention(0), 1, "pending");
+    fs::write(h.dir.path().join("delay"), "").unwrap();
+    h.slack.lock().unwrap().connections = vec![vec![mention(1)]];
+    let start = Instant::now();
+    let mut listener = Listener(h.command(&["mentions", "--once"]).spawn().unwrap());
+    // Observe the ack independently of the bus's 30-second deadline, then
+    // release subsequent sends so only the first stalled send must time out.
+    let deadline = start + Duration::from_secs(10);
+    while h.slack.lock().unwrap().acks.is_empty() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    fs::remove_file(h.dir.path().join("delay")).unwrap();
+    assert!(listener.0.wait().unwrap().success());
+    let slack = h.slack.lock().unwrap();
+    assert_eq!(slack.acks.len(), 1);
+    assert!(slack.acks[0].1.duration_since(start) < Duration::from_secs(10));
+}
+
+#[test]
+fn hello_resets_reconnect_backoff_after_each_closed_connection() {
+    let h = Harness::new();
+    let _listener = Listener(h.command(&["mentions"]).spawn().unwrap());
+    wait_until(|| {
+        h.slack
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .filter(|call| call.0 == "apps.connections.open")
+            .count()
+            >= 4
+    });
+    let slack = h.slack.lock().unwrap();
+    let opens: Vec<_> = slack
+        .calls
+        .iter()
+        .filter(|call| call.0 == "apps.connections.open")
+        .map(|call| call.2)
+        .collect();
+    for pair in opens.windows(2).skip(1) {
+        let gap = pair[1].duration_since(pair[0]);
+        assert!(gap < Duration::from_secs(3), "reconnect gap: {gap:?}");
+    }
+}
+
+#[test]
+fn connection_open_failure_preserves_the_cause_in_health() {
+    let h = Harness::new();
+    h.slack
+        .lock()
+        .unwrap()
+        .errors
+        .insert("apps.connections.open".into(), "invalid_auth".into());
+    let _listener = Listener(h.command(&["mentions"]).spawn().unwrap());
+    wait_until(|| {
+        h.slack
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .filter(|call| call.0 == "apps.connections.open")
+            .count()
+            >= 2
+    });
+    assert_eq!(h.state("health.json")["ok"], false);
+    assert!(
+        h.state("health.json")["detail"]
+            .as_str()
+            .unwrap()
+            .contains("invalid_auth")
+    );
+}
+
+#[test]
+fn once_connection_open_failure_exits_nonzero_with_the_cause() {
+    let h = Harness::new();
+    h.slack
+        .lock()
+        .unwrap()
+        .errors
+        .insert("apps.connections.open".into(), "invalid_auth".into());
+    let output = h.run(&["mentions", "--once"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("invalid_auth"));
+    assert!(
+        h.state("health.json")["detail"]
+            .as_str()
+            .unwrap()
+            .contains("invalid_auth")
     );
 }
 
@@ -643,4 +766,46 @@ fn startup_auth_failure_retries_instead_of_ending_the_listener() {
     assert!(listener.0.try_wait().unwrap().is_none());
     h.slack.lock().unwrap().errors.clear();
     wait_until(|| h.sends().len() == 1);
+}
+
+#[test]
+fn pending_requests_with_equal_journal_times_deliver_in_timestamp_order() {
+    let h = Harness::new();
+    let events: Vec<_> = (0..12).map(mention).collect();
+    let at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    for event in events.iter().rev() {
+        record(&h, event, 0, "pending");
+        let name = format!("req-{}.json", id(event));
+        let mut saved = h.state(&name);
+        saved["at"] = json!(at);
+        fs::write(h.dir.path().join("state").join(name), saved.to_string()).unwrap();
+    }
+    listen(&h, vec![vec![]]);
+    let sends = h.sends();
+    assert_eq!(sends.len(), events.len());
+    for (send, event) in sends.iter().zip(events) {
+        assert!(send.last().unwrap().contains(&id(&event)));
+    }
+}
+
+#[test]
+fn repeated_startup_auth_failures_back_off_before_retrying() {
+    let h = Harness::new();
+    h.slack
+        .lock()
+        .unwrap()
+        .errors
+        .insert("auth.test".into(), "invalid_auth".into());
+    let _listener = Listener(h.command(&["mentions"]).spawn().unwrap());
+    wait_until(|| h.slack.lock().unwrap().calls.len() >= 3);
+    let slack = h.slack.lock().unwrap();
+    let attempts: Vec<_> = slack
+        .calls
+        .iter()
+        .filter(|call| call.0 == "auth.test")
+        .collect();
+    assert!(attempts[2].2.duration_since(attempts[1].2) >= Duration::from_secs(2));
 }

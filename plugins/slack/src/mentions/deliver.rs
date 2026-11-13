@@ -91,7 +91,7 @@ pub(super) fn deliver(
             requests.push((name, request));
         }
     }
-    requests.sort_by_key(|(_, r)| r.at);
+    requests.sort_by(|a, b| (a.1.at, &a.1.ts).cmp(&(b.1.at, &b.1.ts)));
     status.delivery.clear();
     drop(status);
     for (name, mut request) in requests {
@@ -107,16 +107,18 @@ pub(super) fn deliver(
             Ok(_) => {
                 request.state = "sent".into();
                 files.write_json(&name, &request)?;
-                api.call_with(
-                    "reactions.add",
-                    json!({"channel":request.channel,"timestamp":request.ts,"name":"eyes"}),
-                    true,
-                    &api::var("SLACK_BOT_TOKEN"),
-                    true,
-                )
-                .err()
-                .map(|e| e.to_string())
-                .unwrap_or_default()
+                health.lock().unwrap().reaction = api
+                    .call_with(
+                        "reactions.add",
+                        json!({"channel":request.channel,"timestamp":request.ts,"name":"eyes"}),
+                        true,
+                        &api::var("SLACK_BOT_TOKEN"),
+                        true,
+                    )
+                    .err()
+                    .map(|e| e.to_string())
+                    .unwrap_or_default();
+                String::new()
             }
             Err(error) => {
                 if now().saturating_sub(request.at) >= 3600 {

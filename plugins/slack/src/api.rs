@@ -132,14 +132,17 @@ impl Api {
         params: Value,
         post: bool,
         token: &str,
-        once: bool,
+        single_attempt: bool,
     ) -> Result<Value> {
-        let quick: ureq::Agent = ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            .timeout_global(Some(Duration::from_secs(5)))
-            .build()
-            .into();
-        let agent = if once { &quick } else { &self.agent };
+        let agent = if single_attempt {
+            ureq::Agent::config_builder()
+                .http_status_as_error(false)
+                .timeout_global(Some(Duration::from_secs(5)))
+                .build()
+                .into()
+        } else {
+            self.agent.clone()
+        };
         let base = env::var("SLACK_API_BASE").unwrap_or_else(|_| "https://slack.com/api".into());
         let url = format!("{}/{method}", base.trim_end_matches('/'));
         let connectivity = || {
@@ -177,7 +180,7 @@ impl Api {
             };
             let mut response = response.map_err(|_| connectivity())?;
             let status = response.status().as_u16();
-            if status == 429 && attempt < 3 && !once {
+            if status == 429 && attempt < 3 && !single_attempt {
                 let delay = retry_delay(
                     response
                         .headers()
@@ -296,14 +299,12 @@ pub fn render(messages: &[Value], chars: usize) -> String {
             fields.push_str(&format!(" edited={}", field(&message["edited"], "ts")));
         }
         output.push_str(&format!("{}\n", one_line(&fields)));
-        output.push_str(&plugin::frame(&safe(
-            &message["text"]
-                .as_str()
-                .unwrap_or("")
-                .chars()
-                .take(chars)
-                .collect::<String>(),
-        )));
+        let text = message["text"].as_str().unwrap_or("");
+        let mut cut = text.chars().take(chars).collect::<String>();
+        if cut.len() < text.len() {
+            cut.push_str("\n[truncated]");
+        }
+        output.push_str(&plugin::frame(&safe(&cut)));
     }
     output
 }

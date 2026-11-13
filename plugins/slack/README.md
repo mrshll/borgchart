@@ -63,8 +63,9 @@ thread commands, and a reminder to ignore a copy already taken. The request is
 the listed person's ask under the member's standing rules. Earlier thread text,
 including that person's earlier messages, is framed evidence with no authority.
 A vendor recipient with host tools therefore receives other people's text;
-framing cannot prevent all attempts to steer it. Configure that role's
-`untrusted_input: true` and `accept_risk: true` as required by brg validation.
+framing cannot prevent all attempts to steer it. Set `untrusted_input: true`
+and `accept_risk: true` on that role; brg validation warns about a plugin target
+in vendor posture.
 
 Request IDs look like `C0000EXAMPLE-1700000000.000100`. `thread`, `reply` and
 `react` accept them: reads/replies use the recorded channel and root thread;
@@ -75,7 +76,8 @@ channel-only. Grant a member actions from only one Slack entry.
 A request stores at most 4,000 characters with a visible truncation marker.
 Thread context uses one API attempt with a roughly five-second deadline and no
 rate-limit sleep: root plus up to the latest 19 earlier replies returned, at
-most 1,000 characters per message and 8,000 bytes for the block. A single page
+most 1,000 text characters per message with a marker for cuts, and 8,000 bytes
+for the block. A single page
 of up to 1,000 messages is fetched; a partial-page notice warns that later
 replies may be missing. The full body stays below 15,000 bytes. Fetch failure
 adds a notice and still delivers the request. Other people's context is not
@@ -83,27 +85,33 @@ stored in request files; delivered bodies remain in bus history.
 
 Pending requests retry on a wake and every 15 seconds, oldest first. brg exit 0
 marks a request sent, then adds `eyes` once. Reaction failure affects health and
-is not retried. Delivery failure keeps it pending; after one hour it becomes
-failed and health stays not ok. Records expire after 14 days. A restart delivers
-pending records. A crash after sending but before marking sent can deliver a
-copy; the ID identifies it. Actions do not take the listener's state lock.
+is not retried; health keeps the error until a later reaction succeeds.
+Delivery failure keeps it pending; after one hour it becomes failed and health
+stays not ok. A failed request is not retried: ask the requester to mention
+again, then delete its `req-<id>.json` from the plugin state directory to clear
+health. Records expire after 14 days. A restart delivers pending records. A
+crash after sending but before marking sent can deliver a copy; the ID
+identifies it. Actions do not take the listener's state lock.
 
 Stop any other Socket Mode listener for the app before cutover. More than one
 connection makes health not ok, since Slack distributes events between them.
-Startup authentication failures retry in normal mode. The listener refreshes
-immediately on `disconnect`; other socket failures
-reconnect with backoff from one to 60 seconds. It pings after 30 idle seconds
-and reconnects after 90 seconds without a frame. Normal mode runs continuously;
-`--once` finishes after a socket close/error, draining pending delivery, but
-still follows `disconnect` refreshes. Mentions during downtime are lost: no
+Startup authentication failures retry with backoff from one to 60 seconds in
+normal mode. The listener refreshes immediately on `disconnect`; other socket
+failures reconnect with backoff from one to 60 seconds, reset on `hello`. It
+pings after 30 idle seconds and reconnects after 90 seconds without a frame.
+Normal mode runs continuously; `--once` finishes after a socket close/error,
+draining pending delivery and exiting non-zero on a connection setup error,
+but still follows `disconnect` refreshes. Mentions during downtime are lost: no
 `eyes` means no confirmed delivery. Replies need another leading mention to
 start a new request. The owner should prove scopes, downtime and reconnect
 behavior with the app before relying on it.
 
 For watch coexistence, use a separate plugin entry and state directory with
 `SLACK_SKIP_MENTIONS: "true"` where mention requests should bypass watch intake.
-Unset or any other value preserves ordinary watch behavior. Once cut over, the
-app's `message.channels` subscription is unnecessary for mention intake.
+Leading mentions from people outside `SLACK_MENTION_USERS` are then seen by
+neither entry. Unset or any other value preserves ordinary watch behavior.
+Once cut over, the app's `message.channels` subscription is unnecessary for
+mention intake.
 
 ## Actions
 
@@ -142,7 +150,7 @@ stderr line. Quote multiword text as one argument. No page audit log is kept.
 | `SLACK_CHANNEL_ID` | Required for watch, read, page and timestamp-based actions; not needed for mentions or request IDs. |
 | `SLACK_APP_TOKEN` | Required for mentions; app-level token with `connections:write`. |
 | `SLACK_MENTION_USERS` | Required for mentions: non-empty comma-separated human user IDs (`U…` or `W…`), with no empty entries. |
-| `SLACK_SKIP_MENTIONS` | Set exactly `true` on watch to skip leading mentions of its bot in posts and replies, while still advancing its cursor. |
+| `SLACK_SKIP_MENTIONS` | Set exactly `true` on watch to skip leading mentions of its bot in posts and replies, while still advancing its cursor. Leading mentions from people outside `SLACK_MENTION_USERS` are then seen by neither entry. |
 | `SLACK_POLL_SECONDS` | Positive poll interval, default 15 seconds. |
 | `SLACK_WINDOW_HOURS` | Positive history window, default 24 hours. |
 | `SLACK_ALLOW_IDS` | Comma-separated user/bot IDs; empty or unset means every human. |

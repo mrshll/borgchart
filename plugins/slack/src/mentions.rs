@@ -8,6 +8,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeSet,
     fs,
     net::{TcpStream, ToSocketAddrs},
     sync::{Mutex, mpsc},
@@ -76,14 +77,14 @@ pub fn resolve(api: &Api, target: &str) -> Result<Request> {
 fn clipped(text: &str, chars: usize, bytes: usize) -> String {
     let mut cut = text.chars().take(chars).collect::<String>();
     let mut count = cut.chars().count();
-    let mut framed_bytes = cut.len() + 2 * cut.matches('\n').count();
+    let mut framed_bytes = cut.len() + 3 * (cut.matches('\n').count() + 1);
     if cut.len() < text.len() || framed_bytes > bytes {
-        while count + 12 > chars || framed_bytes + 14 > bytes {
+        while count + 12 > chars || framed_bytes + 15 > bytes {
             let Some(c) = cut.pop() else {
                 break;
             };
             count -= 1;
-            framed_bytes -= c.len_utf8() + if c == '\n' { 2 } else { 0 };
+            framed_bytes -= c.len_utf8() + if c == '\n' { 3 } else { 0 };
         }
         cut.push_str("\n[truncated]");
     }
@@ -91,17 +92,19 @@ fn clipped(text: &str, chars: usize, bytes: usize) -> String {
 }
 #[derive(Default)]
 struct Health {
+    hello: bool,
     connection: String,
     delivery: String,
+    reaction: String,
     ignored: usize,
 }
 impl Health {
     fn write(&self, files: &State) -> Result<()> {
-        let ok = self.connection.is_empty() && self.delivery.is_empty();
+        let ok = self.connection.is_empty() && self.delivery.is_empty() && self.reaction.is_empty();
         files.health(
             ok,
             &api::safe(&format!(
-                "{}; {} ignored{}{}",
+                "{}; {} ignored{}{}; {}",
                 if self.connection.is_empty() {
                     "listening"
                 } else {
@@ -109,18 +112,14 @@ impl Health {
                 },
                 self.ignored,
                 if self.delivery.is_empty() { "" } else { "; " },
-                self.delivery
+                self.delivery,
+                self.reaction
             )),
         )?;
         Ok(())
     }
 }
-fn accept(
-    envelope: &Value,
-    bot: &str,
-    team: &str,
-    users: &std::collections::BTreeSet<String>,
-) -> Option<Request> {
+fn accept(envelope: &Value, bot: &str, team: &str, users: &BTreeSet<String>) -> Option<Request> {
     let e = &envelope["payload"]["event"];
     let ts = e["ts"].as_str()?;
     let c = e["channel"].as_str()?;
@@ -156,7 +155,7 @@ fn connection(
     files: &State,
     bot: &str,
     team: &str,
-    users: &std::collections::BTreeSet<String>,
+    users: &BTreeSet<String>,
     wake: &mpsc::Sender<()>,
     health: &Mutex<Health>,
 ) -> Result<bool> {
@@ -212,10 +211,13 @@ fn connection(
         };
         let envelope: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
         if envelope["type"] == "disconnect" {
+            let _ = socket.close(None);
+            let _ = socket.flush();
             return Ok(true);
         }
         if envelope["type"] == "hello" {
             let mut status = health.lock().unwrap();
+            status.hello = true;
             status.connection = if envelope["num_connections"].as_u64().unwrap_or(1) > 1 {
                 "another Socket Mode connection is open for this app; stop the other listener"
                     .into()
@@ -231,10 +233,7 @@ fn connection(
         let mut recorded = false;
         if let Some(request) = accept(&envelope, bot, team, users) {
             let name = filename(&request.channel, &request.ts);
-            if !std::path::Path::new(&api::var("BORGCHART_STATE_DIR"))
-                .join(&name)
-                .exists()
-            {
+            if fs::metadata(format!("{}/{name}", api::var("BORGCHART_STATE_DIR"))).is_err() {
                 files.write_json(&name, &request)?;
                 recorded = true;
             }
@@ -277,13 +276,15 @@ pub fn run(api: &Api, once: bool) -> Result<()> {
     }
     let files = State::from_env()?;
     let _lock = files.lock()?;
+    let mut backoff = 1;
     let auth = loop {
         match api.call("auth.test", json!({}), false) {
             Ok(auth) => break auth,
             Err(error) if once => return Err(error),
             Err(_) => files.health(false, "cannot identify bot; check Slack access; retrying")?,
         }
-        std::thread::sleep(Duration::from_secs(1));
+        std::thread::sleep(Duration::from_secs(backoff));
+        backoff = (backoff * 2).min(60);
     };
     let (bot, team) = (
         auth["user_id"].as_str().unwrap_or(""),
@@ -300,18 +301,13 @@ pub fn run(api: &Api, once: bool) -> Result<()> {
     });
     std::thread::scope(|scope| {
         let (wake, receiver) = mpsc::channel();
-        let (ready, started) = mpsc::channel();
         let (files, target, health) = (&files, &target, &health);
         let worker = scope.spawn(move || {
-            let mut ready = Some(ready);
             loop {
                 if let Err(error) = deliver(api, files, target, health) {
                     let mut status = health.lock().unwrap();
                     status.delivery = error.to_string();
                     let _ = status.write(files);
-                }
-                if let Some(ready) = ready.take() {
-                    let _ = ready.send(());
                 }
                 if let Err(mpsc::RecvTimeoutError::Disconnected) =
                     receiver.recv_timeout(DELIVERY_INTERVAL)
@@ -320,30 +316,35 @@ pub fn run(api: &Api, once: bool) -> Result<()> {
                 }
             }
         });
-        started
-            .recv()
-            .map_err(|_| Error::failure("delivery worker stopped; restart mentions"))?;
-        let mut backoff = 1;
-        loop {
+        backoff = 1;
+        let result = loop {
+            health.lock().unwrap().hello = false;
             let result = connection(api, files, bot, team, &users, &wake, health);
+            if health.lock().unwrap().hello {
+                backoff = 1;
+            }
             if matches!(result, Ok(true)) {
                 backoff = 1;
                 continue;
             }
-            if once {
-                break;
-            }
-            {
+            if !once || result.is_err() {
                 let mut status = health.lock().unwrap();
-                status.connection = "Socket Mode disconnected; reconnecting".into();
+                status.connection = match &result {
+                    Err(e) => format!("Socket Mode disconnected: {e}; reconnecting"),
+                    Ok(_) => "Socket Mode disconnected; reconnecting".into(),
+                };
                 let _ = status.write(files);
+            }
+            if once {
+                break result.map(|_| ());
             }
             std::thread::sleep(Duration::from_secs(backoff));
             backoff = (backoff * 2).min(60);
-        }
+        };
         drop(wake);
         worker
             .join()
-            .map_err(|_| Error::failure("delivery worker stopped; restart mentions"))
+            .map_err(|_| Error::failure("delivery worker stopped; restart mentions"))?;
+        result
     })
 }
