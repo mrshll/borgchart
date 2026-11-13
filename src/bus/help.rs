@@ -28,10 +28,12 @@ The tree shares one store and one set of message IDs. --member accepts a full
 address anywhere in the tree, or a bare ID in your own team or the one --team
 names.
 Reading never acknowledges. Use `msg read ID` for an older message and
-`msg ack ID...` once you have taken messages on, then `msg wait`.
+`msg ack ID...` once you have taken messages on, then `msg wait` (Claude). A
+Codex member runs no wait: it finishes its turn, and brg types each new
+message into its session.
 Progress and reports belong in your notes and GitHub.
 
-A member's loop:
+A Claude member's loop:
   \"$BORGCHART_BIN\" msg list --full
   \"$BORGCHART_BIN\" msg ack m4 m5
   \"$BORGCHART_BIN\" msg wait --timeout 600

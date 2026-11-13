@@ -285,11 +285,15 @@ impl View {
                 rest = tail;
                 continue;
             }
-            // Codex also breaks inside a word (after `-` or `/`, or in a word
-            // longer than the line), losing no character.
+            // Codex also breaks a word after `-` or `/`, losing no character,
+            // when the piece up to the next such break can't fit.
+            let piece = next
+                .find(['-', '/', ' '])
+                .map_or(next.as_str(), |n| &next[..=n]);
             if self.vendor == Vendor::Codex
-                && !word.is_empty()
-                && line.chars().count() + word.chars().count() > width
+                && line.ends_with(['-', '/'])
+                && !next.starts_with(' ')
+                && line.chars().count() + piece.trim_end().chars().count() > width
             {
                 continue;
             }

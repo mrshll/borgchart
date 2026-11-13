@@ -66,7 +66,7 @@ roles:
 
 The role's identity is its key under `roles:`. `brg delete <team>/<member>` removes a stopped member; its ID stays issued and is never reused. A later `create <team>/<role>` gets a fresh ID.
 
-**Messages.** Every team has a bus. `msg send TARGET TEXT` records work, then may type it; ordinary recipients explicitly ack and use one `msg wait`. `status` shows ordinary unacked counts. Omit `bus` unless configuring a real `bus: {alert: {plugin: notify, action: alert}}` action; automatic alert dispatch is not wired. Locked recipients have immutable no-ack-required history, no inbox recovery and no new grants. See [the bus](bus.md).
+**Messages.** Every team has a bus. `msg send TARGET TEXT` records work, then may type it; ordinary recipients explicitly ack; a Claude member uses one `msg wait`, and a Codex member hears new messages typed into its session. `status` shows ordinary unacked counts. Omit `bus` unless configuring a real `bus: {alert: {plugin: notify, action: alert}}` action; automatic alert dispatch is not wired. Locked recipients have immutable no-ack-required history, no inbox recovery and no new grants. See [the bus](bus.md).
 
 **`interactive`.** An agent role's boolean, default false, applies to every member and is frozen at start. True means inbox-only for a Claude member: never paste/Enter, even with `msg send --allow-unknown`. A Codex member still gets guarded typing, since nothing wakes it when a background wait ends. Use it for a lead whose session a person shares; remote-session users may leave it false. It is invalid with `posture: locked` or on a nested `template:` role. The bundled dev-team lead is interactive; helpers keep the false default.
 

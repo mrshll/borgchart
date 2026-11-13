@@ -337,6 +337,29 @@ fn codex_breaks_inside_words_need_a_word_that_could_not_fit() {
     assert!(!v.holds_submission(REMINDER));
 }
 
+/// Codex breaks a word short of the line's end only after `-` or `/`, so a
+/// break after a letter is a typed newline unless the line is full.
+#[test]
+fn codex_rejects_a_newline_typed_inside_a_word() {
+    let original = format!(
+        "{}\n  {}\n  {}",
+        "x".repeat(77),
+        "x".repeat(77),
+        "x".repeat(16)
+    );
+    let altered = format!(
+        "x\n  {}\n  {}\n  {}",
+        "x".repeat(77),
+        "x".repeat(77),
+        "x".repeat(15)
+    );
+    assert!(codex("long-wrap").contains(&original));
+    let screen = codex("long-wrap").replace(&original, &altered);
+    let v = composer::view(Vendor::Codex, &screen, at(80, 17, 37)).unwrap();
+    assert_eq!(v.cursor, Some((3, 15)));
+    assert!(!v.holds_submission(&"x".repeat(170)), "{:?}", v.lines);
+}
+
 #[test]
 fn blocked_rule_ids_are_shared_with_status() {
     // `status` reads these screens with the same rules; the wake must report
