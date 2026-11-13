@@ -156,7 +156,7 @@ roles:
 
 ## Teams as members
 
-A role can be a whole team, so teams form a tree: a team's roles can be teams, and every member has a parent (except the root), children and a subtree. The member with no parent is the **root**; the lead at the top of a tree is its **root lead**. [`engineering/`](../templates/engineering/) is the real tree: its root lead runs dev teams, design panels, researchers and monitors for this repository's engineering.
+A role can be a whole team, so teams form a tree: a team's roles can be teams, and every member has a parent (except the root), children and a subtree. The member with no parent is the **root**; the lead at the top of a tree is its **root lead**. [`engineering/`](../templates/engineering/) is the real tree: its root lead runs dev teams, design panels, solo implementers, researchers and monitors for this repository's engineering.
 
 ```yaml
 # engineering/template.yaml, shortened

@@ -1,4 +1,4 @@
-# An owner's engineering team: a root lead with dev child teams, design panels, researchers and monitors.
+# An owner's engineering team: a root lead with dev child teams, design panels, solo implementers, researchers and monitors.
 default: claude
 includes: catalog:shared/includes
 
@@ -25,6 +25,13 @@ roles:
     parent: lead
     start: false
     max: 3
+  implementer:
+    prompt: implementer.md
+    vendor: codex
+    parent: lead
+    start: false
+    max: 3
+    worktree: true
   researcher:
     prompt: researcher.md
     vendor: codex
