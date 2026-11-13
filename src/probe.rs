@@ -1,13 +1,13 @@
 //! `brg validate --probe`: ask each vendor CLI which MCP servers are configured,
 //! and warn about connectors a member expects but the vendor doesn't list.
 //!
-//! Listing health-checks (and so starts) your MCP servers, which is why this
-//! only runs when asked. It can't tell whether a connector is signed in, which
-//! account it acts as, or what it may do.
+//! Claude listing health-checks (and so starts) MCP servers. Codex listing reads
+//! configuration, also used at start to disable explicitly empty connectors.
+//! Neither checks which account a connector acts as, or what it may do.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -26,55 +26,45 @@ pub fn parse_claude_list(text: &str) -> BTreeSet<String> {
 }
 
 /// Server names from `codex mcp list --json`.
-pub fn parse_codex_list(text: &str) -> BTreeSet<String> {
-    serde_json::from_str::<serde_json::Value>(text)
-        .ok()
-        .and_then(|v| v.as_array().cloned())
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|s| s.get("name").and_then(|n| n.as_str()).map(str::to_string))
-        .collect()
+pub fn parse_codex_list(text: &str) -> Result<BTreeSet<String>, String> {
+    #[derive(serde::Deserialize)]
+    struct Server {
+        name: String,
+    }
+    serde_json::from_str::<Vec<Server>>(text)
+        .map(|servers| servers.into_iter().map(|s| s.name).collect())
+        .map_err(|_| "`codex mcp list --json` returned invalid server names".to_string())
 }
 
-fn list(vendor: Vendor, cwd: &Path) -> Result<BTreeSet<String>, String> {
+pub(crate) fn list(
+    vendor: Vendor,
+    cwd: &Path,
+    env: &BTreeMap<String, String>,
+) -> Result<BTreeSet<String>, String> {
     let mut cmd = Command::new(vendor.as_str());
     cmd.args(["mcp", "list"]);
     if vendor == Vendor::Codex {
         cmd.arg("--json");
     }
-    // The small base environment only: plugin secrets in your shell don't
-    // reach your MCP servers.
-    let mut child = cmd
-        .env_clear()
-        .envs(crate::runtime::base_env())
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("cannot run `{} mcp list`: {e}", vendor.as_str()))?;
-    let deadline = Instant::now() + PROBE_TIMEOUT;
-    loop {
-        if child.try_wait().map_err(|e| e.to_string())?.is_some() {
-            break;
-        }
-        if Instant::now() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!(
-                "`{} mcp list` took over {}s; skipped",
-                vendor.as_str(),
-                PROBE_TIMEOUT.as_secs()
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(100));
+    cmd.env_clear().envs(env).current_dir(cwd);
+    let out = crate::bounded_process::run(
+        &mut cmd,
+        None,
+        crate::bounded_process::Limits {
+            deadline: Instant::now() + PROBE_TIMEOUT,
+            stdout_bytes: 1024 * 1024,
+            stderr_bytes: 64 * 1024,
+        },
+    )
+    .map_err(|e| format!("cannot run `{} mcp list`: {e}", vendor.as_str()))?;
+    if !out.status.success() {
+        return Err(format!("`{} mcp list` failed", vendor.as_str()));
     }
-    let out = child.wait_with_output().map_err(|e| e.to_string())?;
     let text = String::from_utf8_lossy(&out.stdout);
-    Ok(match vendor {
-        Vendor::Claude => parse_claude_list(&text),
+    match vendor {
+        Vendor::Claude => Ok(parse_claude_list(&text)),
         Vendor::Codex => parse_codex_list(&text),
-    })
+    }
 }
 
 pub fn probe(v: &Validated, report: &mut Report) {
@@ -85,7 +75,7 @@ pub fn probe(v: &Validated, report: &mut Report) {
         }
         // The team's folder isn't known here: ask from the template folder.
         let cwd = v.team.dir.clone();
-        match list(member.vendor, &cwd) {
+        match list(member.vendor, &cwd, &crate::runtime::base_env()) {
             Ok(names) => {
                 for server in member.connectors.servers.keys() {
                     if !names.contains(server) {
@@ -122,11 +112,11 @@ mod tests {
     #[test]
     fn codex_list() {
         let text = r#"[{"name":"example","enabled":true,"auth_status":"unsupported","transport":{}},{"name":"other","enabled":false}]"#;
-        let names = parse_codex_list(text);
+        let names = parse_codex_list(text).unwrap();
         assert_eq!(
             names,
             BTreeSet::from(["example".to_string(), "other".to_string()])
         );
-        assert!(parse_codex_list("not json").is_empty());
+        assert!(parse_codex_list("not json").is_err());
     }
 }

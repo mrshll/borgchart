@@ -1060,6 +1060,158 @@ fn locked_member_without_an_active_gate_is_stopped() {
 }
 
 #[test]
+fn empty_connectors_disable_claude_mcp_without_duplicating_locked_flag() {
+    for declaration in ["", "    connectors: []\n"] {
+        let env = Env::new();
+        env.role_extra("alpha", declaration);
+        env.role_extra("gamma", declaration);
+        let template = fs::read_to_string(env.path("team/template.yaml")).unwrap();
+        env.write(
+            "team/template.yaml",
+            &template.replace("    start: false", "    start: true"),
+        );
+        env.up();
+        for (role, expected) in [
+            ("alpha", 1),
+            ("gamma", usize::from(!declaration.is_empty())),
+        ] {
+            assert_eq!(
+                start_argv(&env, role)
+                    .iter()
+                    .filter(|a| *a == "--strict-mcp-config")
+                    .count(),
+                expected,
+                "{role}, declaration {declaration:?}"
+            );
+        }
+    }
+}
+
+fn codex_mcp_list(env: &Env, body: &str) {
+    fs::remove_file(env.path("bin/codex")).unwrap();
+    std::os::unix::fs::symlink(
+        env!("CARGO_BIN_EXE_fake-agent"),
+        env.path("bin/codex-agent"),
+    )
+    .unwrap();
+    env.script("bin/codex", &format!(
+        "#!/bin/sh\nif [ \"$1\" = mcp ]; then\n  [ \"$2\" = list ] && [ \"$3\" = --json ] || exit 64\n{body}\nfi\nexec '{}' \"$@\"\n",
+        env.path("bin/codex-agent").display()
+    ));
+}
+
+#[test]
+fn empty_connectors_disable_listed_codex_servers_in_member_environment() {
+    for posture in ["vendor", "locked"] {
+        let env = Env::new();
+        env.role_extra(
+            "beta",
+            &format!("    connectors: []\n    posture: {posture}\n"),
+        );
+        env.write(
+            "codex-home/servers.json",
+            r#"[{"name":"cloudflare-docs"},{"name":"notes_2"}]"#,
+        );
+        codex_mcp_list(
+            &env,
+            "pwd > \"$CODEX_HOME/list-cwd\"\ncat \"$CODEX_HOME/servers.json\"\nexit 0",
+        );
+        let out = env
+            .brg_cmd(&["start"])
+            .env("CODEX_HOME", env.path("codex-home"))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}\n{}",
+            stdout(&out),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let argv = start_argv(&env, "beta");
+        for value in ["apps", "plugins"] {
+            assert!(
+                argv.windows(2).any(|w| w == ["--disable", value]),
+                "{argv:?}"
+            );
+        }
+        for value in [
+            "mcp_servers.cloudflare-docs.enabled=false",
+            "mcp_servers.notes_2.enabled=false",
+        ] {
+            assert!(argv.windows(2).any(|w| w == ["-c", value]), "{argv:?}");
+        }
+        let start = env
+            .events("beta")
+            .into_iter()
+            .find(|e| e["event"] == "start")
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(env.path("codex-home/list-cwd"))
+                .unwrap()
+                .trim(),
+            start["cwd"].as_str().unwrap()
+        );
+    }
+}
+
+#[test]
+fn empty_connectors_refuse_codex_start_when_server_listing_fails() {
+    for reply in ["exit 1", "echo invalid-json; exit 0", "echo '[{}]'; exit 0"] {
+        let env = Env::new();
+        env.role_extra("beta", "    connectors: []\n");
+        codex_mcp_list(&env, reply);
+        let out = env.brg(&["start"]);
+        assert!(!out.status.success(), "{}", stdout(&out));
+        let error = String::from_utf8_lossy(&out.stderr);
+        println!("{error}");
+        assert!(error.contains("codex mcp list"));
+        assert!(
+            env.events("beta").is_empty(),
+            "Codex must not launch with unknown servers"
+        );
+    }
+}
+
+#[test]
+fn empty_connectors_refuse_codex_server_names_that_cannot_be_disabled() {
+    let env = Env::new();
+    env.role_extra("beta", "    connectors: []\n");
+    codex_mcp_list(&env, "echo '[{\"name\":\"docs.example\"}]'; exit 0");
+    let out = env.brg(&["start"]);
+    assert!(!out.status.success(), "{}", stdout(&out));
+    let error = String::from_utf8_lossy(&out.stderr);
+    println!("{error}");
+    assert!(error.contains("docs.example"), "{error}");
+    assert!(env.events("beta").is_empty());
+}
+
+#[test]
+fn probing_empty_connectors_does_not_run_vendor_listings_or_warn() {
+    let env = Env::new();
+    env.write("team/template.yaml", "roles:\n  alpha: {prompt: alpha.md, connectors: []}\n  beta: {prompt: beta.md, vendor: codex, connectors: []}\n");
+    fs::remove_file(env.path("bin/claude")).unwrap();
+    env.script(
+        "bin/claude",
+        "#!/bin/sh\ntouch \"$HOME/list-called\"\nexit 1\n",
+    );
+    codex_mcp_list(&env, "touch \"$HOME/list-called\"; exit 1");
+    let out = env.brg(&[
+        "validate",
+        "--probe",
+        "--json",
+        &env.path("team").display().to_string(),
+    ]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["warnings"].as_array().unwrap().len(), 0);
+    assert!(!env.path("home/list-called").exists());
+}
+
+#[test]
 fn launch_arguments_follow_posture() {
     let env = Env::new();
     env.up();
@@ -1102,6 +1254,7 @@ fn launch_arguments_follow_posture() {
     assert!(!prompt.contains("ping"));
 
     let beta = argv("beta");
+    assert!(!beta.iter().any(|a| a == "--disable"));
     assert_eq!(
         beta[beta.len() - 2],
         "--",
