@@ -9,8 +9,24 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-/// Send once: only brg exit 0 succeeds; callers decide when to retry errors.
+/// Send directly, or queue for brg's post-tool hook when configured by the shim.
 pub fn send(plugin: &str, target: &str, text: &str, from: Option<&str>) -> Result<String, String> {
+    if let Some(root) = std::env::var_os("BORGCHART_SEND_QUEUE") {
+        let root = PathBuf::from(root);
+        crate::state::ensure_dir(&root).map_err(|e| e.to_string())?;
+        let sender = std::env::var("BORGCHART_MEMBER").unwrap_or_default();
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos();
+        State { root }
+            .write_json(
+                &format!("{stamp:039}-{}.json", std::process::id()),
+                &json!({"sender":from.unwrap_or(&sender), "target":target, "text":text}),
+            )
+            .map_err(|e| format!("cannot queue send: {e}"))?;
+        return Ok("queued; brg sends it when the command returns".into());
+    }
     let mut command = Command::new(std::env::var_os("BORGCHART_BIN").unwrap_or("brg".into()));
     command.args(["msg", "send", "--json"]);
     if std::env::var("BORGCHART_MEMBER")
@@ -30,7 +46,9 @@ pub fn send(plugin: &str, target: &str, text: &str, from: Option<&str>) -> Resul
     };
     let output = bounded_process::run(&mut command, None, limits).map_err(|error| match error {
         bounded_process::Error::Deadline => "brg did not answer within 30 s; retry".into(),
-        bounded_process::Error::Io(io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied) => {
+        bounded_process::Error::Spawn(
+            io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied,
+        ) => {
             format!("cannot send with brg: {error}; check BORGCHART_BIN and retry")
         }
         _ => format!("cannot send with brg: {error}; retry"),

@@ -87,9 +87,14 @@ Actions run in the calling member's folder and use the same state directory:
 - `brg-checks promote <name> <reason>` sends the check ID and a reason
   to `BORGCHART_PARENT` with `--from BORGCHART_MEMBER`, so brg checks the parent
   route. Reasons are fixed: `outage`, `alert`, `question`, `other`. Success
-  prints brg's output, including its ID, and exits 0. Any failure prints brg's
-  error and exits 1; the member can retry. Promote has no retry spool, so a locked
-  Codex member can't promote.
+  prints brg's output, including its ID, and exits 0. For locked Codex members,
+  it instead prints `queued; brg sends it when the command returns`: brg's
+  PostToolUse hook sends as the member, to its parent only, and reports failures
+  as extra context. Permanent refusals are removed. If brg cannot start, the send
+  stays queued and is only retried at the next tool call, which may be the member's
+  next wake; uncertain sends need inspection before
+  retrying (see [bus delivery](../../docs/bus.md#attention)). Other failures
+  print brg's error and exit 1; inspect any committed ID before retrying.
 
 `brg-checks run --once` runs one tick, useful for testing. It exits nonzero for
 invalid startup configuration; check or delivery failures appear in health.

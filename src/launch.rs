@@ -263,15 +263,19 @@ fn toml_string(value: &str) -> String {
 pub fn codex_hook_config(brg: &Path, state: &StateDir, member: &str) -> String {
     let pre = hook_command(brg, "pre", state, member);
     let start = hook_command(brg, "start", state, member);
+    let post = hook_command(brg, "post", state, member);
     let key = |label: &str| toml_string(&format!("/<session-flags>/config.toml:{label}:0:0"));
     format!(
-        "hooks={{PreToolUse=[{{matcher=\"*\",hooks=[{{type=\"command\",command={pre_q}}}]}}],SessionStart=[{{matcher=\"*\",hooks=[{{type=\"command\",command={start_q}}}]}}],state={{{pre_key}={{trusted_hash={pre_hash}}},{start_key}={{trusted_hash={start_hash}}}}}}}",
+        "hooks={{PreToolUse=[{{matcher=\"*\",hooks=[{{type=\"command\",command={pre_q}}}]}}],SessionStart=[{{matcher=\"*\",hooks=[{{type=\"command\",command={start_q}}}]}}],PostToolUse=[{{matcher=\"*\",hooks=[{{type=\"command\",command={post_q}}}]}}],state={{{pre_key}={{trusted_hash={pre_hash}}},{start_key}={{trusted_hash={start_hash}}},{post_key}={{trusted_hash={post_hash}}}}}}}",
         pre_q = toml_string(&pre),
         start_q = toml_string(&start),
+        post_q = toml_string(&post),
         pre_key = key("pre_tool_use"),
         start_key = key("session_start"),
+        post_key = key("post_tool_use"),
         pre_hash = toml_string(&codex_hook_hash("pre_tool_use", &pre)),
         start_hash = toml_string(&codex_hook_hash("session_start", &start)),
+        post_hash = toml_string(&codex_hook_hash("post_tool_use", &post)),
     )
 }
 
@@ -572,6 +576,29 @@ mod tests {
             v.contains(r#""/<session-flags>/config.toml:pre_tool_use:0:0"={trusted_hash="sha256:"#)
         );
         assert!(v.contains("_gate start /s/dep-1 triager"));
+    }
+
+    #[test]
+    fn locked_codex_trusts_post_hook_while_vendor_has_no_post_hook() {
+        let state = StateDir::from_root(Path::new("/s/dep-1"));
+        let brg = Path::new("/bin/brg");
+        let hooks = codex_hook_config(brg, &state, "triager");
+        assert!(hooks.contains("PostToolUse=["), "{hooks}");
+        let command = hook_command(brg, "post", &state, "triager");
+        assert!(hooks.contains(&toml_string(&command)), "{hooks}");
+        assert!(
+            hooks.contains(&format!(
+                "{}={{trusted_hash={}}}",
+                toml_string("/<session-flags>/config.toml:post_tool_use:0:0"),
+                toml_string(&codex_hook_hash("post_tool_use", &command))
+            )),
+            "{hooks}"
+        );
+        assert!(
+            codex_session_hook_config(brg, &state, "triager")
+                .iter()
+                .all(|value| !value.contains("post"))
+        );
     }
 
     #[test]

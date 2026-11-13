@@ -8,11 +8,13 @@
 //! failures other than exit code 2 as non-blocking.
 
 use std::collections::BTreeMap;
+use std::error::Error;
 use std::io::Read;
 use std::path::Path;
 use std::process::ExitCode;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::names::is_plain_word;
 use crate::state::{StateDir, write_private};
@@ -159,12 +161,25 @@ fn record_session(state: &StateDir, member: &str) -> Result<(), String> {
     .map_err(|e| format!("cannot record session: {e}"))
 }
 
-/// `brg _gate pre|start|session <state> <member>`. `start` is a `locked`
+/// `brg _gate pre|post|start|session <state> <member>`. `start` is a `locked`
 /// member's SessionStart hook: it marks the gate active and records the
 /// session. `session` is every other member's, and only records the session.
 pub fn hook_main(event: &str, state_root: &Path, member: &str) -> ExitCode {
     let state = StateDir::from_root(state_root);
     match event {
+        "post" => {
+            let mut notes = Vec::new();
+            if let Err(e) = post_send(&state, member, &mut notes) {
+                notes.push(format!("Queued send uncertain: {e}; inspect bus history."));
+            }
+            if !notes.is_empty() {
+                println!(
+                    "{}",
+                    serde_json::json!({"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":notes.join("\n")}})
+                );
+            }
+            ExitCode::SUCCESS
+        }
         "start" => {
             let stamp = format!("{}\n", std::process::id());
             if let Err(e) = write_private(&state.gate_marker(member), stamp.as_bytes()) {
@@ -213,6 +228,95 @@ pub fn hook_main(event: &str, state_root: &Path, member: &str) -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+fn post_send(state: &StateDir, member: &str, log: &mut Vec<String>) -> Result<(), Box<dyn Error>> {
+    use crate::bounded_process::{Error, Limits, run};
+    use rustix::fs::{AtFlags, Dir, Mode, OFlags, open, openat, renameat, unlinkat};
+    use std::time::{Duration, Instant};
+    use std::{fs::File, process::Command};
+    if std::env::var("BORGCHART_MEMBER").as_deref() != Ok(member) {
+        log.push("Queued sends kept for retry: member identity mismatch.".into());
+        return Ok(());
+    }
+    let queue = state.member_tmp(member).join("send-queue");
+    let flags = OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let queue = match open(&queue, flags | OFlags::DIRECTORY, Mode::empty()) {
+        Ok(fd) => fd,
+        Err(rustix::io::Errno::NOENT) => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    let meta = crate::state::read_meta(state)?.ok_or("no running team")?;
+    let actor = meta.members.get(member).ok_or("unknown sender")?;
+    let parent = actor.parent.as_deref().ok_or("sender has no parent")?;
+    let full_parent = if parent.contains('/') {
+        parent.into()
+    } else {
+        format!("{}/{parent}", state.id)
+    };
+    let mut requests = Dir::read_from(&queue)?
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter_map(|e| e.file_name().to_str().ok().map(str::to_owned))
+        .filter(|name| name.ends_with(".json"))
+        .collect::<Vec<_>>();
+    requests.sort();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    for path in requests.into_iter().take(8) {
+        if Instant::now() >= deadline {
+            break;
+        }
+        let sending = format!("{path}.sending");
+        if let Err(e) = renameat(&queue, &path, &queue, &sending) {
+            if e != rustix::io::Errno::NOENT {
+                log.push(format!("Queued send kept for retry: claim failed ({e})."));
+            }
+            continue;
+        }
+        let flags = flags | OFlags::NONBLOCK;
+        let file = File::from(openat(&queue, &sending, flags, Mode::empty())?);
+        let request: Value = serde_json::from_reader(file.take(65536)).unwrap_or_default();
+        let target = request["target"].as_str().unwrap_or("");
+        let text = request["text"].as_str().unwrap_or("");
+        if request["sender"] != member
+            || (target != parent && target != full_parent)
+            || text.is_empty()
+        {
+            log.push("Queued send refused: wrong sender, target or empty text.".into());
+            unlinkat(&queue, &sending, AtFlags::empty())?;
+            continue;
+        }
+        let mut command = Command::new(&meta.brg);
+        command.args(["msg", "send", "--json", "--", target, text]);
+        let limits = Limits {
+            deadline: deadline.min(Instant::now() + Duration::from_secs(30)),
+            stdout_bytes: 65536,
+            stderr_bytes: 65536,
+        };
+        let outcome = run(&mut command, None, limits);
+        if let Err(Error::Spawn(error)) = outcome {
+            renameat(&queue, &sending, &queue, &path)?;
+            log.push(format!(
+                "Queued send kept for retry: brg did not start ({error:?})."
+            ));
+            break;
+        }
+        if let Ok(output) = outcome {
+            let result: Value = serde_json::from_slice(&output.stdout).unwrap_or_default();
+            if output.status.success() || result["id"].is_string() {
+                unlinkat(&queue, &sending, AtFlags::empty())?;
+                continue;
+            }
+            if result["ok"] == false {
+                unlinkat(&queue, &sending, AtFlags::empty())?;
+                let detail = result["message"].to_string();
+                log.push(format!("Queued send refused: {detail:.160}"));
+                continue;
+            }
+        }
+        return Err("unknown outcome; inspect .sending files before retrying".into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

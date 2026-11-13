@@ -133,6 +133,11 @@ pub fn run_main(
         crate::bus::context::ENV_INCARNATION.into(),
         incarnation.clone(),
     );
+    let sender = &meta.members[member];
+    if sender.vendor == "codex" && sender.posture == "locked" {
+        let queue = state.member_tmp(member).join("send-queue");
+        env.insert("BORGCHART_SEND_QUEUE".into(), queue.display().to_string());
+    }
 
     let (program, cwd) = match &plugin_meta.dir {
         Some(dir) => (dir.join(command), dir.clone()),

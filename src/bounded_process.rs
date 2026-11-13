@@ -21,6 +21,8 @@ pub enum Stream {
 pub enum Error {
     Deadline,
     OutputLimit(Stream),
+    /// The child never started; retrying cannot repeat its side effects.
+    Spawn(io::ErrorKind),
     Io(io::ErrorKind),
 }
 impl From<io::Error> for Error {
@@ -33,7 +35,7 @@ impl std::fmt::Display for Error {
         match self {
             Self::Deadline => f.write_str("process deadline exceeded"),
             Self::OutputLimit(stream) => write!(f, "process {stream:?} limit exceeded"),
-            Self::Io(kind) => write!(f, "process I/O failed ({kind:?})"),
+            Self::Spawn(kind) | Self::Io(kind) => write!(f, "process I/O failed ({kind:?})"),
         }
     }
 }
@@ -159,7 +161,8 @@ fn drive(
             })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()?,
+            .spawn()
+            .map_err(|e| Error::Spawn(e.kind()))?,
     );
     let mut stdin = child.0.stdin.take();
     let mut stdout = child.0.stdout.take().expect("piped stdout");
