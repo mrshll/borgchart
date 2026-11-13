@@ -146,6 +146,8 @@ At the existing brief deadline, check ordinary untyped work's ack/status. Start 
 
 Locked recipients are typed-only: send preflights the live pane, gate, empty composer and conservative typing budget before recording a no-ack-required message. Oversized locked input refuses before recording. Ordinary messages outside the typing budget remain stored for the next inbox read. Failure or uncertainty after recording returns nonzero with its ID; retry can duplicate history and uncertain input. There is no inbox recovery and no new locked permission. The fixed reminder qualification helper remains separate from send delivery.
 
+A locked Codex member's granted plugin action queues sends in `<team-state>/tmp/<member>/send-queue`. Its PostToolUse hook sends through the ordinary bus as the member, to its parent only, oldest first: up to eight requests per hook, with 30 seconds per send and 60 seconds total. A committed request is removed; a definite failure stays queued for the next tool call. A refused sender or target is removed and noted in `<team-state>/members/<member>/send-note`. A timeout or unknown outcome leaves a `.sending` file and a note there; interrupted hooks can also leave `.sending` files. These files are never retried automatically: inspect the bus history before retrying. Claude plugin sends remain direct.
+
 ## Outcome codes
 
 These are separate from `brg msg send`'s codes.

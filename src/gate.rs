@@ -13,6 +13,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::names::is_plain_word;
 use crate::state::{StateDir, write_private};
@@ -159,12 +160,19 @@ fn record_session(state: &StateDir, member: &str) -> Result<(), String> {
     .map_err(|e| format!("cannot record session: {e}"))
 }
 
-/// `brg _gate pre|start|session <state> <member>`. `start` is a `locked`
+/// `brg _gate pre|post|start|session <state> <member>`. `start` is a `locked`
 /// member's SessionStart hook: it marks the gate active and records the
 /// session. `session` is every other member's, and only records the session.
 pub fn hook_main(event: &str, state_root: &Path, member: &str) -> ExitCode {
     let state = StateDir::from_root(state_root);
     match event {
+        "post" => {
+            if let Err(e) = post_send(&state, member) {
+                let note = state.member_dir(member).join("send-note");
+                let _ = write_private(&note, e.to_string().as_bytes());
+            }
+            ExitCode::SUCCESS
+        }
         "start" => {
             let stamp = format!("{}\n", std::process::id());
             if let Err(e) = write_private(&state.gate_marker(member), stamp.as_bytes()) {
@@ -213,6 +221,80 @@ pub fn hook_main(event: &str, state_root: &Path, member: &str) -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+fn post_send(state: &StateDir, member: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::bounded_process::{Limits, run};
+    use std::time::{Duration, Instant};
+    use std::{fs, os::unix::fs::OpenOptionsExt, process::Command};
+    if std::env::var("BORGCHART_MEMBER").as_deref() != Ok(member) {
+        return Ok(());
+    }
+    let queue = state.member_tmp(member).join("send-queue");
+    if !fs::symlink_metadata(&queue).is_ok_and(|m| m.is_dir()) {
+        return Ok(());
+    }
+    let meta = crate::state::read_meta(state)?.ok_or("no running team")?;
+    let actor = meta.members.get(member).ok_or("unknown sender")?;
+    let parent = actor.parent.as_deref().ok_or("sender has no parent")?;
+    let full_parent = if parent.contains('/') {
+        parent.into()
+    } else {
+        format!("{}/{parent}", state.id)
+    };
+    let mut requests = fs::read_dir(queue)?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "json"))
+        .collect::<Vec<_>>();
+    requests.sort();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    for path in requests.into_iter().take(8) {
+        if Instant::now() >= deadline {
+            break;
+        }
+        let sending = path.with_extension("sending");
+        if fs::rename(&path, &sending).is_err() {
+            continue;
+        }
+        let flags = rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK;
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(flags.bits() as i32)
+            .open(&sending)?;
+        let request: Value = serde_json::from_reader(file.take(65536)).unwrap_or_default();
+        let target = request["target"].as_str().unwrap_or("");
+        let text = request["text"].as_str().unwrap_or("");
+        if request["sender"] != member
+            || (target != parent && target != full_parent)
+            || text.is_empty()
+        {
+            let note = state.member_dir(member).join("send-note");
+            write_private(&note, b"Refused queued send: wrong sender or target.\n")?;
+            fs::remove_file(sending)?;
+            continue;
+        }
+        let mut command = Command::new(&meta.brg);
+        command.args(["msg", "send", "--json", target, text]);
+        let limits = Limits {
+            deadline: deadline.min(Instant::now() + Duration::from_secs(30)),
+            stdout_bytes: 65536,
+            stderr_bytes: 65536,
+        };
+        if let Ok(output) = run(&mut command, None, limits) {
+            let result: Value = serde_json::from_slice(&output.stdout).unwrap_or_default();
+            if output.status.success() || result["id"].is_string() {
+                fs::remove_file(sending)?;
+                continue;
+            }
+            if result["ok"] == false {
+                fs::rename(sending, path)?;
+                break;
+            }
+        }
+        return Err("Queued send outcome uncertain; inspect .sending files in the member's tmp/send-queue and the bus history before retrying.\n".into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

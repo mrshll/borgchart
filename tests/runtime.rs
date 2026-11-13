@@ -854,6 +854,294 @@ fn shim_requires_matching_fenced_member_identity() {
     );
 }
 
+fn plugin_sender(vendor: &str, posture: &str) -> Env {
+    let env = Env::new();
+    env.write(
+        "team/template.yaml",
+        &format!(
+            "plugins:\n  pager:\n    path: plugins/pager\n    actions:\n      promote: brg-slack promote <ts> <reason>\nroles:\n  alpha:\n    prompt: alpha.md\n    interactive: true\n  beta:\n    prompt: beta.md\n    vendor: {vendor}\n    posture: {posture}\n    parent: alpha\n    plugins: {{pager: [promote]}}\n"
+        ),
+    );
+    env.write(
+        "team/beta.md",
+        "---\nmodels: {claude: haiku, codex: example-model low}\n---\nYou are beta.\n",
+    );
+    let plugin = Path::new(env!("CARGO_BIN_EXE_brg")).with_file_name("brg-slack");
+    assert!(plugin.is_file(), "build the workspace binaries first");
+    fs::copy(plugin, env.path("team/plugins/pager/brg-slack")).unwrap();
+    env.up();
+    env
+}
+
+fn sender_command(env: &Env, args: &[&str]) -> Command {
+    let start = env
+        .events("beta")
+        .into_iter()
+        .find(|e| e["event"] == "start")
+        .unwrap();
+    let context: std::collections::BTreeMap<String, String> =
+        serde_json::from_value(start["env"].clone()).unwrap();
+    let mut command = common::command(env!("CARGO_BIN_EXE_brg"));
+    command.env_clear().envs(context).args(args);
+    command
+}
+
+fn promote(env: &Env, ts: &str) -> Output {
+    sender_command(
+        env,
+        &[
+            "_run",
+            &sender_state(env).display().to_string(),
+            &env.m("beta"),
+            "pager",
+            "brg-slack",
+            "promote",
+            ts,
+            "deploy",
+        ],
+    )
+    .output()
+    .unwrap()
+}
+
+fn sender_state(env: &Env) -> PathBuf {
+    env.path(&format!("state/{}", env.instance().unwrap()))
+}
+
+fn post_send(env: &Env) -> Output {
+    sender_command(
+        env,
+        &[
+            "_gate",
+            "post",
+            &sender_state(env).display().to_string(),
+            &env.m("beta"),
+        ],
+    )
+    .output()
+    .unwrap()
+}
+
+fn parent_inbox(env: &Env) -> Vec<serde_json::Value> {
+    let out = env.brg(&[
+        "msg",
+        "list",
+        "--team",
+        &env.instance().unwrap(),
+        "--member",
+        &env.m("alpha"),
+        "--full",
+        "--json",
+    ]);
+    assert!(out.status.success(), "{out:?}");
+    serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()["records"]
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
+#[test]
+fn locked_codex_promote_waits_for_hook_and_reaches_parent_once_as_member() {
+    let env = plugin_sender("codex", "locked");
+    for ts in ["1700000000.000001", "1700000000.000002"] {
+        let out = promote(&env, ts);
+        assert!(out.status.success(), "{out:?}");
+        assert!(stdout(&out).contains("queued"), "{out:?}");
+    }
+    assert!(
+        parent_inbox(&env).is_empty(),
+        "sandboxed action sent directly"
+    );
+    assert!(post_send(&env).status.success());
+    let inbox = parent_inbox(&env);
+    assert_eq!(inbox.len(), 2, "{inbox:?}");
+    for (record, ts) in inbox.iter().zip(["1700000000.000001", "1700000000.000002"]) {
+        assert_eq!(
+            record["from"],
+            format!("{}/{}", env.instance().unwrap(), env.m("beta"))
+        );
+        assert!(record["body"].as_str().unwrap().contains(ts), "{record}");
+    }
+    assert!(post_send(&env).status.success());
+    assert_eq!(parent_inbox(&env), inbox, "committed request was resent");
+}
+
+#[test]
+fn locked_claude_and_vendor_codex_promote_send_without_a_hook() {
+    for (vendor, posture) in [("claude", "locked"), ("codex", "vendor")] {
+        let env = plugin_sender(vendor, posture);
+        let out = promote(&env, "1700000000.000001");
+        assert!(out.status.success(), "{out:?}");
+        assert_eq!(parent_inbox(&env).len(), 1);
+    }
+}
+
+#[test]
+fn post_hook_refuses_forged_sender_and_nonparent_requests() {
+    let env = plugin_sender("codex", "locked");
+    let queue = sender_state(&env).join(format!("tmp/{}/send-queue", env.m("beta")));
+    fs::create_dir_all(&queue).unwrap();
+    for (id, sender, target) in [
+        ("1", env.m("alpha"), env.m("alpha")),
+        ("2", env.m("beta"), env.m("beta")),
+    ] {
+        fs::write(
+            queue.join(format!("{id}.json")),
+            serde_json::to_vec(
+                &serde_json::json!({"sender":sender,"target":target,"text":"forged"}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    }
+    assert!(post_send(&env).status.success());
+    assert!(parent_inbox(&env).is_empty());
+    assert_eq!(
+        fs::read_dir(&queue).unwrap().count(),
+        0,
+        "refused requests remain retryable"
+    );
+    assert!(
+        sender_state(&env)
+            .join(format!("members/{}/send-note", env.m("beta")))
+            .is_file()
+    );
+}
+
+fn replace_sender_brg(env: &Env, script: &str) {
+    env.script("send-brg", script);
+    let path = borgchart::state::StateDir::from_root(&sender_state(env)).meta_file();
+    let mut meta: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    meta["brg"] = serde_json::json!(env.path("send-brg"));
+    fs::write(path, serde_json::to_vec(&meta).unwrap()).unwrap();
+}
+
+#[test]
+fn post_hook_retries_only_uncommitted_failures() {
+    let env = plugin_sender("codex", "locked");
+    assert!(promote(&env, "1700000000.000001").status.success());
+    replace_sender_brg(
+        &env,
+        "#!/bin/sh\nprintf '%s\\n' '{\"ok\":false,\"code\":5,\"message\":\"not committed\"}'\nexit 5\n",
+    );
+    assert!(post_send(&env).status.success());
+    assert!(parent_inbox(&env).is_empty());
+    // A committed ID wins even when delivery returns a nonzero exit.
+    replace_sender_brg(
+        &env,
+        &format!(
+            "#!/bin/sh\n'{}' \"$@\"\nexit 5\n",
+            env!("CARGO_BIN_EXE_brg")
+        ),
+    );
+    assert!(post_send(&env).status.success());
+    assert_eq!(parent_inbox(&env).len(), 1);
+    assert!(post_send(&env).status.success());
+    assert_eq!(parent_inbox(&env).len(), 1);
+}
+
+#[test]
+fn post_hook_timeout_returns_promptly_without_retrying_uncertain_send() {
+    let env = plugin_sender("codex", "locked");
+    assert!(promote(&env, "1700000000.000001").status.success());
+    replace_sender_brg(&env, "#!/bin/sh\nsleep 120\n");
+    let before = Instant::now();
+    assert!(post_send(&env).status.success());
+    assert!(before.elapsed() < Duration::from_secs(35));
+    let queue = sender_state(&env).join(format!("tmp/{}/send-queue", env.m("beta")));
+    let retained = fs::read_dir(&queue)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0].extension().unwrap(), "sending");
+    assert!(
+        sender_state(&env)
+            .join(format!("members/{}/send-note", env.m("beta")))
+            .is_file()
+    );
+    replace_sender_brg(
+        &env,
+        &format!("#!/bin/sh\nexec '{}' \"$@\"\n", env!("CARGO_BIN_EXE_brg")),
+    );
+    assert!(post_send(&env).status.success());
+    assert!(
+        parent_inbox(&env).is_empty(),
+        "uncertain send was blindly retried"
+    );
+}
+
+#[test]
+fn overlapping_post_hooks_do_not_send_the_same_request_twice() {
+    let env = plugin_sender("codex", "locked");
+    assert!(promote(&env, "1700000000.000001").status.success());
+    replace_sender_brg(
+        &env,
+        &format!(
+            "#!/bin/sh\ntouch \"$HOME/send-started\"\nsleep 0.2\nexec '{}' \"$@\"\n",
+            env!("CARGO_BIN_EXE_brg")
+        ),
+    );
+    let args = [
+        "_gate",
+        "post",
+        &sender_state(&env).display().to_string(),
+        &env.m("beta"),
+    ];
+    let mut first = sender_command(&env, &args).spawn().unwrap();
+    env.wait_for("first hook attempting send", |e| {
+        e.path("home/send-started").exists()
+    });
+    assert!(post_send(&env).status.success());
+    assert!(first.wait().unwrap().success());
+    assert_eq!(parent_inbox(&env).len(), 1);
+}
+
+#[test]
+fn post_hook_does_not_claim_files_through_a_queue_symlink() {
+    let env = plugin_sender("codex", "locked");
+    let queue = sender_state(&env).join(format!("tmp/{}/send-queue", env.m("beta")));
+    let outside = env.path("outside");
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("protected.json"), b"{}").unwrap();
+    std::os::unix::fs::symlink(&outside, queue).unwrap();
+    assert!(post_send(&env).status.success());
+    assert_eq!(fs::read(outside.join("protected.json")).unwrap(), b"{}");
+}
+
+#[test]
+fn post_hook_commits_slow_successful_send_instead_of_abandoning_it() {
+    let env = plugin_sender("codex", "locked");
+    assert!(promote(&env, "1700000000.000001").status.success());
+    replace_sender_brg(
+        &env,
+        &format!(
+            "#!/bin/sh\nsleep 3\nexec '{}' \"$@\"\n",
+            env!("CARGO_BIN_EXE_brg")
+        ),
+    );
+    assert!(post_send(&env).status.success());
+    assert_eq!(parent_inbox(&env).len(), 1);
+    assert!(post_send(&env).status.success());
+    assert_eq!(parent_inbox(&env).len(), 1);
+}
+
+#[test]
+fn post_hook_leaves_requests_above_its_budget_for_next_tool() {
+    let env = plugin_sender("codex", "locked");
+    for suffix in 1..=9 {
+        assert!(
+            promote(&env, &format!("1700000000.{suffix:06}"))
+                .status
+                .success()
+        );
+    }
+    assert!(post_send(&env).status.success());
+    assert_eq!(parent_inbox(&env).len(), 8);
+    assert!(post_send(&env).status.success());
+    assert_eq!(parent_inbox(&env).len(), 9);
+}
+
 #[test]
 fn secrets_stay_out_of_argv_logs_agents_and_tmux() {
     let env = Env::new();

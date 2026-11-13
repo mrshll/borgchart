@@ -41,7 +41,11 @@ The [slack-devops example](../../examples/slack-devops) provides a complete team
   escapes control characters except newline/tab, and redacts the bot token.
 - `promote <ts> <reason>`: send a fixed notice to the member's parent, with
   `--from` validating that route. The reasons are `outage`, `deploy`,
-  `security`, `question`, `other`. No Slack text is forwarded.
+  `security`, `question`, `other`. No Slack text is forwarded. For locked Codex,
+  success prints `queued; brg sends it when the command returns`; brg's
+  PostToolUse hook sends as the member to its parent only. Definite failures
+  stay queued for the next tool call; uncertain sends need inspection before
+  retrying (see [bus delivery](../../docs/bus.md#attention)). Claude sends directly.
 - `react <ts> <reaction>`: use `eyes` or `done` to add eyes or a white check mark.
   An existing reaction succeeds.
 - `reply <thread_ts> <text>`: post in the configured channel's thread, at most
