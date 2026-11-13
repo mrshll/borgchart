@@ -40,6 +40,27 @@ fn expect_error(f: &Fixture, needle: &str) {
 }
 
 #[test]
+fn slack_readme_example_does_not_fail_validation() {
+    let example = include_str!("../plugins/slack/README.md")
+        .split_once("```yaml\n")
+        .unwrap()
+        .1
+        .split_once("```")
+        .unwrap()
+        .0;
+    let f = Fixture::new();
+    f.write(
+        "template.yaml",
+        &format!(
+            "{example}\nroles:\n  lead:\n    prompt: lead.md\n  triager:\n    prompt: triager.md\n    parent: lead\n    plugins: {{slack: [read, react]}}\n"
+        ),
+    );
+    let (report, validated) = f.run();
+    assert!(validated.is_some(), "{}", errors(&report));
+    assert!(!report.has_errors(), "{}", errors(&report));
+}
+
+#[test]
 fn valid_team_loads() {
     let f = Fixture::new();
     let (report, validated) = f.run();
