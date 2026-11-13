@@ -1,8 +1,10 @@
 //! `brg validate --probe`: ask each vendor CLI which MCP servers are configured,
 //! and warn about connectors a member expects but the vendor doesn't list.
 //!
-//! Claude listing health-checks (and so starts) MCP servers. Codex listing reads
-//! configuration, also used at start to disable explicitly empty connectors.
+//! Claude listing health-checks (and so starts) MCP servers. Codex listing does
+//! not start stdio servers, but contacts HTTP servers to check sign-in status;
+//! each unresponsive HTTP server can add a few seconds. It is also used at start
+//! to disable explicitly empty connectors.
 //! Neither checks which account a connector acts as, or what it may do.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -40,13 +42,14 @@ pub(crate) fn list(
     vendor: Vendor,
     cwd: &Path,
     env: &BTreeMap<String, String>,
+    extra_args: &[String],
 ) -> Result<BTreeSet<String>, String> {
     let mut cmd = Command::new(vendor.as_str());
     cmd.args(["mcp", "list"]);
     if vendor == Vendor::Codex {
         cmd.arg("--json");
     }
-    cmd.env_clear().envs(env).current_dir(cwd);
+    cmd.args(extra_args).env_clear().envs(env).current_dir(cwd);
     let out = crate::bounded_process::run(
         &mut cmd,
         None,
@@ -75,7 +78,7 @@ pub fn probe(v: &Validated, report: &mut Report) {
         }
         // The team's folder isn't known here: ask from the template folder.
         let cwd = v.team.dir.clone();
-        match list(member.vendor, &cwd, &crate::runtime::base_env()) {
+        match list(member.vendor, &cwd, &crate::runtime::base_env(), &[]) {
             Ok(names) => {
                 for server in member.connectors.servers.keys() {
                     if !names.contains(server) {

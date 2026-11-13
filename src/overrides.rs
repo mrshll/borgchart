@@ -233,14 +233,10 @@ mod tests {
     use crate::team::Posture;
 
     fn role() -> Role {
-        role_with("")
-    }
-
-    fn role_with(options: &str) -> Role {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("template.yaml"),
-            format!("roles:\n  worker: {{prompt: worker.md{options}}}\n"),
+            "roles:\n  worker: {prompt: worker.md}\n",
         )
         .unwrap();
         std::fs::write(dir.path().join("worker.md"), "---\nmodels: {claude: opus low, codex: example-model medium}\n---\nWork on the sample.\n").unwrap();
@@ -394,12 +390,6 @@ mod tests {
         role.posture = Posture::Locked;
         assert!(apply(&role, Some(Vendor::Codex), None, None, Auth::Login).is_ok());
         assert!(apply(&role, None, Some("custom"), None, Auth::Login).is_ok());
-    }
-
-    #[test]
-    fn explicitly_empty_connectors_do_not_prevent_vendor_choice() {
-        let role = role_with(", connectors: []");
-        assert!(apply(&role, Some(Vendor::Codex), None, None, Auth::Login).is_ok());
     }
 
     #[test]

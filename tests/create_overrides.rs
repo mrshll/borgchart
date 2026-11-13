@@ -73,7 +73,6 @@ fn child_vendor_choices_accept_locked_and_explicitly_empty_connector_roles() {
     for role in ["triager", "watcher"] {
         assert_eq!(env.row(&child, role)["vendor"], "codex");
     }
-    println!("{}", stdout(&env.ok(&["status", &child])));
     env.ok(&["stop", &parent]);
 }
 

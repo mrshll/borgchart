@@ -1101,6 +1101,54 @@ fn codex_mcp_list(env: &Env, body: &str) {
 }
 
 #[test]
+fn empty_connectors_list_with_session_trust_to_find_project_servers() {
+    let env = Env::new();
+    env.config("auto_trust: true\n");
+    env.role_extra("beta", "    connectors: []\n");
+    codex_mcp_list(
+        &env,
+        "printf '%s\\n' \"$@\" > \"$HOME/list-argv\"\necho '[{\"name\":\"project-only\"}]'\nexit 0",
+    );
+    env.up();
+    let argv = start_argv(&env, "beta");
+    let trust = argv
+        .windows(2)
+        .find(|w| w[0] == "-c" && w[1].starts_with("projects="))
+        .unwrap();
+    let listing = fs::read_to_string(env.path("home/list-argv")).unwrap();
+    let listing: Vec<&str> = listing.lines().collect();
+    assert!(
+        listing.windows(2).any(|w| w == ["-c", &trust[1]]),
+        "{listing:?}"
+    );
+    assert!(
+        argv.windows(2)
+            .any(|w| w == ["-c", "mcp_servers.project-only.enabled=false"]),
+        "{argv:?}"
+    );
+}
+
+#[test]
+fn empty_connectors_refusals_do_not_leave_an_earlier_locked_member_without_its_gate() {
+    for reply in ["exit 1", "echo '[{\"name\":\"docs.example\"}]'; exit 0"] {
+        let env = Env::new();
+        env.role_extra("beta", "    connectors: []\n");
+        env.write("home/fake-agent/no-hooks", "");
+        codex_mcp_list(&env, reply);
+        let out = env
+            .brg_cmd(&["start"])
+            .env("BORGCHART_GATE_WAIT_MS", "1500")
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1));
+        let output = format!("{}{}", stdout(&out), String::from_utf8_lossy(&out.stderr));
+        assert!(output.contains(&env.m("beta")), "{output}");
+        assert_eq!(env.state_of("alpha"), "stopped");
+        assert!(env.events("beta").is_empty());
+    }
+}
+
+#[test]
 fn empty_connectors_disable_listed_codex_servers_in_member_environment() {
     for posture in ["vendor", "locked"] {
         let env = Env::new();
@@ -1162,8 +1210,7 @@ fn empty_connectors_refuse_codex_start_when_server_listing_fails() {
         codex_mcp_list(&env, reply);
         let out = env.brg(&["start"]);
         assert!(!out.status.success(), "{}", stdout(&out));
-        let error = String::from_utf8_lossy(&out.stderr);
-        println!("{error}");
+        let error = format!("{}{}", stdout(&out), String::from_utf8_lossy(&out.stderr));
         assert!(error.contains("codex mcp list"));
         assert!(
             env.events("beta").is_empty(),
@@ -1179,8 +1226,7 @@ fn empty_connectors_refuse_codex_server_names_that_cannot_be_disabled() {
     codex_mcp_list(&env, "echo '[{\"name\":\"docs.example\"}]'; exit 0");
     let out = env.brg(&["start"]);
     assert!(!out.status.success(), "{}", stdout(&out));
-    let error = String::from_utf8_lossy(&out.stderr);
-    println!("{error}");
+    let error = format!("{}{}", stdout(&out), String::from_utf8_lossy(&out.stderr));
     assert!(error.contains("docs.example"), "{error}");
     assert!(env.events("beta").is_empty());
 }

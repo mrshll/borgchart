@@ -852,20 +852,39 @@ fn start_members(
             && member.connectors.declared
             && member.connectors.is_empty()
         {
-            let names = crate::probe::list(Vendor::Codex, &cwd, &env).map_err(|e| format!(
-                "cannot start `{id}` with `connectors: []`: {e}; run `codex mcp list --json` in {} and retry", cwd.display()
-            ))?;
-            if let Some(name) = names.iter().find(|name| {
-                name.is_empty()
-                    || !name
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-            }) {
-                return Err(format!(
-                    "Codex server {name:?} can't be turned off for this member; rename it in the Codex config or drop `connectors: []`"
-                ));
+            let list_args = codex_trust
+                .as_deref()
+                .map(|dir| vec!["-c".into(), launch::codex_trust_config(dir)])
+                .unwrap_or_default();
+            let listing = crate::probe::list(Vendor::Codex, &cwd, &env, &list_args)
+                .map_err(|e| {
+                    format!(
+                        "{e}; run `codex mcp list --json` in {} and retry",
+                        cwd.display()
+                    )
+                })
+                .and_then(|names| {
+                    if let Some(name) = names.iter().find(|name| {
+                        name.is_empty()
+                            || !name
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+                    }) {
+                        Err(format!(
+                            "Codex server {name:?} can't be turned off for this member; rename it in the Codex config or drop `connectors: []`"
+                        ))
+                    } else {
+                        Ok(names)
+                    }
+                });
+            match listing {
+                Ok(names) => names,
+                Err(error) => {
+                    set(&mut outcomes, id, format!("not started: {error}"));
+                    failed = true;
+                    continue;
+                }
             }
-            names
         } else {
             Default::default()
         };
