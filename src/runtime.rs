@@ -820,37 +820,6 @@ fn start_members(
             && !launch::codex_args_set(&member.args, "projects"))
         .then(|| cwd.clone());
 
-        let settings_path = state.member_dir(id).join("claude-settings.json");
-        let spec = launch::member_launch(
-            &brg,
-            state,
-            &v.team,
-            member,
-            id,
-            posture,
-            &help,
-            &settings_path,
-            codex_trust.as_deref(),
-            &shared,
-            sessions.get(id).map(String::as_str),
-        );
-        if let Some(rules) = &spec.gate {
-            write_private(
-                &state.gate_file(id),
-                &serde_json::to_vec_pretty(rules).map_err(|e| e.to_string())?,
-            )
-            .map_err(|e| e.to_string())?;
-        }
-        if let Some(settings) = &spec.claude_settings {
-            write_private(
-                &settings_path,
-                &serde_json::to_vec_pretty(settings).map_err(|e| e.to_string())?,
-            )
-            .map_err(|e| e.to_string())?;
-        }
-        let _ = std::fs::remove_file(state.gate_marker(id));
-        let _ = std::fs::remove_file(state.member_dir(id).join("trust-accepted"));
-
         let mut env = base.clone();
         let path = format!(
             "{}:{}",
@@ -879,6 +848,79 @@ fn start_members(
         if let Some((key, value)) = keys.get(id) {
             env.insert(key.clone(), value.clone());
         }
+        let codex_mcp_servers = if member.vendor == Vendor::Codex
+            && member.connectors.declared
+            && member.connectors.is_empty()
+        {
+            let list_args = codex_trust
+                .as_deref()
+                .map(|dir| vec!["-c".into(), launch::codex_trust_config(dir)])
+                .unwrap_or_default();
+            let listing = crate::probe::list(Vendor::Codex, &cwd, &env, &list_args)
+                .map_err(|e| {
+                    format!(
+                        "{e}; run `codex mcp list --json` in {} and retry",
+                        cwd.display()
+                    )
+                })
+                .and_then(|names| {
+                    if let Some(name) = names.iter().find(|name| {
+                        name.is_empty()
+                            || !name
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+                    }) {
+                        Err(format!(
+                            "Codex server {name:?} can't be turned off for this member; rename it in the Codex config or drop `connectors: []`"
+                        ))
+                    } else {
+                        Ok(names)
+                    }
+                });
+            match listing {
+                Ok(names) => names,
+                Err(error) => {
+                    set(&mut outcomes, id, format!("not started: {error}"));
+                    failed = true;
+                    continue;
+                }
+            }
+        } else {
+            Default::default()
+        };
+
+        let settings_path = state.member_dir(id).join("claude-settings.json");
+        let spec = launch::member_launch(
+            &brg,
+            state,
+            &v.team,
+            member,
+            id,
+            posture,
+            &help,
+            &settings_path,
+            codex_trust.as_deref(),
+            &codex_mcp_servers,
+            &shared,
+            sessions.get(id).map(String::as_str),
+        );
+        if let Some(rules) = &spec.gate {
+            write_private(
+                &state.gate_file(id),
+                &serde_json::to_vec_pretty(rules).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        if let Some(settings) = &spec.claude_settings {
+            write_private(
+                &settings_path,
+                &serde_json::to_vec_pretty(settings).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        let _ = std::fs::remove_file(state.gate_marker(id));
+        let _ = std::fs::remove_file(state.member_dir(id).join("trust-accepted"));
+
         // Record every start before its window exists.
         let incarnation = {
             let inc = Incarnation {

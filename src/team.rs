@@ -403,6 +403,8 @@ pub enum Grant {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Connectors {
+    /// Whether the role explicitly declared connectors, including an empty list.
+    pub declared: bool,
     /// Server names as the vendor's `mcp list` prints them, each with the
     /// tools allowed in `locked` posture (empty when only names were given).
     pub servers: BTreeMap<String, Vec<String>>,
@@ -1007,10 +1009,12 @@ fn load_role(
     let connectors = match &m.connectors {
         None => Connectors::default(),
         Some(ConnectorsRaw::Names(names)) => Connectors {
+            declared: true,
             servers: names.iter().map(|n| (n.clone(), Vec::new())).collect(),
             with_tools: false,
         },
         Some(ConnectorsRaw::Tools(map)) => Connectors {
+            declared: true,
             servers: map.clone(),
             with_tools: true,
         },
