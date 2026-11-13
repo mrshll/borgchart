@@ -266,7 +266,7 @@ enum Command {
         /// Print the rows as JSON.
         #[arg(long, conflicts_with_all = ["watch", "interactive"])]
         json: bool,
-        /// Refresh the table every few seconds.
+        /// Live tree and message graph tabs (Tab switches, q quits); plain when piped or NO_COLOR.
         #[arg(short, long, conflicts_with = "interactive")]
         watch: bool,
         /// Seconds between refreshes with --watch.
