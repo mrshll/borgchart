@@ -10,7 +10,7 @@ use team_env::*;
 
 fn setup(source: &str) -> Env {
     let env = Env::new();
-    env.write("templates/oncall/template.yaml", &format!("{TEAM}\nplugins:\n  pager:\n    process: [sh, -c, 'test \"${{#PAGER_TOKEN}}\" = 15 && touch \"$HOME/plugin-saw-token\"; sleep 60']\n    env: {{PAGER_TOKEN: {source}}}\n"));
+    env.write("templates/oncall/template.yaml", &format!("{TEAM}\nplugins:\n  pager:\n    process: [sh, -c, 'test \"${{#PAGER_TOKEN}}\" = 15 && test \"$PORT$DEBUG\" = 8080true && touch \"$HOME/plugin-saw-token\"; sleep 60']\n    env: {{PAGER_TOKEN: {source}, PORT: 8080, DEBUG: true}}\n"));
     script(
         &env.path("bin/resolver"),
         r#"#!/bin/sh
@@ -278,7 +278,7 @@ fn source_diagnostics_hide_references_and_reject_unsafe_configuration() {
     clean_output(&out);
     assert!(stdout(&out).contains("resolver"));
     clean_output(&env.ok(&["validate", "oncall"]));
-    for value in ["{form: 'fake://root'}", "42", "[value]"] {
+    for value in ["{form: 'fake://root'}", "{from: 42}", "[value]"] {
         let text = fs::read_to_string(env.path("templates/oncall/template.yaml")).unwrap();
         env.write(
             "templates/oncall/template.yaml",

@@ -752,9 +752,6 @@ fn load_plugin(
             );
         }
         match value {
-            serde_json::Value::String(value) => {
-                values.insert(name.clone(), value.clone());
-            }
             serde_json::Value::Object(source)
                 if source.len() == 1
                     && source.get("from").is_some_and(serde_json::Value::is_string) =>
@@ -766,6 +763,14 @@ fn load_plugin(
                 sources.insert(name.clone(), reference.to_string());
             }
             serde_json::Value::Null => {}
+            plain @ (serde_json::Value::String(_)
+            | serde_json::Value::Number(_)
+            | serde_json::Value::Bool(_)) => {
+                values.insert(
+                    name.clone(),
+                    plain.as_str().map_or(plain.to_string(), str::to_string),
+                );
+            }
             _ => report.error(
                 Some(team_file),
                 at(format!(
