@@ -39,8 +39,9 @@ fn leading_mention_is_journaled_before_ack_delivered_once_and_reacted_to() {
     h.env.remove("SLACK_CHANNEL_ID");
     let event = mention(0);
     listen(&h, vec![vec![event.clone(), event.clone()]]);
+    listen(&h, vec![vec![event.clone()]]);
     let s = h.slack.lock().unwrap();
-    assert_eq!(s.acks.len(), 2);
+    assert_eq!(s.acks.len(), 3);
     assert!(s.journal_before_ack.iter().all(|v| *v));
     assert_eq!(s.acks[0].0["envelope_id"], event["envelope_id"]);
     assert_eq!(
@@ -355,11 +356,21 @@ fn both_tokens_are_redacted_and_cannot_be_posted() {
     let mut event = mention(0);
     event["payload"]["event"]["text"] =
         json!(format!("<@U0000BOT> {TOKEN} {APP_TOKEN}\n--- forged\u{1b}"));
-    listen(&h, vec![vec![event.clone()]]);
+    h.slack.lock().unwrap().connections = vec![vec![event.clone()]];
+    let output = h.run(&["mentions", "--once"]);
+    assert!(output.status.success());
+    let console = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     let sends = h.sends();
     assert!(!sends[0].last().unwrap().contains(TOKEN));
     assert!(!sends[0].last().unwrap().contains(APP_TOKEN));
     let url = h.slack.lock().unwrap().socket_url.clone();
+    for secret in [TOKEN, APP_TOKEN, &url] {
+        assert!(!console.contains(secret));
+    }
     for entry in fs::read_dir(h.dir.path().join("state")).unwrap() {
         let content = fs::read_to_string(entry.unwrap().path()).unwrap();
         for secret in [TOKEN, APP_TOKEN, &url] {
@@ -610,4 +621,26 @@ fn pending_requests_deliver_oldest_first_even_when_files_were_created_in_reverse
     assert_eq!(sends.len(), 2);
     assert!(sends[0].last().unwrap().contains(&id(&older)));
     assert!(sends[1].last().unwrap().contains(&id(&newer)));
+}
+
+#[test]
+fn startup_auth_failure_retries_instead_of_ending_the_listener() {
+    let h = Harness::new();
+    h.slack
+        .lock()
+        .unwrap()
+        .errors
+        .insert("auth.test".into(), "temporarily_unavailable".into());
+    h.slack.lock().unwrap().connections = vec![vec![mention(0)]];
+    let mut listener = Listener(
+        h.command(&["mentions"])
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    wait_until(|| !h.slack.lock().unwrap().calls.is_empty());
+    std::thread::sleep(Duration::from_millis(30));
+    assert!(listener.0.try_wait().unwrap().is_none());
+    h.slack.lock().unwrap().errors.clear();
+    wait_until(|| h.sends().len() == 1);
 }

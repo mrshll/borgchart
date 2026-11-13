@@ -16,12 +16,14 @@ pub fn var(name: &str) -> String {
     env::var(name).unwrap_or_default()
 }
 pub fn safe(text: &str) -> String {
-    let token = var("SLACK_BOT_TOKEN");
-    plugin::escape(&if token.is_empty() {
-        text.into()
-    } else {
-        text.replace(&token, "[redacted]")
-    })
+    let mut text = text.to_owned();
+    for name in ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"] {
+        let token = var(name);
+        if !token.is_empty() {
+            text = text.replace(&token, "[redacted]");
+        }
+    }
+    plugin::escape(&text)
 }
 pub fn one_line(text: &str) -> String {
     safe(text).replace('\n', "\\x0a").replace('\t', "\\x09")
@@ -58,6 +60,13 @@ pub fn csv(value: &str) -> BTreeSet<String> {
         .collect()
 }
 pub fn allowed(message: &Value, own: &BTreeSet<String>, allow: &BTreeSet<String>) -> bool {
+    if var("SLACK_SKIP_MENTIONS") == "true"
+        && own
+            .iter()
+            .any(|id| leading_mention(message["text"].as_str().unwrap_or(""), id))
+    {
+        return false;
+    }
     let authors: BTreeSet<_> = ["user", "bot_id"]
         .iter()
         .filter_map(|k| message[k].as_str())
@@ -109,7 +118,28 @@ impl Api {
         required("SLACK_CHANNEL_ID", "running the plugin")
     }
     pub fn call(&self, method: &str, params: Value, post: bool) -> Result<Value> {
-        let token = required("SLACK_BOT_TOKEN", "running the plugin")?;
+        self.call_with(
+            method,
+            params,
+            post,
+            &required("SLACK_BOT_TOKEN", "running the plugin")?,
+            false,
+        )
+    }
+    pub fn call_with(
+        &self,
+        method: &str,
+        params: Value,
+        post: bool,
+        token: &str,
+        once: bool,
+    ) -> Result<Value> {
+        let quick: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .timeout_global(Some(Duration::from_secs(5)))
+            .build()
+            .into();
+        let agent = if once { &quick } else { &self.agent };
         let base = env::var("SLACK_API_BASE").unwrap_or_else(|_| "https://slack.com/api".into());
         let url = format!("{}/{method}", base.trim_end_matches('/'));
         let connectivity = || {
@@ -120,7 +150,7 @@ impl Api {
         for attempt in 0..4 {
             let auth = format!("Bearer {token}");
             let response = if post {
-                self.agent
+                agent
                     .post(&url)
                     .header("Authorization", &auth)
                     .header("Content-Type", "application/json; charset=utf-8")
@@ -139,7 +169,7 @@ impl Api {
                         )
                     })
                     .collect();
-                self.agent
+                agent
                     .get(&url)
                     .header("Authorization", &auth)
                     .query_pairs(query)
@@ -147,7 +177,7 @@ impl Api {
             };
             let mut response = response.map_err(|_| connectivity())?;
             let status = response.status().as_u16();
-            if status == 429 && attempt < 3 {
+            if status == 429 && attempt < 3 && !once {
                 let delay = retry_delay(
                     response
                         .headers()
@@ -239,6 +269,43 @@ pub fn promotion_notice(target: &str, sender: &str, ts: &str, reason: &str) -> R
     Ok(format!(
         "Slack promote from {sender}: ts={ts} reason={reason}. Read it with brg-slack read {ts} (or brg-slack thread {ts})."
     ))
+}
+
+pub fn leading_mention(text: &str, bot: &str) -> bool {
+    let text = text.trim_start();
+    text.starts_with(&format!("<@{bot}>")) || text.starts_with(&format!("<@{bot}|"))
+}
+
+fn field(message: &Value, key: &str) -> String {
+    message[key].as_str().unwrap_or("unknown").to_string()
+}
+pub fn render(messages: &[Value], chars: usize) -> String {
+    let mut output = String::new();
+    for message in messages.iter().take(200) {
+        let mut fields = format!("--- ts={}", field(message, "ts"));
+        if let Some(thread) = message["thread_ts"].as_str() {
+            fields.push_str(&format!(" thread_ts={thread}"));
+        }
+        let author = message["user"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .or_else(|| message["bot_id"].as_str())
+            .unwrap_or("unknown");
+        fields.push_str(&format!(" author={author}"));
+        if !message["edited"].is_null() {
+            fields.push_str(&format!(" edited={}", field(&message["edited"], "ts")));
+        }
+        output.push_str(&format!("{}\n", one_line(&fields)));
+        output.push_str(&plugin::frame(&safe(
+            &message["text"]
+                .as_str()
+                .unwrap_or("")
+                .chars()
+                .take(chars)
+                .collect::<String>(),
+        )));
+    }
+    output
 }
 
 #[cfg(test)]
