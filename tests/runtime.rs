@@ -808,7 +808,7 @@ fn locked_gate_allows_only_granted_commands() {
 }
 
 #[test]
-fn shim_requires_matching_fenced_member_identity() {
+fn shim_refuses_wrong_member_identity_and_corrupt_settings_without_leaking() {
     let env = Env::new();
     env.up();
     let shim = walk(&env.path("state"))
@@ -831,18 +831,26 @@ fn shim_requires_matching_fenced_member_identity() {
         .output()
         .unwrap();
     assert!(!refused.status.success());
-    let out = common::command(&shim)
+    let mut action = common::command(&shim);
+    action
         .env_clear()
         .envs(captured("alpha"))
         .args(["read", "5"])
-        .env("PAGER_TOKEN", "")
-        .output()
-        .unwrap();
+        .env("PAGER_TOKEN", "");
+    let out = action.output().unwrap();
     assert!(
         out.status.success(),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
+    let settings = env.path(&format!(
+        "state/{}/secrets/pager.json",
+        env.instance().unwrap()
+    ));
+    fs::write(settings, serde_json::to_string(SECRET).unwrap()).unwrap();
+    let out = action.output().unwrap();
+    assert!(!out.status.success());
+    assert!(!String::from_utf8_lossy(&out.stderr).contains(SECRET));
     let calls = walk(&env.path("state"))
         .into_iter()
         .find(|p| p.ends_with("plugins/pager/calls.log"))

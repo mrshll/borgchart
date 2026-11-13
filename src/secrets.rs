@@ -18,7 +18,8 @@ impl Drop for EnvFile {
 
 /// Hidden helper: only the resolver's captured stdout pipe receives this line.
 pub fn helper() {
-    let values: BTreeMap<_, _> = std::env::vars()
+    let values: BTreeMap<_, _> = std::env::vars_os()
+        .filter_map(|(n, v)| Some((n.into_string().ok()?, v.into_string().ok()?)))
         .filter(|(n, _)| {
             n.strip_prefix("BORGCHART_SECRET_")
                 .is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
@@ -32,6 +33,22 @@ pub fn helper() {
 
 /// Collect values before taking the registry lock or registering a team.
 pub fn values(v: &Validated, id: &str) -> Result<PluginValues, String> {
+    for entry in std::fs::read_dir(state::state_home())
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let pid = name
+            .strip_prefix("resolver-")
+            .and_then(|s| s.strip_suffix(".env")?.parse().ok())
+            .and_then(rustix::process::Pid::from_raw);
+        if pid.is_some_and(|pid| {
+            rustix::process::test_kill_process(pid) == Err(rustix::io::Errno::SRCH)
+        }) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
     let sources: Vec<_> = v
         .team
         .plugins
@@ -58,7 +75,10 @@ pub fn values(v: &Validated, id: &str) -> Result<PluginValues, String> {
             "team {id} takes secrets from the resolver; ask the owner to run brg start {id}"
         ));
     }
-    let resolver = &v.config.secrets.as_ref().ok_or("plugin secrets need a resolver: add secrets: {resolver: [...]} to brg's configuration and run the command again; nothing was started")?.resolver;
+    let resolver = &v.config.secrets.as_ref().ok_or_else(|| {
+        let config = v.config.file.as_ref().map_or_else(|| "brg's configuration".into(), |p| p.display().to_string());
+        format!("plugin secrets need a resolver: add secrets: {{resolver: [...]}} to {config} and run the command again; nothing was started")
+    })?.resolver;
     let failure = "the secrets resolver failed; check your resolver and run the command again; nothing was started";
     state::ensure_dir(&state::state_home()).map_err(|_| failure)?;
     let file = EnvFile(state::state_home().join(format!("resolver-{}.env", std::process::id())));
@@ -117,17 +137,12 @@ pub fn values(v: &Validated, id: &str) -> Result<PluginValues, String> {
         .lines()
         .rev()
         .find_map(|l| l.strip_prefix(PREFIX))
+        .filter(|hex| hex.len().is_multiple_of(2))
         .ok_or(failure)?;
     let bytes = hex
         .as_bytes()
         .chunks(2)
-        .map(|c| {
-            if c.len() != 2 {
-                return None;
-            }
-            let digit = |b: u8| (b as char).to_digit(16).map(|d| d as u8);
-            Some(digit(c[0])? * 16 + digit(c[1])?)
-        })
+        .map(|c| u8::from_str_radix(std::str::from_utf8(c).ok()?, 16).ok())
         .collect::<Option<Vec<_>>>()
         .ok_or(failure)?;
     let resolved: BTreeMap<String, String> = serde_json::from_slice(&bytes).map_err(|_| failure)?;

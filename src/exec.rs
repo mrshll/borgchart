@@ -116,7 +116,14 @@ pub fn run_main(
         return fail(e.message);
     }
     let secrets: PluginEnv = match std::fs::read_to_string(state.plugin_env_file(plugin)) {
-        Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
+        Ok(text) => match serde_json::from_str(&text) {
+            Ok(settings) => settings,
+            Err(_) => {
+                return fail(format!(
+                    "cannot read plugin `{plugin}` settings; stop the whole team and start it again"
+                ));
+            }
+        },
         Err(e) => return fail(format!("cannot read plugin `{plugin}` settings: {e}")),
     };
     let parent = meta.members.get(member).and_then(|m| m.parent.clone());

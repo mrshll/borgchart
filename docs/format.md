@@ -234,7 +234,7 @@ secrets: {resolver: [example-secrets, run, "--env-file={file}", "--"]}
 ```
 
 - **`secrets.resolver`:** optional argv, with `{file}` exactly once. brg appends its own helper command; the resolver must run that command with the references resolved into its environment. No shell is used. The resolver inherits brg's environment, has no stdin, and has 120 seconds for approval. Its stdout and stderr are captured; failures show only fixed brg diagnostics. To diagnose a failure, check the resolver separately.
-  - The temporary 0600 env-file contains `BORGCHART_SECRET_<n>='<reference>'` lines and is removed when resolution returns. Values return over a pipe and go only to the existing 0600 plugin settings files.
+  - The temporary 0600 env-file contains `BORGCHART_SECRET_<n>='<reference>'` lines and is removed when resolution returns. An interrupted start may leave it until the next resolving start. Values return over a pipe and go only to the existing 0600 plugin settings files.
   - Resolution runs once per team starting fresh, before the registry lock. Joining a running team reuses its settings; missing or corrupt settings require a full stop/start. Members cannot trigger resolution: ask the owner to start that team. Each restored child resolves separately; a failed child leaves its already-started parent running.
   - Starts need the owner's resolver reachable and approved. Rotate secrets with a full stop/start; vendor API keys still follow `auth` below.
 - **Settings:** members that start use current `auth`, `auto_trust` and template files. Plugin settings refresh after a full stop/start. A team retains its recorded template folder.

@@ -554,8 +554,8 @@ fn start_members(
             "the team stopped during this start; run the command again; nothing was started".into(),
         );
     }
-    if joining {
-        for name in v.team.plugins.keys() {
+    if let Some(existing) = &existing {
+        for name in existing.plugins.keys() {
             let settings = std::fs::read(state.plugin_env_file(name))
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<PluginEnv>(&bytes).ok());
@@ -2279,7 +2279,10 @@ fn start_instance(
                     }
                     Err(error) => {
                         outcome.notes.push(format!(
-                            "{full_id}: {error}; start it with: brg start {full_id}"
+                            "{full_id}: {}; start it with: brg start {full_id}",
+                            error
+                                .replace(" and run the command again; nothing was started", "")
+                                .replace("; run the command again; nothing was started", "")
                         ));
                         outcome.failed = true;
                     }

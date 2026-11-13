@@ -4,6 +4,7 @@ mod common;
 mod team_env;
 
 use std::fs;
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::PermissionsExt;
 use team_env::*;
 
@@ -21,6 +22,7 @@ cat "$file" > "$HOME/resolver-input"
 case ${MODE:-} in
   fail) echo 'fake://root fake-value-root' >&2; exit 1;;
   timeout) sleep 2;;
+  slow) sleep 5;;
 esac
 while IFS='=' read -r name reference; do
   reference=${reference#\'}; reference=${reference%\'}
@@ -101,13 +103,20 @@ fn private_tree(path: &std::path::Path) {
 #[test]
 fn fresh_and_joining_starts_resolve_only_when_needed_and_keep_values_private() {
     let env = setup("{from: 'fake://root'}");
+    env.write("state/resolver-2147483647.env", "stale reference");
+    let live = format!("state/resolver-{}.env", std::process::id());
+    env.write(&live, "live reference");
     let out = env
         .cmd(&["create", "oncall", env.path("work/a").to_str().unwrap()])
         .env("PAGER_TOKEN", "wrong")
+        .env("UNRELATED", std::ffi::OsString::from_vec(vec![0xff]))
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", both(&out));
     clean_output(&out);
+    assert!(!env.path("state/resolver-2147483647.env").exists());
+    assert!(env.path(&live).exists());
+    fs::remove_file(env.path(&live)).unwrap();
     let id = stdout(&out).split_whitespace().next().unwrap().to_string();
     assert_eq!(token(&env, &id), "fake-value-root");
     env.wait_for("plugin received its value", || {
@@ -123,10 +132,17 @@ fn fresh_and_joining_starts_resolve_only_when_needed_and_keep_values_private() {
     let start = fs::read_to_string(env.path(&format!("state/{id}/start.json"))).unwrap();
     assert!(!start.contains("fake-value-") && !start.contains("fake://"));
     env.ok(&["stop", &format!("{id}/{lead}")]);
+    let template = fs::read_to_string(env.path("templates/oncall/template.yaml")).unwrap();
+    env.write(
+        "templates/oncall/template.yaml",
+        &format!("{template}  extra: {{command: extra}}\n"),
+    );
     env.ok(&["start", &format!("{id}/{lead}")]);
+    env.write("templates/oncall/template.yaml", &template);
+    env.ok(&["create", &format!("{id}/helper")]);
     assert_eq!(runs(&env), 1);
     env.ok(&["stop", &id]);
-    env.ok(&["start", &format!("{id}/{lead}")]);
+    env.ok(&["create", &format!("{id}/scout")]);
     assert_eq!(runs(&env), 2);
     cleaned(&env);
     private_tree(&env.path("state"));
@@ -205,6 +221,12 @@ fn resolver_failures_leave_no_team_or_settings_and_do_not_relay_child_output() {
             .unwrap();
         assert!(!out.status.success(), "{mode}: {}", both(&out));
         clean_output(&out);
+        let phrase = match mode {
+            "fail" => "failed with exit 1",
+            "timeout" => "timed out",
+            _ => "left pager: PAGER_TOKEN unset",
+        };
+        assert!(both(&out).contains(phrase), "{}", both(&out));
         assert_eq!(runs(&env), 1, "{mode}: {}", both(&out));
         assert!(!env.path("state/registry.json").exists());
         cleaned(&env);
@@ -212,13 +234,8 @@ fn resolver_failures_leave_no_team_or_settings_and_do_not_relay_child_output() {
 }
 
 #[test]
-fn environment_secrets_start_without_a_resolver_and_sourced_ones_refuse_members() {
+fn environment_secrets_skip_the_configured_resolver_and_sourced_ones_refuse_members() {
     let env = setup("");
-    env.config("");
-    let rows: serde_json::Value =
-        serde_json::from_slice(&env.ok(&["secrets", "oncall", "--json"]).stdout).unwrap();
-    assert_eq!(rows["secrets"][0]["source"], "environment");
-    assert_eq!(rows["secrets"][0]["set"], false);
     let out = env
         .cmd(&["create", "oncall", env.path("work/a").to_str().unwrap()])
         .env("PAGER_TOKEN", "fake-value-root")
@@ -244,7 +261,8 @@ fn environment_secrets_start_without_a_resolver_and_sourced_ones_refuse_members(
     env.config("");
     let out = env.brg(&["start", &id]);
     assert!(!out.status.success());
-    assert!(both(&out).contains("resolver"));
+    assert!(both(&out).contains("plugin secrets need a resolver"));
+    assert!(both(&out).contains(env.path("config.yaml").to_str().unwrap()));
     clean_output(&out);
 }
 
@@ -260,6 +278,18 @@ fn source_diagnostics_hide_references_and_reject_unsafe_configuration() {
     clean_output(&out);
     assert!(stdout(&out).contains("resolver"));
     clean_output(&env.ok(&["validate", "oncall"]));
+    for value in ["{form: 'fake://root'}", "42", "[value]"] {
+        let text = fs::read_to_string(env.path("templates/oncall/template.yaml")).unwrap();
+        env.write(
+            "templates/oncall/template.yaml",
+            &text.replace("{from: 'fake://root'}", value),
+        );
+        let out = env.brg(&["validate", "oncall"]);
+        assert!(!out.status.success());
+        assert!(both(&out).contains("env `PAGER_TOKEN`: give a plain value"));
+        clean_output(&out);
+        env.write("templates/oncall/template.yaml", &text);
+    }
     for reference in [
         "''",
         "'fake://bad''quote'",
@@ -282,4 +312,26 @@ fn source_diagnostics_hide_references_and_reject_unsafe_configuration() {
         env.config(&format!("secrets: {{resolver: {resolver}}}\n"));
         assert!(!env.brg(&["validate", "oncall"]).status.success());
     }
+}
+
+#[test]
+fn slow_resolution_does_not_block_status_or_another_start() {
+    let env = setup("{from: 'fake://root'}");
+    let id = env.create("oncall", "work/a");
+    env.ok(&["stop", &id]);
+    let child = env
+        .cmd(&["start", &id])
+        .env("MODE", "slow")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    env.wait_for("resolver waiting", || runs(&env) == 2);
+    let began = std::time::Instant::now();
+    env.ok(&["status", &id]);
+    env.ok(&["create", &format!("{id}/helper")]);
+    assert!(began.elapsed() < std::time::Duration::from_secs(3));
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", both(&out));
+    env.ok(&["stop", &id]);
 }
