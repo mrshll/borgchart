@@ -104,21 +104,9 @@ struct PluginRaw {
     process: Option<Vec<String>>,
     delivers_to: Option<String>,
     #[serde(default)]
-    env: EnvRaw,
+    env: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     actions: BTreeMap<String, String>,
-}
-
-/// A plugin's `env`: a map of names to plain values (empty for a secret).
-#[derive(Debug, Default, Deserialize)]
-#[serde(transparent)]
-struct EnvRaw(BTreeMap<String, Option<String>>);
-
-impl EnvRaw {
-    /// Every name in order, each with its plain value if it has one.
-    fn entries(&self) -> Vec<(String, Option<String>)> {
-        self.0.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -430,11 +418,13 @@ pub struct Plugin {
     pub env: Vec<String>,
     /// The plain values the template gives; every other name is a secret.
     pub values: BTreeMap<String, String>,
+    /// Secrets the resolver supplies: name → reference.
+    pub sources: BTreeMap<String, String>,
     pub actions: BTreeMap<String, Action>,
 }
 
 impl Plugin {
-    /// The names whose values come from the caller's environment.
+    /// The names whose values come from the environment or resolver.
     pub fn secrets(&self) -> impl Iterator<Item = &String> {
         self.env.iter().filter(|n| !self.values.contains_key(*n))
     }
@@ -753,17 +743,42 @@ fn load_plugin(
 
     let mut env = Vec::new();
     let mut values = BTreeMap::new();
-    for (name, value) in p.env.entries() {
-        if !is_valid_env_name(&name) {
+    let mut sources = BTreeMap::new();
+    for (name, value) in &p.env {
+        if !is_valid_env_name(name) {
             report.error(
                 Some(team_file),
                 at(format!("env name `{name}` must match `[A-Z_][A-Z0-9_]*`")),
             );
         }
-        if let Some(value) = value {
-            values.insert(name.clone(), value);
+        match value {
+            serde_json::Value::Object(source)
+                if source.len() == 1
+                    && source.get("from").is_some_and(serde_json::Value::is_string) =>
+            {
+                let reference = source["from"].as_str().unwrap();
+                if reference.is_empty() || reference.chars().any(|c| c.is_control() || c == '\'') {
+                    report.error(Some(team_file), at(format!("env `{name}`: `from` must be non-empty with no control characters or single quote")));
+                }
+                sources.insert(name.clone(), reference.to_string());
+            }
+            serde_json::Value::Null => {}
+            plain @ (serde_json::Value::String(_)
+            | serde_json::Value::Number(_)
+            | serde_json::Value::Bool(_)) => {
+                values.insert(
+                    name.clone(),
+                    plain.as_str().map_or(plain.to_string(), str::to_string),
+                );
+            }
+            _ => report.error(
+                Some(team_file),
+                at(format!(
+                    "env `{name}`: give a plain value, nothing, or {{from: \"<reference>\"}}"
+                )),
+            ),
         }
-        env.push(name);
+        env.push(name.clone());
     }
 
     let mut actions = BTreeMap::new();
@@ -858,6 +873,7 @@ fn load_plugin(
         delivers_to: p.delivers_to.clone(),
         env,
         values,
+        sources,
         actions,
     })
 }

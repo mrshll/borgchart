@@ -21,6 +21,7 @@ HANDOVER = (
 )
 ROOT = Path(__file__).resolve().parent.parent
 BRG = os.environ.get("BRG") or "brg"
+BRG_BUILT = os.environ.get("BRG_BUILT") or str(ROOT / "target/release/brg")
 
 
 def say(message: str) -> None:
@@ -47,6 +48,37 @@ def live(row: dict[str, Any]) -> bool:
         and row["state"] not in ("stopped", "not started", "exited")
         and row.get("liveness") != "gone"
     )
+
+
+def secret_teams(rows: list[dict[str, Any]], trees: list[str]) -> list[str]:
+    teams = dict.fromkeys(trees)
+    for row in rows:
+        if row["team"].split("/")[0] in trees and (
+            live(row) or (row["kind"] == "plugin" and row["state"] == "alive")
+        ):
+            teams[row["team"]] = None
+    return list(teams)
+
+
+def check_secrets(teams: list[str], *, handover_sent: bool = False) -> bool:
+    for team in teams:
+        say(f"checking: secrets for {team}")
+        result = subprocess.run(
+            [BRG_BUILT, "secrets", "--check", team],
+            stdout=subprocess.DEVNULL,
+            check=False,
+        )
+        if result.returncode:
+            say(f"failed: secrets for {team}")
+            sent = "handover messages were sent; " if handover_sent else ""
+            untouched = (
+                "stopped or installed"
+                if handover_sent
+                else "sent, stopped or installed"
+            )
+            say(f"summary: secrets check failed; {sent}nothing {untouched}")
+            return False
+    return True
 
 
 def wait_for_replies(pending: list[tuple[str, str, str]], deadline: float) -> bool:
@@ -161,6 +193,7 @@ def main() -> int:
             if "/" not in row["team"] and not row.get("parent"):
                 leads.setdefault(tree, []).append(f"{row['team']}/{row['member']}")
     trees = list(members)
+    teams = secret_teams(rows, trees)
     if not force:
         missing = [tree for tree in trees if tree not in leads]
         for tree in missing:
@@ -171,6 +204,8 @@ def main() -> int:
             return 1
     if dry_run:
         say("dry-run: build with make build")
+        for team in teams:
+            say(f"dry-run: check secrets for {team}")
         for tree in trees:
             handover = (
                 "skip handover (FORCE=1)"
@@ -185,6 +220,8 @@ def main() -> int:
         return 0
     if not make("build"):
         say("summary: build failed; nothing sent, stopped or installed")
+        return 1
+    if not check_secrets(teams):
         return 1
     pending = []
     deadline = time.monotonic() + timeout
@@ -216,6 +253,11 @@ def main() -> int:
             say("summary: nothing stopped or installed")
             return 1
         time.sleep(min(2, remaining))
+    if not check_secrets(
+        [team for team in secret_teams(rows, trees) if team not in teams],
+        handover_sent=not force and bool(leads),
+    ):
+        return 1
     stopped = []
     for tree in trees:
         say(f"stopping: {tree}")

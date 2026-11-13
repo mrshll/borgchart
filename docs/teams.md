@@ -72,7 +72,7 @@ devteam-k3f9  template ~/.config/borgchart/templates/devteam · folder ~/work/pr
 
 - **`create`** makes a new team in that folder, with a suffixed ID; run it twice and you have two. Every team has durable messages.
 - **Per role** in `template.yaml`: `posture`, extra vendor `args` and `worktree: true` for members that each need their own checkout. Standing rules go in the template's own files; context for one piece of work goes to the lead in a message.
-- **Secrets:** brg stores none. They come from your environment by name when you run `brg create` or `brg start`; `brg secrets devteam` lists which are set.
+- **Secrets:** empty `env` values read your start environment; `NAME: {from: "<reference>"}` uses `secrets.resolver` instead. `brg secrets devteam` lists sources and which environment secrets are set, without values or references.
 
 ## Commands
 
@@ -115,7 +115,7 @@ By each brief's existing deadline, check ordinary untyped records' ack/status. S
 
 ## Secrets
 
-Decided: brg stores no secrets. A plugin's secrets come from the environment `brg create` or `brg start` runs in (for example under your password manager's `run`), go only to that plugin's 0600 file, and are removed at `brg stop`. `brg secrets <template>` lists the names the plugins need and whether each is set, without values. 0600 keeps other users out, not the members: a member that isn't `locked` could read the file while it exists.
+Plugin secrets come from the start environment or a [configured resolver](format.md#configyaml), go only to that plugin's 0600 file, and are removed at `brg stop`. Fresh starts resolve once per team; joining starts reuse settings. A member cannot trigger the resolver; the owner starts the team and approves any prompt. Rotation requires a full stop/start. `brg secrets <template>` lists sources without values or references. 0600 keeps other users out, not the members: a member that isn't `locked` could read the file while it exists.
 
 ## Roles with several members
 

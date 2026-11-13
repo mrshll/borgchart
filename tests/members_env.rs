@@ -315,7 +315,7 @@ fn brg_secrets_lists_the_names_and_whether_each_is_set() {
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(
         v["secrets"],
-        json!([{"plugin": "pager", "name": "PAGER_TOKEN", "set": true}])
+        json!([{"plugin": "pager", "name": "PAGER_TOKEN", "source": "environment", "set": true}])
     );
     assert_eq!(every_file(&env).len(), before, "nothing written");
     assert!(!env.path("state").exists());
