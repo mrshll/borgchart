@@ -4656,9 +4656,6 @@ pub fn send(
     } else {
         Vendor::Claude
     };
-    // Codex starts no turn when a background wait ends, so only a Claude
-    // member can be inbox-only.
-    let inbox_only = interactive && vendor == Vendor::Claude;
     let original = if target_meta.is_some() {
         lifecycle::load_incarnation(&inst.state, &to).map_err(SendError::Refused)?
     } else {
@@ -4723,7 +4720,7 @@ pub fn send(
         outcome.reason = "external inbox".into();
         return Ok(outcome);
     }
-    if inbox_only {
+    if interactive && vendor == Vendor::Claude {
         outcome.reason = "interactive recipient".into();
         return Ok(outcome);
     }
@@ -4764,6 +4761,14 @@ pub fn send(
                 "recipient delivery posture changed after commit".into(),
             ));
         }
+        if interactive {
+            // A person may be typing in the box, and Codex starts no turn when
+            // a background wait ends: hand the message over as its next turn.
+            let inc = current.as_ref().expect("checked above");
+            return queue_send(&inst.state, &to, &inc.started_at, &envelope)
+                .map(|()| "queued")
+                .map_err(SendError::Refused);
+        }
         let tmux = tmux.with_socket(&pane.socket);
         let before = send_snapshot(&tmux, &inst.state, &to, pane, vendor, force, locked)?;
         let mut view = crate::composer::view(vendor, &before.screen, Some(before.geometry))
@@ -4779,12 +4784,16 @@ pub fn send(
                 "message exceeds the screen-verification budget; no text pasted".into(),
             ));
         }
-        paste_send(&tmux, &inst.state, &to, pane, vendor, locked, &envelope)
+        paste_send(&tmux, &inst.state, &to, pane, vendor, locked, &envelope).map(|()| "typed")
     })();
     match typed {
-        Ok(()) => {
-            outcome.delivery = "typed";
-            outcome.reason = "submitted".into();
+        Ok(delivery) => {
+            outcome.delivery = delivery;
+            outcome.reason = match delivery {
+                "queued" => "codex queue: the member's next turn",
+                _ => "submitted",
+            }
+            .into();
             Ok(outcome)
         }
         Err(error) => {
@@ -4805,6 +4814,37 @@ pub fn send(
                 Ok(outcome)
             }
         }
+    }
+}
+
+/// Give an interactive Codex member `envelope` with `codex queue`, on the
+/// session its current start recorded. Err says why it stays stored.
+fn queue_send(
+    state: &StateDir,
+    member: &str,
+    started_at: &str,
+    envelope: &str,
+) -> Result<(), String> {
+    let started = crate::bus::time::parse_utc(started_at)
+        .ok_or("this start's time can't be read; not queued")?;
+    let recorded = std::fs::metadata(state.member_session(member))
+        .and_then(|m| m.modified())
+        .ok();
+    let id = recorded
+        .filter(|&t| t >= started)
+        .and_then(|_| recorded_session(state, member))
+        .ok_or("no Codex session recorded for this start yet; not queued")?;
+    let mut command = Command::new("codex");
+    command.args(["queue", "--thread", &id, "--message", envelope]);
+    let limits = crate::bounded_process::Limits {
+        deadline: Instant::now() + Duration::from_secs(10),
+        stdout_bytes: 64 * 1024,
+        stderr_bytes: 64 * 1024,
+    };
+    match crate::bounded_process::run(&mut command, None, limits) {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(out) => Err(format!("`codex queue` failed ({}); not queued", out.status)),
+        Err(e) => Err(format!("`codex queue` did not finish ({e}); not queued")),
     }
 }
 

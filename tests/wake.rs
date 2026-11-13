@@ -950,8 +950,12 @@ impl Env {
         cmd.env_clear()
             .env(
                 "PATH",
-                self.private
-                    .path_with(&std::env::var("PATH").unwrap_or_default()),
+                format!(
+                    "{}:{}",
+                    self.dir.path().join("fakebin").display(),
+                    self.private
+                        .path_with(&std::env::var("PATH").unwrap_or_default())
+                ),
             )
             .env("HOME", self.dir.path())
             .env("BORGCHART_STATE_HOME", self.dir.path())
@@ -1020,33 +1024,189 @@ fn unified_send_preserves_drafts_and_skips_unverifiable_and_interactive_messages
     }
 }
 
-/// Codex starts no turn when a background wait ends, so typing is the only
-/// way an idle Codex member hears a message: `interactive` doesn't stop it.
+impl Env {
+    /// A stand-in `codex` on the sender's PATH that records its arguments
+    /// and then runs `then` (a shell snippet: `exit 0`, `exit 3`, `exec sleep 60`).
+    fn fake_codex(&self, then: &str) {
+        let bin = self.dir.path().join("fakebin");
+        fs::create_dir_all(&bin).unwrap();
+        let log = self.dir.path().join("codex-args");
+        let script = bin.join("codex");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\0' \"$a\"; done > '{}'\n{then}\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// The arguments the stand-in `codex` was called with, if it was.
+    fn codex_args(&self) -> Option<Vec<String>> {
+        let raw = fs::read_to_string(self.dir.path().join("codex-args")).ok()?;
+        Some(raw.split_terminator('\0').map(String::from).collect())
+    }
+
+    /// The vendor session the member's start reported, as its hook would.
+    fn record_session(&self, id: &str) {
+        borgchart::state::write_private(
+            &self.state.member_session("m"),
+            format!("{id}\n").as_bytes(),
+        )
+        .unwrap();
+    }
+}
+
+/// An interactive member's input box belongs to a person, so brg never types
+/// into it. An interactive Codex member gets the message through
+/// `codex queue` on the session its start recorded instead: it runs as the
+/// member's next turn.
 #[test]
-fn interactive_codex_recipients_are_typed_into_but_drafts_still_stop_it() {
-    for draft in [false, true] {
+fn interactive_codex_recipients_get_a_queued_message_and_nothing_typed() {
+    let e = Env::new(Vendor::Codex);
+    e.send_setup(Vendor::Codex, false, true);
+    e.fake_codex("echo 'Queued message 1 for thread 2.'; exit 0");
+    e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20");
+    e.keys(&["draft"]);
+    let (code, out) = e.send_message("hello", &[]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(out["delivery"], "queued", "{out}");
+    let args = e.codex_args().expect("codex queue was called");
+    assert_eq!(
+        args[..4],
+        [
+            "queue",
+            "--thread",
+            "01a1d300-f48d-7c70-a58a-d5fbea1edd20",
+            "--message"
+        ]
+    );
+    assert_eq!(args.len(), 5, "{args:?}");
+    assert!(
+        args[4].starts_with("[brg m1 from external:test]\nhello\n"),
+        "{args:?}"
+    );
+    assert!(args[4].contains("brg msg ack m1"), "{args:?}");
+    // The person's draft is untouched and nothing was pasted.
+    assert!(e.events("paste").is_empty());
+    assert!(e.screen().contains("draft"));
+}
+
+/// Without a session for this start, or when `codex queue` fails or hangs,
+/// the message stays stored and the send still succeeds.
+#[test]
+fn interactive_codex_messages_stay_stored_when_they_cannot_be_queued() {
+    for case in [
+        "no session",
+        "stale session",
+        "unreadable start",
+        "fails",
+        "hangs",
+    ] {
         let e = Env::new(Vendor::Codex);
         e.send_setup(Vendor::Codex, false, true);
-        if draft {
-            e.keys(&["draft"]);
+        e.fake_codex(match case {
+            "fails" => "exit 3",
+            "hangs" => "exec sleep 60",
+            _ => "exit 0",
+        });
+        match case {
+            "no session" => {}
+            "stale session" => {
+                e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20");
+                // A later start that hasn't reported its session yet.
+                let path = e.state.current_incarnation("m");
+                let text = fs::read_to_string(&path).unwrap();
+                let later = text.replace("2026-11-09T00:00:00Z", "2099-01-01T00:00:00Z");
+                assert_ne!(text, later);
+                fs::write(&path, later).unwrap();
+            }
+            "unreadable start" => {
+                e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20");
+                let path = e.state.current_incarnation("m");
+                let text = fs::read_to_string(&path).unwrap();
+                fs::write(&path, text.replace("2026-11-09T00:00:00Z", "unreadable")).unwrap();
+            }
+            _ => e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20"),
         }
+        let started = Instant::now();
         let (code, out) = e.send_message("hello", &[]);
-        assert_eq!(code, 0, "{out}");
-        if draft {
-            assert_eq!(out["delivery"], "stored", "{out}");
-            assert!(e.events("paste").is_empty());
-            assert!(e.screen().contains("draft"));
-        } else {
-            assert_eq!(out["delivery"], "typed", "{out}");
-            let submits = e.events("submit");
-            assert_eq!(submits.len(), 1, "{submits:?}");
-            assert!(
-                submits[0]["text"]
-                    .as_str()
-                    .unwrap()
-                    .contains("[brg m1 from external:test]\nhello")
-            );
+        assert_eq!(code, 0, "{case}: {out}");
+        assert_eq!(out["delivery"], "stored", "{case}: {out}");
+        assert!(!out["reason"].as_str().unwrap().is_empty(), "{case}: {out}");
+        assert!(started.elapsed() < Duration::from_secs(30), "{case}");
+        if case.contains("session") || case.contains("start") {
+            assert!(e.codex_args().is_none(), "{case}");
         }
+        assert!(e.events("paste").is_empty(), "{case}");
+        let bus = borgchart::bus::store::open(&e.state).unwrap();
+        let snap = borgchart::bus::store::snapshot(&bus).unwrap();
+        assert_eq!(snap.records[&1].body, "hello", "{case}");
+    }
+}
+
+/// A member stopped or started again while the record was being stored
+/// gets nothing queued on its old session: the message stays stored for
+/// whichever start reads its inbox next.
+#[test]
+fn queue_delivery_rechecks_the_start_after_the_record_is_stored() {
+    for case in ["stopped", "started again"] {
+        let e = Env::new(Vendor::Codex);
+        e.send_setup(Vendor::Codex, false, true);
+        e.fake_codex("exit 0");
+        e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20");
+        let gate = e.dir.path().join("publish-pause");
+        let mut cmd = common::command(env!("CARGO_BIN_EXE_brg"));
+        cmd.env_clear()
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    e.dir.path().join("fakebin").display(),
+                    e.private
+                        .path_with(&std::env::var("PATH").unwrap_or_default())
+                ),
+            )
+            .env("HOME", e.dir.path())
+            .env("BORGCHART_STATE_HOME", e.dir.path())
+            .env("BORGCHART_CONFIG", e.dir.path().join("unused.yaml"))
+            .env("BORGCHART_TEST_PUBLISH_PAUSE", &gate)
+            .args([
+                "msg",
+                "send",
+                "state/m",
+                "hello",
+                "--external",
+                "test",
+                "--json",
+            ])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        e.private.brg_env(&mut cmd, &e.socket);
+        let child = cmd.spawn().unwrap();
+        e.wait_for("send to read the start", |_| {
+            gate.with_extension("waiting").exists()
+        });
+        if case == "stopped" {
+            borgchart::lifecycle::end_incarnation(&e.state, "m", "stopped").unwrap();
+        } else {
+            let mut inc = borgchart::lifecycle::load_incarnation(&e.state, "m")
+                .unwrap()
+                .unwrap();
+            inc.incarnation = "m-2".into();
+            inc.started_at = borgchart::bus::time::utc_now();
+            inc.pane = None;
+            borgchart::lifecycle::begin_incarnation(&e.state, &inc).unwrap();
+        }
+        fs::write(&gate, b"").unwrap();
+        let out = child.wait_with_output().unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(out.status.code(), Some(0), "{case}: {value}");
+        assert_eq!(value["delivery"], "stored", "{case}: {value}");
+        assert!(e.codex_args().is_none(), "{case}");
     }
 }
 

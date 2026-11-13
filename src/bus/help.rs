@@ -29,7 +29,7 @@ address anywhere in the tree, or a bare ID in your own team or the one --team
 names.
 Reading never acknowledges. Use `msg read ID` for an older message and
 `msg ack ID...` once you have taken messages on, then `msg wait` (Claude). A
-Codex member runs no wait: it finishes its turn, and brg types each new
+Codex member runs no wait: it finishes its turn, and brg delivers each new
 message into its session.
 Progress and reports belong in your notes and GitHub.
 
@@ -86,8 +86,9 @@ This command takes no --team; name the target as <team>/<member>.
 
 Ordinary messages commit before optional typing. Exit 0 means committed even
 when delivery is stored or uncertain; never automatically republish. Interactive
-Claude recipients are inbox-only even with --allow-unknown; Codex recipients
-are typed into either way. Working recipients may
+recipients are never typed into, even with --allow-unknown: Claude ones are
+inbox-only, and Codex ones get the message through `codex queue` as their next
+turn (delivery queued). Working recipients may
 absorb input in the current turn. Typing never acknowledges: use `msg ack ID`
 when taking responsibility, and ignore an already-acked duplicate from
 `msg wait`.
@@ -106,7 +107,8 @@ copy mode and unverified pasted text never get an automatic Enter or clearing.
 Outcomes: committed (0); usage (2); unaddressable/locked not running (3);
 locked dialog or copy mode (4); validation, fence, storage or locked input
 failure (5). --json includes ok, code, message, and a committed id plus delivery
-and reason when present. Delivery: typed, stored, uncertain, recorded-not-typed.",
+and reason when present. Delivery: typed, queued, stored, uncertain,
+recorded-not-typed.",
         crate::runtime::MAX_SEND_BYTES
     )
 }

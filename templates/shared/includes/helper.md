@@ -7,7 +7,7 @@ Your parent is the lead recorded as your parent in `status`; send only to it, ev
 - **Wait for an answer, in this order:**
   1. Ack everything you have taken on, including any answer you have handled.
   2. Wait the way your vendor allows:
-     - **Codex:** run no wait: finish your turn. brg types each new message into your session, which starts your next turn; then read your inbox, with message bodies, act and ack.
+     - **Codex:** run no wait: finish your turn. brg delivers each new message into your session (typed, or queued if you are interactive), which starts your next turn; then read your inbox, with message bodies, act and ack.
      - **Claude:** run one wait with your Bash tool in **background** mode: `"$BORGCHART_BIN" msg wait --full`; its exit wakes you.
   3. The wait prints your inbox, with bodies: read it, act and ack before waiting again. On exit 9, wait again. On exit 8 (`fenced`), your session ended or was replaced: tell the lead and stop waiting.
 

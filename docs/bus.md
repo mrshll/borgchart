@@ -69,7 +69,7 @@ action-needed: none
 MESSAGE
 ```
 
-Send JSON keeps `ok`, `code`, `message` and adds `outcome`, committed `id`, `delivery` (`typed`, `stored`, `uncertain` or `recorded-not-typed`) and a reason. See [send outcomes](cli.md#brg-msg-send). The other bus commands retain their own outcome codes below.
+Send JSON keeps `ok`, `code`, `message` and adds `outcome`, committed `id`, `delivery` (`typed`, `queued`, `stored`, `uncertain` or `recorded-not-typed`) and a reason. See [send outcomes](cli.md#brg-msg-send). The other bus commands retain their own outcome codes below.
 
 **Inbox:** `brg msg list [--member ID | --external NAME] [--full] [--json]` returns every ordinary unacked message, oldest first. A member defaults to itself; without team context, a caller defaults to `external:owner`. A plugin process with only `BORGCHART_TEAM` set must name an inbox. `--member` reads another member's inbox anywhere in the tree. A bare ID resolves in the caller's team, or the outside caller's `--team`; a full address selects any member in the tree. Headers omit body and add `body_bytes` and `acked`; `--full` includes body instead of body_bytes. Reading never acknowledges.
 
@@ -116,7 +116,7 @@ Repeating an ack returns `already` for that ID. Locked records have `ack_require
 - Each poll (250 ms) checks the current start and reads the next record file, moving past other recipients. There is one initial scan, then incremental reads. An existing next file that won't parse is an error, never skipped. Shared-lock attempts respect the deadline.
 - A stopped, exited or replaced member exits 8 (`fenced`), even without a publication. Wait checks member liveness about once a second, including while waiting for a publisher's lock; unknown liveness keeps waiting. Member waits require tmux evidence and do not infer exit from a sandbox process listing. Stop waiting and tell the owner; never change identity variables to retry.
 
-Ack everything you've taken on, then wait. Claude arms one wait with its Bash tool in background mode, and on exit 9 waits again. Codex runs no wait: it finishes its turn, and brg types each new message into its session, which starts its next turn. A waiting member with unacked messages is woken about once a minute.
+Ack everything you've taken on, then wait. Claude arms one wait with its Bash tool in background mode, and on exit 9 waits again. Codex runs no wait: it finishes its turn, and brg delivers each new message into its session (typed, or queued for an interactive member), which starts its next turn. A waiting member with unacked messages is woken about once a minute.
 
 **Check:** `brg msg integrity-check [--json]` reports gaps, unreadable files and stray temporaries, without writing.
 
@@ -138,7 +138,7 @@ Delete needs `--force` for unacked messages to the team's kept members, unacked 
 
 ## Attention
 
-An ordinary send commits first, then rechecks the current incarnation and pane before optional typing. `interactive: true` makes a Claude member inbox-only, even with `--allow-unknown`; default false permits guarded typing. A Codex member always gets guarded typing, since nothing wakes it when a background wait ends. Existing drafts, copy mode and visible dialogs prevent input. The exact pasted composer is checked again before Enter. Mid-turn delivery may steer or join the current turn; it is not a guaranteed next turn. No guard eliminates the final-check/Enter race.
+An ordinary send commits first, then rechecks the current incarnation and pane before optional typing. `interactive: true` means brg never types into the member, even with `--allow-unknown`; default false permits guarded typing. An interactive Claude member is inbox-only. An interactive Codex member gets the message with `codex queue` on the session its start recorded: it runs as the member's next turn, after any current one. With no session recorded for this start yet, or if `codex queue` fails or takes over 10 seconds, the message stays stored. Queueing relies on Codex's local app-server. Existing drafts, copy mode and visible dialogs prevent input. The exact pasted composer is checked again before Enter. Mid-turn delivery may steer or join the current turn; it is not a guaranteed next turn. No guard eliminates the final-check/Enter race.
 
 Typing never acknowledges ordinary work. Inbox waits and typing can deliver the same ID: ignore an already-acked duplicate, otherwise ack when taking responsibility. As Claude, keep one wait armed as above, especially for an interactive lead.
 
