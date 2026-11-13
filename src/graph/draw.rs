@@ -163,7 +163,10 @@ pub(crate) fn draw(
         if !points.contains_key(&e.msg.from) || !points.contains_key(&e.msg.to) {
             continue;
         }
-        let at = time::format_utc(e.msg.at);
+        let at = time::format_utc(match e.kind {
+            Kind::Acked(d) => e.msg.at + d,
+            _ => e.msg.at,
+        });
         let fact = match e.kind {
             Kind::Sent => format!("{} → {}", name(&e.msg.from), name(&e.msg.to)),
             Kind::Acked(d) => format!("acked by {} after {}s", name(&e.msg.to), d.as_secs()),
@@ -306,6 +309,7 @@ mod tests {
             .map(|c| c.symbol())
             .collect::<String>();
         assert!(text.contains('✓') && text.contains("41s"), "{text}");
+        assert!(text.contains("00:02:21"), "ack timestamp: {text}");
     }
     #[test]
     fn messages_tab_at_eighty_columns_remains_readable() {

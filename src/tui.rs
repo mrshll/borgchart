@@ -1024,6 +1024,17 @@ mod watch_tests {
             .collect::<String>();
         assert!(text.contains("waiting") && text.contains("m1"));
         assert!(!text.contains(&record.body));
+        println!(
+            "messages tab 80x24:\n{}",
+            watch
+                .backend()
+                .buffer()
+                .content
+                .chunks(80)
+                .map(|line| line.iter().map(|c| c.symbol()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
     }
     #[test]
     fn multiple_tree_graph_requests_a_scope_and_refresh_errors_stay_visible() {
@@ -1052,5 +1063,22 @@ mod watch_tests {
             .collect::<String>();
         assert!(text.contains("brg status -w <team>"));
         assert!(text.contains("cannot refresh"));
+        for (w, h) in [(1, 1), (2, 3), (10, 6)] {
+            terminal.resize(Rect::new(0, 0, w, h)).unwrap();
+            terminal
+                .draw(|f| {
+                    watch_draw(
+                        f,
+                        &[],
+                        true,
+                        true,
+                        None,
+                        &mut crate::graph::layout::Motion::default(),
+                        Duration::ZERO,
+                        "",
+                    )
+                })
+                .unwrap();
+        }
     }
 }

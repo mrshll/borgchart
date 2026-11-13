@@ -127,6 +127,9 @@ pub(crate) fn short(label: &str, width: u16) -> String {
 fn cluster(nodes: &[Node], id: &str, start: f64, end: f64, depth: f64, points: &mut Points) {
     let angle = (start + end) / 2.;
     points.insert(id.into(), (depth * angle.sin(), -depth * angle.cos()));
+    if nodes.iter().any(|n| n.id == id && n.outside) {
+        return;
+    }
     let children: Vec<_> = nodes
         .iter()
         .filter(|n| n.parent.as_deref() == Some(id) && !n.outside)
@@ -160,7 +163,11 @@ pub(crate) fn positions(nodes: &[Node], width: u16, height: u16) -> Points {
         .iter()
         .filter(|n| n.outside)
         .chain(nodes.iter().filter(|n| {
-            (n.parent.as_deref() == Some(&root.id) || (n.parent.is_none() && n.id != root.id))
+            (n.parent.as_deref() == Some(&root.id)
+                || (n.id != root.id
+                    && !nodes
+                        .iter()
+                        .any(|p| !p.outside && Some(&p.id) == n.parent.as_ref())))
                 && !n.outside
         }))
         .collect();
@@ -438,8 +445,30 @@ pub(crate) mod tests {
         assert!(labels(&nodes, &p, 12, 4, &BTreeMap::new()).1 > 0);
     }
     #[test]
-    fn child_roots_and_scoped_parents_follow_member_routes() {
+    fn scoped_team_keeps_all_roots_connected_to_the_outside_parent() {
         let rows = vec![
+            row("demo/dev-search", "lead-abcd", None),
+            row("demo/dev-search", "lead-efgh", None),
+            row("demo/dev-search", "implementer-index", Some("lead-efgh")),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let feed = Feed::open(crate::bus::layout::StorePaths::from_root(dir.path())).unwrap();
+        let nodes = nodes(&rows, "demo/dev-search", Some("demo/lead-ijkl"), &feed);
+        let points = positions(&nodes, 80, 20);
+        for node in &nodes {
+            assert!(points.contains_key(&node.id), "missing {}", node.id);
+        }
+        let mut unlinked = nodes.clone();
+        for node in &mut unlinked {
+            if node.parent.as_deref() == Some("demo/lead-ijkl") {
+                node.parent = None;
+            }
+        }
+        assert_eq!(points, positions(&unlinked, 80, 20));
+    }
+    #[test]
+    fn child_roots_and_scoped_parents_follow_member_routes() {
+        let mut rows = vec![
             row("demo", "lead-abcd", None),
             row("demo/dev-search", "lead-efgh", Some("demo/dev-search")),
             row("demo/dev-search", "implementer-index", Some("lead-efgh")),
@@ -460,6 +489,19 @@ pub(crate) mod tests {
             Some("demo/lead-abcd")
         );
         assert!(!nodes.iter().any(|n| n.id == "demo/lead-abcd" && !n.outside));
+        let mut team = row("demo/dev-search", "dev-search", Some("demo/lead-abcd"));
+        team.kind = "team";
+        rows.push(team);
+        let all = super::nodes(&rows, "demo", None, &feed);
+        assert_eq!(
+            all.iter()
+                .find(|n| n.id.ends_with("lead-efgh"))
+                .unwrap()
+                .parent
+                .as_deref(),
+            Some("demo/lead-abcd")
+        );
+        assert_eq!(positions(&all, 80, 20).len(), 3);
     }
     pub(crate) fn row(team: &str, name: &str, parent: Option<&str>) -> crate::runtime::StatusRow {
         crate::runtime::StatusRow {
