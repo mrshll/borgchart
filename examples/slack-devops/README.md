@@ -34,6 +34,10 @@ an ID notice if brg already received it.
 The lead can acknowledge, suggest likely causes and ask questions. It cannot
 look at systems. Giving it more read-only tools is future work.
 
+For allow-listed mention requests instead of channel intake, see the
+[Slack plugin mention mode](../../plugins/slack/README.md#mention-requests). A
+separate watch entry can set `SLACK_SKIP_MENTIONS: "true"` to coexist with it.
+
 ## Setup
 
 1. Create a Slack app with a bot user. Give it `channels:history`, `chat:write`

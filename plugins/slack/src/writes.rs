@@ -2,6 +2,7 @@
 use crate::{
     Error, Result,
     api::{self, Api},
+    mentions,
 };
 use borgchart::plugin;
 use regex::Regex;
@@ -20,7 +21,10 @@ pub fn check_text(text: &str, limit: usize, token: &str) -> Result<()> {
             "text exceeds {limit} characters; shorten it"
         )));
     }
-    if !token.is_empty() && text.contains(token) {
+    let app_token = api::var("SLACK_APP_TOKEN");
+    if (!token.is_empty() && text.contains(token))
+        || (!app_token.is_empty() && text.contains(&app_token))
+    {
         return Err(Error::usage(
             "text contains a secret; remove it before posting",
         ));
@@ -38,11 +42,11 @@ pub fn check_text(text: &str, limit: usize, token: &str) -> Result<()> {
     Ok(())
 }
 pub fn reply(api: &Api, ts: &str, text: &str) -> Result<()> {
-    api::check_ts(ts)?;
+    let request = mentions::resolve(api, ts)?;
     check_text(text, 1500, &api::var("SLACK_BOT_TOKEN"))?;
     api.call(
         "chat.postMessage",
-        json!({"channel":api.channel()?,"thread_ts":ts,"text":text}),
+        json!({"channel":request.channel,"thread_ts":request.thread,"text":text}),
         true,
     )?;
     println!("reply posted");
@@ -74,7 +78,7 @@ pub fn promote(ts: &str, reason: &str) -> Result<()> {
     Ok(())
 }
 pub fn react(api: &Api, ts: &str, reaction: &str) -> Result<()> {
-    api::check_ts(ts)?;
+    let request = mentions::resolve(api, ts)?;
     let name = match reaction {
         "eyes" => "eyes",
         "done" => "white_check_mark",
@@ -82,7 +86,7 @@ pub fn react(api: &Api, ts: &str, reaction: &str) -> Result<()> {
     };
     match api.call(
         "reactions.add",
-        json!({"channel":api.channel()?,"timestamp":ts,"name":name}),
+        json!({"channel":request.channel,"timestamp":request.ts,"name":name}),
         true,
     ) {
         Ok(_) => {}

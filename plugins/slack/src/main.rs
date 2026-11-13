@@ -3,10 +3,10 @@ use borgchart::plugin;
 use brg_slack::{
     Error, Result,
     api::{self, Api},
-    watch, writes,
+    mentions, watch, writes,
 };
 use clap::{Parser, Subcommand, error::ErrorKind};
-use serde_json::{Value, json};
+use serde_json::json;
 
 #[derive(Parser)]
 #[command(about = "Read and watch Slack evidence; promote IDs and make guarded writes")]
@@ -21,48 +21,33 @@ enum Action {
         #[arg(long)]
         once: bool,
     },
+    /// Listen for allow-listed leading mentions over Socket Mode
+    Mentions {
+        #[arg(long)]
+        once: bool,
+    },
     /// Read a top-level post
     Read { ts: String },
-    /// Read up to 200 thread messages
+    /// Read up to 200 thread messages by timestamp or request ID
     Thread { ts: String },
     /// Send a timestamp and reason to your parent
     Promote { ts: String, reason: String },
-    /// Add eyes or done
+    /// Add eyes or done by timestamp or request ID
     React { ts: String, reaction: String },
-    /// Reply in a thread
+    /// Reply in a thread by timestamp or request ID
     Reply { thread_ts: String, text: String },
     /// Page an explicitly allowed user in the configured channel
     Page { user_id: String, text: String },
 }
-fn field(message: &Value, key: &str) -> String {
-    message[key].as_str().unwrap_or("unknown").to_string()
-}
-fn show(messages: &[Value]) {
-    println!("{}", plugin::UNTRUSTED_HEADER);
-    for message in messages.iter().take(200) {
-        let mut fields = format!("--- ts={}", field(message, "ts"));
-        if let Some(thread) = message["thread_ts"].as_str() {
-            fields.push_str(&format!(" thread_ts={thread}"));
-        }
-        let author = message["user"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .or_else(|| message["bot_id"].as_str())
-            .unwrap_or("unknown");
-        fields.push_str(&format!(" author={author}"));
-        if !message["edited"].is_null() {
-            fields.push_str(&format!(" edited={}", field(&message["edited"], "ts")));
-        }
-        println!("{}", api::one_line(&fields));
-        print!(
-            "{}",
-            plugin::frame(&api::safe(message["text"].as_str().unwrap_or("")))
-        );
-    }
-}
 fn read(api: &Api, ts: &str, thread: bool) -> Result<()> {
-    api::check_ts(ts)?;
-    let mut params = json!({"channel":api.channel()?,"limit":if thread {200} else {1}});
+    let (channel, ts) = if thread {
+        let request = mentions::resolve(api, ts)?;
+        (request.channel, request.thread)
+    } else {
+        api::check_ts(ts)?;
+        (api.channel()?, ts.to_owned())
+    };
+    let mut params = json!({"channel":channel,"limit":if thread {200} else {1}});
     if thread {
         params["ts"] = json!(ts);
     } else {
@@ -82,7 +67,7 @@ fn read(api: &Api, ts: &str, thread: bool) -> Result<()> {
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|m| thread || (m["ts"] == ts && m["thread_ts"].as_str().unwrap_or(ts) == ts))
+        .filter(|m| thread || (m["ts"] == ts && m["thread_ts"].as_str().unwrap_or(&ts) == ts))
         .cloned()
         .collect();
     if messages.is_empty() {
@@ -90,12 +75,17 @@ fn read(api: &Api, ts: &str, thread: bool) -> Result<()> {
             "post not found; use the root timestamp and check channel access",
         ));
     }
-    show(&messages);
+    print!(
+        "{}\n{}",
+        plugin::UNTRUSTED_HEADER,
+        api::render(&messages, usize::MAX)
+    );
     Ok(())
 }
 fn run(action: Action) -> Result<()> {
     let api = Api::default();
     match action {
+        Action::Mentions { once } => mentions::run(&api, once),
         Action::Watch { once } => watch::run(&api, once),
         Action::Read { ts } => read(&api, &ts, false),
         Action::Thread { ts } => read(&api, &ts, true),
