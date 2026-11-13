@@ -73,6 +73,79 @@ fn cleaned(env: &Env) {
     );
 }
 
+#[test]
+fn secrets_check_resolves_once_without_registering_or_writing_settings() {
+    let env = setup("{from: 'fake://root'}");
+    let id = env.create("oncall", "work/a");
+    env.ok(&["stop", &id]);
+    let registry = fs::read(env.path("state/registry.json")).unwrap();
+    let start = fs::read(env.path(&format!("state/{id}/start.json"))).unwrap();
+    let out = env.ok(&["secrets", "--check", &id]);
+    clean_output(&out);
+    assert!(out.stdout.is_empty());
+    assert_eq!(runs(&env), 2);
+    assert_eq!(fs::read(env.path("state/registry.json")).unwrap(), registry);
+    assert_eq!(
+        fs::read(env.path(&format!("state/{id}/start.json"))).unwrap(),
+        start
+    );
+    assert!(!env.path(&format!("state/{id}/secrets/pager.json")).exists());
+    cleaned(&env);
+    assert!(
+        !env.brg(&["secrets", "--check", "unknown-2222"])
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn secrets_check_reports_resolver_failure_without_leaking_or_changing_settings() {
+    let env = setup("{from: 'fake://root'}");
+    let id = env.create("oncall", "work/a");
+    let settings = fs::read(env.path(&format!("state/{id}/secrets/pager.json"))).unwrap();
+    let out = env
+        .cmd(&["secrets", "--check", &id])
+        .env("MODE", "fail")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    clean_output(&out);
+    assert!(both(&out).contains("the secrets resolver failed with exit 1"));
+    assert_eq!(runs(&env), 2);
+    assert_eq!(
+        fs::read(env.path(&format!("state/{id}/secrets/pager.json"))).unwrap(),
+        settings
+    );
+    cleaned(&env);
+    env.ok(&["stop", &id]);
+}
+
+#[test]
+fn secrets_check_without_sources_skips_resolver() {
+    let env = setup("'fake-value-root'");
+    let id = env.create("oncall", "work/a");
+    let out = env.ok(&["secrets", "--check", &id]);
+    clean_output(&out);
+    assert_eq!(runs(&env), 0);
+    env.ok(&["stop", &id]);
+}
+
+#[test]
+fn secrets_check_refuses_members_before_running_resolver() {
+    let env = setup("{from: 'fake://root'}");
+    let id = env.create("oncall", "work/a");
+    let out = env
+        .cmd(&["secrets", "--check", &id])
+        .env("BORGCHART_MEMBER", "lead-example")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(both(&out).contains("ask the owner"));
+    clean_output(&out);
+    assert_eq!(runs(&env), 1);
+    env.ok(&["stop", &id]);
+}
+
 fn token(env: &Env, id: &str) -> String {
     let path = env.path(&format!("state/{id}/secrets/pager.json"));
     assert_eq!(

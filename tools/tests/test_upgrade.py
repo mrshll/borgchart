@@ -28,6 +28,10 @@ elif args[0] == "status":
     out = s["statuses"].pop(0) if len(s["statuses"]) > 1 else s["statuses"][0]
     if s.get("status_codes"):
         code = s["status_codes"].pop(0)
+elif args[0] == "secrets":
+    code = 99 if name == "brg" else s.get("secrets_codes", {}).get(args[-1], 0)
+    if code:
+        print("the secrets resolver failed; check your resolver", file=sys.stderr)
 elif args[:2] == ["msg", "send"]:
     s["sent"] = s.get("sent", 0) + 1
     out = {"id": "m" + str(s["sent"])}
@@ -90,6 +94,7 @@ class FakeUpgrade:
         for key in list(self.env):
             if key.startswith("BORGCHART_") or key in (
                 "BRG",
+                "BRG_BUILT",
                 "MAKE",
                 "FORCE",
                 "DRY_RUN",
@@ -99,7 +104,7 @@ class FakeUpgrade:
                 "MAKELEVEL",
             ):
                 self.env.pop(key)
-        for name in ("brg", "make"):
+        for name in ("brg", "brg-built", "make"):
             path = directory / name
             path.write_text(FAKE)
             path.chmod(0o755)
@@ -108,6 +113,7 @@ class FakeUpgrade:
             SCENARIO=str(directory / "scenario.json"),
             CALLS=str(directory / "calls.jsonl"),
             TIMEOUT="0.8",
+            BRG_BUILT=str(directory / "brg-built"),
         )
 
     def run(
@@ -191,6 +197,62 @@ def test_matching_handover_precedes_stop_install_and_fresh_start(
     ] in fake.calls()
     assert len([call for call in fake.calls() if call[1:3] == ["msg", "ack"]]) == 1
     assert fake.calls()[-1] == ["brg", "start", "sample-1111"]
+
+
+def test_built_binary_secrets_failure_aborts_before_handover_stop_or_install(
+    fake: FakeUpgrade,
+) -> None:
+    result = fake.run({"statuses": [[member()]], "secrets_codes": {"sample-1111": 1}})
+    assert result.returncode == 1
+    assert fake.calls() == [
+        ["brg", "status", "--json"],
+        ["make", "-C", str(ROOT), "build"],
+        ["brg-built", "secrets", "--check", "sample-1111"],
+    ]
+
+
+@pytest.mark.parametrize("failed_team", [None, "sample-1111/dev"])
+def test_built_binary_checks_each_distinct_live_team_before_stop(
+    fake: FakeUpgrade, failed_team: str | None
+) -> None:
+    rows = [
+        member(),
+        member(name="other-bbbb"),
+        member(team="sample-1111/dev", parent="sample-1111"),
+        member(team="second-2222"),
+        member(team="stopped-3333", state="stopped", liveness="gone"),
+    ]
+    result = fake.run(
+        {"statuses": [rows], "secrets_codes": {failed_team: 1} if failed_team else {}},
+        FORCE="1",
+    )
+    checked = ["sample-1111", "second-2222", "sample-1111/dev"]
+    if failed_team is None:
+        assert result.returncode == 0, result.stderr
+        assert fake.actions() == ["build", "stop", "stop", "install", "start", "start"]
+    else:
+        assert result.returncode == 1
+        assert fake.actions() == ["build"]
+    assert fake.calls()[1 : 2 + len(checked)] == [
+        ["make", "-C", str(ROOT), "build"],
+        *[["brg-built", "secrets", "--check", team] for team in checked],
+    ]
+
+
+def test_forced_live_child_checks_stopped_root_before_stop(fake: FakeUpgrade) -> None:
+    result = fake.run(
+        {
+            "statuses": [[member(team="sample-1111/dev", parent="sample-1111")]],
+            "secrets_codes": {"sample-1111": 1},
+        },
+        FORCE="1",
+    )
+    assert result.returncode == 1
+    assert fake.calls() == [
+        ["brg", "status", "--json"],
+        ["make", "-C", str(ROOT), "build"],
+        ["brg-built", "secrets", "--check", "sample-1111"],
+    ]
 
 
 def test_timeout_reports_committed_message_and_stops_nothing(fake: FakeUpgrade) -> None:

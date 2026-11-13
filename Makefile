@@ -4,7 +4,7 @@ BINDIR ?= $(HOME)/.local/bin
 
 help:
 	@echo 'build: release binaries; install: build, copy binaries, link into BINDIR'
-	@echo 'upgrade: build, collect handovers, stop trees, install, start fresh (TIMEOUT=1800; FORCE=1 skips handover and working check; DRY_RUN=1 previews)'
+	@echo 'upgrade: build, check secrets, collect handovers, stop trees, install, start fresh (TIMEOUT=1800; FORCE=1 skips handover and working check; DRY_RUN=1 previews)'
 	@echo 'check: quick checks; test: full checks; lint: clippy'
 	@echo 'fmt: format Rust; clean: remove build artifacts'
 

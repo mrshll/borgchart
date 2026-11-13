@@ -2857,6 +2857,13 @@ pub struct RequiredSecret {
     pub set: Option<bool>,
 }
 
+/// Check the current recorded template as a fresh start would, keeping no values.
+pub fn check_secrets(team: &str) -> Result<(), String> {
+    let inst = address::instance(team)?;
+    let v = validate_printing(&inst.record.team_dir)?;
+    crate::secrets::values(&v, &inst.id).map(|_| ())
+}
+
 pub fn secrets(team: &str) -> Result<Vec<RequiredSecret>, String> {
     let mut report = crate::diag::Report::default();
     let config = crate::config::load(&mut report).ok_or_else(|| {

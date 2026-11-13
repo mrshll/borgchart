@@ -21,15 +21,18 @@ HANDOVER = (
 )
 ROOT = Path(__file__).resolve().parent.parent
 BRG = os.environ.get("BRG") or "brg"
+BRG_BUILT = os.environ.get("BRG_BUILT") or str(ROOT / "target/release/brg")
 
 
 def say(message: str) -> None:
     print(message, flush=True)
 
 
-def run(*args: str, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
+def run(
+    *args: str, timeout: float | None = None, binary: str = BRG
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [BRG, *args], capture_output=True, text=True, check=False, timeout=timeout
+        [binary, *args], capture_output=True, text=True, check=False, timeout=timeout
     )
 
 
@@ -161,6 +164,7 @@ def main() -> int:
             if "/" not in row["team"] and not row.get("parent"):
                 leads.setdefault(tree, []).append(f"{row['team']}/{row['member']}")
     trees = list(members)
+    teams = list(dict.fromkeys([*trees, *(row["team"] for row in rows if live(row))]))
     if not force:
         missing = [tree for tree in trees if tree not in leads]
         for tree in missing:
@@ -171,6 +175,8 @@ def main() -> int:
             return 1
     if dry_run:
         say("dry-run: build with make build")
+        for team in teams:
+            say(f"dry-run: check secrets for {team}")
         for tree in trees:
             handover = (
                 "skip handover (FORCE=1)"
@@ -186,6 +192,14 @@ def main() -> int:
     if not make("build"):
         say("summary: build failed; nothing sent, stopped or installed")
         return 1
+    for team in teams:
+        result = run("secrets", "--check", team, binary=BRG_BUILT)
+        if result.returncode:
+            say(
+                f"failed: secrets for {team}: {result.stderr.strip() or result.stdout.strip()}"
+            )
+            say("summary: secrets check failed; nothing sent, stopped or installed")
+            return 1
     pending = []
     deadline = time.monotonic() + timeout
     if not force:
