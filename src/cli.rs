@@ -255,7 +255,7 @@ enum Command {
     /// the tree counts working and idle members, rows needing
     /// you and unacked messages. Painted output uses a filled red state label
     /// for attention and a gold ◆ for running teams. Working marks spin in
-    /// --watch and --interactive; NO_COLOR suppresses painting and motion.
+    /// --interactive; NO_COLOR suppresses painting and motion.
     Status {
         /// The team (default: every top-level team and its child teams).
         #[arg(value_name = "TEAM", add = crate::complete::instances())]
@@ -263,7 +263,7 @@ enum Command {
         /// Print the rows as JSON.
         #[arg(long, conflicts_with_all = ["watch", "interactive"])]
         json: bool,
-        /// Refresh the table every few seconds.
+        /// Live tree and message graph tabs (Tab switches, q quits); plain when piped or NO_COLOR.
         #[arg(short, long, conflicts_with = "interactive")]
         watch: bool,
         /// Seconds between refreshes with --watch.

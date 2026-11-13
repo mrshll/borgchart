@@ -613,201 +613,109 @@ fn terminal_status_summarizes_without_adding_a_summary_to_the_pipe() {
 }
 
 #[test]
-fn watch_refresh_errors_start_below_the_last_frame() {
+fn watch_tabs_follow_messages_without_leaking_bodies_and_restore_the_terminal() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    fs::create_dir(root.join("state")).unwrap();
-    let private = common::PrivateTmux::new();
-    let outer = private.socket("watch-error");
-    let inner = private.socket("watch-error-inner");
-    let brg = env!("CARGO_BIN_EXE_brg");
-    let script = root.join("watch.sh");
-    fs::write(&script, format!(
-        "#!/bin/sh\nenv -i PATH={guard}:/usr/bin:/bin HOME={root} TERM=xterm-256color LANG=C.UTF-8 BORGCHART_CONFIG={root}/missing.yaml BORGCHART_STATE_HOME={root}/state BORGCHART_TMUX_TMPDIR={tmpdir} BORGCHART_TMUX_SOCKET={inner} {brg} status -w --interval 1\nprintf '\\nWATCH-EXIT:%s\\n' \"$?\"\nsleep 600\n",
-        guard = private.bin().display(), root = root.display(), tmpdir = private.dir().display(),
-    )).unwrap();
-    let out = private
-        .tmux(&outer)
-        .args(["new-session", "-d", "-s", "o", "-x", "80", "-y", "24", "sh"])
-        .arg(&script)
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "{out:?}");
-    let raw = root.join("watch.ansi");
-    let out = private
-        .tmux(&outer)
-        .args(["pipe-pane", "-t", "=o:"])
-        .arg(format!("cat > {}", raw.display()))
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "{out:?}");
-    let screen = || tmux(&private, &outer, &["capture-pane", "-p", "-t", "=o:"]);
-    wait(
-        "a captured watch frame",
-        || fs::read_to_string(&raw).is_ok_and(|text| text.contains("\x1b[?2026l")),
-        screen,
-    );
-    // The next refresh must return an error through the command's public exit path.
-    fs::write(root.join("state/registry.json"), "{").unwrap();
-    wait(
-        "watch to exit on the refresh error",
-        || fs::read_to_string(&raw).is_ok_and(|text| text.contains("WATCH-EXIT:1")),
-        screen,
-    );
-    let raw = fs::read_to_string(raw).unwrap();
-    let (_, after_frame) = raw.rsplit_once("\x1b[?2026l").unwrap();
-    // A pty may expand LF to CRLF; either way the error must start on a fresh line.
-    assert!(
-        after_frame.starts_with("\r\n") || after_frame.starts_with("\r\r\n"),
-        "{after_frame:?}"
-    );
-}
-
-#[test]
-fn watch_redraw_does_not_scroll_a_frame_that_fills_the_terminal() {
-    let dir = tempfile::tempdir().unwrap();
-    let private = common::PrivateTmux::new();
-    let socket = private.socket("watch-full-height");
-    let frame: String = (1..=24).map(|n| format!("row {n}\n")).collect();
-    let redraw = borgchart::tui::watch_redraw(&frame);
-    fs::write(dir.path().join("frames"), redraw.repeat(50)).unwrap();
-    let out = private
-        .tmux(&socket)
-        .args([
-            "new-session",
-            "-d",
-            "-s",
-            "o",
-            "-x",
-            "80",
-            "-y",
-            "24",
-            "sh",
-            "-c",
-        ])
-        .arg(format!(
-            "cat {}; sleep 600",
-            dir.path().join("frames").display()
-        ))
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "{out:?}");
-    let screen = || tmux(&private, &socket, &["capture-pane", "-p", "-t", "=o:"]);
-    wait("the complete frame", || screen().contains("row 24"), screen);
-    let history = tmux(
-        &private,
-        &socket,
-        &["display-message", "-p", "-t", "=o:", "#{history_size}"],
-    );
-    assert_eq!(history.trim(), "0", "redraw scrolled full-height frames");
-    assert!(screen().starts_with("row 1\n"), "{}", screen());
-}
-
-#[test]
-fn watch_erases_old_rows_and_uses_synchronized_redraw_when_the_tree_shrinks() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    fs::create_dir_all(root.join("team")).unwrap();
-    fs::create_dir_all(root.join("work/old-long-folder")).unwrap();
-    fs::create_dir_all(root.join("work/new")).unwrap();
+    for name in ["team", "work", "home", "bin"] {
+        fs::create_dir(root.join(name)).unwrap();
+    }
     fs::write(
         root.join("team/template.yaml"),
-        "roles:\n  scout: {prompt: scout.md, start: false}\n",
+        "bus: {}\nroles:\n  alpha: {prompt: alpha.md}\n",
     )
     .unwrap();
     fs::write(
-        root.join("team/scout.md"),
+        root.join("team/alpha.md"),
         "---\n---\nObserve the harbor.\n",
     )
     .unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_fake-agent"), root.join("bin/claude")).unwrap();
     let private = common::PrivateTmux::new();
-    let inner = private.socket("watch-inner");
-    let outer = private.socket("watch-outer");
+    let inner = private.socket("graph-inner");
+    let outer = private.socket("graph-outer");
     let brg = env!("CARGO_BIN_EXE_brg");
-    let command = || {
-        let mut cmd = common::command(brg);
-        cmd.env_clear()
-            .env("PATH", private.path_with("/usr/bin:/bin"))
-            .env("HOME", root)
-            .env("BORGCHART_CONFIG", root.join("missing.yaml"))
-            .env("BORGCHART_STATE_HOME", root.join("state"));
-        private.brg_env(&mut cmd, &inner);
-        cmd
-    };
-    let create = |folder: &str| {
-        let out = command()
-            .arg("create")
-            .arg(root.join("team"))
-            .arg(root.join(folder))
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "{out:?}");
-        String::from_utf8(out.stdout)
-            .unwrap()
-            .split_whitespace()
-            .next()
-            .unwrap()
-            .to_string()
-    };
-    let old = create("work/old-long-folder");
-    let new = create("work/new");
-    let script = root.join("watch.sh");
-    fs::write(&script, format!(
-        "#!/bin/sh\nexport PATH={guard}:/usr/bin:/bin HOME={root} TERM=xterm-256color LANG=C.UTF-8 BORGCHART_CONFIG={root}/missing.yaml BORGCHART_STATE_HOME={root}/state BORGCHART_TMUX_TMPDIR={tmpdir} BORGCHART_TMUX_SOCKET={inner}\nunset NO_COLOR\nexec {brg} status -w --interval 1\n",
-        guard = private.bin().display(), root = root.display(), tmpdir = private.dir().display(),
-    )).unwrap();
-    let out = private
-        .tmux(&outer)
-        .args([
-            "new-session",
-            "-d",
-            "-s",
-            "o",
-            "-x",
-            "160",
-            "-y",
-            "24",
-            "sh",
-        ])
-        .arg(&script)
+    let mut create = common::command(brg);
+    create
+        .env_clear()
+        .env(
+            "PATH",
+            private.path_with(&format!("{}:/usr/bin:/bin", root.join("bin").display())),
+        )
+        .env("HOME", root.join("home"))
+        .env("BORGCHART_STATE_HOME", root.join("state"))
+        .env("BORGCHART_CONFIG", root.join("missing.yaml"));
+    private.brg_env(&mut create, &inner);
+    let out = create
+        .arg("create")
+        .arg(root.join("team"))
+        .arg(root.join("work"))
         .output()
         .unwrap();
     assert!(out.status.success(), "{out:?}");
-    let raw = root.join("watch.ansi");
-    // Capture the program's terminal writes, rather than tmux's reconstruction.
+    let output = String::from_utf8(out.stdout).unwrap();
+    let id = output.split_whitespace().next().unwrap();
+    let script = root.join("watch.sh");
+    fs::write(&script,format!("#!/bin/sh\nenv -i PATH={guard}:{root}/bin:/usr/bin:/bin HOME={root}/home TERM=xterm-256color LANG=C.UTF-8 BORGCHART_CONFIG={root}/missing.yaml BORGCHART_STATE_HOME={root}/state BORGCHART_TMUX_TMPDIR={tmpdir} BORGCHART_TMUX_SOCKET={inner} {brg} status -w {id} --interval 1\nprintf 'RESTORED:'\nstty -a\nsleep 600\n",guard=private.bin().display(),root=root.display(),tmpdir=private.dir().display())).unwrap();
     let out = private
         .tmux(&outer)
-        .args(["pipe-pane", "-t", "=o:"])
-        .arg(format!("cat > {}", raw.display()))
+        .args(["new-session", "-d", "-s", "o", "-x", "80", "-y", "24", "sh"])
+        .arg(script)
         .output()
         .unwrap();
     assert!(out.status.success(), "{out:?}");
     let screen = || tmux(&private, &outer, &["capture-pane", "-p", "-t", "=o:"]);
-    wait(
-        "both teams",
-        || screen().contains(&old) && screen().contains(&new),
-        screen,
-    );
-    let out = command().args(["delete", &old]).output().unwrap();
+    wait("tree tab", || screen().contains("▸tree"), screen);
+    tmux(&private, &outer, &["send-keys", "-t", "=o:", "Tab"]);
+    wait("messages tab", || screen().contains("▸messages"), screen);
+    let record: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join(format!("state/{id}/team.json"))).unwrap())
+            .unwrap();
+    let member = record["members"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .next()
+        .unwrap();
+    let mut send = common::command(brg);
+    send.env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("BORGCHART_STATE_HOME", root.join("state"))
+        .env("BORGCHART_CONFIG", root.join("missing.yaml"))
+        .args([
+            "msg",
+            "send",
+            "--external",
+            "owner",
+            &format!("{id}/{member}"),
+            "PRIVATE-BODY-9b7d",
+        ]);
+    let out = send.output().unwrap();
     assert!(out.status.success(), "{out:?}");
     wait(
-        "the smaller tree",
+        "waiting message",
         || {
-            let text = screen();
-            text.contains(&new) && !text.contains(&old) && !text.contains("old-long-folder")
+            let s = screen();
+            s.contains("[1]") && s.contains("m1")
         },
         screen,
     );
-    let raw = fs::read_to_string(&raw).unwrap();
-    assert!(
-        raw.contains("\x1b[?2026h") && raw.contains("\x1b[?2026l"),
-        "{raw:?}"
+    assert!(!screen().contains("PRIVATE-BODY-9b7d"));
+    println!(
+        "create: {output}send: {}graph:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        screen()
     );
-    for frame in raw.split("\x1b[?2026h").skip(1) {
-        assert_eq!(frame.matches("borgchart").count(), 1, "{frame:?}");
-    }
-    assert!(
-        !raw.contains("\x1b[2J"),
-        "redraw must not clear the whole screen: {raw:?}"
+    tmux(&private, &outer, &["send-keys", "-t", "=o:", "q"]);
+    wait(
+        "restored terminal",
+        || screen().contains("RESTORED:"),
+        screen,
     );
+    let s = screen();
+    assert!(!s.contains("-icanon") && !s.contains("-echo "), "{s}");
+    assert!(
+        !s.contains("▸messages"),
+        "alternate screen not restored: {s}"
+    );
+    println!("exit: {s}");
 }

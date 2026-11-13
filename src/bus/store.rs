@@ -804,9 +804,15 @@ pub fn full(r: &Record, acked: bool) -> Value {
     v
 }
 
+/// Read one bounded acknowledgement, counting only its intended recipient.
+pub(crate) fn ack_of(paths: &StorePaths, id: &str, to: &str) -> Option<Ack> {
+    let ack: Ack = serde_json::from_slice(&read_limited(&paths.ack(id), 4096).ok()?).ok()?;
+    (ack.schema == super::SCHEMA && ack.id == id && actor_label(&ack.by) == to).then_some(ack)
+}
+
 /// Read only the next immutable record. Missing means no new publication;
 /// an existing unreadable or inconsistent record is never skipped.
-fn next_record(paths: &StorePaths, seq: u64) -> Result<Option<Record>, Failure> {
+pub(crate) fn next_record(paths: &StorePaths, seq: u64) -> Result<Option<Record>, Failure> {
     let path = paths.record(seq);
     match fs::symlink_metadata(&path) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
