@@ -1,0 +1,3 @@
+- name: sample
+  run: [sh, -c, 'cat "$CHECKS_SAMPLE_FILE"']
+  every_minutes: 1

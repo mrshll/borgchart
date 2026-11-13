@@ -114,3 +114,57 @@ fn descendants_holding_pipes_do_not_extend_the_deadline() {
     std::thread::sleep(Duration::from_millis(1100));
     assert!(!marker.exists(), "descendant escaped process-group cleanup");
 }
+
+#[test]
+fn capture_deadline_keeps_partial_output_and_kills_descendants() {
+    let dir = tempfile::tempdir().unwrap();
+    let start = Instant::now();
+    let mut cap = limits();
+    cap.deadline = start + Duration::from_secs(1);
+    let captured = bounded_process::capture(
+        Command::new("/bin/sh")
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .current_dir(dir.path())
+            .args([
+                "-c",
+                "sleep 30 & printf '%s\\n' \"$$\" \"$!\" > pids; printf partial; printf error >&2; wait",
+            ]),
+        cap,
+    )
+    .unwrap();
+    assert!(start.elapsed() < Duration::from_secs(3));
+    let pids = std::fs::read_to_string(dir.path().join("pids")).unwrap();
+    assert_eq!(pids.lines().count(), 2);
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        let alive: Vec<_> = pids
+            .lines()
+            .filter(|pid| {
+                Command::new("/bin/kill")
+                    .env_clear()
+                    .args(["-0", pid])
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .unwrap()
+                    .success()
+            })
+            .collect();
+        if alive.is_empty() {
+            break;
+        }
+        if Instant::now() >= until {
+            for pid in &alive {
+                let _ = Command::new("/bin/kill")
+                    .env_clear()
+                    .args(["-KILL", pid])
+                    .status();
+            }
+            panic!("capture deadline left processes running: {alive:?}");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(captured.status.is_none());
+    assert_eq!(captured.stdout, b"partial");
+    assert_eq!(captured.stderr, b"error");
+}

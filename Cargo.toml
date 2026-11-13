@@ -1,6 +1,6 @@
 [workspace]
-members = [".", "plugins/seat", "plugins/slack"]
-default-members = [".", "plugins/seat", "plugins/slack"]
+members = [".", "plugins/seat", "plugins/slack", "plugins/checks"]
+default-members = [".", "plugins/seat", "plugins/slack", "plugins/checks"]
 resolver = "3"
 
 [package]

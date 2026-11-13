@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use std::io::{self, Read, Write};
 use std::os::fd::AsFd;
 use std::os::unix::process::CommandExt;
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy)]
@@ -96,7 +96,27 @@ fn drain(
 /// process group. Nonzero exits are normal outputs. Errors discard output and
 /// contain no child-supplied text. Cleanup may take up to 250ms beyond deadline.
 pub fn run(command: &mut Command, input: Option<&[u8]>, limits: Limits) -> Result<Output, Error> {
-    drive(command, input, limits, false, |_| Ok(Action::Continue))?
+    let captured = drive(command, input, limits, false, false, |_| {
+        Ok(Action::Continue)
+    })?
+    .ok_or(Error::Io(io::ErrorKind::UnexpectedEof))?;
+    Ok(Output {
+        status: captured.status.ok_or(Error::Deadline)?,
+        stdout: captured.stdout,
+        stderr: captured.stderr,
+    })
+}
+
+pub struct Captured {
+    /// None means the deadline expired; stdout and stderr are partial evidence.
+    pub status: Option<ExitStatus>,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+/// Preserve collected evidence on deadline, killing the same owned process group.
+/// Limits still bound capture; callers choose whether full stdout is affordable.
+pub fn capture(command: &mut Command, limits: Limits) -> Result<Captured, Error> {
+    drive(command, None, limits, false, true, |_| Ok(Action::Continue))?
         .ok_or(Error::Io(io::ErrorKind::UnexpectedEof))
 }
 
@@ -115,7 +135,7 @@ pub fn exchange(
     limits: Limits,
     advance: impl FnMut(&[u8]) -> Result<Action, Error>,
 ) -> Result<(), Error> {
-    drive(command, Some(initial), limits, true, advance).map(|_| ())
+    drive(command, Some(initial), limits, true, false, advance).map(|_| ())
 }
 
 fn drive(
@@ -123,8 +143,9 @@ fn drive(
     input: Option<&[u8]>,
     limits: Limits,
     interactive: bool,
+    capture_timeout: bool,
     mut advance: impl FnMut(&[u8]) -> Result<Action, Error>,
-) -> Result<Option<Output>, Error> {
+) -> Result<Option<Captured>, Error> {
     if Instant::now() >= limits.deadline {
         return Err(Error::Deadline);
     }
@@ -154,6 +175,13 @@ fn drive(
     let (mut out_eof, mut err_eof) = (false, false);
     loop {
         if Instant::now() >= limits.deadline {
+            if capture_timeout {
+                return Ok(Some(Captured {
+                    status: None,
+                    stdout: out,
+                    stderr: err,
+                }));
+            }
             return Err(Error::Deadline);
         }
         if written == pending.len() && !interactive {
@@ -217,8 +245,8 @@ fn drive(
             && out_eof
             && err_eof
         {
-            return Ok(Some(Output {
-                status,
+            return Ok(Some(Captured {
+                status: Some(status),
                 stdout: out,
                 stderr: err,
             }));
