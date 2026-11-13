@@ -13,6 +13,7 @@ use std::sync::{
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const TOKEN: &str = "xoxb-not-a-real-token";
+pub const APP_TOKEN: &str = "xapp-not-a-real-token";
 #[derive(Default)]
 pub struct Slack {
     pub messages: Vec<Value>,
@@ -22,6 +23,15 @@ pub struct Slack {
     pub calls: Vec<(String, Value, Instant)>,
     pub writes: Vec<(String, Value)>,
     pub rate_limit: Option<String>,
+    pub socket_url: String,
+    pub connections: Vec<Vec<Value>>,
+    pub acks: Vec<(Value, Instant)>,
+    pub journal_before_ack: Vec<bool>,
+    pub hello: Option<Value>,
+    pub partial_replies: bool,
+    pub method_rate_limits: BTreeMap<String, String>,
+    pub reply_delay: Duration,
+    pub close_delay: Duration,
 }
 fn handle(mut stream: TcpStream, state: &Mutex<Slack>) -> std::io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(3)))?;
@@ -57,7 +67,10 @@ fn handle(mut stream: TcpStream, state: &Mutex<Slack>) -> std::io::Result<()> {
     let mut s = state.lock().unwrap();
     s.calls
         .push((method.into(), params.clone(), Instant::now()));
-    let retry = s.rate_limit.take();
+    let retry = s
+        .method_rate_limits
+        .remove(method)
+        .or_else(|| s.rate_limit.take());
     let data = if retry.is_some() {
         json!({"ok":false,"error":"ratelimited"})
     } else if let Some(error) = s.errors.get(method) {
@@ -67,11 +80,23 @@ fn handle(mut stream: TcpStream, state: &Mutex<Slack>) -> std::io::Result<()> {
             .contains_key(params["ts"].as_str().unwrap_or(""))
     {
         json!({"ok":false,"error":s.reply_errors[params["ts"].as_str().unwrap()]})
-    } else if auth != format!("Bearer {TOKEN}") {
+    } else if auth
+        != format!(
+            "Bearer {}",
+            if method == "apps.connections.open" {
+                APP_TOKEN
+            } else {
+                TOKEN
+            }
+        )
+    {
         json!({"ok":false,"error":"invalid_auth"})
     } else {
         match method {
-            "auth.test" => json!({"ok":true,"user_id":"U0000BOT","bot_id":"B0000BOT"}),
+            "auth.test" => {
+                json!({"ok":true,"user_id":"U0000BOT","bot_id":"B0000BOT","team_id":"T0000EXAMPLE"})
+            }
+            "apps.connections.open" => json!({"ok":true,"url":s.socket_url}),
             "conversations.history" | "conversations.replies" => {
                 let mut messages = if method.ends_with("history") {
                     s.messages.clone()
@@ -95,13 +120,14 @@ fn handle(mut stream: TcpStream, state: &Mutex<Slack>) -> std::io::Result<()> {
                 if method.ends_with("history") {
                     messages.reverse();
                 }
+                let has_more = s.partial_replies;
                 messages.truncate(
                     params["limit"]
                         .as_str()
                         .and_then(|s| s.parse().ok())
                         .unwrap_or(200),
                 );
-                json!({"ok":true,"messages":messages})
+                json!({"ok":true,"messages":messages,"has_more":has_more})
             }
             _ => {
                 s.writes.push((method.into(), params));
@@ -109,6 +135,13 @@ fn handle(mut stream: TcpStream, state: &Mutex<Slack>) -> std::io::Result<()> {
             }
         }
     };
+    let delay = if method == "conversations.replies" {
+        s.reply_delay
+    } else {
+        Duration::ZERO
+    };
+    drop(s);
+    std::thread::sleep(delay);
     let text = data.to_string();
     let status = if retry.is_some() {
         "429 Too Many Requests"
@@ -131,6 +164,7 @@ pub struct Harness {
     pub env: BTreeMap<String, String>,
     stop: Arc<AtomicBool>,
     server: Option<std::thread::JoinHandle<()>>,
+    socket_server: Option<std::thread::JoinHandle<()>>,
 }
 impl Harness {
     pub fn new() -> Self {
@@ -146,6 +180,71 @@ impl Harness {
         listener.set_nonblocking(true).unwrap();
         let slack = Arc::new(Mutex::new(Slack::default()));
         let stop = Arc::new(AtomicBool::new(false));
+        let socket_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        slack.lock().unwrap().socket_url =
+            format!("ws://{}/", socket_listener.local_addr().unwrap());
+        socket_listener.set_nonblocking(true).unwrap();
+        let (s, flag, state_dir) = (slack.clone(), stop.clone(), dir.path().join("state"));
+        let socket_server = std::thread::spawn(move || {
+            while !flag.load(Ordering::Relaxed) {
+                let (stream, _) = match socket_listener.accept() {
+                    Ok(pair) => pair,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(2));
+                        continue;
+                    }
+                    Err(error) => panic!("{error}"),
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut socket = tungstenite::accept(stream).unwrap();
+                let envelopes = {
+                    let mut state = s.lock().unwrap();
+                    if state.connections.is_empty() {
+                        vec![]
+                    } else {
+                        state.connections.remove(0)
+                    }
+                };
+                let hello = s
+                    .lock()
+                    .unwrap()
+                    .hello
+                    .clone()
+                    .unwrap_or(json!({"type":"hello"}));
+                socket
+                    .send(tungstenite::Message::text(hello.to_string()))
+                    .unwrap();
+                for envelope in envelopes {
+                    socket
+                        .send(tungstenite::Message::text(envelope.to_string()))
+                        .unwrap();
+                    if envelope["envelope_id"].is_string() {
+                        let ack: Value =
+                            serde_json::from_str(socket.read().unwrap().to_text().unwrap())
+                                .unwrap();
+                        let event = &envelope["payload"]["event"];
+                        let exists = state_dir
+                            .join(format!(
+                                "req-{}-{}.json",
+                                event["channel"].as_str().unwrap_or(""),
+                                event["ts"].as_str().unwrap_or("")
+                            ))
+                            .exists();
+                        let mut state = s.lock().unwrap();
+                        state.acks.push((ack, Instant::now()));
+                        state.journal_before_ack.push(exists);
+                    }
+                    if envelope["type"] == "disconnect" {
+                        break;
+                    }
+                }
+                let delay = s.lock().unwrap().close_delay;
+                std::thread::sleep(delay);
+                let _ = socket.close(None);
+            }
+        });
         let (s, flag) = (slack.clone(), stop.clone());
         let server = std::thread::spawn(move || {
             while !flag.load(Ordering::Relaxed) {
@@ -165,6 +264,8 @@ impl Harness {
                 ("HOME", dir.path().display().to_string()),
                 ("PATH", "/usr/bin:/bin".into()),
                 ("SLACK_BOT_TOKEN", TOKEN.into()),
+                ("SLACK_APP_TOKEN", APP_TOKEN.into()),
+                ("SLACK_MENTION_USERS", "U0000ALICE".into()),
                 ("SLACK_CHANNEL_ID", "C0000TEST".into()),
                 ("SLACK_API_BASE", format!("http://{addr}/api")),
                 ("BORGCHART_BIN", brg.display().to_string()),
@@ -184,12 +285,13 @@ impl Harness {
             env,
             stop,
             server: Some(server),
+            socket_server: Some(socket_server),
         }
     }
     pub fn command(&self, args: &[&str]) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_brg-slack"));
         cmd.env_clear().envs(&self.env).args(args);
-        if args.first() == Some(&"watch") {
+        if matches!(args.first(), Some(&"watch" | &"mentions")) {
             cmd.env_remove("BORGCHART_MEMBER")
                 .env_remove("BORGCHART_PARENT");
         }
@@ -221,6 +323,7 @@ impl Drop for Harness {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         self.server.take().unwrap().join().unwrap();
+        self.socket_server.take().unwrap().join().unwrap();
     }
 }
 pub fn success(output: Output) -> String {
