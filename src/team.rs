@@ -109,14 +109,27 @@ struct PluginRaw {
     actions: BTreeMap<String, String>,
 }
 
-/// A plugin's `env`: a map of names to plain values (empty for a secret).
+/// A plugin's `env`: plain values, sourced secrets, or environment secrets.
 #[derive(Debug, Default, Deserialize)]
 #[serde(transparent)]
-struct EnvRaw(BTreeMap<String, Option<String>>);
+struct EnvRaw(BTreeMap<String, Option<EnvValue>>);
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum EnvValue {
+    Plain(String),
+    Source(SecretSource),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SecretSource {
+    from: String,
+}
 
 impl EnvRaw {
     /// Every name in order, each with its plain value if it has one.
-    fn entries(&self) -> Vec<(String, Option<String>)> {
+    fn entries(&self) -> Vec<(String, Option<EnvValue>)> {
         self.0.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
 }
@@ -430,11 +443,12 @@ pub struct Plugin {
     pub env: Vec<String>,
     /// The plain values the template gives; every other name is a secret.
     pub values: BTreeMap<String, String>,
+    pub sources: BTreeMap<String, String>,
     pub actions: BTreeMap<String, Action>,
 }
 
 impl Plugin {
-    /// The names whose values come from the caller's environment.
+    /// The names whose values come from the environment or resolver.
     pub fn secrets(&self) -> impl Iterator<Item = &String> {
         self.env.iter().filter(|n| !self.values.contains_key(*n))
     }
@@ -753,6 +767,7 @@ fn load_plugin(
 
     let mut env = Vec::new();
     let mut values = BTreeMap::new();
+    let mut sources = BTreeMap::new();
     for (name, value) in p.env.entries() {
         if !is_valid_env_name(&name) {
             report.error(
@@ -760,8 +775,19 @@ fn load_plugin(
                 at(format!("env name `{name}` must match `[A-Z_][A-Z0-9_]*`")),
             );
         }
-        if let Some(value) = value {
-            values.insert(name.clone(), value);
+        match value {
+            Some(EnvValue::Plain(value)) => {
+                values.insert(name.clone(), value);
+            }
+            Some(EnvValue::Source(source)) => {
+                if source.from.is_empty()
+                    || source.from.chars().any(|c| c.is_control() || c == '\'')
+                {
+                    report.error(Some(team_file), at(format!("env `{name}`: `from` must be non-empty with no control characters or single quote")));
+                }
+                sources.insert(name.clone(), source.from);
+            }
+            None => {}
         }
         env.push(name);
     }
@@ -858,6 +884,7 @@ fn load_plugin(
         delivers_to: p.delivers_to.clone(),
         env,
         values,
+        sources,
         actions,
     })
 }

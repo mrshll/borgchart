@@ -225,14 +225,14 @@ enum Command {
         #[arg(value_name = "TEAM", add = crate::complete::instances())]
         instance: Option<String>,
     },
-    /// List the secrets a template's plugins need, and whether each is set.
+    /// List plugin secrets, their sources and environment status.
     ///
-    /// It checks your environment, prints no values and writes nothing.
+    /// Prints no values or references, runs no resolver and writes nothing.
     Secrets {
         /// The template: its name in the search paths, or a path to its folder.
         #[arg(add = crate::complete::teams())]
         template: String,
-        /// Print {secrets: [{plugin, name, set}]} as JSON.
+        /// Print {secrets: [{plugin, name, source, set?}]} as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -304,6 +304,8 @@ enum Command {
         #[command(subcommand)]
         command: crate::bus::cli::MsgCommand,
     },
+    #[command(name = "_secrets", hide = true)]
+    ResolveSecrets,
     #[command(name = "_exec", hide = true)]
     Exec { state: PathBuf, window: String },
     #[command(name = "_run", hide = true)]
@@ -590,18 +592,25 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
         Command::Secrets { template, json } => {
             let secrets = or_fail!(runtime::secrets(&template));
             if json {
-                let rows: Vec<serde_json::Value> = secrets
-                    .iter()
-                    .map(|(p, n, set)| serde_json::json!({"plugin": p, "name": n, "set": set}))
-                    .collect();
-                println!("{}", serde_json::json!({ "secrets": rows }));
+                println!("{}", serde_json::json!({ "secrets": secrets }));
             } else if secrets.is_empty() {
                 println!("the template's plugins need no secrets");
             } else {
-                for (plugin, name, set) in &secrets {
-                    println!("{plugin}: {name}  {}", if *set { "set" } else { "not set" });
+                for secret in &secrets {
+                    let state = secret
+                        .set
+                        .map(|set| if set { ": set" } else { ": not set" })
+                        .unwrap_or("");
+                    println!(
+                        "{}: {}  {}{state}",
+                        secret.plugin, secret.name, secret.source
+                    );
                 }
             }
+            ExitCode::SUCCESS
+        }
+        Command::ResolveSecrets => {
+            crate::secrets::helper();
             ExitCode::SUCCESS
         }
         Command::Templates { json } => {

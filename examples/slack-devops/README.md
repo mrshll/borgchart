@@ -57,8 +57,9 @@ separate watch entry can set `SLACK_SKIP_MENTIONS: "true"` to coexist with it.
    ```
 
 5. Inject `SLACK_BOT_TOKEN` from your shell or secret manager's `run` command.
-   Never write it into a file. `brg secrets ./examples/slack-devops` checks
-   whether it is set.
+   Alternatively, set `SLACK_BOT_TOKEN: {from: "fake://bot-token"}` and configure
+   [a secrets resolver](../../docs/format.md#configyaml). Never write the
+   value into a file. `brg secrets ./examples/slack-devops` shows its source.
 6. Check and create a team in its own folder outside this checkout:
 
    ```sh

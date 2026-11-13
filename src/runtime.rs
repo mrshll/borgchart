@@ -238,28 +238,6 @@ pub struct UpOutcome {
     pub failed: bool,
 }
 
-/// What a fresh start needs from your environment: each plugin's values,
-/// and the names that are missing.
-type PluginValues = BTreeMap<String, BTreeMap<String, String>>;
-
-fn plugin_values(v: &Validated) -> (PluginValues, Vec<String>) {
-    let mut all = BTreeMap::new();
-    let mut missing = Vec::new();
-    for (name, plugin) in &v.team.plugins {
-        let mut values = plugin.values.clone();
-        for env_name in plugin.secrets() {
-            match std::env::var(env_name) {
-                Ok(value) => {
-                    values.insert(env_name.clone(), value);
-                }
-                Err(_) => missing.push(format!("{name}: {env_name}")),
-            }
-        }
-        all.insert(name.clone(), values);
-    }
-    (all, missing)
-}
-
 /// The vendor's own key a member gets with `auth: api_key`.
 fn key_name(vendor: Vendor) -> &'static str {
     match vendor {
@@ -415,6 +393,7 @@ fn start_members(
     member_ids: Vec<String>,
     full: bool,
     resume: bool,
+    values: Option<crate::secrets::PluginValues>,
 ) -> Result<UpOutcome, String> {
     let only = !full;
     let state = &inst.state;
@@ -543,18 +522,13 @@ fn start_members(
     }
     let wanted: Vec<(String, PathBuf)> = cwds.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     crate::checkouts::reserve(&lock, &inst.id, &wanted)?;
-    let (values, missing) = plugin_values(v);
     let keys = api_keys(v, record, &member_ids)?;
-    let missing_error = || {
-        format!(
-            "set these secrets in your environment first (brg stores none); nothing was started: {}",
-            missing.join(", ")
-        )
-    };
     let probe = tmux_for(state);
     let looks_running = probe.has_session(&session) && state.meta_file().exists();
-    if !looks_running && !missing.is_empty() {
-        return Err(missing_error());
+    if !looks_running && values.is_none() {
+        return Err(
+            "the team stopped during this start; run the command again; nothing was started".into(),
+        );
     }
 
     // Serialize lifecycle changes, then decide for real.
@@ -575,8 +549,22 @@ fn start_members(
     {
         lifecycle::check_stopped(state, meta, &restart)?;
     }
-    if !joining && !missing.is_empty() {
-        return Err(missing_error());
+    if !joining && values.is_none() {
+        return Err(
+            "the team stopped during this start; run the command again; nothing was started".into(),
+        );
+    }
+    if joining {
+        for name in v.team.plugins.keys() {
+            let settings = std::fs::read(state.plugin_env_file(name))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<PluginEnv>(&bytes).ok());
+            if settings.is_none() {
+                return Err(format!(
+                    "plugin {name}'s settings are missing or corrupt; stop the whole team and start it again; nothing was started"
+                ));
+            }
+        }
     }
     {
         let paths = StorePaths::new(state);
@@ -683,7 +671,12 @@ fn start_members(
             // Plugins: their values (secrets included) go to private files for the shims.
             for (name, plugin) in &v.team.plugins {
                 let body = serde_json::to_vec(&PluginEnv {
-                    env: values.get(name).cloned().unwrap_or_default(),
+                    env: values
+                        .as_ref()
+                        .unwrap()
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_default(),
                 })
                 .map_err(|e| e.to_string())?;
                 write_private(&state.plugin_env_file(name), &body)
@@ -1042,7 +1035,7 @@ fn start_members(
             let secrets: PluginEnv = std::fs::read_to_string(state.plugin_env_file(name))
                 .ok()
                 .and_then(|t| serde_json::from_str(&t).ok())
-                .unwrap_or_default();
+                .ok_or_else(|| format!("plugin {name}'s settings are missing or corrupt; stop the whole team and start it again"))?;
             let mut env = base.clone();
             env.extend(secrets.env);
             env.extend(identity_env(&meta, state, "", None, name));
@@ -1554,17 +1547,8 @@ fn validate_printing(dir: &Path) -> Result<Validated, String> {
     validated.ok_or_else(|| "validation failed; nothing was started".to_string())
 }
 
-/// Checks a start would fail on, made before anything is registered: the
-/// secrets the plugins need (unless the team runs, and so has its
-/// values already) and, with `auth: api_key`, the starting roles' keys.
-fn precheck(v: &Validated, roles: &[&crate::team::Role], secrets: bool) -> Result<(), String> {
-    let (_, missing) = plugin_values(v);
-    if secrets && !missing.is_empty() {
-        return Err(format!(
-            "set these secrets in your environment first (brg stores none); nothing was created: {}",
-            missing.join(", ")
-        ));
-    }
+/// Check the starting roles' API keys before anything is registered.
+fn precheck(v: &Validated, roles: &[&crate::team::Role]) -> Result<(), String> {
     if v.auth() == Auth::ApiKey {
         let missing: Vec<String> = roles
             .iter()
@@ -1615,7 +1599,8 @@ pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
     state::check_state_home()?;
     let starting: Vec<&crate::team::Role> = v.team.roles.values().filter(|m| m.start).collect();
     check_tmux_tmpdir()?;
-    precheck(&v, &starting, true)?;
+    precheck(&v, &starting)?;
+    let values = Some(crate::secrets::values(&v, &v.team.name)?);
     check_state_overlap(&folder, &state::state_home())
         .map_err(|e| format!("the working {e}; nothing was created"))?;
     let lock = registry::lock()?;
@@ -1640,7 +1625,7 @@ pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
                 created_folders.push((id.clone(), folder));
             }
         }
-        start_members(lock, &inst, &v, ids, true, false)
+        start_members(lock, &inst, &v, ids, true, false, values)
     })();
     if result.is_err() {
         unregister_if_never_started(&inst);
@@ -1778,7 +1763,10 @@ pub fn create_member(
         .unwrap_or_default()
         .merge(&overrides)
         .resolve(member, v.auth())?;
-    precheck(&v, &[&member], !is_running(&inst))?;
+    precheck(&v, &[&member])?;
+    let values = (!is_running(&inst))
+        .then(|| crate::secrets::values(&v, &inst.id))
+        .transpose()?;
     check_parent_authority(&inst, role, Some(&v), None)?;
     create_authority_pause();
     let start = repo
@@ -1815,7 +1803,7 @@ pub fn create_member(
         .into_iter()
         .collect();
     lock.save_instance(&inst.state, &inst.record)?;
-    let mut outcome = start_members(lock, &inst, &v, vec![id.clone()], false, false)?;
+    let mut outcome = start_members(lock, &inst, &v, vec![id.clone()], false, false, values)?;
     if let Some(start) = start {
         outcome.tree = outcome
             .tree
@@ -1961,7 +1949,7 @@ pub(crate) fn check_parent_authority(
     check_subtree_authority(parent, &inst.at(target.unwrap_or(role)))
 }
 
-fn has_member_context() -> bool {
+pub(crate) fn has_member_context() -> bool {
     [context::ENV_MEMBER, context::ENV_INCARNATION]
         .iter()
         .any(|key| std::env::var(key).is_ok_and(|value| !value.is_empty()))
@@ -2216,6 +2204,9 @@ fn start_instance(
     } else {
         validated(&inst)?
     };
+    let values = fresh
+        .then(|| crate::secrets::values(&v, &inst.id))
+        .transpose()?;
     let lock = registry::lock()?;
     inst.reload()?;
     crate::nesting::check_not_stopping(&inst)?;
@@ -2226,7 +2217,7 @@ fn start_instance(
         check_instance_authority(&inst)?;
     }
     match member {
-        Some(id) => start_members(lock, &inst, &v, vec![id], false, resume),
+        Some(id) => start_members(lock, &inst, &v, vec![id], false, resume, values),
         None => {
             // Check every role and kept member this full start brings back,
             // before any role can issue an ID or add a worktree.
@@ -2253,7 +2244,7 @@ fn start_instance(
             let mut created_folders = Vec::new();
             let result = (|| {
                 let ids = full_start_members(&lock, &mut inst, &v, &mut created_folders)?;
-                start_members(lock, &inst, &v, ids, true, resume)
+                start_members(lock, &inst, &v, ids, true, resume, values)
             })();
             if result.is_err() {
                 remove_unkept_worktrees(&inst, created_folders);
@@ -2287,7 +2278,9 @@ fn start_instance(
                         outcome.failed |= copy.failed;
                     }
                     Err(error) => {
-                        outcome.notes.push(format!("{full_id}: {error}"));
+                        outcome.notes.push(format!(
+                            "{full_id}: {error}; start it with: brg start {full_id}"
+                        ));
                         outcome.failed = true;
                     }
                 }
@@ -2851,8 +2844,17 @@ pub fn reset(inst: Instance, warn: impl FnOnce(String)) -> Result<crate::cleanup
 }
 
 /// `brg secrets <template>`: each secret its plugins need (plugin, name), and
-/// whether the caller's environment sets it. No value is read out.
-pub fn secrets(team: &str) -> Result<Vec<(String, String, bool)>, String> {
+/// its source and whether the caller's environment sets it. No value is read out.
+#[derive(Serialize)]
+pub struct RequiredSecret {
+    pub plugin: String,
+    pub name: String,
+    pub source: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub set: Option<bool>,
+}
+
+pub fn secrets(team: &str) -> Result<Vec<RequiredSecret>, String> {
     let mut report = crate::diag::Report::default();
     let config = crate::config::load(&mut report).ok_or_else(|| {
         report
@@ -2875,7 +2877,19 @@ pub fn secrets(team: &str) -> Result<Vec<(String, String, bool)>, String> {
         .values()
         .flat_map(|p| {
             p.secrets()
-                .map(|n| (p.name.clone(), n.clone(), std::env::var_os(n).is_some()))
+                .map(|n| {
+                    let (source, set) = if p.sources.contains_key(n) {
+                        ("resolver", None)
+                    } else {
+                        ("environment", Some(std::env::var_os(n).is_some()))
+                    };
+                    RequiredSecret {
+                        plugin: p.name.clone(),
+                        name: n.clone(),
+                        source,
+                        set,
+                    }
+                })
                 .collect::<Vec<_>>()
         })
         .collect())
