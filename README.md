@@ -21,7 +21,13 @@ This needs Rust 1.89 or newer and tmux 3.2 or newer, plus the `claude` and/or `c
 
 From a checkout, `make install` replaces the binaries; configure template catalogs separately as described in [installing from a checkout](CONTRIBUTING.md#installing-from-a-checkout).
 
-For tab completion of commands, teams and members, see [completion](docs/cli.md) (`BRG_COMPLETE=fish brg | source`).
+For tab completion of commands, teams and members in fish, run this once:
+
+```sh
+echo 'BRG_COMPLETE=fish brg | source' > ~/.config/fish/completions/brg.fish
+```
+
+Other shells are covered in [completion](docs/cli.md).
 
 
 Seating, [Slack](plugins/slack/README.md) and [checks](plugins/checks/README.md) are optional Rust workspace plugins, declared by teams that need them. To install all four binaries and configure template catalogs, follow [installing from a checkout](CONTRIBUTING.md#installing-from-a-checkout). `cargo install --path .` installs only core; the plugins are `cargo install --path plugins/seat`, `cargo install --path plugins/slack` and `cargo install --path plugins/checks`.
