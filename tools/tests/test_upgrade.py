@@ -6,6 +6,7 @@ import shlex
 import shutil
 import subprocess
 import time
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -204,6 +205,8 @@ def test_built_binary_secrets_failure_aborts_before_handover_stop_or_install(
 ) -> None:
     result = fake.run({"statuses": [[member()]], "secrets_codes": {"sample-1111": 1}})
     assert result.returncode == 1
+    assert "sample-1111" in result.stdout
+    assert result.stderr
     assert fake.calls() == [
         ["brg", "status", "--json"],
         ["make", "-C", str(ROOT), "build"],
@@ -211,9 +214,8 @@ def test_built_binary_secrets_failure_aborts_before_handover_stop_or_install(
     ]
 
 
-@pytest.mark.parametrize("failed_team", [None, "sample-1111/dev"])
 def test_built_binary_checks_each_distinct_live_team_before_stop(
-    fake: FakeUpgrade, failed_team: str | None
+    fake: FakeUpgrade,
 ) -> None:
     rows = [
         member(),
@@ -223,20 +225,73 @@ def test_built_binary_checks_each_distinct_live_team_before_stop(
         member(team="stopped-3333", state="stopped", liveness="gone"),
     ]
     result = fake.run(
-        {"statuses": [rows], "secrets_codes": {failed_team: 1} if failed_team else {}},
+        {"statuses": [rows]},
         FORCE="1",
     )
     checked = ["sample-1111", "second-2222", "sample-1111/dev"]
-    if failed_team is None:
-        assert result.returncode == 0, result.stderr
-        assert fake.actions() == ["build", "stop", "stop", "install", "start", "start"]
-    else:
-        assert result.returncode == 1
-        assert fake.actions() == ["build"]
-    assert fake.calls()[1 : 2 + len(checked)] == [
-        ["make", "-C", str(ROOT), "build"],
-        *[["brg-built", "secrets", "--check", team] for team in checked],
+    assert result.returncode == 0, result.stderr
+    assert fake.actions() == ["build", "stop", "stop", "install", "start", "start"]
+    calls = fake.calls()
+    checks = [call for call in calls if call[1] == "secrets"]
+    assert Counter(tuple(call) for call in checks) == Counter(
+        ("brg-built", "secrets", "--check", team) for team in checked
+    )
+    build = calls.index(["make", "-C", str(ROOT), "build"])
+    stop = next(i for i, call in enumerate(calls) if call[1] == "stop")
+    assert all(build < i < stop for i, call in enumerate(calls) if call in checks)
+
+
+def test_plugin_only_child_secrets_failure_prevents_stopping(fake: FakeUpgrade) -> None:
+    child = "sample-1111/dev"
+    result = fake.run(
+        {
+            "statuses": [
+                [
+                    member(),
+                    member(team=child, state="exited", liveness="gone"),
+                    {"kind": "plugin", "team": child, "state": "alive"},
+                    {
+                        "kind": "plugin",
+                        "team": "sample-1111/dormant",
+                        "state": "exited",
+                    },
+                    {"kind": "plugin", "team": "other-2222/dev", "state": "alive"},
+                ]
+            ],
+            "secrets_codes": {child: 1},
+        },
+        FORCE="1",
+    )
+    assert result.returncode == 1
+    assert fake.actions() == ["build"]
+    assert [call[-1] for call in fake.calls() if call[1] == "secrets"] == [
+        "sample-1111",
+        child,
     ]
+    assert child in result.stdout
+
+
+def test_child_started_during_handover_is_checked_before_stopping(
+    fake: FakeUpgrade,
+) -> None:
+    child = "sample-1111/dev"
+    result = fake.run(
+        {
+            "statuses": [[member()], [member(), member(team=child)]],
+            "waits": [{"records": [reply()]}],
+            "secrets_codes": {child: 1},
+        }
+    )
+    assert result.returncode == 1
+    assert fake.actions() == ["build"]
+    calls = fake.calls()
+    check = ["brg-built", "secrets", "--check", child]
+    assert check in calls
+    assert next(
+        i for i, call in enumerate(calls) if call[1:3] == ["msg", "send"]
+    ) < calls.index(check)
+    assert sum(call[1:] == ["secrets", "--check", "sample-1111"] for call in calls) == 1
+    assert child in result.stdout
 
 
 def test_forced_live_child_checks_stopped_root_before_stop(fake: FakeUpgrade) -> None:

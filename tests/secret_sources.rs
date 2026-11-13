@@ -121,6 +121,43 @@ fn secrets_check_reports_resolver_failure_without_leaking_or_changing_settings()
 }
 
 #[test]
+fn secrets_check_reads_edited_template_for_nested_child() {
+    let env = setup("'fake-value-root'");
+    let path = "templates/oncall/template.yaml";
+    let text = fs::read_to_string(env.path(path)).unwrap();
+    env.write(
+        path,
+        &text.replace(
+            "roles:\n",
+            "roles:\n  dev: {template: dev, parent: lead, start: false}\n",
+        ),
+    );
+    env.team("templates/dev");
+    env.write("templates/dev/template.yaml", &text);
+    let root = env.create("oncall", "work/a");
+    env.ok(&["create", &format!("{root}/dev")]);
+    let child = env.registry()["teams"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .find(|id| id.contains('/'))
+        .unwrap()
+        .clone();
+    env.ok(&["start", &child]);
+    assert_eq!(runs(&env), 0);
+    env.write(
+        "templates/dev/template.yaml",
+        &text.replace("'fake-value-root'", "{from: 'fake://root'}"),
+    );
+    let out = env.ok(&["secrets", "--check", &child]);
+    clean_output(&out);
+    assert!(out.stdout.is_empty());
+    assert_eq!(runs(&env), 1);
+    cleaned(&env);
+    env.ok(&["stop", &root]);
+}
+
+#[test]
 fn secrets_check_without_sources_skips_resolver() {
     let env = setup("'fake-value-root'");
     let id = env.create("oncall", "work/a");
