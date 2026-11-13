@@ -28,6 +28,7 @@ pub mod proctree;
 pub mod registry;
 pub mod rules;
 pub mod runtime;
+pub mod secrets;
 pub mod state;
 pub mod team;
 pub mod tmux;

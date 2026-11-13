@@ -50,7 +50,8 @@ plugins:
       react: brg-slack react <request_id> <reaction>
 ```
 
-Inject both tokens through the launching shell or secret manager. brg supplies
+Inject both tokens through the launching shell or set each to `{from: "<reference>"}`
+with [a configured secrets resolver](../../docs/format.md#configyaml). brg supplies
 `BORGCHART_DELIVER_TO` and `BORGCHART_STATE_DIR`; direct runs must set them.
 `mentions [--once]` accepts only `app_mention` events in the bot's workspace,
 from a listed human, with no bot ID or subtype, whose text after whitespace
@@ -152,7 +153,7 @@ stderr line. Quote multiword text as one argument. No page audit log is kept.
 
 | Environment | Meaning |
 | --- | --- |
-| `SLACK_BOT_TOKEN` | Required bot token; inject it from the launching shell or secret manager. |
+| `SLACK_BOT_TOKEN` | Required bot token; supply it through the launching environment or brg's configured secrets resolver. |
 | `SLACK_CHANNEL_ID` | Required for watch, read, page and timestamp-based actions; not needed for mentions or request IDs. |
 | `SLACK_APP_TOKEN` | Required for mentions; app-level token with `connections:write`. |
 | `SLACK_MENTION_USERS` | Required for mentions: non-empty comma-separated human user IDs (`U…` or `W…`), with no empty entries. |

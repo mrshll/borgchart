@@ -43,6 +43,13 @@ struct ConfigRaw {
     teams: Option<Vec<String>>,
     plugins_dir: Option<String>,
     tmux: Option<TmuxRaw>,
+    secrets: Option<Secrets>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Secrets {
+    pub resolver: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -111,6 +118,7 @@ pub struct Config {
     pub plugins_dir: Option<PathBuf>,
     /// Your own tmux config, loaded on brg's server when you opt in.
     pub tmux_user_config: Option<UserTmuxConfig>,
+    pub secrets: Option<Secrets>,
 }
 
 fn home() -> Option<PathBuf> {
@@ -142,6 +150,7 @@ impl Default for Config {
             teams: vec![default_dir().join("templates")],
             plugins_dir: None,
             tmux_user_config: None,
+            secrets: None,
         }
     }
 }
@@ -201,6 +210,21 @@ pub fn load_file(file: &Path, report: &mut Report) -> Option<Config> {
         Some(UserConfigRaw::On(true)) => Some(UserTmuxConfig::Default),
         Some(UserConfigRaw::Path(p)) => Some(UserTmuxConfig::Path(expand_home(base, &p))),
     };
+    if let Some(secrets) = &raw.secrets
+        && (secrets.resolver.first().is_none_or(String::is_empty)
+            || secrets
+                .resolver
+                .iter()
+                .map(|a| a.matches("{file}").count())
+                .sum::<usize>()
+                != 1)
+    {
+        report.error(
+            Some(&file),
+            "`secrets.resolver` needs a program and exactly one `{file}` placeholder",
+        );
+        return None;
+    }
     Some(Config {
         file: Some(file.clone()),
         auth: raw.auth.unwrap_or_default(),
@@ -208,6 +232,7 @@ pub fn load_file(file: &Path, report: &mut Report) -> Option<Config> {
         teams,
         plugins_dir: raw.plugins_dir.as_deref().map(|p| expand_home(base, p)),
         tmux_user_config,
+        secrets: raw.secrets,
     })
 }
 

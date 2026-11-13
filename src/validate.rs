@@ -333,11 +333,15 @@ fn cross_check(v: &Validated, report: &mut Report) {
             continue;
         }
         for name in plugin.secrets() {
-            if std::env::var_os(name).is_none() {
+            if plugin.sources.contains_key(name) {
+                if v.config.secrets.is_none() {
+                    report.warning(team_file, format!("plugin `{}`: secret `{name}` comes from the resolver; add secrets.resolver to brg's configuration before starting", plugin.name));
+                }
+            } else if std::env::var_os(name).is_none() {
                 report.warning(
                     team_file,
                     format!(
-                        "plugin `{}`: the secret `{name}` is not set in your environment; `brg create` and `brg start` will need it",
+                        "plugin `{}`: the secret `{name}` (source environment) is not set in your environment; `brg create` and `brg start` will need it",
                         plugin.name
                     ),
                 );

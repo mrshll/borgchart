@@ -55,8 +55,8 @@ under its parent team, independently of where its team template is stored.
   ```
 
   It's the same for every team, for now. `tmux.user_config` keeps today's meaning: it's read when brg's tmux server starts, and a change applies once every team on that server is stopped. A hosted brg would use `api_key` only.
-- **Secrets** are never stored by brg, and never written in a file you edit. A secret's value comes from the environment of the shell that runs `create` or `start` (for example, under your password manager's `run`), as today.
-  - `brg secrets <template>` lists the secret names the template's plugins need, and whether each is set in your environment. It stores and prints no values.
+- **Secrets** come from the start environment when `env` leaves the value empty, or from a secrets resolver with `NAME: {from: "<reference>"}`. Configure `secrets: {resolver: [example-secrets, run, "--env-file={file}", "--"]}` once; sourced secrets never fall back to the environment. See [the resolver contract](format.md#configyaml).
+  - `brg secrets <template>` lists each secret's source and whether environment secrets are set. It runs no resolver and prints no values or references.
   - Members' windows start from a small base environment, so secrets don't reach them that way. The one exception is the vendor's own key: with `auth: api_key`, brg passes `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` to that vendor's members by name, and with `login` it passes neither. A plugin receives a secret only when its `env` names it: brg writes it to that plugin's private file (mode 0600), which the plugin's shims read, and removes the file at stop.
   - **0600 keeps other users out, not the members.** Members run as you. A member that isn't `locked` and has shell or file access could read that file while it exists. Only `locked` members are kept from it, by their gate.
 - **Prompts** come only from the template: each role file, the includes it names and any other template's role file it names. The vendor's own instruction files load as normal (`~/.claude/CLAUDE.md`, the repo's `CLAUDE.md`, `AGENTS.md`). brg neither adds nor suppresses anything else.
