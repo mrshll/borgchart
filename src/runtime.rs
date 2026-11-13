@@ -4731,20 +4731,6 @@ pub fn send(
         &record.body,
         record.ack_required,
     );
-    if interactive {
-        // A person may be typing in the box, and Codex starts no turn when a
-        // background wait ends: hand the message to Codex as its next turn.
-        if let Some(inc) = original.as_ref().filter(|_| pane.is_some()) {
-            match queue_send(&inst.state, &to, &inc.started_at, &envelope) {
-                Ok(()) => {
-                    outcome.delivery = "queued";
-                    outcome.reason = "codex queue: the member's next turn".into();
-                }
-                Err(why) => outcome.reason = why,
-            }
-        }
-        return Ok(outcome);
-    }
     let typed = (|| {
         let pane = pane
             .as_ref()
@@ -4769,11 +4755,19 @@ pub fn send(
         if meta
             .members
             .get(&to)
-            .is_none_or(|m| m.interactive || (m.posture == "locked") != locked)
+            .is_none_or(|m| m.interactive != interactive || (m.posture == "locked") != locked)
         {
             return Err(SendError::Refused(
                 "recipient delivery posture changed after commit".into(),
             ));
+        }
+        if interactive {
+            // A person may be typing in the box, and Codex starts no turn when
+            // a background wait ends: hand the message over as its next turn.
+            let inc = current.as_ref().expect("checked above");
+            return queue_send(&inst.state, &to, &inc.started_at, &envelope)
+                .map(|()| "queued")
+                .map_err(SendError::Refused);
         }
         let tmux = tmux.with_socket(&pane.socket);
         let before = send_snapshot(&tmux, &inst.state, &to, pane, vendor, force, locked)?;
@@ -4790,12 +4784,16 @@ pub fn send(
                 "message exceeds the screen-verification budget; no text pasted".into(),
             ));
         }
-        paste_send(&tmux, &inst.state, &to, pane, vendor, locked, &envelope)
+        paste_send(&tmux, &inst.state, &to, pane, vendor, locked, &envelope).map(|()| "typed")
     })();
     match typed {
-        Ok(()) => {
-            outcome.delivery = "typed";
-            outcome.reason = "submitted".into();
+        Ok(delivery) => {
+            outcome.delivery = delivery;
+            outcome.reason = match delivery {
+                "queued" => "codex queue: the member's next turn",
+                _ => "submitted",
+            }
+            .into();
             Ok(outcome)
         }
         Err(error) => {
@@ -4827,11 +4825,13 @@ fn queue_send(
     started_at: &str,
     envelope: &str,
 ) -> Result<(), String> {
+    let started = crate::bus::time::parse_utc(started_at)
+        .ok_or("this start's time can't be read; not queued")?;
     let recorded = std::fs::metadata(state.member_session(member))
         .and_then(|m| m.modified())
         .ok();
     let id = recorded
-        .filter(|&t| Some(t) >= crate::bus::time::parse_utc(started_at))
+        .filter(|&t| t >= started)
         .and_then(|_| recorded_session(state, member))
         .ok_or("no Codex session recorded for this start yet; not queued")?;
     let mut command = Command::new("codex");
