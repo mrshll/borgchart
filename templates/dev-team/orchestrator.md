@@ -82,7 +82,7 @@ Follow the git rules below: an up-to-date description, then the owner's review r
 1. **At the start of every turn,** read your inbox, with bodies. Act on the messages and ack each once you have taken it on.
 2. **End every turn ready to hear your inbox:**
    - **Claude:** `"$BORGCHART_BIN" msg wait --full` with your Bash tool in **background** mode; its exit wakes you.
-   - **Codex:** run no wait: finish your turn. brg types each new message into your session, which starts your next turn.
+   - **Codex:** run no wait: finish your turn. brg delivers each new message into your session (typed, or queued if you are interactive), which starts your next turn.
 3. **Exit 9** is a timeout: wait again.
 4. **Exit 8 (`fenced`)** means your session is no longer current: stop waiting and tell the owner. On any other error, wait at least 60 seconds, run `msg integrity-check`, and report the problem.
 
