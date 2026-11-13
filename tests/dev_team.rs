@@ -358,11 +358,13 @@ fn members_wait_the_way_their_vendor_allows() {
     // lead's answers, do it the way their vendor allows.
     let base = fs::read_to_string(shared().join("includes/helper.md")).unwrap();
     assert!(
-        base.contains("**Codex:** run it in the **foreground**"),
+        base.contains(
+            "**Codex:** run no wait: finish your turn. brg types each new message into your session"
+        ),
         "{base}"
     );
     assert!(
-        base.contains("**Claude:** run it with your Bash tool in **background** mode"),
+        base.contains("**Claude:** run one wait with your Bash tool in **background** mode"),
         "{base}"
     );
     let designer = fs::read_to_string(team_dir("dev-design-team").join("designer.md")).unwrap();

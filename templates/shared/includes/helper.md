@@ -6,9 +6,9 @@ Your parent is the lead recorded as your parent in `status`; send only to it, ev
 - **Ask.** Send the lead a plain message naming what you need and why. For research or design help, say which; the lead decides whom to start. Its answer is a reply to your question.
 - **Wait for an answer, in this order:**
   1. Ack everything you have taken on, including any answer you have handled.
-  2. Arm one wait the way your vendor allows:
-     - **Codex:** run it in the **foreground**: `"$BORGCHART_BIN" msg wait --timeout 600 --full`. Nothing wakes you from a background command.
-     - **Claude:** run it with your Bash tool in **background** mode: `"$BORGCHART_BIN" msg wait --full`; its exit wakes you.
+  2. Wait the way your vendor allows:
+     - **Codex:** run no wait: finish your turn. brg types each new message into your session, which starts your next turn; then read your inbox, with message bodies, act and ack.
+     - **Claude:** run one wait with your Bash tool in **background** mode: `"$BORGCHART_BIN" msg wait --full`; its exit wakes you.
   3. The wait prints your inbox, with bodies: read it, act and ack before waiting again. On exit 9, wait again. On exit 8 (`fenced`), your session ended or was replaced: tell the lead and stop waiting.
 
   Wait only for your own answer; never sleep or poll for anything else.

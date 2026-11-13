@@ -116,7 +116,7 @@ Repeating an ack returns `already` for that ID. Locked records have `ack_require
 - Each poll (250 ms) checks the current start and reads the next record file, moving past other recipients. There is one initial scan, then incremental reads. An existing next file that won't parse is an error, never skipped. Shared-lock attempts respect the deadline.
 - A stopped, exited or replaced member exits 8 (`fenced`), even without a publication. Wait checks member liveness about once a second, including while waiting for a publisher's lock; unknown liveness keeps waiting. Member waits require tmux evidence and do not infer exit from a sandbox process listing. Stop waiting and tell the owner; never change identity variables to retry.
 
-Ack everything you've taken on, then arm one wait: Claude with its Bash tool in background mode, Codex in the foreground (`--timeout 600`). On exit 9 wait again. Leaving messages unacked wakes you about once a minute.
+Ack everything you've taken on, then wait. Claude arms one wait with its Bash tool in background mode, and on exit 9 waits again. Codex runs no wait: it finishes its turn, and brg types each new message into its session, which starts its next turn. Leaving messages unacked wakes you about once a minute.
 
 **Check:** `brg msg integrity-check [--json]` reports gaps, unreadable files and stray temporaries, without writing.
 
