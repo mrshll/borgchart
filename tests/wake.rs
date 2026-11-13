@@ -58,6 +58,10 @@ fn codex(name: &str) -> &'static str {
         "reminder-extra" => screen!("codex-composer-reminder-extra.ansi"),
         "reminder-wrapped" => screen!("codex-composer-reminder-wrapped.ansi"),
         "working" => screen!("codex-composer-working.ansi"),
+        "hyphen-wrap" => screen!("codex-composer-hyphen-wrap.ansi"),
+        "slash-wrap" => screen!("codex-composer-slash-wrap.ansi"),
+        "edge-wrap" => screen!("codex-composer-edge-wrap.ansi"),
+        "long-wrap" => screen!("codex-composer-long-wrap.ansi"),
         _ => unreachable!(),
     }
 }
@@ -263,6 +267,97 @@ fn changed_reminders_fail_the_enter_check() {
             .unwrap()
             .holds(REMINDER)
     );
+}
+
+/// Messages as pasted into codex-cli 0.167.0, which leaves three columns of
+/// the pane unused and breaks inside a word: after `-` or `/`, or anywhere
+/// in a word longer than the line.
+fn codex_wraps() -> [(&'static str, String, Option<Geometry>); 4] {
+    let ignore = "[Ignore duplicate delivery if already acked; otherwise brg msg ack m1 when taking responsibility.]";
+    [
+        (
+            "hyphen-wrap",
+            format!(
+                "[brg m1 from external:owner]\nRead the brief in the notes folder of the sample team; its id is sample-team-alpha-bravo-charlie-delta-echo-foxtrot-golf-hotel.\n{ignore}"
+            ),
+            at(120, 100, 36),
+        ),
+        (
+            "slash-wrap",
+            format!(
+                "[brg m1 from external:owner]\nRead /srv/sample/state/sample-tree/dev-sample/tmp/lead-abcd/scratch/e0ca00a4-430f-4f55-a4e5-718975e0395a/notes/brief.md; take on the work and report there as directed.\n{ignore}"
+            ),
+            at(120, 100, 36),
+        ),
+        // `bb` would fit in pane − 2 columns, not in pane − 3.
+        (
+            "edge-wrap",
+            format!("{} bb cc", "a".repeat(75)),
+            at(80, 7, 36),
+        ),
+        ("long-wrap", "x".repeat(170), at(80, 18, 36)),
+    ]
+}
+
+#[test]
+fn codex_submissions_are_verified_where_codex_wraps() {
+    for (name, text, g) in codex_wraps() {
+        let v = composer::view(Vendor::Codex, codex(name), g).unwrap();
+        assert!(v.lines.len() > 1, "{name}: {:?}", v.lines);
+        assert!(v.holds_submission(&text), "{name}: {:?}", v.lines);
+    }
+}
+
+#[test]
+fn codex_breaks_inside_words_need_a_word_that_could_not_fit() {
+    for (name, text, g) in codex_wraps() {
+        // Read in a wider pane, the next word would have fitted: that break
+        // was typed, so the box doesn't hold the message.
+        let wide = g.map(|g| Geometry { width: 200, ..g });
+        let v = composer::view(Vendor::Codex, codex(name), wide).unwrap();
+        assert!(!v.holds_submission(&text), "{name}");
+        // A changed or extra character, or the cursor short of the end.
+        let v = composer::view(Vendor::Codex, codex(name), g).unwrap();
+        let mut changed = text.clone();
+        changed.pop();
+        changed.push('#');
+        assert!(!v.holds_submission(&changed), "{name}");
+        assert!(!v.holds_submission(&format!("{text}.")), "{name}");
+        let mut short = v.clone();
+        short.cursor = short.cursor.map(|(row, col)| (row, col - 1));
+        assert!(!short.holds_submission(&text), "{name}");
+    }
+    // Claude keeps its own wrapping rules: no break inside a word that
+    // doesn't fill the line.
+    let (head, tail) = REMINDER.split_once("inbox").unwrap();
+    let s = edited(claude("reminder"), &format!("{head}in\n  box{tail}"));
+    let g = at(200, 2 + format!("box{tail}").chars().count(), 48);
+    let v = composer::view(Vendor::Claude, &s, g).unwrap();
+    assert_eq!(v.lines.len(), 2, "{:?}", v.lines);
+    assert!(!v.holds_submission(REMINDER));
+}
+
+/// Codex breaks a word short of the line's end only after `-` or `/`, so a
+/// break after a letter is a typed newline unless the line is full.
+#[test]
+fn codex_rejects_a_newline_typed_inside_a_word() {
+    let original = format!(
+        "{}\n  {}\n  {}",
+        "x".repeat(77),
+        "x".repeat(77),
+        "x".repeat(16)
+    );
+    let altered = format!(
+        "x\n  {}\n  {}\n  {}",
+        "x".repeat(77),
+        "x".repeat(77),
+        "x".repeat(15)
+    );
+    assert!(codex("long-wrap").contains(&original));
+    let screen = codex("long-wrap").replace(&original, &altered);
+    let v = composer::view(Vendor::Codex, &screen, at(80, 17, 37)).unwrap();
+    assert_eq!(v.cursor, Some((3, 15)));
+    assert!(!v.holds_submission(&"x".repeat(170)), "{:?}", v.lines);
 }
 
 #[test]
@@ -921,6 +1016,36 @@ fn unified_send_preserves_drafts_and_skips_unverifiable_and_interactive_messages
         assert!(e.events("submit").is_empty());
         if draft {
             assert!(e.screen().contains("draft"));
+        }
+    }
+}
+
+/// Codex starts no turn when a background wait ends, so typing is the only
+/// way an idle Codex member hears a message: `interactive` doesn't stop it.
+#[test]
+fn interactive_codex_recipients_are_typed_into_but_drafts_still_stop_it() {
+    for draft in [false, true] {
+        let e = Env::new(Vendor::Codex);
+        e.send_setup(Vendor::Codex, false, true);
+        if draft {
+            e.keys(&["draft"]);
+        }
+        let (code, out) = e.send_message("hello", &[]);
+        assert_eq!(code, 0, "{out}");
+        if draft {
+            assert_eq!(out["delivery"], "stored", "{out}");
+            assert!(e.events("paste").is_empty());
+            assert!(e.screen().contains("draft"));
+        } else {
+            assert_eq!(out["delivery"], "typed", "{out}");
+            let submits = e.events("submit");
+            assert_eq!(submits.len(), 1, "{submits:?}");
+            assert!(
+                submits[0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("[brg m1 from external:test]\nhello")
+            );
         }
     }
 }

@@ -354,17 +354,27 @@ fn members_wait_the_way_their_vendor_allows() {
     // designer's wait for answers, at least.
     assert!(sleeps >= 3, "{sleeps}");
 
-    // A helper waiting for its answer, and a designer waiting for the
-    // lead's answers, do it the way their vendor allows.
-    let base = fs::read_to_string(shared().join("includes/helper.md")).unwrap();
-    assert!(
-        base.contains("**Codex:** run it in the **foreground**"),
-        "{base}"
-    );
-    assert!(
-        base.contains("**Claude:** run it with your Bash tool in **background** mode"),
-        "{base}"
-    );
+    // A helper waiting for its answer, and a lead between turns, wait the
+    // way their vendor allows: Claude in a background wait, Codex with no
+    // message wait at all (brg types new messages in); a designer waits for
+    // the lead's answers the same way.
+    for file in [
+        shared().join("includes/helper.md"),
+        dev_team().join("orchestrator.md"),
+    ] {
+        let text = fs::read_to_string(&file).unwrap();
+        let line = |vendor: &str| {
+            text.lines()
+                .find(|l| l.trim_start().starts_with(&format!("- **{vendor}:**")))
+                .unwrap_or_else(|| panic!("{}: no {vendor} line", file.display()))
+        };
+        assert!(
+            line("Claude").contains("**background** mode"),
+            "{}",
+            file.display()
+        );
+        assert!(!line("Codex").contains("msg wait"), "{}", file.display());
+    }
     let designer = fs::read_to_string(team_dir("dev-design-team").join("designer.md")).unwrap();
     assert!(
         designer.contains("**Claude:** start, with your Bash tool in **background** mode"),

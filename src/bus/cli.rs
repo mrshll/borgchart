@@ -21,7 +21,7 @@ use super::store::{self, Bus, Inbox};
 pub enum MsgCommand {
     /// Store a message for its recipient, and type it in when safe.
     ///
-    /// It is typed in only for a non-interactive recipient.
+    /// It is never typed into an interactive Claude recipient.
     #[command(after_long_help = crate::bus::help::send())]
     Send {
         /// The member to type into: `<team>/<member>`.

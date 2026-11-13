@@ -285,6 +285,18 @@ impl View {
                 rest = tail;
                 continue;
             }
+            // Codex also breaks a word after `-` or `/`, losing no character,
+            // when the piece up to the next such break can't fit.
+            let piece = next
+                .find(['-', '/', ' '])
+                .map_or(next.as_str(), |n| &next[..=n]);
+            if self.vendor == Vendor::Codex
+                && line.ends_with(['-', '/'])
+                && !next.starts_with(' ')
+                && line.chars().count() + piece.trim_end().chars().count() > width
+            {
+                continue;
+            }
             // A word longer than the pane wraps without an inserted space.
             if line.chars().count() != width {
                 return false;
@@ -358,7 +370,9 @@ pub fn view(vendor: Vendor, capture: &str, geometry: Option<Geometry>) -> Result
         Vendor::Codex => codex_view(&lines)?,
     };
     if let Some(g) = geometry {
-        view.text_width = Some(g.width.saturating_sub(2));
+        // Codex leaves one more column unused at the right.
+        let unused = if vendor == Vendor::Codex { 3 } else { 2 };
+        view.text_width = Some(g.width.saturating_sub(unused));
         let row = g.cursor_y.checked_sub(first);
         view.cursor = row
             .filter(|&r| r < view.lines.len() && g.cursor_x >= 2)
