@@ -13,6 +13,8 @@ fn member(name: &str, parent: Option<&str>) -> StatusRow {
         role: None,
         vendor: Some("codex".into()),
         model: Some("example-model".into()),
+        effort: None,
+        overrides: Default::default(),
         parent: parent.map(String::from),
         posture: Some("vendor".into()),
         state: "working".into(),
@@ -141,4 +143,31 @@ fn remote_control_links_only_terminal_names_without_moving_columns() {
             piped
         );
     }
+}
+
+#[test]
+fn chosen_empty_roles_stay_visible_and_align_with_members() {
+    let chosen = StatusRow {
+        kind: "role",
+        member: None,
+        state: runtime::ON_DEMAND.into(),
+        start: false,
+        effort: Some("medium".into()),
+        overrides: borgchart::overrides::Overrides {
+            vendor: Some(borgchart::team::Vendor::Codex),
+            ..Default::default()
+        },
+        ..member("worker", Some("lead"))
+    };
+    let mut lead = member("lead", None);
+    lead.effort = Some("medium".into());
+    let text = runtime::render_status_as("harbor", &[lead, chosen], true, false, None);
+    let lead = text.lines().find(|line| line.contains("lead")).unwrap();
+    let worker = text
+        .lines()
+        .find(|line| line.contains("worker"))
+        .expect("chosen role remains visible");
+    assert!(worker.contains("example-model medium"), "{worker}");
+    let column = |line: &str| line[..line.find('Λ').unwrap()].chars().count();
+    assert_eq!(column(worker), column(lead), "{text}");
 }

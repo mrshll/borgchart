@@ -173,6 +173,9 @@ pub struct InstanceRecord {
     /// Every member issued in this team, by ID, with its role. A
     /// member's ID is never issued again in the team.
     pub members: BTreeMap<String, IssuedMember>,
+    /// Choices for agent roles in this team, resolved against current templates.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub overrides: BTreeMap<String, crate::overrides::Overrides>,
     /// Child teams, including deleted IDs so their addresses are never reused.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[serde(rename = "child_teams")]
@@ -196,6 +199,8 @@ pub struct InstanceRecord {
 #[serde(deny_unknown_fields)]
 pub struct IssuedMember {
     pub role: String,
+    #[serde(default, skip_serializing_if = "crate::overrides::Overrides::is_empty")]
+    pub overrides: crate::overrides::Overrides,
     /// Deleted members reserve their suffix but have no live state.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub deleted: bool,
@@ -250,6 +255,7 @@ impl InstanceRecord {
             id.clone(),
             IssuedMember {
                 role: role.to_string(),
+                overrides: Default::default(),
                 deleted: false,
                 cwd: None,
             },
@@ -283,6 +289,7 @@ impl InstanceRecord {
             id.clone(),
             IssuedMember {
                 role: role.to_string(),
+                overrides: Default::default(),
                 deleted: false,
                 cwd: None,
             },
@@ -435,6 +442,7 @@ pub fn create(
         folder: folder.to_path_buf(),
         created_at: created_at.to_string(),
         members: BTreeMap::new(),
+        overrides: BTreeMap::new(),
         copies: BTreeMap::new(),
         parent: None,
         running_at_stop: None,
@@ -451,6 +459,7 @@ pub fn create_copy(
     team_dir: &Path,
     folder: &Path,
     parent: Option<String>,
+    overrides: BTreeMap<String, crate::overrides::Overrides>,
 ) -> Result<(StateDir, InstanceRecord), String> {
     register(
         lock,
@@ -463,6 +472,7 @@ pub fn create_copy(
             folder: folder.to_path_buf(),
             created_at: crate::bus::time::utc_now(),
             members: BTreeMap::new(),
+            overrides,
             copies: BTreeMap::new(),
             parent,
             running_at_stop: None,
@@ -538,6 +548,7 @@ mod tests {
             folder: "/work".into(),
             created_at: "2026-11-08T00:00:00Z".into(),
             members: BTreeMap::new(),
+            overrides: BTreeMap::new(),
             copies: BTreeMap::new(),
             parent: None,
             running_at_stop: None,
@@ -573,6 +584,7 @@ mod tests {
             folder: "/y".into(),
             created_at: "now".into(),
             members: BTreeMap::new(),
+            overrides: BTreeMap::new(),
             copies: BTreeMap::new(),
             parent: None,
             running_at_stop: None,
@@ -624,6 +636,7 @@ mod tests {
             folder: "/y".into(),
             created_at: "now".into(),
             members: BTreeMap::new(),
+            overrides: BTreeMap::new(),
             copies: BTreeMap::new(),
             parent: None,
             running_at_stop: None,

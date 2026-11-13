@@ -65,6 +65,39 @@ fn valid_team_loads() {
 }
 
 #[test]
+fn invalid_other_vendor_pin_rejects_the_template() {
+    for (vendor, pins) in [
+        ("claude", "claude: opus low, codex: example-model extreme"),
+        ("codex", "claude: opus extreme, codex: example-model low"),
+    ] {
+        let f = Fixture::new();
+        f.write(
+            "template.yaml",
+            &format!("roles:\n  lead: {{prompt: lead.md, vendor: {vendor}}}\n"),
+        );
+        f.write(
+            "lead.md",
+            &format!("---\nmodels: {{{pins}}}\n---\nWork on the sample.\n"),
+        );
+        let (report, validated) = f.run();
+        assert!(
+            validated.is_none(),
+            "an invalid unused pin must not be accepted"
+        );
+        assert!(report.has_errors());
+        f.write(
+            "lead.md",
+            &format!(
+                "---\nmodels: {{{}}}\n---\nWork on the sample.\n",
+                pins.replace("extreme", "high")
+            ),
+        );
+        let (report, validated) = f.run();
+        assert!(validated.is_some(), "{}", errors(&report));
+    }
+}
+
+#[test]
 fn remote_control_refuses_codex_members() {
     let f = Fixture::new();
     f.edit(

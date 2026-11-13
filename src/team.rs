@@ -326,6 +326,8 @@ pub fn team_name(dir: &Path) -> String {
 pub struct Role {
     pub id: String,
     pub vendor: Vendor,
+    /// The role file's choices for each vendor, before create-time overrides.
+    pub pins: BTreeMap<Vendor, Model>,
     pub model: Option<Model>,
     pub parent: Option<String>,
     pub start: bool,
@@ -1045,7 +1047,7 @@ fn load_role(
             None
         }
     };
-    let mut model = None;
+    let mut pins = BTreeMap::new();
     let mut instruction = String::new();
     let mut prompt_sha256 = String::new();
     let mut source_tree = Vec::new();
@@ -1061,22 +1063,31 @@ fn load_role(
             report,
         ) {
             prompt_sha256 = sha;
-            let configured = match vendor {
-                Vendor::Claude => front.models.claude,
-                Vendor::Codex => front.models.codex,
+            let has_vendor_pin = match vendor {
+                Vendor::Claude => front.models.claude.is_some(),
+                Vendor::Codex => front.models.codex.is_some(),
             };
-            match configured {
-                Some(value) => match parse_model(&value) {
-                    Ok(parsed) => model = Some(parsed),
-                    Err(e) => report.error(Some(&shown), e),
-                },
-                None => report.warning(
+            for (pin_vendor, configured) in [
+                (Vendor::Claude, front.models.claude),
+                (Vendor::Codex, front.models.codex),
+            ] {
+                if let Some(value) = configured {
+                    match parse_model(&value) {
+                        Ok(parsed) => {
+                            pins.insert(pin_vendor, parsed);
+                        }
+                        Err(e) => report.error(Some(&shown), e),
+                    }
+                }
+            }
+            if !has_vendor_pin {
+                report.warning(
                     Some(&shown),
                     format!(
                         "no `models.{}` entry; the vendor's default model will be used",
                         vendor.as_str()
                     ),
-                ),
+                );
             }
             instruction = body;
         }
@@ -1092,7 +1103,8 @@ fn load_role(
     Some(Role {
         id: id.to_string(),
         vendor,
-        model,
+        model: pins.get(&vendor).cloned(),
+        pins,
         parent: m.parent.clone(),
         start: m.start.unwrap_or(true),
         interactive: m.interactive,

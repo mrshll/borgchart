@@ -55,7 +55,7 @@ You are the implementer on a development team. The lead assigns you one bounded 
 {{includes/base}}
 ```
 
-- **`models`:** pins a model, and optionally an effort, per vendor. Only the member's own vendor needs an entry; `templates/dev-team/` names both, so moving a member to the other vendor is a one-line change to its `vendor:` in `template.yaml`.
+- **`models`:** pins a model, and optionally an effort, per vendor. Only the member's own vendor needs an entry; `templates/dev-team/` names both, so a new member can choose the other vendor with `brg create <team>/<role> --set vendor=codex`, without changing the template. For a child team use `--set lead.vendor=codex`; its role choices appear in `status --json` before start, with separate `vendor`, `model` (name only) and `effort` fields. Only explicit choices are stored; other keys follow the current template at each start.
 - **Body:** the standing instruction. It's sent once, when the member starts.
 - **Includes:** one level deep.
 - **Another template's role file:** a line `{{templates/<template>/<role>}}` takes that role's instruction body wholesale, so a private template can reuse a shared lead and add its own lines ([format](format.md#reusing-a-shared-template)).

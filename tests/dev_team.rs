@@ -994,7 +994,7 @@ mod round {
                 .find(|r| r["role"] == designer)
                 .unwrap_or_else(|| panic!("{listed:?}"));
             let vendor = row["vendor"].as_str().unwrap();
-            let model = row["model"].as_str().unwrap().split(' ').next().unwrap();
+            let model = row["model"].as_str().unwrap();
             let route = documented(&rule, "brg-seat route <vendor> <model>")
                 .replace("<vendor>", vendor)
                 .replace("<model>", model);
@@ -1250,15 +1250,7 @@ mod round {
             .expect("the child team's lead role");
         let route = documented(&rule, "brg-seat route <vendor> <model>")
             .replace("<vendor>", lead_row["vendor"].as_str().unwrap())
-            .replace(
-                "<model>",
-                lead_row["model"]
-                    .as_str()
-                    .unwrap()
-                    .split(' ')
-                    .next()
-                    .unwrap(),
-            );
+            .replace("<model>", lead_row["model"].as_str().unwrap());
         let (answer, code) = run("dev-seat", &route);
         assert_eq!((code, answer.trim()), (0, "go: included quota available"));
 

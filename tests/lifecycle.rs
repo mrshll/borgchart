@@ -504,7 +504,8 @@ fn status_prints_the_same_tree_with_live_states() {
     assert_eq!(rows[0]["template"], "oncall");
     assert_eq!(rows[1]["kind"], "role");
     assert_eq!(rows[1]["parent"], env.m("lead"));
-    assert_eq!(rows[0]["model"], "opus high");
+    assert_eq!(rows[0]["model"], "opus");
+    assert_eq!(rows[0]["effort"], "high");
     assert_eq!(rows[0]["liveness"], "alive");
     assert!(rows[1].get("liveness").is_none(), "{}", rows[1]);
     assert_eq!(rows[1]["state"], "not created (start: false)");
