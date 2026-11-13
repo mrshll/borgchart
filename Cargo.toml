@@ -1,6 +1,6 @@
 [workspace]
-members = [".", "plugins/seat"]
-default-members = [".", "plugins/seat"]
+members = [".", "plugins/seat", "plugins/slack"]
+default-members = [".", "plugins/seat", "plugins/slack"]
 resolver = "3"
 
 [package]
@@ -14,7 +14,7 @@ repository = "https://github.com/mrshll/borgchart"
 publish = false
 
 [lib]
-# Internal only: used by `brg` and `brg-seat`. Not a public API.
+# Internal only: used by `brg` and its workspace plugins. Not a public API.
 path = "src/lib.rs"
 
 [[bin]]

@@ -10,7 +10,7 @@ Four checks must pass before a change merges. CI runs the Rust checks on Linux f
 .githooks/checks fast         # the fast tier (below)
 ```
 
-The tests need `tmux`, and `py` needs `uv`. Before running only the `dev_team` integration target, build its sibling plugin binary with `tools/cargo-slot cargo build --workspace --bins --all-features --locked`; `.githooks/checks test` does this automatically.
+The tests need `tmux`, and `py` needs `uv`. Before running only the `dev_team` or `slack_example` integration target, build its sibling plugin binary with `tools/cargo-slot cargo build --workspace --bins --all-features --locked`; `.githooks/checks test` does this automatically.
 
 `make build` builds the release workspace binaries; `make fmt` formats Rust, `make lint` runs clippy, and `make clean` removes build artifacts. Run `make` for help; [installation](#installing-from-a-checkout) uses `make install`.
 
@@ -91,9 +91,9 @@ A team that works on this repository should use binaries and template files from
 make install
 ```
 
-This builds the workspace release binaries with `--locked`, installs `brg` and `brg-seat` into `$HOME/.local/share/brg/bin/`, and records `git rev-parse HEAD` in `$HOME/.local/share/brg/REVISION`. Each binary is copied to a temporary name beside its destination and renamed into place, so readers see a complete file and running processes keep their old inode. Linux builds use `tools/cargo-slot` when executable; other systems use cargo directly.
+This builds the workspace release binaries with `--locked`, installs `brg`, `brg-seat` and `brg-slack` into `$HOME/.local/share/brg/bin/`, and records `git rev-parse HEAD` in `$HOME/.local/share/brg/REVISION`. Each binary is copied to a temporary name beside its destination and renamed into place, so readers see a complete file and running processes keep their old inode. Linux builds use `tools/cargo-slot` when executable; other systems use cargo directly. To install only Slack from a checkout, use `cargo install --path plugins/slack`.
 
-`PREFIX` changes the parent of `brg/` (default `$HOME/.local/share`); `BINDIR` changes where the `brg` and `brg-seat` symlinks go (default `$HOME/.local/bin`). For example, `make install PREFIX="$HOME/apps" BINDIR="$HOME/bin"`. Use absolute paths. The links point directly at `$PREFIX/brg/bin/<name>` and are replaced with `ln -sfn`. Keep `BINDIR` on `PATH`.
+`PREFIX` changes the parent of `brg/` (default `$HOME/.local/share`); `BINDIR` changes where the `brg`, `brg-seat` and `brg-slack` symlinks go (default `$HOME/.local/bin`). For example, `make install PREFIX="$HOME/apps" BINDIR="$HOME/bin"`. Use absolute paths. The links point directly at `$PREFIX/brg/bin/<name>` and are replaced with `ln -sfn`. Keep `BINDIR` on `PATH`.
 
 For later upgrades, run `make upgrade` from your own shell outside any member. It builds first, asks each tree with live members (including child teams) for its root leads' handover notes, waits for their replies and for working members to settle, then stops the trees, installs the built binaries and starts the trees fresh. A tree with live members but no live root lead is refused. `TIMEOUT=1800` bounds the handover and settling wait together in seconds; `FORCE=1` skips the handover messages, wait and working check, including for trees without live root leads. `DRY_RUN=1` prints the steps without sending messages or changing anything; `BRG` selects the installed binary (default `brg` on PATH). A build failure changes nothing; if installing fails after the stop, the trees are started again on whatever is installed.
 
