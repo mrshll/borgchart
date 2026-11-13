@@ -18,7 +18,7 @@ plugins:
       read: brg-slack read <ts>
       thread: brg-slack thread <ts>
       promote: brg-slack promote <ts> <reason>
-      react: brg-slack react <ts> <eyes|done>
+      react: brg-slack react <ts> <reaction>
       reply: brg-slack reply <thread_ts> <text>
       page: brg-slack page <user_id> <text>
 ```
@@ -42,8 +42,8 @@ The [slack-devops example](../../examples/slack-devops) provides a complete team
 - `promote <ts> <reason>`: send a fixed notice to the member's parent, with
   `--from` validating that route. The reasons are `outage`, `deploy`,
   `security`, `question`, `other`. No Slack text is forwarded.
-- `react <ts> <eyes|done>`: add eyes or a white check mark. An existing reaction
-  succeeds.
+- `react <ts> <reaction>`: use `eyes` or `done` to add eyes or a white check mark.
+  An existing reaction succeeds.
 - `reply <thread_ts> <text>`: post in the configured channel's thread, at most
   1,500 characters.
 - `page <user_id> <text>`: post a top-level mention of an allowlisted user in
