@@ -225,16 +225,19 @@ enum Command {
         #[arg(value_name = "TEAM", add = crate::complete::instances())]
         instance: Option<String>,
     },
-    /// List plugin secrets, their sources and environment status.
+    /// List plugin secrets, or check a registered team's secrets resolve.
     ///
-    /// Prints no values or references, runs no resolver and writes nothing.
+    /// Prints no values or references. Only --check runs the resolver.
     Secrets {
-        /// The template: its name in the search paths, or a path to its folder.
+        /// The template name or folder; with --check, a registered team ID.
         #[arg(add = crate::complete::teams())]
         template: String,
         /// Print {secrets: [{plugin, name, source, set?}]} as JSON.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "check")]
         json: bool,
+        /// Resolve and discard a registered team's secrets before a fresh start.
+        #[arg(long)]
+        check: bool,
     },
     /// List available team templates and their teams.
     ///
@@ -589,7 +592,15 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
                 ExitCode::SUCCESS
             }
         }
-        Command::Secrets { template, json } => {
+        Command::Secrets {
+            template,
+            json,
+            check,
+        } => {
+            if check {
+                or_fail!(runtime::check_secrets(&template));
+                return ExitCode::SUCCESS;
+            }
             let secrets = or_fail!(runtime::secrets(&template));
             if json {
                 println!("{}", serde_json::json!({ "secrets": secrets }));
