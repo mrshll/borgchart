@@ -101,21 +101,19 @@ struct Health {
 impl Health {
     fn write(&self, files: &State) -> Result<()> {
         let ok = self.connection.is_empty() && self.delivery.is_empty() && self.reaction.is_empty();
-        files.health(
-            ok,
-            &api::safe(&format!(
-                "{}; {} ignored{}{}; {}",
-                if self.connection.is_empty() {
-                    "listening"
-                } else {
-                    &self.connection
-                },
-                self.ignored,
-                if self.delivery.is_empty() { "" } else { "; " },
-                self.delivery,
-                self.reaction
-            )),
-        )?;
+        let state = if self.connection.is_empty() {
+            "listening"
+        } else {
+            &self.connection
+        };
+        let ignored = format!("{} ignored", self.ignored);
+        let parts = [state, &ignored, &self.delivery, &self.reaction];
+        let detail = parts
+            .iter()
+            .filter(|p| !p.is_empty())
+            .copied()
+            .collect::<Vec<_>>();
+        files.health(ok, &api::safe(&detail.join("; ")))?;
         Ok(())
     }
 }
