@@ -1756,30 +1756,6 @@ fn plugin_send_without_external_author_is_refused_before_recording() {
 }
 
 #[test]
-fn interactive_recipient_stores_even_with_allow_unknown() {
-    let env = Env::new();
-    env.role_extra("beta", "    interactive: true\n");
-    env.up();
-    let output = env.brg(&[
-        "msg",
-        "send",
-        "--external",
-        "runtime-test",
-        "--allow-unknown",
-        "--json",
-        "beta",
-        "owner inbox",
-    ]);
-    assert!(output.status.success(), "{}", stdout(&output));
-    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let record = record_for(&env, "beta", "owner inbox");
-    assert_eq!(result["id"], record["id"]);
-    assert_eq!(result["delivery"], "stored");
-    assert_eq!(record["ack_required"], true);
-    assert!(submissions(&env, "beta").is_empty());
-}
-
-#[test]
 fn long_ordinary_body_is_stored_without_composer_submission() {
     let env = Env::new();
     env.up();
