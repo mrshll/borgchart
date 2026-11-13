@@ -46,7 +46,9 @@ pub fn send(plugin: &str, target: &str, text: &str, from: Option<&str>) -> Resul
     };
     let output = bounded_process::run(&mut command, None, limits).map_err(|error| match error {
         bounded_process::Error::Deadline => "brg did not answer within 30 s; retry".into(),
-        bounded_process::Error::Io(io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied) => {
+        bounded_process::Error::Spawn(
+            io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied,
+        ) => {
             format!("cannot send with brg: {error}; check BORGCHART_BIN and retry")
         }
         _ => format!("cannot send with brg: {error}; retry"),

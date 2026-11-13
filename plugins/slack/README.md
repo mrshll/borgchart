@@ -43,8 +43,10 @@ The [slack-devops example](../../examples/slack-devops) provides a complete team
   `--from` validating that route. The reasons are `outage`, `deploy`,
   `security`, `question`, `other`. No Slack text is forwarded. For locked Codex,
   success prints `queued; brg sends it when the command returns`; brg's
-  PostToolUse hook sends as the member to its parent only. Definite failures
-  stay queued for the next tool call; uncertain sends need inspection before
+  PostToolUse hook sends as the member to its parent only and reports failures as
+  extra context. Permanent refusals are removed. If brg cannot start, the send
+  stays queued and is only retried at the next tool call, which may be the member's
+  next wake; uncertain sends need inspection before
   retrying (see [bus delivery](../../docs/bus.md#attention)). Claude sends directly.
 - `react <ts> <reaction>`: use `eyes` or `done` to add eyes or a white check mark.
   An existing reaction succeeds.

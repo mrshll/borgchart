@@ -994,18 +994,10 @@ fn post_hook_refuses_forged_sender_and_nonparent_requests() {
         )
         .unwrap();
     }
-    assert!(post_send(&env).status.success());
+    let output = post_send(&env);
+    assert_eq!(hook_context(&output).lines().count(), 2);
     assert!(parent_inbox(&env).is_empty());
-    assert_eq!(
-        fs::read_dir(&queue).unwrap().count(),
-        0,
-        "refused requests remain retryable"
-    );
-    assert!(
-        sender_state(&env)
-            .join(format!("members/{}/send-note", env.m("beta")))
-            .is_file()
-    );
+    assert_eq!(walk(&queue).len(), 0, "refused requests remain retryable");
 }
 
 fn replace_sender_brg(env: &Env, script: &str) {
@@ -1017,15 +1009,9 @@ fn replace_sender_brg(env: &Env, script: &str) {
 }
 
 #[test]
-fn post_hook_retries_only_uncommitted_failures() {
+fn post_hook_does_not_resend_a_committed_id_with_nonzero_exit() {
     let env = plugin_sender("codex", "locked");
     assert!(promote(&env, "1700000000.000001").status.success());
-    replace_sender_brg(
-        &env,
-        "#!/bin/sh\nprintf '%s\\n' '{\"ok\":false,\"code\":5,\"message\":\"not committed\"}'\nexit 5\n",
-    );
-    assert!(post_send(&env).status.success());
-    assert!(parent_inbox(&env).is_empty());
     // A committed ID wins even when delivery returns a nonzero exit.
     replace_sender_brg(
         &env,
@@ -1046,20 +1032,13 @@ fn post_hook_timeout_returns_promptly_without_retrying_uncertain_send() {
     assert!(promote(&env, "1700000000.000001").status.success());
     replace_sender_brg(&env, "#!/bin/sh\nsleep 120\n");
     let before = Instant::now();
-    assert!(post_send(&env).status.success());
+    let output = post_send(&env);
+    assert_eq!(hook_context(&output).lines().count(), 1);
     assert!(before.elapsed() < Duration::from_secs(35));
     let queue = sender_state(&env).join(format!("tmp/{}/send-queue", env.m("beta")));
-    let retained = fs::read_dir(&queue)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .collect::<Vec<_>>();
+    let retained = walk(&queue);
     assert_eq!(retained.len(), 1);
     assert_eq!(retained[0].extension().unwrap(), "sending");
-    assert!(
-        sender_state(&env)
-            .join(format!("members/{}/send-note", env.m("beta")))
-            .is_file()
-    );
     replace_sender_brg(
         &env,
         &format!("#!/bin/sh\nexec '{}' \"$@\"\n", env!("CARGO_BIN_EXE_brg")),
@@ -1140,6 +1119,183 @@ fn post_hook_leaves_requests_above_its_budget_for_next_tool() {
     assert_eq!(parent_inbox(&env).len(), 8);
     assert!(post_send(&env).status.success());
     assert_eq!(parent_inbox(&env).len(), 9);
+}
+
+#[test]
+fn post_hook_does_not_follow_a_queue_swapped_during_delivery() {
+    let env = plugin_sender("codex", "locked");
+    for ts in ["1700000000.000001", "1700000000.000002"] {
+        assert!(promote(&env, ts).status.success());
+    }
+    replace_sender_brg(
+        &env,
+        &format!(
+            "#!/bin/sh\ntouch \"$HOME/send-started\"\nwhile [ ! -e \"$HOME/continue-send\" ]; do sleep 0.01; done\nexec '{}' \"$@\"\n",
+            env!("CARGO_BIN_EXE_brg")
+        ),
+    );
+    let queue = sender_state(&env).join(format!("tmp/{}/send-queue", env.m("beta")));
+    let original: Vec<_> = fs::read_dir(&queue)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    let outside = env.path("outside");
+    fs::create_dir_all(&outside).unwrap();
+    for name in &original {
+        fs::write(outside.join(name), b"protected").unwrap();
+        fs::write(outside.join(name).with_extension("sending"), b"protected").unwrap();
+    }
+    let args = [
+        "_gate",
+        "post",
+        &sender_state(&env).display().to_string(),
+        &env.m("beta"),
+    ];
+    let mut hook = sender_command(&env, &args).spawn().unwrap();
+    env.wait_for("hook in slow sender", |e| {
+        e.path("home/send-started").exists()
+    });
+    if queue.symlink_metadata().is_ok() {
+        fs::rename(&queue, env.path("displaced-queue")).unwrap();
+    }
+    std::os::unix::fs::symlink(&outside, &queue).unwrap();
+    env.write("home/continue-send", "");
+    assert!(hook.wait().unwrap().success());
+    for name in &original {
+        for path in [
+            outside.join(name),
+            outside.join(name).with_extension("sending"),
+        ] {
+            assert_eq!(
+                fs::read(&path).unwrap(),
+                b"protected",
+                "hook touched {path:?}"
+            );
+        }
+    }
+    assert_eq!(parent_inbox(&env).len(), 2);
+}
+
+#[test]
+fn post_hook_delivers_option_like_text_as_a_message() {
+    let env = plugin_sender("codex", "locked");
+    assert!(promote(&env, "1700000000.000001").status.success());
+    let queue = sender_state(&env).join(format!("tmp/{}/send-queue", env.m("beta")));
+    let request = fs::read_dir(queue).unwrap().next().unwrap().unwrap().path();
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&fs::read(&request).unwrap()).unwrap();
+    value["text"] = serde_json::json!("--help");
+    fs::write(request, serde_json::to_vec(&value).unwrap()).unwrap();
+    assert!(post_send(&env).status.success());
+    let inbox = parent_inbox(&env);
+    assert_eq!(inbox.len(), 1);
+    assert_eq!(inbox[0]["body"], "--help");
+}
+
+#[test]
+fn post_hook_reports_retry_for_a_send_that_never_started() {
+    let env = plugin_sender("codex", "locked");
+    assert!(promote(&env, "1700000000.000001").status.success());
+    replace_sender_brg(&env, "#!/bin/sh\nexit 0\n");
+    fs::remove_file(env.path("send-brg")).unwrap();
+    let output = post_send(&env);
+    assert!(output.status.success());
+    assert!(parent_inbox(&env).is_empty());
+    replace_sender_brg(
+        &env,
+        &format!("#!/bin/sh\nexec '{}' \"$@\"\n", env!("CARGO_BIN_EXE_brg")),
+    );
+    assert!(post_send(&env).status.success());
+    assert_eq!(parent_inbox(&env).len(), 1);
+    assert_eq!(hook_context(&output).lines().count(), 1);
+}
+
+fn hook_context(output: &Output) -> String {
+    assert!(output.status.success(), "{output:?}");
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["hookSpecificOutput"]["hookEventName"], "PostToolUse");
+    value["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+#[test]
+fn post_hook_reports_permanent_refusals_and_delivers_later_requests() {
+    let env = plugin_sender("codex", "locked");
+    for ts in [
+        "1700000000.000001",
+        "1700000000.000002",
+        "1700000000.000003",
+    ] {
+        assert!(promote(&env, ts).status.success());
+    }
+    let queue = sender_state(&env).join(format!("tmp/{}/send-queue", env.m("beta")));
+    let mut paths = fs::read_dir(queue)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect::<Vec<_>>();
+    paths.sort();
+    for (index, path) in paths.iter().take(2).enumerate() {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        if index == 0 {
+            value["text"] = serde_json::json!("x".repeat(16385));
+        } else {
+            value["sender"] = serde_json::json!(env.m("alpha"));
+        }
+        fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+    }
+    let output = post_send(&env);
+    assert!(output.status.success());
+    let inbox = parent_inbox(&env);
+    assert_eq!(inbox.len(), 1);
+    assert!(
+        inbox[0]["body"]
+            .as_str()
+            .unwrap()
+            .contains("1700000000.000003")
+    );
+    let context = hook_context(&output);
+    assert_eq!(context.lines().count(), 2, "{context}");
+    assert!(post_send(&env).stdout.is_empty(), "refusals remain queued");
+    assert_eq!(parent_inbox(&env), inbox);
+}
+
+#[test]
+fn post_hook_reports_identity_mismatch_and_retries_with_the_right_identity() {
+    let env = plugin_sender("codex", "locked");
+    assert!(promote(&env, "1700000000.000001").status.success());
+    let args = [
+        "_gate",
+        "post",
+        &sender_state(&env).display().to_string(),
+        &env.m("beta"),
+    ];
+    let output = sender_command(&env, &args)
+        .env("BORGCHART_MEMBER", env.m("alpha"))
+        .output()
+        .unwrap();
+    assert_eq!(hook_context(&output).lines().count(), 1);
+    assert!(parent_inbox(&env).is_empty());
+    let output = post_send(&env);
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    assert_eq!(parent_inbox(&env).len(), 1);
+}
+
+#[test]
+fn post_hook_reports_claim_failure_and_retries_when_the_queue_is_writable() {
+    let env = plugin_sender("codex", "locked");
+    assert!(promote(&env, "1700000000.000001").status.success());
+    let queue = sender_state(&env).join(format!("tmp/{}/send-queue", env.m("beta")));
+    fs::set_permissions(&queue, fs::Permissions::from_mode(0o500)).unwrap();
+    let output = post_send(&env);
+    fs::set_permissions(&queue, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(hook_context(&output).lines().count(), 1);
+    assert!(parent_inbox(&env).is_empty());
+    assert!(post_send(&env).status.success());
+    assert_eq!(parent_inbox(&env).len(), 1);
 }
 
 #[test]

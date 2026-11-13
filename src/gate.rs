@@ -8,6 +8,7 @@
 //! failures other than exit code 2 as non-blocking.
 
 use std::collections::BTreeMap;
+use std::error::Error;
 use std::io::Read;
 use std::path::Path;
 use std::process::ExitCode;
@@ -167,9 +168,15 @@ pub fn hook_main(event: &str, state_root: &Path, member: &str) -> ExitCode {
     let state = StateDir::from_root(state_root);
     match event {
         "post" => {
-            if let Err(e) = post_send(&state, member) {
-                let note = state.member_dir(member).join("send-note");
-                let _ = write_private(&note, e.to_string().as_bytes());
+            let mut notes = Vec::new();
+            if let Err(e) = post_send(&state, member, &mut notes) {
+                notes.push(format!("Queued send uncertain: {e}; inspect bus history."));
+            }
+            if !notes.is_empty() {
+                println!(
+                    "{}",
+                    serde_json::json!({"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":notes.join("\n")}})
+                );
             }
             ExitCode::SUCCESS
         }
@@ -223,17 +230,22 @@ pub fn hook_main(event: &str, state_root: &Path, member: &str) -> ExitCode {
     }
 }
 
-fn post_send(state: &StateDir, member: &str) -> Result<(), Box<dyn std::error::Error>> {
-    use crate::bounded_process::{Limits, run};
+fn post_send(state: &StateDir, member: &str, log: &mut Vec<String>) -> Result<(), Box<dyn Error>> {
+    use crate::bounded_process::{Error, Limits, run};
+    use rustix::fs::{AtFlags, Dir, Mode, OFlags, open, openat, renameat, unlinkat};
     use std::time::{Duration, Instant};
-    use std::{fs, os::unix::fs::OpenOptionsExt, process::Command};
+    use std::{fs::File, process::Command};
     if std::env::var("BORGCHART_MEMBER").as_deref() != Ok(member) {
+        log.push("Queued sends kept for retry: member identity mismatch.".into());
         return Ok(());
     }
     let queue = state.member_tmp(member).join("send-queue");
-    if !fs::symlink_metadata(&queue).is_ok_and(|m| m.is_dir()) {
-        return Ok(());
-    }
+    let flags = OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let queue = match open(&queue, flags | OFlags::DIRECTORY, Mode::empty()) {
+        Ok(fd) => fd,
+        Err(rustix::io::Errno::NOENT) => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
     let meta = crate::state::read_meta(state)?.ok_or("no running team")?;
     let actor = meta.members.get(member).ok_or("unknown sender")?;
     let parent = actor.parent.as_deref().ok_or("sender has no parent")?;
@@ -242,10 +254,11 @@ fn post_send(state: &StateDir, member: &str) -> Result<(), Box<dyn std::error::E
     } else {
         format!("{}/{parent}", state.id)
     };
-    let mut requests = fs::read_dir(queue)?
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == "json"))
+    let mut requests = Dir::read_from(&queue)?
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter_map(|e| e.file_name().to_str().ok().map(str::to_owned))
+        .filter(|name| name.ends_with(".json"))
         .collect::<Vec<_>>();
     requests.sort();
     let deadline = Instant::now() + Duration::from_secs(60);
@@ -253,15 +266,15 @@ fn post_send(state: &StateDir, member: &str) -> Result<(), Box<dyn std::error::E
         if Instant::now() >= deadline {
             break;
         }
-        let sending = path.with_extension("sending");
-        if fs::rename(&path, &sending).is_err() {
+        let sending = format!("{path}.sending");
+        if let Err(e) = renameat(&queue, &path, &queue, &sending) {
+            if e != rustix::io::Errno::NOENT {
+                log.push(format!("Queued send kept for retry: claim failed ({e})."));
+            }
             continue;
         }
-        let flags = rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK;
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(flags.bits() as i32)
-            .open(&sending)?;
+        let flags = flags | OFlags::NONBLOCK;
+        let file = File::from(openat(&queue, &sending, flags, Mode::empty())?);
         let request: Value = serde_json::from_reader(file.take(65536)).unwrap_or_default();
         let target = request["target"].as_str().unwrap_or("");
         let text = request["text"].as_str().unwrap_or("");
@@ -269,30 +282,39 @@ fn post_send(state: &StateDir, member: &str) -> Result<(), Box<dyn std::error::E
             || (target != parent && target != full_parent)
             || text.is_empty()
         {
-            let note = state.member_dir(member).join("send-note");
-            write_private(&note, b"Refused queued send: wrong sender or target.\n")?;
-            fs::remove_file(sending)?;
+            log.push("Queued send refused: wrong sender, target or empty text.".into());
+            unlinkat(&queue, &sending, AtFlags::empty())?;
             continue;
         }
         let mut command = Command::new(&meta.brg);
-        command.args(["msg", "send", "--json", target, text]);
+        command.args(["msg", "send", "--json", "--", target, text]);
         let limits = Limits {
             deadline: deadline.min(Instant::now() + Duration::from_secs(30)),
             stdout_bytes: 65536,
             stderr_bytes: 65536,
         };
-        if let Ok(output) = run(&mut command, None, limits) {
+        let outcome = run(&mut command, None, limits);
+        if let Err(Error::Spawn(error)) = outcome {
+            renameat(&queue, &sending, &queue, &path)?;
+            log.push(format!(
+                "Queued send kept for retry: brg did not start ({error:?})."
+            ));
+            break;
+        }
+        if let Ok(output) = outcome {
             let result: Value = serde_json::from_slice(&output.stdout).unwrap_or_default();
             if output.status.success() || result["id"].is_string() {
-                fs::remove_file(sending)?;
+                unlinkat(&queue, &sending, AtFlags::empty())?;
                 continue;
             }
             if result["ok"] == false {
-                fs::rename(sending, path)?;
-                break;
+                unlinkat(&queue, &sending, AtFlags::empty())?;
+                let detail = result["message"].to_string();
+                log.push(format!("Queued send refused: {detail:.160}"));
+                continue;
             }
         }
-        return Err("Queued send outcome uncertain; inspect .sending files in the member's tmp/send-queue and the bus history before retrying.\n".into());
+        return Err("unknown outcome; inspect .sending files before retrying".into());
     }
     Ok(())
 }

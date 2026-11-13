@@ -87,7 +87,7 @@ fn expired_deadline_never_spawns_and_spawn_errors_are_sanitized() {
             limits()
         )
         .unwrap_err(),
-        Error::Io(std::io::ErrorKind::NotFound)
+        Error::Spawn(std::io::ErrorKind::NotFound)
     );
 }
 

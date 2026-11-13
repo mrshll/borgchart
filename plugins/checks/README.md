@@ -89,8 +89,10 @@ Actions run in the calling member's folder and use the same state directory:
   route. Reasons are fixed: `outage`, `alert`, `question`, `other`. Success
   prints brg's output, including its ID, and exits 0. For locked Codex members,
   it instead prints `queued; brg sends it when the command returns`: brg's
-  PostToolUse hook sends as the member, to its parent only. Definite failures
-  stay queued for the next tool call; uncertain sends need inspection before
+  PostToolUse hook sends as the member, to its parent only, and reports failures
+  as extra context. Permanent refusals are removed. If brg cannot start, the send
+  stays queued and is only retried at the next tool call, which may be the member's
+  next wake; uncertain sends need inspection before
   retrying (see [bus delivery](../../docs/bus.md#attention)). Other failures
   print brg's error and exit 1; inspect any committed ID before retrying.
 
