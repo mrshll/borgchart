@@ -8,7 +8,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Cell, Paragraph, Row, Table, TableState};
+use ratatui::widgets::{Block, BorderType, Cell, Clear, Paragraph, Row, Table, TableState};
 
 use crate::address::{self, Instance};
 use crate::runtime::{self, StatusRow};
@@ -29,22 +29,14 @@ fn watch_draw(
     feed: Option<&crate::graph::feed::Feed>,
     motion: &mut crate::graph::layout::Motion,
     now: Duration,
-    error: &str,
+    errors: [&str; 2],
+    refreshed: u64,
 ) {
-    let title = if headers {
-        "teams".into()
-    } else {
-        sections
-            .first()
-            .map_or_else(String::new, |s| s.header.clone())
-    };
+    let Rect { width, height, .. } = frame.area();
+    let title = sections.first().map_or("", |s| s.header.as_str());
+    let title = if headers { "teams" } else { title };
     if messages {
-        let area = Rect::new(
-            0,
-            2,
-            frame.area().width,
-            frame.area().height.saturating_sub(3),
-        );
+        let area = Rect::new(0, 2, width, height.saturating_sub(3));
         if let (Some(section), Some(feed)) = (sections.first(), feed) {
             let nodes = crate::graph::layout::nodes(
                 &section.rows,
@@ -62,47 +54,52 @@ fn watch_draw(
                 std::time::SystemTime::now(),
             );
         } else {
-            frame.render_widget(
-                Paragraph::new("name a team for its messages: brg status -w <team>"),
-                area,
-            );
+            let prompt = if selected_source(sections).is_some() && !errors[1].is_empty() {
+                errors[1]
+            } else {
+                "name a team for its messages: brg status -w <team>"
+            };
+            frame.render_widget(Paragraph::new(prompt), area);
         }
     } else {
         draw(
             frame,
-            &title,
+            title,
             sections,
             headers,
             &mut TableState::default(),
             "",
             None,
             true,
-            None,
+            working(sections).then(|| (now.as_millis() / SPIN_INTERVAL.as_millis()) as usize),
         );
     }
     let rows: Vec<_> = sections.iter().flat_map(|s| s.rows.clone()).collect();
     frame.render_widget(
         Paragraph::new(summary_line(&rows, true)),
-        Rect::new(0, 0, frame.area().width, 1),
+        Rect::new(0, 0, width, 1),
     );
     let tabs = if messages {
         "tree │ ▸messages"
     } else {
         "▸tree │ messages"
     };
-    let x = frame.area().width.saturating_sub(18);
-    frame.render_widget(
-        Paragraph::new(tabs),
-        Rect::new(x, 0, frame.area().width - x, 1),
-    );
-    let y = frame.area().height.saturating_sub(1);
+    let x = width.saturating_sub(18);
+    frame.render_widget(Paragraph::new(tabs), Rect::new(x, 0, width - x, 1));
+    let footer = Rect::new(0, height.saturating_sub(1), width, 1);
+    frame.render_widget(Clear, footer);
+    let error = errors.into_iter().find(|e| !e.is_empty()).unwrap_or("");
     frame.render_widget(
         Paragraph::new(if error.is_empty() {
-            "Tab messages · q quit"
+            format!(
+                "Tab {} · q quit · refreshed {} UTC",
+                if messages { "tree" } else { "messages" },
+                clock(refreshed)
+            )
         } else {
-            error
+            error.into()
         }),
-        Rect::new(0, y, frame.area().width, 1),
+        footer,
     );
 }
 fn watch_key(messages: &mut bool, code: KeyCode, modifiers: KeyModifiers) -> bool {
@@ -115,6 +112,10 @@ fn watch_key(messages: &mut bool, code: KeyCode, modifiers: KeyModifiers) -> boo
         KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => false,
         _ => true,
     }
+}
+
+fn selected_source(sections: &[Section]) -> Option<String> {
+    (sections.len() == 1).then(|| sections[0].inst.id.clone())
 }
 
 /// `brg status -w`: tabs on painted terminals, the plain stream otherwise.
@@ -133,42 +134,46 @@ pub fn watch(one: Option<&Instance>, interval: Duration) -> Result<(), String> {
     let mut motion = Motion::default();
     let mut messages = false;
     let mut error = String::new();
+    let mut follower_error = String::new();
+    let mut refresh_time = epoch();
     let mut terminal = ratatui::try_init().map_err(|e| format!("cannot start the screen: {e}"))?;
     let start = Instant::now();
     let mut refreshed = Instant::now();
     let mut polled = Instant::now() - store::POLL;
     let result = (|| {
         loop {
-            if refreshed.elapsed() >= interval {
+            let refresh = refreshed.elapsed() >= interval;
+            if refresh {
                 match load(one, false) {
                     Ok(new) => {
                         sections = new;
                         error.clear();
+                        refresh_time = epoch();
                     }
                     Err(e) => error = e,
                 }
                 refreshed = Instant::now();
             }
-            let selected = (sections.len() == 1).then(|| sections[0].inst.id.clone());
-            if selected != source {
+            let selected = selected_source(&sections);
+            if selected != source || (refresh && feed.is_none()) {
+                if selected != source {
+                    follower_error.clear();
+                }
                 source = selected;
                 motion = Motion::default();
-                feed = match sections.first().filter(|_| source.is_some()) {
-                    Some(s) => match Feed::open(StorePaths::new(&s.inst.state)) {
-                        Ok(f) => Some(f),
-                        Err(e) => {
-                            error = e;
-                            None
-                        }
-                    },
-                    None => None,
-                };
+                feed = sections
+                    .first()
+                    .filter(|_| source.is_some())
+                    .map(|s| Feed::open(StorePaths::new(&s.inst.state)))
+                    .transpose()
+                    .unwrap_or_else(|e| {
+                        follower_error = e;
+                        None
+                    });
             }
             if polled.elapsed() >= store::POLL {
-                if let Some(feed) = &mut feed
-                    && let Err(e) = feed.poll(start.elapsed())
-                {
-                    error = e;
+                if let Some(feed) = &mut feed {
+                    follower_error = feed.poll(start.elapsed()).err().unwrap_or_default();
                 }
                 polled = Instant::now();
             }
@@ -182,7 +187,8 @@ pub fn watch(one: Option<&Instance>, interval: Duration) -> Result<(), String> {
                         feed.as_ref(),
                         &mut motion,
                         start.elapsed(),
-                        &error,
+                        [&error, &follower_error],
+                        refresh_time,
                     )
                 })
                 .map_err(|e| e.to_string())?;
@@ -194,6 +200,11 @@ pub fn watch(one: Option<&Instance>, interval: Duration) -> Result<(), String> {
                 .min(store::POLL.saturating_sub(polled.elapsed()));
             if moving {
                 timeout = timeout.min(Duration::from_millis(80));
+            }
+            if !messages && working(&sections) {
+                let step = SPIN_INTERVAL.as_millis() as u64;
+                let remaining = step - start.elapsed().as_millis() as u64 % step;
+                timeout = timeout.min(Duration::from_millis(remaining));
             }
             if event::poll(timeout).map_err(|e| e.to_string())?
                 && let Event::Key(key) = event::read().map_err(|e| e.to_string())?
@@ -922,6 +933,59 @@ mod tests {
 #[cfg(test)]
 mod watch_tests {
     use super::*;
+    fn section() -> Section {
+        Section {
+            inst: Instance {
+                id: "demo".into(),
+                state: crate::state::StateDir::from_root(std::path::Path::new(
+                    "/example/state/demo",
+                )),
+                record: serde_json::from_value(serde_json::json!({
+                    "schema":1,"id":"demo","template":"example","template_dir":"/example/template",
+                    "folder":"/example/work","created_at":"2026-01-01T00:00:00Z","members":{}
+                }))
+                .unwrap(),
+            },
+            header: "demo".into(),
+            rows: vec![crate::graph::layout::tests::row("demo", "lead-abcd", None)],
+        }
+    }
+    #[test]
+    fn source_selection_never_follows_one_of_several_trees() {
+        assert_eq!(selected_source(&[section()]).as_deref(), Some("demo"));
+        let mut other = section();
+        other.inst.id = "other".into();
+        assert_eq!(selected_source(&[section(), other]), None);
+        assert_eq!(selected_source(&[]), None);
+    }
+    #[test]
+    fn selected_team_without_a_feed_shows_the_follower_error() {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|f| {
+                watch_draw(
+                    f,
+                    &[section()],
+                    false,
+                    true,
+                    None,
+                    &mut crate::graph::layout::Motion::default(),
+                    Duration::ZERO,
+                    ["", "cannot follow; repair the message store"],
+                    0,
+                )
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let graph: String = buffer.content[160..1840]
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(graph.contains("cannot follow"), "{graph}");
+        let footer: String = buffer.content[1840..].iter().map(|c| c.symbol()).collect();
+        assert!(footer.contains("cannot follow") && !footer.contains("refreshed"));
+    }
     #[test]
     fn tab_switch_preserves_the_shared_tree_renderer_without_selection() {
         let mut tab = false;
@@ -930,6 +994,12 @@ mod watch_tests {
         assert!(watch_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE));
         assert!(!tab);
         assert!(!watch_key(&mut tab, KeyCode::Char('q'), KeyModifiers::NONE));
+        assert!(!watch_key(&mut tab, KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!watch_key(
+            &mut tab,
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL
+        ));
         let dir = tempfile::tempdir().unwrap();
         let paths = crate::bus::layout::StorePaths::from_root(dir.path());
         let mut feed = crate::graph::feed::Feed::open(paths.clone()).unwrap();
@@ -947,21 +1017,8 @@ mod watch_tests {
         crate::bus::fsx::write_new(&paths.record(1), &serde_json::to_vec(&record).unwrap())
             .unwrap();
         feed.poll(Duration::ZERO).unwrap();
-        let sections = vec![Section {
-            inst: Instance {
-                id: "demo".into(),
-                state: crate::state::StateDir::from_root(std::path::Path::new(
-                    "/example/state/demo",
-                )),
-                record: serde_json::from_value(serde_json::json!({
-                    "schema":1,"id":"demo","template":"example","template_dir":"/example/template",
-                    "folder":"/example/work","created_at":"2026-01-01T00:00:00Z","members":{}
-                }))
-                .unwrap(),
-            },
-            header: "demo".into(),
-            rows: vec![crate::graph::layout::tests::row("demo", "lead-abcd", None)],
-        }];
+        let mut sections = vec![section()];
+        sections[0].rows[0].state = "working".into();
         let mut tree = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
         let mut watch = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
         tree.draw(|f| {
@@ -974,7 +1031,7 @@ mod watch_tests {
                 "",
                 None,
                 true,
-                None,
+                Some(1),
             )
         })
         .unwrap();
@@ -987,8 +1044,9 @@ mod watch_tests {
                     false,
                     Some(&feed),
                     &mut crate::graph::layout::Motion::default(),
-                    Duration::ZERO,
-                    "",
+                    SPIN_INTERVAL,
+                    ["", ""],
+                    0,
                 )
             })
             .unwrap();
@@ -999,8 +1057,19 @@ mod watch_tests {
                 assert_eq!(a[(x, y)], b[(x, y)]);
             }
         }
-        let text = b.content.iter().map(|c| c.symbol()).collect::<String>();
-        assert!(!text.contains(&record.body));
+        let footer = b
+            .content
+            .chunks(80)
+            .last()
+            .unwrap()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(
+            footer.contains("Tab messages")
+                && footer.trim_end().ends_with("refreshed 00:00:00 UTC"),
+            "{footer}"
+        );
         watch
             .draw(|f| {
                 watch_draw(
@@ -1011,7 +1080,8 @@ mod watch_tests {
                     Some(&feed),
                     &mut crate::graph::layout::Motion::default(),
                     Duration::ZERO,
-                    "",
+                    ["", ""],
+                    0,
                 )
             })
             .unwrap();
@@ -1024,20 +1094,13 @@ mod watch_tests {
             .collect::<String>();
         assert!(text.contains("waiting") && text.contains("m1"));
         assert!(!text.contains(&record.body));
-        println!(
-            "messages tab 80x24:\n{}",
-            watch
-                .backend()
-                .buffer()
-                .content
-                .chunks(80)
-                .map(|line| line.iter().map(|c| c.symbol()).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
+        assert!(
+            text.contains("Tab tree") && text.contains("refreshed 00:00:00 UTC"),
+            "{text}"
         );
     }
     #[test]
-    fn multiple_tree_graph_requests_a_scope_and_refresh_errors_stay_visible() {
+    fn missing_feed_requests_a_scope_and_refresh_errors_stay_visible() {
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
         terminal
@@ -1050,7 +1113,8 @@ mod watch_tests {
                     None,
                     &mut crate::graph::layout::Motion::default(),
                     Duration::ZERO,
-                    "cannot refresh; check the registry",
+                    ["cannot refresh; check the registry", ""],
+                    0,
                 )
             })
             .unwrap();
@@ -1075,7 +1139,8 @@ mod watch_tests {
                         None,
                         &mut crate::graph::layout::Motion::default(),
                         Duration::ZERO,
-                        "",
+                        ["", ""],
+                        0,
                     )
                 })
                 .unwrap();

@@ -128,10 +128,13 @@ pub(crate) fn draw(
                 match n.state.as_str() {
                     "working" => ("●", palette::BUSY),
                     "stopped" | "not started" => ("·", palette::FADED),
+                    "exited" => ("·", palette::ALERT),
+                    "blocked" => ("○", palette::ALERT),
                     _ => ("○", palette::BUSY),
                 }
             };
-            let color = if flashing || waiting.contains_key(&n.id) {
+            let pending = flashing || waiting.contains_key(&n.id);
+            let color = if pending && color != palette::ALERT {
                 palette::MESSAGE
             } else {
                 color
@@ -169,7 +172,7 @@ pub(crate) fn draw(
         });
         let fact = match e.kind {
             Kind::Sent => format!("{} → {}", name(&e.msg.from), name(&e.msg.to)),
-            Kind::Acked(d) => format!("acked by {} after {}s", name(&e.msg.to), d.as_secs()),
+            Kind::Acked(d) => format!("acked by {} after {}", name(&e.msg.to), age(d)),
             Kind::Delivered => "delivered".into(),
         };
         events.push(format!("{} {} {fact}", &at[11..19], e.msg.id));
@@ -187,16 +190,13 @@ pub(crate) fn draw(
         groups
             .iter()
             .map(|(to, msgs)| format!(
-                "{} {} {}s",
+                "{} {} {}",
                 name(to),
                 msgs.iter()
                     .map(|m| m.id.as_str())
                     .collect::<Vec<_>>()
                     .join(" "),
-                clock
-                    .duration_since(msgs[0].at)
-                    .unwrap_or_default()
-                    .as_secs()
+                age(clock.duration_since(msgs[0].at).unwrap_or_default())
             ))
             .collect::<Vec<_>>()
             .join(" · ")
@@ -205,6 +205,14 @@ pub(crate) fn draw(
         Paragraph::new(waiting),
         Rect::new(area.x, area.y + h + 2, area.width, 1),
     );
+}
+fn age(d: Duration) -> String {
+    let s = d.as_secs();
+    let (unit, suffix) = [(86400, "d"), (3600, "h"), (60, "m"), (1, "s")]
+        .into_iter()
+        .find(|(unit, _)| s >= *unit)
+        .unwrap_or((1, "s"));
+    format!("{}{suffix}", s / unit)
 }
 #[cfg(test)]
 mod tests {
@@ -312,35 +320,121 @@ mod tests {
         assert!(text.contains("00:02:21"), "ack timestamp: {text}");
     }
     #[test]
-    fn messages_tab_at_eighty_columns_remains_readable() {
+    fn failed_members_stay_visibly_alert_in_the_graph() {
         let dir = tempfile::tempdir().unwrap();
-        let feed = Feed::open(crate::bus::layout::StorePaths::from_root(dir.path())).unwrap();
+        let mut feed = Feed::open(crate::bus::layout::StorePaths::from_root(dir.path())).unwrap();
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-        terminal
-            .draw(|f| {
-                draw(
-                    f,
-                    f.area(),
-                    &layout::tests::fixture(),
-                    &feed,
-                    &mut Motion::default(),
-                    Duration::ZERO,
-                    UNIX_EPOCH,
-                )
-            })
-            .unwrap();
-        let text = terminal
-            .backend()
-            .buffer()
-            .content
-            .chunks(80)
-            .map(|line| line.iter().map(|c| c.symbol()).collect::<String>())
-            .collect::<Vec<_>>()
-            .join("\n");
-        println!("{text}");
-        assert!(
-            text.contains("dev-search") && text.contains("owner"),
-            "{text}"
+        let mut nodes = layout::tests::fixture();
+        for state in ["exited", "blocked"] {
+            for node in &mut nodes {
+                node.state = state.into();
+            }
+            for (seq, node) in nodes.iter().filter(|n| !n.outside).enumerate() {
+                feed.waiting.insert(
+                    seq as u64,
+                    crate::graph::feed::Msg {
+                        id: format!("m{seq}"),
+                        seq: seq as u64,
+                        from: "external:owner".into(),
+                        to: node.id.clone(),
+                        at: UNIX_EPOCH,
+                        ack_required: true,
+                    },
+                );
+            }
+            terminal
+                .draw(|f| {
+                    draw(
+                        f,
+                        f.area(),
+                        &nodes,
+                        &feed,
+                        &mut Motion::default(),
+                        Duration::ZERO,
+                        UNIX_EPOCH,
+                    )
+                })
+                .unwrap();
+            let points = layout::positions(&nodes, 80, 21);
+            for node in nodes.iter().filter(|n| !n.outside) {
+                let (x, y) = points[&node.id];
+                assert_eq!(
+                    terminal.backend().buffer()[(x.round() as u16, y.round() as u16)].fg,
+                    rgb(palette::ALERT),
+                    "{state}: {}",
+                    node.id
+                );
+            }
+        }
+    }
+    #[test]
+    fn waiting_and_ack_ages_use_whole_readable_units() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::bus::layout::StorePaths::from_root(dir.path());
+        let mut feed = Feed::open(paths).unwrap();
+        let msg = crate::graph::feed::Msg {
+            id: "m1".into(),
+            seq: 1,
+            from: "external:owner".into(),
+            to: "demo/lead-abcd".into(),
+            at: UNIX_EPOCH,
+            ack_required: true,
+        };
+        feed.routes.insert((msg.from.clone(), msg.to.clone()));
+        let nodes = layout::nodes(
+            &[layout::tests::row("demo", "lead-abcd", None)],
+            "demo",
+            None,
+            &feed,
         );
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        for (seconds, expected) in [
+            (0, "0s"),
+            (41, "41s"),
+            (59, "59s"),
+            (60, "1m"),
+            (419, "6m"),
+            (3599, "59m"),
+            (3600, "1h"),
+            (14399, "3h"),
+            (86399, "23h"),
+            (86400, "1d"),
+            (259199, "2d"),
+        ] {
+            let age = Duration::from_secs(seconds);
+            feed.waiting.insert(1, msg.clone());
+            feed.events.clear();
+            feed.events.push_back(crate::graph::feed::Event {
+                msg: msg.clone(),
+                kind: Kind::Acked(age),
+                observed: Duration::ZERO,
+            });
+            terminal
+                .draw(|f| {
+                    draw(
+                        f,
+                        f.area(),
+                        &nodes,
+                        &feed,
+                        &mut Motion::default(),
+                        Duration::from_secs(3),
+                        UNIX_EPOCH + age,
+                    )
+                })
+                .unwrap();
+            let lines: Vec<_> = terminal
+                .backend()
+                .buffer()
+                .content
+                .chunks(80)
+                .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
+                .collect();
+            assert!(
+                lines[21].contains(&format!("after {expected}")),
+                "{}",
+                lines[21]
+            );
+            assert!(lines[23].trim_end().ends_with(expected), "{}", lines[23]);
+        }
     }
 }

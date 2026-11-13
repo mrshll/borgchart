@@ -654,6 +654,11 @@ fn watch_tabs_follow_messages_without_leaking_bodies_and_restore_the_terminal() 
     assert!(out.status.success(), "{out:?}");
     let output = String::from_utf8(out.stdout).unwrap();
     let id = output.split_whitespace().next().unwrap();
+    let messages = root.join(format!("state/{id}/messages"));
+    let lock = messages.join("lock");
+    let saved_lock = root.join("saved-lock");
+    fs::rename(&lock, &saved_lock).unwrap();
+    std::os::unix::fs::symlink(&saved_lock, &lock).unwrap();
     let script = root.join("watch.sh");
     fs::write(&script,format!("#!/bin/sh\nenv -i PATH={guard}:{root}/bin:/usr/bin:/bin HOME={root}/home TERM=xterm-256color LANG=C.UTF-8 BORGCHART_CONFIG={root}/missing.yaml BORGCHART_STATE_HOME={root}/state BORGCHART_TMUX_TMPDIR={tmpdir} BORGCHART_TMUX_SOCKET={inner} {brg} status -w {id} --interval 1\nprintf 'RESTORED:'\nstty -a\nsleep 600\n",guard=private.bin().display(),root=root.display(),tmpdir=private.dir().display())).unwrap();
     let out = private
@@ -667,6 +672,24 @@ fn watch_tabs_follow_messages_without_leaking_bodies_and_restore_the_terminal() 
     wait("tree tab", || screen().contains("▸tree"), screen);
     tmux(&private, &outer, &["send-keys", "-t", "=o:", "Tab"]);
     wait("messages tab", || screen().contains("▸messages"), screen);
+    let deadline = Instant::now() + Duration::from_millis(1250);
+    while Instant::now() < deadline {
+        let failed = screen();
+        let lines: Vec<_> = failed.lines().collect();
+        let error = lines.last().unwrap().trim();
+        assert!(
+            !error.is_empty() && lines[2..23].iter().any(|line| line.trim() == error),
+            "follower error must survive member refresh in the graph and footer: {failed}"
+        );
+        std::thread::sleep(Duration::from_millis(150));
+    }
+    fs::remove_file(&lock).unwrap();
+    fs::rename(&saved_lock, &lock).unwrap();
+    wait(
+        "follower open retried after member refresh",
+        || screen().contains("waiting"),
+        screen,
+    );
     let record: serde_json::Value =
         serde_json::from_slice(&fs::read(root.join(format!("state/{id}/team.json"))).unwrap())
             .unwrap();
@@ -704,6 +727,29 @@ fn watch_tabs_follow_messages_without_leaking_bodies_and_restore_the_terminal() 
         "create: {output}send: {}graph:\n{}",
         String::from_utf8_lossy(&out.stdout),
         screen()
+    );
+    let corrupt = messages.join("records/0000000002.json");
+    fs::write(&corrupt, "{").unwrap();
+    wait(
+        "poll error",
+        || {
+            screen()
+                .lines()
+                .last()
+                .is_some_and(|line| line.contains("m2"))
+        },
+        screen,
+    );
+    fs::remove_file(&corrupt).unwrap();
+    wait(
+        "successful poll clears the follower error",
+        || {
+            screen()
+                .lines()
+                .last()
+                .is_some_and(|line| line.contains("refreshed"))
+        },
+        screen,
     );
     tmux(&private, &outer, &["send-keys", "-t", "=o:", "q"]);
     wait(

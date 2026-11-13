@@ -258,7 +258,7 @@ enum Command {
     /// the tree counts working and idle members, rows needing
     /// you and unacked messages. Painted output uses a filled red state label
     /// for attention and a gold ◆ for running teams. Working marks spin in
-    /// --interactive; NO_COLOR suppresses painting and motion.
+    /// --watch and --interactive; NO_COLOR suppresses painting and motion.
     Status {
         /// The team (default: every top-level team and its child teams).
         #[arg(value_name = "TEAM", add = crate::complete::instances())]

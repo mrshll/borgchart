@@ -51,11 +51,8 @@ pub(crate) fn nodes(
             };
             let id = format!("{}/{}", r.instance, r.name);
             let label = if root && r.instance != scope {
-                format!(
-                    "{}/{}",
-                    r.instance.rsplit('/').next().unwrap_or(&r.instance),
-                    r.name
-                )
+                let team = r.instance.rsplit('/').next().unwrap_or(&r.instance);
+                format!("{team}/{}", r.name)
             } else {
                 r.name.clone()
             };
@@ -143,6 +140,9 @@ fn cluster(nodes: &[Node], id: &str, start: f64, end: f64, depth: f64, points: &
     }
 }
 fn weight(nodes: &[Node], id: &str) -> usize {
+    if nodes.iter().any(|n| n.id == id && n.outside) {
+        return 1;
+    }
     1 + nodes
         .iter()
         .filter(|n| n.parent.as_deref() == Some(id) && !n.outside)
@@ -171,40 +171,23 @@ pub(crate) fn positions(nodes: &[Node], width: u16, height: u16) -> Points {
                 && !n.outside
         }))
         .collect();
-    let total: usize = items
-        .iter()
-        .map(|n| if n.outside { 1 } else { weight(nodes, &n.id) })
-        .sum();
-    let first = items
-        .first()
-        .map_or(1, |n| if n.outside { 1 } else { weight(nodes, &n.id) });
-    let mut at = -std::f64::consts::PI * first as f64 / total.max(1) as f64;
-    for item in items {
-        let next = at
-            + std::f64::consts::TAU
-                * (if item.outside {
-                    1
-                } else {
-                    weight(nodes, &item.id)
-                }) as f64
-                / total as f64;
+    let sizes: Vec<_> = items.iter().map(|n| weight(nodes, &n.id)).collect();
+    let total = sizes.iter().sum::<usize>().max(1) as f64;
+    let mut at = -std::f64::consts::PI * sizes.first().copied().unwrap_or(1) as f64 / total;
+    for (item, size) in items.into_iter().zip(sizes) {
+        let next = at + std::f64::consts::TAU * size as f64 / total;
         cluster(nodes, &item.id, at, next, 1., &mut points);
         at = next;
     }
     // Reserve label room horizontally, then fit the occupied bounds vertically.
     let pad = (width as f64 * 0.20).min(26.);
-    for axis in [false, true] {
-        let values: Vec<_> = points
-            .values()
-            .map(|&(x, y)| if axis { y } else { x })
-            .collect();
-        let low = values.iter().copied().fold(f64::INFINITY, f64::min);
-        let high = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        let (min, max) = if axis {
-            (1., height.saturating_sub(2) as f64)
-        } else {
-            (pad, width as f64 - 1. - pad)
-        };
+    for (axis, min, max) in [
+        (false, pad, width as f64 - 1. - pad),
+        (true, 1., height.saturating_sub(2) as f64),
+    ] {
+        let coord = |&(x, y): &(f64, f64)| if axis { y } else { x };
+        let low = points.values().map(coord).fold(f64::INFINITY, f64::min);
+        let high = points.values().map(coord).fold(f64::NEG_INFINITY, f64::max);
         for p in points.values_mut() {
             let v = if axis { &mut p.1 } else { &mut p.0 };
             *v = if high == low {
@@ -239,13 +222,9 @@ impl Motion {
             .iter()
             .map(|(id, &end)| {
                 let start = self.old.get(id).copied().unwrap_or(end);
-                (
-                    id.clone(),
-                    (
-                        start.0 + (end.0 - start.0) * t,
-                        start.1 + (end.1 - start.1) * t,
-                    ),
-                )
+                let x = start.0 + (end.0 - start.0) * t;
+                let y = start.1 + (end.1 - start.1) * t;
+                (id.clone(), (x, y))
             })
             .collect()
     }
@@ -399,6 +378,40 @@ pub(crate) mod tests {
         // Outside parties occupy the first sectors, clockwise from the top.
         assert!(p["external:owner"].1 < p["demo/lead-abcd"].1);
         assert!(p["external:slack"].0 > p["external:owner"].0);
+        let root = "demo/lead-abcd";
+        let items: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.outside)
+            .chain(nodes.iter().filter(|n| n.parent.as_deref() == Some(root)))
+            .collect();
+        let total = nodes.len() - 1;
+        let mut start_angle = -std::f64::consts::PI / total as f64;
+        let origin = p[root];
+        let scale_y = origin.1 - p["external:owner"].1;
+        let scale_x =
+            (p["external:slack"].0 - origin.0) / (std::f64::consts::TAU / total as f64).sin();
+        for item in items {
+            let members: Vec<_> = nodes
+                .iter()
+                .filter(|n| n.id == item.id || n.parent.as_deref() == Some(&item.id))
+                .collect();
+            let end_angle =
+                start_angle + std::f64::consts::TAU * members.len() as f64 / total as f64;
+            for member in members {
+                let (x, y) = p[&member.id];
+                let (x, y) = ((x - origin.0) / scale_x, (y - origin.1) / scale_y);
+                let mut angle = x.atan2(-y);
+                if angle < start_angle {
+                    angle += std::f64::consts::TAU;
+                }
+                assert!(
+                    angle >= start_angle && angle <= end_angle,
+                    "{} outside its team sector",
+                    member.id
+                );
+            }
+            start_angle = end_angle;
+        }
         let mut motion = Motion::default();
         let old = motion.at(&nodes, 80, 20, Duration::ZERO);
         let mut changed = nodes.clone();
@@ -411,10 +424,12 @@ pub(crate) mod tests {
         let end = positions(&changed, 80, 20);
         let mid = motion.at(&changed, 80, 20, Duration::from_millis(1250));
         let id = "demo/dev-search/lead-efgh";
-        assert_eq!(
-            mid[id],
-            ((old[id].0 + end[id].0) / 2., (old[id].1 + end[id].1) / 2.)
-        );
+        for (start, middle, finish) in [
+            (old[id].0, mid[id].0, end[id].0),
+            (old[id].1, mid[id].1, end[id].1),
+        ] {
+            assert!(middle > start.min(finish) && middle < start.max(finish));
+        }
         assert_eq!(
             motion.at(&changed, 80, 20, Duration::from_millis(1500)),
             end
