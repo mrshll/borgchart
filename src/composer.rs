@@ -558,10 +558,7 @@ mod tests {
             Reading::Unknown(_)
         ));
         let s = screen(&[&rule, "\x1b[31m❯\x1b[39m ", &rule, "  footer"]);
-        assert!(matches!(
-            read(Vendor::Claude, &s, None),
-            Reading::Unknown(_)
-        ));
+        assert_eq!(read(Vendor::Claude, &s, None), Reading::Busy);
     }
 
     #[test]

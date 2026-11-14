@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::address::{self, Instance};
 use crate::bus::context;
@@ -3607,6 +3607,17 @@ fn stop_one(
     Ok(messages)
 }
 
+/// A failed delivery to a running member, scoped to its current start.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Delivery {
+    pub outcome: String,
+    pub reason: String,
+    pub at: String,
+    pub id: String,
+    #[serde(skip_serializing)]
+    incarnation: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct StatusRow {
     /// The local member or child team ID, a role with nothing created yet, or
@@ -3651,6 +3662,12 @@ pub struct StatusRow {
     pub detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vendor_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<Delivery>,
+    #[serde(skip)]
+    pub input_unreadable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verified: Option<bool>,
     /// The folder a start accepted Claude's trust dialog for, if it did.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trust_accepted: Option<String>,
@@ -3867,6 +3884,9 @@ fn status_with_counts(
                 remote_control_url: None,
                 detail: resolved.as_ref().err().cloned(),
                 vendor_version: None,
+                delivery: None,
+                input_unreadable: false,
+                verified: None,
                 trust_accepted: None,
                 worktree: None,
                 liveness: None,
@@ -3929,6 +3949,9 @@ fn status_with_counts(
             remote_control_url: None,
             detail: None,
             vendor_version: meta.members.get(id).and_then(|m| m.vendor_version.clone()),
+            delivery: None,
+            input_unreadable: false,
+            verified: None,
             trust_accepted: std::fs::read_to_string(state.member_dir(id).join("trust-accepted"))
                 .ok()
                 .map(|s| s.trim().to_string()),
@@ -3936,6 +3959,10 @@ fn status_with_counts(
                 .worktree
                 .then(|| crate::worktree::path(&inst.at(id)).display().to_string()),
         };
+        row.delivery = std::fs::read(state.member_dir(id).join("delivery.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Delivery>(&bytes).ok())
+            .filter(|d| row.start_id.as_deref() == Some(&d.incarnation));
         if let Some(w) = windows.iter().find(|w| &w.name == id) {
             if w.dead {
                 row.state = "exited".into();
@@ -3966,6 +3993,37 @@ fn status_with_counts(
                     None => row.state = State::Unknown.as_str().into(),
                 }
                 let mut details: Vec<String> = row.detail.take().into_iter().collect();
+                if let Some(vendor) = vendor {
+                    row.verified =
+                        Some(crate::wake::verified(vendor, row.vendor_version.as_deref()));
+                    if row.verified == Some(false) {
+                        details.push(format!(
+                            "{} not verified: run the live tier (CONTRIBUTING.md)",
+                            row.vendor_version.as_deref().unwrap_or("unknown version")
+                        ));
+                    }
+                }
+                if row.state == "idle"
+                    && !meta.members.get(id).is_some_and(|m| m.interactive)
+                    && let (Some(vendor), Some(pane)) = (
+                        vendor,
+                        incarnation
+                            .as_ref()
+                            .ok()
+                            .and_then(|i| i.as_ref())
+                            .and_then(|i| i.pane.as_ref()),
+                    )
+                    && let Some(snap) = crate::wake::snapshot(&tmux.with_socket(&pane.socket), pane)
+                    && let Err(reason) =
+                        crate::composer::view(vendor, &snap.screen, Some(snap.geometry))
+                {
+                    row.input_unreadable = true;
+                    details.push(format!(
+                        "brg can't read {} {}'s input box: {reason}",
+                        vendor.as_str(),
+                        row.vendor_version.as_deref().unwrap_or("unknown version")
+                    ));
+                }
                 // It waits for a person to answer it.
                 if row.state == "blocked" && row.rule.as_deref() == Some(TRUST_RULE) {
                     details.insert(
@@ -3992,6 +4050,18 @@ fn status_with_counts(
                     row.detail = Some(details.join("; "));
                 }
             }
+        }
+        if let Some(d) = &row.delivery {
+            let detail = format!(
+                "delivery {} since {}Z: {}",
+                d.outcome,
+                d.at.get(11..16).unwrap_or("?"),
+                d.reason
+            );
+            row.detail = Some(match row.detail.take() {
+                Some(other) => format!("{other}; {detail}"),
+                None => detail,
+            });
         }
         row.expected_running = team_running && row.state == STOPPED && member.start;
         if let Err(error) = resolved {
@@ -4028,6 +4098,9 @@ fn status_with_counts(
             remote_control_url: None,
             detail: None,
             vendor_version: None,
+            delivery: None,
+            input_unreadable: false,
+            verified: None,
             trust_accepted: None,
             worktree: None,
             unacked: None,
@@ -4105,6 +4178,9 @@ fn status_with_counts(
                 remote_control_url: None,
                 detail: None,
                 vendor_version: None,
+                delivery: None,
+                input_unreadable: false,
+                verified: None,
                 trust_accepted: None,
                 worktree: None,
                 liveness: None,
@@ -4166,6 +4242,9 @@ fn status_with_counts(
                 remote_control_url: None,
                 detail: error.clone(),
                 vendor_version: None,
+                delivery: None,
+                input_unreadable: false,
+                verified: None,
                 trust_accepted: None,
                 worktree: role
                     .worktree
@@ -4469,6 +4548,12 @@ pub fn status_look(r: &StatusRow) -> tree::Look {
             look('!', Tone::Alert)
         }
         ("plugin", "alive") => look('●', Tone::Plain),
+        ("member", state)
+            if (r.delivery.is_some() || r.input_unreadable)
+                && !matches!(state, "blocked" | "exited" | "gate-inactive") =>
+        {
+            look('!', Tone::Alert)
+        }
         (_, "working") => look('●', Tone::Busy),
         (_, "idle") => look('·', Tone::Plain),
         (_, "blocked") => look('?', Tone::Alert),
@@ -4797,6 +4882,7 @@ pub fn send(
         &record.body,
         record.ack_required,
     );
+    let mut send_lock = None;
     let typed = (|| {
         let pane = pane
             .as_ref()
@@ -4805,6 +4891,7 @@ pub fn send(
             .map_err(|e| SendError::Refused(format!("cannot open send lock: {e}")))?;
         lock.lock()
             .map_err(|e| SendError::Refused(format!("cannot lock send: {e}")))?;
+        send_lock = Some(lock);
         let current = lifecycle::load_incarnation(&inst.state, &to).map_err(SendError::Refused)?;
         if current.as_ref().is_none_or(|inc| {
             inc.ended_at.is_some()
@@ -4852,6 +4939,57 @@ pub fn send(
         }
         paste_send(&tmux, &inst.state, &to, pane, vendor, locked, &envelope).map(|()| "typed")
     })();
+    let (delivery, reason) = match &typed {
+        Ok(delivery) => (*delivery, "submitted"),
+        Err(error) => (
+            if matches!(error, SendError::Uncertain(_)) {
+                "uncertain"
+            } else {
+                "stored"
+            },
+            error.message(),
+        ),
+    };
+    if let Some(inc) = &original
+        && lifecycle::load_incarnation(&inst.state, &to)
+            .ok()
+            .flatten()
+            .is_some_and(|current| {
+                current.incarnation == inc.incarnation
+                    && (matches!(delivery, "typed" | "queued")
+                        || (current.ended_at.is_none()
+                            && pane.as_ref().is_some_and(|p| {
+                                tmux.with_socket(&p.socket)
+                                    .windows(&p.session)
+                                    .iter()
+                                    .any(|w| {
+                                        !w.dead && w.name == p.window && w.pid == Some(p.pane_pid)
+                                    })
+                            })))
+            })
+    {
+        let path = inst.state.member_dir(&to).join("delivery.json");
+        let saved = if matches!(delivery, "typed" | "queued") {
+            std::fs::remove_file(&path).or_else(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    Ok(())
+                } else {
+                    Err(e)
+                }
+            })
+        } else if !locked || delivery == "uncertain" {
+            write_private(&path, &serde_json::to_vec(&serde_json::json!({
+                "outcome": delivery, "reason": reason, "at": utc_now(), "id": record.id, "incarnation": inc.incarnation
+            })).expect("delivery serializes"))
+        } else {
+            Ok(())
+        };
+        saved.map_err(|e| SendError::Committed {
+            id: record.id.clone(),
+            delivery,
+            message: format!("cannot save delivery status: {e}"),
+        })?;
+    }
     match typed {
         Ok(delivery) => {
             outcome.delivery = delivery;
@@ -5181,6 +5319,9 @@ mod tests {
             remote_control_url: None,
             detail: None,
             vendor_version: None,
+            delivery: None,
+            input_unreadable: false,
+            verified: None,
             trust_accepted: None,
             worktree: None,
             liveness: None,
@@ -5234,6 +5375,9 @@ mod tests {
             remote_control_url: None,
             detail: None,
             vendor_version: None,
+            delivery: None,
+            input_unreadable: false,
+            verified: None,
             trust_accepted: None,
             worktree: Some("/srv/example/worktrees/team.m".into()),
             liveness: None,
@@ -5276,6 +5420,9 @@ mod tests {
             remote_control_url: None,
             detail: None,
             vendor_version: None,
+            delivery: None,
+            input_unreadable: false,
+            verified: None,
             trust_accepted: None,
             worktree: None,
             liveness: None,
@@ -5331,6 +5478,9 @@ mod tests {
                     remote_control_url: None,
                     detail: None,
                     vendor_version: None,
+                    delivery: None,
+                    input_unreadable: false,
+                    verified: None,
                     trust_accepted: None,
                     worktree: None,
                     liveness: None,

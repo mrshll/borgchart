@@ -61,7 +61,10 @@ impl Env {
         let fake = env!("CARGO_BIN_EXE_fake-agent");
         std::os::unix::fs::symlink(fake, bin.join("claude")).unwrap();
         std::os::unix::fs::symlink(fake, bin.join("codex")).unwrap();
-        fs::create_dir_all(env.path("home")).unwrap();
+        fs::create_dir_all(env.path("home")).unwrap(); // These tree-rendering fixtures have verified fake vendors; version notices
+        // are exercised separately by the hardening scenarios.
+        env.write("home/.config/borgchart/rules/wake.yaml", "wake:\n  - vendor: claude\n    version: \"fake-agent 0.0.0 (claude)\"\n    methods: [typed]\n  - vendor: codex\n    version: \"fake-agent 0.0.0 (codex)\"\n    methods: [typed]\n");
+
         env.write("oncall/template.yaml", TEAM);
         env.write("oncall/lead.md", LEAD);
         env.write("oncall/helper.md", HELPER);

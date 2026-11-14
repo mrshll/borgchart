@@ -1,0 +1,263 @@
+//! Delivery and launch diagnostics through the CLI, on private fake members.
+#![cfg(feature = "test-support")]
+mod common;
+mod team_env;
+
+use serde_json::Value;
+use std::fs;
+use team_env::{Env, stdout};
+
+fn setup(interactive: bool) -> (Env, String, String) {
+    let e = Env::new();
+    if interactive {
+        e.write(
+            "templates/oncall/template.yaml",
+            "roles:\n  lead: {prompt: lead.md, interactive: true}\n",
+        );
+    }
+    let team = e.create("oncall", "work/a");
+    let member = e.member(&team, "lead");
+    (e, team, member)
+}
+
+fn command(e: &Env, team: &str, member: &str, text: &str) {
+    let target = format!("brg-{team}:{member}");
+    e.tmux(&["send-keys", "-t", &target, "-l", text]);
+    e.tmux(&["send-keys", "-t", &target, "Enter"]);
+    e.wait_for("fake command", || {
+        fs::read_to_string(e.path(&format!("home/fake-agent/{member}.jsonl")))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|s| serde_json::from_str::<Value>(s).ok())
+            .any(|v| v["event"] == "submit" && v["text"] == text)
+    });
+}
+
+fn send(e: &Env, team: &str, member: &str) -> Value {
+    serde_json::from_slice(
+        &e.ok(&[
+            "msg",
+            "send",
+            &format!("{team}/{member}"),
+            "Task",
+            "--external",
+            "test",
+            "--json",
+        ])
+        .stdout,
+    )
+    .unwrap()
+}
+
+fn alert(e: &Env, team: &str) -> bool {
+    use borgchart::state::shell_quote;
+    let cmd = e.cmd(&["status", team]);
+    let env = cmd
+        .get_envs()
+        .filter_map(|(k, v)| {
+            v.map(|v| {
+                format!(
+                    "{}={}",
+                    k.to_string_lossy(),
+                    shell_quote(&v.to_string_lossy())
+                )
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let script = e.path("status.sh");
+    fs::write(
+        &script,
+        format!(
+            "env -i {env} {} status {}; echo SCENE-DONE; exec sleep 600\n",
+            shell_quote(env!("CARGO_BIN_EXE_brg")),
+            shell_quote(team)
+        ),
+    )
+    .unwrap();
+    e.tmux(&[
+        "new-session",
+        "-d",
+        "-s",
+        "probe",
+        "-x",
+        "240",
+        "-y",
+        "30",
+        "sh",
+        script.to_str().unwrap(),
+    ]);
+    let capture = || e.tmux(&["capture-pane", "-p", "-t", "=probe:"]);
+    e.wait_for("terminal status", || capture().contains("SCENE-DONE"));
+    let text = capture();
+    e.tmux(&["kill-session", "-t", "=probe"]);
+    let needs_attention = text.contains("1 need you");
+    if needs_attention {
+        let member = e.member(team, "lead");
+        assert!(text.contains(&format!("! {member}")), "{text}");
+    }
+    needs_attention
+}
+
+#[test]
+fn unreadable_delivery_alert_survives_status_and_clears_after_typed_send() {
+    let (e, team, member) = setup(false);
+    command(&e, &team, &member, "unreadable");
+    let sent = send(&e, &team, &member);
+    assert_eq!(sent["delivery"], "stored");
+    let row = e.row(&team, "lead");
+    assert_eq!(row["delivery"]["id"], sent["id"]);
+    assert_eq!(row["delivery"]["outcome"], "stored");
+    assert_eq!(row["delivery"]["reason"], sent["reason"]);
+    assert!(alert(&e, &team));
+    let plain = stdout(&e.ok(&["status", &team]));
+    assert!(plain.contains(sent["reason"].as_str().unwrap()), "{plain}");
+    let path = e.path(&format!("state/{team}/members/{member}/delivery.json"));
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(
+        fs::metadata(path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    command(&e, &team, &member, "work 600");
+    assert_eq!(e.row(&team, "lead")["state"], "working");
+    assert!(alert(&e, &team));
+    command(&e, &team, &member, "readable");
+    assert_eq!(send(&e, &team, &member)["delivery"], "typed");
+    assert!(e.row(&team, "lead").get("delivery").is_none());
+    assert!(!alert(&e, &team));
+}
+
+#[test]
+fn stopped_and_inbox_only_members_do_not_get_delivery_alerts() {
+    for interactive in [false, true] {
+        let (e, team, member) = setup(interactive);
+        if !interactive {
+            e.ok(&["stop", &team]);
+        }
+        assert_eq!(send(&e, &team, &member)["delivery"], "stored");
+        assert!(e.row(&team, "lead").get("delivery").is_none());
+        assert!(
+            !e.path(&format!("state/{team}/members/{member}/delivery.json"))
+                .exists()
+        );
+    }
+}
+
+#[test]
+fn restart_ignores_delivery_failure_from_the_previous_incarnation() {
+    let (e, team, member) = setup(false);
+    command(&e, &team, &member, "unreadable");
+    send(&e, &team, &member);
+    assert!(e.row(&team, "lead").get("delivery").is_some());
+    e.ok(&["stop", &team]);
+    e.ok(&["start", &team]);
+    e.wait_for("restarted idle", || e.state_of(&team, "lead") == "idle");
+    assert!(e.row(&team, "lead").get("delivery").is_none());
+    assert!(!alert(&e, &team));
+}
+
+#[test]
+fn idle_unreadable_box_alerts_but_readable_normal_mode_and_interactive_do_not() {
+    for interactive in [false, true] {
+        let (e, team, member) = setup(interactive);
+        e.write("home/.config/borgchart/rules/wake.yaml", "wake:\n  - vendor: claude\n    version: \"fake-agent 0.0.0 (claude)\"\n    methods: [typed]\n");
+        assert!(e.row(&team, "lead").get("detail").is_none());
+        assert!(!alert(&e, &team));
+        command(&e, &team, &member, "normal");
+        assert!(!alert(&e, &team));
+        command(&e, &team, &member, "unreadable");
+        let row = e.row(&team, "lead");
+        assert_eq!(row["state"], "idle");
+        assert_eq!(row.get("detail").is_some(), !interactive, "{row}");
+        assert_eq!(alert(&e, &team), !interactive);
+    }
+}
+
+#[test]
+fn unlisted_versions_are_notices_and_override_versions_are_verified() {
+    let (e, team, _) = setup(false);
+    let row = e.row(&team, "lead");
+    assert_eq!(row["verified"], false);
+    assert!(!row["detail"].as_str().unwrap().is_empty());
+    assert!(!alert(&e, &team));
+    e.write("home/.config/borgchart/rules/wake.yaml", "wake:\n  - vendor: claude\n    version: \"fake-agent 0.0.0 (claude)\"\n    methods: [typed]\n");
+    let row = e.row(&team, "lead");
+    assert_eq!(row["verified"], true, "{row}");
+    assert!(row.get("detail").is_none());
+    assert!(!alert(&e, &team));
+}
+
+#[test]
+fn wake_qualification_uses_shared_list_and_keeps_input_requirements() {
+    let mode = std::env::var("BRG_TEST_WAKE_QUALIFICATION");
+    if mode.is_err() {
+        for mode in ["bundled", "override"] {
+            let dir = tempfile::tempdir().unwrap();
+            if mode == "override" {
+                let folder = dir.path().join("borgchart/rules");
+                fs::create_dir_all(&folder).unwrap();
+                fs::write(
+                    folder.join("wake.yaml"),
+                    "wake:\n  - vendor: claude\n    version: \"2.1.777\"\n    methods: [typed]\n",
+                )
+                .unwrap();
+            }
+            let out = common::command(std::env::current_exe().unwrap())
+                .env_clear()
+                .env("HOME", dir.path())
+                .env("XDG_CONFIG_HOME", dir.path())
+                .env("BRG_TEST_WAKE_QUALIFICATION", mode)
+                .args([
+                    "--exact",
+                    "wake_qualification_uses_shared_list_and_keeps_input_requirements",
+                    "--nocapture",
+                ])
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{mode}: {}", team_env::both(&out));
+        }
+        return;
+    }
+    let overridden = mode.unwrap() == "override";
+    use borgchart::{
+        team::Vendor,
+        wake::{LaunchFacts, Qualification, qualification},
+    };
+    let mut facts = LaunchFacts {
+        vendor_version: Some("2.1.325 (Claude Code)".into()),
+        editor: Some("vim".into()),
+        suggestions: Some(false),
+        ..LaunchFacts::default()
+    };
+    if overridden {
+        assert!(matches!(
+            qualification(Vendor::Claude, &facts),
+            Qualification::Unqualified(_)
+        ));
+        facts.vendor_version = Some("2.1.777 (Claude Code)".into());
+    }
+    assert_eq!(
+        qualification(Vendor::Claude, &facts),
+        Qualification::Qualified
+    );
+    let codex = LaunchFacts {
+        vendor_version: Some("codex-cli 0.165.0".into()),
+        editor: Some("vim".into()),
+        ..LaunchFacts::default()
+    };
+    assert_eq!(
+        qualification(Vendor::Codex, &codex) == Qualification::Qualified,
+        !overridden
+    );
+    facts.suggestions = Some(true);
+    assert!(matches!(
+        qualification(Vendor::Claude, &facts),
+        Qualification::Unqualified(_)
+    ));
+    facts.suggestions = Some(false);
+    facts.editor = Some("normal".into());
+    assert!(matches!(
+        qualification(Vendor::Claude, &facts),
+        Qualification::Unqualified(_)
+    ));
+}

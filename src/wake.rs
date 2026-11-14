@@ -52,8 +52,6 @@ const POLL: Duration = Duration::from_millis(100);
 /// against with real CLIs (the live tier, `tests/live.rs`). Anything else gets alerts only.
 struct Qualified {
     vendor: Vendor,
-    /// The first line of `<cli> --version`, exactly.
-    version: &'static str,
     /// The input mode the CLI was set to.
     editor: &'static str,
     /// Claude's `promptSuggestionEnabled` (`None`: not applicable).
@@ -63,13 +61,11 @@ struct Qualified {
 const QUALIFIED: &[Qualified] = &[
     Qualified {
         vendor: Vendor::Claude,
-        version: "2.1.318 (Claude Code)",
         editor: "vim",
         suggestions: Some(false),
     },
     Qualified {
         vendor: Vendor::Codex,
-        version: "codex-cli 0.165.0",
         editor: "vim",
         suggestions: None,
     },
@@ -100,6 +96,15 @@ pub enum Qualification {
     Unqualified(String),
 }
 
+/// Whether the measured CLI version is in the shared verified-version list.
+pub fn verified(vendor: Vendor, version: Option<&str>) -> bool {
+    let version = version.map(|v| match vendor {
+        Vendor::Claude => v.strip_suffix(" (Claude Code)").unwrap_or(v),
+        Vendor::Codex => v.strip_prefix("codex-cli ").unwrap_or(v),
+    });
+    crate::watcher::methods::load().is_ok_and(|rules| rules.find(vendor, version).is_some())
+}
+
 /// Whether the guarded wake may type into this member at all.
 pub fn qualification(vendor: Vendor, launch: &LaunchFacts) -> Qualification {
     if let Some(problem) = &launch.problem {
@@ -114,11 +119,8 @@ pub fn qualification(vendor: Vendor, launch: &LaunchFacts) -> Qualification {
     let Some(editor) = launch.editor.as_deref() else {
         return Qualification::Unqualified(format!("{}'s input mode is unknown", vendor.as_str()));
     };
-    let candidates: Vec<&Qualified> = QUALIFIED
-        .iter()
-        .filter(|q| q.vendor == vendor && q.version == version)
-        .collect();
-    if candidates.is_empty() {
+    let candidates: Vec<&Qualified> = QUALIFIED.iter().filter(|q| q.vendor == vendor).collect();
+    if !verified(vendor, Some(version)) {
         return Qualification::Unqualified(format!(
             "{} `{version}` has not been qualified for typed reminders",
             vendor.as_str()
@@ -653,7 +655,7 @@ mod tests {
             Qualification::Qualified
         );
         for f in [
-            facts("2.1.319 (Claude Code)", "vim", Some(false)),
+            facts("2.2.0 (Claude Code)", "vim", Some(false)),
             facts("2.1.318 (Claude Code)", "normal", Some(false)),
             facts("2.1.318 (Claude Code)", "vim", Some(true)),
             facts("2.1.318 (Claude Code)", "vim", None),

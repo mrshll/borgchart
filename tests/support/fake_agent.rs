@@ -6,7 +6,7 @@
 //! `$HOME/fake-agent/<member>.jsonl`.
 //!
 //! Submissions it understands: `work <secs>`, `dialog`, `mute`, `crash <code>`,
-//! `tool <shell command>`. Anything else is just logged.
+//! `tool <shell command>`, `unreadable`, `readable`, `normal`. Anything else is just logged.
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -39,6 +39,8 @@ struct Agent {
     pre_hooks: Vec<String>,
     mode: Mode,
     work_until: Option<Instant>,
+    unreadable: bool,
+    normal: bool,
     lines: Vec<String>,
     input: String,
     trust_choice: usize,
@@ -270,7 +272,7 @@ impl Agent {
                     format!("  {row}")
                 } else if self.vendor == Vendor::Claude {
                     if self.mode == Mode::Working {
-                        format!("\x1b[38;5;246m❯\u{a0}\x1b[39m{row}")
+                        format!("\x1b[38;2;153;153;153m❯\u{a0}\x1b[39m{row}")
                     } else {
                         format!("❯\u{a0}{row}")
                     }
@@ -282,7 +284,17 @@ impl Agent {
             }
             if self.vendor == Vendor::Claude {
                 body.push(rule);
-                body.push("  -- INSERT -- ⏵⏵ don't ask on (shift+tab to cycle)".into());
+                body.push(
+                    if self.normal {
+                        "  ⏵⏵ auto mode on"
+                    } else {
+                        "  -- INSERT -- ⏵⏵ don't ask on (shift+tab to cycle)"
+                    }
+                    .into(),
+                );
+                if self.unreadable {
+                    body.extend(["  extra vendor footer"; 4].map(String::from));
+                }
             } else {
                 body.push(String::new());
                 body.push("  ? for shortcuts · Vim: Insert".into());
@@ -353,6 +365,9 @@ impl Agent {
             }
             "dialog" => self.mode = Mode::Dialog,
             "mute" => self.mode = Mode::Mute,
+            "unreadable" => self.unreadable = true,
+            "readable" => self.unreadable = false,
+            "normal" => self.normal = true,
             "crash" => {
                 let code: i32 = rest.trim().parse().unwrap_or(1);
                 log_event(
@@ -541,6 +556,8 @@ fn main() {
             Mode::Idle
         },
         work_until: None,
+        unreadable: false,
+        normal: false,
         lines: Vec::new(),
         input: String::new(),
         trust_choice: if flag("trust-yes") { 1 } else { 0 },

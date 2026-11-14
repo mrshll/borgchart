@@ -106,6 +106,8 @@ Address a dev team's lead by its full address; it reads your message at its next
 
 ## Watch
 
+A red delivery or unreadable-input-box row means that member can’t be reached; tell the owner, and don’t resend.
+
 1. **At the start of every turn,** read your inbox, with bodies. Act on the messages, ack each once you've taken it on, then handle every deadline or seating retry that is due.
 2. **End every turn with exactly one wait running,** timed to end no later than the earliest deadline or retry in your record: `"$BORGCHART_BIN" msg wait --timeout <seconds> --full`, with your Bash tool in **background** mode (`<seconds>` from 60 to 86400: use 86400 for a later deadline and 60 for a sooner one). Its exit wakes you. If a wait is already running and ends too late, stop it and start a new one.
    - **Exit 9:** a deadline is due; handle it, then wait again.
