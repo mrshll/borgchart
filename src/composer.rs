@@ -11,14 +11,12 @@
 //!   rules; its first line starts with `❯`, later lines are indented two
 //!   spaces, and the footer under the bottom rule shows `-- INSERT --` in vim
 //!   insert mode. A grey `❯` means a turn is running.
-//! - **Codex**: the box ends at a blank line above the footer. The footer's
-//!   `Vim: Insert` or `Vim: Normal` segment can have warning segments after it.
-//!   The `Vim:` line can be any of the last three lines (0.165 drew a warnings
-//!   line under it). Search at most `MAX_FOOTER_LINES` lines above it for the
-//!   blank; intervening model/path lines must be indented two spaces. The box's
-//!   first line starts with a bold `›` and later lines are indented two spaces.
-//!   Placeholder text is drawn dim. In 0.169, a box taller than the pane has no
-//!   footer and reads as `Unknown`.
+//! - **Codex**: the box starts with a bold `›` and has two-space continuation
+//!   lines and a dim placeholder when empty. One blank line separates it from
+//!   an indented footer of at most six lines containing a `Vim: Insert` or
+//!   `Vim: Normal` token. The token's line, what follows it, and how many
+//!   model/path lines wrap within that limit don't matter. A box taller than
+//!   the pane can hide the footer and reads as `Unknown`.
 //!
 //! Anything that doesn't fit the layout reads as `Unknown`. Any text in the
 //! box that isn't the vendor's dim placeholder reads as a draft, including
@@ -475,27 +473,36 @@ fn claude_view(lines: &[Line]) -> Result<(usize, View), String> {
 
 fn codex_view(lines: &[Line]) -> Result<(usize, View), String> {
     let n = lines.len();
-    let (status, vim) = (n.saturating_sub(3)..n)
+    let footer = lines
+        .iter()
         .rev()
-        .find_map(|i| {
-            let t = lines[i].text();
-            let (_, tail) = t.trim_end().rsplit_once("Vim: ")?;
-            let vim = match tail.split(" · ").next()? {
-                "Insert" => VimMode::Insert,
-                "Normal" => VimMode::Normal,
-                _ => return None,
-            };
-            Some((i, vim))
+        .take_while(|l| !l.is_blank() && l.text().starts_with("  "))
+        .take(MAX_FOOTER_LINES + 1)
+        .count();
+    if footer == 0 || footer > MAX_FOOTER_LINES {
+        return Err(format!(
+            "no indented footer of at most {MAX_FOOTER_LINES} lines"
+        ));
+    }
+    let first = n - footer;
+    let last = first
+        .checked_sub(2)
+        .filter(|_| lines[first - 1].is_blank())
+        .ok_or("no blank line between the input box and the footer")?;
+    let vim = lines[first..]
+        .iter()
+        .rev()
+        .find_map(|line| {
+            line.text().split("Vim: ").skip(1).find_map(|tail| {
+                [("Insert", VimMode::Insert), ("Normal", VimMode::Normal)]
+                    .into_iter()
+                    .find_map(|(token, mode)| {
+                        let rest = tail.strip_prefix(token)?;
+                        (!rest.starts_with(char::is_alphanumeric)).then_some(mode)
+                    })
+            })
         })
-        .ok_or("no `Vim:` status line under the input box")?;
-    let last = (status.saturating_sub(MAX_FOOTER_LINES)..status)
-        .rev()
-        .take_while(|&i| lines[i].is_blank() || lines[i].text().starts_with("  "))
-        .find(|&i| lines[i].is_blank())
-        .and_then(|i| i.checked_sub(1))
-        .ok_or_else(|| {
-            format!("no blank line within {MAX_FOOTER_LINES} lines above the `Vim:` status line")
-        })?;
+        .ok_or("no vim mode token in the footer")?;
     let start = (last.saturating_sub(MAX_BOX_LINES)..=last)
         .rev()
         .find(|&i| lines[i].0.first().is_some_and(|c| c.ch == '›'))

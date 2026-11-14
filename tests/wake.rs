@@ -230,6 +230,32 @@ fn codex_wrapped_model_footer_preserves_empty_and_draft_readings() {
 }
 
 #[test]
+fn codex_mode_on_first_footer_line_is_not_lost_below_wrapped_details() {
+    let capture = screen!("codex-0169-composer-nowarn.ansi")
+        .replace("Vim: Insert", "")
+        .replace(
+            "~/example/work\x1b[39m",
+            "~/example/work\x1b[39m  Vim: Insert\n  detail one\n  detail two",
+        );
+    assert_eq!(
+        composer::read(Vendor::Codex, &capture, None),
+        Reading::Empty
+    );
+}
+
+#[test]
+fn codex_mode_token_accepts_new_suffixes_but_rejects_longer_words() {
+    let capture = screen!("codex-0169-composer-nowarn.ansi");
+    let suffix = capture.replace("Vim: Insert", "Vim: Insert  ⚠ 1");
+    assert_eq!(composer::read(Vendor::Codex, &suffix, None), Reading::Empty);
+    let longer_word = capture.replace("Vim: Insert", "Vim: Inserting");
+    assert!(matches!(
+        composer::read(Vendor::Codex, &longer_word, None),
+        Reading::Unknown(_)
+    ));
+}
+
+#[test]
 fn codex_narrow_wrapped_footer_does_not_hide_an_empty_composer() {
     assert_eq!(
         composer::read(
