@@ -165,6 +165,13 @@ case $member in queue-*)
   printf '{"session_id":"%s"}' "$thread" | "$BORGCHART_BIN" _gate "$event" "$state" "$BORGCHART_MEMBER"
   draw working
   sleep 1
+  for a in "$@"; do
+    case $a in *'brg restarted you'*'msg list --full'*)
+      for word in $("$BORGCHART_BIN" msg list --full | sed -n 's/.*nonce \([0-9a-z]*\).*/\1/p'); do
+        say "● REPLY-$word"
+      done ;;
+    esac
+  done
   say '● READY'
   draw idle
   promote() {
@@ -189,10 +196,10 @@ case $member in queue-*)
       case $body in
         *'Slack promote '*)
           ts=$(printf '%s' "$body" | sed -n 's/.*ts=\([^ ]*\).*/\1/p')
-          say "● PROMOTED $(printf '%s' "$ts" | rev)" ;;
+          say "● PROMOTED-$ts" ;;
         *'nonce '*)
           for word in $(printf '%s' "$body" | sed -n 's/.*nonce \([0-9a-z]*\).*/\1/p'); do
-            say "● REPLY $(printf '%s' "$word" | rev)"
+            say "● REPLY-$word"
           done ;;
         *'promote '*)
           ts=$(printf '%s' "$body" | sed -n 's/.*promote \([0-9.]*\).*/\1/p' | head -1)

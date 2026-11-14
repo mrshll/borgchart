@@ -8,7 +8,7 @@ use super::cases::{Spec, Team};
 use super::rules::{Outcome, Who};
 use super::world::{self, World, limited_with_stdin};
 
-const PROMPT: &str = "This is an automated queue test. End this opening turn with READY. For each later message containing `nonce WORD`, reply with exactly `REPLY WORD_BACKWARDS`, reversing WORD letter by letter. If a message has several nonce WORD lines, reply with one REPLY line per word, in input order. If the message also says HOLD, first spend a turn working: vendor members run `sleep 5`; locked members run their granted promote action with timestamp 1700000000.000001 and reason question. For a message containing `promote TIMESTAMP`, run your granted promote action with that timestamp and reason question, then reply SENT. For an incoming `Slack promote` message, reply with `PROMOTED TIMESTAMP_BACKWARDS`, reversing the timestamp after ts=. Do not read Slack or run other tools. End each turn after the requested reply.";
+const PROMPT: &str = "This is an automated queue test. End this opening turn with READY. For each later message containing `nonce WORD`, reply with the literal prefix REPLY- immediately followed by WORD copied verbatim. If a message has several nonce WORD lines, reply with one line per word, in input order. If the message also says HOLD, first spend a turn working: vendor members run `sleep 5`; locked members run their granted promote action with timestamp 1700000000.000001 and reason question. For a message containing `promote TIMESTAMP`, run your granted promote action with that timestamp and reason question, then reply SENT. For an incoming `Slack promote` message, reply with the literal prefix PROMOTED- immediately followed by the timestamp after ts= copied verbatim. Do not read Slack or run other tools. End each turn after the requested reply.";
 
 fn state_dir(w: &World, t: &Team<'_>) -> borgchart::state::StateDir {
     borgchart::state::StateDir::from_root(
@@ -54,7 +54,7 @@ fn wait_for(
     }
 }
 
-fn send(w: &World, t: &Team<'_>, body: &str) -> Result<Value, Outcome> {
+fn send(w: &World, t: &Team<'_>, body: &str, delivery: &str) -> Result<Value, Outcome> {
     let mut cmd = t.brg_command();
     cmd.args([
         "msg",
@@ -68,9 +68,9 @@ fn send(w: &World, t: &Team<'_>, body: &str) -> Result<Value, Outcome> {
     let out =
         limited_with_stdin(&mut cmd, w.limits.brg, Some(body.as_bytes())).map_err(Outcome::Fail)?;
     let result: Value = serde_json::from_slice(&out.stdout).unwrap_or(Value::Null);
-    if !out.status.success() || result["delivery"] != "queued" {
+    if !out.status.success() || result["delivery"] != delivery {
         return Err(Outcome::Fail(format!(
-            "send did not queue: {result}; {}",
+            "send expected {delivery}: {result}; {}",
             String::from_utf8_lossy(&out.stderr)
         )));
     }
@@ -78,7 +78,7 @@ fn send(w: &World, t: &Team<'_>, body: &str) -> Result<Value, Outcome> {
 }
 
 fn reply(w: &World, t: &Team<'_>, nonce: &str) -> Result<(), Outcome> {
-    let want = format!("REPLY {}", world::reversed(nonce));
+    let want = format!("REPLY-{nonce}");
     wait_for(w, t, &t.member(), &want, || {
         screen(w, t, &t.member()).contains(&want)
     })
@@ -165,7 +165,7 @@ fn posture(w: &World, locked: bool) -> Result<(), Outcome> {
                 .is_some_and(|i| i.pane.is_some())
                 && (!locked || state.gate_marker(&t.member()).exists())
         })?;
-        send(w, &t, &format!("nonce {early}"))?;
+        send(w, &t, &format!("nonce {early}"), "queued")?;
         let (ok, text) = up.join().unwrap().map_err(Outcome::Fail)?;
         if !ok {
             return Err(Outcome::Fail(text));
@@ -174,21 +174,21 @@ fn posture(w: &World, locked: bool) -> Result<(), Outcome> {
     })?;
     reply(w, &t, &early)?;
     let idle = world::nonce();
-    send(w, &t, &format!("nonce {idle}"))?;
+    send(w, &t, &format!("nonce {idle}"), "queued")?;
     reply(w, &t, &idle)?;
 
     let hold = world::nonce();
-    send(w, &t, &format!("HOLD nonce {hold}"))?;
+    send(w, &t, &format!("HOLD nonce {hold}"), "queued")?;
     wait_for(w, &t, &t.member(), "a running turn", || {
         t.state().0 == "working"
     })?;
     let middle = world::nonce();
-    send(w, &t, &format!("nonce {middle}"))?;
+    send(w, &t, &format!("nonce {middle}"), "queued")?;
     reply(w, &t, &middle)?;
     // The earlier turn's response must precede the queued turn's response.
     let text = screen(w, &t, &t.member());
-    let before = text.find(&format!("REPLY {}", world::reversed(&hold)));
-    let after = text.find(&format!("REPLY {}", world::reversed(&middle)));
+    let before = text.find(&format!("REPLY-{hold}"));
+    let after = text.find(&format!("REPLY-{middle}"));
     if !matches!((before, after), (Some(a), Some(b)) if a < b) {
         return Err(Outcome::Fail(format!(
             "mid-turn queue did not run after the earlier turn: {text}"
@@ -209,7 +209,7 @@ fn posture(w: &World, locked: bool) -> Result<(), Outcome> {
         "x".repeat(padding - padding / 2),
         markers[2]
     );
-    send(w, &t, &body)?;
+    send(w, &t, &body, "queued")?;
     for nonce in &large {
         reply(w, &t, nonce)?;
     }
@@ -217,8 +217,8 @@ fn posture(w: &World, locked: bool) -> Result<(), Outcome> {
     if locked {
         let parent = plugin_parent(w, &t)?;
         let timestamp = format!("1700000000.{:06}", std::process::id() % 1_000_000);
-        send(w, &t, &format!("promote {timestamp}"))?;
-        let want = format!("PROMOTED {}", world::reversed(&timestamp));
+        send(w, &t, &format!("promote {timestamp}"), "queued")?;
+        let want = format!("PROMOTED-{timestamp}");
         wait_for(
             w,
             &t,
@@ -248,14 +248,21 @@ fn posture(w: &World, locked: bool) -> Result<(), Outcome> {
     if !ok {
         return Err(Outcome::Fail(text));
     }
+    let stopped = world::nonce();
+    if !locked {
+        send(w, &t, &format!("nonce {stopped}"), "stored")?;
+    }
     let (ok, text) = t
         .brg(&["start", &t.instance(), "--resume"], w.limits.up)
         .map_err(Outcome::Fail)?;
     if !ok {
         return Err(Outcome::Fail(text));
     }
+    if !locked {
+        reply(w, &t, &stopped)?;
+    }
     let resumed = world::nonce();
-    send(w, &t, &format!("nonce {resumed}"))?;
+    send(w, &t, &format!("nonce {resumed}"), "queued")?;
     reply(w, &t, &resumed)?;
     if std::fs::read_to_string(state.member_session(&t.member()))
         .ok()

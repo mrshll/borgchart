@@ -144,7 +144,7 @@ If a start is under 30 seconds old, send waits up to five seconds for its sessio
 
 Claude keeps guarded typing: `interactive: true` makes it inbox-only, even with `--allow-unknown`; default false permits typing. Drafts, copy mode and visible dialogs prevent typed input. The exact pasted composer is checked again before Enter. Claude mid-turn delivery may steer or join the current turn. No guard eliminates the final-check/Enter race.
 
-For a running Codex member, status checks session readiness instead of reading the input box. After the 30-second startup grace, a missing current session raises `brg can't deliver to codex <version>: no Codex session recorded for this start`. A locked member without its gate marker raises the same alert. Claude keeps its idle input-box check.
+For a running Codex member, status checks session readiness instead of reading the input box. After the 30-second startup grace, a missing current session raises `brg can't deliver to codex <version>: no Codex session recorded for this start`. Claude keeps its idle input-box check.
 
 Typing never acknowledges ordinary work. Inbox waits and typing can deliver the same ID: ignore an already-acked duplicate, otherwise ack when taking responsibility. As Claude, keep one wait armed as above, especially for an interactive lead.
 

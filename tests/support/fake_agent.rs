@@ -495,7 +495,15 @@ fn main() {
             fs::read_to_string(home.join("fake-agent").join(format!("session-{thread}"))).unwrap();
         let queue = home.join("fake-agent").join(format!("queue-{member}"));
         fs::create_dir_all(&queue).unwrap();
-        fs::write(queue.join(format!("{}", std::process::id())), message).unwrap();
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        fs::write(
+            queue.join(format!("{stamp}-{}", std::process::id())),
+            message,
+        )
+        .unwrap();
         println!("Queued");
         return;
     }

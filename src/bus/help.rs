@@ -79,15 +79,15 @@ overrides it. A plugin process with only BORGCHART_TEAM set must name
 parent or children. Across a child team's parent edge, name the full
 team/member address (a child team's roots find their parent's in
 BORGCHART_PARENT). The tree shares one store and message IDs; queue, typing and
-locked delivery work across edges too. Only root members of the root team may
-address external:NAME. --from asserts a parent route within one team, not
+locked delivery work across edges too. Only root members of the tree's root team
+may address external:NAME. --from asserts a parent route within one team, not
 authorship. --reply-to takes plain existing IDs such as m1.
 This command takes no --team; name the target as <team>/<member>.
 
 Ordinary messages commit before delivery. Exit 0 means committed even when
 stored or uncertain; never automatically republish. Every Codex recipient gets
 its next turn through `codex queue`, after any current turn, using its recorded
-base environment and current session. interactive and --allow-unknown have no
+base environment and current session. Interactive and --allow-unknown have no
 effect for Codex. Stopped or replaced starts are never queued; queue never gets
 --resume. A start under 30 s old gets up to 5 s for its session. A nonzero queue
 exit leaves ordinary messages stored; no answer within 10 s is uncertain:
@@ -113,9 +113,9 @@ locked Claude messages outside that budget refuse before committing. Drafts,
 dialogs, copy mode and unverified pasted text never get Enter or clearing.
 
 Outcomes: committed (0); usage (2); unaddressable/locked not running (3);
-locked dialog or copy mode (4); validation, fence, storage or locked input
-failure (5). --json includes ok, code, message, and a committed id plus delivery
-and reason when present. Delivery: typed, queued, stored, uncertain,
+locked Claude dialog or copy mode (4); validation, fence, storage or locked
+input failure (5). --json includes ok, code, message, and a committed id plus
+delivery and reason when present. Delivery: typed, queued, stored, uncertain,
 recorded-not-delivered.",
         crate::runtime::MAX_SEND_BYTES
     )

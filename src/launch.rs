@@ -123,7 +123,7 @@ pub fn opening_prompt(
     }
     if posture != Posture::Locked {
         prompt.push_str(
-            "\n\nRead your inbox with message bodies (`brg msg list --full`) before carrying on.",
+            "\n\nRead your inbox with message bodies (`\"$BORGCHART_BIN\" msg list --full`) before carrying on.",
         );
     }
     prompt
@@ -305,7 +305,7 @@ pub fn codex_session_hook_config(brg: &Path, state: &StateDir, member: &str) -> 
 /// What a resumed member is told: its conversation is back, but its last
 /// turn may have been cut off.
 const LOCKED_RESUME_NOTE: &str = "brg restarted you after your session ended, and your conversation is restored. Your last turn may have been cut off partway: check the state of what you were doing before you carry on.";
-pub const RESUME_NOTE: &str = "brg restarted you after your session ended, and your conversation is restored. Your last turn may have been cut off partway: check the state of what you were doing before you carry on. Read your inbox with message bodies (`brg msg list --full`) before carrying on.";
+pub const RESUME_NOTE: &str = "brg restarted you after your session ended, and your conversation is restored. Your last turn may have been cut off partway: check the state of what you were doing before you carry on. Read your inbox with message bodies (`\"$BORGCHART_BIN\" msg list --full`) before carrying on.";
 
 /// What a sandboxed member's plugin commands may write: each granted plugin's
 /// own state directory and its own temp directory. Codex also makes the

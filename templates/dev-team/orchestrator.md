@@ -79,7 +79,7 @@ Follow the git rules below: an up-to-date description, then the owner's review r
 
 ## Watch
 
-A red delivery row means brg couldn't deliver to that member (its reason is shown); ordinary messages are still in its inbox. Codex delivery queues the next turn; tell the owner about a failure, and don't resend.
+A red delivery row means brg couldn't deliver to that member (its reason is shown); ordinary messages are still in its inbox. A Codex member gets no turn for a stored message until a later send queues one or it restarts: tell the owner, and don't resend.
 
 1. **At the start of every turn,** read your inbox, with bodies. Act on the messages and ack each once you have taken it on.
 2. **End every turn ready to hear your inbox:**
