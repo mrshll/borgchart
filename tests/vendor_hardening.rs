@@ -373,33 +373,26 @@ fn wake_qualification_uses_shared_list_and_keeps_input_requirements() {
     };
     if overridden {
         assert!(matches!(
-            qualification(Vendor::Claude, &facts),
+            qualification(&facts),
             Qualification::Unqualified(_)
         ));
         facts.vendor_version = Some("2.1.777 (Claude Code)".into());
     }
+    assert_eq!(qualification(&facts), Qualification::Qualified);
+    let rules = borgchart::watcher::methods::load().unwrap();
     assert_eq!(
-        qualification(Vendor::Claude, &facts),
-        Qualification::Qualified
-    );
-    let codex = LaunchFacts {
-        vendor_version: Some("codex-cli 0.165.0".into()),
-        editor: Some("vim".into()),
-        ..LaunchFacts::default()
-    };
-    assert_eq!(
-        qualification(Vendor::Codex, &codex) == Qualification::Qualified,
+        borgchart::wake::verified(&rules, Vendor::Codex, Some("codex-cli 0.165.0")),
         !overridden
     );
     facts.suggestions = Some(true);
     assert!(matches!(
-        qualification(Vendor::Claude, &facts),
+        qualification(&facts),
         Qualification::Unqualified(_)
     ));
     facts.suggestions = Some(false);
     facts.editor = Some("normal".into());
     assert!(matches!(
-        qualification(Vendor::Claude, &facts),
+        qualification(&facts),
         Qualification::Unqualified(_)
     ));
 }

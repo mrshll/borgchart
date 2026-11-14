@@ -4044,8 +4044,7 @@ fn status_with_counts(
                             .and_then(|i| i.pane.as_ref()),
                     )
                     && let Some(snap) = crate::wake::snapshot(&tmux.with_socket(&pane.socket), pane)
-                    && let Err(reason) =
-                        crate::composer::view(vendor, &snap.screen, Some(snap.geometry))
+                    && let Err(reason) = crate::composer::view(&snap.screen, Some(snap.geometry))
                 {
                     row.input_unreadable = true;
                     details.push(format!(
@@ -4877,11 +4876,10 @@ pub fn send(
             &inst.state,
             &to,
             pane,
-            vendor,
             force,
             true,
         )?;
-        let mut view = crate::composer::view(vendor, &before.screen, Some(before.geometry))
+        let mut view = crate::composer::view(&before.screen, Some(before.geometry))
             .map_err(SendError::Refused)?;
         view.busy = false;
         if view.reading() != crate::composer::Reading::Empty {
@@ -4970,8 +4968,8 @@ pub fn send(
             return queue_send(&inst.state, &to, inc, &meta.base_env, &envelope).map(|()| "queued");
         }
         let tmux = tmux.with_socket(&pane.socket);
-        let before = send_snapshot(&tmux, &inst.state, &to, pane, vendor, force, locked)?;
-        let mut view = crate::composer::view(vendor, &before.screen, Some(before.geometry))
+        let before = send_snapshot(&tmux, &inst.state, &to, pane, force, locked)?;
+        let mut view = crate::composer::view(&before.screen, Some(before.geometry))
             .map_err(SendError::Refused)?;
         view.busy = false; // Working is allowed; the input box must still be empty.
         if view.reading() != crate::composer::Reading::Empty {
@@ -4984,7 +4982,7 @@ pub fn send(
                 "message exceeds the screen-verification budget; no text pasted".into(),
             ));
         }
-        paste_send(&tmux, &inst.state, &to, pane, vendor, locked, &envelope).map(|()| "typed")
+        paste_send(&tmux, &inst.state, &to, pane, locked, &envelope).map(|()| "typed")
     })();
     let (delivery, reason) = match &typed {
         Ok("queued") => ("queued", "codex queue: the member's next turn"),
@@ -5159,7 +5157,6 @@ fn send_snapshot(
     state: &StateDir,
     member: &str,
     pane: &PaneIdentity,
-    vendor: Vendor,
     force: bool,
     locked: bool,
 ) -> Result<crate::wake::Snapshot, SendError> {
@@ -5170,7 +5167,7 @@ fn send_snapshot(
     }
     let snap = crate::wake::snapshot(tmux, pane)
         .ok_or_else(|| SendError::NotAlive("recipient pane is not alive or changed".into()))?;
-    let rules = rules::load(vendor).map_err(SendError::Refused)?;
+    let rules = rules::load(Vendor::Claude).map_err(SendError::Refused)?;
     let plain = crate::composer::plain(&crate::composer::parse(&snap.screen));
     match rules.read(&snap.title, &plain).state {
         State::Blocked => {
@@ -5196,7 +5193,6 @@ fn paste_send(
     state: &StateDir,
     member: &str,
     pane: &PaneIdentity,
-    vendor: Vendor,
     locked: bool,
     text: &str,
 ) -> Result<(), SendError> {
@@ -5226,9 +5222,9 @@ fn paste_send(
     // The exact composer check below and dialog/copy-mode/pane checks still apply.
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
-        let after = send_snapshot(tmux, state, member, pane, vendor, true, locked)
+        let after = send_snapshot(tmux, state, member, pane, true, locked)
             .map_err(|e| SendError::Uncertain(e.message().into()))?;
-        if crate::composer::view(vendor, &after.screen, Some(after.geometry))
+        if crate::composer::view(&after.screen, Some(after.geometry))
             .is_ok_and(|view| view.holds_submission(text))
         {
             break;
@@ -5244,9 +5240,9 @@ fn paste_send(
         .map_err(SendError::Uncertain)?;
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
-        let after = send_snapshot(tmux, state, member, pane, vendor, true, locked)
+        let after = send_snapshot(tmux, state, member, pane, true, locked)
             .map_err(|e| SendError::Uncertain(e.message().into()))?;
-        if crate::wake::after_enter(vendor, Some(&after)).is_ok() {
+        if crate::wake::after_enter(Some(&after)).is_ok() {
             return Ok(());
         }
         if Instant::now() >= deadline {

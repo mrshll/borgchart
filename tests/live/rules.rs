@@ -37,7 +37,6 @@ pub const REQUIRED: &[(&str, Who)] = &[
     ("claude-background-wait", Who::Claude),
     ("codex-queue", Who::Codex),
     ("claude-wake-matrix", Who::Claude),
-    ("codex-wake-matrix", Who::Codex),
 ];
 
 /// The Claude `auto_trust`-on case answers Claude's trust dialog, which

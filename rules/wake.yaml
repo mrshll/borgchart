@@ -11,7 +11,7 @@
 #               the one before was `rejected` or `unavailable`, never after
 #               an `uncertain` outcome.
 #                 queue: queue a message to the member's live thread.
-#                 typed: the guarded typed reminder, on an idle, empty screen.
+#                 typed: Claude's guarded reminder, on an idle, empty screen.
 wake:
   - vendor: claude
     version: "2.1.*"
@@ -20,4 +20,4 @@ wake:
   - vendor: codex
     version: "0.165.0"
     self_wake: false
-    methods: [queue, typed]
+    methods: [queue]

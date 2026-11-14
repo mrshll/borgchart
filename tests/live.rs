@@ -9,7 +9,7 @@
 //! - `BORGCHART_LIVE_VENDORS=claude` (or `codex`) limits the run, which is
 //!   then partial and qualifies nothing. An empty or unknown name is refused.
 //! - `BORGCHART_LIVE_SUBMIT=0` skips the wake matrix's two real submissions
-//!   per vendor (also partial).
+//!   for Claude (also partial).
 //! - `BORGCHART_LIVE_DRY=1` runs the same harness against owned fake CLIs
 //!   instead, and wins over `BORGCHART_LIVE`. The default tier runs it too
 //!   (`dry_run_reaches_every_expected_result`).
@@ -59,8 +59,7 @@ fn send_midturn_probe() {
     let mut w = world::World::live();
     let (who, vendor) = match std::env::var("BORGCHART_LIVE_VENDORS").as_deref() {
         Ok("claude") => (rules::Who::Claude, borgchart::team::Vendor::Claude),
-        Ok("codex") | Err(_) => (rules::Who::Codex, borgchart::team::Vendor::Codex),
-        _ => panic!("send probe requires exactly claude or codex"),
+        _ => panic!("send probe requires claude"),
     };
     w.preflight(&[who]);
     let version = w.versions[&who].clone().unwrap();
@@ -101,8 +100,7 @@ fn send_composer_matrix() {
     }
     let (who, vendor) = match std::env::var("BORGCHART_LIVE_VENDORS").as_deref() {
         Ok("claude") => (rules::Who::Claude, borgchart::team::Vendor::Claude),
-        Ok("codex") => (rules::Who::Codex, borgchart::team::Vendor::Codex),
-        _ => panic!("select exactly one vendor"),
+        _ => panic!("select claude"),
     };
     let mut w = world::World::live();
     w.preflight(&[who]);
@@ -130,8 +128,7 @@ fn direct_vendor_context_probe() {
     }
     let (who, vendor) = match std::env::var("BORGCHART_LIVE_VENDORS").as_deref() {
         Ok("claude") => (rules::Who::Claude, borgchart::team::Vendor::Claude),
-        Ok("codex") => (rules::Who::Codex, borgchart::team::Vendor::Codex),
-        _ => panic!("select exactly one vendor"),
+        _ => panic!("select claude"),
     };
     let mut w = world::World::live();
     w.preflight(&[who]);
@@ -153,8 +150,7 @@ fn send_near_limit_probe() {
     }
     let (who, vendor) = match std::env::var("BORGCHART_LIVE_VENDORS").as_deref() {
         Ok("claude") => (rules::Who::Claude, borgchart::team::Vendor::Claude),
-        Ok("codex") => (rules::Who::Codex, borgchart::team::Vendor::Codex),
-        _ => panic!("select exactly one vendor"),
+        _ => panic!("select claude"),
     };
     let mut w = world::World::live();
     w.preflight(&[who]);
@@ -332,7 +328,6 @@ fn case(w: &World, id: &str, submit: bool) -> Vec<(String, Outcome)> {
         "claude-background-wait" => one(cases::background_wait(w)),
         "codex-queue" => one(queue::run(w)),
         "claude-wake-matrix" => one(matrix_case(w, Vendor::Claude, submit)),
-        "codex-wake-matrix" => one(matrix_case(w, Vendor::Codex, submit)),
         other => one(Outcome::Fail(format!("no such case {other}"))),
     };
     catch_unwind(AssertUnwindSafe(run))
@@ -531,7 +526,7 @@ fn dry_run_reaches_every_expected_result() {
 
     // Every case, all fakes well behaved.
     let results = run_cases(&w, &both, true, &matrix);
-    let skips = ["claude-trust-on", "claude-wake-matrix", "codex-wake-matrix"];
+    let skips = ["claude-trust-on", "claude-wake-matrix"];
     for (id, _) in REQUIRED {
         let want = if skips.contains(id) { "SKIP" } else { "PASS" };
         check(id, id, want, results.get(*id));
