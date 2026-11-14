@@ -437,11 +437,7 @@ fn claude_view(lines: &[Line]) -> Result<(usize, View), String> {
     if !matches!(first.0.get(1).map(|c| c.ch), Some(' ' | '\u{a0}') | None) {
         return Err("no space after the prompt".into());
     }
-    let busy = match (marker.style.fg, marker.style.dim) {
-        (Fg::Default, false) => false,
-        (Fg::Indexed(246), _) | (_, true) => true,
-        _ => return Err("the prompt has an unfamiliar colour".into()),
-    };
+    let busy = marker.style.fg != Fg::Default || marker.style.dim;
     let mut text = vec![text_after(first, 2)];
     for row in &rows[1..] {
         text.push(continuation(row).ok_or("an input box line isn't indented")?);

@@ -131,6 +131,32 @@ fn claude_input_box_readings() {
 }
 
 #[test]
+fn claude_rgb_busy_prompts_remain_readable_and_idle_stays_empty() {
+    let busy = screen!("claude-2.1.325-busy-rgb.ansi");
+    let idle = screen!("claude-2.1.325-idle.ansi");
+    let other = busy.replace("38;2;153;153;153", "38;2;12;34;56");
+    for (capture, expected) in [
+        (busy, Reading::Busy),
+        (idle, Reading::Empty),
+        (&other, Reading::Busy),
+    ] {
+        let row = capture
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| line.contains('❯'))
+            .map(|(row, _)| row)
+            .last()
+            .unwrap();
+        assert_eq!(
+            composer::view(Vendor::Claude, capture, at(200, 2, row))
+                .unwrap()
+                .reading(),
+            expected
+        );
+    }
+}
+
+#[test]
 fn whitespace_only_drafts_are_never_empty() {
     // Claude: three typed spaces look like nothing but move the cursor.
     let spaces = edited(claude("reminder"), "   ");
