@@ -9,6 +9,7 @@
 //! `tool <shell command>`, `unreadable`, `readable`, `normal`. Anything else is just logged.
 
 use std::collections::BTreeMap;
+use std::fs;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -483,6 +484,21 @@ fn main() {
     if fake_usage::run(args) {
         return;
     }
+    if vendor == Vendor::Codex && args.first().is_some_and(|a| a == "queue") {
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap());
+        let [_, thread_flag, thread, message_flag, message] = args else {
+            panic!("bad fake queue args");
+        };
+        assert_eq!(thread_flag, "--thread");
+        assert_eq!(message_flag, "--message");
+        let member =
+            fs::read_to_string(home.join("fake-agent").join(format!("session-{thread}"))).unwrap();
+        let queue = home.join("fake-agent").join(format!("queue-{member}"));
+        fs::create_dir_all(&queue).unwrap();
+        fs::write(queue.join(format!("{}", std::process::id())), message).unwrap();
+        println!("Queued");
+        return;
+    }
     if args.iter().any(|a| a == "--version") {
         println!("fake-agent 0.0.0 ({name})");
         return;
@@ -516,6 +532,16 @@ fn main() {
             )
         }
     });
+    if vendor == Vendor::Codex {
+        fs::create_dir_all(PathBuf::from(&home).join("fake-agent")).unwrap();
+        fs::write(
+            PathBuf::from(&home)
+                .join("fake-agent")
+                .join(format!("session-{}", SESSION.get().unwrap().0)),
+            &member,
+        )
+        .unwrap();
+    }
     let skip_hooks = PathBuf::from(&home)
         .join("fake-agent")
         .join("no-hooks")
@@ -595,6 +621,23 @@ fn main() {
             agent.work_until = None;
             agent.mode = Mode::Idle;
             agent.draw();
+        }
+        if vendor == Vendor::Codex && agent.work_until.is_none() {
+            let queue = PathBuf::from(&home)
+                .join("fake-agent")
+                .join(format!("queue-{member}"));
+            let mut files = fs::read_dir(queue)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|e| e.path())
+                .collect::<Vec<_>>();
+            files.sort();
+            if let Some(path) = files.first() {
+                let text = fs::read_to_string(path).unwrap();
+                fs::remove_file(path).unwrap();
+                agent.submit(&text);
+            }
         }
         // Consume complete tokens from `pending`.
         loop {

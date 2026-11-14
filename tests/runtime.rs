@@ -2206,10 +2206,22 @@ fn in_copy_mode(env: &Env, pane: &str) -> bool {
 }
 
 #[test]
-fn send_refuses_a_pane_in_copy_mode_until_it_leaves() {
+fn claude_send_refuses_a_pane_in_copy_mode_until_it_leaves() {
     // Catches: in copy mode a paste still reaches the member but Enter goes
     // to tmux, so `msg send` said "sent" and left the text unsubmitted.
     let env = Env::new();
+    let template = env.path("team/template.yaml");
+    fs::write(
+        &template,
+        fs::read_to_string(&template)
+            .unwrap()
+            .replace("vendor: codex", "vendor: claude"),
+    )
+    .unwrap();
+    env.write(
+        "team/beta.md",
+        "---\nmodels: {claude: haiku}\n---\nYou are beta.\n",
+    );
     env.up();
     let pane = pane_of(&env, "beta").unwrap();
     env.tmux(&["copy-mode", "-t", &pane]);
@@ -2234,13 +2246,13 @@ fn send_refuses_a_pane_in_copy_mode_until_it_leaves() {
     }
     // The copy-mode detail doesn't hide one `status` already gives: here, a
     // broken rules override.
-    env.write("home/.config/borgchart/rules/codex.yaml", "not: [valid");
+    env.write("home/.config/borgchart/rules/claude.yaml", "not: [valid");
     let detail = status_of(&env, "beta")["detail"].to_string();
     assert!(
-        detail.contains("copy mode") && detail.contains("codex.yaml"),
+        detail.contains("copy mode") && detail.contains("claude.yaml"),
         "{detail}"
     );
-    fs::remove_file(env.path("home/.config/borgchart/rules/codex.yaml")).unwrap();
+    fs::remove_file(env.path("home/.config/borgchart/rules/claude.yaml")).unwrap();
     env.tmux(&["send-keys", "-X", "-t", &pane, "cancel"]);
     assert!(!in_copy_mode(&env, &pane));
     assert!(
@@ -2411,8 +2423,20 @@ fn plugin_send_without_external_author_is_refused_before_recording() {
 }
 
 #[test]
-fn long_ordinary_body_is_stored_without_composer_submission() {
+fn long_ordinary_claude_body_is_stored_without_composer_submission() {
     let env = Env::new();
+    let template = env.path("team/template.yaml");
+    fs::write(
+        &template,
+        fs::read_to_string(&template)
+            .unwrap()
+            .replace("vendor: codex", "vendor: claude"),
+    )
+    .unwrap();
+    env.write(
+        "team/beta.md",
+        "---\nmodels: {claude: haiku}\n---\nYou are beta.\n",
+    );
     env.up();
     // The conservative paste budget is not the record body limit.
     let body = "x".repeat(16 * 1024);

@@ -4019,7 +4019,22 @@ fn status_with_counts(
                         ));
                     }
                 }
-                if row.state == "idle"
+                if vendor == Some(Vendor::Codex)
+                    && let Some(inc) = incarnation.as_ref().ok().and_then(|i| i.as_ref())
+                    && ((posture == Posture::Locked && !state.gate_marker(id).exists())
+                        || (codex_session(state, id, &inc.started_at).is_none()
+                            && crate::bus::time::parse_utc(&inc.started_at)
+                                .and_then(|t| t.elapsed().ok())
+                                .is_some_and(|age| age > Duration::from_secs(30))))
+                {
+                    row.input_unreadable = true;
+                    details.push(format!(
+                        "brg can't deliver to codex {}: no Codex session recorded for this start",
+                        row.vendor_version.as_deref().unwrap_or("unknown version")
+                    ));
+                }
+                if vendor == Some(Vendor::Claude)
+                    && row.state == "idle"
                     && !meta.members.get(id).is_some_and(|m| m.interactive)
                     && let (Some(vendor), Some(pane)) = (
                         vendor,
@@ -4834,7 +4849,22 @@ pub fn send(
         .filter(|inc| inc.ended_at.is_none())
         .and_then(|inc| inc.pane.clone());
     let tmux = tmux_for(&inst.state);
-    if locked {
+    if locked && vendor == Vendor::Codex {
+        pane.as_ref()
+            .ok_or_else(|| SendError::NotAlive(format!("`{to}` is not running")))?;
+        if !inst.state.gate_marker(&to).exists() {
+            return Err(SendError::Refused(
+                "locked recipient's gate is not active".into(),
+            ));
+        }
+        wait_codex_session(
+            &inst.state,
+            &to,
+            &original.as_ref().expect("pane has start").started_at,
+        )
+        .map_err(SendError::Refused)?;
+    }
+    if locked && vendor == Vendor::Claude {
         let pane = pane
             .as_ref()
             .ok_or_else(|| SendError::NotAlive(format!("`{to}` is not running")))?;
@@ -4931,13 +4961,9 @@ pub fn send(
                 "recipient delivery posture changed after commit".into(),
             ));
         }
-        if interactive {
-            // A person may be typing in the box, and Codex starts no turn when
-            // a background wait ends: hand the message over as its next turn.
+        if vendor == Vendor::Codex {
             let inc = current.as_ref().expect("checked above");
-            return queue_send(&inst.state, &to, &inc.started_at, &envelope)
-                .map(|()| "queued")
-                .map_err(SendError::Refused);
+            return queue_send(&inst.state, &to, inc, &meta.base_env, &envelope).map(|()| "queued");
         }
         let tmux = tmux.with_socket(&pane.socket);
         let before = send_snapshot(&tmux, &inst.state, &to, pane, vendor, force, locked)?;
@@ -5020,7 +5046,7 @@ pub fn send(
                     delivery: if uncertain {
                         "uncertain"
                     } else {
-                        "recorded-not-typed"
+                        "recorded-not-delivered"
                     },
                     message: reason,
                 })
@@ -5033,25 +5059,58 @@ pub fn send(
     }
 }
 
-/// Give an interactive Codex member `envelope` with `codex queue`, on the
-/// session its current start recorded. Err says why it stays stored.
+/// The session file must have been written by this start, including resumes.
+fn codex_session(state: &StateDir, member: &str, started_at: &str) -> Option<String> {
+    let started = crate::bus::time::parse_utc(started_at)?;
+    let recorded = std::fs::metadata(state.member_session(member))
+        .and_then(|m| m.modified())
+        .ok()?;
+    recorded_session(state, member).filter(|_| recorded >= started)
+}
+
+fn wait_codex_session(state: &StateDir, member: &str, started_at: &str) -> Result<String, String> {
+    let young = crate::bus::time::parse_utc(started_at)
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age < Duration::from_secs(30));
+    let deadline = Instant::now() + Duration::from_secs(if young { 5 } else { 0 });
+    loop {
+        if let Some(id) = codex_session(state, member, started_at) {
+            return Ok(id);
+        }
+        if Instant::now() >= deadline {
+            return Err("no Codex session recorded for this start yet; not queued".into());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Queue the next turn using the recipient's recorded environment.
 fn queue_send(
     state: &StateDir,
     member: &str,
-    started_at: &str,
+    inc: &lifecycle::Incarnation,
+    env: &BTreeMap<String, String>,
     envelope: &str,
-) -> Result<(), String> {
-    let started = crate::bus::time::parse_utc(started_at)
-        .ok_or("this start's time can't be read; not queued")?;
-    let recorded = std::fs::metadata(state.member_session(member))
-        .and_then(|m| m.modified())
-        .ok();
-    let id = recorded
-        .filter(|&t| t >= started)
-        .and_then(|_| recorded_session(state, member))
-        .ok_or("no Codex session recorded for this start yet; not queued")?;
+) -> Result<(), SendError> {
+    let id = wait_codex_session(state, member, &inc.started_at).map_err(SendError::Refused)?;
+    if lifecycle::load_incarnation(state, member)
+        .map_err(SendError::Refused)?
+        .is_none_or(|current| {
+            current.incarnation != inc.incarnation
+                || current.ended_at.is_some()
+                || current.pane != inc.pane
+        })
+        || lifecycle::liveness(state, member, &inc.incarnation) != Liveness::Alive
+    {
+        return Err(SendError::NotAlive(
+            "recipient stopped or changed before queueing".into(),
+        ));
+    }
     let mut command = Command::new("codex");
-    command.args(["queue", "--thread", &id, "--message", envelope]);
+    command
+        .env_clear()
+        .envs(env)
+        .args(["queue", "--thread", &id, "--message", envelope]);
     let limits = crate::bounded_process::Limits {
         deadline: Instant::now() + Duration::from_secs(10),
         stdout_bytes: 64 * 1024,
@@ -5059,8 +5118,16 @@ fn queue_send(
     };
     match crate::bounded_process::run(&mut command, None, limits) {
         Ok(out) if out.status.success() => Ok(()),
-        Ok(out) => Err(format!("`codex queue` failed ({}); not queued", out.status)),
-        Err(e) => Err(format!("`codex queue` did not finish ({e}); not queued")),
+        Ok(out) => Err(SendError::Refused(format!(
+            "`codex queue` failed ({}); not queued",
+            out.status
+        ))),
+        Err(crate::bounded_process::Error::Spawn(e)) => Err(SendError::Refused(format!(
+            "`codex queue` could not start ({e:?}); not queued"
+        ))),
+        Err(e) => Err(SendError::Uncertain(format!(
+            "`codex queue` did not finish ({e}); may have been queued; do not resend"
+        ))),
     }
 }
 

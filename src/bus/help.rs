@@ -78,37 +78,45 @@ overrides it. A plugin process with only BORGCHART_TEAM set must name
 --external NAME. Members use their launch identity and may send only to their
 parent or children. Across a child team's parent edge, name the full
 team/member address (a child team's roots find their parent's in
-BORGCHART_PARENT). The tree shares one store and message IDs; typed and locked
-delivery work across edges too. Only root members of the tree's root team may
+BORGCHART_PARENT). The tree shares one store and message IDs; queue, typing and
+locked delivery work across edges too. Only root members of the root team may
 address external:NAME. --from asserts a parent route within one team, not
 authorship. --reply-to takes plain existing IDs such as m1.
 This command takes no --team; name the target as <team>/<member>.
 
-Ordinary messages commit before optional typing. Exit 0 means committed even
-when delivery is stored or uncertain; never automatically republish. Interactive
-recipients are never typed into, even with --allow-unknown: Claude ones are
-inbox-only, and Codex ones get the message through `codex queue` as their next
-turn (delivery queued). Working recipients may
-absorb input in the current turn. Typing never acknowledges: use `msg ack ID`
-when taking responsibility, and ignore an already-acked duplicate from
-`msg wait`.
+Ordinary messages commit before delivery. Exit 0 means committed even when
+stored or uncertain; never automatically republish. Every Codex recipient gets
+its next turn through `codex queue`, after any current turn, using its recorded
+base environment and current session. interactive and --allow-unknown have no
+effect for Codex. Stopped or replaced starts are never queued; queue never gets
+--resume. A start under 30 s old gets up to 5 s for its session. A nonzero queue
+exit leaves ordinary messages stored; no answer within 10 s is uncertain:
+may have been queued; do not resend. A queued turn can run while a UI picker
+is open, leaving it unanswered and drafts alone.
 
-Locked recipients require a live, guarded, empty composer before committing.
-Their records do not require ack and have no inbox recovery. Failures after
-commit include the ID; retry may duplicate recorded or submitted input.
+Interactive Claude recipients are inbox-only, even with --allow-unknown.
+Other Claude recipients get guarded typing, possibly during the current turn.
+Delivery never acknowledges: use `msg ack ID` when taking responsibility,
+and ignore an already-acked duplicate from `msg wait`.
+
+Locked Codex requires a live start with a pane, active gate marker and current
+session before recording. Locked Claude requires a live, guarded, empty
+composer and the typing budget. Locked records need no ack and have no inbox
+recovery. Postcommit failures are recorded-not-delivered or uncertain, return
+nonzero and include the ID; retry may duplicate recorded or submitted input.
 
 TEXT of - reads stdin. Body limit: {} bytes; repeat --reply-to for up to 32
 existing record IDs. Controls other than newline/tab and leading / or ! refuse.
-Typing uses a smaller conservative screen-verification budget: 1024 envelope
-bytes and at most ten estimated lines. Larger ordinary messages remain stored;
-locked messages outside that budget refuse before committing. Drafts, dialogs,
-copy mode and unverified pasted text never get an automatic Enter or clearing.
+Claude typing uses a smaller screen-verification budget: 1024 envelope bytes
+and at most ten estimated lines. Larger ordinary Claude messages remain stored;
+locked Claude messages outside that budget refuse before committing. Drafts,
+dialogs, copy mode and unverified pasted text never get Enter or clearing.
 
 Outcomes: committed (0); usage (2); unaddressable/locked not running (3);
 locked dialog or copy mode (4); validation, fence, storage or locked input
 failure (5). --json includes ok, code, message, and a committed id plus delivery
 and reason when present. Delivery: typed, queued, stored, uncertain,
-recorded-not-typed.",
+recorded-not-delivered.",
         crate::runtime::MAX_SEND_BYTES
     )
 }

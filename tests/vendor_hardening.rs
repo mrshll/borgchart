@@ -266,7 +266,7 @@ fn locked_send_failure_after_commit_raises_a_delivery_alert() {
     fs::remove_dir(&lock).unwrap();
     assert_eq!(out.status.code(), Some(5), "{}", team_env::both(&out));
     let sent: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(sent["delivery"], "recorded-not-typed", "{sent}");
+    assert_eq!(sent["delivery"], "recorded-not-delivered", "{sent}");
     assert_eq!(e.row(&team, "lead")["delivery"]["id"], sent["id"]);
     assert!(alert(&e, &team));
 }
@@ -402,4 +402,88 @@ fn wake_qualification_uses_shared_list_and_keeps_input_requirements() {
         qualification(Vendor::Claude, &facts),
         Qualification::Unqualified(_)
     ));
+}
+
+#[test]
+fn codex_missing_session_alerts_after_start_grace_and_clears_when_ready() {
+    for interactive in [false, true] {
+        let e = Env::new();
+        e.write(
+            "templates/oncall/template.yaml",
+            &format!(
+                "roles:\n  lead: {{prompt: lead.md, vendor: codex, interactive: {interactive}}}\n"
+            ),
+        );
+        e.write(
+            "templates/oncall/lead.md",
+            "---\nmodels: {codex: example-model}\n---\nReady.\n",
+        );
+        let team = e.create("oncall", "work/a");
+        let member = e.member(&team, "lead");
+        let state = borgchart::state::StateDir::from_root(&e.path(&format!("state/{team}")));
+        let mut inc = borgchart::lifecycle::load_incarnation(&state, &member)
+            .unwrap()
+            .unwrap();
+        let _ = fs::remove_file(state.member_session(&member));
+        assert!(!alert(&e, &team));
+        inc.started_at = "2026-11-09T00:00:00Z".into();
+        borgchart::lifecycle::begin_incarnation(&state, &inc).unwrap();
+        assert!(alert(&e, &team), "missing session should need attention");
+        fs::write(
+            state.member_session(&member),
+            "01a1d300-f48d-7c70-a58a-d5fbea1edd20\n",
+        )
+        .unwrap();
+        assert!(
+            !alert(&e, &team),
+            "recorded session should restore delivery readiness"
+        );
+        command(&e, &team, &member, "unreadable");
+        assert!(
+            !alert(&e, &team),
+            "Codex delivery does not depend on a readable composer"
+        );
+    }
+}
+
+#[test]
+fn codex_failed_queue_alert_clears_after_a_successful_queue() {
+    use std::os::unix::fs::PermissionsExt;
+    for locked in [false, true] {
+        let e = Env::new();
+        e.write(
+            "templates/oncall/template.yaml",
+            &format!(
+                "roles:\n  lead: {{prompt: lead.md, vendor: codex, posture: {}}}\n",
+                if locked { "locked" } else { "vendor" }
+            ),
+        );
+        e.write(
+            "templates/oncall/lead.md",
+            "---\nmodels: {codex: example-model}\n---\nReady.\n",
+        );
+        let team = e.create("oncall", "work/a");
+        let member = e.member(&team, "lead");
+        let cli = e.path("bin/codex");
+        fs::remove_file(&cli).unwrap();
+        fs::write(&cli, "#!/bin/sh\nexit 3\n").unwrap();
+        fs::set_permissions(&cli, fs::Permissions::from_mode(0o755)).unwrap();
+        let failed = e.brg(&[
+            "msg",
+            "send",
+            &format!("{team}/{member}"),
+            "first task",
+            "--external",
+            "test",
+            "--json",
+        ]);
+        assert_eq!(failed.status.code(), Some(if locked { 5 } else { 0 }));
+        let sent: Value = serde_json::from_slice(&failed.stdout).unwrap();
+        assert_eq!(e.row(&team, "lead")["delivery"]["id"], sent["id"]);
+        assert!(alert(&e, &team));
+        fs::write(&cli, "#!/bin/sh\nexit 0\n").unwrap();
+        assert_eq!(send(&e, &team, &member)["delivery"], "queued");
+        assert!(e.row(&team, "lead").get("delivery").is_none());
+        assert!(!alert(&e, &team));
+    }
 }

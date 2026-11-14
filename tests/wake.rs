@@ -606,7 +606,12 @@ impl Env {
             .unwrap();
         let (id, pid) = out.trim().split_once(' ').unwrap();
         PaneIdentity {
-            socket: self.socket.clone(),
+            socket: self
+                .tmux
+                .ok(&["display-message", "-p", "-t", "=s:=m", "#{socket_path}"])
+                .unwrap()
+                .trim()
+                .into(),
             session: "s".into(),
             window: "m".into(),
             pane_id: id.into(),
@@ -953,7 +958,7 @@ impl Env {
             "brg":env!("CARGO_BIN_EXE_brg"),
             "config":{"version":1,"digest":"00","inputs":{},"template_dirs":{}},
             "socket":"brg-wake-test","windows_started":true,
-            "base_env":{},"plugins":{},"members":{"m":{
+            "base_env":{"PATH":format!("{}:{}", folder.join("fakebin").display(), self.private.path_with(&std::env::var("PATH").unwrap_or_default())),"HOME":folder,"QUEUE_RECIPIENT_MARKER":"recipient-only"},"plugins":{},"members":{"m":{
                 "role":"worker","vendor":vendor.as_str(),"posture":if locked {"locked"} else {"vendor"},
                 "interactive":interactive,"started":true,"parent":null,"vendor_version":null
             }}}),
@@ -1005,25 +1010,24 @@ impl Env {
 
 #[test]
 fn unified_send_types_into_working_composers_and_keeps_a_record() {
-    for vendor in [Vendor::Claude, Vendor::Codex] {
-        let e = Env::new(vendor);
-        e.send_setup(vendor, false, false);
-        e.control("mode=working");
-        let (code, out) = e.send_message("hello\nsecond line", &[]);
-        assert_eq!(code, 0, "{out}");
-        assert_eq!(out["delivery"], "typed", "{out}");
-        let submits = e.events("submit");
-        assert_eq!(submits.len(), 1, "{submits:?}");
-        let body = submits[0]["text"].as_str().unwrap();
-        assert!(body.contains("[brg m1 from external:test]"), "{body}");
-        assert!(body.contains("hello\nsecond line"), "{body}");
-        assert!(body.contains("brg msg ack m1"), "{body}");
-        let bus = borgchart::bus::store::open(&e.state).unwrap();
-        let snap = borgchart::bus::store::snapshot(&bus).unwrap();
-        assert_eq!(snap.records[&1].body, "hello\nsecond line");
-        assert!(snap.records[&1].ack_required);
-        assert!(snap.acks.is_empty());
-    }
+    let vendor = Vendor::Claude;
+    let e = Env::new(vendor);
+    e.send_setup(vendor, false, false);
+    e.control("mode=working");
+    let (code, out) = e.send_message("hello\nsecond line", &[]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(out["delivery"], "typed", "{out}");
+    let submits = e.events("submit");
+    assert_eq!(submits.len(), 1, "{submits:?}");
+    let body = submits[0]["text"].as_str().unwrap();
+    assert!(body.contains("[brg m1 from external:test]"), "{body}");
+    assert!(body.contains("hello\nsecond line"), "{body}");
+    assert!(body.contains("brg msg ack m1"), "{body}");
+    let bus = borgchart::bus::store::open(&e.state).unwrap();
+    let snap = borgchart::bus::store::snapshot(&bus).unwrap();
+    assert_eq!(snap.records[&1].body, "hello\nsecond line");
+    assert!(snap.records[&1].ack_required);
+    assert!(snap.acks.is_empty());
 }
 
 #[test]
@@ -1061,7 +1065,8 @@ impl Env {
         fs::write(
             &script,
             format!(
-                "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\0' \"$a\"; done > '{}'\n{then}\n",
+                "#!/bin/sh\nprintf 'call\\n' >> '{}'\nfor a in \"$@\"; do printf '%s\\0' \"$a\"; done > '{}'\n{then}\n",
+                log.with_extension("calls").display(),
                 log.display()
             ),
         )
@@ -1086,52 +1091,42 @@ impl Env {
     }
 }
 
-/// An interactive member's input box belongs to a person, so brg never types
-/// into it. An interactive Codex member gets the message through
-/// `codex queue` on the session its start recorded instead: it runs as the
-/// member's next turn.
+/// Every Codex posture queues the next turn without reading or changing a draft.
 #[test]
-fn interactive_codex_recipients_get_a_queued_message_and_nothing_typed() {
-    let e = Env::new(Vendor::Codex);
-    e.send_setup(Vendor::Codex, false, true);
-    e.fake_codex("echo 'Queued message 1 for thread 2.'; exit 0");
-    e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20");
-    e.keys(&["draft"]);
-    let (code, out) = e.send_message("hello", &[]);
-    assert_eq!(code, 0, "{out}");
-    assert_eq!(out["delivery"], "queued", "{out}");
-    let args = e.codex_args().expect("codex queue was called");
-    assert_eq!(
-        args[..4],
-        [
-            "queue",
-            "--thread",
-            "01a1d300-f48d-7c70-a58a-d5fbea1edd20",
-            "--message"
-        ]
-    );
-    assert_eq!(args.len(), 5, "{args:?}");
-    assert!(
-        args[4].starts_with("[brg m1 from external:test]\nhello\n"),
-        "{args:?}"
-    );
-    assert!(args[4].contains("brg msg ack m1"), "{args:?}");
-    // The person's draft is untouched and nothing was pasted.
-    assert!(e.events("paste").is_empty());
-    assert!(e.screen().contains("draft"));
+fn codex_recipients_queue_without_touching_a_draft_in_every_posture() {
+    for (locked, interactive) in [(false, true), (false, false), (true, false)] {
+        let e = Env::new(Vendor::Codex);
+        e.send_setup(Vendor::Codex, locked, interactive);
+        e.fake_codex("echo 'Queued message 1 for thread 2.'; exit 0");
+        e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20");
+        e.keys(&["draft"]);
+        let (code, out) = e.send_message("hello", &[]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(out["delivery"], "queued", "{out}");
+        let args = e.codex_args().expect("codex queue was called");
+        assert_eq!(
+            args[..4],
+            [
+                "queue",
+                "--thread",
+                "01a1d300-f48d-7c70-a58a-d5fbea1edd20",
+                "--message"
+            ]
+        );
+        assert_eq!(args.len(), 5, "{args:?}");
+        assert!(args[4].contains("\nhello"), "{args:?}");
+        assert_eq!(args[4].contains("brg msg ack m1"), !locked, "{args:?}");
+        // The person's draft is untouched and nothing was pasted.
+        assert!(e.events("paste").is_empty());
+        assert!(e.screen().contains("draft"));
+    }
 }
 
-/// Without a session for this start, or when `codex queue` fails or hangs,
+/// Without a session for this start, or when `codex queue` fails,
 /// the message stays stored and the send still succeeds.
 #[test]
-fn interactive_codex_messages_stay_stored_when_they_cannot_be_queued() {
-    for case in [
-        "no session",
-        "stale session",
-        "unreadable start",
-        "fails",
-        "hangs",
-    ] {
+fn codex_messages_without_a_current_session_or_queue_success_stay_stored() {
+    for case in ["no session", "stale session", "unreadable start", "fails"] {
         let e = Env::new(Vendor::Codex);
         e.send_setup(Vendor::Codex, false, true);
         e.fake_codex(match case {
@@ -1493,5 +1488,196 @@ fn cross_edge_sends_type_and_preflight_locked_recipients_in_their_own_team() {
         let snap = borgchart::bus::store::snapshot(&borgchart::bus::store::open(&e.state).unwrap())
             .unwrap();
         assert_eq!(snap.records[&1].ack_required, !locked);
+    }
+}
+
+#[test]
+fn locked_codex_missing_readiness_refuses_without_recording() {
+    for case in ["no session", "inactive gate", "stopped"] {
+        let e = Env::new(Vendor::Codex);
+        e.send_setup(Vendor::Codex, true, false);
+        e.fake_codex("exit 0");
+        if case != "no session" {
+            e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20");
+        }
+        if case == "inactive gate" {
+            fs::remove_file(e.state.gate_marker("m")).unwrap();
+        }
+        if case == "stopped" {
+            borgchart::lifecycle::end_incarnation(&e.state, "m", "stopped").unwrap();
+        }
+        let (code, out) = e.send_message("hello", &["--allow-unknown"]);
+        assert_ne!(code, 0, "{case}: {out}");
+        assert!(out.get("id").is_none(), "{case}: {out}");
+        let bus = borgchart::bus::store::open(&e.state).unwrap();
+        assert!(
+            borgchart::bus::store::snapshot(&bus)
+                .unwrap()
+                .records
+                .is_empty(),
+            "{case}"
+        );
+        assert!(e.codex_args().is_none(), "{case}");
+        assert!(e.events("paste").is_empty(), "{case}");
+    }
+}
+
+#[test]
+fn codex_queue_failure_preserves_the_record_and_reports_locked_failure() {
+    for locked in [false, true] {
+        let e = Env::new(Vendor::Codex);
+        e.send_setup(Vendor::Codex, locked, false);
+        e.fake_codex("exit 3");
+        e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20");
+        let (code, out) = e.send_message("hello", &[]);
+        assert_eq!(code, if locked { 5 } else { 0 }, "{out}");
+        assert_eq!(
+            out["delivery"],
+            if locked {
+                "recorded-not-delivered"
+            } else {
+                "stored"
+            },
+            "{out}"
+        );
+        assert_eq!(out["id"], "m1");
+        let bus = borgchart::bus::store::open(&e.state).unwrap();
+        assert_eq!(
+            borgchart::bus::store::snapshot(&bus).unwrap().records[&1].body,
+            "hello"
+        );
+    }
+}
+
+#[test]
+fn codex_queue_timeout_is_uncertain_and_never_retried() {
+    for locked in [false, true] {
+        let e = Env::new(Vendor::Codex);
+        e.send_setup(Vendor::Codex, locked, !locked);
+        e.fake_codex("exec sleep 60");
+        e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20");
+        let start = Instant::now();
+        let (code, out) = e.send_message("hello", &[]);
+        assert_eq!(code, if locked { 5 } else { 0 }, "{out}");
+        assert_eq!(out["delivery"], "uncertain", "{out}");
+        assert!(start.elapsed() < Duration::from_secs(20));
+        assert!(e.codex_args().is_some());
+        assert_eq!(
+            fs::read_to_string(e.dir.path().join("codex-args.calls"))
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+        assert!(e.events("paste").is_empty());
+    }
+}
+
+#[test]
+fn codex_queue_uses_the_recipients_environment() {
+    let e = Env::new(Vendor::Codex);
+    e.send_setup(Vendor::Codex, false, true);
+    e.fake_codex("test \"$QUEUE_RECIPIENT_MARKER\" = recipient-only");
+    e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20");
+    let (code, out) = e.send_message("hello", &[]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(out["delivery"], "queued", "{out}");
+}
+
+#[test]
+fn codex_queue_waits_for_a_young_starts_session() {
+    for locked in [false, true] {
+        let e = Env::new(Vendor::Codex);
+        e.send_setup(Vendor::Codex, locked, false);
+        e.fake_codex("exit 0");
+        let mut inc = borgchart::lifecycle::load_incarnation(&e.state, "m")
+            .unwrap()
+            .unwrap();
+        inc.started_at = borgchart::bus::time::utc_now();
+        borgchart::lifecycle::begin_incarnation(&e.state, &inc).unwrap();
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(Duration::from_millis(500));
+                e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20");
+            });
+            let (code, out) = e.send_message("hello", &[]);
+            assert_eq!(code, 0, "{out}");
+            assert_eq!(out["delivery"], "queued", "{out}");
+        });
+    }
+}
+
+#[test]
+fn codex_queue_accepts_a_full_body_without_the_typing_budget() {
+    for locked in [false, true] {
+        let e = Env::new(Vendor::Codex);
+        e.send_setup(Vendor::Codex, locked, false);
+        e.fake_codex("exit 0");
+        e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20");
+        let body = "x".repeat(16 * 1024);
+        let (code, out) = e.send_message(&body, &[]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(out["delivery"], "queued", "{out}");
+        assert!(e.codex_args().unwrap()[4].contains(&body));
+        assert!(e.events("paste").is_empty());
+    }
+}
+
+#[test]
+fn codex_queue_never_targets_a_dead_pane_or_a_start_replaced_during_session_wait() {
+    for case in ["dead pane", "stopped during wait", "replaced during wait"] {
+        let e = Env::new(Vendor::Codex);
+        e.send_setup(Vendor::Codex, false, false);
+        e.fake_codex("exit 0");
+        let mut inc = borgchart::lifecycle::load_incarnation(&e.state, "m")
+            .unwrap()
+            .unwrap();
+        inc.started_at = borgchart::bus::time::utc_now();
+        borgchart::lifecycle::begin_incarnation(&e.state, &inc).unwrap();
+        if case == "dead pane" {
+            e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20");
+            e.tmux.ok(&["kill-pane", "-t", "=s:=m"]).unwrap();
+        }
+        std::thread::scope(|s| {
+            if case != "dead pane" {
+                s.spawn(|| {
+                    std::thread::sleep(Duration::from_millis(250));
+                    if case == "stopped during wait" {
+                        borgchart::lifecycle::end_incarnation(&e.state, "m", "stopped").unwrap();
+                    } else {
+                        inc.incarnation = "m-2".into();
+                        borgchart::lifecycle::begin_incarnation(&e.state, &inc).unwrap();
+                    }
+                    e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20");
+                });
+            }
+            let (code, out) = e.send_message("hello", &[]);
+            assert_eq!(code, 0, "{case}: {out}");
+            assert_eq!(out["delivery"], "stored", "{case}: {out}");
+        });
+        assert!(e.codex_args().is_none(), "{case}");
+        assert!(e.events("paste").is_empty(), "{case}");
+    }
+}
+
+#[test]
+fn codex_queue_delivers_through_dialog_and_copy_mode_without_answering_them() {
+    for locked in [false, true] {
+        for mode in ["dialog", "copy"] {
+            let e = Env::new(Vendor::Codex);
+            e.send_setup(Vendor::Codex, locked, false);
+            e.fake_codex("exit 0");
+            e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20");
+            if mode == "dialog" {
+                e.control("mode=dialog");
+            } else {
+                e.tmux.ok(&["copy-mode", "-t", "=s:=m"]).unwrap();
+            }
+            let (code, out) = e.send_message("hello", &["--allow-unknown"]);
+            assert_eq!(code, 0, "{locked} {mode}: {out}");
+            assert_eq!(out["delivery"], "queued", "{locked} {mode}: {out}");
+            assert!(e.events("paste").is_empty());
+            assert!(e.events("enter").is_empty());
+        }
     }
 }
