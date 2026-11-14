@@ -230,6 +230,66 @@ fn codex_wrapped_model_footer_preserves_empty_and_draft_readings() {
 }
 
 #[test]
+fn codex_narrow_wrapped_footer_does_not_hide_an_empty_composer() {
+    assert_eq!(
+        composer::read(
+            Vendor::Codex,
+            screen!("codex-0169-composer-wrapped-60.ansi"),
+            None
+        ),
+        Reading::Empty
+    );
+}
+
+#[test]
+fn codex_unindented_footer_never_authorizes_typing() {
+    let capture = screen!("codex-0169-composer-nowarn.ansi").replace(
+        "\n  \x1b[38;2;246;226;183mGPT",
+        "\n \x1b[38;2;246;226;183mGPT",
+    );
+    assert!(matches!(
+        composer::read(Vendor::Codex, &capture, None),
+        Reading::Unknown(_)
+    ));
+}
+
+#[test]
+fn codex_shortcuts_overlay_never_authorizes_typing() {
+    assert!(matches!(
+        composer::read(
+            Vendor::Codex,
+            screen!("codex-0169-composer-shortcuts-overlay.ansi"),
+            None
+        ),
+        Reading::Unknown(_)
+    ));
+}
+
+#[test]
+fn codex_offscreen_draft_without_footer_never_authorizes_typing() {
+    assert!(matches!(
+        composer::read(
+            Vendor::Codex,
+            screen!("codex-0169-composer-offscreen-draft.ansi"),
+            None
+        ),
+        Reading::Unknown(_)
+    ));
+}
+
+#[test]
+fn codex_draft_without_left_footer_hints_is_preserved() {
+    assert_eq!(
+        composer::read(
+            Vendor::Codex,
+            screen!("codex-0169-composer-draft.ansi"),
+            None
+        ),
+        Reading::Draft
+    );
+}
+
+#[test]
 fn codex_missing_footer_anchors_never_authorize_typing() {
     let capture = screen!("codex-0169-composer-nowarn.ansi");
     let no_blank = capture.replace(
@@ -238,7 +298,7 @@ fn codex_missing_footer_anchors_never_authorize_typing() {
     );
     let too_many_footer_lines = capture.replace(
         "~/example/work\x1b[39m",
-        "~/example/\n  long/\n  work\x1b[39m",
+        "~/example/\n  long/\n  nested/\n  folder/\n  path/\n  to/\n  work\x1b[39m",
     );
     let no_vim = capture.replace("Vim: Insert", "");
     let invalid_mode = capture.replace("Vim: Insert", "Vim: Inserted · ⚠ 1 warning");

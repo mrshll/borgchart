@@ -12,10 +12,13 @@
 //!   spaces, and the footer under the bottom rule shows `-- INSERT --` in vim
 //!   insert mode. A grey `❯` means a turn is running.
 //! - **Codex**: the box ends at a blank line above the footer. The footer's
-//!   `Vim: Insert` or `Vim: Normal` segment can have warning segments after it,
-//!   with up to two model/path lines above it. The box's first line starts
-//!   with a bold `›` and later lines are indented two spaces. Placeholder
-//!   text is drawn dim.
+//!   `Vim: Insert` or `Vim: Normal` segment can have warning segments after it.
+//!   The `Vim:` line can be any of the last three lines (0.165 drew a warnings
+//!   line under it). Search at most `MAX_FOOTER_LINES` lines above it for the
+//!   blank; intervening model/path lines must be indented two spaces. The box's
+//!   first line starts with a bold `›` and later lines are indented two spaces.
+//!   Placeholder text is drawn dim. In 0.169, a box taller than the pane has no
+//!   footer and reads as `Unknown`.
 //!
 //! Anything that doesn't fit the layout reads as `Unknown`. Any text in the
 //! box that isn't the vendor's dim placeholder reads as a draft, including
@@ -30,6 +33,8 @@ use crate::team::Vendor;
 pub const MIN_ROWS: usize = 20;
 /// The most lines an input box is searched for.
 const MAX_BOX_LINES: usize = 60;
+/// Covers a model/path line wrapped at narrow widths.
+const MAX_FOOTER_LINES: usize = 6;
 
 /// A cell's foreground colour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -483,11 +488,14 @@ fn codex_view(lines: &[Line]) -> Result<(usize, View), String> {
             Some((i, vim))
         })
         .ok_or("no `Vim:` status line under the input box")?;
-    let last = (status.saturating_sub(3)..status)
+    let last = (status.saturating_sub(MAX_FOOTER_LINES)..status)
         .rev()
+        .take_while(|&i| lines[i].is_blank() || lines[i].text().starts_with("  "))
         .find(|&i| lines[i].is_blank())
         .and_then(|i| i.checked_sub(1))
-        .ok_or("no blank line between the input box and the status line")?;
+        .ok_or_else(|| {
+            format!("no blank line within {MAX_FOOTER_LINES} lines above the `Vim:` status line")
+        })?;
     let start = (last.saturating_sub(MAX_BOX_LINES)..=last)
         .rev()
         .find(|&i| lines[i].0.first().is_some_and(|c| c.ch == '›'))

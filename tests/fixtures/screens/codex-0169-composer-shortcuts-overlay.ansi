@@ -1,0 +1,50 @@
+
+  [38;2;99;168;248m>_ [1m[39mOpenAI Codex[0;2m (v0.169.0)[0m
+     [2m~/example/work[0m
+[2m  permissions: [0;1m[38;5;5mYOLO mode[0m
+
+[38;2;238;238;238m[48;2;68;68;68m [39m
+[1;2m[38;2;238;238;238m› [0m[38;2;238;238;238m[48;2;68;68;68mExample request.[39m
+[38;2;238;238;238m [39m
+[49m
+[2m• [0mOK
+
+[2m  Worked for 1s • 9:40 AM
+[0m
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  [1mKeyboard shortcuts[0m
+
+  [1mCompose[0m                       [1mSession[0m                                    [1mTranscript (open first)[0m
+  [38;2;99;168;248m/[39m        Commands             [38;2;99;168;248mtab[39m            Send message                [38;2;99;168;248m^t[39m                         Open transcript
+  [38;2;99;168;248m@[39m        Mention files        [38;2;99;168;248mshift+tab[39m      Change mode                 [38;2;99;168;248mf3[39m                         Find text
+  [38;2;99;168;248m![39m        Shell command        [38;2;99;168;248malt+,[39m          Less reasoning              [38;2;99;168;248mpgup / pgdn[39m                Scroll
+  [38;2;99;168;248m^j[39m       New line             [38;2;99;168;248malt+.[39m          More reasoning              [38;2;99;168;248m^space[39m                     Start selection
+  [38;2;99;168;248m^v[39m       Paste image          [38;2;99;168;248mf8[39m             Voice                       [38;2;99;168;248m^home / ^end[39m               Top / latest
+  [38;2;99;168;248m^g[39m       External editor      [38;2;99;168;248m←[39m              Agents (empty prompt)       [38;2;99;168;248mshift+alt+, / shift+alt+.[39m  Top / latest
+  [38;2;99;168;248m^r[39m       Search history       [38;2;99;168;248malt+← / alt+→[39m  Subagents (empty prompt)
+  [38;2;99;168;248mesc esc[39m  Edit last message    [38;2;99;168;248mf4[39m             Inspect activity
+                                [38;2;99;168;248m^c[39m             Quit
+
+  [38;2;99;168;248m/keymap[39m customize
+
+[1m›[0m [2mAsk Codex to do anything[0m
+
+  [38;2;246;226;183mGPT-6.1 Terra low[39m · [38;2;171;223;167m~/example/work[39m · [38;2;235;160;172mExample Thread[39m
+  [1m?[0m / [1mesc[0m close
