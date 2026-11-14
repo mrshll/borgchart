@@ -495,7 +495,7 @@ mod tests {
         }
     }
 
-    // Catches: removing generic method fallback while removing Codex typing.
+    // Catches: a rejected method not falling back to the next one listed.
     #[test]
     fn a_rejected_queue_can_still_use_a_configured_claude_typed_fallback() {
         let rules = methods::parse(

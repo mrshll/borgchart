@@ -30,7 +30,6 @@ pub enum Fg {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Style {
     pub fg: Fg,
-    pub bold: bool,
     pub dim: bool,
 }
 
@@ -69,12 +68,8 @@ fn apply_sgr(style: &mut Style, params: &str) {
     while i < nums.len() {
         match nums[i] {
             0 => *style = Style::default(),
-            1 => style.bold = true,
             2 => style.dim = true,
-            22 => {
-                style.bold = false;
-                style.dim = false;
-            }
+            22 => style.dim = false,
             n @ 30..=37 => style.fg = Fg::Basic((n - 30) as u8),
             n @ 90..=97 => style.fg = Fg::Basic((n - 90 + 8) as u8),
             39 => style.fg = Fg::Default,

@@ -35,7 +35,7 @@ impl Env {
         fs::create_dir_all(env.path("home")).unwrap();
         // Runtime fixtures use verified fake vendors; unverified notices have
         // their own end-to-end scenarios.
-        env.write("home/.config/borgchart/rules/wake.yaml", "wake:\n  - vendor: claude\n    version: \"fake-agent 0.0.0 (claude)\"\n    methods: [typed]\n  - vendor: codex\n    version: \"fake-agent 0.0.0 (codex)\"\n    methods: [typed]\n");
+        env.write("home/.config/borgchart/rules/wake.yaml", "wake:\n  - vendor: claude\n    version: \"fake-agent 0.0.0 (claude)\"\n    methods: [typed]\n  - vendor: codex\n    version: \"fake-agent 0.0.0 (codex)\"\n    methods: [queue]\n");
 
         env.write(
             "team/template.yaml",

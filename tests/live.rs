@@ -56,11 +56,14 @@ fn send_midturn_probe() {
     if std::env::var("BORGCHART_LIVE").as_deref() != Ok("1") {
         return;
     }
-    let mut w = world::World::live();
     let (who, vendor) = match std::env::var("BORGCHART_LIVE_VENDORS").as_deref() {
         Ok("claude") => (rules::Who::Claude, borgchart::team::Vendor::Claude),
-        _ => panic!("send probe requires claude"),
+        _ => {
+            println!("SKIP: Claude-only probe; set BORGCHART_LIVE_VENDORS=claude");
+            return;
+        }
     };
+    let mut w = world::World::live();
     w.preflight(&[who]);
     let version = w.versions[&who].clone().unwrap();
     wake_matrix::set_dirs(wake_matrix::Dirs {
@@ -100,7 +103,10 @@ fn send_composer_matrix() {
     }
     let (who, vendor) = match std::env::var("BORGCHART_LIVE_VENDORS").as_deref() {
         Ok("claude") => (rules::Who::Claude, borgchart::team::Vendor::Claude),
-        _ => panic!("select claude"),
+        _ => {
+            println!("SKIP: Claude-only probe; set BORGCHART_LIVE_VENDORS=claude");
+            return;
+        }
     };
     let mut w = world::World::live();
     w.preflight(&[who]);
@@ -128,7 +134,10 @@ fn direct_vendor_context_probe() {
     }
     let (who, vendor) = match std::env::var("BORGCHART_LIVE_VENDORS").as_deref() {
         Ok("claude") => (rules::Who::Claude, borgchart::team::Vendor::Claude),
-        _ => panic!("select claude"),
+        _ => {
+            println!("SKIP: Claude-only probe; set BORGCHART_LIVE_VENDORS=claude");
+            return;
+        }
     };
     let mut w = world::World::live();
     w.preflight(&[who]);
@@ -150,7 +159,10 @@ fn send_near_limit_probe() {
     }
     let (who, vendor) = match std::env::var("BORGCHART_LIVE_VENDORS").as_deref() {
         Ok("claude") => (rules::Who::Claude, borgchart::team::Vendor::Claude),
-        _ => panic!("select claude"),
+        _ => {
+            println!("SKIP: Claude-only probe; set BORGCHART_LIVE_VENDORS=claude");
+            return;
+        }
     };
     let mut w = world::World::live();
     w.preflight(&[who]);

@@ -53,7 +53,7 @@ const POLL: Duration = Duration::from_millis(100);
 struct Qualified {
     /// The input mode the CLI was set to.
     editor: &'static str,
-    /// Claude's `promptSuggestionEnabled` (`None`: not applicable).
+    /// Claude's qualified `promptSuggestionEnabled` setting.
     suggestions: Option<bool>,
 }
 
@@ -71,7 +71,7 @@ pub struct LaunchFacts {
     pub argv: Vec<String>,
     /// The input mode the vendor will use: `vim` or `normal` (`None`: unknown).
     pub editor: Option<String>,
-    /// Claude's `promptSuggestionEnabled` (`None`: unknown or not applicable).
+    /// Claude's `promptSuggestionEnabled` (`None`: unknown).
     pub suggestions: Option<bool>,
     /// Settings files that were read, for diagnosis.
     pub sources: Vec<PathBuf>,
