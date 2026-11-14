@@ -11,10 +11,11 @@
 //!   rules; its first line starts with `❯`, later lines are indented two
 //!   spaces, and the footer under the bottom rule shows `-- INSERT --` in vim
 //!   insert mode. A grey `❯` means a turn is running.
-//! - **Codex**: the box ends one blank line above the status line (the one
-//!   ending in `Vim: Insert` or `Vim: Normal`); its first line starts with a
-//!   bold `›` and later lines are indented two spaces. Placeholder text is
-//!   drawn dim.
+//! - **Codex**: the box ends at a blank line above the footer. The footer's
+//!   `Vim: Insert` or `Vim: Normal` segment can have warning segments after it,
+//!   with up to two model/path lines above it. The box's first line starts
+//!   with a bold `›` and later lines are indented two spaces. Placeholder
+//!   text is drawn dim.
 //!
 //! Anything that doesn't fit the layout reads as `Unknown`. Any text in the
 //! box that isn't the vendor's dim placeholder reads as a draft, including
@@ -469,23 +470,24 @@ fn claude_view(lines: &[Line]) -> Result<(usize, View), String> {
 
 fn codex_view(lines: &[Line]) -> Result<(usize, View), String> {
     let n = lines.len();
-    let status = (n.saturating_sub(3)..n)
+    let (status, vim) = (n.saturating_sub(3)..n)
         .rev()
-        .find(|&i| {
+        .find_map(|i| {
             let t = lines[i].text();
-            let t = t.trim_end();
-            t.ends_with("Vim: Insert") || t.ends_with("Vim: Normal")
+            let (_, tail) = t.trim_end().rsplit_once("Vim: ")?;
+            let vim = match tail.split(" · ").next()? {
+                "Insert" => VimMode::Insert,
+                "Normal" => VimMode::Normal,
+                _ => return None,
+            };
+            Some((i, vim))
         })
-        .ok_or("no status line under the input box")?;
-    let vim = if lines[status].text().trim_end().ends_with("Insert") {
-        VimMode::Insert
-    } else {
-        VimMode::Normal
-    };
-    if status < 2 || !lines[status - 1].is_blank() {
-        return Err("no blank line between the input box and the status line".into());
-    }
-    let last = status - 2;
+        .ok_or("no `Vim:` status line under the input box")?;
+    let last = (status.saturating_sub(3)..status)
+        .rev()
+        .find(|&i| lines[i].is_blank())
+        .and_then(|i| i.checked_sub(1))
+        .ok_or("no blank line between the input box and the status line")?;
     let start = (last.saturating_sub(MAX_BOX_LINES)..=last)
         .rev()
         .find(|&i| lines[i].0.first().is_some_and(|c| c.ch == '›'))

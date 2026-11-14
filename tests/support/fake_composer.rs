@@ -218,17 +218,15 @@ impl Fake {
                     }
                 }
                 lines.push(String::new());
+                lines.push("  example-model · ~/example · Example Thread".into());
                 lines.push(format!(
-                    "  example-model · ~/example   {}",
+                    "  ? for shortcuts · {} · ⚠ 1 warning · f2 to view",
                     if self.insert {
                         "Vim: Insert"
                     } else {
                         "Vim: Normal"
                     }
                 ));
-                if self.buffer.is_empty() {
-                    lines.push("  ? for shortcuts".into());
-                }
             }
         }
         let mut out = format!("\x1b[2J\x1b[H\x1b]0;{title}\x07");

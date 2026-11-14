@@ -285,7 +285,8 @@ impl Agent {
                 body.push("  -- INSERT -- ⏵⏵ don't ask on (shift+tab to cycle)".into());
             } else {
                 body.push(String::new());
-                body.push("  ? for shortcuts · Vim: Insert".into());
+                body.push("  example-model · ~/example · Example Thread".into());
+                body.push("  ? for shortcuts · Vim: Insert · ⚠ 1 warning · f2 to view".into());
             }
         }
         let mut out = String::from("\x1b[2J\x1b[H");

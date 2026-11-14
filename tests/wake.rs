@@ -182,6 +182,75 @@ fn codex_input_box_readings() {
 }
 
 #[test]
+fn codex_warning_segments_do_not_hide_an_empty_composer_or_its_vim_mode() {
+    let capture = screen!("codex-0169-composer-warnings.ansi");
+    for (capture, mode) in [
+        (capture.to_string(), VimMode::Insert),
+        (capture.replace("6 warnings", "1 warning"), VimMode::Insert),
+        (
+            capture
+                .replace("Vim: Insert", "Vim: Normal")
+                .replace("6 warnings", "3 warnings"),
+            VimMode::Normal,
+        ),
+    ] {
+        assert_eq!(
+            composer::read(Vendor::Codex, &capture, None),
+            Reading::Empty
+        );
+        assert_eq!(
+            composer::view(Vendor::Codex, &capture, None).unwrap().vim,
+            Some(mode)
+        );
+    }
+}
+
+#[test]
+fn codex_model_footer_does_not_hide_an_empty_composer_without_warnings() {
+    assert_eq!(
+        composer::read(
+            Vendor::Codex,
+            screen!("codex-0169-composer-nowarn.ansi"),
+            None
+        ),
+        Reading::Empty
+    );
+}
+
+#[test]
+fn codex_wrapped_model_footer_preserves_empty_and_draft_readings() {
+    let capture = screen!("codex-0169-composer-nowarn.ansi")
+        .replace("~/example/work\x1b[39m", "~/example/\n  work\x1b[39m");
+    assert_eq!(
+        composer::read(Vendor::Codex, &capture, None),
+        Reading::Empty
+    );
+    let draft = capture.replace("\x1b[2mAsk Codex to do anything\x1b[0m", "draft message");
+    assert_eq!(composer::read(Vendor::Codex, &draft, None), Reading::Draft);
+}
+
+#[test]
+fn codex_missing_footer_anchors_never_authorize_typing() {
+    let capture = screen!("codex-0169-composer-nowarn.ansi");
+    let no_blank = capture.replace(
+        "\n\n  \x1b[38;2;246;226;183mGPT",
+        "\n  \x1b[38;2;246;226;183mGPT",
+    );
+    let too_many_footer_lines = capture.replace(
+        "~/example/work\x1b[39m",
+        "~/example/\n  long/\n  work\x1b[39m",
+    );
+    let no_vim = capture.replace("Vim: Insert", "");
+    let invalid_mode = capture.replace("Vim: Insert", "Vim: Inserted · ⚠ 1 warning");
+    for capture in [no_blank, too_many_footer_lines, no_vim, invalid_mode] {
+        assert!(matches!(
+            composer::read(Vendor::Codex, &capture, None),
+            Reading::Unknown(_)
+        ));
+    }
+}
+
+#[test]
 fn vim_modes_are_read() {
     let mode = |v, s| composer::view(v, s, None).unwrap().vim;
     assert_eq!(mode(Vendor::Claude, claude("empty")), Some(VimMode::Insert));
