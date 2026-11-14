@@ -87,11 +87,11 @@ brg create <root>/dev --repo gadgets --branch fix-rounding
 | `stopping` | A team or child team has an unfinished stop cascade; run `brg stop <team>` to finish it before creating or starting inside |
 | `unreadable` | A kept child team could not be read; its detail shows the error. Other readable members and child teams remain visible in text, JSON, watch and interactive status |
 
-A `stored` or `uncertain` send to a running recipient adds `delivery <outcome> since HH:MMZ: <reason>` to its row until the next `typed` or `queued` delivery. `--json` includes `delivery: {outcome, reason, at, id}`. Inbox-only interactive Claude members and stopped recipients create no delivery alert, and a restart ignores the previous start’s record.
+A `stored` or `uncertain` send to a running recipient adds `delivery <outcome> since HH:MMZ: <reason>` to its row until the next `typed` or `queued` delivery, or until an ordinary member has no unacknowledged messages. Sends outside the screen-verification size budget create no alert. `--json` includes `delivery: {outcome, reason, at, id}`. Inbox-only interactive Claude members and stopped recipients create no delivery alert, and a restart ignores the previous start’s record.
 
 For a running, non-interactive member that reads `idle`, each status refresh also checks the styled input box. An unreadable layout adds `brg can’t read <vendor> <version>’s input box: <reason>`. A readable box in Vim normal mode is fine. Delivery and unreadable-box failures give the row a red `!` and count in “need you”; `blocked`, `exited` and `gate-inactive` keep their own marks.
 
-A running member with a version absent from `rules/wake.yaml` (or its `$XDG_CONFIG_HOME/borgchart/rules/wake.yaml` override) shows `<version> not verified: run the live tier (CONTRIBUTING.md)` and `verified: false` in JSON. Verified versions have `verified: true`. This is a plain notice and does not count in “need you”.
+A running member with a version absent from `rules/wake.yaml` (or its `$XDG_CONFIG_HOME/borgchart/rules/wake.yaml` override) shows `<version> not verified: run the live tier (CONTRIBUTING.md)` and `verified: false` in JSON. If the rules cannot be read, the notice shows that error instead. Verified versions have `verified: true`. This is a plain notice and does not count in “need you”.
 
 States are advisory: they gate `msg send` for safety, not access.
 

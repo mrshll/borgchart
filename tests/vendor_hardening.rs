@@ -144,6 +144,148 @@ fn stopped_and_inbox_only_members_do_not_get_delivery_alerts() {
 }
 
 #[test]
+fn stopping_after_failed_delivery_removes_the_alert() {
+    let (e, team, member) = setup(false);
+    command(&e, &team, &member, "unreadable");
+    send(&e, &team, &member);
+    assert!(alert(&e, &team));
+    e.ok(&["stop", &team]);
+    assert!(e.row(&team, "lead").get("delivery").is_none());
+    assert!(!alert(&e, &team));
+}
+
+#[test]
+fn acknowledging_failed_delivery_removes_the_alert() {
+    let (e, team, member) = setup(false);
+    command(&e, &team, &member, "unreadable");
+    let sent = send(&e, &team, &member);
+    command(&e, &team, &member, "readable");
+    assert!(alert(&e, &team));
+    let start = e.starts(&member).last().unwrap().clone();
+    let ack = e
+        .cmd(&["msg", "ack", sent["id"].as_str().unwrap()])
+        .env("BORGCHART_TEAM", &team)
+        .env("BORGCHART_MEMBER", &member)
+        .env(
+            "BORGCHART_INCARNATION",
+            start["env"]["BORGCHART_INCARNATION"].as_str().unwrap(),
+        )
+        .output()
+        .unwrap();
+    assert!(ack.status.success(), "{}", team_env::both(&ack));
+    assert!(e.row(&team, "lead").get("delivery").is_none());
+    assert!(!alert(&e, &team));
+}
+
+#[test]
+fn oversized_stored_message_does_not_raise_a_delivery_alert() {
+    let (e, team, member) = setup(false);
+    let sent: Value = serde_json::from_slice(
+        &e.ok(&[
+            "msg",
+            "send",
+            &format!("{team}/{member}"),
+            &"x".repeat(1200),
+            "--external",
+            "test",
+            "--json",
+        ])
+        .stdout,
+    )
+    .unwrap();
+    assert_eq!(sent["delivery"], "stored");
+    assert!(
+        !e.path(&format!("state/{team}/members/{member}/delivery.json"))
+            .exists()
+    );
+    assert!(e.row(&team, "lead").get("delivery").is_none());
+    assert!(!alert(&e, &team));
+}
+
+#[test]
+fn delivery_status_save_failure_keeps_a_typed_send_successful() {
+    use std::os::unix::fs::PermissionsExt;
+    let (e, team, member) = setup(false);
+    command(&e, &team, &member, "unreadable");
+    send(&e, &team, &member);
+    command(&e, &team, &member, "readable");
+    let folder = e.path(&format!("state/{team}/members/{member}"));
+    fs::set_permissions(&folder, fs::Permissions::from_mode(0o500)).unwrap();
+    let out = e.brg(&[
+        "msg",
+        "send",
+        &format!("{team}/{member}"),
+        "Task",
+        "--external",
+        "test",
+        "--json",
+    ]);
+    fs::set_permissions(&folder, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", team_env::both(&out));
+    let sent: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(sent["delivery"], "typed", "{sent}");
+    assert!(
+        sent["reason"]
+            .as_str()
+            .unwrap()
+            .contains("cannot save delivery status"),
+        "{sent}"
+    );
+    let log = fs::read_to_string(e.path(&format!("home/fake-agent/{member}.jsonl"))).unwrap();
+    assert!(
+        log.lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .any(|v| v["event"] == "submit"
+                && v["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains(sent["id"].as_str().unwrap())))
+    );
+}
+
+#[test]
+fn locked_send_failure_after_commit_raises_a_delivery_alert() {
+    let e = Env::new();
+    e.write(
+        "templates/oncall/template.yaml",
+        "roles:\n  lead: {prompt: lead.md, posture: locked}\n",
+    );
+    let team = e.create("oncall", "work/a");
+    let member = e.member(&team, "lead");
+    let lock = e.path(&format!("state/{team}/locks/{member}.lock"));
+    fs::remove_file(&lock).unwrap();
+    fs::create_dir(&lock).unwrap();
+    let out = e.brg(&[
+        "msg",
+        "send",
+        &format!("{team}/{member}"),
+        "Task",
+        "--external",
+        "test",
+        "--json",
+    ]);
+    fs::remove_dir(&lock).unwrap();
+    assert_eq!(out.status.code(), Some(5), "{}", team_env::both(&out));
+    let sent: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(sent["delivery"], "recorded-not-typed", "{sent}");
+    assert_eq!(e.row(&team, "lead")["delivery"]["id"], sent["id"]);
+    assert!(alert(&e, &team));
+}
+
+#[test]
+fn broken_wake_rules_notice_explains_the_configuration_failure() {
+    let (e, team, _) = setup(false);
+    e.write("home/.config/borgchart/rules/wake.yaml", "wake: [");
+    let row = e.row(&team, "lead");
+    assert_eq!(row["verified"], false);
+    let detail = row["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("wake rules can't be read") && detail.contains("wake.yaml"),
+        "{detail}"
+    );
+    assert!(!alert(&e, &team));
+}
+
+#[test]
 fn restart_ignores_delivery_failure_from_the_previous_incarnation() {
     let (e, team, member) = setup(false);
     command(&e, &team, &member, "unreadable");

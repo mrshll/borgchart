@@ -97,12 +97,16 @@ pub enum Qualification {
 }
 
 /// Whether the measured CLI version is in the shared verified-version list.
-pub fn verified(vendor: Vendor, version: Option<&str>) -> bool {
+pub fn verified(
+    rules: &crate::watcher::methods::WakeRules,
+    vendor: Vendor,
+    version: Option<&str>,
+) -> bool {
     let version = version.map(|v| match vendor {
         Vendor::Claude => v.strip_suffix(" (Claude Code)").unwrap_or(v),
         Vendor::Codex => v.strip_prefix("codex-cli ").unwrap_or(v),
     });
-    crate::watcher::methods::load().is_ok_and(|rules| rules.find(vendor, version).is_some())
+    rules.find(vendor, version).is_some()
 }
 
 /// Whether the guarded wake may type into this member at all.
@@ -120,7 +124,7 @@ pub fn qualification(vendor: Vendor, launch: &LaunchFacts) -> Qualification {
         return Qualification::Unqualified(format!("{}'s input mode is unknown", vendor.as_str()));
     };
     let candidates: Vec<&Qualified> = QUALIFIED.iter().filter(|q| q.vendor == vendor).collect();
-    if !verified(vendor, Some(version)) {
+    if !crate::watcher::methods::load().is_ok_and(|rules| verified(&rules, vendor, Some(version))) {
         return Qualification::Unqualified(format!(
             "{} `{version}` has not been qualified for typed reminders",
             vendor.as_str()

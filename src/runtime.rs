@@ -3781,7 +3781,12 @@ pub fn status(inst: &Instance) -> Result<Vec<StatusRow>, String> {
             ),
         }
     };
-    status_with_counts(inst, counts.as_ref(), bus_note.as_deref())
+    status_with_counts(
+        inst,
+        counts.as_ref(),
+        bus_note.as_deref(),
+        &crate::watcher::methods::load(),
+    )
 }
 
 /// Ignore missing or changed Claude session data and unsafe hyperlink targets.
@@ -3836,6 +3841,7 @@ fn status_with_counts(
     inst: &Instance,
     counts: Option<&std::collections::BTreeMap<String, store::Progress>>,
     bus_note: Option<&str>,
+    wake_rules: &Result<crate::watcher::methods::WakeRules, String>,
 ) -> Result<Vec<StatusRow>, String> {
     let v = validated(inst)?;
     let state = &inst.state;
@@ -3959,15 +3965,20 @@ fn status_with_counts(
                 .worktree
                 .then(|| crate::worktree::path(&inst.at(id)).display().to_string()),
         };
-        row.delivery = std::fs::read(state.member_dir(id).join("delivery.json"))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<Delivery>(&bytes).ok())
-            .filter(|d| row.start_id.as_deref() == Some(&d.incarnation));
         if let Some(w) = windows.iter().find(|w| &w.name == id) {
             if w.dead {
                 row.state = "exited".into();
                 row.detail = w.dead_status.map(|s| format!("status {s}"));
             } else {
+                if !inst.record.stopping
+                    && row.liveness == Some(Liveness::Alive)
+                    && (posture == Posture::Locked || row.unacked != Some(0))
+                {
+                    row.delivery = std::fs::read(state.member_dir(id).join("delivery.json"))
+                        .ok()
+                        .and_then(|bytes| serde_json::from_slice::<Delivery>(&bytes).ok())
+                        .filter(|d| row.start_id.as_deref() == Some(&d.incarnation));
+                }
                 let vendor = match row.vendor.as_deref() {
                     Some("claude") => Some(Vendor::Claude),
                     Some("codex") => Some(Vendor::Codex),
@@ -3994,12 +4005,17 @@ fn status_with_counts(
                 }
                 let mut details: Vec<String> = row.detail.take().into_iter().collect();
                 if let Some(vendor) = vendor {
-                    row.verified =
-                        Some(crate::wake::verified(vendor, row.vendor_version.as_deref()));
+                    row.verified = Some(wake_rules.as_ref().is_ok_and(|rules| {
+                        crate::wake::verified(rules, vendor, row.vendor_version.as_deref())
+                    }));
                     if row.verified == Some(false) {
                         details.push(format!(
-                            "{} not verified: run the live tier (CONTRIBUTING.md)",
-                            row.vendor_version.as_deref().unwrap_or("unknown version")
+                            "{} not verified: {}",
+                            row.vendor_version.as_deref().unwrap_or("unknown version"),
+                            match wake_rules {
+                                Ok(_) => "run the live tier (CONTRIBUTING.md)".into(),
+                                Err(error) => format!("wake rules can't be read: {error}"),
+                            }
                         ));
                     }
                 }
@@ -4193,7 +4209,8 @@ fn status_with_counts(
         for (id, _) in copies {
             let full_id = inst.at(id);
             let (copy, mut children, error) = match address::instance(&full_id).and_then(|copy| {
-                status_with_counts(&copy, counts, bus_note).map(|children| (copy, children))
+                status_with_counts(&copy, counts, bus_note, wake_rules)
+                    .map(|children| (copy, children))
             }) {
                 Ok((copy, children)) => (Some(copy), children, None),
                 Err(error) => (None, Vec::new(), Some(error)),
@@ -4940,6 +4957,7 @@ pub fn send(
         paste_send(&tmux, &inst.state, &to, pane, vendor, locked, &envelope).map(|()| "typed")
     })();
     let (delivery, reason) = match &typed {
+        Ok("queued") => ("queued", "codex queue: the member's next turn"),
         Ok(delivery) => (*delivery, "submitted"),
         Err(error) => (
             if matches!(error, SendError::Uncertain(_)) {
@@ -4950,7 +4968,9 @@ pub fn send(
             error.message(),
         ),
     };
+    let mut reason = reason.to_string();
     if let Some(inc) = &original
+        && !reason.starts_with("message exceeds the screen-verification budget")
         && lifecycle::load_incarnation(&inst.state, &to)
             .ok()
             .flatten()
@@ -4977,27 +4997,19 @@ pub fn send(
                     Err(e)
                 }
             })
-        } else if !locked || delivery == "uncertain" {
+        } else {
             write_private(&path, &serde_json::to_vec(&serde_json::json!({
                 "outcome": delivery, "reason": reason, "at": utc_now(), "id": record.id, "incarnation": inc.incarnation
             })).expect("delivery serializes"))
-        } else {
-            Ok(())
         };
-        saved.map_err(|e| SendError::Committed {
-            id: record.id.clone(),
-            delivery,
-            message: format!("cannot save delivery status: {e}"),
-        })?;
+        if let Err(error) = saved {
+            reason.push_str(&format!("; cannot save delivery status: {error}"));
+        }
     }
     match typed {
         Ok(delivery) => {
             outcome.delivery = delivery;
-            outcome.reason = match delivery {
-                "queued" => "codex queue: the member's next turn",
-                _ => "submitted",
-            }
-            .into();
+            outcome.reason = reason;
             Ok(outcome)
         }
         Err(error) => {
@@ -5010,11 +5022,11 @@ pub fn send(
                     } else {
                         "recorded-not-typed"
                     },
-                    message: error.message().to_string(),
+                    message: reason,
                 })
             } else {
                 outcome.delivery = if uncertain { "uncertain" } else { "stored" };
-                outcome.reason = error.message().to_string();
+                outcome.reason = reason;
                 Ok(outcome)
             }
         }

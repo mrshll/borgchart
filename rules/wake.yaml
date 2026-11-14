@@ -1,6 +1,7 @@
 # How the watcher may wake a member that has unacked messages, by vendor
 # and CLI version. A version not listed here gets no wake: it needs a person.
 # Turn on a newly tested CLI by adding it here; no code changes.
+# This is also the verified-version list behind status notices.
 #
 #   version:    an exact version (`0.165.0`), or a prefix ending in `.*`
 #               (`2.1.*` matches 2.1.318, not 2.10.0). The first match wins.

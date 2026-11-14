@@ -79,7 +79,7 @@ Follow the git rules below: an up-to-date description, then the owner's review r
 
 ## Watch
 
-A red delivery or unreadable-input-box row means that member can’t be reached; tell the owner, and don’t resend.
+A red delivery row means brg couldn't type to that member (its reason is shown); its messages are still in its inbox. A non-interactive Codex member gets no turn until that's fixed: tell the owner, and don't resend.
 
 1. **At the start of every turn,** read your inbox, with bodies. Act on the messages and ack each once you have taken it on.
 2. **End every turn ready to hear your inbox:**
