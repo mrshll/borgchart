@@ -4021,11 +4021,10 @@ fn status_with_counts(
                 }
                 if vendor == Some(Vendor::Codex)
                     && let Some(inc) = incarnation.as_ref().ok().and_then(|i| i.as_ref())
-                    && ((posture == Posture::Locked && !state.gate_marker(id).exists())
-                        || (codex_session(state, id, &inc.started_at).is_none()
-                            && crate::bus::time::parse_utc(&inc.started_at)
-                                .and_then(|t| t.elapsed().ok())
-                                .is_some_and(|age| age > Duration::from_secs(30))))
+                    && codex_session(state, id, &inc.started_at).is_none()
+                    && crate::bus::time::parse_utc(&inc.started_at)
+                        .and_then(|t| t.elapsed().ok())
+                        .is_some_and(|age| age > Duration::from_secs(30))
                 {
                     row.input_unreadable = true;
                     details.push(format!(
@@ -4852,6 +4851,11 @@ pub fn send(
     if locked && vendor == Vendor::Codex {
         pane.as_ref()
             .ok_or_else(|| SendError::NotAlive(format!("`{to}` is not running")))?;
+        if lifecycle::liveness(&inst.state, &to, &original.as_ref().unwrap().incarnation)
+            != Liveness::Alive
+        {
+            return Err(SendError::NotAlive(format!("`{to}` is not running")));
+        }
         if !inst.state.gate_marker(&to).exists() {
             return Err(SendError::Refused(
                 "locked recipient's gate is not active".into(),

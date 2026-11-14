@@ -989,6 +989,7 @@ impl Env {
                 ),
             )
             .env("HOME", self.dir.path())
+            .env("QUEUE_SENDER_MARKER", "sender-only")
             .env("BORGCHART_STATE_HOME", self.dir.path())
             .env("BORGCHART_CONFIG", self.dir.path().join("unused.yaml"))
             .args([
@@ -1493,7 +1494,7 @@ fn cross_edge_sends_type_and_preflight_locked_recipients_in_their_own_team() {
 
 #[test]
 fn locked_codex_missing_readiness_refuses_without_recording() {
-    for case in ["no session", "inactive gate", "stopped"] {
+    for case in ["no session", "inactive gate", "stopped", "dead pane"] {
         let e = Env::new(Vendor::Codex);
         e.send_setup(Vendor::Codex, true, false);
         e.fake_codex("exit 0");
@@ -1506,8 +1507,14 @@ fn locked_codex_missing_readiness_refuses_without_recording() {
         if case == "stopped" {
             borgchart::lifecycle::end_incarnation(&e.state, "m", "stopped").unwrap();
         }
+        if case == "dead pane" {
+            e.tmux.ok(&["kill-pane", "-t", "=s:=m"]).unwrap();
+        }
         let (code, out) = e.send_message("hello", &["--allow-unknown"]);
         assert_ne!(code, 0, "{case}: {out}");
+        if case == "dead pane" {
+            assert_eq!(code, 3, "{case}: {out}");
+        }
         assert!(out.get("id").is_none(), "{case}: {out}");
         let bus = borgchart::bus::store::open(&e.state).unwrap();
         assert!(
@@ -1577,7 +1584,9 @@ fn codex_queue_timeout_is_uncertain_and_never_retried() {
 fn codex_queue_uses_the_recipients_environment() {
     let e = Env::new(Vendor::Codex);
     e.send_setup(Vendor::Codex, false, true);
-    e.fake_codex("test \"$QUEUE_RECIPIENT_MARKER\" = recipient-only");
+    e.fake_codex(
+        "test \"$QUEUE_RECIPIENT_MARKER\" = recipient-only && test -z \"${QUEUE_SENDER_MARKER+x}\"",
+    );
     e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20");
     let (code, out) = e.send_message("hello", &[]);
     assert_eq!(code, 0, "{out}");
