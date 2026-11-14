@@ -41,6 +41,8 @@ mod seat_qualification;
 
 #[path = "live/cases.rs"]
 mod cases;
+#[path = "live/queue.rs"]
+mod queue;
 #[path = "live/rules.rs"]
 mod rules;
 #[path = "live/wake_matrix.rs"]
@@ -328,9 +330,7 @@ fn case(w: &World, id: &str, submit: bool) -> Vec<(String, Outcome)> {
         "claude-env-colour" => one(cases::env_colour(w, Who::Claude)),
         "codex-env-colour" => one(cases::env_colour(w, Who::Codex)),
         "claude-background-wait" => one(cases::background_wait(w)),
-        "codex-queue" => one(Outcome::Skip(
-            "`codex queue` isn't available until #20".into(),
-        )),
+        "codex-queue" => one(queue::run(w)),
         "claude-wake-matrix" => one(matrix_case(w, Vendor::Claude, submit)),
         "codex-wake-matrix" => one(matrix_case(w, Vendor::Codex, submit)),
         other => one(Outcome::Fail(format!("no such case {other}"))),
@@ -531,12 +531,7 @@ fn dry_run_reaches_every_expected_result() {
 
     // Every case, all fakes well behaved.
     let results = run_cases(&w, &both, true, &matrix);
-    let skips = [
-        "claude-trust-on",
-        "codex-queue",
-        "claude-wake-matrix",
-        "codex-wake-matrix",
-    ];
+    let skips = ["claude-trust-on", "claude-wake-matrix", "codex-wake-matrix"];
     for (id, _) in REQUIRED {
         let want = if skips.contains(id) { "SKIP" } else { "PASS" };
         check(id, id, want, results.get(*id));
@@ -675,4 +670,40 @@ fn time_limited_calls_end_their_group_and_never_wait_on_held_pipes() {
         start.elapsed()
     );
     assert!(out.status.success());
+}
+
+#[test]
+fn codex_queue_dry_run_checks_both_postures_and_post_tool_delivery() {
+    let keep = tempfile::tempdir().unwrap();
+    let w = World::dry(keep.path());
+    let outcome = queue::run(&w);
+    assert!(matches!(outcome, Outcome::Pass(_)), "{outcome:?}");
+    // Controls must fail when exit 0 silently loses the turn or the
+    // granted action runs without its PostToolUse delivery.
+    w.fake_file("drop-queue", Some(""));
+    let outcome = queue::run(&w);
+    assert!(
+        matches!(outcome, Outcome::Fail(_)),
+        "lost queue: {outcome:?}"
+    );
+    w.fake_file("drop-queue", None);
+    w.scenario("queue-locked", "no-post");
+    let outcome = queue::run(&w);
+    assert!(
+        matches!(outcome, Outcome::Fail(_)),
+        "missing post hook: {outcome:?}"
+    );
+}
+
+#[test]
+#[ignore = "launches real Codex; set BORGCHART_LIVE=1"]
+fn codex_queue() {
+    if std::env::var("BORGCHART_LIVE").as_deref() != Ok("1") {
+        return;
+    }
+    let mut w = World::live();
+    w.preflight(&[Who::Codex]);
+    let outcome = case(&w, "codex-queue", true).remove(0).1;
+    println!("codex-queue: {}: {}", outcome.label(), outcome.detail());
+    assert!(matches!(outcome, Outcome::Pass(_)), "{outcome:?}");
 }
