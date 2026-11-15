@@ -39,15 +39,16 @@ pub const REQUIRED: &[(&str, Who)] = &[
     ("claude-wake-matrix", Who::Claude),
 ];
 
-/// Saving Claude trust is allowed only in a canonical throwaway home.
-pub fn throwaway(value: Option<&str>, home: &Path, temp: &Path) -> Result<bool, String> {
-    if value != Some("1") {
-        return Ok(false);
+type Homes = [Option<PathBuf>; 3];
+/// Throwaway HOME and optional configuration homes; temp must be canonical.
+pub fn throwaway(value: Option<&str>, homes: &Homes, temp: &Path) -> Result<bool, String> {
+    let inside = |h: PathBuf| h != temp && h.starts_with(temp);
+    let mut paths = homes.iter().flatten();
+    let valid = homes[0].is_some() && paths.all(|h| h.canonicalize().is_ok_and(inside));
+    if value == Some("1") && !valid {
+        return Err("Use throwaway configuration homes under the system temp directory".into());
     }
-    match (home.canonicalize(), temp.canonicalize()) {
-        (Ok(home), Ok(temp)) if home != temp && home.starts_with(&temp) => Ok(true),
-        _ => Err("BORGCHART_LIVE_THROWAWAY requires HOME under the system temp directory".into()),
-    }
+    Ok(value == Some("1"))
 }
 
 pub fn codex_model(value: Option<&str>) -> &str {
@@ -278,17 +279,24 @@ mod tests {
     const BOTH: &[Who] = &[Who::Claude, Who::Codex];
 
     #[test]
-    fn throwaway_switch_refuses_local_home_and_symlink_escape() {
+    fn throwaway_switch_refuses_real_or_escaped_configuration_homes() {
         let temp = tempfile::tempdir().unwrap();
-        let home = temp.path().join("home");
+        let root = temp.path().canonicalize().unwrap();
+        let home = root.join("home");
         std::fs::create_dir(&home).unwrap();
-        assert_eq!(throwaway(None, &home, temp.path()), Ok(false));
-        assert_eq!(throwaway(Some("1"), &home, temp.path()), Ok(true));
-        assert!(throwaway(Some("1"), temp.path(), temp.path()).is_err());
         let outside = tempfile::tempdir().unwrap();
-        let link = temp.path().join("escape");
+        let link = root.join("escape");
         std::os::unix::fs::symlink(outside.path(), &link).unwrap();
-        assert!(throwaway(Some("1"), &link, temp.path()).is_err());
+        let mut homes = [Some(home.clone()), None, None];
+        assert_eq!(throwaway(None, &homes, &root), Ok(false));
+        assert_eq!(throwaway(Some("1"), &homes, &root), Ok(true));
+        for index in 0..3 {
+            for bad in [&root, &link] {
+                homes[index] = Some(bad.to_path_buf());
+                assert!(throwaway(Some("1"), &homes, &root).is_err());
+            }
+            homes[index] = Some(home.clone());
+        }
     }
 
     #[test]

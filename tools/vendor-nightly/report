@@ -14,9 +14,10 @@ REQUIRED = set(re.findall(r'\("([\w-]+)", Who::', (ROOT / "tests/live/rules.rs")
 
 
 def scrub(data: bytes) -> None:
-    patterns = [b"sk-ant-", b"sk-proj-"] + [
-        os.environ.get(k, "").encode() for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY")
-    ]
+    patterns = [b"sk-ant-", b"sk-proj-", b"sk-svcacct-"]
+    for name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+        key = os.environ.get(name, "").encode()
+        patterns.extend((key, key[-16:]))
     if any(p and p in data for p in patterns):
         raise SystemExit("Refusing publication: credential pattern in evidence")
 
@@ -26,7 +27,9 @@ def matrix(folder: Path) -> tuple[dict[str, tuple[str, str]], dict[str, str], bo
     text = files[-1].read_text() if len(files) == 1 else ""
     rows = {
         case: (result, detail)
-        for case, result, detail in re.findall(r"^\| ([\w-]+) \| (\w+) \| (.*) \|$", text, re.MULTILINE)
+        for case, result, detail in re.findall(
+            r"^\| ([\w-]+) \| (PASS|FAIL|SKIP|BLOCKED) \| (.*) \|$", text, re.MULTILINE
+        )
     }
     versions = dict(re.findall(r"^- (claude|codex): (?:codex-cli )?(\d+\.\d+\.\d+[^\s]*)", text, re.MULTILINE))
     complete = (
@@ -41,18 +44,18 @@ def matrix(folder: Path) -> tuple[dict[str, tuple[str, str]], dict[str, str], bo
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("latest", type=Path)
-    parser.add_argument("control", type=Path)
-    parser.add_argument("latest_result")
-    parser.add_argument("control_result")
+    for name in ("latest", "control", "latest_result", "control_result"):
+        parser.add_argument(name, type=Path if name in ("latest", "control") else str)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+    if "cancelled" in (args.latest_result, args.control_result):
+        return
     for folder in (args.latest, args.control):
         for file in folder.rglob("*"):
             if file.is_file():
                 scrub(file.read_bytes())
     rows, versions, complete = matrix(args.latest)
-    controls, _, control_complete = matrix(args.control)
+    controls, control_versions, control_complete = matrix(args.control)
     bad = [case for case, (result, _) in rows.items() if result != "PASS"]
     wake_skip = bad == ["claude-wake-matrix"] and rows[bad[0]][0] == "SKIP" and "isn't qualified" in rows[bad[0]][1]
     patterns = re.findall(r'- vendor: (\w+)\s+version: "([^"]+)"', (ROOT / "rules/wake.yaml").read_text())
@@ -65,36 +68,30 @@ def main() -> None:
     ]
     desired: dict[str, str] = {}
     wake_skip = wake_skip and any(v.startswith("claude ") for v in unknown)
-    if args.latest_result != "success" or not complete or (bad and not wake_skip):
+    conclusive = args.latest_result == "success" and complete and (not bad or wake_skip)
+    if not conclusive:
         regression = (
-            complete
-            and bad
-            and all(rows[c][0] == "FAIL" for c in bad)
+            versions != control_versions
             and args.control_result == "success"
             and control_complete
             and all(r == "PASS" for r, _ in controls.values())
         )
         kind = "regression" if regression else "harness"
         desired[kind] = (
-            f"vendor-nightly: {', '.join(f'{v} {n}' for v, n in versions.items())} breaks {', '.join(bad)}"
+            f"vendor-nightly: {', '.join(f'{v} {n}' for v, n in versions.items()) or 'latest'} breaks {', '.join(bad) or '(no latest evidence)'}"
             if regression
             else "vendor-nightly: harness red on verified versions"
         )
     elif unknown:
         desired["qualification"] = f"vendor-nightly: {', '.join(unknown)} passed, not on rules/wake.yaml"
     run = f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{os.environ.get('GITHUB_REPOSITORY', 'example/project')}/actions/runs/{os.environ.get('GITHUB_RUN_ID', 'local')}"
-    body = (
-        f"@mrshll\n\nRun: {run}\nLatest: {args.latest_result}; control: {args.control_result}\nVersions: {versions}\n\n| case | result | detail |\n| --- | --- | --- |\n"
-        + "\n".join(f"| {c} | {r} | {d} |" for c, (r, d) in rows.items())
-    )
+    body = f"@{os.environ.get('GITHUB_REPOSITORY_OWNER', 'owner')}\n\nRun: {run}\nLatest: {args.latest_result}; control: {args.control_result}\nVersions: {versions}\n\n| case | result | detail |\n| --- | --- | --- |\n"
+    body += "\n".join(f"| {c} | {r} | {d} |" for c, (r, d) in rows.items())
     if wake_skip:
         body += "\nTyped submissions were skipped: qualification needs a rules/wake.yaml entry and then a full run."
     elif "qualification" in desired:
-        body += (
-            "\nSuggested version lines in rules/wake.yaml: "
-            + ", ".join(f'`version: "{v.split()[1]}"` ({v.split()[0]})' for v in unknown)
-            + ". Review them and update control pins by hand."
-        )
+        entries = ", ".join(f'`version: "{v.split()[1]}"` ({v.split()[0]})' for v in unknown)
+        body += f"\nSuggested version lines in rules/wake.yaml: {entries}. Review them and update control pins by hand."
     scrub(body.encode())
 
     def gh(*parts: str) -> str:
@@ -118,7 +115,7 @@ def main() -> None:
                 else:
                     title = desired[kind]
                     gh("issue", "create", "--label", "vendor-nightly", "--title", title, "--body-file", issue.name)
-            else:
+            elif conclusive or (kind == "harness" and "regression" in desired):
                 for old in issues:
                     gh("issue", "comment", str(old["number"]), "--body-file", issue.name)
                     gh("issue", "close", str(old["number"]))

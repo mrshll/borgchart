@@ -422,8 +422,9 @@ pub fn claude_trust(w: &World, on: bool) -> Vec<(String, Outcome)> {
 fn claude_trust_case(w: &World, on: bool, id: &str, status: &mut Outcome) -> Outcome {
     let enabled = match super::rules::throwaway(
         std::env::var("BORGCHART_LIVE_THROWAWAY").ok().as_deref(),
-        Path::new(&std::env::var("HOME").unwrap_or_default()),
-        &std::env::temp_dir(),
+        &["HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME"]
+            .map(|k| std::env::var_os(k).map(PathBuf::from)),
+        &std::env::temp_dir().canonicalize().unwrap(),
     ) {
         Ok(enabled) => enabled,
         Err(why) => return Outcome::Blocked(why),

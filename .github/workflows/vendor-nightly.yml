@@ -12,7 +12,6 @@ on:
         type: string
 permissions:
   contents: read
-  issues: write
 concurrency:
   group: vendor-nightly
   cancel-in-progress: false
@@ -21,6 +20,7 @@ env:
   CONTROL_CODEX: 0.169.0
 jobs:
   latest:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     environment: vendor-nightly
@@ -29,6 +29,7 @@ jobs:
       CODEX_VERSION: ${{ inputs.codex_version || 'latest' }}
     steps: &live
       - uses: actions/checkout@v4
+        with: {persist-credentials: false}
       - run: sudo apt-get update && sudo apt-get install -y tmux
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: cargo build --locked --workspace --bins
@@ -77,6 +78,7 @@ jobs:
     environment: vendor-nightly
     steps: *live
   report:
+    permissions: {contents: read, issues: write}
     needs: [latest, control]
     if: always()
     runs-on: ubuntu-24.04
