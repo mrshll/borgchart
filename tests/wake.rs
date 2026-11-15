@@ -169,6 +169,7 @@ fn only_the_exact_reminder_passes_the_enter_check() {
 fn claude_narrow_paste_verifies_exact_payload() {
     let rules = rules::load(Vendor::Claude).unwrap();
     for (capture, width, cursor_x) in [
+        // The 60-column case guards the width fix; 80 columns also cover the negatives.
         (screen!("claude-composer-reminder-60.ansi"), 60, 27),
         (screen!("claude-composer-reminder-80.ansi"), 80, 8),
     ] {
@@ -197,6 +198,21 @@ fn claude_narrow_paste_verifies_exact_payload() {
             );
         }
     }
+}
+
+#[test]
+fn claude_hard_break_before_an_exact_fit_word_is_not_a_soft_wrap() {
+    let line = "a".repeat(51);
+    let capture = screen!("claude-composer-reminder-60.ansi")
+        .replace(
+            "brg: new records in your inbox. Run `brg msg list` at",
+            &line,
+        )
+        .replace("your next stopping point.", "word");
+    let view = composer::view(&capture, at(60, 6, 47)).unwrap();
+    let text = format!("{line} word");
+    assert!(!view.holds(&text));
+    assert!(!view.holds_submission(&text));
 }
 
 #[test]
