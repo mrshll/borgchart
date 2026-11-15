@@ -393,6 +393,8 @@ pub fn snapshot(bus: &Bus) -> Result<Snapshot, Failure> {
 /// Read a store by its paths.
 pub fn snapshot_of(paths: &StorePaths) -> Result<Snapshot, Failure> {
     let _lock = read_lock(paths)?;
+    #[cfg(feature = "test-support")]
+    mutation_pause("BORGCHART_TEST_SNAPSHOT_PAUSE")?;
     Ok(scan(paths))
 }
 
@@ -702,7 +704,7 @@ pub fn peer_actor(sender: &Bus, target: &Bus, caller: &Caller, to: &str) -> Resu
     {
         return Err(Failure::new(
             Code::Refused,
-            "cross-tree messages require parentless vendor members of different top-level teams",
+            "cross-tree messages require parentless vendor members of different top-level teams; address a vendor root member, or ask your tree's root lead to relay the request",
         ));
     }
     Ok(actor)
@@ -717,8 +719,8 @@ pub fn publish_peer(
 ) -> Result<Record, Failure> {
     use std::os::unix::fs::OpenOptionsExt;
     let mut draft = parse_draft(draft_bytes)?;
-    peer_actor(sender, target, caller, &draft.to)?;
-    let healthy = |bus: &Bus| {
+    let actor = peer_actor(sender, target, caller, &draft.to)?;
+    let healthy = |bus: &Bus, shared: bool| {
         fsx::check_private_dir(&bus.state.root)
             .and_then(|_| fsx::check_private_dir(&bus.paths.root))
             .map_err(|e| {
@@ -741,11 +743,31 @@ pub fn publish_peer(
                     e,
                 )
             })?;
-        let snap = scan(&bus.paths);
+        let snap = if shared {
+            snapshot_of(&bus.paths)
+        } else {
+            Ok(scan(&bus.paths))
+        }
+        .map_err(|e| Failure::new(e.code, format!("team `{}`: {}", bus.instance, e.message)))?;
         snap.require_healthy()
             .map_err(|e| Failure::new(e.code, format!("team `{}`: {}", bus.instance, e.message)))?;
         Ok::<_, Failure>(snap)
     };
+    let own = healthy(sender, true)?;
+    for id in &mut draft.reply_to {
+        if own
+            .get(id)
+            .is_none_or(|r| r.from != draft.to || r.to != actor_label(&actor))
+        {
+            return Err(Failure::new(
+                Code::Invalid,
+                format!(
+                    "`{id}` is not a message from this peer to you; use an ID from `brg msg list` that this peer sent you"
+                ),
+            ));
+        }
+        *id = super::record::qualified_record_id(&sender.instance, id);
+    }
     #[cfg(feature = "test-support")]
     mutation_pause("BORGCHART_TEST_PUBLISH_PAUSE")?;
     let lock = fs::OpenOptions::new()
@@ -765,20 +787,7 @@ pub fn publish_peer(
     let target = open(&target.state)?;
     let sender = open(&sender.state)?;
     let actor = peer_actor(&sender, &target, caller, &draft.to)?;
-    let own = healthy(&sender)?;
-    for id in &mut draft.reply_to {
-        if own
-            .get(id)
-            .is_none_or(|r| r.from != draft.to || r.to != actor_label(&actor))
-        {
-            return Err(Failure::new(
-                Code::Invalid,
-                format!("`{id}` is not a message from this peer to you"),
-            ));
-        }
-        *id = super::record::qualified_record_id(&sender.instance, id);
-    }
-    let snap = healthy(&target)?;
+    let snap = healthy(&target, false)?;
     recheck_authority(&sender, caller)?;
     commit(&target, &actor, draft, true, &snap)
 }

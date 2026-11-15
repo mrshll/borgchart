@@ -90,9 +90,10 @@ and --allow-unknown cannot use this route. One record belongs to the recipient
 tree; the sender keeps its printed ID and store. --reply-to m1 names a message
 from that peer to you in your own store, saved as <your-tree>:m1. The sender
 cannot read or ack the other tree's records; reply when taking a request on.
-The envelope identifies another tree's lead, not the owner. These checks prevent
-mistakes, not hostile processes running as the same user. Other-tree --team,
-lifecycle, status, pane and secrets access remain refused.
+The envelope identifies another tree's root member, not the owner. These checks
+prevent mistakes, not hostile processes running as the same user. This adds no
+other-tree --team, lifecycle, read, list, ack or secrets access; status, logs
+and attach already reach every tree.
 
 Ordinary messages commit before delivery. Exit 0 means committed even when
 stored or uncertain; never automatically republish. Every Codex recipient gets

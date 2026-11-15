@@ -2726,6 +2726,8 @@ pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
     lock.save(&registry)?;
     drop(bus_lock);
     drop(state_lock);
+    #[cfg(feature = "test-support")]
+    store::mutation_pause("BORGCHART_TEST_DELETE_REMOVE_PAUSE").map_err(|e| e.message)?;
     std::fs::remove_dir_all(&inst.state.root)
         .map_err(|e| format!("cannot remove {}: {e}", inst.state.root.display()))?;
     let own_worktree = crate::worktree::path(&inst.id);
@@ -5163,7 +5165,7 @@ fn send_envelope(
         .map(|from| format!("; relayed for {from}"))
         .unwrap_or_default();
     if peer {
-        relay.push_str("; another tree's lead, not the owner");
+        relay.push_str("; another tree's root member, not the owner");
     }
     if ack_required {
         format!(
