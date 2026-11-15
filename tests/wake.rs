@@ -166,6 +166,52 @@ fn only_the_exact_reminder_passes_the_enter_check() {
 }
 
 #[test]
+fn claude_narrow_paste_verifies_exact_payload() {
+    let rules = rules::load(Vendor::Claude).unwrap();
+    for (capture, width, cursor_x) in [
+        (screen!("claude-composer-reminder-60.ansi"), 60, 27),
+        (screen!("claude-composer-reminder-80.ansi"), 80, 8),
+    ] {
+        let snapshot = snap("✳ Fictional session", capture, at(width, cursor_x, 47));
+        assert_eq!(wake::before_enter(&rules, &snapshot), None);
+        let view = composer::view(capture, Some(snapshot.geometry)).unwrap();
+        assert!(view.holds_submission(REMINDER));
+
+        for (from, to) in [("new records", "new  records"), ("msg list", "msglist")] {
+            let changed = capture.replace(from, to);
+            let snapshot = snap("✳ Fictional session", &changed, at(width, cursor_x, 47));
+            assert!(wake::before_enter(&rules, &snapshot).is_some());
+            assert!(
+                !composer::view(&changed, Some(snapshot.geometry))
+                    .unwrap()
+                    .holds_submission(REMINDER)
+            );
+        }
+        for moved in [cursor_x - 1, cursor_x + 1] {
+            let snapshot = snap("✳ Fictional session", capture, at(width, moved, 47));
+            assert!(wake::before_enter(&rules, &snapshot).is_some());
+            assert!(
+                !composer::view(capture, Some(snapshot.geometry))
+                    .unwrap()
+                    .holds_submission(REMINDER)
+            );
+        }
+    }
+}
+
+#[test]
+fn claude_long_word_wrap_does_not_withhold_valid_delivery() {
+    for (capture, width, length) in [
+        (screen!("claude-composer-long-word-60.ansi"), 60, 58),
+        (screen!("claude-composer-long-word-80.ansi"), 80, 78),
+    ] {
+        let view = composer::view(capture, at(width, 4, 47)).unwrap();
+        assert!(view.holds_submission(&"a".repeat(length)));
+        assert!(!view.holds_submission(&"a".repeat(length + 1)));
+    }
+}
+
+#[test]
 fn changed_reminders_fail_the_enter_check() {
     let joined = REMINDER.replace("brg msg list", "brginbox");
     let doubled = REMINDER.replace("Run ", "Run  ");
@@ -749,6 +795,19 @@ fn unified_send_types_into_working_composers_and_keeps_a_record() {
     assert_eq!(snap.records[&1].body, "hello\nsecond line");
     assert!(snap.records[&1].ack_required);
     assert!(snap.acks.is_empty());
+}
+
+#[test]
+fn claude_wrapped_typed_send_is_submitted_without_uncertainty() {
+    let e = Env::new(Vendor::Claude);
+    e.send_setup(Vendor::Claude, false, false);
+    let text = "x".repeat(160);
+    let (code, out) = e.send_message(&text, &[]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(out["delivery"], "typed", "{out}");
+    let submissions = e.submissions();
+    assert_eq!(submissions.len(), 1);
+    assert!(submissions[0].contains(&text));
 }
 
 #[test]

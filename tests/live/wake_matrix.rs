@@ -1,9 +1,9 @@
 //! The guarded wake's input-box matrix against Claude Code: how `wake`
 //! reads and treats its input box. Typing without submitting costs nothing;
-//! Claude gets two real
-//! submissions of the reminder (vim insert mode, with clients attached and a
-//! resize during the attempt; and vim normal mode). Approval prompts are
-//! never answered: one that appears is recorded and left.
+//! Claude gets one real reminder submission in vim insert mode, with clients
+//! attached and a resize during the attempt. An empty vim normal-mode box must
+//! defer without typing. Approval prompts are never answered: one that appears
+//! is recorded and left.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -943,6 +943,11 @@ impl Run {
 
     /// An attempt on a draft must defer and leave the draft as it was.
     fn draft_case(&mut self, case: &str) {
+        self.deferred_case(case, "deferred:draft");
+    }
+
+    /// A deferred attempt must preserve the input and record no intent.
+    fn deferred_case(&mut self, case: &str, want: &str) {
         std::thread::sleep(Duration::from_millis(500));
         let before = self.snap();
         let (r, calls) = if self.qualified {
@@ -961,7 +966,7 @@ impl Run {
         self.save(case);
         self.record_checked(
             case,
-            "deferred:draft",
+            want,
             show(&r),
             &[
                 ("no intent recorded", calls == 0),
@@ -1100,14 +1105,6 @@ pub fn qualify(vendor: Vendor, version: Option<String>, submit: bool) -> (Vec<[S
     ]);
     run.draft_case("draft wrapped");
 
-    // History recall.
-    run.start(200, 50);
-    run.keys(&["Up"]);
-    std::thread::sleep(Duration::from_millis(500));
-    let got = show_reading(&run.reading());
-    run.save("history-up");
-    run.record("history recall (Up)", "draft", got.clone());
-
     // A draft that clears: draft, then (after a person clears it) empty.
     run.start(200, 50);
     run.keys(&["-l", "temporary"]);
@@ -1220,11 +1217,16 @@ pub fn qualify(vendor: Vendor, version: Option<String>, submit: bool) -> (Vec<[S
     let _ = run.client(&outer).arg("kill-server").output();
 
     if !qualified || !submit {
+        run.record(
+            "history recall (Up)",
+            "unavailable",
+            "unavailable: submissions disabled or unqualified".into(),
+        );
         run.record("submissions", "", "skipped".into());
         return (std::mem::take(&mut run.rows), qualified);
     }
 
-    // Submission 1: insert mode, clients attached, resize during the attempt.
+    // Insert-mode submission: clients attached, resize during the attempt.
     run.start(200, 50);
     let _ = run
         .client(&outer)
@@ -1296,26 +1298,39 @@ pub fn qualify(vendor: Vendor, version: Option<String>, submit: bool) -> (Vec<[S
             ),
         );
     }
-    let end = run.wait_turn();
+    let end = if submitted {
+        run.wait_turn()
+    } else {
+        "unavailable: no submission".into()
+    };
     run.save("after-turn-1");
-    run.record("turn 1 ended", "idle", end);
+    run.record("turn 1 ended", "idle", end.clone());
+    if submitted && end == "idle" {
+        // History needs a completed submission in this run's working directory.
+        run.keys(&["Up"]);
+        std::thread::sleep(Duration::from_millis(500));
+        let got = show_reading(&run.reading());
+        run.save("history-up");
+        run.record("history recall (Up)", "draft", got);
+    } else {
+        run.record(
+            "history recall (Up)",
+            "unavailable",
+            "unavailable: first submission did not complete".into(),
+        );
+    }
     let _ = control.kill();
     let _ = control.wait();
     let _ = run.client(&outer).arg("kill-server").output();
 
-    // Submission 2: vim normal mode.
+    // Vim normal mode must defer without submitting or changing the input.
     run.start(200, 50);
     run.keys(&["Escape"]);
     std::thread::sleep(Duration::from_millis(500));
     let mode = composer::view(&run.screen(), None).ok().and_then(|v| v.vim);
     run.record("normal mode shown", "Some(Normal)", format!("{mode:?}"));
-    let (r, _) = run.attempt();
     // Claude can't tell an empty box from one space in normal mode, so it defers.
-    let want = "deferred:uncertain";
-    run.record("submit: vim normal", want, show(&r));
-    let end = run.wait_turn();
-    run.save("after-turn-2");
-    run.record("turn 2 ended", "idle", end);
+    run.deferred_case("attempt: vim normal", "deferred:uncertain");
     (std::mem::take(&mut run.rows), qualified)
 }
 
