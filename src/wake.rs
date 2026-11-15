@@ -1,4 +1,4 @@
-//! The guarded wake: type one fixed reminder into an idle member, or don't.
+//! The guarded Claude wake: type one fixed reminder into an idle member, or don't.
 //!
 //! [`attempt`] pastes [`REMINDER`] and presses Enter only after every check
 //! passes, and stops short (leaving whatever is on screen alone) as soon as
@@ -48,32 +48,19 @@ const RENDER_WAIT: Duration = Duration::from_secs(3);
 const SUBMIT_WAIT: Duration = Duration::from_secs(3);
 const POLL: Duration = Duration::from_millis(100);
 
-/// Vendor, version and settings combinations the wake has been qualified
-/// against with real CLIs (the live tier, `tests/live.rs`). Anything else gets alerts only.
+/// Claude settings qualified against the real CLI (the live tier,
+/// `tests/live.rs`). Anything else gets alerts only.
 struct Qualified {
-    vendor: Vendor,
-    /// The first line of `<cli> --version`, exactly.
-    version: &'static str,
     /// The input mode the CLI was set to.
     editor: &'static str,
-    /// Claude's `promptSuggestionEnabled` (`None`: not applicable).
+    /// Claude's qualified `promptSuggestionEnabled` setting.
     suggestions: Option<bool>,
 }
 
-const QUALIFIED: &[Qualified] = &[
-    Qualified {
-        vendor: Vendor::Claude,
-        version: "2.1.318 (Claude Code)",
-        editor: "vim",
-        suggestions: Some(false),
-    },
-    Qualified {
-        vendor: Vendor::Codex,
-        version: "codex-cli 0.165.0",
-        editor: "vim",
-        suggestions: None,
-    },
-];
+const QUALIFIED: &[Qualified] = &[Qualified {
+    editor: "vim",
+    suggestions: Some(false),
+}];
 
 /// What qualification needs to know about one member's start.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,7 +71,7 @@ pub struct LaunchFacts {
     pub argv: Vec<String>,
     /// The input mode the vendor will use: `vim` or `normal` (`None`: unknown).
     pub editor: Option<String>,
-    /// Claude's `promptSuggestionEnabled` (`None`: unknown or not applicable).
+    /// Claude's `promptSuggestionEnabled` (`None`: unknown).
     pub suggestions: Option<bool>,
     /// Settings files that were read, for diagnosis.
     pub sources: Vec<PathBuf>,
@@ -100,8 +87,22 @@ pub enum Qualification {
     Unqualified(String),
 }
 
+/// Whether the measured CLI version is in the shared verified-version list.
+pub fn verified(
+    rules: &crate::watcher::methods::WakeRules,
+    vendor: Vendor,
+    version: Option<&str>,
+) -> bool {
+    let version = version.map(|v| match vendor {
+        Vendor::Claude => v.strip_suffix(" (Claude Code)").unwrap_or(v),
+        Vendor::Codex => v.strip_prefix("codex-cli ").unwrap_or(v),
+    });
+    rules.find(vendor, version).is_some()
+}
+
 /// Whether the guarded wake may type into this member at all.
-pub fn qualification(vendor: Vendor, launch: &LaunchFacts) -> Qualification {
+pub fn qualification(launch: &LaunchFacts) -> Qualification {
+    let vendor = Vendor::Claude;
     if let Some(problem) = &launch.problem {
         return Qualification::Unqualified(format!(
             "{}'s settings are unknown: {problem}",
@@ -114,23 +115,19 @@ pub fn qualification(vendor: Vendor, launch: &LaunchFacts) -> Qualification {
     let Some(editor) = launch.editor.as_deref() else {
         return Qualification::Unqualified(format!("{}'s input mode is unknown", vendor.as_str()));
     };
-    let candidates: Vec<&Qualified> = QUALIFIED
-        .iter()
-        .filter(|q| q.vendor == vendor && q.version == version)
-        .collect();
-    if candidates.is_empty() {
+    if !crate::watcher::methods::load().is_ok_and(|rules| verified(&rules, vendor, Some(version))) {
         return Qualification::Unqualified(format!(
             "{} `{version}` has not been qualified for typed reminders",
             vendor.as_str()
         ));
     }
-    if !candidates.iter().any(|q| q.editor == editor) {
+    if !QUALIFIED.iter().any(|q| q.editor == editor) {
         return Qualification::Unqualified(format!(
             "{} `{version}` in `{editor}` input mode has not been qualified",
             vendor.as_str()
         ));
     }
-    if !candidates
+    if !QUALIFIED
         .iter()
         .any(|q| q.editor == editor && q.suggestions == launch.suggestions)
     {
@@ -170,50 +167,11 @@ fn read_json(path: &Path, sources: &mut Vec<PathBuf>) -> Result<Option<serde_jso
     }
 }
 
-/// `[section] key = value` from a TOML file, for the few plain keys needed
-/// (no TOML dependency). `Ok(None)`: the key isn't set. `Err`: it may be set
-/// in a way this reader doesn't follow (inline table, odd value).
-fn toml_bool(text: &str, section: &str, key: &str) -> Result<Option<bool>, String> {
-    let mut current = String::new();
-    let mut found = None;
-    let dotted = format!("{section}.{key}");
-    for line in text.lines() {
-        let line = line.split('#').next().unwrap_or("").trim();
-        if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
-            current = name.trim().to_string();
-            continue;
-        }
-        let Some((k, v)) = line.split_once('=') else {
-            if line.contains(key) {
-                return Err(format!("unreadable line mentioning `{key}`"));
-            }
-            continue;
-        };
-        let (k, v) = (k.trim(), v.trim());
-        if (current == section && k == key) || (current.is_empty() && k == dotted) {
-            found = match v {
-                "true" => Some(true),
-                "false" => Some(false),
-                _ => return Err(format!("`{key} = {v}` is not true or false")),
-            };
-        } else if current.is_empty() && k == section {
-            return Err(format!("`{section}` is written inline"));
-        } else if k == key || k.ends_with(&format!(".{key}")) || v.contains(key) {
-            return Err(format!(
-                "`{key}` is set somewhere this reader doesn't follow"
-            ));
-        }
-    }
-    Ok(found)
-}
-
 impl LaunchFacts {
-    /// Measure a member's launch facts: its argv plus the settings files the
-    /// vendor will read from `cwd` and the member's environment (`HOME`,
-    /// `CODEX_HOME`). A file that is missing counts as unset; one that exists
-    /// but can't be read or parsed leaves the facts with a `problem`.
+    /// Measure Claude's launch facts: its argv plus the settings files read
+    /// from `cwd` and the member's environment (`HOME`). A missing file counts
+    /// as unset; an unreadable or malformed file leaves a `problem`.
     pub fn measure(
-        vendor: Vendor,
         vendor_version: Option<String>,
         argv: &[String],
         cwd: &Path,
@@ -224,10 +182,7 @@ impl LaunchFacts {
             argv: argv.to_vec(),
             ..LaunchFacts::default()
         };
-        let result = match vendor {
-            Vendor::Claude => claude_settings(&mut facts, argv, cwd, env),
-            Vendor::Codex => codex_settings(&mut facts, argv, cwd, env),
-        };
+        let result = claude_settings(&mut facts, argv, cwd, env);
         if let Err(problem) = result {
             facts.editor = None;
             facts.suggestions = None;
@@ -299,50 +254,6 @@ fn claude_settings(
     }
     facts.editor = editor;
     facts.suggestions = suggestions;
-    Ok(())
-}
-
-fn codex_settings(
-    facts: &mut LaunchFacts,
-    argv: &[String],
-    cwd: &Path,
-    env: &BTreeMap<String, String>,
-) -> Result<(), String> {
-    if argv.iter().any(|a| a == "-p" || a.starts_with("--profile")) {
-        return Err("a `--profile` is not followed".into());
-    }
-    let codex_home = match env.get("CODEX_HOME") {
-        Some(h) => PathBuf::from(h),
-        None => PathBuf::from(env.get("HOME").ok_or("HOME is not set")?).join(".codex"),
-    };
-    let mut vim = false;
-    for file in [
-        codex_home.join("config.toml"),
-        cwd.join(".codex/config.toml"),
-    ] {
-        if let Some(text) = read_text(&file, &mut facts.sources)?
-            && let Some(v) = toml_bool(&text, "tui", "vim_mode_default")
-                .map_err(|e| format!("{}: {e}", file.display()))?
-        {
-            vim = v;
-        }
-    }
-    for (i, arg) in argv.iter().enumerate() {
-        let value = if arg == "-c" || arg == "--config" {
-            argv.get(i + 1).map(String::as_str)
-        } else {
-            arg.strip_prefix("--config=")
-        };
-        let Some(value) = value else { continue };
-        if value.contains("vim_mode_default") || value.trim_start().starts_with("tui") {
-            vim = match value.replace(' ', "").as_str() {
-                "tui.vim_mode_default=true" => true,
-                "tui.vim_mode_default=false" => false,
-                _ => return Err(format!("`-c {value}` is not followed")),
-            };
-        }
-    }
-    facts.editor = Some(if vim { "vim" } else { "normal" }.to_string());
     Ok(())
 }
 
@@ -424,7 +335,7 @@ pub fn snapshot(tmux: &Tmux, expect: &PaneIdentity) -> Option<Snapshot> {
 }
 
 /// The pre-paste decision for one snapshot: `None` means type the reminder.
-pub fn before_paste(vendor: Vendor, rules: &rules::RuleSet, snap: &Snapshot) -> Option<WakeResult> {
+pub fn before_paste(rules: &rules::RuleSet, snap: &Snapshot) -> Option<WakeResult> {
     let lines = composer::parse(&snap.screen);
     let reading = rules.read(&snap.title, &composer::plain(&lines));
     match reading.state {
@@ -439,7 +350,7 @@ pub fn before_paste(vendor: Vendor, rules: &rules::RuleSet, snap: &Snapshot) -> 
     if snap.in_mode {
         return Some(WakeResult::Deferred(Defer::Uncertain(tmux::IN_MODE.into())));
     }
-    match composer::read(vendor, &snap.screen, Some(snap.geometry)) {
+    match composer::read(&snap.screen, Some(snap.geometry)) {
         Reading::Busy => Some(WakeResult::Deferred(Defer::Busy)),
         Reading::Draft => Some(WakeResult::Deferred(Defer::Draft)),
         Reading::Unknown(why) => Some(WakeResult::Deferred(Defer::Uncertain(why))),
@@ -451,7 +362,7 @@ pub fn before_paste(vendor: Vendor, rules: &rules::RuleSet, snap: &Snapshot) -> 
 }
 
 /// Why Enter may not be pressed on this snapshot, or `None` if it may.
-pub fn before_enter(vendor: Vendor, rules: &rules::RuleSet, snap: &Snapshot) -> Option<String> {
+pub fn before_enter(rules: &rules::RuleSet, snap: &Snapshot) -> Option<String> {
     let lines = composer::parse(&snap.screen);
     let reading = rules.read(&snap.title, &composer::plain(&lines));
     if reading.state == State::Blocked {
@@ -463,7 +374,7 @@ pub fn before_enter(vendor: Vendor, rules: &rules::RuleSet, snap: &Snapshot) -> 
     if snap.in_mode {
         return Some(format!("{}; Enter was not pressed", tmux::IN_MODE));
     }
-    match composer::view(vendor, &snap.screen, Some(snap.geometry)) {
+    match composer::view(&snap.screen, Some(snap.geometry)) {
         Ok(v) if v.holds(REMINDER) => None,
         Ok(v) if v.busy => Some("a turn started after the paste; Enter was not pressed".into()),
         Ok(_) => {
@@ -477,14 +388,14 @@ pub fn before_enter(vendor: Vendor, rules: &rules::RuleSet, snap: &Snapshot) -> 
 
 /// After Enter: `Ok` once the input box reads as empty (a turn may be running), so
 /// the reminder left it; otherwise why the outcome isn't known.
-pub fn after_enter(vendor: Vendor, snap: Option<&Snapshot>) -> Result<(), String> {
+pub fn after_enter(snap: Option<&Snapshot>) -> Result<(), String> {
     let snap = snap.ok_or("the pane changed or exited after Enter")?;
     if snap.in_mode {
         return Err(format!("{} after Enter", tmux::IN_MODE));
     }
-    let view = composer::view(vendor, &snap.screen, Some(snap.geometry))
+    let view = composer::view(&snap.screen, Some(snap.geometry))
         .map_err(|why| format!("the input box can't be read after Enter ({why})"))?;
-    if view.placeholder || view.lines.iter().all(|l| l.trim().is_empty()) {
+    if view.lines.iter().all(|l| l.trim().is_empty()) {
         Ok(())
     } else if view.holds(REMINDER) {
         Err("Enter was pressed but the reminder is still in the input box".into())
@@ -529,11 +440,10 @@ pub fn attempt(
     state: &StateDir,
     member: &str,
     expect: &PaneIdentity,
-    vendor: Vendor,
     launch: &LaunchFacts,
     before_input: &mut dyn FnMut() -> std::io::Result<()>,
 ) -> WakeResult {
-    if let Qualification::Unqualified(why) = qualification(vendor, launch) {
+    if let Qualification::Unqualified(why) = qualification(launch) {
         return WakeResult::AlertOnly(why);
     }
     let tmux = &server(tmux, expect);
@@ -552,7 +462,7 @@ pub fn attempt(
             "the member's `locked` gate is not active".into(),
         ));
     }
-    let rules = match rules::load(vendor) {
+    let rules = match rules::load(Vendor::Claude) {
         Ok(r) => r,
         Err(e) => return WakeResult::Deferred(Defer::Uncertain(e)),
     };
@@ -563,7 +473,7 @@ pub fn attempt(
     let Some(snap) = snapshot(tmux, expect) else {
         return WakeResult::NotRunning;
     };
-    if let Some(result) = before_paste(vendor, &rules, &snap) {
+    if let Some(result) = before_paste(&rules, &snap) {
         return result;
     }
     if let Err(e) = before_input() {
@@ -602,7 +512,7 @@ pub fn attempt(
         std::thread::sleep(POLL);
         let why = match snapshot(tmux, expect) {
             None => "the pane changed or exited after the paste".to_string(),
-            Some(snap) => match before_enter(vendor, &rules, &snap) {
+            Some(snap) => match before_enter(&rules, &snap) {
                 None => break,
                 Some(why) => why,
             },
@@ -619,7 +529,7 @@ pub fn attempt(
     let start = Instant::now();
     loop {
         std::thread::sleep(POLL);
-        match after_enter(vendor, snapshot(tmux, expect).as_ref()) {
+        match after_enter(snapshot(tmux, expect).as_ref()) {
             Ok(()) => {
                 drop(lock);
                 return WakeResult::Submitted;
@@ -646,37 +556,18 @@ mod tests {
     #[test]
     fn only_qualified_combinations_qualify() {
         assert_eq!(
-            qualification(
-                Vendor::Claude,
-                &facts("2.1.318 (Claude Code)", "vim", Some(false))
-            ),
+            qualification(&facts("2.1.318 (Claude Code)", "vim", Some(false))),
             Qualification::Qualified
         );
         for f in [
-            facts("2.1.319 (Claude Code)", "vim", Some(false)),
+            facts("2.2.0 (Claude Code)", "vim", Some(false)),
             facts("2.1.318 (Claude Code)", "normal", Some(false)),
             facts("2.1.318 (Claude Code)", "vim", Some(true)),
             facts("2.1.318 (Claude Code)", "vim", None),
             LaunchFacts::default(),
         ] {
-            assert!(matches!(
-                qualification(Vendor::Claude, &f),
-                Qualification::Unqualified(_)
-            ));
+            assert!(matches!(qualification(&f), Qualification::Unqualified(_)));
         }
-    }
-
-    #[test]
-    fn toml_reading_is_narrow() {
-        let read = |t: &str| toml_bool(t, "tui", "vim_mode_default");
-        assert_eq!(read("[tui]\nvim_mode_default = true\n"), Ok(Some(true)));
-        assert_eq!(read("tui.vim_mode_default = false\n"), Ok(Some(false)));
-        assert_eq!(read("model = \"m\"\n"), Ok(None));
-        // Anything this reader can't follow fails closed.
-        assert!(read("tui = { vim_mode_default = true }\n").is_err());
-        assert!(read("[other]\nvim_mode_default = true\n").is_err());
-        assert!(read("[tui]\nvim_mode_default = \"yes\"\n").is_err());
-        assert!(read("[profiles.x]\ntui.vim_mode_default = true\n").is_err());
     }
 
     fn claude_env(dir: &Path) -> (PathBuf, PathBuf, BTreeMap<String, String>) {
@@ -698,7 +589,7 @@ mod tests {
             vendor_version: Some("2.1.318 (Claude Code)".into()),
             ..f
         };
-        qualification(Vendor::Claude, &f) == Qualification::Qualified
+        qualification(&f) == Qualification::Qualified
     }
 
     #[test]
@@ -706,7 +597,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (_, cwd, env) = claude_env(dir.path());
         let argv = vec!["claude".to_string()];
-        let f = LaunchFacts::measure(Vendor::Claude, None, &argv, &cwd, &env);
+        let f = LaunchFacts::measure(None, &argv, &cwd, &env);
         assert_eq!(f.editor.as_deref(), Some("vim"));
         assert_eq!(f.suggestions, Some(false));
         assert!(qualified_claude(f));
@@ -715,14 +606,14 @@ mod tests {
             r#"{"editorMode":"normal"}"#,
         )
         .unwrap();
-        let f = LaunchFacts::measure(Vendor::Claude, None, &argv, &cwd, &env);
+        let f = LaunchFacts::measure(None, &argv, &cwd, &env);
         assert_eq!(f.editor.as_deref(), Some("normal"));
         let argv = vec![
             "claude".to_string(),
             "--settings".into(),
             "/nonexistent/settings.json".into(),
         ];
-        let f = LaunchFacts::measure(Vendor::Claude, None, &argv, &cwd, &env);
+        let f = LaunchFacts::measure(None, &argv, &cwd, &env);
         assert_eq!(f.editor, None);
         assert!(!qualified_claude(f));
     }
@@ -748,79 +639,10 @@ mod tests {
                 let dir = tempfile::tempdir().unwrap();
                 let (_, cwd, env) = claude_env(dir.path());
                 make(&cwd.join(rel));
-                let f = LaunchFacts::measure(Vendor::Claude, None, &argv, &cwd, &env);
+                let f = LaunchFacts::measure(None, &argv, &cwd, &env);
                 assert!(f.problem.is_some(), "{what} at {rel}");
                 assert!(!qualified_claude(f), "{what} at {rel}");
             }
         }
-    }
-
-    fn codex_env(dir: &Path) -> BTreeMap<String, String> {
-        let home = dir.join("home");
-        std::fs::create_dir_all(home.join(".codex")).unwrap();
-        std::fs::write(
-            home.join(".codex/config.toml"),
-            "model = \"m\"\n[tui]\nvim_mode_default = true\n",
-        )
-        .unwrap();
-        BTreeMap::from([("HOME".to_string(), home.display().to_string())])
-    }
-
-    #[test]
-    fn codex_launch_facts() {
-        let dir = tempfile::tempdir().unwrap();
-        let env = codex_env(dir.path());
-        let argv = vec!["codex".to_string()];
-        let f = LaunchFacts::measure(Vendor::Codex, None, &argv, dir.path(), &env);
-        assert_eq!(f.editor.as_deref(), Some("vim"));
-        let argv: Vec<String> = ["codex", "-c", "tui.vim_mode_default=false"]
-            .map(String::from)
-            .to_vec();
-        let f = LaunchFacts::measure(Vendor::Codex, None, &argv, dir.path(), &env);
-        assert_eq!(f.editor.as_deref(), Some("normal"));
-        for argv in [
-            vec!["codex", "--profile", "x"],
-            vec!["codex", "-c", "tui={vim_mode_default=true}"],
-        ] {
-            let argv: Vec<String> = argv.into_iter().map(String::from).collect();
-            let f = LaunchFacts::measure(Vendor::Codex, None, &argv, dir.path(), &env);
-            assert_eq!(f.editor, None);
-            assert!(f.problem.is_some());
-        }
-    }
-
-    #[test]
-    fn unreadable_or_malformed_codex_settings_are_unqualified() {
-        let argv = vec!["codex".to_string()];
-        let qualified = |f: LaunchFacts| {
-            let f = LaunchFacts {
-                vendor_version: Some("codex-cli 0.165.0".into()),
-                ..f
-            };
-            qualification(Vendor::Codex, &f) == Qualification::Qualified
-        };
-        let dir = tempfile::tempdir().unwrap();
-        let env = codex_env(dir.path());
-        assert!(qualified(LaunchFacts::measure(
-            Vendor::Codex,
-            None,
-            &argv,
-            dir.path(),
-            &env
-        )));
-        // The project file outranks the user one.
-        std::fs::create_dir_all(dir.path().join(".codex/config.toml")).unwrap();
-        let f = LaunchFacts::measure(Vendor::Codex, None, &argv, dir.path(), &env);
-        assert!(f.problem.is_some());
-        assert!(!qualified(f));
-        std::fs::remove_dir(dir.path().join(".codex/config.toml")).unwrap();
-        std::fs::write(
-            dir.path().join(".codex/config.toml"),
-            "[tui]\nvim_mode_default = maybe\n",
-        )
-        .unwrap();
-        let f = LaunchFacts::measure(Vendor::Codex, None, &argv, dir.path(), &env);
-        assert!(f.problem.is_some());
-        assert!(!qualified(f));
     }
 }

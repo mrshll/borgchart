@@ -604,11 +604,13 @@ mod tests {
             r.read("⠸ Wait for instructions | m2", CODEX_WORKING).state,
             State::Working
         );
-        assert_eq!(
-            r.read("[ . ] Action Required | Run netbot | m2", CODEX_APPROVAL)
-                .state,
-            State::Blocked
-        );
+        // Catches: a lagging title hiding an active Codex turn from status.
+        let working = r.read("Wait for instructions | m2", CODEX_WORKING);
+        assert_eq!(working.state, State::Working);
+        assert_eq!(working.rule.as_deref(), Some("working-status"));
+        let approval = r.read("[ . ] Action Required | Run netbot | m2", CODEX_APPROVAL);
+        assert_eq!(approval.state, State::Blocked);
+        assert_eq!(approval.rule.as_deref(), Some("approval-title"));
     }
 
     #[test]

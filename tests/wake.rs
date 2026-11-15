@@ -44,28 +44,6 @@ fn claude(name: &str) -> &'static str {
     }
 }
 
-fn codex(name: &str) -> &'static str {
-    match name {
-        "empty" => screen!("codex-composer-empty.ansi"),
-        "empty-normal" => screen!("codex-composer-empty-normal.ansi"),
-        "draft" => screen!("codex-composer-draft.ansi"),
-        "draft-normal" => screen!("codex-composer-draft-normal.ansi"),
-        "multiline" => screen!("codex-composer-multiline.ansi"),
-        "offscreen" => screen!("codex-composer-offscreen.ansi"),
-        "wrapped" => screen!("codex-composer-wrapped.ansi"),
-        "history-up" => screen!("codex-composer-history-up.ansi"),
-        "reminder" => screen!("codex-composer-reminder.ansi"),
-        "reminder-extra" => screen!("codex-composer-reminder-extra.ansi"),
-        "reminder-wrapped" => screen!("codex-composer-reminder-wrapped.ansi"),
-        "working" => screen!("codex-composer-working.ansi"),
-        "hyphen-wrap" => screen!("codex-composer-hyphen-wrap.ansi"),
-        "slash-wrap" => screen!("codex-composer-slash-wrap.ansi"),
-        "edge-wrap" => screen!("codex-composer-edge-wrap.ansi"),
-        "long-wrap" => screen!("codex-composer-long-wrap.ansi"),
-        _ => unreachable!(),
-    }
-}
-
 /// Where the real CLI left the cursor on these screens (recorded with them).
 fn at(width: usize, cursor_x: usize, cursor_y: usize) -> Option<Geometry> {
     Some(Geometry {
@@ -107,11 +85,7 @@ fn claude_input_box_readings() {
         ("reminder", None, Reading::Draft),
         ("working", at(200, 2, 47), Reading::Busy),
     ] {
-        assert_eq!(
-            composer::read(Vendor::Claude, claude(name), geo),
-            want,
-            "{name}"
-        );
+        assert_eq!(composer::read(claude(name), geo), want, "{name}");
     }
     for (name, geo) in [
         ("small", at(100, 2, 9)),
@@ -121,11 +95,32 @@ fn claude_input_box_readings() {
         ("empty-normal", at(200, 2, 47)),
     ] {
         assert!(
-            matches!(
-                composer::read(Vendor::Claude, claude(name), geo),
-                Reading::Unknown(_)
-            ),
+            matches!(composer::read(claude(name), geo), Reading::Unknown(_)),
             "{name}"
+        );
+    }
+}
+
+#[test]
+fn claude_rgb_busy_prompts_remain_readable_and_idle_stays_empty() {
+    let busy = screen!("claude-2.1.325-busy-rgb.ansi");
+    let idle = screen!("claude-2.1.325-idle.ansi");
+    let other = busy.replace("38;2;153;153;153", "38;2;12;34;56");
+    for (capture, expected) in [
+        (busy, Reading::Busy),
+        (idle, Reading::Empty),
+        (&other, Reading::Busy),
+    ] {
+        let row = capture
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| line.contains('❯'))
+            .map(|(row, _)| row)
+            .last()
+            .unwrap();
+        assert_eq!(
+            composer::view(capture, at(200, 2, row)).unwrap().reading(),
+            expected
         );
     }
 }
@@ -134,104 +129,39 @@ fn claude_input_box_readings() {
 fn whitespace_only_drafts_are_never_empty() {
     // Claude: three typed spaces look like nothing but move the cursor.
     let spaces = edited(claude("reminder"), "   ");
-    assert_eq!(
-        composer::read(Vendor::Claude, &spaces, at(200, 5, 47)),
-        Reading::Draft
-    );
-    assert!(!matches!(
-        composer::read(Vendor::Claude, &spaces, None),
-        Reading::Empty
-    ));
-    // Codex: typed spaces remove the placeholder.
-    let spaces = edited(codex("reminder"), "   ");
-    assert_eq!(
-        composer::read(Vendor::Codex, &spaces, at(200, 5, 46)),
-        Reading::Draft
-    );
+    assert_eq!(composer::read(&spaces, at(200, 5, 47)), Reading::Draft);
+    assert!(!matches!(composer::read(&spaces, None), Reading::Empty));
     let c = rules::load(Vendor::Claude).unwrap();
     let s = edited(claude("reminder"), " ");
     assert_eq!(
-        wake::before_paste(
-            Vendor::Claude,
-            &c,
-            &snap("✳ Claude Code", &s, at(200, 3, 47))
-        ),
+        wake::before_paste(&c, &snap("✳ Claude Code", &s, at(200, 3, 47))),
         Some(WakeResult::Deferred(Defer::Draft))
     );
 }
 
 #[test]
-fn codex_input_box_readings() {
-    for (name, want) in [
-        ("empty", Reading::Empty),
-        ("empty-normal", Reading::Empty),
-        ("draft", Reading::Draft),
-        ("draft-normal", Reading::Draft),
-        ("multiline", Reading::Draft),
-        ("offscreen", Reading::Draft),
-        ("wrapped", Reading::Draft),
-        ("history-up", Reading::Draft),
-        ("reminder", Reading::Draft),
-    ] {
-        assert_eq!(
-            composer::read(Vendor::Codex, codex(name), at(200, 2, 46)),
-            want,
-            "{name}"
-        );
-    }
-}
-
-#[test]
 fn vim_modes_are_read() {
-    let mode = |v, s| composer::view(v, s, None).unwrap().vim;
-    assert_eq!(mode(Vendor::Claude, claude("empty")), Some(VimMode::Insert));
-    assert_eq!(
-        mode(Vendor::Claude, claude("empty-normal")),
-        Some(VimMode::Normal)
-    );
-    assert_eq!(mode(Vendor::Codex, codex("empty")), Some(VimMode::Insert));
-    assert_eq!(
-        mode(Vendor::Codex, codex("draft-normal")),
-        Some(VimMode::Normal)
-    );
+    let mode = |s| composer::view(s, None).unwrap().vim;
+    assert_eq!(mode(claude("empty")), Some(VimMode::Insert));
+    assert_eq!(mode(claude("empty-normal")), Some(VimMode::Normal));
 }
 
 #[test]
 fn only_the_exact_reminder_passes_the_enter_check() {
-    let holds = |v, s: &str, g| composer::view(v, s, g).unwrap().holds(REMINDER);
-    assert!(holds(Vendor::Claude, claude("reminder"), at(200, 81, 47)));
+    let holds = |s: &str, g| composer::view(s, g).unwrap().holds(REMINDER);
+    assert!(holds(claude("reminder"), at(200, 81, 47)));
     // Wrapped by Claude in a 60-column pane: `next` could not have fitted.
-    assert!(holds(
-        Vendor::Claude,
-        claude("reminder-wrapped"),
-        at(60, 22, 47)
-    ));
-    assert!(holds(Vendor::Codex, codex("reminder"), at(200, 81, 46)));
-    assert!(holds(
-        Vendor::Codex,
-        codex("reminder-wrapped"),
-        at(60, 22, 46)
-    ));
+    assert!(holds(claude("reminder-wrapped"), at(60, 22, 47)));
     // A trailing typed space only shows in the cursor.
-    assert!(!holds(Vendor::Claude, claude("reminder"), at(200, 82, 47)));
-    assert!(!holds(Vendor::Codex, codex("reminder"), at(200, 82, 46)));
+    assert!(!holds(claude("reminder"), at(200, 82, 47)));
     // Without geometry nothing passes.
     assert!(
-        !composer::view(Vendor::Codex, codex("reminder"), None)
+        !composer::view(claude("reminder"), None)
             .unwrap()
             .holds(REMINDER)
     );
-    for name in ["reminder-extra", "draft", "empty", "history-up"] {
-        assert!(
-            !holds(Vendor::Codex, codex(name), at(200, 87, 46)),
-            "codex {name}"
-        );
-    }
     for name in ["reminder-extra", "draft", "empty", "working", "multiline"] {
-        assert!(
-            !holds(Vendor::Claude, claude(name), at(200, 87, 47)),
-            "claude {name}"
-        );
+        assert!(!holds(claude(name), at(200, 87, 47)), "claude {name}");
     }
 }
 
@@ -240,124 +170,35 @@ fn changed_reminders_fail_the_enter_check() {
     let joined = REMINDER.replace("brg msg list", "brginbox");
     let doubled = REMINDER.replace("Run ", "Run  ");
     let leading = format!(" {REMINDER}");
-    for (vendor, screen, row) in [
-        (Vendor::Claude, claude("reminder"), 47),
-        (Vendor::Codex, codex("reminder"), 46),
-    ] {
-        for text in [&joined, &doubled, &leading] {
-            let s = edited(screen, text);
-            let g = at(200, 2 + text.chars().count(), row);
-            assert!(
-                !composer::view(vendor, &s, g).unwrap().holds(REMINDER),
-                "{vendor:?}: {text}"
-            );
-        }
+    for text in [&joined, &doubled, &leading] {
+        let s = edited(claude("reminder"), text);
+        let g = at(200, 2 + text.chars().count(), 47);
+        assert!(!composer::view(&s, g).unwrap().holds(REMINDER), "{text}");
     }
     // A hard newline after `Run`, where the rest would have fitted.
     let (head, tail) = REMINDER.split_once("Run ").unwrap();
     let broken = format!("{head}Run\n  {tail}");
     let s = edited(claude("reminder"), &broken);
     let g = at(200, 2 + tail.chars().count(), 48);
-    let v = composer::view(Vendor::Claude, &s, g).unwrap();
+    let v = composer::view(&s, g).unwrap();
     assert_eq!(v.lines.len(), 2, "{:?}", v.lines);
     assert!(!v.holds(REMINDER));
     // The real wrapped fixture read in a wider pane: that break was typed.
     assert!(
-        !composer::view(Vendor::Claude, claude("reminder-wrapped"), at(200, 22, 47))
+        !composer::view(claude("reminder-wrapped"), at(200, 22, 47))
             .unwrap()
             .holds(REMINDER)
     );
 }
 
-/// Messages as pasted into codex-cli 0.167.0, which leaves three columns of
-/// the pane unused and breaks inside a word: after `-` or `/`, or anywhere
-/// in a word longer than the line.
-fn codex_wraps() -> [(&'static str, String, Option<Geometry>); 4] {
-    let ignore = "[Ignore duplicate delivery if already acked; otherwise brg msg ack m1 when taking responsibility.]";
-    [
-        (
-            "hyphen-wrap",
-            format!(
-                "[brg m1 from external:owner]\nRead the brief in the notes folder of the sample team; its id is sample-team-alpha-bravo-charlie-delta-echo-foxtrot-golf-hotel.\n{ignore}"
-            ),
-            at(120, 100, 36),
-        ),
-        (
-            "slash-wrap",
-            format!(
-                "[brg m1 from external:owner]\nRead /srv/sample/state/sample-tree/dev-sample/tmp/lead-abcd/scratch/e0ca00a4-430f-4f55-a4e5-718975e0395a/notes/brief.md; take on the work and report there as directed.\n{ignore}"
-            ),
-            at(120, 100, 36),
-        ),
-        // `bb` would fit in pane − 2 columns, not in pane − 3.
-        (
-            "edge-wrap",
-            format!("{} bb cc", "a".repeat(75)),
-            at(80, 7, 36),
-        ),
-        ("long-wrap", "x".repeat(170), at(80, 18, 36)),
-    ]
-}
-
 #[test]
-fn codex_submissions_are_verified_where_codex_wraps() {
-    for (name, text, g) in codex_wraps() {
-        let v = composer::view(Vendor::Codex, codex(name), g).unwrap();
-        assert!(v.lines.len() > 1, "{name}: {:?}", v.lines);
-        assert!(v.holds_submission(&text), "{name}: {:?}", v.lines);
-    }
-}
-
-#[test]
-fn codex_breaks_inside_words_need_a_word_that_could_not_fit() {
-    for (name, text, g) in codex_wraps() {
-        // Read in a wider pane, the next word would have fitted: that break
-        // was typed, so the box doesn't hold the message.
-        let wide = g.map(|g| Geometry { width: 200, ..g });
-        let v = composer::view(Vendor::Codex, codex(name), wide).unwrap();
-        assert!(!v.holds_submission(&text), "{name}");
-        // A changed or extra character, or the cursor short of the end.
-        let v = composer::view(Vendor::Codex, codex(name), g).unwrap();
-        let mut changed = text.clone();
-        changed.pop();
-        changed.push('#');
-        assert!(!v.holds_submission(&changed), "{name}");
-        assert!(!v.holds_submission(&format!("{text}.")), "{name}");
-        let mut short = v.clone();
-        short.cursor = short.cursor.map(|(row, col)| (row, col - 1));
-        assert!(!short.holds_submission(&text), "{name}");
-    }
-    // Claude keeps its own wrapping rules: no break inside a word that
-    // doesn't fill the line.
+fn a_newline_inside_a_word_with_space_to_fit_withholds_enter() {
     let (head, tail) = REMINDER.split_once("inbox").unwrap();
     let s = edited(claude("reminder"), &format!("{head}in\n  box{tail}"));
     let g = at(200, 2 + format!("box{tail}").chars().count(), 48);
-    let v = composer::view(Vendor::Claude, &s, g).unwrap();
+    let v = composer::view(&s, g).unwrap();
     assert_eq!(v.lines.len(), 2, "{:?}", v.lines);
     assert!(!v.holds_submission(REMINDER));
-}
-
-/// Codex breaks a word short of the line's end only after `-` or `/`, so a
-/// break after a letter is a typed newline unless the line is full.
-#[test]
-fn codex_rejects_a_newline_typed_inside_a_word() {
-    let original = format!(
-        "{}\n  {}\n  {}",
-        "x".repeat(77),
-        "x".repeat(77),
-        "x".repeat(16)
-    );
-    let altered = format!(
-        "x\n  {}\n  {}\n  {}",
-        "x".repeat(77),
-        "x".repeat(77),
-        "x".repeat(15)
-    );
-    assert!(codex("long-wrap").contains(&original));
-    let screen = codex("long-wrap").replace(&original, &altered);
-    let v = composer::view(Vendor::Codex, &screen, at(80, 17, 37)).unwrap();
-    assert_eq!(v.cursor, Some((3, 15)));
-    assert!(!v.holds_submission(&"x".repeat(170)), "{:?}", v.lines);
 }
 
 #[test]
@@ -377,18 +218,12 @@ fn blocked_rule_ids_are_shared_with_status() {
             screen!("claude-trust.txt"),
             "trust-dialog",
         ),
-        (
-            Vendor::Codex,
-            "[ . ] Action Required | Run netbot | m2",
-            screen!("codex-approval.txt"),
-            "approval-title",
-        ),
     ];
     for (vendor, title, screen, rule) in cases {
         let rules = rules::load(vendor).unwrap();
         assert_eq!(rules.read(title, screen).rule.as_deref(), Some(rule));
         assert_eq!(
-            wake::before_paste(vendor, &rules, &snap(title, screen, None)),
+            wake::before_paste(&rules, &snap(title, screen, None)),
             Some(WakeResult::Blocked(rule.into()))
         );
     }
@@ -397,93 +232,49 @@ fn blocked_rule_ids_are_shared_with_status() {
 #[test]
 fn pre_paste_decisions_on_real_screens() {
     let c = rules::load(Vendor::Claude).unwrap();
-    let x = rules::load(Vendor::Codex).unwrap();
     let t = "✳ Claude Code";
-    let paste = |v, r, s: Snapshot| wake::before_paste(v, r, &s);
+    let paste = |r, s: Snapshot| wake::before_paste(r, &s);
+    assert_eq!(paste(&c, snap(t, claude("empty"), at(200, 2, 47))), None);
     assert_eq!(
-        paste(Vendor::Claude, &c, snap(t, claude("empty"), at(200, 2, 47))),
-        None
-    );
-    assert_eq!(
-        paste(Vendor::Claude, &c, snap(t, claude("draft"), None)),
+        paste(&c, snap(t, claude("draft"), None)),
         Some(WakeResult::Deferred(Defer::Draft))
     );
     // The title stays idle while a turn runs; the grey prompt says busy.
     assert_eq!(
-        paste(
-            Vendor::Claude,
-            &c,
-            snap(t, claude("working"), at(200, 2, 47))
-        ),
+        paste(&c, snap(t, claude("working"), at(200, 2, 47))),
         Some(WakeResult::Deferred(Defer::Busy))
     );
     // Copy mode over an empty box: keys would go to tmux, not the member.
     let mut s = snap(t, claude("empty"), at(200, 2, 47));
     s.in_mode = true;
     assert!(matches!(
-        wake::before_paste(Vendor::Claude, &c, &s),
+        wake::before_paste(&c, &s),
         Some(WakeResult::Deferred(Defer::Uncertain(_)))
     ));
-    let t = "example";
     assert_eq!(
-        paste(Vendor::Codex, &x, snap(t, codex("empty"), at(200, 2, 46))),
+        wake::before_enter(&c, &snap(t, claude("reminder"), at(200, 81, 47))),
         None
     );
-    // A Codex draft hides the idle footer, so the state is unknown; the draft
-    // is still reported as a draft.
-    assert_eq!(
-        paste(Vendor::Codex, &x, snap(t, codex("draft"), None)),
-        Some(WakeResult::Deferred(Defer::Draft))
-    );
-    assert_eq!(
-        wake::before_enter(
-            Vendor::Codex,
-            &x,
-            &snap(t, codex("reminder"), at(200, 81, 46))
-        ),
-        None
-    );
-    assert!(
-        wake::before_enter(
-            Vendor::Codex,
-            &x,
-            &snap(t, codex("reminder-extra"), at(200, 87, 46))
-        )
-        .is_some()
-    );
-    // The reminder is in the box, but copy mode would catch the Enter.
-    let mut s = snap(t, codex("reminder"), at(200, 81, 46));
+    assert!(wake::before_enter(&c, &snap(t, claude("reminder-extra"), at(200, 87, 47))).is_some());
+    let mut s = snap(t, claude("reminder"), at(200, 81, 47));
     s.in_mode = true;
-    assert!(wake::before_enter(Vendor::Codex, &x, &s).is_some());
-    // The title can lag; the working line alone (either bullet) says busy.
-    for title in ["\u{2838} example", t] {
-        assert_eq!(
-            paste(
-                Vendor::Codex,
-                &x,
-                snap(title, codex("working"), at(200, 2, 46))
-            ),
-            Some(WakeResult::Deferred(Defer::Busy)),
-            "{title}"
-        );
-    }
+    assert!(wake::before_enter(&c, &s).is_some());
 }
 
 #[test]
 fn only_a_seen_empty_box_confirms_a_submission() {
-    let ok = |v, s: &str, g| wake::after_enter(v, Some(&snap("t", s, g)));
-    assert!(ok(Vendor::Claude, claude("empty"), at(200, 2, 47)).is_ok());
-    assert!(ok(Vendor::Claude, claude("working"), at(200, 2, 47)).is_ok());
-    assert!(ok(Vendor::Codex, codex("working"), at(200, 2, 46)).is_ok());
-    assert!(ok(Vendor::Claude, claude("reminder"), at(200, 81, 47)).is_err());
-    assert!(ok(Vendor::Claude, claude("multiline"), None).is_err());
-    assert!(ok(Vendor::Claude, claude("small"), at(100, 2, 9)).is_err());
-    assert!(ok(Vendor::Claude, screen!("claude-permission.txt"), None).is_err());
-    assert!(wake::after_enter(Vendor::Codex, None).is_err());
+    let ok = |s: &str, g| wake::after_enter(Some(&snap("t", s, g)));
+    assert!(ok(claude("empty"), at(200, 2, 47)).is_ok());
+    assert!(ok(claude("working"), at(200, 2, 47)).is_ok());
+    assert!(ok(claude("reminder"), at(200, 81, 47)).is_err());
+    assert!(ok(claude("multiline"), None).is_err());
+    assert!(ok(claude("small"), at(100, 2, 9)).is_err());
+    assert!(ok(screen!("claude-permission.txt"), None).is_err());
+    assert!(wake::after_enter(None).is_err());
     // An empty box under copy mode doesn't show the Enter reached the member.
     let mut s = snap("t", claude("empty"), at(200, 2, 47));
     s.in_mode = true;
-    assert!(wake::after_enter(Vendor::Claude, Some(&s)).is_err());
+    assert!(wake::after_enter(Some(&s)).is_err());
 }
 
 // ---- attempts against the fake composer ----
@@ -497,14 +288,11 @@ struct Env {
     state: StateDir,
 }
 
-fn qualified(vendor: Vendor) -> LaunchFacts {
+fn qualified() -> LaunchFacts {
     LaunchFacts {
-        vendor_version: Some(match vendor {
-            Vendor::Claude => "2.1.318 (Claude Code)".into(),
-            Vendor::Codex => "codex-cli 0.165.0".into(),
-        }),
+        vendor_version: Some("2.1.318 (Claude Code)".into()),
         editor: Some("vim".into()),
-        suggestions: (vendor == Vendor::Claude).then_some(false),
+        suggestions: Some(false),
         ..LaunchFacts::default()
     }
 }
@@ -580,7 +368,12 @@ impl Env {
             .unwrap();
         let (id, pid) = out.trim().split_once(' ').unwrap();
         PaneIdentity {
-            socket: self.socket.clone(),
+            socket: self
+                .tmux
+                .ok(&["display-message", "-p", "-t", "=s:=m", "#{socket_path}"])
+                .unwrap()
+                .trim()
+                .into(),
             session: "s".into(),
             window: "m".into(),
             pane_id: id.into(),
@@ -639,15 +432,14 @@ impl Env {
         panic!("timed out waiting for {what}; log: {:?}", self.log());
     }
 
-    fn attempt(&self, vendor: Vendor) -> (WakeResult, usize) {
+    fn attempt(&self) -> (WakeResult, usize) {
         let mut calls = 0;
         let r = wake::attempt(
             &self.tmux,
             &self.state,
             "m",
             &self.pane(),
-            vendor,
-            &qualified(vendor),
+            &qualified(),
             &mut || {
                 calls += 1;
                 Ok(())
@@ -664,13 +456,13 @@ impl Env {
     }
 }
 
-const VENDORS: [Vendor; 2] = [Vendor::Claude, Vendor::Codex];
+const VENDORS: [Vendor; 1] = [Vendor::Claude];
 
 #[test]
 fn empty_idle_member_gets_exactly_one_reminder() {
     for v in VENDORS {
         let e = Env::new(v);
-        assert_eq!(e.attempt(v), (WakeResult::Submitted, 1), "{v:?}");
+        assert_eq!(e.attempt(), (WakeResult::Submitted, 1), "{v:?}");
         assert_eq!(e.submissions(), vec![REMINDER.to_string()]);
         assert_eq!(e.events("paste").len(), 1);
     }
@@ -683,15 +475,15 @@ fn drafts_defer_without_typing_and_resume_once_cleared() {
         e.keys(&["-l", "half a thought"]);
         // On screen, not just read by the fake: the wake reads the screen.
         e.wait_for("the draft", |e| e.screen().contains("half a thought"));
-        assert_eq!(e.attempt(v), (WakeResult::Deferred(Defer::Draft), 0));
-        assert_eq!(e.attempt(v), (WakeResult::Deferred(Defer::Draft), 0));
+        assert_eq!(e.attempt(), (WakeResult::Deferred(Defer::Draft), 0));
+        assert_eq!(e.attempt(), (WakeResult::Deferred(Defer::Draft), 0));
         assert!(e.events("paste").is_empty());
         // The person clears it; the next attempt goes ahead.
         e.keys(&["C-u"]);
         e.wait_for("the clear", |e| {
             !e.events("clear").is_empty() && !e.screen().contains("half a thought")
         });
-        assert_eq!(e.attempt(v), (WakeResult::Submitted, 1), "{v:?}");
+        assert_eq!(e.attempt(), (WakeResult::Submitted, 1), "{v:?}");
         assert_eq!(e.submissions(), vec![REMINDER.to_string()]);
     }
 }
@@ -706,7 +498,7 @@ fn multiline_and_scrolled_drafts_defer() {
         }
         e.wait_for("the newlines", |e| e.events("key").len() >= 61);
         assert_eq!(
-            e.attempt(v),
+            e.attempt(),
             (WakeResult::Deferred(Defer::Draft), 0),
             "{v:?}"
         );
@@ -719,9 +511,9 @@ fn busy_and_blocked_members_get_nothing() {
     for v in VENDORS {
         let e = Env::new(v);
         e.control("mode=working");
-        assert_eq!(e.attempt(v), (WakeResult::Deferred(Defer::Busy), 0));
+        assert_eq!(e.attempt(), (WakeResult::Deferred(Defer::Busy), 0));
         e.control("mode=dialog");
-        let (r, calls) = e.attempt(v);
+        let (r, calls) = e.attempt();
         assert!(matches!(r, WakeResult::Blocked(_)), "{v:?}: {r:?}");
         assert_eq!(calls, 0);
         assert!(e.events("paste").is_empty());
@@ -734,7 +526,7 @@ fn a_dialog_after_the_paste_withholds_enter() {
     for v in VENDORS {
         let e = Env::new(v);
         e.control("on_paste=dialog");
-        let (r, calls) = e.attempt(v);
+        let (r, calls) = e.attempt();
         assert!(matches!(r, WakeResult::HumanRequired(_)), "{v:?}: {r:?}");
         assert_eq!(calls, 1);
         assert_eq!(e.events("paste").len(), 1);
@@ -747,7 +539,7 @@ fn typing_during_the_paste_withholds_enter() {
     for v in VENDORS {
         let e = Env::new(v);
         e.control("on_paste=append: and more");
-        let (r, _) = e.attempt(v);
+        let (r, _) = e.attempt();
         assert!(matches!(r, WakeResult::HumanRequired(_)), "{v:?}: {r:?}");
         assert!(e.events("enter").is_empty());
         // Nothing was cleared: the text is still there for the person.
@@ -759,7 +551,7 @@ fn typing_during_the_paste_withholds_enter() {
 fn an_enter_that_does_not_submit_is_human_required() {
     let e = Env::new(Vendor::Claude);
     e.control("enter=ignore");
-    let (r, _) = e.attempt(Vendor::Claude);
+    let (r, _) = e.attempt();
     assert!(matches!(r, WakeResult::HumanRequired(_)), "{r:?}");
     assert_eq!(e.events("enter").len(), 1);
     assert!(e.submissions().is_empty());
@@ -770,27 +562,11 @@ fn a_different_pane_is_not_running() {
     let e = Env::new(Vendor::Claude);
     let mut p = e.pane();
     p.pane_pid += 1;
-    let r = wake::attempt(
-        &e.tmux,
-        &e.state,
-        "m",
-        &p,
-        Vendor::Claude,
-        &qualified(Vendor::Claude),
-        &mut || Ok(()),
-    );
+    let r = wake::attempt(&e.tmux, &e.state, "m", &p, &qualified(), &mut || Ok(()));
     assert_eq!(r, WakeResult::NotRunning);
     let mut p = e.pane();
     p.pane_id = "%999".into();
-    let r = wake::attempt(
-        &e.tmux,
-        &e.state,
-        "m",
-        &p,
-        Vendor::Claude,
-        &qualified(Vendor::Claude),
-        &mut || Ok(()),
-    );
+    let r = wake::attempt(&e.tmux, &e.state, "m", &p, &qualified(), &mut || Ok(()));
     assert_eq!(r, WakeResult::NotRunning);
     assert!(e.events("paste").is_empty());
 }
@@ -800,26 +576,17 @@ fn a_held_send_lock_defers() {
     let e = Env::new(Vendor::Claude);
     let lock = borgchart::state::open_lock(&e.state.lock_file("m")).unwrap();
     lock.lock().unwrap();
-    assert_eq!(
-        e.attempt(Vendor::Claude),
-        (WakeResult::Deferred(Defer::Locked), 0)
-    );
+    assert_eq!(e.attempt(), (WakeResult::Deferred(Defer::Locked), 0));
     drop(lock);
-    assert_eq!(e.attempt(Vendor::Claude), (WakeResult::Submitted, 1));
+    assert_eq!(e.attempt(), (WakeResult::Submitted, 1));
 }
 
 #[test]
 fn a_failing_intent_record_types_nothing() {
-    let e = Env::new(Vendor::Codex);
-    let r = wake::attempt(
-        &e.tmux,
-        &e.state,
-        "m",
-        &e.pane(),
-        Vendor::Codex,
-        &qualified(Vendor::Codex),
-        &mut || Err(std::io::Error::other("disk full")),
-    );
+    let e = Env::new(Vendor::Claude);
+    let r = wake::attempt(&e.tmux, &e.state, "m", &e.pane(), &qualified(), &mut || {
+        Err(std::io::Error::other("disk full"))
+    });
     assert!(
         matches!(r, WakeResult::Deferred(Defer::Uncertain(_))),
         "{r:?}"
@@ -830,17 +597,9 @@ fn a_failing_intent_record_types_nothing() {
 #[test]
 fn unqualified_members_get_alerts_only() {
     let e = Env::new(Vendor::Claude);
-    let mut facts = qualified(Vendor::Claude);
+    let mut facts = qualified();
     facts.vendor_version = Some("9.9.9 (Claude Code)".into());
-    let r = wake::attempt(
-        &e.tmux,
-        &e.state,
-        "m",
-        &e.pane(),
-        Vendor::Claude,
-        &facts,
-        &mut || Ok(()),
-    );
+    let r = wake::attempt(&e.tmux, &e.state, "m", &e.pane(), &facts, &mut || Ok(()));
     assert!(matches!(r, WakeResult::AlertOnly(_)), "{r:?}");
     assert!(e.log().iter().all(|l| l["event"] != "paste"));
 }
@@ -862,7 +621,7 @@ fn an_attached_client_and_a_resize_do_not_matter() {
         .unwrap();
     // Let the program redraw at the new size (mid-redraw reads defer).
     std::thread::sleep(Duration::from_millis(400));
-    assert_eq!(e.attempt(Vendor::Claude), (WakeResult::Submitted, 1));
+    assert_eq!(e.attempt(), (WakeResult::Submitted, 1));
     let _ = client.kill();
     let _ = client.wait();
 }
@@ -872,7 +631,7 @@ fn an_unreadable_screen_after_enter_is_human_required() {
     for v in VENDORS {
         let e = Env::new(v);
         e.control("after_enter=garbage");
-        let (r, _) = e.attempt(v);
+        let (r, _) = e.attempt();
         assert!(matches!(r, WakeResult::HumanRequired(_)), "{v:?}: {r:?}");
         assert_eq!(e.events("enter").len(), 1);
     }
@@ -880,7 +639,7 @@ fn an_unreadable_screen_after_enter_is_human_required() {
 
 #[test]
 fn a_pane_is_found_by_its_socket_path() {
-    let e = Env::new(Vendor::Codex);
+    let e = Env::new(Vendor::Claude);
     let path = e
         .tmux
         .ok(&["display-message", "-p", "-t", "=s:=m", "#{socket_path}"])
@@ -890,15 +649,7 @@ fn a_pane_is_found_by_its_socket_path() {
     assert!(p.socket.starts_with('/'));
     // The client given names another server; the pane's own socket wins.
     let other = e.tmux.with_socket("brg-wake-no-such-server");
-    let r = wake::attempt(
-        &other,
-        &e.state,
-        "m",
-        &p,
-        Vendor::Codex,
-        &qualified(Vendor::Codex),
-        &mut || Ok(()),
-    );
+    let r = wake::attempt(&other, &e.state, "m", &p, &qualified(), &mut || Ok(()));
     assert_eq!(r, WakeResult::Submitted);
     assert_eq!(e.submissions(), vec![REMINDER.to_string()]);
 }
@@ -927,7 +678,7 @@ impl Env {
             "brg":env!("CARGO_BIN_EXE_brg"),
             "config":{"version":1,"digest":"00","inputs":{},"template_dirs":{}},
             "socket":"brg-wake-test","windows_started":true,
-            "base_env":{},"plugins":{},"members":{"m":{
+            "base_env":{"PATH":format!("{}:{}", folder.join("fakebin").display(), self.private.path_with(&std::env::var("PATH").unwrap_or_default())),"HOME":folder,"QUEUE_RECIPIENT_MARKER":"recipient-only"},"plugins":{},"members":{"m":{
                 "role":"worker","vendor":vendor.as_str(),"posture":if locked {"locked"} else {"vendor"},
                 "interactive":interactive,"started":true,"parent":null,"vendor_version":null
             }}}),
@@ -958,6 +709,7 @@ impl Env {
                 ),
             )
             .env("HOME", self.dir.path())
+            .env("QUEUE_SENDER_MARKER", "sender-only")
             .env("BORGCHART_STATE_HOME", self.dir.path())
             .env("BORGCHART_CONFIG", self.dir.path().join("unused.yaml"))
             .args([
@@ -979,25 +731,24 @@ impl Env {
 
 #[test]
 fn unified_send_types_into_working_composers_and_keeps_a_record() {
-    for vendor in [Vendor::Claude, Vendor::Codex] {
-        let e = Env::new(vendor);
-        e.send_setup(vendor, false, false);
-        e.control("mode=working");
-        let (code, out) = e.send_message("hello\nsecond line", &[]);
-        assert_eq!(code, 0, "{out}");
-        assert_eq!(out["delivery"], "typed", "{out}");
-        let submits = e.events("submit");
-        assert_eq!(submits.len(), 1, "{submits:?}");
-        let body = submits[0]["text"].as_str().unwrap();
-        assert!(body.contains("[brg m1 from external:test]"), "{body}");
-        assert!(body.contains("hello\nsecond line"), "{body}");
-        assert!(body.contains("brg msg ack m1"), "{body}");
-        let bus = borgchart::bus::store::open(&e.state).unwrap();
-        let snap = borgchart::bus::store::snapshot(&bus).unwrap();
-        assert_eq!(snap.records[&1].body, "hello\nsecond line");
-        assert!(snap.records[&1].ack_required);
-        assert!(snap.acks.is_empty());
-    }
+    let vendor = Vendor::Claude;
+    let e = Env::new(vendor);
+    e.send_setup(vendor, false, false);
+    e.control("mode=working");
+    let (code, out) = e.send_message("hello\nsecond line", &[]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(out["delivery"], "typed", "{out}");
+    let submits = e.events("submit");
+    assert_eq!(submits.len(), 1, "{submits:?}");
+    let body = submits[0]["text"].as_str().unwrap();
+    assert!(body.contains("[brg m1 from external:test]"), "{body}");
+    assert!(body.contains("hello\nsecond line"), "{body}");
+    assert!(body.contains("brg msg ack m1"), "{body}");
+    let bus = borgchart::bus::store::open(&e.state).unwrap();
+    let snap = borgchart::bus::store::snapshot(&bus).unwrap();
+    assert_eq!(snap.records[&1].body, "hello\nsecond line");
+    assert!(snap.records[&1].ack_required);
+    assert!(snap.acks.is_empty());
 }
 
 #[test]
@@ -1035,7 +786,8 @@ impl Env {
         fs::write(
             &script,
             format!(
-                "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\0' \"$a\"; done > '{}'\n{then}\n",
+                "#!/bin/sh\nprintf 'call\\n' >> '{}'\nfor a in \"$@\"; do printf '%s\\0' \"$a\"; done > '{}'\n{then}\n",
+                log.with_extension("calls").display(),
                 log.display()
             ),
         )
@@ -1060,52 +812,42 @@ impl Env {
     }
 }
 
-/// An interactive member's input box belongs to a person, so brg never types
-/// into it. An interactive Codex member gets the message through
-/// `codex queue` on the session its start recorded instead: it runs as the
-/// member's next turn.
+/// Every Codex posture queues the next turn without reading or changing a draft.
 #[test]
-fn interactive_codex_recipients_get_a_queued_message_and_nothing_typed() {
-    let e = Env::new(Vendor::Codex);
-    e.send_setup(Vendor::Codex, false, true);
-    e.fake_codex("echo 'Queued message 1 for thread 2.'; exit 0");
-    e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20");
-    e.keys(&["draft"]);
-    let (code, out) = e.send_message("hello", &[]);
-    assert_eq!(code, 0, "{out}");
-    assert_eq!(out["delivery"], "queued", "{out}");
-    let args = e.codex_args().expect("codex queue was called");
-    assert_eq!(
-        args[..4],
-        [
-            "queue",
-            "--thread",
-            "01a1d300-f48d-7c70-a58a-d5fbea1edd20",
-            "--message"
-        ]
-    );
-    assert_eq!(args.len(), 5, "{args:?}");
-    assert!(
-        args[4].starts_with("[brg m1 from external:test]\nhello\n"),
-        "{args:?}"
-    );
-    assert!(args[4].contains("brg msg ack m1"), "{args:?}");
-    // The person's draft is untouched and nothing was pasted.
-    assert!(e.events("paste").is_empty());
-    assert!(e.screen().contains("draft"));
+fn codex_recipients_queue_without_touching_a_draft_in_every_posture() {
+    for (locked, interactive) in [(false, true), (false, false), (true, false)] {
+        let e = Env::new(Vendor::Codex);
+        e.send_setup(Vendor::Codex, locked, interactive);
+        e.fake_codex("echo 'Queued message 1 for thread 2.'; exit 0");
+        e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20");
+        e.keys(&["draft"]);
+        let (code, out) = e.send_message("hello", &[]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(out["delivery"], "queued", "{out}");
+        let args = e.codex_args().expect("codex queue was called");
+        assert_eq!(
+            args[..4],
+            [
+                "queue",
+                "--thread",
+                "01a1d300-f48d-7c70-a58a-d5fbea1edd20",
+                "--message"
+            ]
+        );
+        assert_eq!(args.len(), 5, "{args:?}");
+        assert!(args[4].contains("\nhello"), "{args:?}");
+        assert_eq!(args[4].contains("brg msg ack m1"), !locked, "{args:?}");
+        // The person's draft is untouched and nothing was pasted.
+        assert!(e.events("paste").is_empty());
+        assert!(e.screen().contains("draft"));
+    }
 }
 
-/// Without a session for this start, or when `codex queue` fails or hangs,
+/// Without a session for this start, or when `codex queue` fails,
 /// the message stays stored and the send still succeeds.
 #[test]
-fn interactive_codex_messages_stay_stored_when_they_cannot_be_queued() {
-    for case in [
-        "no session",
-        "stale session",
-        "unreadable start",
-        "fails",
-        "hangs",
-    ] {
+fn codex_messages_without_a_current_session_or_queue_success_stay_stored() {
+    for case in ["no session", "stale session", "unreadable start", "fails"] {
         let e = Env::new(Vendor::Codex);
         e.send_setup(Vendor::Codex, false, true);
         e.fake_codex(match case {
@@ -1467,5 +1209,204 @@ fn cross_edge_sends_type_and_preflight_locked_recipients_in_their_own_team() {
         let snap = borgchart::bus::store::snapshot(&borgchart::bus::store::open(&e.state).unwrap())
             .unwrap();
         assert_eq!(snap.records[&1].ack_required, !locked);
+    }
+}
+
+#[test]
+fn locked_codex_missing_readiness_refuses_without_recording() {
+    for case in ["no session", "inactive gate", "stopped", "dead pane"] {
+        let e = Env::new(Vendor::Codex);
+        e.send_setup(Vendor::Codex, true, false);
+        e.fake_codex("exit 0");
+        if case != "no session" {
+            e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20");
+        }
+        if case == "inactive gate" {
+            fs::remove_file(e.state.gate_marker("m")).unwrap();
+        }
+        if case == "stopped" {
+            borgchart::lifecycle::end_incarnation(&e.state, "m", "stopped").unwrap();
+        }
+        if case == "dead pane" {
+            e.tmux.ok(&["kill-pane", "-t", "=s:=m"]).unwrap();
+        }
+        let (code, out) = e.send_message("hello", &["--allow-unknown"]);
+        assert_ne!(code, 0, "{case}: {out}");
+        if case == "dead pane" {
+            assert_eq!(code, 3, "{case}: {out}");
+        }
+        assert!(out.get("id").is_none(), "{case}: {out}");
+        let bus = borgchart::bus::store::open(&e.state).unwrap();
+        assert!(
+            borgchart::bus::store::snapshot(&bus)
+                .unwrap()
+                .records
+                .is_empty(),
+            "{case}"
+        );
+        assert!(e.codex_args().is_none(), "{case}");
+        assert!(e.events("paste").is_empty(), "{case}");
+    }
+}
+
+#[test]
+fn codex_queue_failure_preserves_the_record_and_reports_locked_failure() {
+    for locked in [false, true] {
+        let e = Env::new(Vendor::Codex);
+        e.send_setup(Vendor::Codex, locked, false);
+        e.fake_codex("exit 3");
+        e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20");
+        let (code, out) = e.send_message("hello", &[]);
+        assert_eq!(code, if locked { 5 } else { 0 }, "{out}");
+        assert_eq!(
+            out["delivery"],
+            if locked {
+                "recorded-not-delivered"
+            } else {
+                "stored"
+            },
+            "{out}"
+        );
+        assert_eq!(out["id"], "m1");
+        let bus = borgchart::bus::store::open(&e.state).unwrap();
+        assert_eq!(
+            borgchart::bus::store::snapshot(&bus).unwrap().records[&1].body,
+            "hello"
+        );
+    }
+}
+
+#[test]
+fn codex_queue_timeout_is_uncertain_and_never_retried() {
+    for locked in [false, true] {
+        let e = Env::new(Vendor::Codex);
+        e.send_setup(Vendor::Codex, locked, !locked);
+        e.fake_codex("exec sleep 60");
+        e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20");
+        let start = Instant::now();
+        let (code, out) = e.send_message("hello", &[]);
+        assert_eq!(code, if locked { 5 } else { 0 }, "{out}");
+        assert_eq!(out["delivery"], "uncertain", "{out}");
+        assert!(start.elapsed() < Duration::from_secs(20));
+        assert!(e.codex_args().is_some());
+        assert_eq!(
+            fs::read_to_string(e.dir.path().join("codex-args.calls"))
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+        assert!(e.events("paste").is_empty());
+    }
+}
+
+#[test]
+fn codex_queue_uses_the_recipients_environment() {
+    let e = Env::new(Vendor::Codex);
+    e.send_setup(Vendor::Codex, false, true);
+    e.fake_codex(
+        "test \"$QUEUE_RECIPIENT_MARKER\" = recipient-only && test -z \"${QUEUE_SENDER_MARKER+x}\"",
+    );
+    e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20");
+    let (code, out) = e.send_message("hello", &[]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(out["delivery"], "queued", "{out}");
+}
+
+#[test]
+fn codex_queue_waits_for_a_young_starts_session() {
+    for locked in [false, true] {
+        let e = Env::new(Vendor::Codex);
+        e.send_setup(Vendor::Codex, locked, false);
+        e.fake_codex("exit 0");
+        let mut inc = borgchart::lifecycle::load_incarnation(&e.state, "m")
+            .unwrap()
+            .unwrap();
+        inc.started_at = borgchart::bus::time::utc_now();
+        borgchart::lifecycle::begin_incarnation(&e.state, &inc).unwrap();
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(Duration::from_millis(500));
+                e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20");
+            });
+            let (code, out) = e.send_message("hello", &[]);
+            assert_eq!(code, 0, "{out}");
+            assert_eq!(out["delivery"], "queued", "{out}");
+        });
+    }
+}
+
+#[test]
+fn codex_queue_accepts_a_full_body_without_the_typing_budget() {
+    for locked in [false, true] {
+        let e = Env::new(Vendor::Codex);
+        e.send_setup(Vendor::Codex, locked, false);
+        e.fake_codex("exit 0");
+        e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20");
+        let body = "x".repeat(16 * 1024);
+        let (code, out) = e.send_message(&body, &[]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(out["delivery"], "queued", "{out}");
+        assert!(e.codex_args().unwrap()[4].contains(&body));
+        assert!(e.events("paste").is_empty());
+    }
+}
+
+#[test]
+fn codex_queue_never_targets_a_dead_pane_or_a_start_replaced_during_session_wait() {
+    for case in ["dead pane", "stopped during wait", "replaced during wait"] {
+        let e = Env::new(Vendor::Codex);
+        e.send_setup(Vendor::Codex, false, false);
+        e.fake_codex("exit 0");
+        let mut inc = borgchart::lifecycle::load_incarnation(&e.state, "m")
+            .unwrap()
+            .unwrap();
+        inc.started_at = borgchart::bus::time::utc_now();
+        borgchart::lifecycle::begin_incarnation(&e.state, &inc).unwrap();
+        if case == "dead pane" {
+            e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20");
+            e.tmux.ok(&["kill-pane", "-t", "=s:=m"]).unwrap();
+        }
+        std::thread::scope(|s| {
+            if case != "dead pane" {
+                s.spawn(|| {
+                    std::thread::sleep(Duration::from_millis(250));
+                    if case == "stopped during wait" {
+                        borgchart::lifecycle::end_incarnation(&e.state, "m", "stopped").unwrap();
+                    } else {
+                        inc.incarnation = "m-2".into();
+                        borgchart::lifecycle::begin_incarnation(&e.state, &inc).unwrap();
+                    }
+                    e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20");
+                });
+            }
+            let (code, out) = e.send_message("hello", &[]);
+            assert_eq!(code, 0, "{case}: {out}");
+            assert_eq!(out["delivery"], "stored", "{case}: {out}");
+        });
+        assert!(e.codex_args().is_none(), "{case}");
+        assert!(e.events("paste").is_empty(), "{case}");
+    }
+}
+
+#[test]
+fn codex_queue_delivers_through_dialog_and_copy_mode_without_answering_them() {
+    for locked in [false, true] {
+        for mode in ["dialog", "copy"] {
+            let e = Env::new(Vendor::Codex);
+            e.send_setup(Vendor::Codex, locked, false);
+            e.fake_codex("exit 0");
+            e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20");
+            if mode == "dialog" {
+                e.control("mode=dialog");
+            } else {
+                e.tmux.ok(&["copy-mode", "-t", "=s:=m"]).unwrap();
+            }
+            let (code, out) = e.send_message("hello", &["--allow-unknown"]);
+            assert_eq!(code, 0, "{locked} {mode}: {out}");
+            assert_eq!(out["delivery"], "queued", "{locked} {mode}: {out}");
+            assert!(e.events("paste").is_empty());
+            assert!(e.events("enter").is_empty());
+        }
     }
 }

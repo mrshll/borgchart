@@ -1,6 +1,7 @@
 # How the watcher may wake a member that has unacked messages, by vendor
 # and CLI version. A version not listed here gets no wake: it needs a person.
 # Turn on a newly tested CLI by adding it here; no code changes.
+# This is also the verified-version list behind status notices.
 #
 #   version:    an exact version (`0.165.0`), or a prefix ending in `.*`
 #               (`2.1.*` matches 2.1.318, not 2.10.0). The first match wins.
@@ -10,7 +11,7 @@
 #               the one before was `rejected` or `unavailable`, never after
 #               an `uncertain` outcome.
 #                 queue: queue a message to the member's live thread.
-#                 typed: the guarded typed reminder, on an idle, empty screen.
+#                 typed: Claude's guarded reminder, on an idle, empty screen.
 wake:
   - vendor: claude
     version: "2.1.*"
@@ -19,4 +20,4 @@ wake:
   - vendor: codex
     version: "0.165.0"
     self_wake: false
-    methods: [queue, typed]
+    methods: [queue]

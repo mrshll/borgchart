@@ -35,6 +35,21 @@ for a in "$@"; do
     exit 0
   fi
 done
+# Queue requests run outside any member, with the recipient's base env.
+if [ "$vendor" = codex ] && [ "${1:-}" = queue ]; then
+  shift
+  [ "${1:-}" = --thread ] || exit 2
+  thread=$2
+  shift 2
+  [ "${1:-}" = --message ] || exit 2
+  [ -d "$fake/queue-$thread" ] || exit 1
+  [ -e "$fake/drop-queue" ] && exit 0
+  input=$(mktemp "$fake/queue-$thread/.incoming.XXXXXX")
+  printf '%s' "$2" >"$input"
+  mv "$input" "$fake/queue-$thread/$(date +%s%N)-$$"
+  echo Queued
+  exit 0
+fi
 scenario=ok
 [ -n "$member" ] && [ -f "$fake/scenario-$member" ] && scenario=$(cat "$fake/scenario-$member")
 
@@ -117,7 +132,7 @@ at_trust() {
   forever
 }
 
-if ! trusted; then
+if [ "$member" != queue-locked ] && ! trusted; then
   [ "$vendor" = claude ] && at_trust trust
   want="projects={\"$PWD\"={trust_level=\"trusted\"}}"
   ok=
@@ -129,6 +144,73 @@ if [ "$scenario" = approval ]; then
   draw approval
   forever
 fi
+
+# The queue case's fakes exercise the real session/gate and plugin handlers.
+# Only the vendor turn itself is acted out; no typed input is read here.
+case $member in queue-*)
+  state="$BORGCHART_STATE_HOME/$BORGCHART_TEAM"
+  session_file="$fake/session-$BORGCHART_MEMBER"
+  if [ ! -f "$session_file" ]; then
+    n=$(printf '%s' "$BORGCHART_MEMBER" | cksum | cut -d' ' -f1)
+    printf '00000000-0000-4000-8000-%012d\n' "$n" >"$session_file"
+  fi
+  thread=$(cat "$session_file")
+  inbox="$fake/queue-$thread"
+  mkdir -p "$inbox"
+  event=session
+  post=
+  for a in "$@"; do
+    case $a in *PostToolUse=*) event=start; post=1 ;; esac
+  done
+  printf '{"session_id":"%s"}' "$thread" | "$BORGCHART_BIN" _gate "$event" "$state" "$BORGCHART_MEMBER"
+  draw working
+  sleep 1
+  for a in "$@"; do
+    case $a in *'brg restarted you'*'msg list --full'*)
+      for word in $("$BORGCHART_BIN" msg list --full | sed -n 's/.*nonce \([0-9a-z]*\).*/\1/p'); do
+        say "● REPLY-$word"
+      done ;;
+    esac
+  done
+  say '● READY'
+  draw idle
+  promote() {
+    shim="$state/members/$BORGCHART_MEMBER/bin/brg-slack"
+    printf '{"tool_name":"Bash","tool_input":{"command":"%s promote %s question"}}' "$shim" "$1" | "$BORGCHART_BIN" _gate pre "$state" "$BORGCHART_MEMBER" || return 1
+    "$shim" promote "$1" question || return 1
+    if [ -n "$post" ] && [ "$scenario" != no-post ]; then
+      "$BORGCHART_BIN" _gate post "$state" "$BORGCHART_MEMBER"
+    fi
+  }
+  while :; do
+    for input in "$inbox"/[0-9]*; do
+      [ -f "$input" ] || continue
+      body=$(cat "$input")
+      rm "$input"
+      draw working
+      case $body in
+        *'HOLD nonce '*)
+          if [ -n "$post" ]; then promote 1700000000.000001; fi
+          sleep 2 ;;
+      esac
+      case $body in
+        *'Slack promote '*)
+          ts=$(printf '%s' "$body" | sed -n 's/.*ts=\([^ ]*\).*/\1/p')
+          say "● PROMOTED-$ts" ;;
+        *'nonce '*)
+          for word in $(printf '%s' "$body" | sed -n 's/.*nonce \([0-9a-z]*\).*/\1/p'); do
+            say "● REPLY-$word"
+          done ;;
+        *'promote '*)
+          ts=$(printf '%s' "$body" | sed -n 's/.*promote \([0-9.]*\).*/\1/p' | head -1)
+          promote "$ts"
+          say '● SENT' ;;
+      esac
+      draw idle
+    done
+    sleep 0.05
+  done ;;
+esac
 
 nonce_word() { # the nonce from the inbox, read without marking it shown
   "$BORGCHART_BIN" msg list --member "$BORGCHART_MEMBER" --full | grep -o 'nonce [0-9a-z]*' | tail -1 | cut -d' ' -f2

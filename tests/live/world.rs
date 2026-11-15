@@ -209,7 +209,7 @@ impl World {
         .unwrap();
         std::fs::write(
             scratch.join("codex-home/config.toml"),
-            "# generated for the dry run\n[tui]\nvim_mode_default = true\n",
+            "# generated for the dry run\n[tui]\n",
         )
         .unwrap();
         let mut env = BTreeMap::new();

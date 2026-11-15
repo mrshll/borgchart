@@ -174,7 +174,7 @@ impl Fake {
                 lines.insert(0, "▝▜█ Fake Claude v0.0.0".into());
                 let marker = if mode == Mode::Working {
                     lines.push("\x1b[38;5;174m✶ Working… (1s)\x1b[39m".into());
-                    "\x1b[38;5;246m❯\u{a0}\x1b[39m"
+                    "\x1b[38;2;153;153;153m❯\u{a0}\x1b[39m"
                 } else {
                     "❯\u{a0}"
                 };
