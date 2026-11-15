@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Usage: seed [--scrub evidence-directory]; requires a throwaway HOME.
+set -euo pipefail
+umask 077
+if [[ ${1:-} == --scrub ]]; then
+  patterns=$(mktemp)
+  trap 'rm -f "$patterns"' EXIT
+  for key in ANTHROPIC_API_KEY OPENAI_API_KEY; do printenv "$key" >> "$patterns"; done
+  printf '%s\n' sk-ant- sk-proj- >> "$patterns"
+  if grep -rqFf "$patterns" "${2:?evidence directory required}"; then
+    echo 'Refusing publication: credential pattern in evidence' >&2; exit 1
+  else
+    status=$?; [[ $status == 1 ]] || exit "$status"
+  fi
+  exit 0
+fi
+[[ $(realpath "$HOME") == "$(realpath "${TMPDIR:-/tmp}")/"* ]] || { echo 'Use a throwaway HOME under TMPDIR' >&2; exit 1; }
+export CLAUDE_CONFIG_DIR="$HOME/.claude" CODEX_HOME="$HOME/.codex"
+mkdir -p "$HOME/.claude" "$HOME/.codex"
+printenv ANTHROPIC_API_KEY > "$HOME/.claude/api-key"
+# shellcheck disable=SC2016
+printf '#!/bin/sh\ncat "$HOME/.claude/api-key"\n' > "$HOME/.claude/key-helper"
+chmod 700 "$HOME/.claude/key-helper"
+jq -n --arg workspace "$GITHUB_WORKSPACE" '{hasCompletedOnboarding:true,projects:{($workspace):{hasTrustDialogAccepted:true}}}' > "$HOME/.claude.json"
+cp "$HOME/.claude.json" "$HOME/.claude/.claude.json"
+jq -n '{apiKeyHelper:"sh \"$HOME/.claude/key-helper\"",model:"claude-haiku-5-5",env:{DISABLE_AUTOUPDATER:"1"}}' > "$HOME/.claude/settings.json"
+printenv OPENAI_API_KEY | codex login --with-api-key >/dev/null 2>&1
+printf '%s\n' 'model = "gpt-6.1-terra"' 'model_reasoning_effort = "low"' 'check_for_update_on_startup = false' > "$HOME/.codex/config.toml"

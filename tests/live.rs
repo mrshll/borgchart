@@ -1,6 +1,6 @@
 //! The live tier: the real `claude` and `codex`, started by real `brg up`
 //! with your own login and configuration in place. Ignored by default;
-//! local only.
+//! local by default, with a throwaway-home nightly in CI.
 //!
 //! ```text
 //! BORGCHART_LIVE=1 cargo test --locked --test live -- --ignored --nocapture --test-threads=1
@@ -18,7 +18,7 @@
 //! test's guard, under a watchdog that stops it if the run dies or
 //! overruns. Nothing of your vendor configuration is copied or written by
 //! brg: Codex gets session-only trust (`-c projects=…`), and every Claude
-//! deployment sets `auto_trust: false`. Claude cases other than trust run in
+//! deployment defaults to `auto_trust: false`. Claude cases other than trust run in
 //! `target/live/<run>/work/`, which must be inside a folder Claude already
 //! trusts (this checkout or a parent); the trust cases use fresh folders
 //! under the system temp directory. No tool approval is ever answered: one

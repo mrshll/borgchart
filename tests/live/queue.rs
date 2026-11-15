@@ -122,7 +122,8 @@ fn posture(w: &World, locked: bool) -> Result<(), Outcome> {
             bus: true,
         },
     );
-    // Pin the small model used by the other manual probes, for this test only.
+    let model = std::env::var("BORGCHART_LIVE_CODEX_MODEL").ok();
+    let model = serde_json::to_string(super::rules::codex_model(model.as_deref())).unwrap();
     let prompt_path = t.dir.join(if locked {
         "queue-locked.md"
     } else {
@@ -130,7 +131,7 @@ fn posture(w: &World, locked: bool) -> Result<(), Outcome> {
     });
     std::fs::write(
         prompt_path,
-        format!("---\nmodels: {{codex: gpt-6.1-terra low}}\n---\n{PROMPT}\n"),
+        format!("---\nmodels: {{codex: {model}}}\n---\n{PROMPT}\n"),
     )
     .unwrap();
     if locked {
@@ -139,7 +140,7 @@ fn posture(w: &World, locked: bool) -> Result<(), Outcome> {
         std::fs::write(&path, format!("plugins:\n  pager:\n    path: plugins/pager\n    actions:\n      promote: brg-slack promote <ts> <reason>\n{text}    parent: queue-parent\n    plugins: {{pager: [promote]}}\n  queue-parent:\n    prompt: queue-parent.md\n    vendor: codex\n")).unwrap();
         std::fs::write(
             t.dir.join("queue-parent.md"),
-            format!("---\nmodels: {{codex: gpt-6.1-terra low}}\n---\n{PROMPT}\n"),
+            format!("---\nmodels: {{codex: {model}}}\n---\n{PROMPT}\n"),
         )
         .unwrap();
         let plugin = w.brg.with_file_name("brg-slack");

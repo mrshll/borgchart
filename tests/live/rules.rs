@@ -39,10 +39,20 @@ pub const REQUIRED: &[(&str, Who)] = &[
     ("claude-wake-matrix", Who::Claude),
 ];
 
-/// The Claude `auto_trust`-on case answers Claude's trust dialog, which
-/// saves trust to your Claude config, so it doesn't run. Flip this to run
-/// it.
-pub const RUN_CLAUDE_TRUST_ON: bool = false;
+/// Saving Claude trust is allowed only in a canonical throwaway home.
+pub fn throwaway(value: Option<&str>, home: &Path, temp: &Path) -> Result<bool, String> {
+    if value != Some("1") {
+        return Ok(false);
+    }
+    match (home.canonicalize(), temp.canonicalize()) {
+        (Ok(home), Ok(temp)) if home != temp && home.starts_with(&temp) => Ok(true),
+        _ => Err("BORGCHART_LIVE_THROWAWAY requires HOME under the system temp directory".into()),
+    }
+}
+
+pub fn codex_model(value: Option<&str>) -> &str {
+    value.unwrap_or("gpt-6.1-terra low")
+}
 
 /// With `auto_trust: false`, `brg status` reports the member waiting at
 /// folder trust with a `brg attach` hint (`*-trust-status`, #54).
@@ -266,6 +276,26 @@ mod tests {
     }
 
     const BOTH: &[Who] = &[Who::Claude, Who::Codex];
+
+    #[test]
+    fn throwaway_switch_refuses_local_home_and_symlink_escape() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        std::fs::create_dir(&home).unwrap();
+        assert_eq!(throwaway(None, &home, temp.path()), Ok(false));
+        assert_eq!(throwaway(Some("1"), &home, temp.path()), Ok(true));
+        assert!(throwaway(Some("1"), temp.path(), temp.path()).is_err());
+        let outside = tempfile::tempdir().unwrap();
+        let link = temp.path().join("escape");
+        std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+        assert!(throwaway(Some("1"), &link, temp.path()).is_err());
+    }
+
+    #[test]
+    fn queue_model_override_keeps_default_when_unset() {
+        assert_eq!(codex_model(None), "gpt-6.1-terra low");
+        assert_eq!(codex_model(Some("test-model low")), "test-model low");
+    }
 
     #[test]
     fn only_a_complete_live_run_of_passes_qualifies() {
