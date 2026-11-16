@@ -8,7 +8,7 @@
 //!
 //! - `BORGCHART_LIVE_VENDORS=claude` (or `codex`) limits the run, which is
 //!   then partial and qualifies nothing. An empty or unknown name is refused.
-//! - `BORGCHART_LIVE_SUBMIT=0` skips the wake matrix's two real submissions
+//! - `BORGCHART_LIVE_SUBMIT=0` skips the wake matrix's real submission
 //!   for Claude (also partial).
 //! - `BORGCHART_LIVE_DRY=1` runs the same harness against owned fake CLIs
 //!   instead, and wins over `BORGCHART_LIVE`. The default tier runs it too

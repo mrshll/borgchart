@@ -324,7 +324,7 @@ pub fn view(capture: &str, geometry: Option<Geometry>) -> Result<View, String> {
     }
     let (first, mut view) = claude_view(&lines)?;
     if let Some(g) = geometry {
-        view.text_width = Some(g.width.saturating_sub(2));
+        view.text_width = Some(g.width.saturating_sub(4));
         let row = g.cursor_y.checked_sub(first);
         view.cursor = row
             .filter(|&r| r < view.lines.len() && g.cursor_x >= 2)
