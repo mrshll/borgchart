@@ -7,6 +7,156 @@ use std::{
 };
 use support::*;
 
+fn alarm(f: &Fixture, args: &[&str]) -> String {
+    let out = f
+        .command(args)
+        .env("BORGCHART_TEAM", "harbor-test/dev-test")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    String::from_utf8(out.stdout).unwrap()
+}
+fn alarm_fixture() -> Fixture {
+    let f = Fixture::new();
+    f.write("checks.yaml", "[]");
+    f.tick();
+    f
+}
+fn overdue(f: &Fixture) {
+    alarm(f, &["alarm", "set", "1", "review deadline"]);
+    let mut value = f.read("alarms/reader-test.json");
+    value["due"] = json!("2020-01-01T12:34:00.000Z");
+    f.write("state/alarms/reader-test.json", &value.to_string());
+}
+#[test]
+fn alarm_rejects_typos_and_out_of_range_deadlines_without_replacing_the_alarm() {
+    let f = alarm_fixture();
+    let utc =
+        borgchart::bus::time::format_utc(std::time::SystemTime::now() + Duration::from_secs(86400));
+    for when in ["1", "10080", &(utc[..16].to_owned() + "Z")] {
+        alarm(&f, &["alarm", "set", when, "valid"]);
+    }
+    for (when, note) in [
+        ("0", "note"),
+        ("10081", "note"),
+        ("garbage", "note"),
+        ("+1", "note"),
+        ("2020-01-01T00:00Z", "note"),
+        ("9999-01-01T00:00Z", "note"),
+        ("2026-02-31T00:00Z", "note"),
+        ("1", ""),
+        ("1", "  "),
+        ("1", &"é".repeat(101)),
+        ("1", "two\nlines"),
+        ("1", "tab\there"),
+    ] {
+        let out = f
+            .command(&["alarm", "set", when, note])
+            .env("BORGCHART_TEAM", "harbor-test/dev-test")
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "accepted {when:?}, {note:?}");
+    }
+    assert!(alarm(&f, &["alarm", "show"]).contains("valid"));
+}
+#[test]
+fn replacing_and_clearing_an_alarm_removes_the_previous_deadline() {
+    let f = alarm_fixture();
+    alarm(&f, &["alarm", "set", "1", "old"]);
+    alarm(&f, &["alarm", "set", "2", "replacement"]);
+    let shown = alarm(&f, &["alarm", "show"]);
+    assert!(shown.contains("replacement") && !shown.contains("old"));
+    alarm(&f, &["alarm", "clear"]);
+    assert!(!alarm(&f, &["alarm", "show"]).contains("replacement"));
+    alarm(&f, &["alarm", "clear"]);
+}
+#[test]
+fn overdue_alarm_survives_restart_and_never_fires_twice_or_early() {
+    for delivery in ["stored", "uncertain"] {
+        let f = alarm_fixture();
+        overdue(&f);
+        let mut later = f.read("alarms/reader-test.json");
+        later["member"] = json!("later-test");
+        later["due"] = json!("9999-01-01T00:00:00.000Z");
+        f.write("state/alarms/later-test.json", &later.to_string());
+        f.outcome(0, json!({"id":"m100", "delivery":delivery}));
+        for _ in 0..2 {
+            f.tick();
+        }
+        let sends = f.sends();
+        assert_eq!(sends.len(), 1);
+        let args = &sends[0];
+        assert_eq!(args[args.len() - 2], "harbor-test/dev-test/reader-test");
+        assert!(args.last().unwrap().contains("review deadline"));
+        assert!(!f.path("state/alarms/reader-test.json").exists());
+        assert!(f.path("state/alarms/later-test.json").exists());
+    }
+}
+#[test]
+fn failed_alarm_send_keeps_the_wake_and_health_recovers_after_retry() {
+    let f = alarm_fixture();
+    overdue(&f);
+    f.outcome(5, json!({"message":"cannot deliver"}));
+    f.tick();
+    assert!(f.path("state/alarms/reader-test.json").exists());
+    assert_eq!(f.read("health.json")["ok"], false);
+    assert!(
+        f.read("health.json")["detail"]
+            .as_str()
+            .unwrap()
+            .contains("cannot deliver")
+    );
+    f.outcome(0, json!({"id":"m100"}));
+    f.tick();
+    f.tick();
+    assert_eq!(f.sends().len(), 2);
+    assert_eq!(f.read("health.json")["ok"], true);
+}
+#[test]
+fn alarm_set_during_a_send_survives_and_does_not_wait_for_the_checks_lock() {
+    let f = alarm_fixture();
+    overdue(&f);
+    let script = fs::read_to_string(f.path("brg")).unwrap();
+    f.write(
+        "brg",
+        &script.replace(
+            "/bin/cat",
+            "while [ ! -f \"$BORGCHART_STATE_DIR/release\" ]; do /bin/sleep 0.01; done\n/bin/cat",
+        ),
+    );
+    let mut running = f.command(&["run", "--once"]).spawn().unwrap();
+    wait_for(&f.path("state/sends"));
+    let before = Instant::now();
+    alarm(&f, &["alarm", "set", "2", "new deadline"]);
+    let elapsed = before.elapsed();
+    f.write("state/release", "");
+    assert!(running.wait().unwrap().success());
+    assert!(elapsed < Duration::from_secs(2));
+    assert!(alarm(&f, &["alarm", "show"]).contains("new deadline"));
+    f.tick();
+    assert_eq!(f.sends().len(), 1);
+}
+#[test]
+fn missing_or_stale_heartbeat_refuses_to_arm_an_alarm_against_a_dead_process() {
+    let f = alarm_fixture();
+    for stamp in [None, Some("2020-01-01T00:00:00.000Z")] {
+        if let Some(at) = stamp {
+            f.write("state/health.json", &json!({"at":at}).to_string());
+        } else {
+            fs::remove_file(f.path("state/health.json")).unwrap();
+        }
+        let out = f
+            .command(&["alarm", "set", "1", "deadline"])
+            .env("BORGCHART_TEAM", "harbor-test")
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        assert!(!f.path("state/alarms/reader-test.json").exists());
+    }
+    f.tick();
+    alarm(&f, &["alarm", "set", "1", "live again"]);
+}
+
 #[test]
 fn restart_detects_one_change_without_replaying_baseline_or_output() {
     let f = Fixture::new();

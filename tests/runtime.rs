@@ -1957,6 +1957,46 @@ fn status_of(env: &Env, name: &str) -> serde_json::Value {
 }
 
 #[test]
+fn status_exposes_the_next_alarm_and_flags_it_after_two_minutes_overdue() {
+    let env = Env::new();
+    assert!(env.brg(&["start"]).status.success());
+    let path = format!(
+        "state/{}/plugins/pager/alarms/{}.json",
+        env.instance().unwrap(),
+        env.m("alpha")
+    );
+    let now = std::time::SystemTime::now();
+    for (due, overdue) in [
+        (now + Duration::from_secs(600), false),
+        (now - Duration::from_secs(60), false),
+        (now - Duration::from_secs(180), true),
+    ] {
+        let due = borgchart::bus::time::format_utc(due);
+        env.write(&path, &serde_json::json!({"due":due}).to_string());
+        let detail = status_of(&env, "alpha")["detail"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let prefix = if overdue {
+            "alarm overdue since"
+        } else {
+            "alarm"
+        };
+        assert!(
+            detail.contains(&format!("{prefix} {}Z", &due[11..16])),
+            "{detail}"
+        );
+    }
+    env.write(&path, "unreadable alarm");
+    assert!(
+        !status_of(&env, "alpha")["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("alarm")
+    );
+}
+
+#[test]
 fn codex_auto_trust_trusts_exactly_the_declared_folder_for_the_session() {
     // Catches: a Codex member with `auto_trust: true` sitting at its
     // folder-trust screen, or a folder other than its own trusted.

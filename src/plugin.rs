@@ -121,13 +121,16 @@ impl State {
             .unwrap_or_default()
     }
     pub fn lock(&self) -> io::Result<File> {
+        self.lock_named("plugin.lock")
+    }
+    pub fn lock_named(&self, name: &str) -> io::Result<File> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
             .mode(0o600)
-            .open(self.root.join("plugin.lock"))?;
+            .open(self.root.join(name))?;
         rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive)?;
         Ok(file)
     }

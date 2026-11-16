@@ -135,7 +135,13 @@ pub fn run(store: &plugin::State, once: bool) -> Result<(), String> {
                         .map_err(|_| "cannot save plugin state; check permissions")?;
                 }
             }
-            let detail = deliver(&mut state);
+            let mut detail = deliver(&mut state);
+            if let Err(error) = crate::alarm::fire(store) {
+                if !detail.is_empty() {
+                    detail.push_str("; ");
+                }
+                detail.push_str(&error);
+            }
             state
                 .save(store)
                 .and_then(|_| state.health(store, &detail))

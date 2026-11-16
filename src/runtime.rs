@@ -4094,6 +4094,32 @@ fn status_with_counts(
                 None => detail,
             });
         }
+        let alarm = v
+            .team
+            .plugins
+            .keys()
+            .filter_map(|name| {
+                let path = state
+                    .plugin_dir(name)
+                    .join("alarms")
+                    .join(format!("{id}.json"));
+                let value: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+                crate::bus::time::parse_utc(value["due"].as_str()?)
+            })
+            .min();
+        if let Some(due) = alarm {
+            let prefix = if due.elapsed().is_ok_and(|d| d > Duration::from_secs(120)) {
+                "alarm overdue since"
+            } else {
+                "alarm"
+            };
+            let detail = format!("{prefix} {}Z", &crate::bus::time::format_utc(due)[11..16]);
+            row.detail = Some(match row.detail.take() {
+                Some(other) => format!("{other}; {detail}"),
+                None => detail,
+            });
+        }
         row.expected_running = team_running && row.state == STOPPED && member.start;
         if let Err(error) = resolved {
             row.detail = Some(match row.detail.take() {

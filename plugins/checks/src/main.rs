@@ -1,6 +1,6 @@
 //! Run change-gated checks and read their evidence.
 use borgchart::plugin;
-use brg_checks::{config, run, state};
+use brg_checks::{alarm, config, run, state};
 use clap::{Parser, Subcommand, error::ErrorKind};
 use state::{Snapshot, one_line};
 
@@ -12,6 +12,11 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Action {
+    /// Set, show or clear your deadline alarm
+    Alarm {
+        #[command(subcommand)]
+        action: alarm::Action,
+    },
     /// Run checks, waiting 30 seconds between ticks
     Run {
         #[arg(long)]
@@ -25,6 +30,7 @@ enum Action {
 fn action(action: Action) -> Result<(), (i32, String)> {
     let store = plugin::State::from_env().map_err(|e| (1, e.to_string()))?;
     let (name, reason) = match action {
+        Action::Alarm { action } => return alarm::action(&store, action).map_err(|e| (1, e)),
         Action::Run { once } => return run::run(&store, once).map_err(|e| (1, e)),
         Action::Last { name } => (name, None),
         Action::Promote { name, reason } => (name, Some(reason)),
