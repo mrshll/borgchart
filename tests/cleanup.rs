@@ -293,3 +293,169 @@ fn cleanup_fails_and_keeps_a_worktree_git_cannot_check() {
     assert!(leaf.join(".git").is_file());
     env.ok(&["stop", &inst]);
 }
+
+/// Commit a content change through Git, retaining real reflogs.
+fn change(dir: &std::path::Path, file: &str, content: &str) {
+    fs::write(dir.join(file), content).unwrap();
+    git(dir, &["add", file]);
+    git(dir, &["commit", "-qm", "topic change"]);
+}
+
+fn squash_topic(lead: &std::path::Path, leaf: &std::path::Path) {
+    change(leaf, "one", "first\n");
+    change(leaf, "two", "second\n");
+    git(leaf, &["push", "-q", "origin", "HEAD:refs/heads/topic"]);
+    git(lead, &["merge", "--squash", "origin/topic"]);
+    git(lead, &["commit", "-qm", "squashed topic"]);
+    git(lead, &["push", "-q", "origin", "main"]);
+    git(lead, &["push", "-q", "origin", "--delete", "topic"]);
+    git(lead, &["fetch", "-q", "--prune", "origin"]);
+}
+
+#[test]
+fn cleanup_removes_squashed_work_after_remote_branch_deletion() {
+    let env = worktrees_env();
+    let inst = env.create("oncall", "work/a");
+    let (_, leaf) = left_clean(&env, &inst);
+    squash_topic(&env.path("work/a"), &leaf);
+    let out = env.ok(&["cleanup"]);
+    assert!(!leaf.exists(), "{}", both(&out));
+    env.ok(&["stop", &inst]);
+}
+
+#[test]
+fn delete_keeps_local_work_added_after_squash() {
+    let env = worktrees_env();
+    let inst = env.create("oncall", "work/a");
+    let id = helper(&env, &inst);
+    let leaf = env.worktree(&format!("{inst}/{id}"));
+    squash_topic(&env.path("work/a"), &leaf);
+    change(&leaf, "extra", "local work\n");
+    env.ok(&["stop", &format!("{inst}/{id}")]);
+    let out = env
+        .cmd(&["delete", &format!("{inst}/{id}")])
+        .output()
+        .unwrap();
+    assert!(leaf.exists(), "{}", both(&out));
+    assert_eq!(
+        fs::read_to_string(leaf.join("extra")).unwrap(),
+        "local work\n"
+    );
+    env.ok(&["stop", &inst]);
+}
+
+fn rewritten_work_is_removed(scenario: &str) {
+    let env = worktrees_env();
+    let inst = env.create("oncall", "work/a");
+    let (_, leaf) = left_clean(&env, &inst);
+    let lead = env.path("work/a");
+    change(&leaf, "topic", "work\n");
+    match scenario {
+        "amend" => {
+            fs::write(leaf.join("added"), "more work\n").unwrap();
+            git(&leaf, &["add", "added"]);
+            git(&leaf, &["commit", "--amend", "-qm", "replacement"]);
+        }
+        "rebase" => {
+            change(&lead, "upstream", "upstream\n");
+            git(&lead, &["push", "-q", "origin", "main"]);
+            git(&leaf, &["rebase", "origin/main"]);
+        }
+        "merge" => {
+            change(&lead, "upstream", "upstream\n");
+            git(&lead, &["push", "-q", "origin", "main"]);
+            git(&leaf, &["merge", "-qm", "first merge", "origin/main"]);
+            git(&leaf, &["reset", "--hard", "HEAD^"]);
+            git(&leaf, &["merge", "-qm", "replacement merge", "origin/main"]);
+        }
+        _ => unreachable!(),
+    }
+    git(&leaf, &["push", "-q", "origin", "HEAD:refs/heads/topic"]);
+    let out = env.ok(&["cleanup"]);
+    assert!(!leaf.exists(), "{scenario}: {}", both(&out));
+    env.ok(&["stop", &inst]);
+}
+
+#[test]
+fn cleanup_removes_amended_work_already_on_remote() {
+    rewritten_work_is_removed("amend");
+}
+
+#[test]
+fn cleanup_removes_rebased_work_already_on_remote() {
+    rewritten_work_is_removed("rebase");
+}
+
+#[test]
+fn cleanup_removes_redone_merge_already_on_remote() {
+    rewritten_work_is_removed("merge");
+}
+
+#[test]
+fn cleanup_keeps_abandoned_detached_work() {
+    let env = worktrees_env();
+    let inst = env.create("oncall", "work/a");
+    let (_, leaf) = left_clean(&env, &inst);
+    git(&leaf, &["checkout", "--detach"]);
+    change(&leaf, "unique", "detached work\n");
+    let commit = git(&leaf, &["rev-parse", "HEAD"]);
+    git(&leaf, &["checkout", "--detach", "origin/main"]);
+    env.ok(&["cleanup"]);
+    assert!(leaf.exists());
+    assert_eq!(
+        git(&leaf, &["show", &format!("{}:unique", commit.trim())]),
+        "detached work\n"
+    );
+    env.ok(&["stop", &inst]);
+}
+
+#[test]
+fn cleanup_keeps_unique_content_from_changed_amend() {
+    let env = worktrees_env();
+    let inst = env.create("oncall", "work/a");
+    let (_, leaf) = left_clean(&env, &inst);
+    change(&leaf, "README", "unique old work\n");
+    let commit = git(&leaf, &["rev-parse", "HEAD"]);
+    fs::write(leaf.join("README"), "replacement\n").unwrap();
+    git(&leaf, &["commit", "-qam", "replacement", "--amend"]);
+    git(&leaf, &["push", "-q", "origin", "HEAD:refs/heads/topic"]);
+    env.ok(&["cleanup"]);
+    assert!(leaf.exists());
+    assert_eq!(
+        git(&leaf, &["show", &format!("{}:README", commit.trim())]),
+        "unique old work\n"
+    );
+    env.ok(&["stop", &inst]);
+}
+
+#[test]
+fn cleanup_keeps_work_when_no_remote_can_account_for_it() {
+    let env = worktrees_env();
+    let inst = env.create("oncall", "work/a");
+    let (_, leaf) = left_clean(&env, &inst);
+    git(&leaf, &["remote", "remove", "origin"]);
+    env.ok(&["cleanup"]);
+    assert!(leaf.exists());
+    env.ok(&["stop", &inst]);
+}
+
+#[test]
+fn cleanup_does_not_run_repository_merge_drivers() {
+    let env = worktrees_env();
+    let inst = env.create("oncall", "work/a");
+    let (_, leaf) = left_clean(&env, &inst);
+    let lead = env.path("work/a");
+    change(&leaf, ".gitattributes", "README merge=unsafe\n");
+    change(&leaf, "README", "local\n");
+    change(&lead, "README", "remote\n");
+    git(&lead, &["push", "-q", "origin", "main"]);
+    git(
+        &leaf,
+        &["config", "merge.unsafe.driver", "touch driver-ran"],
+    );
+    env.ok(&["cleanup"]);
+    assert!(leaf.exists());
+    assert!(!leaf.join("driver-ran").exists());
+    assert!(!lead.join("driver-ran").exists());
+    env.ok(&["stop", &inst]);
+}
