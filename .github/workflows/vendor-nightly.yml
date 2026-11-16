@@ -1,0 +1,98 @@
+name: vendor-nightly
+on:
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+    inputs:
+      claude_version:
+        default: latest
+        type: string
+      codex_version:
+        default: latest
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: vendor-nightly
+  cancel-in-progress: false
+env:
+  CONTROL_CLAUDE: 2.1.325
+  CONTROL_CODEX: 0.169.0
+jobs:
+  latest:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    environment: vendor-nightly
+    env:
+      CLAUDE_VERSION: ${{ inputs.claude_version || 'latest' }}
+      CODEX_VERSION: ${{ inputs.codex_version || 'latest' }}
+    steps: &live
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - run: sudo apt-get update && sudo apt-get install -y tmux
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - run: cargo build --locked --workspace --bins
+      - name: Install native CLIs in a throwaway home
+        run: |
+          echo "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" >> "$GITHUB_ENV"
+          export HOME="$RUNNER_TEMP/home"
+          mkdir -p "$HOME" target/live
+          echo "HOME=$HOME" >> "$GITHUB_ENV"
+          echo "CLAUDE_CONFIG_DIR=$HOME/.claude" >> "$GITHUB_ENV"
+          echo "CODEX_HOME=$HOME/.codex" >> "$GITHUB_ENV"
+          echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          tools/vendor-nightly/install "${CLAUDE_VERSION:-$CONTROL_CLAUDE}" "${CODEX_VERSION:-$CONTROL_CODEX}"
+      - name: Seed API authentication
+        run: tools/vendor-nightly/seed
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      - run: codex sandbox -- true
+      - name: Full live matrix
+        run: cargo test --locked --test live live_matrix -- --ignored --nocapture --test-threads=1
+        env:
+          BORGCHART_LIVE: '1'
+          BORGCHART_LIVE_THROWAWAY: '1'
+          BORGCHART_LIVE_CODEX_MODEL: gpt-6.1-terra low
+      - name: Scrub before uploading
+        id: scrub
+        if: always()
+        run: tools/vendor-nightly/seed --scrub target/live
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.scrub.outcome == 'success'
+        with:
+          name: ${{ github.job }}
+          path: target/live
+          retention-days: 7
+  control:
+    needs: latest
+    if: failure() && needs.latest.result == 'failure'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    environment: vendor-nightly
+    steps: *live
+  report:
+    permissions: {contents: read, issues: write}
+    needs: [latest, control]
+    if: always()
+    runs-on: ubuntu-24.04
+    environment: vendor-nightly
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          path: evidence
+      - run: python3 tools/vendor-nightly/report evidence/latest evidence/control "$LATEST_RESULT" "$CONTROL_RESULT"
+        env:
+          LATEST_RESULT: ${{ needs.latest.result }}
+          CONTROL_RESULT: ${{ needs.control.result }}
+          GH_TOKEN: ${{ github.token }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

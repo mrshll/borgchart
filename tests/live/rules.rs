@@ -39,10 +39,21 @@ pub const REQUIRED: &[(&str, Who)] = &[
     ("claude-wake-matrix", Who::Claude),
 ];
 
-/// The Claude `auto_trust`-on case answers Claude's trust dialog, which
-/// saves trust to your Claude config, so it doesn't run. Flip this to run
-/// it.
-pub const RUN_CLAUDE_TRUST_ON: bool = false;
+type Homes = [Option<PathBuf>; 3];
+/// Throwaway HOME and optional configuration homes; temp must be canonical.
+pub fn throwaway(value: Option<&str>, homes: &Homes, temp: &Path) -> Result<bool, String> {
+    let inside = |h: PathBuf| h != temp && h.starts_with(temp);
+    let mut paths = homes.iter().flatten();
+    let valid = homes[0].is_some() && paths.all(|h| h.canonicalize().is_ok_and(inside));
+    if value == Some("1") && !valid {
+        return Err("Use throwaway configuration homes under the system temp directory".into());
+    }
+    Ok(value == Some("1"))
+}
+
+pub fn codex_model(value: Option<&str>) -> &str {
+    value.unwrap_or("gpt-6.1-terra low")
+}
 
 /// With `auto_trust: false`, `brg status` reports the member waiting at
 /// folder trust with a `brg attach` hint (`*-trust-status`, #54).
@@ -266,6 +277,33 @@ mod tests {
     }
 
     const BOTH: &[Who] = &[Who::Claude, Who::Codex];
+
+    #[test]
+    fn throwaway_switch_refuses_real_or_escaped_configuration_homes() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let home = root.join("home");
+        std::fs::create_dir(&home).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let link = root.join("escape");
+        std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+        let mut homes = [Some(home.clone()), None, None];
+        assert_eq!(throwaway(None, &homes, &root), Ok(false));
+        assert_eq!(throwaway(Some("1"), &homes, &root), Ok(true));
+        for index in 0..3 {
+            for bad in [&root, &link] {
+                homes[index] = Some(bad.to_path_buf());
+                assert!(throwaway(Some("1"), &homes, &root).is_err());
+            }
+            homes[index] = Some(home.clone());
+        }
+    }
+
+    #[test]
+    fn queue_model_override_keeps_default_when_unset() {
+        assert_eq!(codex_model(None), "gpt-6.1-terra low");
+        assert_eq!(codex_model(Some("test-model low")), "test-model low");
+    }
 
     #[test]
     fn only_a_complete_live_run_of_passes_qualifies() {

@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use borgchart::rules::State;
 
-use super::rules::{CHECK_STATUS_TRUST_DETAIL, Outcome, RUN_CLAUDE_TRUST_ON, Who};
+use super::rules::{CHECK_STATUS_TRUST_DETAIL, Outcome, Who};
 use super::world::{self, World, limited, limited_with_stdin};
 
 const POLL: Duration = Duration::from_millis(300);
@@ -420,7 +420,16 @@ pub fn claude_trust(w: &World, on: bool) -> Vec<(String, Outcome)> {
 }
 
 fn claude_trust_case(w: &World, on: bool, id: &str, status: &mut Outcome) -> Outcome {
-    if on && !RUN_CLAUDE_TRUST_ON {
+    let enabled = match super::rules::throwaway(
+        std::env::var("BORGCHART_LIVE_THROWAWAY").ok().as_deref(),
+        &["HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME"]
+            .map(|k| std::env::var_os(k).map(PathBuf::from)),
+        &std::env::temp_dir().canonicalize().unwrap(),
+    ) {
+        Ok(enabled) => enabled,
+        Err(why) => return Outcome::Blocked(why),
+    };
+    if on && !enabled {
         return Outcome::Skip("would save trust to your Claude config".into());
     }
     let folder = fresh_dir(&w.scratch, w, "untrusted");
