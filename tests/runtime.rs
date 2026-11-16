@@ -1873,6 +1873,63 @@ fn folder_trust_is_accepted_for_a_locked_members_folder_by_default() {
 }
 
 #[test]
+fn folder_trust_is_accepted_when_the_dialog_drops_the_first_key() {
+    // Claude draws its trust dialog before it reads keys, and drops a key
+    // pressed that early.
+    let env = trust_env("");
+    fs::write(env.path("home/fake-agent/trust-drops-keys"), "").unwrap();
+    let out = env.brg(&["start"]);
+    assert!(
+        stdout(&out).contains("started; accepted folder trust for"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(
+        env.events("alpha")
+            .iter()
+            .any(|e| e["event"] == "trust-accepted")
+    );
+}
+
+#[test]
+fn folder_trust_with_slow_keys_is_accepted_and_never_declined() {
+    // Each key takes longer than brg waits to read the dialog again, so
+    // brg presses a second time before the first one shows.
+    let env = trust_env("");
+    fs::write(env.path("home/fake-agent/trust-delays-keys"), "").unwrap();
+    let out = env.brg(&["start"]);
+    let events: Vec<_> = env
+        .events("alpha")
+        .into_iter()
+        .filter_map(|e| e["event"].as_str().map(str::to_string))
+        .filter(|e| e.starts_with("trust-"))
+        .collect();
+    assert_eq!(events, ["trust-accepted"], "{}", stdout(&out));
+}
+
+#[test]
+fn folder_trust_that_never_takes_a_key_is_left_for_a_person() {
+    let env = trust_env("");
+    fs::write(env.path("home/fake-agent/trust-drops-keys"), "1000").unwrap();
+    let out = env
+        .brg_cmd(&["start"])
+        .env("BORGCHART_GATE_WAIT_MS", "1500")
+        .output()
+        .unwrap();
+    assert!(
+        stdout(&out).contains("so it was left for you"),
+        "{}",
+        stdout(&out)
+    );
+    // Enter was never pressed, so the dialog neither accepted nor declined.
+    assert!(
+        !env.events("alpha")
+            .iter()
+            .any(|e| e["event"].as_str().unwrap_or("").starts_with("trust-"))
+    );
+}
+
+#[test]
 fn folder_trust_is_left_alone_when_turned_off() {
     {
         let env = trust_env("auto_trust: false\n");

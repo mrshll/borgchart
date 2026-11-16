@@ -1210,13 +1210,20 @@ fn start_members(
                     }
                 }
                 let t = pane.as_str();
-                tmux.ok(&["send-keys", "-t", t, "Down"])?;
+                // End selects the last choice, "Yes", however often it is
+                // pressed: Down wraps back to "No".
+                tmux.ok(&["send-keys", "-t", t, "End"])?;
                 std::thread::sleep(Duration::from_millis(250));
                 let after = tmux.capture(&session, id);
-                if tmux.pane_in_mode(t) != Some(false)
-                    || !(has_line(&after, TRUST_YES_SELECTED)
-                        && trust_dialog_path(&after).as_deref() == s.trust_dir.as_deref())
-                {
+                let same = tmux.pane_in_mode(t) == Some(false)
+                    && trust_dialog_path(&after).as_deref() == s.trust_dir.as_deref();
+                // Claude draws the dialog before it reads keys and drops a
+                // key pressed that early: while "No" is still highlighted,
+                // press End again on the next round.
+                if same && has_line(&after, TRUST_NO_SELECTED) && Instant::now() < deadline {
+                    continue;
+                }
+                if !(same && has_line(&after, TRUST_YES_SELECTED)) {
                     append(
                         &mut outcomes,
                         id,
@@ -5684,6 +5691,17 @@ mod tests {
             None
         );
         assert_eq!(trust_dialog_path("no dialog here\n"), None);
+    }
+
+    #[test]
+    fn the_trust_dialogs_highlighted_choice_is_read_from_real_screens() {
+        // Claude Code 2.1.325 draws its trust dialog exactly as
+        // claude-trust.txt, then as claude-2.1.325-trust-yes.txt after End.
+        let no = include_str!("../tests/fixtures/screens/claude-trust.txt");
+        let yes = include_str!("../tests/fixtures/screens/claude-2.1.325-trust-yes.txt");
+        assert!(has_line(no, TRUST_NO_SELECTED) && !has_line(no, TRUST_YES_SELECTED));
+        assert!(has_line(yes, TRUST_YES_SELECTED) && !has_line(yes, TRUST_NO_SELECTED));
+        assert_eq!(trust_dialog_path(yes), trust_dialog_path(no));
     }
 
     #[test]

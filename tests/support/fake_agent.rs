@@ -45,6 +45,9 @@ struct Agent {
     lines: Vec<String>,
     input: String,
     trust_choice: usize,
+    /// Arrow keys the trust screen still drops, as Claude drops keys
+    /// pressed just after it draws that screen.
+    trust_dropped_keys: usize,
     start_hooks: Vec<String>,
 }
 
@@ -595,6 +598,14 @@ fn main() {
         lines: Vec::new(),
         input: String::new(),
         trust_choice: if flag("trust-yes") { 1 } else { 0 },
+        // The file holds how many keys to drop; empty drops one.
+        trust_dropped_keys: fs::read_to_string(
+            PathBuf::from(&home)
+                .join("fake-agent")
+                .join("trust-drops-keys"),
+        )
+        .map(|n| n.trim().parse().unwrap_or(1))
+        .unwrap_or(0),
         start_hooks,
     };
     agent.draw();
@@ -663,20 +674,32 @@ fn main() {
                 agent.draw();
                 continue;
             }
-            if pending.starts_with(b"\x1b[B") || pending.starts_with(b"\x1b[A") {
-                let down = pending[2] == b'B';
-                pending.drain(..3);
-                if agent.mode == Mode::Trust {
-                    agent.trust_choice = if down { 1 } else { 0 };
+            // Up and Down move round Claude's two trust choices, wrapping;
+            // End (as tmux sends it) selects the last, "Yes".
+            let key = [&b"\x1b[B"[..], b"\x1b[A", b"\x1b[4~"]
+                .into_iter()
+                .find(|k| pending.starts_with(k));
+            if let Some(key) = key {
+                let end = key.len() == 4;
+                pending.drain(..key.len());
+                if agent.mode == Mode::Trust && agent.trust_dropped_keys > 0 {
+                    agent.trust_dropped_keys -= 1;
+                } else if agent.mode == Mode::Trust {
+                    if flag("trust-delays-keys") {
+                        std::thread::sleep(Duration::from_millis(350));
+                    }
+                    agent.trust_choice = if end { 1 } else { 1 - agent.trust_choice };
                     agent.draw();
                 }
                 continue;
             }
             if pending[0] == 0x1b
                 && pending.len() < 6
-                && (b"\x1b[200~".starts_with(&pending) || b"\x1b[201~".starts_with(&pending))
+                && (b"\x1b[200~".starts_with(&pending)
+                    || b"\x1b[201~".starts_with(&pending)
+                    || b"\x1b[4~".starts_with(&pending))
             {
-                break; // wait for the rest of a paste marker
+                break; // wait for the rest of a paste marker or End
             }
             let b = pending.remove(0);
             if in_paste {
