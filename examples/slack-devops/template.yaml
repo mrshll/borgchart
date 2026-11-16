@@ -1,5 +1,5 @@
 # A triager reads new posts and replies from one channel, then promotes the
-# ones that need a lead. Both are locked and run only granted Slack actions.
+# ones that need a lead. Both are restricted and run only granted Slack actions.
 default: claude
 
 plugins:
@@ -19,11 +19,9 @@ roles:
   triager:
     prompt: triager.md
     parent: lead
-    posture: locked
-    untrusted_input: true
+    restricted_access: true
     plugins: {slack: [read, thread, promote]}
   lead:
     prompt: lead.md
-    posture: locked
-    untrusted_input: true
+    restricted_access: true
     plugins: {slack: [read, thread, reply]}

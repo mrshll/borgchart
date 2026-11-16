@@ -49,16 +49,14 @@ roles:
     parent: lead                # optional; another role
     start: true                 # optional; false = its member is made with `brg create <team>/triager`
     max: 1                      # optional; limit on kept members, running or stopped (default 1)
-    posture: locked             # optional: vendor (default) | locked
+    restricted_access: true     # only its granted plugin commands may run
     worktree: false             # optional: true = each member gets its own git worktree
     remote_control: false       # optional: start Claude Remote Control, named by its full address
     args: []                    # optional: extra vendor launch arguments
-    untrusted_input: true       # it reads text from outside (a channel, an inbox)
     plugins: {slackbot: [read, escalate]}
   lead:
     prompt: lead.md
-    posture: locked
-    untrusted_input: true
+    restricted_access: true
     plugins: {slackbot: [read, reply]}
 ```
 
@@ -66,9 +64,9 @@ roles:
 
 The role's identity is its key under `roles:`. `brg delete <team>/<member>` removes a stopped member; its ID stays issued and is never reused. A later `create <team>/<role>` gets a fresh ID.
 
-**Messages.** Every team has a bus. `msg send TARGET TEXT` records work, then queues it for Codex or may type it for Claude; ordinary recipients explicitly ack; a Claude member uses one `msg wait`, and a Codex member gets new messages queued as its next turn. `status` shows ordinary unacked counts. Omit `bus` unless configuring a real `bus: {alert: {plugin: notify, action: alert}}` action; automatic alert dispatch is not wired. Locked recipients have immutable no-ack-required history, no inbox recovery and no new grants. See [the bus](bus.md).
+**Messages.** Every team has a bus. `msg send TARGET TEXT` records work, then queues it for Codex or may type it for Claude; ordinary recipients explicitly ack; a Claude member uses one `msg wait`, and a Codex member gets new messages queued as its next turn. `status` shows ordinary unacked counts. Omit `bus` unless configuring a real `bus: {alert: {plugin: notify, action: alert}}` action; automatic alert dispatch is not wired. Restricted recipients have immutable no-ack-required history, no inbox recovery and no new grants. See [the bus](bus.md).
 
-**`interactive`.** An agent role's boolean, default false, applies to every member and is frozen at start. True means brg never pastes or presses Enter, even with `msg send --allow-unknown`: a Claude member is inbox-only. Every Codex member gets each message through `codex queue` as its next turn, so for Codex this setting only describes what a person sharing the session sees; it does not change delivery. Use it for a lead whose session a person shares; remote-session users may leave it false. It is invalid with `posture: locked` or on a nested `template:` role. The bundled dev-team lead is interactive; helpers keep the false default.
+**`interactive`.** An agent role's boolean, default false, applies to every member and is frozen at start. True means brg never pastes or presses Enter, even with `msg send --allow-unknown`: a Claude member is inbox-only. Every Codex member gets each message through `codex queue` as its next turn, so for Codex this setting only describes what a person sharing the session sees; it does not change delivery. Use it for a lead whose session a person shares; remote-session users may leave it false. It is invalid with `restricted_access: true` or on a nested `template:` role. The bundled dev-team lead is interactive; helpers keep the false default.
 
 **`remote_control`.** An agent role's boolean, default false; Claude-only and requires your claude.ai login (`auth: login`, not `auth: api_key`); on Team and Enterprise plans an Owner must first enable Remote Control in Claude Code's admin settings, and it isn't available through Bedrock, Google Cloud, Foundry or a custom `ANTHROPIC_BASE_URL`, where the member runs without a remote session or link. True adds `--remote-control <team>/<member>` on fresh starts and resumes, naming the session by its full member address at [claude.ai/code](https://claude.ai/code) and in the Claude app under Code. On first use, if a member shows `blocked` at a Remote Control consent dialog, attach and accept it once, or run `/remote-control` in any Claude session of yours first. `brg status` and `status -w` link a running Claude member's name on a terminal, including sessions enabled by hand, and `status --json` gives `remote_control_url` when known: the address comes from an undocumented field in Claude Code's own session file under `<CLAUDE_CONFIG_DIR or ~/.claude>/sessions/`, matched by the member's recorded session; missing or changed data leaves the name plain and the JSON field absent (checked on Claude Code 2.1.322). Remote prompts arrive over Claude Code's own connection, not the terminal, so they shouldn't disturb the guarded wake's input-box checks; at worst a reminder queues behind a remote turn.
 
@@ -82,7 +80,7 @@ roles:
   dev: {template: dev, parent: lead, start: false, max: 2, worktree: true}
 ```
 
-A team role accepts only `template`, `parent`, `start`, `max` and `worktree`. Agent options, including `prompt`, `vendor`, `posture`, `plugins`, `connectors`, `interactive` and `args`, are errors even when empty or false. `start` must be false or absent: `create <team>/dev` makes a stopped child team (and its worktree), which the parent starts with `start <team>/<child-team>`.
+A team role accepts only `template`, `parent`, `start`, `max` and `worktree`. Agent options, including `prompt`, `vendor`, `restricted_access`, `plugins`, `connectors`, `interactive` and `args`, are errors even when empty or false. `start` must be false or absent: `create <team>/dev` makes a stopped child team (and its worktree), which the parent starts with `start <team>/<child-team>`.
 
 `template` is a template name, resolved through the configured `templates` directories exactly like `brg create <name>`. Missing and ambiguous names are refused; path forms and the old nested template form are not supported. `max` defaults to 1 and must be at least 1. Each runtime tree shares one message store at its root. `validate` checks referenced templates recursively and reports their errors at their own files. A template may not contain itself, directly or indirectly, as judged by resolved folders. Creation and a child team's full start also check its recorded ancestors, including after a template-folder move.
 
@@ -92,11 +90,11 @@ New child teams resolve template names through the current catalog. Each child t
 
 **`env`.** A map of names: `{A: , B: value, C: {from: "fake://token"}}`. A name without a value reads the start environment; `{from: "<reference>"}` uses the configured secrets resolver and never falls back to the environment. References must be non-empty with no control characters or single quote. `brg secrets <template>` lists each secret's source (`resolver` or `environment`) without values or references.
 
-**`worktree`.** Members work in the team's working folder (a `locked` Codex member: in its temp folder). With `worktree: true`, each member, or each child team of a team role, gets its own git worktree from the team's folder instead: brg adds it when it issues the member (`create`, or a full `start` that gives a `start: true` role a new member), detached at the folder's `HEAD`, or on a new branch with `create <team>/<role> --branch <name>`. The folder must be in a git repository with a commit. The worktree lives beside brg's state folder, at `<state>-worktrees/<address>` (`~/.local/state/borgchart-worktrees/` by default, with the address's `/` written as `.`); the command that adds it names it, and `status --json` gives it as `worktree`. Starting an existing member never adds one; if it is gone, the start is refused. `delete` removes it with `git worktree remove` when it is clean; it refuses while the worktree holds uncommitted or untracked changes or commits on no remote, and `--force` deletes the member but leaves the worktree as it is. A child team of a team role without `worktree: true` works in its parent's folder.
+**`worktree`.** Members work in the team's working folder (a restricted Codex member: in its temp folder). With `worktree: true`, each member, or each child team of a team role, gets its own git worktree from the team's folder instead: brg adds it when it issues the member (`create`, or a full `start` that gives a `start: true` role a new member), detached at the folder's `HEAD`, or on a new branch with `create <team>/<role> --branch <name>`. The folder must be in a git repository with a commit. The worktree lives beside brg's state folder, at `<state>-worktrees/<address>` (`~/.local/state/borgchart-worktrees/` by default, with the address's `/` written as `.`); the command that adds it names it, and `status --json` gives it as `worktree`. Starting an existing member never adds one; if it is gone, the start is refused. `delete` removes it with `git worktree remove` when it is clean; it refuses while the worktree holds uncommitted or untracked changes or commits on no remote, and `--force` deletes the member but leaves the worktree as it is. A child team of a team role without `worktree: true` works in its parent's folder.
 
 For a tree rooted in a plain folder of clones, `create <team>/<role> --repo <name>` selects a clone directly in the tree's top folder for a `worktree: true` role. The name must be one child directory name: no paths, symlinks, linked worktrees (`.git` files), bare repositories or symlinked `.git` directories. brg queries `origin` for its default branch and fetches it before taking the registry lock, then starts at the fetched tip, detached or on `--branch <name>`. Missing origin, unavailable credentials or a failed fetch refuse creation before issuing anything. The clone's checked-out branch, index and working files stay as they are. Without `--repo`, the start remains the working folder's `HEAD`; an implementer inside a child team inherits that child team's committed work. Use one child team per repository; the root lead sequences them. Repository selection is a creation option, never a template-file field or stored setting. Deletion, cleanup and destroy find ownership through the original repository and real child clones' own worktree records; ambiguous ownership is refused.
 
-**`args`.** Extra vendor launch arguments. Treat them as trusted, like the rest of the template: they can widen an agent's permissions. A `-c check_for_update_on_startup=…` (Codex) overrides brg's default of turning the update check off, so an unattended member doesn't stop at Codex's "Update available" prompt; `--add-dir` (Claude) replaces the folders brg adds, and a `-c projects…` replaces brg's Codex trust. Custom Codex vendor-posture permission overrides (`-s`/`--sandbox`, `-a`/`--ask-for-approval`, or equivalent modes) are unsupported; brg supplies full access and no approvals.
+**`args`.** Extra vendor launch arguments. Treat them as trusted, like the rest of the template: they can widen an agent's permissions. A `-c check_for_update_on_startup=…` (Codex) overrides brg's default of turning the update check off, so an unattended member doesn't stop at Codex's "Update available" prompt; `--add-dir` (Claude) replaces the folders brg adds, and a `-c projects…` replaces brg's Codex trust. Custom Codex unrestricted permission overrides (`-s`/`--sandbox`, `-a`/`--ask-for-approval`, or equivalent modes) are unsupported; brg supplies full access and no approvals.
 
 ## Role files
 
@@ -121,7 +119,7 @@ You read each new message in the channel and decide whether it needs the lead.
   - Only the member's own vendor needs an entry; without one, the vendor's default model is used (with a warning).
   - Every supplied vendor pin is checked, including the other vendor's pin.
   - Model names are passed to the vendor unchanged.
-- **Create-time choices:** `brg create <team>/<agent-role> --set vendor=codex,model=example-model,effort=medium` replaces only the keys given. A child team takes role-prefixed keys, such as `--set lead.vendor=codex`. A vendor-only choice selects its pin; model alone keeps the pin's effort; effort alone keeps the model. Vendor changes on roles with `args`, non-empty `connectors` or `remote_control` are refused. `posture: locked` and `connectors: []` work on either vendor.
+- **Create-time choices:** `brg create <team>/<agent-role> --set vendor=codex,model=example-model,effort=medium` replaces only the keys given. A child team takes role-prefixed keys, such as `--set lead.vendor=codex`. A vendor-only choice selects its pin; model alone keeps the pin's effort; effort alone keeps the model. Vendor changes on roles with `args`, non-empty `connectors` or `remote_control` are refused. `restricted_access: true` and `connectors: []` work on either vendor.
   - `team.json` stores only explicit keys: an optional `overrides` object on an issued member, or a map from role to overrides on a child team's record. Empty choices are omitted. Start, resume and status resolve the template, then team choices, then member choices, key by key. Edits to pins apply on the next start unless that key was explicitly chosen. An invalid stored choice refuses the affected start and names the member or child team to delete and create again; unrelated starts and creates still work. Status retains the rows with the refusal in `detail`, the recorded vendor if any (null for an uncreated role), null model and effort, and the explicit `overrides`.
 - **The body** is the member's standing instruction, sent as its opening prompt.
 - **Includes:** a line that is exactly `{{includes/<stem>}}` is replaced by `<includes>/<stem>.md`. Includes are one level deep: an included file can't include another.
@@ -159,7 +157,7 @@ A plugin is a plain script or program, in any language, that members run themsel
   - It may write `health.json` (`{"ok": true, "at": "<UTC time>", "detail": "…"}`) in its state directory, which `brg status` shows.
 - **`actions`:** named command lines.
   - **The prompt:** granted lines appear in the member's opening prompt under "Commands you can run".
-  - **The allow-list:** in `locked` posture, the literal words before the first placeholder are what the member may run (`slackbot escalate <ts> …` allows `slackbot escalate` with plain arguments).
+  - **The allow-list:** with restricted access, the literal words before the first placeholder are what the member may run (`slackbot escalate <ts> …` allows `slackbot escalate` with plain arguments).
   - **Placeholders** such as `<ts>` are documentation. The agent fills them in its own shell, so scripts must validate their arguments.
   - **The command** (the first word) must be an executable in the plugin directory.
 - **`command`:** for a plugin without actions, the script whose `--help` output stands in for action lines.
@@ -167,33 +165,32 @@ A plugin is a plain script or program, in any language, that members run themsel
   - brg puts a shim for each granted command first on the member's `PATH`, and the prompt lists the shim by absolute path.
   - The shim loads the plugin's secrets from a private file and runs the real script, so the agent's own environment never holds them.
 
-## Postures
+## Restricted access
 
-How much a member may do is set per role, in `template.yaml`.
+How much a member may do is set per role, in `template.yaml`. Omit `restricted_access`, or set it to `false`, for unrestricted access; set `restricted_access: true` to restrict the member.
 
-- **`vendor`** (default): the agent uses your settings and MCP connectors, with these permission rules:
-  - **Codex:** brg passes `--sandbox danger-full-access --ask-for-approval never`. Shell commands have full host access and run without tool approvals. This also applies to vendor-posture researchers using `--search`. Folder trust is separate: `auto_trust: true` supplies session-only trust; otherwise an untrusted folder can still stop at its trust dialog.
+- **Unrestricted** (default): the agent uses your settings and MCP connectors, with these permission rules:
+  - **Codex:** brg passes `--sandbox danger-full-access --ask-for-approval never`. Shell commands have full host access and run without tool approvals. This also applies to unrestricted researchers using `--search`. Folder trust is separate: `auto_trust: true` supplies session-only trust; otherwise an untrusted folder can still stop at its trust dialog.
   - **Claude:** brg leaves the vendor's permission settings unchanged. If it stops at an approval prompt, `brg status` shows it `blocked` and you attach to answer.
   - These launch settings do not authorize work beyond the owner's task or change the team's review and merge rules.
-- **`locked`:** for members that read untrusted input.
+- **`restricted_access: true`:** for members that read untrusted input.
   - The only tool calls allowed are the member's granted action lines, with plain arguments. That is enforced by brg's own pre-tool-use gate on both Claude and Codex, plus each vendor's no-prompt mode.
   - Everything else is denied without asking: other tools, shell metacharacters, expansions, redirects.
-- **`untrusted_input: true`** marks a member that reads text from outside. Such a member must be `locked` unless it also says `accept_risk: true`.
 
-**What `locked` does and doesn't do.** The gate is the barrier: it decides every tool call.
-- **Claude:** `locked` has no sandbox. Granted plugin commands run with your full rights.
-- **Codex:** `locked` keeps network on, and Codex's sandbox lets commands read any file. Writes are limited to the granted plugins' data directories, the member's temp directory and its working directory. A `locked` Codex member without `worktree: true` starts in its temp directory. It never gets the team's messages or notes, and its folder can't overlap the template folder. Plugin programs that need to write elsewhere, such as `uv` writing its cache, fail inside the sandbox; give such a plugin a program that doesn't (e.g. plain `python3` for a standard-library script). brg doesn't move caches into member-writable directories, because a member could then plant code there.
-- **Plugin sends from locked Codex:** the action queues the request in the member's temp directory and prints `queued; brg sends it when the command returns`. brg's session-only PostToolUse hook opens the queue once and sends outside the sandbox, as that member, to its parent only. Granted plugin programs can queue text for that parent under the bus's normal limits. The hook removes permanent refusals and reports failures as extra context. If brg cannot start, the send stays queued and is only retried at the next tool call, which may be the member's next wake; uncertain sends need inspection before retrying. Claude sends directly.
-- **The tmux socket:** brg's tmux socket is a full capability. Anything that can reach it can type into, read or stop any member. That is why `locked` members get no general shell.
-- **Fail closed:** if a `locked` member's gate doesn't report in when it starts, it is stopped, or (behind Claude's folder-trust prompt) gets no input until the gate does report in.
+**What restricted access does and doesn't do.** The gate is the barrier: it decides every tool call.
+- **Claude:** restricted access has no sandbox. Granted plugin commands run with your full rights.
+- **Codex:** restricted access keeps network on, and Codex's sandbox lets commands read any file. Writes are limited to the granted plugins' data directories, the member's temp directory and its working directory. A restricted Codex member without `worktree: true` starts in its temp directory. It never gets the team's messages or notes, and its folder can't overlap the template folder. Plugin programs that need to write elsewhere, such as `uv` writing its cache, fail inside the sandbox; give such a plugin a program that doesn't (e.g. plain `python3` for a standard-library script). brg doesn't move caches into member-writable directories, because a member could then plant code there.
+- **Plugin sends from restricted Codex:** the action queues the request in the member's temp directory and prints `queued; brg sends it when the command returns`. brg's session-only PostToolUse hook opens the queue once and sends outside the sandbox, as that member, to its parent only. Granted plugin programs can queue text for that parent under the bus's normal limits. The hook removes permanent refusals and reports failures as extra context. If brg cannot start, the send stays queued and is only retried at the next tool call, which may be the member's next wake; uncertain sends need inspection before retrying. Claude sends directly.
+- **The tmux socket:** brg's tmux socket is a full capability. Anything that can reach it can type into, read or stop any member. That is why restricted members get no general shell.
+- **Fail closed:** if a restricted member's gate doesn't report in when it starts, it is stopped, or (behind Claude's folder-trust prompt) gets no input until the gate does report in.
 
-**What `brg validate` warns about.** A `vendor`-posture member that:
+**What `brg validate` warns about.** An unrestricted member that:
 
 - receives work from a plugin process (a `delivers_to` target);
 - is the parent of such a member;
 - or is granted a plugin that runs a process.
 
-**Safety depends on posture.** In `vendor` posture, an agent that reads untrusted text can be steered into anything its vendor mode allows, including acting as you through your connectors.
+**Safety depends on access.** Without restricted access, an agent that reads untrusted text can be steered into anything its vendor mode allows, including acting as you through your connectors.
 
 ## Connectors
 
@@ -203,15 +200,15 @@ A member can use MCP connections you've already set up in its vendor CLI, such a
 roles:
   helper:
     prompt: helper.md
-    connectors: [Example Mail]                    # vendor posture: server names
+    connectors: [Example Mail]                    # unrestricted: server names
   reader:
     prompt: reader.md
-    posture: locked
-    connectors: {Example Mail: [search, read]}    # locked posture: allowed tools
+    restricted_access: true
+    connectors: {Example Mail: [search, read]}    # restricted: allowed tools
 ```
 
 - **Names:** use server names exactly as `claude mcp list` / `codex mcp list` print them.
-- **No connectors:** `connectors: []` starts with no MCP servers on either vendor, in either posture. Claude gets `--strict-mcp-config`. Codex gets `--disable apps --disable plugins` and an `enabled=false` override for every configured server, listed with `codex mcp list --json` in the member's folder and environment. If that bounded listing fails, that member is not started; fix the listing and retry. Codex server names must contain only ASCII letters, digits, `_` or `-`; other names prevent that member from starting, so rename them in Codex's config or drop `connectors: []`. With `connectors` absent, vendor settings apply; a locked Claude member without connectors still disables MCP, while locked Codex loads its configured servers and its gate denies their tools.
+- **No connectors:** `connectors: []` starts with no MCP servers on either vendor, with or without restricted access. Claude gets `--strict-mcp-config`. Codex gets `--disable apps --disable plugins` and an `enabled=false` override for every configured server, listed with `codex mcp list --json` in the member's folder and environment. If that bounded listing fails, that member is not started; fix the listing and retry. Codex server names must contain only ASCII letters, digits, `_` or `-`; other names prevent that member from starting, so rename them in Codex's config or drop `connectors: []`. With `connectors` absent, vendor settings apply; a restricted Claude member without connectors still disables MCP, while restricted Codex loads its configured servers and its gate denies their tools.
 - **Acting as you:** connector actions act as **you**, not as a bot. A connector that reads mail or messages is untrusted input.
 - **Auth:** Claude's own connectors need your login, so `auth: api_key` can't be used with members that declare them.
 - **Probing:** `brg validate --probe` asks each vendor CLI which servers are configured (`claude mcp list`, `codex mcp list --json`, run in the template folder), and warns about missing names. An empty connector list expects nothing and is skipped. Claude's listing health-checks, and so starts, your MCP servers; its list is parsed from text output and may need updating across versions. Codex's listing doesn't start stdio servers, but contacts HTTP servers to check their sign-in status; each unresponsive HTTP server can add a few seconds. Probing can't check which account a connector acts as, or its scopes.
@@ -225,7 +222,7 @@ brg's configuration is `~/.config/borgchart/config.yaml`, or the file `$BORGCHAR
 ```yaml
 schema: 1
 auth: login                   # login (default) | api_key, for every member
-auto_trust: true              # trust each member's folder without a person (Claude default: locked members only)
+auto_trust: true              # trust each member's folder without a person (Claude default: restricted members only)
 templates:                    # where template names are looked up, each a folder of templates
   - ~/.config/borgchart/templates # the default
 plugins_dir: ~/borgchart-plugins   # where shared:<name> plugins live
@@ -241,9 +238,9 @@ secrets: {resolver: [example-secrets, run, "--env-file={file}", "--"]}
 - **`auth: login`:** brg passes no API-key variables, so a stray key in your shell can't replace your login.
 - **`auth: api_key`:** brg passes each member its own vendor's key by name: `ANTHROPIC_API_KEY` to Claude members, `OPENAI_API_KEY` to Codex members, from the environment `create` or `start` runs in. Nothing stores the key.
 - **`auto_trust`:** trusts each member's folder (the team's working folder, or its own worktree), so the member doesn't stop at its vendor's folder-trust screen. Choosing the folder at `create` is your consent. Each trust is printed and shown in `brg status --json` (`trust_accepted`). Set `auto_trust: false` to attach and answer the screen yourself; `brg status` shows such a member as `blocked (folder trust)` with the `brg attach` command.
-  - **Claude:** brg answers Claude's folder-trust dialog for exactly that folder by sending keys through tmux. It acts only on the plain trust screen showing that folder; it never answers any other dialog. While the member's pane is in tmux copy mode, it sends nothing and waits (within the start's start-up wait) for the pane to leave it. By default this applies to `locked` members only, because they ignore project settings. `auto_trust: true` extends it to every member; a start then notes if the folder has project settings (`.claude/`, `.mcp.json`), which would load in `vendor` posture.
-  - **Codex:** only with `auto_trust: true`, and only in `vendor` posture. brg starts the member with `-c projects={"<folder>"={trust_level="trusted"}}`, so Codex never shows its trust screen. That trusts exactly that folder, for that session only: nothing is written to `~/.codex/config.toml`. Answering the screen yourself trusts the whole Git repository (every worktree too) and saves it. Trust lets the folder's `.codex/` config, hooks and MCP servers load, while brg's vendor-posture permission flags remain explicit; a start notes if the folder has a `.codex/`. A `-c projects…` in the role's `args` replaces brg's.
-  - A `locked` Codex member is never trusted this way. It can write its own folder, so it could write a `.codex/` that would load outside its gate on its next start. `brg validate` warns, and its trust screen is left for you.
+  - **Claude:** brg answers Claude's folder-trust dialog for exactly that folder by sending keys through tmux. It acts only on the plain trust screen showing that folder; it never answers any other dialog. While the member's pane is in tmux copy mode, it sends nothing and waits (within the start's start-up wait) for the pane to leave it. By default this applies to restricted members only, because they ignore project settings. `auto_trust: true` extends it to every member; a start then notes if the folder has project settings (`.claude/`, `.mcp.json`), which would load without restricted access.
+  - **Codex:** only with `auto_trust: true`, and only without restricted access. brg starts the member with `-c projects={"<folder>"={trust_level="trusted"}}`, so Codex never shows its trust screen. That trusts exactly that folder, for that session only: nothing is written to `~/.codex/config.toml`. Answering the screen yourself trusts the whole Git repository (every worktree too) and saves it. Trust lets the folder's `.codex/` config, hooks and MCP servers load, while brg's unrestricted permission flags remain explicit; a start notes if the folder has a `.codex/`. A `-c projects…` in the role's `args` replaces brg's.
+  - A restricted Codex member is never trusted this way. It can write its own folder, so it could write a `.codex/` that would load outside its gate on its next start. `brg validate` warns, and its trust screen is left for you.
 - **`tmux.user_config`:** brg's private tmux server normally reads only brg's own config, so `brg attach` doesn't have your prefix, key bindings, mouse settings or status bar (key bindings belong to the tmux server, not to the client that attaches). Set it to `true` to load the first of `~/.tmux.conf`, `$XDG_CONFIG_HOME/tmux/tmux.conf` and `~/.config/tmux/tmux.conf` that exists, or to a path. Off by default.
   - The path can't contain `'`, `*`, `?`, `[`, `\` or a newline (tmux would read it as a glob pattern).
   - The config is read once, when brg's tmux server starts. Every team on that server shares it, so it is the setting brg's configuration had when the server started. If the server is already running with a different setting, a start says so; the change takes effect once every team on it is stopped. Its scripts run with brg's cleared environment.

@@ -459,7 +459,7 @@ pub fn attempt(
         && !state.gate_marker(member).exists()
     {
         return WakeResult::Deferred(Defer::Uncertain(
-            "the member's `locked` gate is not active".into(),
+            "the member's restricted-access gate is not active".into(),
         ));
     }
     let rules = match rules::load(Vendor::Claude) {

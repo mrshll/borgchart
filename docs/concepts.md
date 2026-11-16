@@ -25,7 +25,7 @@ under its parent team, independently of where its team template is stored.
 - **The template folder** holds its files; sibling templates may use one catalog `shared/` folder for common includes and plugins:
   - the roles and their role files, includes and plugins;
   - whether the team uses the message bus, and its alert action (`bus:`);
-  - each role's `posture`, its extra launch arguments (`args`, such as the researcher's `--search`), and whether each member works in its own git worktree (`worktree: true`);
+  - each role's `restricted_access`, its extra launch arguments (`args`, such as the researcher's `--search`), and whether each member works in its own git worktree (`worktree: true`);
   - plain plugin values, such as a channel ID.
 - **The team's working folder** is given at `create` (the current folder by default) and recorded on the team for its whole life: usually the repository the team works on. Members start there, or in their own worktree for a `worktree: true` role. It can't be the same as, inside or around brg's state folder, so a member's own folder never exposes brg's files; brg's worktrees live beside the state folder, never in it.
 - **The team's state folder,** `~/.local/state/borgchart/<team>/`, holds:
@@ -33,15 +33,15 @@ under its parent team, independently of where its team template is stored.
   - `notes/`, for members' reports and other files the members share (`$BORGCHART_NOTES`);
   - brg's own files.
 
-  Codex `vendor` members run with full host access and no tool approvals, including access to brg's state files. Claude `vendor` members get the tree's `messages/` and their team's `notes/` as added folders. Locked members retain their gate and restricted launch settings.
+  Unrestricted Codex members run with full host access and no tool approvals, including access to brg's state files. Unrestricted Claude members get the tree's `messages/` and their team's `notes/` as added folders. Restricted members retain their gate and restricted launch settings.
 
-  `locked` members keep today's launch unchanged:
+  Restricted members use these launch settings:
   - their gate;
   - no automatic trust for Codex;
   - writes limited to their granted plugins' data and their temp folder;
   - for Codex, a start in the temp folder unless the role sets `worktree: true`.
 
-  A team with `bus:` still can't have `locked` members.
+  Restricted members may receive messages; their records need no ack and have no inbox recovery.
 - **brg's global configuration,** `~/.config/borgchart/config.yaml`, holds what belongs to you rather than to a template:
 
   ```yaml
@@ -58,7 +58,7 @@ under its parent team, independently of where its team template is stored.
 - **Secrets** come from the start environment when `env` leaves the value empty, or from a secrets resolver with `NAME: {from: "<reference>"}`. Configure `secrets: {resolver: [example-secrets, run, "--env-file={file}", "--"]}` once; sourced secrets never fall back to the environment. See [the resolver contract](format.md#configyaml).
   - `brg secrets <template>` lists each secret's source and whether environment secrets are set. It runs no resolver and prints no values or references.
   - Members' windows start from a small base environment, so secrets don't reach them that way. The one exception is the vendor's own key: with `auth: api_key`, brg passes `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` to that vendor's members by name, and with `login` it passes neither. A plugin receives a secret only when its `env` names it: brg writes it to that plugin's private file (mode 0600), which the plugin's shims read, and removes the file at stop.
-  - **0600 keeps other users out, not the members.** Members run as you. A member that isn't `locked` and has shell or file access could read that file while it exists. Only `locked` members are kept from it, by their gate.
+  - **0600 keeps other users out, not the members.** Members run as you. An unrestricted member and has shell or file access could read that file while it exists. Only restricted members are kept from it, by their gate.
 - **Prompts** come only from the template: each role file, the includes it names and any other template's role file it names. The vendor's own instruction files load as normal (`~/.claude/CLAUDE.md`, the repo's `CLAUDE.md`, `AGENTS.md`). brg neither adds nor suppresses anything else.
   - **Standing rules** go in the template's own files, without repeating what the vendors' files already give every member. To layer local rules on a shared template, keep a complete template of your own whose role files include the shared ones with `{{templates/<template>/<role>}}` and add your lines after.
 - **Context for one piece of work,** such as a tracking issue or a handover note, goes to the lead in a message. It isn't configuration.
@@ -111,7 +111,7 @@ Two folders with the same name can both run. Their teams are told apart by their
 
 **Parents are agent roles.** `parent: lead` names an agent role, and a member's parent is the member filling that role. So a parent role must have one member: `validate` refuses a `parent:` that names a team role or a role with `max > 1`. The same goes for a plugin's `delivers_to:`.
 
-**Recipients.** A message goes to one kept, started member along a parent/child edge, or from a root member of the tree's root team to `external:NAME`. Parentless `vendor` members of different top-level teams may also message one another by full address; child-team roots and locked members cannot. A team isn't a recipient: name a member in it. Siblings, cousins and unrelated roots within a tree cannot exchange messages. Each record belongs to its recipient's tree. Across independent trees, `--reply-to m1` names a message from that peer to you in your own store and is stored as `<your-tree>:m1`; other routes keep plain references. Peer messages give no owner authority or additional access to the other tree; status, logs and attach already reach every tree. These are same-user mistake guards, not protection against a hostile process running as you.
+**Recipients.** A message goes to one kept, started member along a parent/child edge, or from a root member of the tree's root team to `external:NAME`. Parentless unrestricted members of different top-level teams may also message one another by full address; child-team roots and restricted members cannot. A team isn't a recipient: name a member in it. Siblings, cousins and unrelated roots within a tree cannot exchange messages. Each record belongs to its recipient's tree. Across independent trees, `--reply-to m1` names a message from that peer to you in your own store and is stored as `<your-tree>:m1`; other routes keep plain references. Peer messages give no owner authority or additional access to the other tree; status, logs and attach already reach every tree. These are same-user mistake guards, not protection against a hostile process running as you.
 
 **Teams as members.** A role can be a team, referenced by name through the configured template directories (`template: dev-team`). Its members are child teams (`dev-a7k2`): nested teams, each with its own members, notes and state, and a working folder inside its parent's. Teams form a tree: the member with no parent is the root. Addresses nest (`engineering-h4k2/dev-a7k2/lead-c4nd`), and a child team's ID is its full path. Child teams are created stopped, prepared by their parent and then started. A member may act on its whole subtree, and `stop` cascades deepest first. [teams.md](teams.md#teams-as-members) has the rules, and [`engineering/`](../templates/engineering/) defines the runtime tree from sibling templates under `templates/`.
 
@@ -170,6 +170,6 @@ Every `BORGCHART_*` variable that a member, plugin or test can see:
 | `BORGCHART_TMUX_SOCKET` | members, plugins, tests | which tmux server runs the team |
 | `BORGCHART_TMUX_TMPDIR` | members, plugins, tests | where that server keeps its socket; keeps test servers private |
 | `BORGCHART_STATE_HOME` | the caller, tests | brg's state folder, holding every team's state folder |
-| `BORGCHART_GATE_WAIT_MS` | the caller, tests | how long a start waits for a `locked` member's gate |
+| `BORGCHART_GATE_WAIT_MS` | the caller, tests | how long a start waits for a restricted member's gate |
 | `BORGCHART_WAIT_MIN_MS`, `BORGCHART_WAIT_TIMEOUT_MS` | tests (test builds only) | shorten `msg wait`'s minimum and timeout |
 | `BORGCHART_QUALIFY`, `…_VENDORS`, `…_SUBMIT` | the manual vendor qualification test | turn that test on and pick its vendors |

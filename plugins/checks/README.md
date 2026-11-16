@@ -87,7 +87,7 @@ Actions run in the calling member's folder and use the same state directory:
 - `brg-checks promote <name> <reason>` sends the check ID and a reason
   to `BORGCHART_PARENT` with `--from BORGCHART_MEMBER`, so brg checks the parent
   route. Reasons are fixed: `outage`, `alert`, `question`, `other`. Success
-  prints brg's output, including its ID, and exits 0. For locked Codex members,
+  prints brg's output, including its ID, and exits 0. For restricted Codex members,
   it instead prints `queued; brg sends it when the command returns`: brg's
   PostToolUse hook sends as the member, to its parent only, and reports failures
   as extra context. Permanent refusals are removed. If brg cannot start, the send

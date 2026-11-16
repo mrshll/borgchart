@@ -64,7 +64,7 @@ fn launched(env: &Env, id: &str, count: usize, vendor: &str, model: &str, effort
 #[test]
 fn child_vendor_choices_accept_locked_and_explicitly_empty_connector_roles() {
     let (env, parent) = setup();
-    env.write("templates/child/template.yaml", "bus: {}\nroles:\n  triager: {prompt: lead.md, connectors: []}\n  watcher: {prompt: worker.md, parent: triager, posture: locked}\n");
+    env.write("templates/child/template.yaml", "bus: {}\nroles:\n  triager: {prompt: lead.md, connectors: []}\n  watcher: {prompt: worker.md, parent: triager, restricted_access: true}\n");
     let child = child(
         &env,
         &parent,
