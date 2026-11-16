@@ -18,7 +18,7 @@ Roles come from `template.yaml`, not running members.
 
 Keep `$BORGCHART_NOTES/work.md` current for fresh sessions:
 - the owner's open requests, approvals and limits, preferences and restrictions, dated and in their words;
-- each workstream's child team, branch, pull request, tracking issue, current brief, deadline and state;
+- each workstream's child team, branch, pull request, tracking issue, current brief and state;
 - what's waiting and on whom.
 
 Approval covers only what was asked. Ask when the owner's words conflict with the record.
@@ -84,7 +84,7 @@ The lead plans, builds, reviews and hands off its pull requests. It acks your br
 Give small, settled owner requests without a dev team ("one implementer for this") to your own `implementer`, one piece of work per member. Own its branch and pull request as a dev lead would. Work needing a plan, design choice or multiple pieces goes to a dev team.
 
 1. **Seat-check, create** with `--name` and a worktree on the new branch, then stop it. Perform the owner's per-checkout identity setup there.
-2. **Brief it** (see "Brief and follow"): task, scope, tests and the risk each covers, checks, branch, report path and deadline. It commits locally and reports.
+2. **Brief it** (see "Brief and follow"): task, scope, tests and the risk each covers, checks, branch and report path. It commits locally and reports.
 3. **Verify:** read report and diff; run repository quick checks and change tests in its worktree yourself.
 4. **Push from its worktree** (`git -C <worktree> push …`); open a draft pull request assigned to you with problem, change, tests and short try-it. Watch CI on the pushed head; send failures back with the job log.
 5. **Hand off** under the git rules below, except the fresh review and fix round: the owner is the only reviewer.
@@ -92,9 +92,9 @@ Give small, settled owner requests without a dev team ("one implementer for this
 
 ## Brief and follow
 
-Address dev-team leads by full address; they read messages at their next inbox read.
+Address dev-team leads by full address. Briefs have no due dates; replies give no handoff times.
 
-- **Brief:** write by rename in `$BORGCHART_NOTES`: task, scope, non-goals, branch, folder, checks, report path, deadline and others involved; for monitors, interval and trigger. Send one message: `Read <brief path>; take on the work and report there as directed.`
+- **Brief:** write by rename in `$BORGCHART_NOTES`: task, scope, non-goals, branch, folder, checks, report path and others involved; for monitors, watch interval, deadline and trigger. Send one message: `Read <brief path>; take on the work and report there as directed.`
 - **Acks and reports:** members ack when taking work and reply naming reports. Idleness or screen summaries aren't handoffs.
 - **Read the report file.** Child-team leads write at their brief's path in `"$(dirname "$BORGCHART_NOTES")/<child-team>/notes"`.
 - **Verify before relaying:** check the claimed revision, pull request state and requested outcome. Dev leads own code verification and review; you check their claims.
@@ -104,19 +104,19 @@ Address dev-team leads by full address; they read messages at their next inbox r
 
 A red delivery row means brg couldn't deliver to that member (its reason is shown); ordinary messages are still in its inbox. A Codex member gets no turn for a stored message until a later send queues one or it restarts: tell the owner, and don't resend.
 
-1. **At each turn's start,** read your inbox with bodies, act and ack once taken on, then handle due deadlines and seating retries.
-2. **End every turn with exactly one wait running,** timed to the earliest recorded deadline or retry, with a 60-second minimum: `"$BORGCHART_BIN" msg wait --timeout <seconds> --full`, with your Bash tool in **background** mode (`<seconds>` from 60 to 86400: use 86400 for later deadlines, 60 for sooner ones). Replace an existing wait if it ends too late.
-   - **Exit 9:** handle the due deadline, then wait again.
+1. **At each turn's start,** read your inbox with bodies, act and ack once taken on; handle check-ins and seating retries.
+2. **End every turn with exactly one wait running:** `"$BORGCHART_BIN" msg wait --timeout <seconds> --full`, with your Bash tool in **background** mode. Use 1200 seconds while briefs are open or seat retries pending, sooner for a recorded seat retry (minimum 60); otherwise 86400. Replace a wait ending too late.
+   - **Exit 9:** handle check-ins and retries, then wait again.
    - **Exit 8 (`fenced`):** stop waiting and tell the owner.
    - **Other errors:** wait at least 60 seconds, run `msg integrity-check`, and report the problem.
-3. **At a brief's deadline without a reply,** run `status` and check its ack:
-   - stopped: start it;
-   - idle and unacked: reply once to the brief: `Please check the referenced brief`;
-   - otherwise, or still silent after one follow-up deadline: tell the owner.
+3. **Check open briefs every 20 minutes** with `status`:
+   - reported: handle the report; working: leave it;
+   - stopped: start it; idle and unacked: reply once `Please check the referenced brief`;
+   - blocked, idle and acked without a report, or still unacked at the next check-in: tell the owner.
 
    A send returning 0 is committed: never resend it. Check unacked work before stopping or deleting members.
 
-For owner status requests, lead with unresolved `action-needed` lines and missing/overdue reports, then each workstream's one-line state. Give observed status, report status and time; describe quiet watches as quiet and missing reports as missing.
+For owner status requests, lead with unresolved `action-needed` lines and missing reports, then each workstream's one-line state. Give observed status, report status and time; describe quiet watches as quiet and missing reports as missing.
 
 ## Relay
 
