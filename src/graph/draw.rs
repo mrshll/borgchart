@@ -10,7 +10,7 @@ use ratatui::{
     style::{Color, Style},
     symbols::Marker,
     widgets::{
-        Paragraph, Wrap,
+        Block, BorderType, Paragraph, Widget, Wrap,
         canvas::{Canvas, Line},
     },
 };
@@ -24,10 +24,12 @@ fn arrow(dx: f64, dy: f64) -> &'static str {
     ["→", "↘", "↓", "↙", "←", "↖", "↑", "↗"][octant.rem_euclid(8) as usize]
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw(
     frame: &mut ratatui::Frame,
     area: Rect,
     nodes: &[Node],
+    scope: &str,
     feed: &Feed,
     motion: &mut Motion,
     now: Duration,
@@ -43,6 +45,29 @@ pub(crate) fn draw(
         *waiting.entry(msg.to.clone()).or_default() += 1;
     }
     let (labels, hidden) = layout::labels(nodes, &points, area.width, h, &waiting);
+    for (team, [left, top, right, bottom]) in layout::team_boxes(nodes, &points, &labels, scope) {
+        let rect = Rect::new(0, 0, (right - left + 1) as u16, (bottom - top + 1) as u16);
+        let mut buffer = ratatui::buffer::Buffer::empty(rect);
+        Block::bordered()
+            .border_type(BorderType::Rounded)
+            .title(team.rsplit('/').next().unwrap())
+            .style(Style::default().fg(rgb(palette::FADED)))
+            .render(rect, &mut buffer);
+        for (i, cell) in buffer
+            .content
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.symbol() != " ")
+        {
+            let (x, y) = (
+                left + i as i32 % rect.width as i32,
+                top + i as i32 / rect.width as i32,
+            );
+            if x >= 0 && x < area.width as i32 && y >= 0 && y < h as i32 {
+                frame.buffer_mut()[(area.x + x as u16, area.y + y as u16)] = cell.clone();
+            }
+        }
+    }
     let last = feed
         .last
         .as_ref()
@@ -301,6 +326,7 @@ mod tests {
                     f,
                     f.area(),
                     nodes,
+                    "demo",
                     feed,
                     &mut Motion::default(),
                     Duration::from_millis(milliseconds),
@@ -317,6 +343,73 @@ mod tests {
             .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+    #[test]
+    fn grouping_borders_survive_except_where_routes_or_readable_labels_cover_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let feed = Feed::open(crate::bus::layout::StorePaths::from_root(dir.path())).unwrap();
+        let nodes = layout::tests::fixture();
+        let points = layout::positions(&nodes, 80, 21);
+        let (labels, hidden) = layout::labels(&nodes, &points, 80, 21, &BTreeMap::new());
+        assert_eq!(hidden, 0);
+        let boxes = layout::team_boxes(&nodes, &points, &labels, "demo");
+        let buffer = render(&feed, &nodes, 9000);
+        assert!(
+            dump(&buffer).contains('╭') || dump(&buffer).contains('╰'),
+            "{}",
+            dump(&buffer)
+        );
+        let mut crossed = 0;
+        let mut retained = 0;
+        for (_, [left, top, right, bottom]) in boxes {
+            for y in top.max(0)..=bottom.min(20) {
+                for x in left.max(0)..=right.min(79) {
+                    if x != left && x != right && y != top && y != bottom {
+                        continue;
+                    }
+                    let cell = &buffer[(x as u16, y as u16)];
+                    if cell
+                        .symbol()
+                        .chars()
+                        .any(|ch| ('\u{2801}'..='\u{28ff}').contains(&ch))
+                    {
+                        crossed += 1;
+                    }
+                    if ["─", "│", "╭", "╮", "╰", "╯"].contains(&cell.symbol()) {
+                        assert_eq!(cell.fg, rgb(palette::FADED));
+                        retained += 1;
+                    }
+                }
+            }
+        }
+        assert!(
+            crossed > 0 && retained > 0,
+            "crossed={crossed} retained={retained}"
+        );
+        let mut labels_on_borders = 0;
+        let boxes = layout::team_boxes(&nodes, &points, &labels, "demo");
+        for label in labels {
+            let text: String = (label.x..label.x + label.text.len() as u16)
+                .map(|x| buffer[(x, label.y)].symbol())
+                .collect();
+            assert_eq!(text, label.text);
+            if boxes.iter().any(|(_, [left, top, right, bottom])| {
+                let y = label.y as i32;
+                let x = label.x as i32;
+                (y == *top || y == *bottom) && x <= *right && x + label.text.len() as i32 >= *left
+                    || y >= *top
+                        && y <= *bottom
+                        && [*left, *right]
+                            .iter()
+                            .any(|border| *border >= x && *border < x + label.text.len() as i32)
+            }) {
+                labels_on_borders += 1;
+            }
+        }
+        assert!(labels_on_borders > 0, "fixture exercises label over border");
+        println!(
+            "borders crossed by canvas={crossed}; retained={retained}; labels over borders={labels_on_borders}"
+        );
     }
     #[test]
     fn sent_messages_fly_three_directed_passes_with_gaps_then_stop() {
@@ -588,6 +681,7 @@ mod tests {
                     f,
                     f.area(),
                     &nodes,
+                    "demo",
                     &feed,
                     &mut motion,
                     Duration::from_millis(600),
@@ -638,6 +732,7 @@ mod tests {
                     f,
                     f.area(),
                     &nodes,
+                    "demo",
                     &feed,
                     &mut motion,
                     Duration::from_secs(1),
@@ -684,6 +779,7 @@ mod tests {
                         f,
                         f.area(),
                         &nodes,
+                        "demo",
                         &feed,
                         &mut Motion::default(),
                         Duration::ZERO,
@@ -751,6 +847,7 @@ mod tests {
                         f,
                         f.area(),
                         &nodes,
+                        "demo",
                         &feed,
                         &mut Motion::default(),
                         Duration::from_secs(3),

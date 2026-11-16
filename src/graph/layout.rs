@@ -293,6 +293,55 @@ pub(crate) fn labels(
     let hidden = nodes.len() - labels.len();
     (labels, hidden)
 }
+pub(crate) fn team_boxes(
+    nodes: &[Node],
+    points: &Points,
+    labels: &[Label],
+    scope: &str,
+) -> Vec<(String, [i32; 4])> {
+    let mut teams = BTreeSet::new();
+    for node in nodes.iter().filter(|n| !n.outside) {
+        let mut team = node.id.rsplit_once('/').unwrap().0;
+        while team != scope {
+            teams.insert(team);
+            team = team.rsplit_once('/').map_or(scope, |(parent, _)| parent);
+        }
+    }
+    let mut teams: Vec<_> = teams.into_iter().collect();
+    teams.sort_by_key(|t| std::cmp::Reverse(t.len()));
+    let mut out: Vec<(String, [i32; 4])> = Vec::new();
+    for team in teams {
+        let owns = |id: &str| id.starts_with(&format!("{team}/"));
+        let mut cells: Vec<_> = points
+            .iter()
+            .filter(|(id, _)| owns(id))
+            .map(|(_, &(x, y))| (x.round() as i32, y.round() as i32))
+            .collect();
+        for l in labels.iter().filter(|l| owns(&l.id)) {
+            cells.push((l.x as i32 - 1, l.y as i32));
+            cells.push((l.x as i32 + l.text.chars().count() as i32, l.y as i32));
+        }
+        for (_, b) in out.iter().filter(|(id, _)| owns(id)) {
+            cells.extend([(b[0], b[1]), (b[2], b[3])]);
+        }
+        let xs = cells.iter().map(|p| p.0);
+        let ys = cells.iter().map(|p| p.1);
+        let b = [
+            xs.clone().min().unwrap() - 2,
+            ys.clone().min().unwrap() - 2,
+            xs.max().unwrap() + 2,
+            ys.max().unwrap() + 2,
+        ];
+        if points.iter().any(|(id, &(x, y))| {
+            let (x, y) = (x.round() as i32, y.round() as i32);
+            !owns(id) && (b[0]..=b[2]).contains(&x) && (b[1]..=b[3]).contains(&y)
+        }) {
+            continue;
+        }
+        out.push((team.into(), b));
+    }
+    out
+}
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -354,6 +403,211 @@ pub(crate) mod tests {
         }
         nodes.sort_by(|a, b| a.id.cmp(&b.id));
         nodes
+    }
+    pub(crate) fn grouped_rows() -> Vec<StatusRow> {
+        let mut rows = vec![row("demo", "lead-root", None)];
+        for (team, parent, lead, members) in [
+            (
+                "demo/dev-search",
+                "demo/lead-root",
+                "lead-search",
+                vec!["implementer-index", "reviewer-search"],
+            ),
+            (
+                "demo/dev-build",
+                "demo/lead-root",
+                "lead-build",
+                vec!["implementer-compile"],
+            ),
+            (
+                "demo/dev-search/dev-rank",
+                "demo/dev-search/lead-search",
+                "lead-rank",
+                vec!["implementer-score", "reviewer-rank"],
+            ),
+        ] {
+            let mut child = row(team, team.rsplit('/').next().unwrap(), Some(parent));
+            child.kind = "team";
+            rows.push(child);
+            rows.push(row(team, lead, Some(team)));
+            for member in members {
+                rows.push(row(team, member, Some(lead)));
+            }
+        }
+        rows
+    }
+    #[test]
+    fn descendant_boxes_enclose_labels_and_nested_boxes_with_a_cell_between_borders() {
+        let dir = tempfile::tempdir().unwrap();
+        let feed = Feed::open(crate::bus::layout::StorePaths::from_root(dir.path())).unwrap();
+        let rows = grouped_rows();
+        for scope in ["demo", "demo/dev-search"] {
+            let nodes = nodes(&rows, scope, Some("external:owner"), &feed);
+            for (w, h) in [(80, 18), (160, 42)] {
+                let points = positions(&nodes, w, h);
+                let (labels, _) = labels(&nodes, &points, w, h, &BTreeMap::new());
+                let boxes = team_boxes(&nodes, &points, &labels, scope);
+                let expected = if scope == "demo" { 2 } else { 1 };
+                assert_eq!(boxes.len(), expected);
+                assert!(
+                    boxes
+                        .iter()
+                        .any(|(team, _)| team == "demo/dev-search/dev-rank")
+                );
+                if scope == "demo" {
+                    assert!(boxes.iter().any(|(team, _)| team == "demo/dev-build"));
+                    assert!(!boxes.iter().any(|(team, _)| team == "demo/dev-search"));
+                }
+                assert!(!boxes.iter().any(|(team, _)| team == scope));
+                for (team, [left, top, right, bottom]) in &boxes {
+                    for node in nodes
+                        .iter()
+                        .filter(|node| !node.outside && node.id.starts_with(&format!("{team}/")))
+                    {
+                        let (x, y) = points[&node.id];
+                        assert!(
+                            *left < x.round() as i32
+                                && (x.round() as i32) < *right
+                                && *top < y.round() as i32
+                                && (y.round() as i32) < *bottom,
+                            "{team}: {}",
+                            node.id
+                        );
+                        if let Some(label) = labels.iter().find(|label| label.id == node.id) {
+                            assert!(
+                                *left < label.x as i32 - 1
+                                    && label.x as i32 + (label.text.len() as i32) < *right
+                                    && *top < label.y as i32
+                                    && (label.y as i32) < *bottom
+                            );
+                        }
+                    }
+                    for (child, b) in boxes
+                        .iter()
+                        .filter(|(child, _)| child.starts_with(&format!("{team}/")))
+                    {
+                        assert!(
+                            b[0] - left >= 2
+                                && b[1] - top >= 2
+                                && right - b[2] >= 2
+                                && bottom - b[3] >= 2,
+                            "{team}: {child}"
+                        );
+                    }
+                    let others: Vec<_> = nodes
+                        .iter()
+                        .filter(|node| !node.id.starts_with(&format!("{team}/")))
+                        .filter(|node| {
+                            let (x, y) = points[&node.id];
+                            *left < x.round() as i32
+                                && (x.round() as i32) < *right
+                                && *top < y.round() as i32
+                                && (y.round() as i32) < *bottom
+                        })
+                        .map(|node| node.id.as_str())
+                        .collect();
+                    assert!(others.is_empty(), "foreign nodes in {team}: {others:?}");
+                    println!(
+                        "{w}x{h} scope={scope} team={team} bounds={left},{top},{right},{bottom} unrelated nodes={others:?}"
+                    );
+                }
+            }
+        }
+    }
+    #[test]
+    fn foreign_nodes_drop_only_their_enclosing_boxes_and_preserve_drawn_nesting() {
+        let dir = tempfile::tempdir().unwrap();
+        let feed = Feed::open(crate::bus::layout::StorePaths::from_root(dir.path())).unwrap();
+        let nodes = nodes(&grouped_rows(), "demo", Some("external:owner"), &feed);
+        for (blocker, blocker_x) in [
+            (None, 5.),
+            (Some("demo/lead-root"), 5.),
+            (Some("external:owner"), 5.),
+            (Some("demo/lead-root"), 14.),
+            (Some("external:owner"), -2.),
+        ] {
+            let points: Points = nodes
+                .iter()
+                .map(|node| {
+                    let x = if blocker == Some(node.id.as_str()) {
+                        blocker_x
+                    } else if node.id.starts_with("demo/dev-search/dev-rank/") {
+                        10.
+                    } else if node.id.starts_with("demo/dev-search/") {
+                        0.
+                    } else if node.id.starts_with("demo/dev-build/") {
+                        20.
+                    } else {
+                        30.
+                    };
+                    (node.id.clone(), (x, 5.))
+                })
+                .collect();
+            let boxes = team_boxes(&nodes, &points, &[], "demo");
+            assert_eq!(
+                boxes.len(),
+                if blocker.is_some() { 2 } else { 3 },
+                "{blocker:?}"
+            );
+            assert!(
+                boxes
+                    .iter()
+                    .any(|(team, _)| team == "demo/dev-search/dev-rank")
+            );
+            assert!(boxes.iter().any(|(team, _)| team == "demo/dev-build"));
+            let parent = boxes.iter().find(|(team, _)| team == "demo/dev-search");
+            if let Some((_, parent)) = parent {
+                assert!(blocker.is_none());
+                let child = boxes
+                    .iter()
+                    .find(|(team, _)| team == "demo/dev-search/dev-rank")
+                    .unwrap()
+                    .1;
+                assert!(
+                    child[0] - parent[0] >= 2
+                        && child[1] - parent[1] >= 2
+                        && parent[2] - child[2] >= 2
+                        && parent[3] - child[3] >= 2
+                );
+            } else {
+                assert!(blocker.is_some());
+            }
+        }
+    }
+    #[test]
+    fn dropped_descendant_borders_cannot_expand_an_otherwise_clear_parent_box() {
+        let dir = tempfile::tempdir().unwrap();
+        let feed = Feed::open(crate::bus::layout::StorePaths::from_root(dir.path())).unwrap();
+        let nodes = nodes(&grouped_rows(), "demo", Some("external:owner"), &feed);
+        let points: Points = nodes
+            .iter()
+            .map(|node| {
+                let x = if node.id == "demo/lead-root" {
+                    -3.
+                } else if node.id.starts_with("demo/dev-search/dev-rank/") {
+                    0.
+                } else if node.id.starts_with("demo/dev-search/") {
+                    2.
+                } else if node.id.starts_with("demo/dev-build/") {
+                    20.
+                } else {
+                    30.
+                };
+                (node.id.clone(), (x, 5.))
+            })
+            .collect();
+        let boxes = team_boxes(&nodes, &points, &[], "demo");
+        assert!(
+            !boxes
+                .iter()
+                .any(|(team, _)| team == "demo/dev-search/dev-rank")
+        );
+        let parent = boxes
+            .iter()
+            .find(|(team, _)| team == "demo/dev-search")
+            .expect("discarded child border must not enlarge the parent into the root")
+            .1;
+        assert_eq!(parent, [-2, 3, 4, 7]);
     }
     #[test]
     fn radial_clusters_keep_nodes_distinct_and_ease_membership_changes() {

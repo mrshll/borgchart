@@ -62,6 +62,7 @@ fn watch_draw(
                 frame,
                 area,
                 &nodes,
+                &section.inst.id,
                 feed,
                 motion,
                 now,
@@ -1188,6 +1189,65 @@ mod watch_tests {
                 .collect();
             assert!(!lines.join("\n").contains(&record.body));
             println!("watch at {milliseconds}ms 80x24:\n{}", lines.join("\n"));
+        }
+    }
+    #[test]
+    fn grouped_watch_clips_boxes_without_hiding_nested_team_labels() {
+        let mut section = section();
+        section.rows = crate::graph::layout::tests::grouped_rows();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::bus::layout::StorePaths::from_root(dir.path());
+        let record = crate::bus::record::Record {
+            schema: crate::bus::SCHEMA,
+            id: "m1".into(),
+            seq: 1,
+            from: "external:owner".into(),
+            to: "demo/lead-root".into(),
+            at: "2026-01-01T00:00:00.000Z".into(),
+            ack_required: false,
+            body: "PRIVATE-MARKER-7f49".into(),
+            reply_to: vec![],
+        };
+        crate::bus::fsx::write_new(&paths.record(1), &serde_json::to_vec(&record).unwrap())
+            .unwrap();
+        let feed = crate::graph::feed::Feed::open(paths).unwrap();
+        for (w, h) in [(80, 24), (160, 48)] {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+            terminal
+                .draw(|f| {
+                    watch_draw(
+                        f,
+                        std::slice::from_ref(&section),
+                        false,
+                        true,
+                        Some("demo"),
+                        Some(&feed),
+                        &mut crate::graph::layout::Motion::default(),
+                        Duration::ZERO,
+                        ["", ""],
+                        0,
+                    )
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let lines: Vec<String> = buffer
+                .content
+                .chunks(w as usize)
+                .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+                .collect();
+            assert!(
+                lines[2].trim().is_empty(),
+                "foreign-node box must be omitted: {}",
+                lines[2]
+            );
+            let text = lines.join("\n");
+            assert!(text.contains('╭') || text.contains('╰'), "{text}");
+            for label in ["dev-search", "dev-build", "dev-rank"] {
+                assert!(text.contains(label), "missing {label}: {text}");
+            }
+            assert!(!text.contains(&record.body));
+            println!("grouped messages {w}x{h}:\n{text}");
         }
     }
     #[test]
