@@ -125,6 +125,7 @@ pub fn action(store: &plugin::State, action: Action) -> Result<(), String> {
     Ok(())
 }
 pub fn fire(store: &plugin::State) -> Result<(), String> {
+    let mut failures = Vec::new();
     let alarms = {
         let _lock = store.lock_named("alarms.lock").map_err(storage)?;
         fs::read_dir(folder()?)
@@ -134,15 +135,24 @@ pub fn fire(store: &plugin::State) -> Result<(), String> {
                 if path.extension().is_none_or(|e| e != "json") {
                     return Ok(None);
                 }
-                let bytes = fs::read(&path).map_err(storage)?;
-                let alarm: Alarm = serde_json::from_slice(&bytes).map_err(|e| storage(e.into()))?;
+                let read = fs::read(&path).map_err(storage).and_then(|bytes| {
+                    serde_json::from_slice::<Alarm>(&bytes)
+                        .map(|alarm| (bytes, alarm))
+                        .map_err(|e| storage(e.into()))
+                });
+                let (bytes, alarm) = match read {
+                    Ok(alarm) => alarm,
+                    Err(e) => {
+                        failures.push(format!("alarm {} skipped: {e}", path.display()));
+                        return Ok(None);
+                    }
+                };
                 Ok(time::parse_utc(&alarm.due)
                     .filter(|t| *t <= SystemTime::now())
                     .map(|_| (path, bytes, alarm)))
             })
             .collect::<Result<Vec<_>, String>>()?
     };
-    let mut failures = Vec::new();
     for (path, bytes, alarm) in alarms.into_iter().flatten() {
         let text = format!(
             "Alarm due {}: {}. Check your recorded deadlines and retries.",
@@ -162,7 +172,8 @@ pub fn fire(store: &plugin::State) -> Result<(), String> {
                 }
             }
             Err(e) => failures.push(format!(
-                "alarm delivery failed: {e}; kept for the next tick"
+                "alarm {}/{} delivery failed: {e}; kept for the next tick",
+                alarm.team, alarm.member
             )),
         }
     }

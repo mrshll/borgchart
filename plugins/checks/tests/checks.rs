@@ -93,6 +93,22 @@ fn overdue_alarm_survives_restart_and_never_fires_twice_or_early() {
     }
 }
 #[test]
+fn bad_alarm_files_do_not_block_due_alarms() {
+    let f = alarm_fixture();
+    overdue(&f);
+    f.write("state/alarms/broken.json", "{");
+    fs::create_dir(f.path("state/alarms/unreadable.json")).unwrap();
+    f.tick();
+    assert_eq!(f.sends().len(), 1);
+    assert!(!f.path("state/alarms/reader-test.json").exists());
+    let health = f.read("health.json");
+    assert_eq!(health["ok"], false);
+    let detail = health["detail"].as_str().unwrap();
+    for file in ["broken.json", "unreadable.json"] {
+        assert!(detail.contains(file), "{detail}");
+    }
+}
+#[test]
 fn failed_alarm_send_keeps_the_wake_and_health_recovers_after_retry() {
     let f = alarm_fixture();
     overdue(&f);
@@ -100,11 +116,9 @@ fn failed_alarm_send_keeps_the_wake_and_health_recovers_after_retry() {
     f.tick();
     assert!(f.path("state/alarms/reader-test.json").exists());
     assert_eq!(f.read("health.json")["ok"], false);
+    let detail = f.read("health.json")["detail"].to_string();
     assert!(
-        f.read("health.json")["detail"]
-            .as_str()
-            .unwrap()
-            .contains("cannot deliver")
+        detail.contains("cannot deliver") && detail.contains("harbor-test/dev-test/reader-test")
     );
     f.outcome(0, json!({"id":"m100"}));
     f.tick();
