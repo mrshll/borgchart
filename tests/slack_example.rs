@@ -15,11 +15,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const TOKEN: &str = "xoxb-not-a-real-token-9a2d";
+const APP_TOKEN: &str = "xapp-not-a-real-token";
 
 #[derive(Default)]
 struct Slack {
     messages: Vec<serde_json::Value>,
     posted: Vec<serde_json::Value>,
+    socket_url: String,
+    acks: usize,
 }
 
 fn serve(listener: TcpListener, slack: Arc<Mutex<Slack>>) {
@@ -67,12 +70,20 @@ fn handle(mut stream: TcpStream, slack: &Mutex<Slack>) -> std::io::Result<()> {
             (k == key).then(|| v.replace("%2E", ".").replace("%2e", "."))
         })
     };
-    let reply = if auth != format!("Bearer {TOKEN}") {
+    let token = if method == "apps.connections.open" {
+        APP_TOKEN
+    } else {
+        TOKEN
+    };
+    let reply = if auth != format!("Bearer {token}") {
         serde_json::json!({"ok": false, "error": "invalid_auth"})
     } else {
         let mut s = slack.lock().unwrap();
         match method {
-            "auth.test" => serde_json::json!({"ok": true, "user_id": "U0BOT"}),
+            "auth.test" => {
+                serde_json::json!({"ok": true, "user_id": "U0BOT", "bot_id":"B0BOT", "team_id":"T0000EXAMPLE"})
+            }
+            "apps.connections.open" => serde_json::json!({"ok":true, "url":s.socket_url}),
             "conversations.history" => {
                 let mut msgs: Vec<serde_json::Value> = s.messages.clone();
                 if let Some(oldest) = param("oldest").and_then(|o| o.parse::<f64>().ok()) {
@@ -134,6 +145,7 @@ impl Run {
             .env("BORGCHART_CONFIG", self.dir.path().join("config.yaml"))
             .env("BORGCHART_GATE_WAIT_MS", "15000")
             .env("SLACK_BOT_TOKEN", TOKEN)
+            .env("SLACK_APP_TOKEN", APP_TOKEN)
             .current_dir(self.dir.path().join("team"))
             .args(self.translate(args))
             .output()
@@ -234,20 +246,50 @@ fn slack_round_trip_through_the_example_team() {
         + 5;
     let urgent = format!("{now}.000100");
     let chatter = format!("{}.000200", now + 1);
-    let slack = Arc::new(Mutex::new(Slack::default()));
+    let socket_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let slack = Arc::new(Mutex::new(Slack {
+        socket_url: format!("ws://{}/", socket_listener.local_addr().unwrap()),
+        ..Slack::default()
+    }));
+    let (events, receiver) = std::sync::mpsc::channel::<Vec<serde_json::Value>>();
+    let socket_state = slack.clone();
+    std::thread::spawn(move || {
+        let (stream, _) = socket_listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(60)))
+            .unwrap();
+        let mut socket = tungstenite::accept(stream).unwrap();
+        socket
+            .send(tungstenite::Message::text(r#"{"type":"hello"}"#))
+            .unwrap();
+        for (i, message) in receiver.recv().unwrap().into_iter().enumerate() {
+            let mut message = message;
+            message["type"] = serde_json::json!("message");
+            message["channel"] = serde_json::json!("C0000EXAMPLE");
+            let envelope = serde_json::json!({"type":"events_api", "envelope_id":format!("event-{i}"), "payload":{"team_id":"T0000EXAMPLE", "event":message}});
+            socket
+                .send(tungstenite::Message::text(envelope.to_string()))
+                .unwrap();
+            let ack: serde_json::Value =
+                serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
+            assert_eq!(ack["envelope_id"], envelope["envelope_id"]);
+            socket_state.lock().unwrap().acks += 1;
+        }
+        while socket.read().is_ok() {}
+    });
     {
         let slack = slack.clone();
         std::thread::spawn(move || serve(listener, slack));
     }
 
-    // Point the plugin at the fake API (tests only), and poll quickly.
+    // Point the plugin at the fake API and Socket Mode listener (tests only).
     let team_yaml = fs::read_to_string(team.join("template.yaml")).unwrap();
     let channel = "      SLACK_CHANNEL_ID: C0000EXAMPLE";
     assert!(team_yaml.contains(channel), "{team_yaml}");
     let team_yaml = team_yaml.replacen(
         channel,
         &format!(
-            "      SLACK_CHANNEL_ID: C0000EXAMPLE\n      SLACK_API_BASE: http://127.0.0.1:{port}/api\n      SLACK_POLL_SECONDS: '1'"
+            "      SLACK_CHANNEL_ID: C0000EXAMPLE\n      SLACK_API_BASE: http://127.0.0.1:{port}/api"
         ),
         1,
     );
@@ -284,7 +326,7 @@ fn slack_round_trip_through_the_example_team() {
         String::from_utf8_lossy(&up.stderr)
     );
 
-    // Wait for the first snapshot, which must not replay existing history.
+    // Wait for the first hello, which establishes the history baseline.
     run.wait("watcher initialized", || {
         run.instance()
             .and_then(|inst| run.read(&format!("state/{inst}/plugins/slack/health.json")))
@@ -294,13 +336,18 @@ fn slack_round_trip_through_the_example_team() {
         serde_json::json!({"ts": urgent, "user": "U0000ALICE", "text": "deploys are failing on main"}),
         serde_json::json!({"ts": chatter, "user": "U0000OTHER", "text": "lunch?"}),
     ];
+    events.send(slack.lock().unwrap().messages.clone()).unwrap();
 
-    // The watcher hands both new messages to the triager in one ID-only batch.
+    // The watcher hands the socket messages to the triager as ID-only notices.
     run.wait("triager notified", || {
-        run.submissions("triager")
-            .iter()
-            .any(|notice| notice.contains(&format!("ts={urgent}")))
+        let notices = run.submissions("triager");
+        [&urgent, &chatter].iter().all(|ts| {
+            notices
+                .iter()
+                .any(|notice| notice.contains(&format!("ts={ts}")))
+        })
     });
+    assert_eq!(slack.lock().unwrap().acks, 2);
     let notes = run.submissions("triager");
     assert!(
         notes.iter().any(|n| n.contains(&format!("ts={urgent}"))),
@@ -315,11 +362,8 @@ fn slack_round_trip_through_the_example_team() {
 
     // The triager promotes the urgent one (a real triager would decide this).
     let cmd = format!("tool brg-slack promote {urgent} deploy");
-    assert!(
-        run.brg(&["msg", "send", "triager", &cmd, "--external", "test"])
-            .status
-            .success()
-    );
+    let promotion = run.brg(&["msg", "send", "triager", &cmd, "--external", "test"]);
+    assert!(promotion.status.success(), "{promotion:?}");
     run.wait("lead promotion", || {
         run.submissions("lead").iter().any(|s| {
             s.contains(&format!(

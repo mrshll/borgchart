@@ -10,10 +10,12 @@ Slack → brg-slack watch → triager → brg-slack promote → lead → brg-sla
 
 The [core Slack plugin](../../plugins/slack) is a Rust binary with no additional
 runtime requirements. The template finds `brg-slack` on PATH.
-Notices contain IDs only. The first poll snapshots the channel without a replay;
-later polls deliver new human posts and thread replies, including broadcast
-replies, skipping bots, other subtypes and edits. Each poll sends at most six
-items and 900 bytes.
+Notices contain IDs only. Watch listens over Socket Mode for new human posts
+and thread replies, including replies into old threads and broadcast replies,
+skipping bots, other subtypes and edits. Each batch has at most six items and
+900 bytes. The first connection establishes a baseline without replay; later
+connections catch up one page of up to 200 channel posts and broadcasts within
+`SLACK_WINDOW_HOURS`. Plain replies during downtime are lost.
 
 Both agents are restricted: the triager can `read`, `thread` and `promote`; the lead
 can `read`, `thread` and `reply`. Neither sees the bot token in its environment;
@@ -28,22 +30,27 @@ Every team has a bus. Restricted notices remain readable history with
 inbox/wait/unacked counts. Restricted recipients get no bus commands or inbox
 recovery. Bodies persist under existing plugin read rights, and store size/scan
 cost grow without automatic retention. Code 0 means committed and is never
-republished. Failed intake sends stay pending for the next poll and can repeat
+republished. Failed intake sends stay pending for retry and can repeat
 an ID notice if brg already received it.
 
 The lead can acknowledge, suggest likely causes and ask questions. It cannot
 look at systems. Giving it more read-only tools is future work.
 
 For allow-listed mention requests instead of channel intake, see the
-[Slack plugin mention mode](../../plugins/slack/README.md#mention-requests). A
-separate watch entry can set `SLACK_SKIP_MENTIONS: "true"` to coexist with it.
+[Slack plugin mention mode](../../plugins/slack/README.md#mention-requests).
+Run watch and mentions with separate Slack apps and state directories.
+`SLACK_SKIP_MENTIONS: "true"` skips leading mentions of watch's own bot,
+including requests from people outside the mention allowlist; it does not
+filter mentions of another app's bot.
 
 ## Setup
 
 1. Create a Slack app with a bot user. Give it `channels:history`, `chat:write`
    and `reactions:write`, plus `groups:history` for private channels. Install it
    and invite it to the channel. Slack's app/token restrictions also apply to
-   reading threads.
+   reading threads. Enable Socket Mode, create an app-level token with
+   `connections:write`, and subscribe to the bot events `message.channels` and
+   `message.groups` (private channels). Run one listener per Slack app.
 2. Set `SLACK_CHANNEL_ID` in `template.yaml` to the channel ID.
 3. Install brg, tmux and Claude Code. From a checkout,
    `make install` puts `brg-slack` on PATH; keep `BINDIR` on PATH.
@@ -56,8 +63,9 @@ separate watch entry can set `SLACK_SKIP_MENTIONS: "true"` to coexist with it.
    auth: api_key
    ```
 
-5. Inject `SLACK_BOT_TOKEN` from your shell or secret manager's `run` command.
-   Alternatively, set `SLACK_BOT_TOKEN: {from: "fake://bot-token"}` and configure
+5. Inject `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` from your shell or secret manager's `run` command.
+   Alternatively, set `SLACK_APP_TOKEN` to `{from: "fake://app-token"}` and
+   `SLACK_BOT_TOKEN` to `{from: "fake://bot-token"}` and configure
    [a secrets resolver](../../docs/format.md#configyaml). Never write the
    value into a file. `brg secrets ./examples/slack-devops` shows its source.
 6. Check and create a team in its own folder outside this checkout:
