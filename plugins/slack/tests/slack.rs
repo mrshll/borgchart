@@ -183,6 +183,179 @@ fn broadcast_reply_delivers_once_without_the_channel_copy() {
     );
 }
 
+fn broadcast(offset: u64, thread: &str) -> serde_json::Value {
+    let mut reply = post(offset);
+    reply["thread_ts"] = json!(thread);
+    reply["subtype"] = json!("thread_broadcast");
+    reply["bot_id"] = json!("B0000OTHER");
+    reply
+}
+
+#[test]
+fn broadcasts_to_expired_parents_are_delivered_once_in_timestamp_order() {
+    let mut h = Harness::new();
+    h.env.insert("SLACK_ALLOW_IDS".into(), "B0000OTHER".into());
+    let mut root = post(0);
+    root["latest_reply"] = post(1)["ts"].clone();
+    h.slack.lock().unwrap().messages = vec![root.clone()];
+    h.tick();
+    let old_thread = format!(
+        "{}.000100",
+        ts(&root)[..10].parse::<u64>().unwrap() - 90_000
+    );
+    let replies: Vec<_> = (2..6).map(|i| broadcast(i, &old_thread)).collect();
+    h.slack.lock().unwrap().messages.extend(replies.clone());
+    h.tick();
+    h.tick();
+    let sends = h.sends();
+    assert_eq!(sends.len(), 1);
+    assert_eq!(
+        sends[0].last().unwrap().lines().skip(1).collect::<Vec<_>>(),
+        replies
+            .iter()
+            .map(|r| format!("reply ts={} thread={old_thread}", ts(r)))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(h.state("health.json")["ok"], true);
+}
+
+#[test]
+fn broadcasts_do_not_replay_when_the_parent_leaves_or_reenters_history() {
+    let mut h = Harness::new();
+    h.env.insert("SLACK_ALLOW_IDS".into(), "B0000OTHER".into());
+    let mut root = post(0);
+    root["ts"] = json!(format!(
+        "{}.000100",
+        ts(&root)[..10].parse::<u64>().unwrap() - 7_200
+    ));
+    let first = broadcast(1, ts(&root));
+    let second = broadcast(2, ts(&root));
+    let third = broadcast(3, ts(&root));
+    h.slack.lock().unwrap().messages = vec![root.clone()];
+    h.tick();
+    root["latest_reply"] = first["ts"].clone();
+    {
+        let mut s = h.slack.lock().unwrap();
+        s.messages = vec![root.clone(), first.clone()];
+        s.replies.insert(ts(&root).into(), vec![first.clone()]);
+    }
+    h.tick();
+    h.tick();
+    h.env.insert("SLACK_WINDOW_HOURS".into(), "1".into());
+    h.tick();
+    assert_eq!(h.sends().len(), 1);
+    h.slack.lock().unwrap().messages.push(second.clone());
+    h.tick();
+    assert_eq!(h.sends().len(), 2);
+    h.env.insert("SLACK_WINDOW_HOURS".into(), "24".into());
+    root["latest_reply"] = third["ts"].clone();
+    {
+        let mut s = h.slack.lock().unwrap();
+        s.messages = vec![root.clone(), first.clone(), second.clone(), third.clone()];
+        s.replies.insert(
+            ts(&root).into(),
+            vec![first.clone(), second.clone(), third.clone()],
+        );
+    }
+    h.tick();
+    h.tick();
+    assert_eq!(
+        h.sends()
+            .iter()
+            .flat_map(|a| a.last().unwrap().lines().skip(1).map(str::to_owned))
+            .collect::<Vec<_>>(),
+        [first, second, third]
+            .iter()
+            .map(|r| format!("reply ts={} thread={}", ts(r), ts(&root)))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn baseline_broadcasts_do_not_replay_when_their_parent_later_appears() {
+    let mut h = Harness::new();
+    h.env.insert("SLACK_ALLOW_IDS".into(), "B0000OTHER".into());
+    let mut root = post(0);
+    let baseline = broadcast(1, ts(&root));
+    let new = broadcast(2, ts(&root));
+    h.slack.lock().unwrap().messages = vec![baseline.clone()];
+    h.tick();
+    h.tick();
+    assert!(h.sends().is_empty());
+    root["latest_reply"] = new["ts"].clone();
+    {
+        let mut s = h.slack.lock().unwrap();
+        s.messages = vec![root.clone(), baseline.clone(), new.clone()];
+        s.replies
+            .insert(ts(&root).into(), vec![baseline, new.clone()]);
+    }
+    h.tick();
+    h.tick();
+    let sends = h.sends();
+    assert_eq!(sends.len(), 1);
+    assert_eq!(
+        sends[0].last().unwrap().lines().skip(1).collect::<Vec<_>>(),
+        vec![format!("reply ts={} thread={}", ts(&new), ts(&root))]
+    );
+}
+
+#[test]
+fn late_history_broadcast_does_not_replay_a_baselined_thread_reply() {
+    let mut h = Harness::new();
+    h.env.insert("SLACK_ALLOW_IDS".into(), "B0000OTHER".into());
+    let mut root = post(0);
+    let reply = broadcast(1, ts(&root));
+    root["latest_reply"] = reply["ts"].clone();
+    h.slack.lock().unwrap().messages = vec![root];
+    h.tick();
+    h.slack.lock().unwrap().messages.push(reply);
+    h.tick();
+    h.tick();
+    assert!(h.sends().is_empty());
+}
+
+#[test]
+fn broadcast_allowlist_excludes_unlisted_authors_without_dropping_listed_bots() {
+    let mut h = Harness::new();
+    h.env.insert("SLACK_ALLOW_IDS".into(), "B0000OTHER".into());
+    h.tick();
+    let root = post(0);
+    let mut unlisted = broadcast(1, ts(&root));
+    unlisted["bot_id"] = json!("B0000NOISE");
+    let listed = broadcast(2, ts(&root));
+    h.slack.lock().unwrap().messages = vec![unlisted, listed.clone()];
+    h.tick();
+    h.tick();
+    let sends = h.sends();
+    assert_eq!(sends.len(), 1);
+    assert_eq!(
+        sends[0].last().unwrap().lines().skip(1).collect::<Vec<_>>(),
+        vec![format!("reply ts={} thread={}", ts(&listed), ts(&root))]
+    );
+}
+
+#[test]
+fn failed_broadcast_delivery_retries_even_when_its_parent_has_expired() {
+    let mut h = Harness::new();
+    h.env.insert("SLACK_ALLOW_IDS".into(), "B0000OTHER".into());
+    h.tick();
+    let old_thread = format!(
+        "{}.000100",
+        ts(&post(0))[..10].parse::<u64>().unwrap() - 90_000
+    );
+    h.slack.lock().unwrap().messages = vec![broadcast(1, &old_thread)];
+    h.outcome(4, json!({}));
+    h.tick();
+    assert_eq!(h.state("health.json")["ok"], false);
+    h.outcome(0, json!({}));
+    h.tick();
+    h.tick();
+    let sends = h.sends();
+    assert_eq!(sends.len(), 2);
+    assert_eq!(sends[0], sends[1]);
+    assert_eq!(h.state("health.json")["ok"], true);
+}
+
 #[test]
 fn reply_filter_prevents_own_bot_feedback_and_unlisted_bot_or_subtype_noise() {
     let mut h = Harness::new();

@@ -16,7 +16,7 @@ fn member(name: &str, parent: Option<&str>) -> StatusRow {
         effort: None,
         overrides: Default::default(),
         parent: parent.map(String::from),
-        posture: Some("vendor".into()),
+        restricted_access: false,
         state: "working".into(),
         rule: None,
         activity: None,

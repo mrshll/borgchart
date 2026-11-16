@@ -317,7 +317,10 @@ fn full_start_cannot_hide_unacked_work_on_a_kept_unstarted_locked_member() {
     env.ok(&["stop", &instance]);
     env.write(
         "templates/oncall/template.yaml",
-        &TEAM.replace("prompt: scout.md", "prompt: scout.md\n    posture: locked"),
+        &TEAM.replace(
+            "prompt: scout.md",
+            "prompt: scout.md\n    restricted_access: true",
+        ),
     );
     let out = env.brg(&["start", &instance]);
     assert!(!out.status.success(), "{}", both(&out));
@@ -337,7 +340,10 @@ fn joining_locked_member_cannot_abandon_unacked_ordinary_work() {
     env.ok(&["stop", &format!("{instance}/{scout}")]);
     env.write(
         "templates/oncall/template.yaml",
-        &TEAM.replace("prompt: scout.md", "prompt: scout.md\n    posture: locked"),
+        &TEAM.replace(
+            "prompt: scout.md",
+            "prompt: scout.md\n    restricted_access: true",
+        ),
     );
     // Starting a helper must not transition the stopped scout.
     env.ok(&["create", &format!("{instance}/helper")]);
@@ -359,13 +365,13 @@ fn vendor_to_locked_requires_settling_ordinary_messages() {
         "templates/oncall/template.yaml",
         &TEAM.replace(
             "    prompt: lead.md",
-            "    prompt: lead.md\n    posture: locked",
+            "    prompt: lead.md\n    restricted_access: true",
         ),
     );
     let out = env.cmd(&["start", &instance]).output().unwrap();
     assert!(!out.status.success(), "{}", both(&out));
     assert!(
-        both(&out).contains("settle them before changing to locked"),
+        both(&out).contains("settle them before restricting it"),
         "{}",
         both(&out)
     );
@@ -388,7 +394,7 @@ fn vendor_to_locked_requires_settling_ordinary_messages() {
         "templates/oncall/template.yaml",
         &TEAM.replace(
             "    prompt: lead.md",
-            "    prompt: lead.md\n    posture: locked",
+            "    prompt: lead.md\n    restricted_access: true",
         ),
     );
     env.ok(&["start", &instance]);

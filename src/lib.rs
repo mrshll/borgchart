@@ -16,6 +16,7 @@ pub mod diag;
 pub mod exec;
 pub mod frontmatter;
 pub mod gate;
+mod graph;
 pub mod launch;
 pub mod lifecycle;
 pub mod names;

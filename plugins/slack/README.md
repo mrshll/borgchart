@@ -63,10 +63,10 @@ request inline to the fixed member from `external:slack`, with its ID, reply and
 thread commands, and a reminder to ignore a copy already taken. The request is
 the listed person's ask under the member's standing rules. Earlier thread text,
 including that person's earlier messages, is framed evidence with no authority.
-A vendor recipient with host tools therefore receives other people's text;
-framing cannot prevent all attempts to steer it. Set `untrusted_input: true`
-and `accept_risk: true` on that role; brg validation warns about a plugin target
-in vendor posture.
+An unrestricted recipient with host tools therefore receives other people's text;
+framing cannot prevent all attempts to steer it. To let the lead use vendor
+settings, leave out `restricted_access: true`; brg validation warns about an
+unrestricted plugin target.
 
 Request IDs look like `C0000EXAMPLE-1700000000.000100`. `thread`, `reply` and
 `react` accept them: reads/replies use the recorded channel and root thread;
@@ -119,7 +119,7 @@ mention intake.
 - `watch [--once]`: snapshot the first window without delivering it, then poll
   new top-level posts and replies to tracked threads. Notices contain timestamps
   and fixed labels, never Slack text. Edits and subtypes are skipped, except
-  human `thread_broadcast` replies and explicitly allowlisted bots' `bot_message`
+  `thread_broadcast` replies and explicitly allowlisted bots' `bot_message`
   posts. The plugin's own bot is always skipped. Without an allowlist, every
   human qualifies.
 - `read <ts>`: read a top-level post. `thread <ts-or-request-id>`: read up to 200 thread
@@ -128,7 +128,7 @@ mention intake.
   escapes control characters except newline/tab, and redacts both Slack tokens.
 - `promote <ts> <reason>`: send a fixed notice to the member's parent, with
   `--from` validating that route. The reasons are `outage`, `deploy`,
-  `security`, `question`, `other`. No Slack text is forwarded. For locked Codex,
+  `security`, `question`, `other`. No Slack text is forwarded. For restricted Codex,
   success prints `queued; brg sends it when the command returns`; brg's
   PostToolUse hook sends as the member to its parent only and reports failures as
   extra context. Permanent refusals are removed. If brg cannot start, the send
@@ -191,14 +191,17 @@ State files are created with mode 0600. One plugin state lock serializes polling
 cursor and health snapshots use a temporary file and rename. A crash after an
 intake send but before saving its removal, or a failed send that already reached
 brg, can repeat an ID notice. Pending items remain available for the next poll.
-Locked recipients have no inbox recovery; check plugin health after failures.
+Restricted recipients have no inbox recovery; check plugin health after failures.
 
 Edits are not delivered. Threads whose roots left the window are not watched,
-and pending items expire with that window. History scans one page of 200; more
-than 200 posts in the window leave older posts unscanned. Thread reads return at
-most 200 messages; the watcher fetches replies in pages of at most 200, advancing
-its timestamp until it catches the advertised latest reply. Slack rate limits
-honour Retry-After, capped at 60 seconds, with at most three retries per call.
+but thread replies also sent to the channel are delivered as replies while
+they are within the window, even when their roots are not. Pending broadcasts
+expire by their own timestamps; other pending items expire with their roots.
+History scans one page of 200; more than 200 posts in the window leave older
+posts unscanned. Thread reads return at most 200 messages; the watcher fetches
+replies in pages of at most 200, advancing its timestamp until it catches the
+advertised latest reply. Slack rate limits honour Retry-After, capped at 60
+seconds, with at most three retries per call.
 
 Run the fake-backed tests with:
 

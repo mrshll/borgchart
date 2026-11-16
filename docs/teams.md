@@ -38,7 +38,7 @@ roles:
     start: false
 ```
 
-- **Roles** have a role file (`prompt`), an optional `vendor`, a `parent`, and `start`. The key under `roles:` names the role. `start: false` means its members are created on demand. Each role keeps up to `max` members (default 1), running or stopped. Roles also have a `posture` (`vendor`, the default, or `locked` for members that read untrusted text) and plugin grants.
+- **Roles** have a role file (`prompt`), an optional `vendor`, a `parent`, and `start`. The key under `roles:` names the role. `start: false` means its members are created on demand. Each role keeps up to `max` members (default 1), running or stopped. Roles also have optional `restricted_access: true` for members that read untrusted text (unrestricted by default) and plugin grants.
 - **`parent`** makes the org chart, and messages follow it: a member writes to its parent or its children. The top member can also write to an outside caller (`external:NAME`).
 - **Plugins** are plain programs, declared under `plugins:` (a folder in the template, or `shared:<name>`, with the variables they receive and the actions members may be granted). brg runs only what `template.yaml` lists. A member can use only the actions it's granted; each granted action appears in its instruction with an absolute path. Secrets reach the plugin through a private file, never the agent's environment.
   - A plugin may also declare a long-running `process` (a watcher of some outside source) with `delivers_to: <role>`.
@@ -71,7 +71,7 @@ devteam-k3f9  template ~/.config/borgchart/templates/devteam · folder ~/work/pr
 ```
 
 - **`create`** makes a new team in that folder, with a suffixed ID; run it twice and you have two. Every team has durable messages.
-- **Per role** in `template.yaml`: `posture`, extra vendor `args` and `worktree: true` for members that each need their own checkout. Standing rules go in the template's own files; context for one piece of work goes to the lead in a message.
+- **Per role** in `template.yaml`: `restricted_access`, extra vendor `args` and `worktree: true` for members that each need their own checkout. Standing rules go in the template's own files; context for one piece of work goes to the lead in a message.
 - **Secrets:** empty `env` values read your start environment; `NAME: {from: "<reference>"}` uses `secrets.resolver` instead. `brg secrets devteam` lists sources and which environment secrets are set, without values or references.
 
 ## Commands
@@ -104,9 +104,9 @@ A small top level for people. `brg --help` and `brg <command> --help` give the f
 
 ## How members talk
 
-- **`msg send`** writes a durable message, then queues its tagged envelope as the next Codex turn or uses guarded Claude typing, including during a Claude turn. Members send to their parent or children; only root members of the tree's root team also send to outside callers. Outside callers without team context default to `external:owner`; `--external NAME` overrides it. Across a child team's parent edge, members use full `team/member` addresses; the tree shares one store and message IDs, with the same queue, typing and locked delivery rules across edges. Parentless `vendor` members of independent top-level teams may also send by full address, without `--from` or `--allow-unknown`. One record belongs to the recipient's store; `--reply-to m1` references a message from that peer to you in your own store and is saved as `<your-tree>:m1`. Other cross-team sends, including between sibling child teams, are refused. Peer requests give no owner authority or additional access to the other tree. Status, logs and attach already reach every tree. The same-user checks guard mistakes, not hostile processes.
-- **`interactive: true`** roles are never typed into, even with `--allow-unknown`: Claude members are inbox-only; every Codex member gets each message through `codex queue` as its next turn, regardless of this setting. False is the default. The setting is frozen per start and invalid on locked or nested team roles. Ordinary recipients explicitly ack when taking responsibility; typing does not ack. Treat a duplicate ID from typed delivery and msg wait as the same work. Locked records require no ack and give no new permissions or inbox recovery.
-- **Stored success is success.** An ordinary send returns 0 once committed, even when input is suppressed or uncertain. Never republish it automatically. Locked postcommit delivery failure returns nonzero with its ID; retries may duplicate history and input.
+- **`msg send`** writes a durable message, then queues its tagged envelope as the next Codex turn or uses guarded Claude typing, including during a Claude turn. Members send to their parent or children; only root members of the tree's root team also send to outside callers. Outside callers without team context default to `external:owner`; `--external NAME` overrides it. Across a child team's parent edge, members use full `team/member` addresses; the tree shares one store and message IDs, with the same queue, typing and restricted delivery rules across edges. Parentless unrestricted members of independent top-level teams may also send by full address, without `--from` or `--allow-unknown`. One record belongs to the recipient's store; `--reply-to m1` references a message from that peer to you in your own store and is saved as `<your-tree>:m1`. Other cross-team sends, including between sibling child teams, are refused. Peer requests give no owner authority or additional access to the other tree. Status, logs and attach already reach every tree. The same-user checks guard mistakes, not hostile processes.
+- **`interactive: true`** roles are never typed into, even with `--allow-unknown`: Claude members are inbox-only; every Codex member gets each message through `codex queue` as its next turn, regardless of this setting. False is the default. The setting is frozen per start and invalid on restricted or nested team roles. Ordinary recipients explicitly ack when taking responsibility; typing does not ack. Treat a duplicate ID from typed delivery and msg wait as the same work. Restricted records require no ack and give no new permissions or inbox recovery.
+- **Stored success is success.** An ordinary send returns 0 once committed, even when input is suppressed or uncertain. Never republish it automatically. Restricted postcommit delivery failure returns nonzero with its ID; retries may duplicate history and input.
 - **Work is prose.** The lead writes a brief file, sends a message naming it and starts the helper. The helper reads `msg list --full`, acks once it takes responsibility, writes its report atomically and replies naming it with `reply_to` the brief message. The lead verifies the report, diff and checks itself, stops the helper, then checks status shows it stopped before reusing the checkout. One writer per checkout and one piece of work per helper are team rules. Progress and delegation live in pull request descriptions and comments.
 
 **Getting a member's attention.** Ack everything you have taken on. A Claude member then arms one `msg wait` with its Bash tool in background mode. A Codex member runs no wait: it finishes its turn, and brg queues each new message into its session as its next turn. For a waiting Claude member, new unacked messages return at once; messages already there wait 60 seconds and return only if still unacked. Errors wait at least 60 seconds too, except fenced, explicit help and signals. On exit 9 wait again; on exit 8 (`fenced`) stop waiting and tell the owner. A message left unacked wakes a waiting member about once a minute.
@@ -115,7 +115,7 @@ By each brief's existing deadline, check ordinary records' ack/status. Start a s
 
 ## Secrets
 
-Plugin secrets come from the start environment or a [configured resolver](format.md#configyaml), go only to that plugin's 0600 file, and are removed at `brg stop`. Fresh starts resolve once per team; joining starts reuse settings. A member cannot trigger the resolver; the owner starts the team and approves any prompt. Rotation requires a full stop/start. `brg secrets <template>` lists sources without values or references. 0600 keeps other users out, not the members: a member that isn't `locked` could read the file while it exists.
+Plugin secrets come from the start environment or a [configured resolver](format.md#configyaml), go only to that plugin's 0600 file, and are removed at `brg stop`. Fresh starts resolve once per team; joining starts reuse settings. A member cannot trigger the resolver; the owner starts the team and approves any prompt. Rotation requires a full stop/start. `brg secrets <template>` lists sources without values or references. 0600 keeps other users out, not the members: an unrestricted member could read the file while it exists.
 
 ## Roles with several members
 
@@ -188,7 +188,7 @@ roles:
 
 - **Trusted, same-user operation.** Members can reach each other's terminals; nothing isolates them.
 - **A reboot stops every team.** brg refuses a state folder under `/tmp`, so messages survive it.
-- **`locked` members can't use messages yet.**
+- **Restricted members have no inbox recovery.** Granted plugins can send to their parent.
 
 ## Open
 

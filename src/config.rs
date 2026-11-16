@@ -106,10 +106,10 @@ pub struct Config {
     pub file: Option<PathBuf>,
     pub auth: Auth,
     /// Trust each team's folder without a person. Claude: brg answers its
-    /// folder-trust dialog; `None` (the default) for `locked` members only,
+    /// folder-trust dialog; `None` (the default) for restricted members only,
     /// which ignore project settings; `Some(true)` for every member;
     /// `Some(false)` for none. Codex: session config, only with `Some(true)`
-    /// and only in `vendor` posture.
+    /// and only without restricted access.
     pub auto_trust: Option<bool>,
     /// Where template names are looked up, in order.
     #[serde(rename = "templates")]

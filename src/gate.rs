@@ -1,4 +1,4 @@
-//! The `locked` gate: a pre-tool-use hook shared by Claude and Codex.
+//! The restricted gate: a pre-tool-use hook shared by Claude and Codex.
 //!
 //! The vendor runs `brg _gate pre <state> <member>` before every tool call and
 //! passes the call as JSON on stdin. The gate allows a call only when it is a
@@ -161,7 +161,7 @@ fn record_session(state: &StateDir, member: &str) -> Result<(), String> {
     .map_err(|e| format!("cannot record session: {e}"))
 }
 
-/// `brg _gate pre|post|start|session <state> <member>`. `start` is a `locked`
+/// `brg _gate pre|post|start|session <state> <member>`. `start` is a restricted
 /// member's SessionStart hook: it marks the gate active and records the
 /// session. `session` is every other member's, and only records the session.
 pub fn hook_main(event: &str, state_root: &Path, member: &str) -> ExitCode {
@@ -218,7 +218,7 @@ pub fn hook_main(event: &str, state_root: &Path, member: &str) -> ExitCode {
             match verdict {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(why) => {
-                    eprintln!("borgchart locked: {why}");
+                    eprintln!("borgchart restricted: {why}");
                     ExitCode::from(2)
                 }
             }
