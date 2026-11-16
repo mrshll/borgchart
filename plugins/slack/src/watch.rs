@@ -61,7 +61,6 @@ fn collect(
         json!({"channel":api.channel()?,"oldest":format!("{cutoff:.6}"),"limit":200}),
         false,
     )?;
-    let mut roots = BTreeSet::new();
     for message in messages(&history) {
         let Some(ts) = timestamp(&message["ts"]) else {
             continue;
@@ -69,7 +68,6 @@ fn collect(
         if number(ts) < cutoff || message["thread_ts"].as_str().unwrap_or(ts) != ts {
             continue;
         }
-        roots.insert(ts);
         let old = state.messages.get(ts);
         let mut entry = old.cloned().unwrap_or_else(|| Entry {
             newest_reply: ts.into(),
@@ -138,11 +136,11 @@ fn collect(
             .messages
             .get(thread)
             .is_some_and(|entry| ts <= entry.newest_reply.as_str());
+        // Record baseline and covered broadcasts so neither path replays them.
         if message["subtype"] == "thread_broadcast"
             && thread != ts
             && number(ts) >= cutoff
             && api::allowed(message, own, &allow)
-            && (first || covered || !roots.contains(thread))
             && state.broadcasts.insert(ts.into())
             && !first
             && !covered

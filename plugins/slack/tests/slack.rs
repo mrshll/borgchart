@@ -300,6 +300,21 @@ fn baseline_broadcasts_do_not_replay_when_their_parent_later_appears() {
 }
 
 #[test]
+fn late_history_broadcast_does_not_replay_a_baselined_thread_reply() {
+    let mut h = Harness::new();
+    h.env.insert("SLACK_ALLOW_IDS".into(), "B0000OTHER".into());
+    let mut root = post(0);
+    let reply = broadcast(1, ts(&root));
+    root["latest_reply"] = reply["ts"].clone();
+    h.slack.lock().unwrap().messages = vec![root];
+    h.tick();
+    h.slack.lock().unwrap().messages.push(reply);
+    h.tick();
+    h.tick();
+    assert!(h.sends().is_empty());
+}
+
+#[test]
 fn broadcast_allowlist_excludes_unlisted_authors_without_dropping_listed_bots() {
     let mut h = Harness::new();
     h.env.insert("SLACK_ALLOW_IDS".into(), "B0000OTHER".into());

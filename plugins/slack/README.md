@@ -194,13 +194,14 @@ brg, can repeat an ID notice. Pending items remain available for the next poll.
 Locked recipients have no inbox recovery; check plugin health after failures.
 
 Edits are not delivered. Threads whose roots left the window are not watched,
-but thread replies also sent to the channel are delivered as replies, even
-when their roots are outside the window. Pending items expire with that window.
-History scans one page of 200; more
-than 200 posts in the window leave older posts unscanned. Thread reads return at
-most 200 messages; the watcher fetches replies in pages of at most 200, advancing
-its timestamp until it catches the advertised latest reply. Slack rate limits
-honour Retry-After, capped at 60 seconds, with at most three retries per call.
+but thread replies also sent to the channel are delivered as replies while
+they are within the window, even when their roots are not. Pending broadcasts
+expire by their own timestamps; other pending items expire with their roots.
+History scans one page of 200; more than 200 posts in the window leave older
+posts unscanned. Thread reads return at most 200 messages; the watcher fetches
+replies in pages of at most 200, advancing its timestamp until it catches the
+advertised latest reply. Slack rate limits honour Retry-After, capped at 60
+seconds, with at most three retries per call.
 
 Run the fake-backed tests with:
 
