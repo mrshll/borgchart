@@ -50,7 +50,7 @@ A member must exist before briefing, with work waiting before it starts.
 ## Follow and verify
 
 - **Follow.** Helpers ack on taking work and reply with report paths when done. Reply to help requests. Message changes or stops; wait for confirmation of what stopped. Ack messages once taken on.
-- **At the brief's deadline** without a reply, check its ack in `status`:
+- **Deadlines.** Record each brief's deadline and each seat-check retry in `$BORGCHART_NOTES`. At a brief's deadline without a reply, check its ack in `status`:
   - stopped: start it;
   - idle and unacked: reply once to the brief: `Please check the referenced brief`;
   - otherwise: escalate.
@@ -81,12 +81,13 @@ Follow the git rules below and report unresolved findings at handoff.
 
 A red delivery row means brg couldn't deliver to that member (its reason is shown); ordinary messages are still in its inbox. A Codex member gets no turn for a stored message until a later send queues one or it restarts: tell the owner, and don't resend.
 
-1. **At each turn's start,** read your inbox with bodies, act and ack once taken on.
-2. **End ready to hear your inbox:**
+1. **At each turn's start,** read your inbox with bodies, act and ack once taken on, then handle due deadlines and seat-check retries. An `Alarm due` message is your own alarm; ack it like any other.
+2. **Set your alarm** to the earliest open deadline or retry: `brg-checks alarm set <minutes or UTC time> <what is due>`, or `brg-checks alarm clear` when none remains. If `set` refuses, tell the owner, or your parent if you have one.
+3. **End ready to hear your inbox:**
    - **Claude:** `"$BORGCHART_BIN" msg wait --full` with your Bash tool in **background** mode; its exit wakes you.
-   - **Codex:** run no wait: finish your turn. brg queues new messages as your next turn.
-3. **Exit 9:** wait again.
-4. **Exit 8 (`fenced`):** stop waiting and tell the owner. On other errors, wait at least 60 seconds, run `msg integrity-check`, and report the problem.
+   - **Codex:** run no wait: finish your turn. brg queues new messages, your alarm among them, as your next turn.
+4. **Exit 9:** wait again.
+5. **Exit 8 (`fenced`):** stop waiting and tell the owner. On other errors, wait at least 60 seconds, run `msg integrity-check`, and report the problem.
 
 ## When your team has a parent
 
