@@ -26,22 +26,23 @@ pub(crate) struct Health {
     connection: String,
     pub(crate) delivery: String,
     pub(crate) reaction: String,
+    catch_up: String,
     ignored: usize,
 }
 impl Health {
     pub(crate) fn write(&self, files: &State) -> Result<()> {
-        let ok = self.connection.is_empty() && self.delivery.is_empty() && self.reaction.is_empty();
+        let errors = [&self.delivery, &self.reaction, &self.catch_up];
+        let ok = self.connection.is_empty() && errors.iter().all(|e| e.is_empty());
         let state = if self.connection.is_empty() {
             "listening"
         } else {
             &self.connection
         };
         let ignored = format!("{} ignored", self.ignored);
-        let parts = [state, &ignored, &self.delivery, &self.reaction];
-        let detail = parts
-            .iter()
+        let detail = [state, &ignored]
+            .into_iter()
+            .chain(errors.map(String::as_str))
             .filter(|p| !p.is_empty())
-            .copied()
             .collect::<Vec<_>>();
         files.health(ok, &api::safe(&detail.join("; ")))?;
         Ok(())
@@ -51,7 +52,7 @@ fn connection(
     api: &Api,
     files: &State,
     event: &impl Fn(&Value) -> Result<Event>,
-    hello: &impl Fn() -> Result<()>,
+    hello: &impl Fn() -> Result<bool>,
     wake: &mpsc::Sender<()>,
     health: &Mutex<Health>,
 ) -> Result<bool> {
@@ -122,7 +123,18 @@ fn connection(
             };
             status.write(files)?;
             drop(status);
-            hello()?;
+            let catch_up = match hello() {
+                Ok(queued) => {
+                    if queued {
+                        let _ = wake.send(());
+                    }
+                    String::new()
+                }
+                Err(error) => format!("catch-up failed: {error}"),
+            };
+            let mut status = health.lock().unwrap();
+            status.catch_up = catch_up;
+            status.write(files)?;
         }
         let Some(id) = envelope["envelope_id"].as_str() else {
             continue;
@@ -147,7 +159,7 @@ pub(crate) fn run(
     files: &State,
     once: bool,
     event: impl Fn(&Value) -> Result<Event>,
-    hello: impl Fn() -> Result<()>,
+    hello: impl Fn() -> Result<bool>,
     deliver: impl Fn(&Mutex<Health>) -> Result<()> + Send,
 ) -> Result<()> {
     let health = Mutex::new(Health {
@@ -199,7 +211,20 @@ pub(crate) fn run(
         drop(wake);
         worker
             .join()
-            .map_err(|_| Error::failure("delivery worker stopped; restart mentions"))?;
+            .map_err(|_| Error::failure("delivery worker stopped; restart the listener"))?;
         result
     })
+}
+
+pub(crate) fn auth(api: &Api, files: &State, once: bool) -> Result<Value> {
+    let mut backoff = 1;
+    loop {
+        match api.call("auth.test", json!({}), false) {
+            Ok(auth) => return Ok(auth),
+            Err(error) if once => return Err(error),
+            Err(_) => files.health(false, "cannot identify bot; check Slack access; retrying")?,
+        }
+        std::thread::sleep(Duration::from_secs(backoff));
+        backoff = (backoff * 2).min(60);
+    }
 }

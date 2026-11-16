@@ -16,7 +16,7 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Action {
-    /// Poll the channel and send ID notices
+    /// Listen for channel message events over Socket Mode and send ID notices
     Watch {
         #[arg(long)]
         once: bool,

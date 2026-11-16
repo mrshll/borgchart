@@ -13,6 +13,7 @@ plugins:
     process: [brg-slack, watch]
     delivers_to: triager
     env:
+      SLACK_APP_TOKEN:
       SLACK_BOT_TOKEN:
       SLACK_CHANNEL_ID: C0000TEST
     actions:
@@ -27,6 +28,46 @@ plugins:
 Grant only the actions a role needs. The process runs in the template folder;
 actions run in the member's folder. Use `brg-slack --help` for the command list.
 The [slack-devops example](../../examples/slack-devops) provides a complete team.
+
+## Channel watch
+
+Enable Socket Mode for the Slack app and create an app-level token with
+`connections:write`. Subscribe the bot to `message.channels` for public channels
+and `message.groups` for private channels. Give it `channels:history` and,
+for private channels, `groups:history`; install the app and invite its bot to
+the configured channel. Add `chat:write` and `reactions:write` for the write
+actions you grant. Inject `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` through the
+launching environment or brg's configured secrets resolver.
+
+`watch [--once]` listens for message events in `SLACK_CHANNEL_ID` from its own
+workspace. Notices contain timestamps and fixed labels, never Slack text.
+Top-level posts and replies reach the recipient, including plain replies in
+threads whose parents are older than `SLACK_WINDOW_HOURS`. Edits and deletions
+are skipped. `thread_broadcast` replies and explicitly allowlisted bots'
+`bot_message` posts qualify; the plugin's own bot is always skipped. Without
+an allowlist, every human qualifies.
+
+Use **one Socket Mode listener per Slack app**. Slack distributes events among
+connections; another connection makes health not ok. To run watch and mentions
+together, use separate Slack apps and separate state directories. Set
+`SLACK_SKIP_MENTIONS: "true"` on watch if leading mentions of its bot should
+bypass channel intake.
+
+The first `hello` establishes a baseline without replaying history. Each later
+`hello`, including reconnects, catches up from the saved last timestamp or
+`now − SLACK_WINDOW_HOURS`, whichever is later. Catch-up reads **one page of up
+to 200 channel messages**: posts and broadcasts qualify, plain thread replies
+during downtime are lost, and older messages beyond that page can be missed.
+A catch-up error makes health not ok while socket events continue; a successful
+catch-up clears it. Prove scopes, downtime and reconnect behavior with the app
+before relying on it.
+
+Startup authentication failures retry with backoff from one to 60 seconds.
+The listener refreshes immediately on `disconnect`; other socket failures
+reconnect with the same backoff, reset on `hello`. It pings after 30 idle seconds
+and reconnects after 90 seconds without a frame. `--once` follows refreshes,
+then finishes after a socket close/error and drains pending delivery; connection
+setup errors exit non-zero.
 
 ## Mention requests
 
@@ -107,21 +148,16 @@ but still follows `disconnect` refreshes. Mentions during downtime are lost: no
 start a new request. The owner should prove scopes, downtime and reconnect
 behavior with the app before relying on it.
 
-For watch coexistence, use a separate plugin entry and state directory with
-`SLACK_SKIP_MENTIONS: "true"` where mention requests should bypass watch intake.
-Leading mentions from people outside `SLACK_MENTION_USERS` are then seen by
-neither entry. Unset or any other value preserves ordinary watch behavior.
-Once cut over, the app's `message.channels` subscription is unnecessary for
-mention intake.
+For watch coexistence, use a separate Slack app, plugin entry and state directory.
+`SLACK_SKIP_MENTIONS: "true"` filters only leading mentions of watch's own bot;
+it does not filter mentions of another app's bot. Unset or any other value
+preserves ordinary watch behavior. Mention intake needs only `app_mention`,
+not a `message.channels` subscription.
 
 ## Actions
 
-- `watch [--once]`: snapshot the first window without delivering it, then poll
-  new top-level posts and replies to tracked threads. Notices contain timestamps
-  and fixed labels, never Slack text. Edits and subtypes are skipped, except
-  `thread_broadcast` replies and explicitly allowlisted bots' `bot_message`
-  posts. The plugin's own bot is always skipped. Without an allowlist, every
-  human qualifies.
+- `watch [--once]`: listen for channel message events and deliver ID notices;
+  see [Channel watch](#channel-watch) for setup and catch-up limits.
 - `read <ts>`: read a top-level post. `thread <ts-or-request-id>`: read up to 200 thread
   messages. Output starts with an untrusted-data warning, frames each message
   with timestamp/author/edit metadata, prefixes every text line with `| `,
@@ -155,11 +191,10 @@ stderr line. Quote multiword text as one argument. No page audit log is kept.
 | --- | --- |
 | `SLACK_BOT_TOKEN` | Required bot token; supply it through the launching environment or brg's configured secrets resolver. |
 | `SLACK_CHANNEL_ID` | Required for watch, read, page and timestamp-based actions; not needed for mentions or request IDs. |
-| `SLACK_APP_TOKEN` | Required for mentions; app-level token with `connections:write`. |
+| `SLACK_APP_TOKEN` | Required for watch and mentions; app-level token with `connections:write`. |
 | `SLACK_MENTION_USERS` | Required for mentions: non-empty comma-separated human user IDs (`U…` or `W…`), with no empty entries. |
-| `SLACK_SKIP_MENTIONS` | Set exactly `true` on watch to skip leading mentions of its bot in posts and replies, while still advancing its cursor. Leading mentions from people outside `SLACK_MENTION_USERS` are then seen by neither entry. |
-| `SLACK_POLL_SECONDS` | Positive poll interval, default 15 seconds. |
-| `SLACK_WINDOW_HOURS` | Positive history window, default 24 hours. |
+| `SLACK_SKIP_MENTIONS` | Set exactly `true` on watch to skip leading mentions of its bot in posts and replies. |
+| `SLACK_WINDOW_HOURS` | Positive retention and reconnect catch-up bound, default 24 hours. Seen timestamps and pending items expire by their own timestamp. |
 | `SLACK_ALLOW_IDS` | Comma-separated user/bot IDs; empty or unset means every human. |
 | `SLACK_PAGE_IDS` | Comma-separated user IDs allowed for paging; empty/unset disables it. |
 | `SLACK_API_BASE` | Local fake API test hook; leave unset for Slack. |
@@ -175,33 +210,30 @@ dedicated state directory. New directories are private; existing directory permi
 
 ## Delivery and limits
 
-Pending intake items are sent oldest first, one batch per poll, at most six
-items and 900 UTF-8 bytes. Exit 0 from brg means sent: remove the batch from
-pending and save the cursor. Every other result, including a timeout, keeps the
-batch for the next poll. Each poll writes `ok`, UTC `at` and `detail` to
-`health.json`. Failed intake delivery and failed thread reads make health not ok;
-a failed thread is retried without blocking other posts or threads.
+Watch journals accepted timestamps and pending notices to `cursor.json` before
+acknowledging Slack. Pending intake items are sent oldest first on event or
+catch-up wakes and every 15 seconds, at most six items and 900 UTF-8 bytes per
+batch. Exit 0 from brg means sent: remove exactly that batch and save the cursor.
+Every other result, including a timeout, keeps it for retry. Sending runs off
+the socket thread and releases the cursor lock, so a slow send cannot delay
+acknowledgements. Health writes `ok`, UTC `at` and `detail` to `health.json`;
+connection, duplicate-listener, delivery and catch-up errors make it not ok.
+Listening health includes the count of ignored envelopes.
 
 Promotions send once and print brg's result, including its message ID, on success.
 On failure they exit 1 with brg's sanitized error; the member retries the action.
 The action retains its member identity and `--from` validates the parent route.
 The brg call is bounded to 30 seconds and kills its process group on timeout.
 
-State files are created with mode 0600. One plugin state lock serializes polling;
-cursor and health snapshots use a temporary file and rename. A crash after an
-intake send but before saving its removal, or a failed send that already reached
-brg, can repeat an ID notice. Pending items remain available for the next poll.
-Restricted recipients have no inbox recovery; check plugin health after failures.
+State files are created with mode 0600. One plugin state lock is held for the
+listener's run; cursor and health snapshots use a temporary file and rename.
+A crash after an intake send but before saving its removal, or a failed send
+that already reached brg, can repeat an ID notice. Pending items remain available
+for retry until their own timestamps leave the retention window. Restricted
+recipients have no inbox recovery; check plugin health after failures.
 
-Edits are not delivered. Threads whose roots left the window are not watched,
-but thread replies also sent to the channel are delivered as replies while
-they are within the window, even when their roots are not. Pending broadcasts
-expire by their own timestamps; other pending items expire with their roots.
-History scans one page of 200; more than 200 posts in the window leave older
-posts unscanned. Thread reads return at most 200 messages; the watcher fetches
-replies in pages of at most 200, advancing its timestamp until it catches the
-advertised latest reply. Slack rate limits honour Retry-After, capped at 60
-seconds, with at most three retries per call.
+Thread reads return at most 200 messages. Slack rate limits honour Retry-After,
+capped at 60 seconds, with at most three retries per call.
 
 Run the fake-backed tests with:
 

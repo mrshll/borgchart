@@ -12,7 +12,7 @@ use std::{
     collections::BTreeSet,
     fs,
     sync::Mutex,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 mod deliver;
@@ -29,13 +29,6 @@ pub struct Request {
     at: u64,
     state: String,
 }
-fn channel(value: &str) -> bool {
-    value.starts_with(['C', 'G'])
-        && value.len() > 1
-        && value
-            .bytes()
-            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
-}
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -48,7 +41,7 @@ fn filename(channel: &str, ts: &str) -> String {
 pub fn resolve(api: &Api, target: &str) -> Result<Request> {
     if let Some((c, ts)) = target
         .split_once('-')
-        .filter(|(c, ts)| channel(c) && api::valid_ts(ts))
+        .filter(|(c, ts)| api::valid_channel(c) && api::valid_ts(ts))
     {
         let request: Request = State::from_env()?.read_json(&filename(c, ts));
         if request.channel == c
@@ -100,7 +93,7 @@ fn accept(envelope: &Value, bot: &str, team: &str, users: &BTreeSet<String>) -> 
         || user == bot
         || !e["bot_id"].is_null()
         || !e["subtype"].is_null()
-        || !channel(c)
+        || !api::valid_channel(c)
         || !api::valid_ts(ts)
         || !api::valid_ts(thread)
         || !api::leading_mention(text, bot)
@@ -143,16 +136,7 @@ pub fn run(api: &Api, once: bool) -> Result<()> {
     }
     let files = State::from_env()?;
     let _lock = files.lock()?;
-    let mut backoff = 1;
-    let auth = loop {
-        match api.call("auth.test", json!({}), false) {
-            Ok(auth) => break auth,
-            Err(error) if once => return Err(error),
-            Err(_) => files.health(false, "cannot identify bot; check Slack access; retrying")?,
-        }
-        std::thread::sleep(Duration::from_secs(backoff));
-        backoff = (backoff * 2).min(60);
-    };
+    let auth = socket::auth(api, &files, once)?;
     let (bot, team) = (
         auth["user_id"].as_str().unwrap_or(""),
         auth["team_id"].as_str().unwrap_or(""),
@@ -178,7 +162,7 @@ pub fn run(api: &Api, once: bool) -> Result<()> {
                 Ok(Event::Ignored)
             }
         },
-        || Ok(()),
+        || Ok(false),
         |health| deliver(api, &files, &target, health),
     )
 }
