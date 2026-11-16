@@ -901,7 +901,7 @@ fn executable_symlink_swapped_after_validation_cannot_escape_at_execution() {
 }
 
 #[test]
-fn timer_without_member_routes_notice_as_external_checks() {
+fn timer_without_member_routes_notice_as_external_timer() {
     let f = Fixture::new();
     f.tick();
     f.write("value", "second");
@@ -915,7 +915,7 @@ fn timer_without_member_routes_notice_as_external_checks() {
     let args = &sends[0];
     assert_eq!(
         args[args.iter().position(|a| a == "--external").unwrap() + 1],
-        "checks"
+        "timer"
     );
     assert_eq!(args[args.len() - 2], "triager-test");
 }

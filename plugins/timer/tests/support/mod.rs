@@ -49,7 +49,7 @@ exit "$(/bin/cat "$BORGCHART_STATE_DIR/code")"
         self.write("value", "first\n");
     }
     pub fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_brg-checks"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_brg-timer"));
         command
             .env_clear()
             .current_dir(self.dir.path())

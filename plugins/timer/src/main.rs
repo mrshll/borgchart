@@ -1,6 +1,6 @@
 //! Run change-gated checks and read their evidence.
 use borgchart::plugin;
-use brg_checks::{alarm, config, run, state};
+use brg_timer::{alarm, config, run, state};
 use clap::{Parser, Subcommand, error::ErrorKind};
 use state::{Snapshot, one_line};
 
@@ -72,9 +72,9 @@ fn action(action: Action) -> Result<(), (i32, String)> {
             ));
         }
         let text = format!(
-            "Checks promote from {sender}: check={name} reason={reason}. Look with brg-checks last {name}."
+            "Timer promote from {sender}: check={name} reason={reason}. Look with brg-timer last {name}."
         );
-        match plugin::send("checks", &target, &text, Some(&sender)) {
+        match plugin::send("timer", &target, &text, Some(&sender)) {
             Ok(output) => println!("{output}"),
             Err(message) => return Err((1, message)),
         }
@@ -155,7 +155,7 @@ fn main() {
                     .collect::<Vec<_>>()
                     .join(" ")
             };
-            eprintln!("{}; run brg-checks --help", one_line(&detail));
+            eprintln!("{}; run brg-timer --help", one_line(&detail));
             std::process::exit(2);
         }
     };

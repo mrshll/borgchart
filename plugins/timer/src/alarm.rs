@@ -1,4 +1,4 @@
-//! One persistent check-in alarm per member, delivered by the checks process.
+//! One persistent check-in alarm per member, delivered by the timer process.
 use crate::config;
 use borgchart::{bus::time, plugin};
 use clap::Subcommand;
@@ -85,8 +85,8 @@ pub fn action(store: &plugin::State, action: Action) -> Result<(), String> {
                 .and_then(|t| now.duration_since(t).ok());
             match age {
                 Some(age) if age <= Duration::from_secs(300) => (),
-                Some(age) => return Err(format!("the checks process has not reported for {}s, so no alarm can fire; tell the owner", age.as_secs())),
-                None => return Err("the checks process has no current heartbeat, so no alarm can fire; tell the owner".into()),
+                Some(age) => return Err(format!("the timer process has not reported for {}s, so no alarm can fire; tell the owner", age.as_secs())),
+                None => return Err("the timer process has no current heartbeat, so no alarm can fire; tell the owner".into()),
             }
             let alarm = Alarm {
                 team,

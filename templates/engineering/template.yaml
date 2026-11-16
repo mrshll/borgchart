@@ -3,19 +3,19 @@ default: claude
 includes: catalog:shared/includes
 
 plugins:
-  checks:
-    process: [brg-checks, run]
+  timer:
+    process: [brg-timer, run]
     actions:
-      alarm-set: brg-checks alarm set <when> <note>
-      alarm-show: brg-checks alarm show
-      alarm-clear: brg-checks alarm clear
+      alarm-set: brg-timer alarm set <when> <note>
+      alarm-show: brg-timer alarm show
+      alarm-clear: brg-timer alarm clear
   seat:
     actions:
       route: brg-seat route <vendor> <model>
 
 roles:
   lead:
-    plugins: {seat: [route], checks: [alarm-set, alarm-show, alarm-clear]}
+    plugins: {seat: [route], timer: [alarm-set, alarm-show, alarm-clear]}
     prompt: lead.md
     interactive: true
     vendor: claude

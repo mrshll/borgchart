@@ -89,7 +89,7 @@ fn setup(dir: &Path, text: &str) -> PathBuf {
     fs::write(&file, text).unwrap();
     fs::create_dir_all(dir.join("home")).unwrap();
     fs::create_dir_all(dir.join("pinned/bin")).unwrap();
-    for name in ["brg-seat", "brg-checks"] {
+    for name in ["brg-seat", "brg-timer"] {
         let plugin = Path::new(env!("CARGO_BIN_EXE_brg")).with_file_name(name);
         assert!(
             plugin.is_file(),
@@ -207,7 +207,7 @@ fn alarm_process_warnings(report: &serde_json::Value, count: usize) {
     assert_eq!(
         warnings,
         vec![
-            "role `lead`: is granted `checks`, which runs a background process, but is unrestricted";
+            "role `lead`: is granted `timer`, which runs a background process, but is unrestricted";
             count
         ],
         "{report}"

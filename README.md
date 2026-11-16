@@ -89,7 +89,7 @@ The quick start installs from a clone. To install without one:
 cargo install --git https://github.com/mrshll/borgchart --locked --bin brg borgchart
 cargo install --git https://github.com/mrshll/borgchart --locked brg-seat
 cargo install --git https://github.com/mrshll/borgchart --locked brg-slack
-cargo install --git https://github.com/mrshll/borgchart --locked brg-checks
+cargo install --git https://github.com/mrshll/borgchart --locked brg-timer
 ```
 
 This needs Rust 1.89 or newer and tmux 3.2 or newer, plus the `claude` and/or `codex` CLIs. Building the Slack plugin also needs a C compiler for TLS. Nothing is published to crates.io yet.
@@ -105,4 +105,4 @@ echo 'BRG_COMPLETE=fish brg | source' > ~/.config/fish/completions/brg.fish
 Other shells are covered in [completion](docs/cli.md).
 
 
-Seating, [Slack](plugins/slack/README.md) and [checks](plugins/checks/README.md) are optional Rust workspace plugins, declared by teams that need them. To install all four binaries and configure template catalogs, follow [installing from a checkout](CONTRIBUTING.md#installing-from-a-checkout). `cargo install --path .` installs only core; the plugins are `cargo install --path plugins/seat`, `cargo install --path plugins/slack` and `cargo install --path plugins/checks`.
+Seating, [Slack](plugins/slack/README.md) and [timer](plugins/timer/README.md) are optional Rust workspace plugins, declared by teams that need them. To install all four binaries and configure template catalogs, follow [installing from a checkout](CONTRIBUTING.md#installing-from-a-checkout). `cargo install --path .` installs only core; the plugins are `cargo install --path plugins/seat`, `cargo install --path plugins/slack` and `cargo install --path plugins/timer`.
