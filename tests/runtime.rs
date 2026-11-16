@@ -1892,6 +1892,22 @@ fn folder_trust_is_accepted_when_the_dialog_drops_the_first_key() {
 }
 
 #[test]
+fn folder_trust_with_slow_keys_is_accepted_and_never_declined() {
+    // Each key takes longer than brg waits to read the dialog again, so
+    // brg presses a second time before the first one shows.
+    let env = trust_env("");
+    fs::write(env.path("home/fake-agent/trust-delays-keys"), "").unwrap();
+    let out = env.brg(&["start"]);
+    let events: Vec<_> = env
+        .events("alpha")
+        .into_iter()
+        .filter_map(|e| e["event"].as_str().map(str::to_string))
+        .filter(|e| e.starts_with("trust-"))
+        .collect();
+    assert_eq!(events, ["trust-accepted"], "{}", stdout(&out));
+}
+
+#[test]
 fn folder_trust_that_never_takes_a_key_is_left_for_a_person() {
     let env = trust_env("");
     fs::write(env.path("home/fake-agent/trust-drops-keys"), "1000").unwrap();

@@ -674,22 +674,32 @@ fn main() {
                 agent.draw();
                 continue;
             }
-            if pending.starts_with(b"\x1b[B") || pending.starts_with(b"\x1b[A") {
-                let down = pending[2] == b'B';
-                pending.drain(..3);
+            // Up and Down move round Claude's two trust choices, wrapping;
+            // End (as tmux sends it) selects the last, "Yes".
+            let key = [&b"\x1b[B"[..], b"\x1b[A", b"\x1b[4~"]
+                .into_iter()
+                .find(|k| pending.starts_with(k));
+            if let Some(key) = key {
+                let end = key.len() == 4;
+                pending.drain(..key.len());
                 if agent.mode == Mode::Trust && agent.trust_dropped_keys > 0 {
                     agent.trust_dropped_keys -= 1;
                 } else if agent.mode == Mode::Trust {
-                    agent.trust_choice = if down { 1 } else { 0 };
+                    if flag("trust-delays-keys") {
+                        std::thread::sleep(Duration::from_millis(350));
+                    }
+                    agent.trust_choice = if end { 1 } else { 1 - agent.trust_choice };
                     agent.draw();
                 }
                 continue;
             }
             if pending[0] == 0x1b
                 && pending.len() < 6
-                && (b"\x1b[200~".starts_with(&pending) || b"\x1b[201~".starts_with(&pending))
+                && (b"\x1b[200~".starts_with(&pending)
+                    || b"\x1b[201~".starts_with(&pending)
+                    || b"\x1b[4~".starts_with(&pending))
             {
-                break; // wait for the rest of a paste marker
+                break; // wait for the rest of a paste marker or End
             }
             let b = pending.remove(0);
             if in_paste {
