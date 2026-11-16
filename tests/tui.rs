@@ -614,6 +614,15 @@ fn terminal_status_summarizes_without_adding_a_summary_to_the_pipe() {
 
 #[test]
 fn watch_tabs_follow_messages_without_leaking_bodies_and_restore_the_terminal() {
+    watch_tabs(false);
+}
+
+#[test]
+fn bare_watch_switches_tree_stores_without_leaking_same_id_messages() {
+    watch_tabs(true);
+}
+
+fn watch_tabs(all: bool) {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     for name in ["team", "work", "home", "bin"] {
@@ -654,13 +663,70 @@ fn watch_tabs_follow_messages_without_leaking_bodies_and_restore_the_terminal() 
     assert!(out.status.success(), "{out:?}");
     let output = String::from_utf8(out.stdout).unwrap();
     let id = output.split_whitespace().next().unwrap();
+    let mut other = String::new();
+    if all {
+        fs::create_dir(root.join("other")).unwrap();
+        fs::create_dir(root.join("other-work")).unwrap();
+        fs::copy(
+            root.join("team/template.yaml"),
+            root.join("other/template.yaml"),
+        )
+        .unwrap();
+        fs::copy(root.join("team/alpha.md"), root.join("other/alpha.md")).unwrap();
+        let mut second = common::command(brg);
+        second
+            .env_clear()
+            .env(
+                "PATH",
+                private.path_with(&format!("{}:/usr/bin:/bin", root.join("bin").display())),
+            )
+            .env("HOME", root.join("home"))
+            .env("BORGCHART_STATE_HOME", root.join("state"))
+            .env("BORGCHART_CONFIG", root.join("missing.yaml"));
+        private.brg_env(&mut second, &inner);
+        let out = second
+            .arg("create")
+            .arg(root.join("other"))
+            .arg(root.join("other-work"))
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        other = String::from_utf8(out.stdout)
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .into();
+        let team: serde_json::Value = serde_json::from_slice(
+            &fs::read(root.join(format!("state/{other}/team.json"))).unwrap(),
+        )
+        .unwrap();
+        let member = team["members"].as_object().unwrap().keys().next().unwrap();
+        let paths = borgchart::bus::layout::StorePaths::from_root(
+            &root.join(format!("state/{other}/messages")),
+        );
+        let record = borgchart::bus::record::Record {
+            schema: borgchart::bus::SCHEMA,
+            id: "m1".into(),
+            seq: 1,
+            from: "external:second".into(),
+            to: format!("{other}/{member}"),
+            at: "2026-01-01T00:00:00.000Z".into(),
+            ack_required: true,
+            reply_to: vec![],
+            body: "PRIVATE-BODY-SECOND".into(),
+        };
+        borgchart::bus::fsx::write_new(&paths.record(1), &serde_json::to_vec(&record).unwrap())
+            .unwrap();
+    }
     let messages = root.join(format!("state/{id}/messages"));
     let lock = messages.join("lock");
     let saved_lock = root.join("saved-lock");
     fs::rename(&lock, &saved_lock).unwrap();
     std::os::unix::fs::symlink(&saved_lock, &lock).unwrap();
     let script = root.join("watch.sh");
-    fs::write(&script,format!("#!/bin/sh\nenv -i PATH={guard}:{root}/bin:/usr/bin:/bin HOME={root}/home TERM=xterm-256color LANG=C.UTF-8 BORGCHART_CONFIG={root}/missing.yaml BORGCHART_STATE_HOME={root}/state BORGCHART_TMUX_TMPDIR={tmpdir} BORGCHART_TMUX_SOCKET={inner} {brg} status -w {id} --interval 1\nprintf 'RESTORED:'\nstty -a\nsleep 600\n",guard=private.bin().display(),root=root.display(),tmpdir=private.dir().display())).unwrap();
+    let scope = if all { "" } else { id };
+    fs::write(&script,format!("#!/bin/sh\nenv -i PATH={guard}:{root}/bin:/usr/bin:/bin HOME={root}/home TERM=xterm-256color LANG=C.UTF-8 BORGCHART_CONFIG={root}/missing.yaml BORGCHART_STATE_HOME={root}/state BORGCHART_TMUX_TMPDIR={tmpdir} BORGCHART_TMUX_SOCKET={inner} {brg} status -w {scope} --interval 1\nprintf 'RESTORED:'\nstty -a\nsleep 600\n",guard=private.bin().display(),root=root.display(),tmpdir=private.dir().display())).unwrap();
     let out = private
         .tmux(&outer)
         .args(["new-session", "-d", "-s", "o", "-x", "80", "-y", "24", "sh"])
@@ -671,6 +737,29 @@ fn watch_tabs_follow_messages_without_leaking_bodies_and_restore_the_terminal() 
     let screen = || tmux(&private, &outer, &["capture-pane", "-p", "-t", "=o:"]);
     wait("tree tab", || screen().contains("▸tree"), screen);
     tmux(&private, &outer, &["send-keys", "-t", "=o:", "Tab"]);
+    if all {
+        wait(
+            "first tree selected",
+            || {
+                screen()
+                    .lines()
+                    .nth(1)
+                    .is_some_and(|line| line.starts_with("tree 1/2") && line.contains(&other))
+            },
+            screen,
+        );
+        tmux(&private, &outer, &["send-keys", "-t", "=o:", "j"]);
+        wait(
+            "second tree selected",
+            || {
+                screen()
+                    .lines()
+                    .nth(1)
+                    .is_some_and(|line| line.starts_with("tree 2/2") && line.contains(id))
+            },
+            screen,
+        );
+    }
     wait("messages tab", || screen().contains("▸messages"), screen);
     let deadline = Instant::now() + Duration::from_millis(1250);
     while Instant::now() < deadline {
@@ -751,6 +840,38 @@ fn watch_tabs_follow_messages_without_leaking_bodies_and_restore_the_terminal() 
         },
         screen,
     );
+    if all {
+        tmux(&private, &outer, &["send-keys", "-t", "=o:", "j"]);
+        wait(
+            "wrapped to the other store's m1",
+            || {
+                let s = screen();
+                s.lines()
+                    .nth(1)
+                    .is_some_and(|line| line.starts_with("tree 1/2") && line.contains(&other))
+                    && s.contains("second")
+                    && s.contains("m1")
+                    && s.contains("[1]")
+                    && !s.contains("owner")
+            },
+            screen,
+        );
+        assert!(!screen().contains("PRIVATE-BODY"));
+        println!("switched graph:\n{}", screen());
+        tmux(&private, &outer, &["send-keys", "-t", "=o:", "k"]);
+        wait(
+            "previous tree wraps back",
+            || {
+                let s = screen();
+                s.lines()
+                    .nth(1)
+                    .is_some_and(|line| line.starts_with("tree 2/2"))
+                    && s.contains("owner")
+                    && !s.contains("second")
+            },
+            screen,
+        );
+    }
     tmux(&private, &outer, &["send-keys", "-t", "=o:", "q"]);
     wait(
         "restored terminal",

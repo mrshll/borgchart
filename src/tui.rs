@@ -26,6 +26,7 @@ fn watch_draw(
     sections: &[Section],
     headers: bool,
     messages: bool,
+    selected: Option<&str>,
     feed: Option<&crate::graph::feed::Feed>,
     motion: &mut crate::graph::layout::Motion,
     now: Duration,
@@ -36,8 +37,21 @@ fn watch_draw(
     let title = sections.first().map_or("", |s| s.header.as_str());
     let title = if headers { "teams" } else { title };
     if messages {
+        let section = selected_source(sections, selected);
+        if let Some(section) = section {
+            let header = if headers && sections.len() > 1 {
+                let i = sections
+                    .iter()
+                    .position(|s| s.inst.id == section.inst.id)
+                    .unwrap();
+                format!("tree {}/{} · {}", i + 1, sections.len(), section.header)
+            } else {
+                section.header.clone()
+            };
+            frame.render_widget(Paragraph::new(header), Rect::new(0, 1, width, 1));
+        }
         let area = Rect::new(0, 2, width, height.saturating_sub(3));
-        if let (Some(section), Some(feed)) = (sections.first(), feed) {
+        if let (Some(section), Some(feed)) = (section, feed) {
             let nodes = crate::graph::layout::nodes(
                 &section.rows,
                 &section.inst.id,
@@ -54,10 +68,10 @@ fn watch_draw(
                 std::time::SystemTime::now(),
             );
         } else {
-            let prompt = if selected_source(sections).is_some() && !errors[1].is_empty() {
+            let prompt = if section.is_some() && !errors[1].is_empty() {
                 errors[1]
             } else {
-                "name a team for its messages: brg status -w <team>"
+                "there are no teams"
             };
             frame.render_widget(Paragraph::new(prompt), area);
         }
@@ -92,7 +106,12 @@ fn watch_draw(
     frame.render_widget(
         Paragraph::new(if error.is_empty() {
             format!(
-                "Tab {} · q quit · refreshed {} UTC",
+                "{}Tab {} · q quit · refreshed {} UTC",
+                if messages && headers && sections.len() > 1 {
+                    "j/k tree · "
+                } else {
+                    ""
+                },
                 if messages { "tree" } else { "messages" },
                 clock(refreshed)
             )
@@ -102,8 +121,29 @@ fn watch_draw(
         footer,
     );
 }
-fn watch_key(messages: &mut bool, code: KeyCode, modifiers: KeyModifiers) -> bool {
+fn watch_key(
+    messages: &mut bool,
+    selected: &mut Option<String>,
+    sections: &[Section],
+    code: KeyCode,
+    modifiers: KeyModifiers,
+) -> bool {
     match code {
+        KeyCode::Char('j' | 'k') | KeyCode::Down | KeyCode::Up
+            if *messages && sections.len() > 1 =>
+        {
+            let i = sections
+                .iter()
+                .position(|s| Some(&s.inst.id) == selected.as_ref())
+                .unwrap_or(0);
+            let step = if matches!(code, KeyCode::Char('j') | KeyCode::Down) {
+                1
+            } else {
+                sections.len() - 1
+            };
+            *selected = Some(sections[(i + step) % sections.len()].inst.id.clone());
+            true
+        }
         KeyCode::Tab => {
             *messages = !*messages;
             true
@@ -114,8 +154,11 @@ fn watch_key(messages: &mut bool, code: KeyCode, modifiers: KeyModifiers) -> boo
     }
 }
 
-fn selected_source(sections: &[Section]) -> Option<String> {
-    (sections.len() == 1).then(|| sections[0].inst.id.clone())
+fn selected_source<'a>(sections: &'a [Section], selected: Option<&str>) -> Option<&'a Section> {
+    sections
+        .iter()
+        .find(|s| Some(s.inst.id.as_str()) == selected)
+        .or_else(|| sections.first())
 }
 
 /// `brg status -w`: tabs on painted terminals, the plain stream otherwise.
@@ -130,6 +173,7 @@ pub fn watch(one: Option<&Instance>, interval: Duration) -> Result<(), String> {
     }
     let mut sections = load(one, false)?;
     let mut source = None;
+    let mut selected = None;
     let mut feed = None;
     let mut motion = Motion::default();
     let mut messages = false;
@@ -154,16 +198,15 @@ pub fn watch(one: Option<&Instance>, interval: Duration) -> Result<(), String> {
                 }
                 refreshed = Instant::now();
             }
-            let selected = selected_source(&sections);
+            let section = selected_source(&sections, selected.as_deref());
+            selected = section.map(|s| s.inst.id.clone());
             if selected != source || (refresh && feed.is_none()) {
                 if selected != source {
                     follower_error.clear();
                 }
-                source = selected;
+                source = selected.clone();
                 motion = Motion::default();
-                feed = sections
-                    .first()
-                    .filter(|_| source.is_some())
+                feed = section
                     .map(|s| Feed::open(StorePaths::new(&s.inst.state)))
                     .transpose()
                     .unwrap_or_else(|e| {
@@ -184,6 +227,7 @@ pub fn watch(one: Option<&Instance>, interval: Duration) -> Result<(), String> {
                         &sections,
                         one.is_none(),
                         messages,
+                        selected.as_deref(),
                         feed.as_ref(),
                         &mut motion,
                         start.elapsed(),
@@ -209,7 +253,13 @@ pub fn watch(one: Option<&Instance>, interval: Duration) -> Result<(), String> {
             if event::poll(timeout).map_err(|e| e.to_string())?
                 && let Event::Key(key) = event::read().map_err(|e| e.to_string())?
                 && key.kind == KeyEventKind::Press
-                && !watch_key(&mut messages, key.code, key.modifiers)
+                && !watch_key(
+                    &mut messages,
+                    &mut selected,
+                    &sections,
+                    key.code,
+                    key.modifiers,
+                )
             {
                 return Ok(());
             }
@@ -956,13 +1006,128 @@ mod watch_tests {
             rows: vec![crate::graph::layout::tests::row("demo", "lead-abcd", None)],
         }
     }
-    #[test]
-    fn source_selection_never_follows_one_of_several_trees() {
-        assert_eq!(selected_source(&[section()]).as_deref(), Some("demo"));
+    fn other_section() -> Section {
         let mut other = section();
         other.inst.id = "other".into();
-        assert_eq!(selected_source(&[section(), other]), None);
-        assert_eq!(selected_source(&[]), None);
+        other.header = "other".into();
+        other.rows = vec![crate::graph::layout::tests::row("other", "lead-efgh", None)];
+        other
+    }
+    #[test]
+    fn tree_keys_wrap_without_selecting_on_the_tree_tab_or_a_single_tree() {
+        let sections = [section(), other_section()];
+        let mut selected = None;
+        let mut messages = false;
+        for code in [
+            KeyCode::Char('j'),
+            KeyCode::Down,
+            KeyCode::Char('k'),
+            KeyCode::Up,
+        ] {
+            assert!(watch_key(
+                &mut messages,
+                &mut selected,
+                &sections,
+                code,
+                KeyModifiers::NONE
+            ));
+            assert!(selected.is_none());
+        }
+        messages = true;
+        for (code, expected) in [
+            (KeyCode::Char('j'), "other"),
+            (KeyCode::Down, "demo"),
+            (KeyCode::Char('k'), "other"),
+            (KeyCode::Up, "demo"),
+        ] {
+            assert!(watch_key(
+                &mut messages,
+                &mut selected,
+                &sections,
+                code,
+                KeyModifiers::NONE
+            ));
+            assert_eq!(selected.as_deref(), Some(expected));
+        }
+        for code in [
+            KeyCode::Char('j'),
+            KeyCode::Down,
+            KeyCode::Char('k'),
+            KeyCode::Up,
+        ] {
+            watch_key(
+                &mut messages,
+                &mut selected,
+                &sections[..1],
+                code,
+                KeyModifiers::NONE,
+            );
+            assert_eq!(selected.as_deref(), Some("demo"));
+            watch_key(&mut messages, &mut selected, &[], code, KeyModifiers::NONE);
+        }
+    }
+    #[test]
+    fn selected_tree_survives_reordering_and_falls_back_after_removal() {
+        let sections = [section(), other_section()];
+        assert_eq!(selected_source(&sections, None).unwrap().inst.id, "demo");
+        assert_eq!(
+            selected_source(&sections, Some("other")).unwrap().inst.id,
+            "other"
+        );
+        let reordered = [other_section(), section()];
+        assert_eq!(
+            selected_source(&reordered, Some("other")).unwrap().inst.id,
+            "other"
+        );
+        assert_eq!(
+            selected_source(&sections[..1], Some("other"))
+                .unwrap()
+                .inst
+                .id,
+            "demo"
+        );
+        assert!(selected_source(&[], Some("other")).is_none());
+    }
+    #[test]
+    fn messages_header_identifies_the_selected_tree_without_changing_the_tree_tab() {
+        let sections = [section(), other_section()];
+        let dir = tempfile::tempdir().unwrap();
+        let feed =
+            crate::graph::feed::Feed::open(crate::bus::layout::StorePaths::from_root(dir.path()))
+                .unwrap();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        for (selected, heading) in [
+            (None, "tree 1/2 · demo"),
+            (Some("other"), "tree 2/2 · other"),
+        ] {
+            terminal
+                .draw(|f| {
+                    watch_draw(
+                        f,
+                        &sections,
+                        true,
+                        true,
+                        selected,
+                        Some(&feed),
+                        &mut crate::graph::layout::Motion::default(),
+                        Duration::ZERO,
+                        ["", ""],
+                        0,
+                    )
+                })
+                .unwrap();
+            let lines: Vec<String> = terminal
+                .backend()
+                .buffer()
+                .content
+                .chunks(80)
+                .map(|row| row.iter().map(|c| c.symbol()).collect())
+                .collect();
+            assert_eq!(lines[1].trim_end(), heading);
+            assert!(lines[23].starts_with("j/k tree · Tab tree · q quit · refreshed"));
+            println!("two-tree messages 80x24:\n{}", lines.join("\n"));
+        }
     }
     #[test]
     fn selected_team_without_a_feed_shows_the_follower_error() {
@@ -975,6 +1140,7 @@ mod watch_tests {
                     &[section()],
                     false,
                     true,
+                    None,
                     None,
                     &mut crate::graph::layout::Motion::default(),
                     Duration::ZERO,
@@ -995,14 +1161,40 @@ mod watch_tests {
     #[test]
     fn tab_switch_preserves_the_shared_tree_renderer_without_selection() {
         let mut tab = false;
-        assert!(watch_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE));
+        assert!(watch_key(
+            &mut tab,
+            &mut None,
+            &[],
+            KeyCode::Tab,
+            KeyModifiers::NONE
+        ));
         assert!(tab);
-        assert!(watch_key(&mut tab, KeyCode::Tab, KeyModifiers::NONE));
+        assert!(watch_key(
+            &mut tab,
+            &mut None,
+            &[],
+            KeyCode::Tab,
+            KeyModifiers::NONE
+        ));
         assert!(!tab);
-        assert!(!watch_key(&mut tab, KeyCode::Char('q'), KeyModifiers::NONE));
-        assert!(!watch_key(&mut tab, KeyCode::Esc, KeyModifiers::NONE));
         assert!(!watch_key(
             &mut tab,
+            &mut None,
+            &[],
+            KeyCode::Char('q'),
+            KeyModifiers::NONE
+        ));
+        assert!(!watch_key(
+            &mut tab,
+            &mut None,
+            &[],
+            KeyCode::Esc,
+            KeyModifiers::NONE
+        ));
+        assert!(!watch_key(
+            &mut tab,
+            &mut None,
+            &[],
             KeyCode::Char('c'),
             KeyModifiers::CONTROL
         ));
@@ -1048,6 +1240,7 @@ mod watch_tests {
                     &sections,
                     true,
                     false,
+                    None,
                     Some(&feed),
                     &mut crate::graph::layout::Motion::default(),
                     SPIN_INTERVAL,
@@ -1083,6 +1276,7 @@ mod watch_tests {
                     &sections,
                     true,
                     true,
+                    None,
                     Some(&feed),
                     &mut crate::graph::layout::Motion::default(),
                     Duration::ZERO,
@@ -1106,7 +1300,7 @@ mod watch_tests {
         );
     }
     #[test]
-    fn missing_feed_requests_a_scope_and_refresh_errors_stay_visible() {
+    fn empty_registry_and_refresh_errors_stay_visible() {
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
         terminal
@@ -1116,6 +1310,7 @@ mod watch_tests {
                     &[],
                     true,
                     true,
+                    None,
                     None,
                     &mut crate::graph::layout::Motion::default(),
                     Duration::ZERO,
@@ -1131,7 +1326,7 @@ mod watch_tests {
             .iter()
             .map(|c| c.symbol())
             .collect::<String>();
-        assert!(text.contains("brg status -w <team>"));
+        assert!(text.contains("there are no teams"));
         assert!(text.contains("cannot refresh"));
         for (w, h) in [(1, 1), (2, 3), (10, 6)] {
             terminal.resize(Rect::new(0, 0, w, h)).unwrap();
@@ -1142,6 +1337,7 @@ mod watch_tests {
                         &[],
                         true,
                         true,
+                        None,
                         None,
                         &mut crate::graph::layout::Motion::default(),
                         Duration::ZERO,
