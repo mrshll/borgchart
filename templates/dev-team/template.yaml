@@ -1,4 +1,4 @@
-# A development team: a lead with implementers, a reviewer, a researcher and a monitor it starts on demand.
+# A development team: a lead with implementers, reviewers, a researcher and a monitor it starts on demand.
 default: claude
 includes: catalog:shared/includes
 
@@ -22,6 +22,7 @@ roles:
     max: 4
     worktree: true
   reviewer:
+    max: 2
     prompt: reviewer.md
     vendor: claude
     parent: lead

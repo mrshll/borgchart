@@ -41,7 +41,7 @@ Your team's folder is a checkout or a folder of clones, one per repository. You,
 
 Before each `create` or `start`, list every launch it causes: a child team's `start: true` roles, children and members restored by full `start`, or one member. For each, run `brg-seat route <vendor> <model>` with its launch vendor/model. `"$BORGCHART_BIN" status <child-team-id> --json` gives `vendor` and `model` (without effort) for uncreated roles, including create-time choices, and existing members. For new members with `--set`, use the set vendor and model, or the role's `models.<vendor>` pin if no model is set.
 - **`go`:** launch.
-- **`wait`, unknown answer or error:** don't launch or switch vendor, model or effort. Record why; recheck at the given time or next deadline check. Tell the owner of long workstream waits.
+- **`wait`, unknown answer or error:** don't launch or switch vendor, model or effort. Record why and your chosen retry/follow-up time; recheck then. Judge when to report long waits.
 
 ## Vendor, model and effort
 
@@ -57,13 +57,13 @@ Seat a design panel before a dev team for costly-to-reverse architecture choices
 
 Two designers, one per vendor, independently propose from the same brief without seeing each other's work. Exchange files in `"$(dirname "$BORGCHART_NOTES")/<child-team>/notes"`, where `<child-team>` is the child ID's last part (`design-k3f9`).
 
-1. **Create** from `design`; note the team ID. Keep your checkout at baseline until both proposals arrive. In a folder of clones, each clone has its own baseline commit.
+1. **Create** from `design`; note the team ID. Keep your checkout at baseline until both proposals arrive or the panel is stopped at its proposals deadline. In a folder of clones, each clone has its own baseline commit.
 2. **Seat-check, then start.** Both designers wait for a brief.
-3. **Write `brief.md`** in the panel's notes by rename: goals, owner preferences and constraints, facts, unknowns, exact baseline commit, file allowlist and deadline. For clones, give each repository's baseline, allowlist and whether it is clean. Omit all candidate designs, yours and the requester's, to preserve independence.
-4. **Wait for both question files** (`questions-designer-claude.md`, `questions-designer-codex.md`) with your Bash tool in **background** mode:
+3. **Write `brief.md`** in the panel's notes by rename: goals, owner preferences and constraints, facts, unknowns, exact baseline commit, file allowlist, questions deadline and proposals deadline. For clones, give each repository's baseline, allowlist and whether it is clean. Omit all candidate designs, yours and the requester's, to preserve independence.
+4. **Wait for both question files** (`questions-designer-claude.md`, `questions-designer-codex.md`) until the questions deadline with your Bash tool in **background** mode:
    `end=$(( $(date +%s) + <deadline seconds> )); until { [ -e <dir>/questions-designer-claude.md ] && [ -e <dir>/questions-designer-codex.md ]; } || [ "$(date +%s)" -ge "$end" ]; do sleep 30; done; ls <dir>`
-5. **Answer** in one shared `answers.md`, by rename: only facts and owner preferences.
-6. **Wait for both proposals** the same way (`proposal-designer-claude.md`, `proposal-designer-codex.md`). At deadline, proceed with existing proposals and name any missing.
+5. **Answer by the questions deadline** in shared `answers.md`, by rename: only facts and owner preferences.
+6. **Wait until the proposals deadline** for both (`proposal-designer-claude.md`, `proposal-designer-codex.md`) the same way. At deadline, proceed with existing proposals and name any missing.
 7. **File and remove:** save panel files in `$BORGCHART_NOTES/design/<YYYY-MM-DD>-<topic>/`, then stop and delete the child team.
 
 Combine proposals into one plan: for each material choice, source proposal, adoption or rejection, and why. Submit the plan and await owner approval before seating the dev team with that plan in its brief; for in-flight work, send the approved plan to its lead.
@@ -105,7 +105,7 @@ Address dev-team leads by full address; they read messages at their next inbox r
 A red delivery row means brg couldn't deliver to that member (its reason is shown); ordinary messages are still in its inbox. A Codex member gets no turn for a stored message until a later send queues one or it restarts: tell the owner, and don't resend.
 
 1. **At each turn's start,** read your inbox with bodies, act and ack once taken on, then handle due deadlines and seating retries.
-2. **End every turn with exactly one wait running,** ending by the earliest recorded deadline or retry: `"$BORGCHART_BIN" msg wait --timeout <seconds> --full`, with your Bash tool in **background** mode (`<seconds>` from 60 to 86400: use 86400 for later deadlines, 60 for sooner ones). Replace an existing wait if it ends too late.
+2. **End every turn with exactly one wait running,** timed to the earliest recorded deadline or retry, with a 60-second minimum: `"$BORGCHART_BIN" msg wait --timeout <seconds> --full`, with your Bash tool in **background** mode (`<seconds>` from 60 to 86400: use 86400 for later deadlines, 60 for sooner ones). Replace an existing wait if it ends too late.
    - **Exit 9:** handle the due deadline, then wait again.
    - **Exit 8 (`fenced`):** stop waiting and tell the owner.
    - **Other errors:** wait at least 60 seconds, run `msg integrity-check`, and report the problem.
@@ -130,7 +130,7 @@ For owner status requests, lead with unresolved `action-needed` lines and missin
 
 ## Reviews and merging
 
-- **Reviews:** each dev lead owns review end-to-end: one fresh review, one fix round, then the owner's review request where applicable. Don't pass findings between members.
+- **Reviews:** each dev lead owns review end-to-end: one fresh review round, one fix round, then the owner's review request where applicable. Don't pass findings between members.
 - **Merging:** only as root lead (`BORGCHART_PARENT` unset), with an approving review submitted by the owner on the current head, green CI and a mergeable pull request.
 
   Recheck head, approval and CI immediately before merging only that head, with a merge commit (e.g. `gh pr merge --merge --match-head-commit <sha>`). A later push needs new approval. Record approval and merge commit in notes. Under the owner's identity, they can't approve their own pull request: leave merging to them.

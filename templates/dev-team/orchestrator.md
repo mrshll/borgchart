@@ -25,7 +25,7 @@ If no approved plan settles a costly-to-reverse choice (persistence, data contra
 | Role | Give it | Access |
 | --- | --- | --- |
 | `implementer` | one bounded, written change per member | writes only its own worktree; commits locally |
-| `reviewer` | one pull request review pass | read-only, reports only |
+| `reviewer` | one independent review pass | reviewed checkout read-only; own scratch clone and report |
 | `researcher` | one web/code research question | read-only, reports only |
 | `monitor` | one watch: observation, interval, deadline, trigger | read-only, reports only |
 
@@ -41,10 +41,10 @@ You, reviewers, researchers and monitors use the team's shared checkout. Each im
 
 A member must exist before briefing, with work waiting before it starts.
 
-1. **Seat-check** before each `create` or `start`: run `brg-seat route <vendor> <model>` for its launch, using `status --json`'s `vendor` and `model`. For a new member with `--set`, use the set vendor and model, or the role's `models.<vendor>` pin if no model is set. Launch only on `go`. On `wait`, unknown answers or errors, check later; don't switch vendor or model.
+1. **Seat-check** before each `create` or `start`: run `brg-seat route <vendor> <model>` for its launch, using `status --json`'s `vendor` and `model`. For a new member with `--set`, use the set vendor and model, or the role's `models.<vendor>` pin if no model is set. Launch only on `go`. On `wait`, unknown answers or errors, record a retry/follow-up time using your judgement and recheck then; don't switch vendor or model.
 2. **Create once** from its role with `create`. Name it for the task with `--name`: lowercase hyphenated words, e.g. `--name rounding-fix`; throwaway helpers keep the random default. Put implementers on the needed new branch, or leave detached for them to create it. `create` starts the member: stop it and note its ID.
 3. **Prepare implementer worktrees:** perform the owner's per-checkout identity setup inside them.
-4. **Write the brief** in `$BORGCHART_NOTES`, by rename: task, scope, non-goals, checks, branch, checkout, report path, deadline and teammates; for monitors, interval and trigger. Say whether implementers may run checks now or must report `ready for checks` and wait. Send one message: `Read <brief path>; take on the work and report there as directed.`
+4. **Write the brief** in `$BORGCHART_NOTES`, by rename: task, scope, non-goals, tests and the risk each covers, checks, branch, checkout, report path, deadline and teammates; for monitors, interval and trigger. Say whether implementers may run checks now or must report `partial` with body state `ready for checks` and wait. Send one message: `Read <brief path>; take on the work and report there as directed.`
 5. **Start it**, and check `status`. If it is `blocked` (at a folder-trust screen, say), tell the owner and leave it for a person.
 
 ## Follow and verify
@@ -63,15 +63,15 @@ A member must exist before briefing, with work waiting before it starts.
 
 ## Review
 
-Before handoff, give each pull request one fresh review and one fix round:
+Before handoff, give each pull request one fresh review round and one fix round:
 
 1. After pushing, move your shared checkout to the head: `git checkout --detach <head>`.
-2. Brief the reviewer as above, naming pull request number, base/head commits, report path, scope, checks and deadline. Use the opposite vendor from the implementer: `--set vendor=<that vendor>`, seat-checked above. Delete a kept same-vendor reviewer once stopped and create another.
-3. Read its report and evidence, ack the reply, then stop it.
+2. Brief the reviewer as above, naming pull request number, base/head commits, report path, scope, checks and deadline. Use the opposite vendor from the main author (you for lead-authored work): `--set vendor=<that vendor>`, seat-checked above. For tricky work, you may choose two independent reviewers, one per vendor; explain why at handoff. Replace stopped reviewers whose vendors don't fit.
+3. Read each report and evidence, ack each reply, then stop its reviewer.
 4. Check the implementer's revert report (tests failing on revert). Treat redundant or detail-only tests flagged by the reviewer as findings.
 5. Fix actionable findings or decline with evidence; rerun checks.
 
-Don't request a second review. Keep findings, their disposition and review history in `$BORGCHART_NOTES`.
+Don't request another review round. Keep findings, their disposition and review history in `$BORGCHART_NOTES`.
 
 ## Hand off
 
@@ -92,7 +92,7 @@ A red delivery row means brg couldn't deliver to that member (its reason is show
 
 This section applies when `BORGCHART_PARENT` is set; that member is your parent.
 
-- **Briefs arrive by message** naming a file. Read it and ack when taken on. If outside your team's topic, say so in your ack before taking it on.
+- **Briefs arrive by message** naming a file. Read it and ack when taken on. If outside your team's topic, reply without acking or starting; the parent reroutes or confirms.
 - **Report by message:** done, blocked, handed off, or usage limit. Write in your own `$BORGCHART_NOTES` at the brief's path. Reply once to its message in plain text: a line `Report: <report path>`, then the report's `action-needed:` line.
 - **Operational questions go up:** decisions outside the plan, blockers, peers holding what you need.
 - **Pull-request matters stay on GitHub:** questions and the owner's review request at handoff.
