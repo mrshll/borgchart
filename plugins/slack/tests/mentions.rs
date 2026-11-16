@@ -386,47 +386,6 @@ fn both_tokens_are_redacted_and_cannot_be_posted() {
 }
 
 #[test]
-fn watch_skip_mentions_advances_posts_and_replies_without_losing_other_intake() {
-    for enabled in [true, false] {
-        let mut h = Harness::new();
-        if enabled {
-            h.env.insert("SLACK_SKIP_MENTIONS".into(), "true".into());
-        }
-        let root = post(0);
-        h.slack.lock().unwrap().messages = vec![root.clone()];
-        h.tick();
-        let mut mentioned = post(1);
-        mentioned["text"] = json!(" <@U0000BOT|helper> help");
-        h.slack
-            .lock()
-            .unwrap()
-            .messages
-            .extend([mentioned.clone(), post(2)]);
-        h.slack.lock().unwrap().messages[0]["latest_reply"] = post(4)["ts"].clone();
-        let mut reply = post(3);
-        reply["text"] = json!("<@U0000BOT> help");
-        h.slack
-            .lock()
-            .unwrap()
-            .replies
-            .insert(ts(&root).into(), vec![root, reply.clone(), post(4)]);
-        h.tick();
-        h.tick();
-        let sends = h.sends();
-        let body = sends
-            .iter()
-            .map(|s| s.last().unwrap().as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert_eq!(body.contains(ts(&mentioned)), !enabled);
-        assert_eq!(body.contains(ts(&reply)), !enabled);
-        assert!(body.contains(ts(&post(2))));
-        assert!(body.contains(ts(&post(4))));
-        assert_eq!(sends.len(), 1);
-    }
-}
-
-#[test]
 fn partial_thread_page_warns_that_later_replies_may_be_missing() {
     let h = Harness::new();
     let root = post(0);

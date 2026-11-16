@@ -1,6 +1,7 @@
 //! Slack channel intake, bounded ID notices and guarded writes.
 pub mod api;
 pub mod mentions;
+mod socket;
 pub mod watch;
 pub mod writes;
 use std::fmt;

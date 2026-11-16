@@ -531,7 +531,10 @@ fn start_members(
     let keys = api_keys(v, record, &member_ids)?;
     let probe = tmux_for(state);
     let looks_running = probe.has_session(&session) && state.meta_file().exists();
-    if !looks_running && values.is_none() {
+    let complete = values
+        .as_ref()
+        .is_some_and(|m| v.team.plugins.keys().all(|k| m.contains_key(k)));
+    if !looks_running && !complete {
         return Err(
             "the team stopped during this start; run the command again; nothing was started".into(),
         );
@@ -555,7 +558,7 @@ fn start_members(
     {
         lifecycle::check_stopped(state, meta, &restart)?;
     }
-    if !joining && values.is_none() {
+    if !joining && !complete {
         return Err(
             "the team stopped during this start; run the command again; nothing was started".into(),
         );
@@ -664,7 +667,7 @@ fn start_members(
             Tmux::new(&state.tmux_conf(), base.clone())
                 .write_config(user_config.as_deref())
                 .map_err(|e| format!("cannot write tmux config: {e}"))?;
-            let mut meta = Meta {
+            Meta {
                 team_dir: v.team.dir.clone(),
                 folder: record.folder.clone(),
                 brg: brg.clone(),
@@ -673,9 +676,14 @@ fn start_members(
                 base_env: base.clone(),
                 windows_started: may_still_run,
                 ..Meta::default()
-            };
-            // Plugins: their values (secrets included) go to private files for the shims.
-            for (name, plugin) in &v.team.plugins {
+            }
+        }
+    };
+    let mut added = fresh;
+    // Plugins: their values (secrets included) go to private files for the shims.
+    if fresh || full {
+        for (name, plugin) in &v.team.plugins {
+            if !meta.plugins.contains_key(name) {
                 let body = serde_json::to_vec(&PluginEnv {
                     env: values
                         .as_ref()
@@ -695,13 +703,12 @@ fn start_members(
                         has_process: plugin.process.is_some(),
                     },
                 );
+                added = true;
             }
-            meta
         }
-    };
+    }
     // Every member of the team is known to the start record, including
     // ones created since the team started.
-    let mut added = fresh;
     for (id, _) in record.kept_members() {
         if !meta.members.contains_key(id)
             && let Some(m) = member_meta(id, &meta.base_env)
@@ -1210,13 +1217,20 @@ fn start_members(
                     }
                 }
                 let t = pane.as_str();
-                tmux.ok(&["send-keys", "-t", t, "Down"])?;
+                // End selects the last choice, "Yes", however often it is
+                // pressed: Down wraps back to "No".
+                tmux.ok(&["send-keys", "-t", t, "End"])?;
                 std::thread::sleep(Duration::from_millis(250));
                 let after = tmux.capture(&session, id);
-                if tmux.pane_in_mode(t) != Some(false)
-                    || !(has_line(&after, TRUST_YES_SELECTED)
-                        && trust_dialog_path(&after).as_deref() == s.trust_dir.as_deref())
-                {
+                let same = tmux.pane_in_mode(t) == Some(false)
+                    && trust_dialog_path(&after).as_deref() == s.trust_dir.as_deref();
+                // Claude draws the dialog before it reads keys and drops a
+                // key pressed that early: while "No" is still highlighted,
+                // press End again on the next round.
+                if same && has_line(&after, TRUST_NO_SELECTED) && Instant::now() < deadline {
+                    continue;
+                }
+                if !(same && has_line(&after, TRUST_YES_SELECTED)) {
                     append(
                         &mut outcomes,
                         id,
@@ -2203,16 +2217,30 @@ fn start_instance(
             inst.record.folder.display()
         ));
     }
-    let fresh = state::read_meta(&inst.state)?.is_none_or(|meta| meta.stopped_at.is_some())
+    let previous = state::read_meta(&inst.state)?;
+    let fresh = previous
+        .as_ref()
+        .is_none_or(|meta| meta.stopped_at.is_some())
         || !tmux_for(&inst.state).has_session(&inst.state.session());
     let v = if member.is_none() && (fresh || inst.id.contains('/')) {
         validate_printing(&inst.record.team_dir)?
     } else {
         validated(&inst)?
     };
-    let values = fresh
-        .then(|| crate::secrets::values(&v, &inst.id))
-        .transpose()?;
+    let values = if fresh {
+        Some(crate::secrets::values(&v, &inst.id)?)
+    } else if member.is_none() {
+        let names = v
+            .team
+            .plugins
+            .keys()
+            .filter(|name| !previous.as_ref().unwrap().plugins.contains_key(*name))
+            .cloned()
+            .collect::<Vec<_>>();
+        Some(crate::secrets::values_for(&v, &inst.id, &names)?)
+    } else {
+        None
+    };
     let lock = registry::lock()?;
     inst.reload()?;
     crate::nesting::check_not_stopping(&inst)?;
@@ -4094,6 +4122,35 @@ fn status_with_counts(
                 None => detail,
             });
         }
+        let alarm = v
+            .team
+            .plugins
+            .keys()
+            .filter_map(|name| {
+                let path = state
+                    .plugin_dir(name)
+                    .join("alarms")
+                    .join(format!("{id}.json"));
+                let value: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+                crate::bus::time::parse_utc(value["due"].as_str()?)
+            })
+            .min();
+        if let Some(due) = alarm {
+            let prefix = if due.elapsed().is_ok_and(|d| d > Duration::from_secs(120)) {
+                "alarm overdue since"
+            } else {
+                "alarm"
+            };
+            let due = crate::bus::time::format_utc(due);
+            let today = due[..10] == crate::bus::time::utc_now()[..10];
+            let when = if today { &due[11..16] } else { &due[5..16] };
+            let detail = format!("{prefix} {}Z", when.replace('T', " "));
+            row.detail = Some(match row.detail.take() {
+                Some(other) => format!("{other}; {detail}"),
+                None => detail,
+            });
+        }
         row.expected_running = team_running && row.state == STOPPED && member.start;
         if let Err(error) = resolved {
             row.detail = Some(match row.detail.take() {
@@ -5684,6 +5741,17 @@ mod tests {
             None
         );
         assert_eq!(trust_dialog_path("no dialog here\n"), None);
+    }
+
+    #[test]
+    fn the_trust_dialogs_highlighted_choice_is_read_from_real_screens() {
+        // Claude Code 2.1.325 draws its trust dialog exactly as
+        // claude-trust.txt, then as claude-2.1.325-trust-yes.txt after End.
+        let no = include_str!("../tests/fixtures/screens/claude-trust.txt");
+        let yes = include_str!("../tests/fixtures/screens/claude-2.1.325-trust-yes.txt");
+        assert!(has_line(no, TRUST_NO_SELECTED) && !has_line(no, TRUST_YES_SELECTED));
+        assert!(has_line(yes, TRUST_YES_SELECTED) && !has_line(yes, TRUST_NO_SELECTED));
+        assert_eq!(trust_dialog_path(yes), trust_dialog_path(no));
     }
 
     #[test]

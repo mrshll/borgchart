@@ -7,6 +7,7 @@ plugins:
     process: [brg-slack, watch]
     delivers_to: triager
     env:
+      SLACK_APP_TOKEN:                 # app-level token with connections:write
       SLACK_BOT_TOKEN:                 # export in the shell you run brg from
       SLACK_CHANNEL_ID: C0000EXAMPLE   # replace with your channel's ID
     actions:

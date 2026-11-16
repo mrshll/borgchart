@@ -99,12 +99,46 @@ Actions run in the calling member's folder and use the same state directory:
 `brg-checks run --once` runs one tick, useful for testing. It exits nonzero for
 invalid startup configuration; check or delivery failures appear in health.
 `CHECKS_TIMEOUT_SECONDS` overrides the command timeout for tests only; production
-uses the fixed 60-second default. There are no time/cron triggers. A check whose
+uses the fixed 60-second default. There are no cron triggers. A check whose
 output changes every run wakes every interval, so use `ignore` for volatile data.
 Checks run one after another, so slow commands delay the next check and tick.
 Each check captures at most 16 MiB of stdout and 1 MiB of stderr. Exceeding either
 cap kills the process group, discards its output and records `failing / output-limit`
 with a stderr hint to reduce the check's output.
+
+## Alarms
+
+An alarm-only team declares the process and three actions, grants them to its
+lead, and puts `[]` in `checks.yaml`. It needs no `delivers_to`:
+
+```yaml
+plugins:
+  checks:
+    process: [brg-checks, run]
+    actions:
+      alarm-set: brg-checks alarm set <when> <note>
+      alarm-show: brg-checks alarm show
+      alarm-clear: brg-checks alarm clear
+```
+
+`brg-checks alarm set <when> <note>` replaces your alarm. Use 1–10080 whole
+minutes or a future `YYYY-MM-DDTHH:MMZ` within 7 days, and one non-empty line
+of at most 200 bytes without control characters. `alarm show` shows it;
+`alarm clear` removes it. The shim supplies your verified team/member identity.
+Setting refuses a missing heartbeat or one older than 300 seconds; tell the
+owner. A broken `checks.yaml` stops the process; setting then refuses once its
+heartbeat becomes stale.
+
+Every tick writes health, even with `[]`. After checks and their delivery, due
+alarms send an ordinary `Alarm due` message to their own member. One slow pass
+of checks delays alarms by up to its length, plus the 30-second tick interval.
+Alarms persist in `alarms/<member>.json` and use a separate `alarms.lock`, so
+setting never waits behind checks. A successful send removes only the unchanged
+alarm, including when brg reports `stored` or `uncertain`. A failed send keeps
+it for the next tick and marks health not ok. Overdue alarms fire on restart.
+If delivery keeps failing, use `alarm clear` to remove your own alarm. For a
+member that no longer exists, the owner removes `alarms/<member>.json` from
+the plugin's state directory, `<team state>/plugins/checks/`.
 
 Build with `tools/cargo-slot cargo build -p brg-checks --locked`.
 For a local demonstration without a real bus, from the checkout root run these

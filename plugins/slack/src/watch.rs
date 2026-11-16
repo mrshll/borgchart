@@ -1,29 +1,24 @@
-//! Poll one channel window and deliver bounded ID notices.
+//! Journal channel message events before acknowledging; deliver bounded ID notices.
 use crate::{
     Error, Result,
     api::{self, Api, Item},
+    socket::{self, Event, Health},
 };
 use borgchart::plugin::{self, State};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
+    sync::Mutex,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 #[derive(Default, Deserialize, Serialize)]
 #[serde(default)]
 struct Cursor {
-    initialized: bool,
-    messages: BTreeMap<String, Entry>,
-    broadcasts: BTreeSet<String>,
+    last: String,
+    seen: BTreeSet<String>,
     pending: Vec<Item>,
-}
-#[derive(Clone, Default, Deserialize, Serialize)]
-#[serde(default)]
-struct Entry {
-    newest_reply: String,
-    latest_reply: Option<String>,
 }
 fn timestamp(value: &Value) -> Option<&str> {
     value.as_str().filter(|s| api::valid_ts(s))
@@ -31,177 +26,86 @@ fn timestamp(value: &Value) -> Option<&str> {
 fn number(ts: &str) -> f64 {
     ts.parse().unwrap_or(0.0)
 }
-fn messages(data: &Value) -> Vec<&Value> {
-    let mut values: Vec<_> = data["messages"].as_array().into_iter().flatten().collect();
-    values.sort_by_key(|m| m["ts"].as_str().unwrap_or(""));
-    values
-}
-fn collect(
-    api: &Api,
-    state: &mut Cursor,
-    cutoff: f64,
-    own: &BTreeSet<String>,
-) -> Result<Vec<String>> {
-    let mut errors = Vec::new();
-    let first = !state.initialized;
-    let allow = api::csv(&api::var("SLACK_ALLOW_IDS"));
-    state.messages.retain(|ts, entry| {
-        api::valid_ts(ts) && number(ts) >= cutoff && api::valid_ts(&entry.newest_reply)
-    });
-    state
-        .broadcasts
-        .retain(|ts| api::valid_ts(ts) && number(ts) >= cutoff);
-    state.pending.retain(|item| {
-        item.line().is_ok()
-            && (number(item.thread.as_deref().unwrap_or(&item.ts)) >= cutoff
-                || state.broadcasts.contains(&item.ts))
-    });
-    let history = api.call(
-        "conversations.history",
-        json!({"channel":api.channel()?,"oldest":format!("{cutoff:.6}"),"limit":200}),
-        false,
-    )?;
-    for message in messages(&history) {
+impl Cursor {
+    fn prune(&mut self, cutoff: f64) {
+        self.seen
+            .retain(|ts| api::valid_ts(ts) && number(ts) >= cutoff);
+        self.pending
+            .retain(|item| item.line().is_ok() && number(&item.ts) >= cutoff);
+    }
+    fn journal(
+        &mut self,
+        message: &Value,
+        own: &BTreeSet<String>,
+        allow: &BTreeSet<String>,
+    ) -> Event {
         let Some(ts) = timestamp(&message["ts"]) else {
-            continue;
+            return Event::Ignored;
         };
-        if number(ts) < cutoff || message["thread_ts"].as_str().unwrap_or(ts) != ts {
-            continue;
+        let thread = message["thread_ts"].as_str().unwrap_or(ts);
+        if message["type"] != "message"
+            || !api::valid_ts(thread)
+            || !api::allowed(message, own, allow)
+        {
+            return Event::Ignored;
         }
-        let old = state.messages.get(ts);
-        let mut entry = old.cloned().unwrap_or_else(|| Entry {
-            newest_reply: ts.into(),
-            latest_reply: None,
+        if !self.seen.insert(ts.into()) {
+            return Event::Duplicate;
+        }
+        self.pending.push(Item {
+            kind: if thread == ts { "post" } else { "reply" }.into(),
+            ts: ts.into(),
+            thread: (thread != ts).then(|| thread.into()),
         });
-        if !first && old.is_none() && api::allowed(message, own, &allow) {
-            state.pending.push(Item {
-                kind: "post".into(),
-                ts: ts.into(),
-                thread: None,
-            });
+        if number(ts) > number(&self.last) {
+            self.last = ts.into();
         }
-        let latest = timestamp(&message["latest_reply"]);
-        if first {
-            // Baseline the thread even when Slack's replies endpoint lags.
-            entry.newest_reply = latest.unwrap_or(ts).into();
-            entry.latest_reply = latest.map(str::to_owned);
-        } else if let Some(latest) = latest
-            && Some(latest) != entry.latest_reply.as_deref()
-        {
-            match api.call(
-                "conversations.replies",
-                json!({"channel":api.channel()?,"ts":ts,"oldest":entry.newest_reply,"limit":200}),
-                false,
-            ) {
-                Err(error) => {
-                    errors.push(error.to_string());
-                    state.messages.insert(ts.into(), entry);
-                    continue;
-                }
-                Ok(data) => {
-                    for reply in messages(&data) {
-                        let Some(reply_ts) = timestamp(&reply["ts"]) else {
-                            continue;
-                        };
-                        if reply_ts <= entry.newest_reply.as_str() {
-                            continue;
-                        }
-                        entry.newest_reply = reply_ts.into();
-                        if api::allowed(reply, own, &allow)
-                            && (reply["subtype"] != "thread_broadcast"
-                                || state.broadcasts.insert(reply_ts.into()))
-                        {
-                            state.pending.push(Item {
-                                kind: "reply".into(),
-                                ts: reply_ts.into(),
-                                thread: Some(ts.into()),
-                            });
-                        }
-                    }
-                    if entry.newest_reply.as_str() >= latest {
-                        entry.latest_reply = Some(latest.into());
-                    }
-                }
-            }
-        }
-        state.messages.insert(ts.into(), entry);
+        Event::Journaled
     }
-    for message in messages(&history) {
-        let (Some(ts), Some(thread)) =
-            (timestamp(&message["ts"]), timestamp(&message["thread_ts"]))
-        else {
-            continue;
-        };
-        let covered = state
-            .messages
-            .get(thread)
-            .is_some_and(|entry| ts <= entry.newest_reply.as_str());
-        // Record baseline and covered broadcasts so neither path replays them.
-        if message["subtype"] == "thread_broadcast"
-            && thread != ts
-            && number(ts) >= cutoff
-            && api::allowed(message, own, &allow)
-            && state.broadcasts.insert(ts.into())
-            && !first
-            && !covered
-        {
-            state.pending.push(Item {
-                kind: "reply".into(),
-                ts: ts.into(),
-                thread: Some(thread.into()),
-            });
-        }
-    }
-    state.initialized = true;
-    Ok(errors)
 }
-fn poll_once(
-    api: &Api,
+fn deliver(
     files: &State,
-    own: &BTreeSet<String>,
-    window_hours: f64,
-) -> Result<Vec<String>> {
-    let mut state: Cursor = files.read_json("cursor.json");
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs_f64();
-    let errors = collect(api, &mut state, now - window_hours * 3600.0, own)?;
-    files.write_json("cursor.json", &state)?;
-    state
-        .pending
-        .sort_by(|a, b| number(&a.ts).total_cmp(&number(&b.ts)));
-    let mut count = 0;
-    for end in 1..=state.pending.len().min(api::NOTICE_MAX_ITEMS) {
-        if api::message_notice(&state.pending[..end]).is_err() {
-            break;
+    cursor: &Mutex<Cursor>,
+    target: &str,
+    cutoff: f64,
+    health: &Mutex<Health>,
+) -> Result<()> {
+    let batch = {
+        let mut state = cursor.lock().unwrap();
+        state.prune(cutoff);
+        state
+            .pending
+            .sort_by(|a, b| number(&a.ts).total_cmp(&number(&b.ts)));
+        let mut count = 0;
+        for end in 1..=state.pending.len().min(api::NOTICE_MAX_ITEMS) {
+            if api::message_notice(&state.pending[..end]).is_err() {
+                break;
+            }
+            count = end;
         }
-        count = end;
+        state.pending[..count].to_vec()
+    };
+    if batch.is_empty() {
+        let mut status = health.lock().unwrap();
+        status.delivery.clear();
+        return status.write(files);
     }
-    if count == 0 {
-        return Ok(errors);
-    }
-    let target = api::var("BORGCHART_DELIVER_TO");
-    if !api::valid_address(&target) {
-        return Err(Error::usage(
-            "set BORGCHART_DELIVER_TO to the intake member's ID",
-        ));
-    }
-    plugin::send(
-        "slack",
-        &target,
-        &api::message_notice(&state.pending[..count])?,
-        None,
-    )
-    .map_err(|message| {
+    plugin::send("slack", target, &api::message_notice(&batch)?, None).map_err(|message| {
         Error::failure(format!(
-            "delivery failed: {}; batch kept for the next poll",
+            "delivery failed: {}; batch kept for retry",
             api::safe(&message)
         ))
     })?;
-    state.pending.drain(..count);
-    files.write_json("cursor.json", &state)?;
-    Ok(errors)
+    {
+        let mut state = cursor.lock().unwrap();
+        state
+            .pending
+            .retain(|item| !batch.iter().any(|sent| sent.ts == item.ts));
+        files.write_json("cursor.json", &*state)?;
+    }
+    let mut status = health.lock().unwrap();
+    status.delivery.clear();
+    status.write(files)
 }
 fn positive_env(name: &str, default: &str) -> Result<f64> {
     let value = std::env::var(name).unwrap_or_else(|_| default.into());
@@ -212,51 +116,95 @@ fn positive_env(name: &str, default: &str) -> Result<f64> {
         .ok_or_else(|| Error::usage(format!("set {name} to a positive number")))
 }
 pub fn run(api: &Api, once: bool) -> Result<()> {
-    let poll_seconds = positive_env("SLACK_POLL_SECONDS", "15")?;
-    let window_hours = positive_env("SLACK_WINDOW_HOURS", "24")?;
-    let mut own = BTreeSet::new();
-    loop {
-        let (state, lock) =
-            match State::from_env().and_then(|state| state.lock().map(|lock| (state, lock))) {
-                Ok(pair) => pair,
-                Err(error) => {
-                    eprintln!("{}", api::one_line(&Error::from(error).to_string()));
-                    if once {
-                        return Ok(());
-                    }
-                    std::thread::sleep(Duration::from_secs_f64(poll_seconds));
-                    continue;
-                }
+    for name in [
+        "SLACK_APP_TOKEN",
+        "SLACK_BOT_TOKEN",
+        "SLACK_CHANNEL_ID",
+        "BORGCHART_DELIVER_TO",
+        "BORGCHART_STATE_DIR",
+    ] {
+        if api::var(name).is_empty() {
+            return Err(Error::usage(format!("set {name} before running watch")));
+        }
+    }
+    let channel = api.channel()?;
+    let target = api::var("BORGCHART_DELIVER_TO");
+    if !api::valid_address(&target) || !api::valid_channel(&channel) {
+        return Err(Error::usage(
+            "set BORGCHART_DELIVER_TO to a member ID and SLACK_CHANNEL_ID to a channel ID",
+        ));
+    }
+    let window = positive_env("SLACK_WINDOW_HOURS", "24")? * 3600.0;
+    let now = || {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64()
+    };
+    let files = State::from_env()?;
+    let _lock = files.lock()?;
+    let auth = socket::auth(api, &files, once)?;
+    let own = ["user_id", "bot_id"]
+        .iter()
+        .filter_map(|k| auth[k].as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let team = auth["team_id"].as_str().unwrap_or("");
+    if auth["user_id"].as_str().unwrap_or("").is_empty() || team.is_empty() {
+        return Err(Error::failure(
+            "auth.test returned no bot or workspace identity; check Slack access",
+        ));
+    }
+    let allow = api::csv(&api::var("SLACK_ALLOW_IDS"));
+    let cursor = Mutex::new(files.read_json::<Cursor>("cursor.json"));
+    socket::run(
+        api,
+        &files,
+        once,
+        |envelope| {
+            let event = &envelope["payload"]["event"];
+            if envelope["type"] != "events_api"
+                || envelope["payload"]["team_id"] != team
+                || event["channel"] != channel
+            {
+                return Ok(Event::Ignored);
+            }
+            let mut state = cursor.lock().unwrap();
+            let outcome = state.journal(event, &own, &allow);
+            // A duplicate may retry an earlier failed save of the in-memory journal.
+            if matches!(outcome, Event::Journaled | Event::Duplicate) {
+                files.write_json("cursor.json", &*state)?;
+            }
+            Ok(outcome)
+        },
+        || {
+            let last = cursor.lock().unwrap().last.clone();
+            let history = if last.is_empty() {
+                Value::Null
+            } else {
+                api.call_with(
+                    "conversations.history",
+                    json!({"channel":channel,"oldest":format!("{:.6}", number(&last).max(now() - window)),"limit":200}),
+                    false,
+                    &api::var("SLACK_BOT_TOKEN"),
+                    true,
+                )?
             };
-        let poll = (|| {
-            if own.is_empty() {
-                let auth = api.call("auth.test", json!({}), false)?;
-                own = ["user_id", "bot_id"]
-                    .iter()
-                    .filter_map(|k| auth[k].as_str())
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_owned)
-                    .collect();
-                if own.is_empty() {
-                    return Err(Error::failure(
-                        "auth.test returned no bot identity; check Slack access",
-                    ));
+            let mut state = cursor.lock().unwrap();
+            let mut queued = false;
+            if last.is_empty() {
+                state.last = format!("{:.6}", now());
+            }
+            for message in history["messages"].as_array().into_iter().flatten() {
+                if number(message["ts"].as_str().unwrap_or("")) > number(&last) {
+                    queued |= matches!(state.journal(message, &own, &allow), Event::Journaled);
                 }
             }
-            poll_once(api, &state, &own, window_hours)
-        })();
-        let (ok, detail) = match poll {
-            Ok(errors) if errors.is_empty() => (true, "watching".into()),
-            Ok(errors) => (false, errors.join("; ")),
-            Err(error) => (false, error.to_string()),
-        };
-        if state.health(ok, &api::safe(&detail)).is_err() {
-            eprintln!("cannot write health; check plugin state permissions");
-        }
-        drop(lock);
-        if once {
-            return Ok(());
-        }
-        std::thread::sleep(Duration::from_secs_f64(poll_seconds));
-    }
+            state.prune(now() - window);
+            files.write_json("cursor.json", &*state)?;
+            Ok(queued)
+        },
+        |health| deliver(&files, &cursor, &target, now() - window, health),
+    )
 }

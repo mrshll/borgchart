@@ -45,6 +45,13 @@ pub fn check_ts(value: &str) -> Result<&str> {
         ))
     }
 }
+pub fn valid_channel(value: &str) -> bool {
+    value.starts_with(['C', 'G'])
+        && value.len() > 1
+        && value
+            .bytes()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+}
 pub fn valid_ts(value: &str) -> bool {
     TS.is_match(value)
 }

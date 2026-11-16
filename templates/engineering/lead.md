@@ -60,10 +60,9 @@ Two designers, one per vendor, independently propose from the same brief without
 1. **Create** from `design`; note the team ID. Keep your checkout at baseline until both proposals arrive or the panel is stopped at its proposals deadline. In a folder of clones, each clone has its own baseline commit.
 2. **Seat-check, then start.** Both designers wait for a brief.
 3. **Write `brief.md`** in the panel's notes by rename: goals, owner preferences and constraints, facts, unknowns, exact baseline commit, file allowlist, questions deadline and proposals deadline. For clones, give each repository's baseline, allowlist and whether it is clean. Omit all candidate designs, yours and the requester's, to preserve independence.
-4. **Wait for both question files** (`questions-designer-claude.md`, `questions-designer-codex.md`) until the questions deadline with your Bash tool in **background** mode:
-   `end=$(( $(date +%s) + <deadline seconds> )); until { [ -e <dir>/questions-designer-claude.md ] && [ -e <dir>/questions-designer-codex.md ]; } || [ "$(date +%s)" -ge "$end" ]; do sleep 30; done; ls <dir>`
+4. **Wait for both question files** (`questions-designer-claude.md`, `questions-designer-codex.md`): record the questions deadline. Each designer messages when its file lands; on each message or alarm, check which files exist. At deadline, proceed with what exists and name what's missing.
 5. **Answer by the questions deadline** in shared `answers.md`, by rename: only facts and owner preferences.
-6. **Wait until the proposals deadline** for both (`proposal-designer-claude.md`, `proposal-designer-codex.md`) the same way. At deadline, proceed with existing proposals and name any missing.
+6. **Wait for both proposals** (`proposal-designer-claude.md`, `proposal-designer-codex.md`): record the proposals deadline. On each designer message or alarm, check which files exist. At deadline, proceed with existing proposals and name any missing.
 7. **File and remove:** save panel files in `$BORGCHART_NOTES/design/<YYYY-MM-DD>-<topic>/`, then stop and delete the child team.
 
 Combine proposals into one plan: for each material choice, source proposal, adoption or rejection, and why. Submit the plan and await owner approval before seating the dev team with that plan in its brief; for in-flight work, send the approved plan to its lead.
@@ -104,12 +103,15 @@ Address dev-team leads by full address. Briefs have no due dates; replies give n
 
 A red delivery row means brg couldn't deliver to that member (its reason is shown); ordinary messages are still in its inbox. A Codex member gets no turn for a stored message until a later send queues one or it restarts: tell the owner, and don't resend.
 
-1. **At each turn's start,** read your inbox with bodies, act and ack once taken on; handle check-ins and seating retries.
-2. **End every turn with exactly one wait running:** `"$BORGCHART_BIN" msg wait --timeout <seconds> --full`, with your Bash tool in **background** mode. Use 1200 seconds while briefs are open or seat retries pending, sooner for a recorded seat retry (minimum 60); otherwise 86400. Replace a wait ending too late.
-   - **Exit 9:** handle check-ins and retries, then wait again.
+1. **At each turn's start,** read your inbox with bodies, act and ack once taken on, then handle check-ins and seating retries. An `Alarm due` message is your own alarm; it needs no ack.
+2. **Set your alarm** about 20 minutes ahead while any brief or retry is open (sooner for a seat-check retry): `brg-checks alarm set <minutes or UTC time> <what is due>`, or `brg-checks alarm clear` when none remains. If `set` refuses, tell the owner.
+3. **End ready to hear your inbox:**
+   - **Codex:** run no wait: finish your turn. brg queues new messages, your alarm among them, as your next turn.
+   - **Claude:** end with exactly one `"$BORGCHART_BIN" msg wait --full` running, with your Bash tool in **background** mode.
+   - **Exit 9:** wait again.
    - **Exit 8 (`fenced`):** stop waiting and tell the owner.
    - **Other errors:** wait at least 60 seconds, run `msg integrity-check`, and report the problem.
-3. **Check open briefs every 20 minutes** with `status`:
+4. **Check open briefs every 20 minutes (at each alarm)** with `status`:
    - reported: handle the report; working: leave it;
    - stopped: start it; idle and unacked: reply once `Please check the referenced brief`;
    - blocked, idle and acked without a report, or still unacked at the next check-in: tell the owner.

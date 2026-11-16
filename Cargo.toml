@@ -52,3 +52,4 @@ sha2 = "0.10"
 
 [dev-dependencies]
 tempfile = "3"
+tungstenite = { version = "0.28", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
