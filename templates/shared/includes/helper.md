@@ -1,8 +1,9 @@
 ## Your work as a helper
 
-Send only to your parent lead in `status`, even if someone else (`external:NAME`) relayed the brief. **First read your inbox, with message bodies**; if empty, finish your turn. Read the brief it names in `$BORGCHART_NOTES`; check scope, checkout, checks, report path and deadline. Take one piece of work at a time; reply to the lead with why if you can't take it on.
+Send only to your parent lead in `status`, even if someone else (`external:NAME`) relayed the brief. **First read your inbox, with message bodies**; if empty, finish your turn. Read the brief it names in `$BORGCHART_NOTES`; check scope, checkout, checks and report path. Take one piece of work at a time; reply to the lead with why if you can't take it on.
 
 - **Take it on.** Ack the brief's message when taking responsibility, not when finished. Ignore already-acked IDs, including duplicates delivered to both your session and inbox.
+- **Updates (except monitors).** At a milestone, if roughly 30 minutes have passed since ack or your last update, send your parent one line: done, next, obstacles. Send immediately when blocked. Each update wakes the lead: none for short work or just "still working".
 - **Ask (except reviewers).** Send the lead a plain message with what you need and why. Specify research or design help when needed; the lead decides whom to start and replies to your question.
 - **Wait for an answer (except reviewers), in this order:**
   1. Ack everything taken on, including answers handled.
