@@ -16,6 +16,7 @@ use std::{
 struct Cursor {
     initialized: bool,
     messages: BTreeMap<String, Entry>,
+    broadcasts: BTreeSet<String>,
     pending: Vec<Item>,
 }
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -47,8 +48,13 @@ fn collect(
     state.messages.retain(|ts, entry| {
         api::valid_ts(ts) && number(ts) >= cutoff && api::valid_ts(&entry.newest_reply)
     });
+    state
+        .broadcasts
+        .retain(|ts| api::valid_ts(ts) && number(ts) >= cutoff);
     state.pending.retain(|item| {
-        item.line().is_ok() && number(item.thread.as_deref().unwrap_or(&item.ts)) >= cutoff
+        item.line().is_ok()
+            && (number(item.thread.as_deref().unwrap_or(&item.ts)) >= cutoff
+                || state.broadcasts.contains(&item.ts))
     });
     let history = api.call(
         "conversations.history",
@@ -101,7 +107,10 @@ fn collect(
                             continue;
                         }
                         entry.newest_reply = reply_ts.into();
-                        if api::allowed(reply, own, &allow) {
+                        if api::allowed(reply, own, &allow)
+                            && (reply["subtype"] != "thread_broadcast"
+                                || state.broadcasts.insert(reply_ts.into()))
+                        {
                             state.pending.push(Item {
                                 kind: "reply".into(),
                                 ts: reply_ts.into(),
@@ -116,6 +125,32 @@ fn collect(
             }
         }
         state.messages.insert(ts.into(), entry);
+    }
+    for message in messages(&history) {
+        let (Some(ts), Some(thread)) =
+            (timestamp(&message["ts"]), timestamp(&message["thread_ts"]))
+        else {
+            continue;
+        };
+        let covered = state
+            .messages
+            .get(thread)
+            .is_some_and(|entry| ts <= entry.newest_reply.as_str());
+        // Record baseline and covered broadcasts so neither path replays them.
+        if message["subtype"] == "thread_broadcast"
+            && thread != ts
+            && number(ts) >= cutoff
+            && api::allowed(message, own, &allow)
+            && state.broadcasts.insert(ts.into())
+            && !first
+            && !covered
+        {
+            state.pending.push(Item {
+                kind: "reply".into(),
+                ts: ts.into(),
+                thread: Some(thread.into()),
+            });
+        }
     }
     state.initialized = true;
     Ok(errors)
