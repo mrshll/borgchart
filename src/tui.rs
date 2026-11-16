@@ -8,7 +8,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Cell, Paragraph, Row, Table, TableState};
+use ratatui::widgets::{Block, BorderType, Cell, Clear, Paragraph, Row, Table, TableState};
 
 use crate::address::{self, Instance};
 use crate::runtime::{self, StatusRow};
@@ -19,55 +19,255 @@ const REFRESH: Duration = Duration::from_secs(2);
 /// Spinner cadence; data is still read only at the chosen refresh interval.
 pub const SPIN_INTERVAL: Duration = Duration::from_millis(500);
 
-/// `brg status -w`: read the tree every few seconds, animating only while busy.
+/// Painted watch uses the same tree renderer as interactive status.
+#[allow(clippy::too_many_arguments)]
+fn watch_draw(
+    frame: &mut ratatui::Frame,
+    sections: &[Section],
+    headers: bool,
+    messages: bool,
+    selected: Option<&str>,
+    feed: Option<&crate::graph::feed::Feed>,
+    motion: &mut crate::graph::layout::Motion,
+    now: Duration,
+    errors: [&str; 2],
+    refreshed: u64,
+) {
+    let Rect { width, height, .. } = frame.area();
+    let title = sections.first().map_or("", |s| s.header.as_str());
+    let title = if headers { "teams" } else { title };
+    if messages {
+        let section = selected_source(sections, selected);
+        if let Some(section) = section {
+            let header = if headers && sections.len() > 1 {
+                let i = sections
+                    .iter()
+                    .position(|s| s.inst.id == section.inst.id)
+                    .unwrap();
+                format!("tree {}/{} · {}", i + 1, sections.len(), section.header)
+            } else {
+                section.header.clone()
+            };
+            frame.render_widget(Paragraph::new(header), Rect::new(0, 1, width, 1));
+        }
+        let area = Rect::new(0, 2, width, height.saturating_sub(3));
+        if let (Some(section), Some(feed)) = (section, feed) {
+            let nodes = crate::graph::layout::nodes(
+                &section.rows,
+                &section.inst.id,
+                section.inst.record.parent.as_deref(),
+                feed,
+            );
+            crate::graph::draw::draw(
+                frame,
+                area,
+                &nodes,
+                &section.inst.id,
+                feed,
+                motion,
+                now,
+                std::time::SystemTime::now(),
+            );
+        } else {
+            let prompt = if section.is_some() && !errors[1].is_empty() {
+                errors[1]
+            } else {
+                "there are no teams"
+            };
+            frame.render_widget(Paragraph::new(prompt), area);
+        }
+    } else {
+        draw(
+            frame,
+            title,
+            sections,
+            headers,
+            &mut TableState::default(),
+            "",
+            None,
+            true,
+            working(sections).then(|| (now.as_millis() / SPIN_INTERVAL.as_millis()) as usize),
+        );
+    }
+    let rows: Vec<_> = sections.iter().flat_map(|s| s.rows.clone()).collect();
+    frame.render_widget(
+        Paragraph::new(summary_line(&rows, true)),
+        Rect::new(0, 0, width, 1),
+    );
+    let tabs = if messages {
+        "tree │ ▸messages"
+    } else {
+        "▸tree │ messages"
+    };
+    let x = width.saturating_sub(18);
+    frame.render_widget(Paragraph::new(tabs), Rect::new(x, 0, width - x, 1));
+    let footer = Rect::new(0, height.saturating_sub(1), width, 1);
+    frame.render_widget(Clear, footer);
+    let error = errors.into_iter().find(|e| !e.is_empty()).unwrap_or("");
+    frame.render_widget(
+        Paragraph::new(if error.is_empty() {
+            format!(
+                "{}Tab {} · q quit · refreshed {} UTC",
+                if messages && headers && sections.len() > 1 {
+                    "j/k tree · "
+                } else {
+                    ""
+                },
+                if messages { "tree" } else { "messages" },
+                clock(refreshed)
+            )
+        } else {
+            error.into()
+        }),
+        footer,
+    );
+}
+fn watch_key(
+    messages: &mut bool,
+    selected: &mut Option<String>,
+    sections: &[Section],
+    code: KeyCode,
+    modifiers: KeyModifiers,
+) -> bool {
+    match code {
+        KeyCode::Char('j' | 'k') | KeyCode::Down | KeyCode::Up
+            if *messages && sections.len() > 1 =>
+        {
+            let i = sections
+                .iter()
+                .position(|s| Some(&s.inst.id) == selected.as_ref())
+                .unwrap_or(0);
+            let step = if matches!(code, KeyCode::Char('j') | KeyCode::Down) {
+                1
+            } else {
+                sections.len() - 1
+            };
+            *selected = Some(sections[(i + step) % sections.len()].inst.id.clone());
+            true
+        }
+        KeyCode::Tab => {
+            *messages = !*messages;
+            true
+        }
+        KeyCode::Char('q') | KeyCode::Esc => false,
+        KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => false,
+        _ => true,
+    }
+}
+
+fn selected_source<'a>(sections: &'a [Section], selected: Option<&str>) -> Option<&'a Section> {
+    sections
+        .iter()
+        .find(|s| Some(s.inst.id.as_str()) == selected)
+        .or_else(|| sections.first())
+}
+
+/// `brg status -w`: tabs on painted terminals, the plain stream otherwise.
 pub fn watch(one: Option<&Instance>, interval: Duration) -> Result<(), String> {
+    use crate::{
+        bus::{layout::StorePaths, store},
+        graph::{feed::Feed, layout::Motion},
+    };
     use std::io::IsTerminal;
     if !tree::colour_wanted(std::io::stdout().is_terminal()) {
         return watch_plain(one, interval);
     }
     let mut sections = load(one, false)?;
-    let mut refreshed = epoch();
-    let mut last_refresh = Instant::now();
-    let mut last_spin = Instant::now();
-    let mut spin: usize = 0;
-    let mut out = std::io::stdout();
-    loop {
-        let busy = working(&sections);
-        let mut frame = watch_frame(&sections, busy.then_some(spin), refreshed);
-        let animate = busy
-            && watch_animation_fits(
-                &frame,
-                crossterm::terminal::size()
-                    .map(|(_, rows)| rows)
-                    .unwrap_or(0),
-            );
-        if busy && !animate {
-            frame = watch_frame(&sections, None, refreshed);
-        }
-        let _ = write!(out, "{}", watch_redraw(&frame));
-        let _ = out.flush();
-        let mut timeout = interval.saturating_sub(last_refresh.elapsed());
-        if animate {
-            timeout = timeout.min(SPIN_INTERVAL.saturating_sub(last_spin.elapsed()));
-        }
-        std::thread::sleep(timeout);
-        if last_refresh.elapsed() >= interval {
-            sections = match load(one, false) {
-                Ok(sections) => sections,
-                Err(error) => {
-                    let _ = write!(out, "\r\n");
-                    let _ = out.flush();
-                    return Err(error);
+    let mut source = None;
+    let mut selected = None;
+    let mut feed = None;
+    let mut motion = Motion::default();
+    let mut messages = false;
+    let mut error = String::new();
+    let mut follower_error = String::new();
+    let mut refresh_time = epoch();
+    let mut terminal = ratatui::try_init().map_err(|e| format!("cannot start the screen: {e}"))?;
+    let start = Instant::now();
+    let mut refreshed = Instant::now();
+    let mut polled = Instant::now() - store::POLL;
+    let result = (|| {
+        loop {
+            let refresh = refreshed.elapsed() >= interval;
+            if refresh {
+                match load(one, false) {
+                    Ok(new) => {
+                        sections = new;
+                        error.clear();
+                        refresh_time = epoch();
+                    }
+                    Err(e) => error = e,
                 }
-            };
-            refreshed = epoch();
-            last_refresh = Instant::now();
+                refreshed = Instant::now();
+            }
+            let section = selected_source(&sections, selected.as_deref());
+            selected = section.map(|s| s.inst.id.clone());
+            if selected != source || (refresh && feed.is_none()) {
+                if selected != source {
+                    follower_error.clear();
+                }
+                source = selected.clone();
+                motion = Motion::default();
+                feed = section
+                    .map(|s| Feed::open(StorePaths::new(&s.inst.state)))
+                    .transpose()
+                    .unwrap_or_else(|e| {
+                        follower_error = e;
+                        None
+                    });
+            }
+            if polled.elapsed() >= store::POLL {
+                if let Some(feed) = &mut feed {
+                    follower_error = feed.poll(start.elapsed()).err().unwrap_or_default();
+                }
+                polled = Instant::now();
+            }
+            terminal
+                .draw(|f| {
+                    watch_draw(
+                        f,
+                        &sections,
+                        one.is_none(),
+                        messages,
+                        selected.as_deref(),
+                        feed.as_ref(),
+                        &mut motion,
+                        start.elapsed(),
+                        [&error, &follower_error],
+                        refresh_time,
+                    )
+                })
+                .map_err(|e| e.to_string())?;
+            let moving = messages
+                && (feed.as_ref().is_some_and(|f| f.moving(start.elapsed()))
+                    || motion.moving(start.elapsed()));
+            let mut timeout = interval
+                .saturating_sub(refreshed.elapsed())
+                .min(store::POLL.saturating_sub(polled.elapsed()));
+            if moving {
+                timeout = timeout.min(Duration::from_millis(80));
+            }
+            if !messages && working(&sections) {
+                let step = SPIN_INTERVAL.as_millis() as u64;
+                let remaining = step - start.elapsed().as_millis() as u64 % step;
+                timeout = timeout.min(Duration::from_millis(remaining));
+            }
+            if event::poll(timeout).map_err(|e| e.to_string())?
+                && let Event::Key(key) = event::read().map_err(|e| e.to_string())?
+                && key.kind == KeyEventKind::Press
+                && !watch_key(
+                    &mut messages,
+                    &mut selected,
+                    &sections,
+                    key.code,
+                    key.modifiers,
+                )
+            {
+                return Ok(());
+            }
         }
-        if animate && last_spin.elapsed() >= SPIN_INTERVAL {
-            spin = spin.wrapping_add(1);
-            last_spin = Instant::now();
-        }
-    }
+    })();
+    ratatui::restore();
+    result
 }
 
 fn epoch() -> u64 {
@@ -75,10 +275,6 @@ fn epoch() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
-}
-
-fn watch_animation_fits(frame: &str, rows: u16) -> bool {
-    frame.lines().count() < usize::from(rows)
 }
 
 /// Keep the pre-existing watch stream byte-for-byte without terminal painting.
@@ -111,53 +307,11 @@ fn watch_plain(one: Option<&Instance>, interval: Duration) -> Result<(), String>
     }
 }
 
-/// One in-place frame, including erasure for lines that shrink or disappear.
-/// Disable autowrap inside the frame so each logical line takes one row.
-/// The caller uses this only on a painted terminal.
-pub fn watch_redraw(text: &str) -> String {
-    let mut out = String::from("\x1b[?2026h\x1b[?7l\x1b[H");
-    for (i, line) in text.lines().enumerate() {
-        if i > 0 {
-            out.push('\n');
-        }
-        out.push_str(line);
-        out.push_str("\x1b[K");
-    }
-    out.push_str("\x1b[J\x1b[?7h\x1b[?2026l");
-    out
-}
-
 fn working(sections: &[Section]) -> bool {
     sections
         .iter()
         .flat_map(|s| &s.rows)
         .any(|r| runtime::status_look(r).tone == tree::Tone::Busy)
-}
-
-fn watch_frame(sections: &[Section], spin: Option<usize>, refreshed: u64) -> String {
-    let mut text = String::new();
-    for section in sections {
-        text.push_str(&runtime::render_status_as(
-            &section.header,
-            &section.rows,
-            true,
-            true,
-            spin,
-        ));
-    }
-    if sections.is_empty() {
-        text.push_str(&format!("{}\n", address::known()));
-    }
-    let rows: Vec<StatusRow> = sections.iter().flat_map(|s| s.rows.clone()).collect();
-    format!(
-        "{}\n\n{text}\n{}\n",
-        runtime::summary_band(&rows, true),
-        tree::ink_text(
-            &format!("refreshed {} UTC · Ctrl-C to stop", clock(refreshed)),
-            tree::palette::FADED,
-            false
-        )
-    )
 }
 
 /// `HH:MM:SS` of a UTC epoch second.
@@ -676,24 +830,6 @@ mod tests {
     }
 
     #[test]
-    fn watch_redraw_disables_wrapping_only_inside_synchronized_frames() {
-        let frame = super::watch_redraw(&format!("{}\nfooter\n", "wide".repeat(100)));
-        assert!(frame.starts_with("\x1b[?2026h\x1b[?7l"));
-        assert!(frame.ends_with("\x1b[?7h\x1b[?2026l"));
-        assert_eq!(frame.matches("\x1b[?7l").count(), 1);
-        assert_eq!(frame.matches("\x1b[?7h").count(), 1);
-    }
-
-    #[test]
-    fn watch_frames_at_or_above_terminal_height_do_not_animate() {
-        let frame = "row\n".repeat(24);
-        assert!(super::watch_animation_fits(&frame, 25));
-        assert!(!super::watch_animation_fits(&frame, 24));
-        assert!(!super::watch_animation_fits(&frame, 23));
-        assert!(!super::watch_animation_fits(&frame, 0));
-    }
-
-    #[test]
     fn interactive_frame_distinguishes_the_title_and_keys_from_the_tree() {
         use ratatui::backend::TestBackend;
         use ratatui::style::{Color, Modifier};
@@ -848,5 +984,488 @@ mod tests {
             .collect();
         assert!(screen.contains("Λ example-model medium"), "{screen}");
         assert!(screen.contains(crate::runtime::ON_DEMAND), "{screen}");
+    }
+}
+
+#[cfg(test)]
+mod watch_tests {
+    use super::*;
+    fn section() -> Section {
+        Section {
+            inst: Instance {
+                id: "demo".into(),
+                state: crate::state::StateDir::from_root(std::path::Path::new(
+                    "/example/state/demo",
+                )),
+                record: serde_json::from_value(serde_json::json!({
+                    "schema":1,"id":"demo","template":"example","template_dir":"/example/template",
+                    "folder":"/example/work","created_at":"2026-01-01T00:00:00Z","members":{}
+                }))
+                .unwrap(),
+            },
+            header: "demo".into(),
+            rows: vec![crate::graph::layout::tests::row("demo", "lead-abcd", None)],
+        }
+    }
+    fn other_section() -> Section {
+        let mut other = section();
+        other.inst.id = "other".into();
+        other.header = "other".into();
+        other.rows = vec![crate::graph::layout::tests::row("other", "lead-efgh", None)];
+        other
+    }
+    #[test]
+    fn tree_keys_wrap_without_selecting_on_the_tree_tab_or_a_single_tree() {
+        let sections = [section(), other_section()];
+        let mut selected = None;
+        let mut messages = false;
+        for code in [
+            KeyCode::Char('j'),
+            KeyCode::Down,
+            KeyCode::Char('k'),
+            KeyCode::Up,
+        ] {
+            assert!(watch_key(
+                &mut messages,
+                &mut selected,
+                &sections,
+                code,
+                KeyModifiers::NONE
+            ));
+            assert!(selected.is_none());
+        }
+        messages = true;
+        for (code, expected) in [
+            (KeyCode::Char('j'), "other"),
+            (KeyCode::Down, "demo"),
+            (KeyCode::Char('k'), "other"),
+            (KeyCode::Up, "demo"),
+        ] {
+            assert!(watch_key(
+                &mut messages,
+                &mut selected,
+                &sections,
+                code,
+                KeyModifiers::NONE
+            ));
+            assert_eq!(selected.as_deref(), Some(expected));
+        }
+        for code in [
+            KeyCode::Char('j'),
+            KeyCode::Down,
+            KeyCode::Char('k'),
+            KeyCode::Up,
+        ] {
+            watch_key(
+                &mut messages,
+                &mut selected,
+                &sections[..1],
+                code,
+                KeyModifiers::NONE,
+            );
+            assert_eq!(selected.as_deref(), Some("demo"));
+            watch_key(&mut messages, &mut selected, &[], code, KeyModifiers::NONE);
+        }
+    }
+    #[test]
+    fn selected_tree_survives_reordering_and_falls_back_after_removal() {
+        let sections = [section(), other_section()];
+        assert_eq!(selected_source(&sections, None).unwrap().inst.id, "demo");
+        assert_eq!(
+            selected_source(&sections, Some("other")).unwrap().inst.id,
+            "other"
+        );
+        let reordered = [other_section(), section()];
+        assert_eq!(
+            selected_source(&reordered, Some("other")).unwrap().inst.id,
+            "other"
+        );
+        assert_eq!(
+            selected_source(&sections[..1], Some("other"))
+                .unwrap()
+                .inst
+                .id,
+            "demo"
+        );
+        assert!(selected_source(&[], Some("other")).is_none());
+    }
+    #[test]
+    fn messages_header_identifies_the_selected_tree_without_changing_the_tree_tab() {
+        let sections = [section(), other_section()];
+        let dir = tempfile::tempdir().unwrap();
+        let feed =
+            crate::graph::feed::Feed::open(crate::bus::layout::StorePaths::from_root(dir.path()))
+                .unwrap();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        for (selected, heading) in [
+            (None, "tree 1/2 · demo"),
+            (Some("other"), "tree 2/2 · other"),
+        ] {
+            terminal
+                .draw(|f| {
+                    watch_draw(
+                        f,
+                        &sections,
+                        true,
+                        true,
+                        selected,
+                        Some(&feed),
+                        &mut crate::graph::layout::Motion::default(),
+                        Duration::ZERO,
+                        ["", ""],
+                        0,
+                    )
+                })
+                .unwrap();
+            let lines: Vec<String> = terminal
+                .backend()
+                .buffer()
+                .content
+                .chunks(80)
+                .map(|row| row.iter().map(|c| c.symbol()).collect())
+                .collect();
+            assert_eq!(lines[1].trim_end(), heading);
+            assert!(lines[23].starts_with("j/k tree · Tab tree · q quit · refreshed"));
+            println!("two-tree messages 80x24:\n{}", lines.join("\n"));
+        }
+    }
+    #[test]
+    fn watch_keeps_the_latest_route_visible_after_the_flights_end() {
+        let mut section = section();
+        for name in ["alpha-abcd", "beta-abcd", "gamma-abcd"] {
+            section.rows.push(crate::graph::layout::tests::row(
+                "demo",
+                name,
+                Some("lead-abcd"),
+            ));
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::bus::layout::StorePaths::from_root(dir.path());
+        let mut feed = crate::graph::feed::Feed::open(paths.clone()).unwrap();
+        let record = crate::bus::record::Record {
+            schema: crate::bus::SCHEMA,
+            id: "m1".into(),
+            seq: 1,
+            from: "demo/gamma-abcd".into(),
+            to: "demo/beta-abcd".into(),
+            at: "2026-01-01T00:00:00.000Z".into(),
+            ack_required: false,
+            body: "PRIVATE-MARKER-7f49".into(),
+            reply_to: vec![],
+        };
+        crate::bus::fsx::write_new(&paths.record(1), &serde_json::to_vec(&record).unwrap())
+            .unwrap();
+        feed.poll(Duration::ZERO).unwrap();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        for milliseconds in [1980, 9000] {
+            terminal
+                .draw(|f| {
+                    watch_draw(
+                        f,
+                        std::slice::from_ref(&section),
+                        false,
+                        true,
+                        Some("demo"),
+                        Some(&feed),
+                        &mut crate::graph::layout::Motion::default(),
+                        Duration::from_millis(milliseconds),
+                        ["", ""],
+                        0,
+                    )
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let graph: String = buffer.content[160..1600]
+                .iter()
+                .map(|c| c.symbol())
+                .collect();
+            assert!(graph.contains("m1") && graph.contains('→'), "{graph}");
+            let lines: Vec<String> = buffer
+                .content
+                .chunks(80)
+                .map(|row| row.iter().map(|c| c.symbol()).collect())
+                .collect();
+            assert!(!lines.join("\n").contains(&record.body));
+            println!("watch at {milliseconds}ms 80x24:\n{}", lines.join("\n"));
+        }
+    }
+    #[test]
+    fn grouped_watch_shows_only_eligible_team_box_titles() {
+        let mut section = section();
+        section.rows = crate::graph::layout::tests::grouped_rows();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::bus::layout::StorePaths::from_root(dir.path());
+        let record = crate::bus::record::Record {
+            schema: crate::bus::SCHEMA,
+            id: "m1".into(),
+            seq: 1,
+            from: "external:owner".into(),
+            to: "demo/lead-root".into(),
+            at: "2026-01-01T00:00:00.000Z".into(),
+            ack_required: false,
+            body: "PRIVATE-MARKER-7f49".into(),
+            reply_to: vec![],
+        };
+        crate::bus::fsx::write_new(&paths.record(1), &serde_json::to_vec(&record).unwrap())
+            .unwrap();
+        let feed = crate::graph::feed::Feed::open(paths).unwrap();
+        for (w, h) in [(80, 24), (160, 48)] {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+            terminal
+                .draw(|f| {
+                    watch_draw(
+                        f,
+                        std::slice::from_ref(&section),
+                        false,
+                        true,
+                        Some("demo"),
+                        Some(&feed),
+                        &mut crate::graph::layout::Motion::default(),
+                        Duration::ZERO,
+                        ["", ""],
+                        0,
+                    )
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let lines: Vec<String> = buffer
+                .content
+                .chunks(w as usize)
+                .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+                .collect();
+            let text = lines.join("\n");
+            assert!(
+                text.contains("╭dev-build") && text.contains("╭dev-rank"),
+                "{text}"
+            );
+            assert!(!text.contains("dev-search─"), "{text}");
+            for label in ["dev-search", "dev-build", "dev-rank"] {
+                assert!(text.contains(label), "missing {label}: {text}");
+            }
+            assert!(!text.contains(&record.body));
+            println!("grouped messages {w}x{h}:\n{text}");
+        }
+    }
+    #[test]
+    fn selected_team_without_a_feed_shows_the_follower_error() {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|f| {
+                watch_draw(
+                    f,
+                    &[section()],
+                    false,
+                    true,
+                    None,
+                    None,
+                    &mut crate::graph::layout::Motion::default(),
+                    Duration::ZERO,
+                    ["", "cannot follow; repair the message store"],
+                    0,
+                )
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let graph: String = buffer.content[160..1840]
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(graph.contains("cannot follow"), "{graph}");
+        let footer: String = buffer.content[1840..].iter().map(|c| c.symbol()).collect();
+        assert!(footer.contains("cannot follow") && !footer.contains("refreshed"));
+    }
+    #[test]
+    fn tab_switch_preserves_the_shared_tree_renderer_without_selection() {
+        let mut tab = false;
+        assert!(watch_key(
+            &mut tab,
+            &mut None,
+            &[],
+            KeyCode::Tab,
+            KeyModifiers::NONE
+        ));
+        assert!(tab);
+        assert!(watch_key(
+            &mut tab,
+            &mut None,
+            &[],
+            KeyCode::Tab,
+            KeyModifiers::NONE
+        ));
+        assert!(!tab);
+        assert!(!watch_key(
+            &mut tab,
+            &mut None,
+            &[],
+            KeyCode::Char('q'),
+            KeyModifiers::NONE
+        ));
+        assert!(!watch_key(
+            &mut tab,
+            &mut None,
+            &[],
+            KeyCode::Esc,
+            KeyModifiers::NONE
+        ));
+        assert!(!watch_key(
+            &mut tab,
+            &mut None,
+            &[],
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL
+        ));
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::bus::layout::StorePaths::from_root(dir.path());
+        let mut feed = crate::graph::feed::Feed::open(paths.clone()).unwrap();
+        let record = crate::bus::record::Record {
+            schema: crate::bus::SCHEMA,
+            id: "m1".into(),
+            seq: 1,
+            from: "external:owner".into(),
+            to: "demo/lead-abcd".into(),
+            at: "2026-01-01T00:00:00.000Z".into(),
+            ack_required: true,
+            reply_to: vec![],
+            body: "PRIVATE-MARKER-7f49".into(),
+        };
+        crate::bus::fsx::write_new(&paths.record(1), &serde_json::to_vec(&record).unwrap())
+            .unwrap();
+        feed.poll(Duration::ZERO).unwrap();
+        let mut sections = vec![section()];
+        sections[0].rows[0].state = "working".into();
+        let mut tree = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        let mut watch = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        tree.draw(|f| {
+            draw(
+                f,
+                "teams",
+                &sections,
+                true,
+                &mut TableState::default(),
+                "",
+                None,
+                true,
+                Some(1),
+            )
+        })
+        .unwrap();
+        watch
+            .draw(|f| {
+                watch_draw(
+                    f,
+                    &sections,
+                    true,
+                    false,
+                    None,
+                    Some(&feed),
+                    &mut crate::graph::layout::Motion::default(),
+                    SPIN_INTERVAL,
+                    ["", ""],
+                    0,
+                )
+            })
+            .unwrap();
+        let a = tree.backend().buffer();
+        let b = watch.backend().buffer();
+        for y in 2..22 {
+            for x in 0..80 {
+                assert_eq!(a[(x, y)], b[(x, y)]);
+            }
+        }
+        let footer = b
+            .content
+            .chunks(80)
+            .last()
+            .unwrap()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(
+            footer.contains("Tab messages")
+                && footer.trim_end().ends_with("refreshed 00:00:00 UTC"),
+            "{footer}"
+        );
+        watch
+            .draw(|f| {
+                watch_draw(
+                    f,
+                    &sections,
+                    true,
+                    true,
+                    None,
+                    Some(&feed),
+                    &mut crate::graph::layout::Motion::default(),
+                    Duration::ZERO,
+                    ["", ""],
+                    0,
+                )
+            })
+            .unwrap();
+        let text = watch
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(text.contains("waiting") && text.contains("m1"));
+        assert!(!text.contains(&record.body));
+        assert!(
+            text.contains("Tab tree") && text.contains("refreshed 00:00:00 UTC"),
+            "{text}"
+        );
+    }
+    #[test]
+    fn empty_registry_and_refresh_errors_stay_visible() {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|f| {
+                watch_draw(
+                    f,
+                    &[],
+                    true,
+                    true,
+                    None,
+                    None,
+                    &mut crate::graph::layout::Motion::default(),
+                    Duration::ZERO,
+                    ["cannot refresh; check the registry", ""],
+                    0,
+                )
+            })
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(text.contains("there are no teams"));
+        assert!(text.contains("cannot refresh"));
+        for (w, h) in [(1, 1), (2, 3), (10, 6)] {
+            terminal.resize(Rect::new(0, 0, w, h)).unwrap();
+            terminal
+                .draw(|f| {
+                    watch_draw(
+                        f,
+                        &[],
+                        true,
+                        true,
+                        None,
+                        None,
+                        &mut crate::graph::layout::Motion::default(),
+                        Duration::ZERO,
+                        ["", ""],
+                        0,
+                    )
+                })
+                .unwrap();
+        }
     }
 }

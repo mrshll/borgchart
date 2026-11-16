@@ -74,6 +74,8 @@ pub mod palette {
     use super::Rgb;
     /// Working rows, whatever their vendor.
     pub const BUSY: Rgb = (0x1f, 0x93, 0x9a);
+    /// New messages, waiting recipients and acknowledgement flashes.
+    pub const MESSAGE: Rgb = (0x3d, 0x7e, 0xc5);
     pub const TEAM: Rgb = (0xa9, 0x81, 0x2a);
     pub const ALERT: Rgb = (0xc0, 0x4a, 0x4a);
     pub const ODD: Rgb = (0x90, 0x7a, 0xa9);
