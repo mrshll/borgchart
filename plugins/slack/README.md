@@ -59,15 +59,18 @@ The first `hello` establishes a baseline without replaying history. Each later
 to 200 channel messages**: posts and broadcasts qualify, plain thread replies
 during downtime are lost, and older messages beyond that page can be missed.
 A catch-up error makes health not ok while socket events continue; a successful
-catch-up clears it. Prove scopes, downtime and reconnect behavior with the app
+catch-up clears it. Catch-up can hold acknowledgements for up to five seconds
+after each `hello`. Slack may redeliver those envelopes; `seen` absorbs
+the duplicates. Prove scopes, downtime and reconnect behavior with the app
 before relying on it.
 
-Startup authentication failures retry with backoff from one to 60 seconds.
+Startup authentication failures retry with backoff from one to 60 seconds in
+normal mode.
 The listener refreshes immediately on `disconnect`; other socket failures
 reconnect with the same backoff, reset on `hello`. It pings after 30 idle seconds
 and reconnects after 90 seconds without a frame. `--once` follows refreshes,
-then finishes after a socket close/error and drains pending delivery; connection
-setup errors exit non-zero.
+then finishes after a socket close/error and sends at most one more batch;
+connection setup errors exit non-zero.
 
 ## Mention requests
 
@@ -207,6 +210,7 @@ Slack's app/token restrictions also apply to reading threads.
 
 `watch` requires `BORGCHART_STATE_DIR`. When running it directly, set it to a
 dedicated state directory. New directories are private; existing directory permissions are preserved.
+Watch exits on a state-directory or lock failure at startup, as mentions does.
 
 ## Delivery and limits
 

@@ -83,11 +83,12 @@ fn deliver(
             }
             count = end;
         }
-        files.write_json("cursor.json", &*state)?;
         state.pending[..count].to_vec()
     };
     if batch.is_empty() {
-        return Ok(());
+        let mut status = health.lock().unwrap();
+        status.delivery.clear();
+        return status.write(files);
     }
     plugin::send("slack", target, &api::message_notice(&batch)?, None).map_err(|message| {
         Error::failure(format!(
@@ -171,33 +172,33 @@ pub fn run(api: &Api, once: bool) -> Result<()> {
             }
             let mut state = cursor.lock().unwrap();
             let outcome = state.journal(event, &own, &allow);
+            // A duplicate may retry an earlier failed save of the in-memory journal.
             if matches!(outcome, Event::Journaled | Event::Duplicate) {
                 files.write_json("cursor.json", &*state)?;
             }
             Ok(outcome)
         },
         || {
-            let mut state = cursor.lock().unwrap();
-            let mut queued = false;
-            if state.last.is_empty() {
-                state.last = format!("{:.6}", now());
+            let last = cursor.lock().unwrap().last.clone();
+            let history = if last.is_empty() {
+                Value::Null
             } else {
-                let last = number(&state.last);
-                let history = api.call_with(
+                api.call_with(
                     "conversations.history",
-                    json!({"channel":channel,"oldest":format!("{:.6}", last.max(now() - window)),"limit":200}),
+                    json!({"channel":channel,"oldest":format!("{:.6}", number(&last).max(now() - window)),"limit":200}),
                     false,
                     &api::var("SLACK_BOT_TOKEN"),
                     true,
-                )?;
-                for message in history["messages"].as_array().into_iter().flatten() {
-                    let ts = message["ts"].as_str().unwrap_or("");
-                    if number(ts) > last
-                        && (message["thread_ts"].as_str().unwrap_or(ts) == ts
-                            || message["subtype"] == "thread_broadcast")
-                    {
-                        queued |= matches!(state.journal(message, &own, &allow), Event::Journaled);
-                    }
+                )?
+            };
+            let mut state = cursor.lock().unwrap();
+            let mut queued = false;
+            if last.is_empty() {
+                state.last = format!("{:.6}", now());
+            }
+            for message in history["messages"].as_array().into_iter().flatten() {
+                if number(message["ts"].as_str().unwrap_or("")) > number(&last) {
+                    queued |= matches!(state.journal(message, &own, &allow), Event::Journaled);
                 }
             }
             state.prune(now() - window);

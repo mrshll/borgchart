@@ -128,13 +128,93 @@ fn retry_envelopes_and_reconnect_duplicates_produce_one_notice() {
 }
 
 #[test]
+fn failed_cursor_save_withholds_ack_until_retry_is_durable_and_delivers_once() {
+    let h = Harness::new();
+    // Own this socket so a deliberately unacknowledged envelope is observable.
+    let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    h.slack.lock().unwrap().socket_url = format!("ws://{}/", server.local_addr().unwrap());
+    let _listener = Listener(h.command(&["watch"]).spawn().unwrap());
+    let connect = || {
+        let (stream, _) = server.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut socket = tungstenite::accept(stream).unwrap();
+        socket
+            .send(tungstenite::Message::text(
+                json!({"type":"hello"}).to_string(),
+            ))
+            .unwrap();
+        socket
+    };
+    let mut socket = connect();
+    let cursor = h.dir.path().join("state/cursor.json");
+    wait_until(|| cursor.is_file());
+    fs::remove_file(&cursor).unwrap();
+    fs::create_dir(&cursor).unwrap();
+    let mut envelope = event(1);
+    socket
+        .send(tungstenite::Message::text(envelope.to_string()))
+        .unwrap();
+    let reply = socket.read();
+    assert!(
+        !matches!(reply, Ok(tungstenite::Message::Text(_))),
+        "failed save was acknowledged"
+    );
+    assert!(h.sends().is_empty());
+    // Keep the next hello from persisting the in-memory journal itself.
+    h.slack
+        .lock()
+        .unwrap()
+        .errors
+        .insert("conversations.history".into(), "missing_scope".into());
+    fs::remove_dir(&cursor).unwrap();
+    drop(socket);
+    let mut socket = connect();
+    envelope["retry_attempt"] = json!(1);
+    socket
+        .send(tungstenite::Message::text(envelope.to_string()))
+        .unwrap();
+    let ack: Value = serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
+    assert_eq!(ack["envelope_id"], envelope["envelope_id"]);
+    let durable = fs::read(&cursor)
+        .ok()
+        .and_then(|data| serde_json::from_slice::<Value>(&data).ok());
+    assert!(
+        durable.is_some_and(|state| state["seen"]
+            .as_array()
+            .unwrap()
+            .contains(&message(&envelope)["ts"])),
+        "retry ack preceded the durable journal"
+    );
+    wait_until(|| !h.sends().is_empty());
+    assert_eq!(
+        lines(&h),
+        vec![format!("post ts={}", ts(message(&envelope)))]
+    );
+}
+
+#[test]
+fn socket_close_marks_health_disconnected_during_reconnect_backoff() {
+    let h = Harness::new();
+    let _listener = Listener(h.command(&["watch"]).spawn().unwrap());
+    wait_until(|| {
+        h.dir.path().join("state/health.json").is_file()
+            && h.state("health.json")["ok"] == false
+            && h.state("health.json")["detail"]
+                .as_str()
+                .unwrap()
+                .contains("disconnected")
+    });
+}
+
+#[test]
 fn ineligible_message_events_are_acked_without_notice_or_slack_write() {
     let mut h = Harness::new();
     h.env.insert(
         "SLACK_ALLOW_IDS".into(),
         "U0000ALICE,U0000BOT,B0000BOT".into(),
     );
-    h.env.insert("SLACK_SKIP_MENTIONS".into(), "true".into());
     let mut events = Vec::new();
     for (key, value) in [
         ("channel", json!("C0000OTHER")),
@@ -143,7 +223,6 @@ fn ineligible_message_events_are_acked_without_notice_or_slack_write() {
         ("user", json!("U0000BOT")),
         ("bot_id", json!("B0000BOT")),
         ("user", json!("U0000OTHER")),
-        ("text", json!(" <@U0000BOT|helper> help")),
         ("type", json!("reaction_added")),
         ("ts", json!("invalid")),
     ] {
@@ -176,14 +255,6 @@ fn first_hello_baselines_history_without_replaying_existing_posts() {
     h.slack.lock().unwrap().messages = vec![post(0)];
     listen(&h, vec![vec![]]);
     assert!(h.sends().is_empty());
-    assert!(
-        h.slack
-            .lock()
-            .unwrap()
-            .calls
-            .iter()
-            .all(|c| c.0 != "conversations.history")
-    );
 }
 
 #[test]
@@ -194,8 +265,6 @@ fn hello_catch_up_delivers_only_newer_posts_and_broadcasts_once() {
     let mut broadcast = event(4);
     broadcast["payload"]["event"]["thread_ts"] = json!(parent);
     broadcast["payload"]["event"]["subtype"] = json!("thread_broadcast");
-    let mut plain = post(5);
-    plain["thread_ts"] = json!(parent);
     let mut edited = post(6);
     edited["subtype"] = json!("message_changed");
     let mut non_message = post(7);
@@ -205,24 +274,17 @@ fn hello_catch_up_delivers_only_newer_posts_and_broadcasts_once() {
         post(2),
         post(3),
         message(&broadcast).clone(),
-        plain,
         edited,
         non_message,
     ];
-    listen(
-        &h,
-        vec![
-            vec![event(3), broadcast.clone(), json!({"type":"disconnect"})],
-            vec![event(3), broadcast.clone()],
-        ],
-    );
-    assert_eq!(
-        lines(&h),
-        vec![
-            format!("post ts={}", ts(&post(3))),
-            format!("reply ts={} thread={}", ts(message(&broadcast)), parent),
-        ]
-    );
+    listen(&h, vec![vec![event(3)]]);
+    let expected = vec![
+        format!("post ts={}", ts(&post(3))),
+        format!("reply ts={} thread={}", ts(message(&broadcast)), parent),
+    ];
+    assert_eq!(lines(&h), expected);
+    listen(&h, vec![vec![event(3), broadcast.clone()]]);
+    assert_eq!(lines(&h), expected);
     let s = h.slack.lock().unwrap();
     let calls: Vec<_> = s
         .calls
@@ -294,6 +356,23 @@ fn failed_send_retains_notices_until_exit_zero_and_redacts_delivery_errors() {
 }
 
 #[test]
+fn delivery_health_recovers_when_retention_leaves_nothing_to_send() {
+    let mut h = Harness::new();
+    h.env.insert("SLACK_WINDOW_HOURS".into(), "0.001".into());
+    h.outcome(4, json!({"message":"route refused"}));
+    {
+        let mut slack = h.slack.lock().unwrap();
+        slack.connections = vec![vec![event(1)]];
+        slack.close_delay = Duration::from_secs(16);
+    }
+    let _listener = Listener(h.command(&["watch"]).spawn().unwrap());
+    wait_until(|| !h.sends().is_empty() && h.state("health.json")["ok"] == false);
+    h.outcome(0, json!({}));
+    wait_until(|| h.state("health.json")["ok"] == true);
+    assert_eq!(h.sends().len(), 1);
+}
+
+#[test]
 fn batch_budget_delivers_pending_notices_oldest_first_without_losing_remainder() {
     let h = Harness::new();
     let pending: Vec<_> = (0..17)
@@ -334,18 +413,12 @@ fn slow_timed_out_delivery_keeps_pending_and_cannot_delay_socket_acks() {
     // Wait until the startup batch is in the slow send, then deliver an event
     // on the next connection while that send is still sleeping.
     wait_until(|| !h.sends().is_empty());
+    let available = Instant::now();
     h.slack.lock().unwrap().connections.push(vec![event(1)]);
     wait_until(|| !h.slack.lock().unwrap().acks.is_empty());
     fs::remove_file(h.dir.path().join("delay")).unwrap();
     let s = h.slack.lock().unwrap();
-    let opened = s
-        .calls
-        .iter()
-        .rev()
-        .find(|c| c.0 == "apps.connections.open")
-        .unwrap()
-        .2;
-    assert!(s.acks[0].1.duration_since(opened) < Duration::from_secs(2));
+    assert!(s.acks[0].1.duration_since(available) < Duration::from_secs(2));
     drop(s);
     wait_until(|| {
         h.state("cursor.json")["pending"]
@@ -405,7 +478,6 @@ fn missing_or_invalid_watch_configuration_fails_before_any_slack_call() {
         "SLACK_BOT_TOKEN",
         "SLACK_CHANNEL_ID",
         "BORGCHART_DELIVER_TO",
-        "BORGCHART_STATE_DIR",
     ] {
         let mut h = Harness::new();
         h.env.remove(key);

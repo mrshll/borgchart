@@ -64,7 +64,8 @@ filter mentions of another app's bot.
    ```
 
 5. Inject `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` from your shell or secret manager's `run` command.
-   Alternatively, set each token to `{from: "fake://token-reference"}` and configure
+   Alternatively, set `SLACK_APP_TOKEN` to `{from: "fake://app-token"}` and
+   `SLACK_BOT_TOKEN` to `{from: "fake://bot-token"}` and configure
    [a secrets resolver](../../docs/format.md#configyaml). Never write the
    value into a file. `brg secrets ./examples/slack-devops` shows its source.
 6. Check and create a team in its own folder outside this checkout:
