@@ -42,7 +42,7 @@
 <p>Start in a disposable folder, as below, not in a checkout you care about.</p>
 
 <h2>QUICK START</h2>
-<p>This runs the example team, templates/engineering: a Claude lead that starts Codex helpers when its work needs them. You need Rust 1.89 or newer, tmux 3.2 or newer, git, and the <b>claude</b> and <b>codex</b> CLIs, each logged in to a plan that offers the models the role files pin: the models: lines at the top of each templates/engineering/*.md (the lead runs Claude fable, helpers run Codex gpt-6-astra and others). Before each launch the lead asks the seating plugin, <b>brg-seat</b>, whether that plan has room, and waits when it can't tell.</p>
+<p>This runs the example team, templates/engineering: a Claude lead that starts Codex helpers when its work needs them. You need Rust 1.89 or newer, tmux 3.2 or newer, git with your name and email set (git config --global user.name and user.email: members commit as you), and the <b>claude</b> and <b>codex</b> CLIs, each logged in to a plan that offers the models the role files pin: the models: lines at the top of each templates/engineering/*.md (the lead runs Claude fable, helpers run Codex gpt-6-astra and others). Before each launch the lead asks the seating plugin, <b>brg-seat</b>, whether that plan has room, and waits when it can't tell.</p>
 <p>Install brg and the seating plugin from a clone, which also holds the templates:</p>
 <pre class="block"><span class="faded">$</span> git clone https://github.com/mrshll/borgchart ~/borgchart
 <span class="faded">$</span> cd ~/borgchart
@@ -60,12 +60,13 @@
 <span class="faded">$</span> git commit --allow-empty -m "Start"
 <span class="faded">$</span> brg create engineering</pre>
 <p><b>create</b> prints the team's tree. The team's ID is engineering- and four letters or digits, its lead's lead- and four more: <b>engineering-k3f9</b> and <b>lead-q8m3</b> below stand for yours. Run <b>brg status</b> until the lead shows idle. If it shows blocked, at its folder-trust screen or another prompt, open its session with <b>brg attach</b> engineering-k3f9/lead-q8m3, answer the prompt yourself, and detach with Ctrl-b, then d.</p>
-<p>Send the lead a small task, and see the result:</p>
-<pre class="block"><span class="faded">$</span> brg msg send engineering-k3f9/lead-q8m3 "Write HELLO.md in this folder with one line saying hello, then reply to me by message. Do it yourself; start no helpers."
-<span class="faded">$</span> brg status
+<p>Send the lead a small task:</p>
+<pre class="block"><span class="faded">$</span> brg msg send engineering-k3f9/lead-q8m3 "Write HELLO.md in this folder with one line saying hello, then reply to me by message. Do it yourself; start no helpers."</pre>
+<p><b>send</b> returns at once; the lead works in its own session, and <b>brg status</b> shows it working meanwhile. Its reply is a message to you, external:owner. Run <b>brg msg list</b> --team engineering-k3f9 --full until the reply appears, then see the result, and acknowledge the reply by its ID (m2 here):</p>
+<pre class="block"><span class="faded">$</span> brg msg list --team engineering-k3f9 --full
 <span class="faded">$</span> cat HELLO.md
-<span class="faded">$</span> brg msg list --team engineering-k3f9 --full</pre>
-<p><b>status</b> shows the lead working, then idle again. Its reply is a message to you, external:owner; acknowledge it with its ID, as in <b>brg msg ack</b> --team engineering-k3f9 m2. <b>brg attach</b> shows the lead's session at any time, and you can talk to the lead there too.</p>
+<span class="faded">$</span> brg msg ack --team engineering-k3f9 m2</pre>
+<p><b>brg attach</b> shows the lead's session at any time, and you can talk to the lead there too.</p>
 <p>Stop the team when you're done:</p>
 <pre class="block"><span class="faded">$</span> brg stop engineering-k3f9</pre>
 <p><b>brg start</b> engineering-k3f9 brings it back, with its notes and messages. <b>brg destroy</b> engineering-k3f9 stops it and deletes them.</p>

@@ -23,7 +23,7 @@ Start in a disposable folder, as below, not in a checkout you care about.
 
 This runs the example team, [`templates/engineering`](templates/engineering): a Claude lead that starts Codex helpers when its work needs them. You need:
 
-- Rust 1.89 or newer, tmux 3.2 or newer, and git.
+- Rust 1.89 or newer, tmux 3.2 or newer, and git with your name and email set (`git config --global user.name` and `user.email`): members commit as you.
 - The [Claude Code](https://docs.anthropic.com/en/docs/claude-code/getting-started) and [Codex](https://github.com/openai/codex) CLIs, each logged in to a plan that offers the models the role files pin: the `models:` lines at the top of each `templates/engineering/*.md` (the lead runs Claude `fable`, helpers run Codex `gpt-6-astra` and others). Before each launch the lead asks the seating plugin, `brg-seat`, whether that plan has room, and waits when it can't tell.
 
 Install brg and the seating plugin from a clone, which also holds the templates:
@@ -57,16 +57,21 @@ brg create engineering
 
 `create` prints the team's tree. The team's ID is `engineering-` and four letters or digits, its lead's `lead-` and four more: `engineering-k3f9` and `lead-q8m3` below stand for yours. Run `brg status` until the lead shows `idle`. If it shows `blocked`, at its folder-trust screen or another prompt, open its session with `brg attach engineering-k3f9/lead-q8m3`, answer the prompt yourself, and detach with Ctrl-b, then d.
 
-Send the lead a small task, and see the result:
+Send the lead a small task:
 
 ```sh
 brg msg send engineering-k3f9/lead-q8m3 "Write HELLO.md in this folder with one line saying hello, then reply to me by message. Do it yourself; start no helpers."
-brg status
-cat HELLO.md
-brg msg list --team engineering-k3f9 --full
 ```
 
-`status` shows the lead `working`, then `idle` again. Its reply is a message to you, `external:owner`; acknowledge it with its ID, as in `brg msg ack --team engineering-k3f9 m2`. `brg attach` shows the lead's session at any time, and you can talk to the lead there too.
+`send` returns at once; the lead works in its own session, and `brg status` shows it `working` meanwhile. Its reply is a message to you, `external:owner`. Run `brg msg list --team engineering-k3f9 --full` until the reply appears, then see the result, and acknowledge the reply by its ID (`m2` here):
+
+```sh
+brg msg list --team engineering-k3f9 --full
+cat HELLO.md
+brg msg ack --team engineering-k3f9 m2
+```
+
+`brg attach` shows the lead's session at any time, and you can talk to the lead there too.
 
 Stop the team when you're done:
 
