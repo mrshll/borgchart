@@ -453,7 +453,7 @@ fn cleanup_does_not_run_repository_merge_drivers() {
         &leaf,
         &["config", "merge.unsafe.driver", "touch driver-ran"],
     );
-    env.cmd(&["cleanup"]).output().unwrap();
+    env.ok(&["cleanup"]);
     assert!(leaf.exists());
     assert!(!leaf.join("driver-ran").exists());
     assert!(!lead.join("driver-ran").exists());

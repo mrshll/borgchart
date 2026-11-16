@@ -307,7 +307,8 @@ pub(crate) fn clean_worktree(admin: &Path, dir: &Path) -> Result<Option<String>,
         dir,
         &["for-each-ref", "--format=%(objectname)", "refs/remotes/"],
     )?;
-    let remotes: std::collections::BTreeSet<&str> = remotes.split_whitespace().collect();
+    let mut remotes: std::collections::BTreeSet<&str> = remotes.split_whitespace().collect();
+    let mut comparison_note = "";
     if !remotes.is_empty() {
         // Even an unused configured driver makes a content check unsafe. Git
         // attributes can select it from any tree participating in the merge.
@@ -316,7 +317,8 @@ pub(crate) fn clean_worktree(admin: &Path, dir: &Path) -> Result<Option<String>,
             .split('\0')
             .any(|key| key.starts_with("merge.") && key.ends_with(".driver"))
         {
-            return Err("cannot compare work with a configured merge driver; preserve the work or remove the driver configuration, then retry".into());
+            remotes.clear();
+            comparison_note = "; content not compared because a merge driver is configured";
         }
         let mut remote_trees = Vec::new();
         for remote in remotes {
@@ -360,7 +362,7 @@ pub(crate) fn clean_worktree(admin: &Path, dir: &Path) -> Result<Option<String>,
     describe.extend(remaining.lines());
     let commits = git(dir, &describe)?;
     Ok(Some(format!(
-        "{} commit(s) on no remote and not accounted for by content: {}; push or preserve this work, fetch remote updates, then retry",
+        "{} commit(s) on no remote and not accounted for by content: {}{comparison_note}; push or preserve this work, fetch remote updates, then retry",
         remaining.lines().count(),
         commits.lines().collect::<Vec<_>>().join("; ")
     )))
