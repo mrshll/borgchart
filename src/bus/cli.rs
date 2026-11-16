@@ -19,9 +19,9 @@ use super::store::{self, Bus, Inbox};
 
 #[derive(Subcommand)]
 pub enum MsgCommand {
-    /// Store a message for its recipient, and type it in when safe.
+    /// Store a message, then queue it for Codex or type it safely for Claude.
     ///
-    /// Never typed into an interactive recipient (Codex: queued instead).
+    /// Every Codex recipient is queued; interactive Claude recipients are inbox-only.
     #[command(after_long_help = crate::bus::help::send())]
     Send {
         /// The member to type into: `<team>/<member>`.
@@ -44,7 +44,7 @@ pub enum MsgCommand {
         /// Reply to an existing record, by its ID (repeatable).
         #[arg(long)]
         reply_to: Vec<String>,
-        /// Print {ok, code, message, id, delivery, reason} as JSON.
+        /// Print {ok, code, message, id, store, delivery, reason} as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -198,7 +198,7 @@ pub fn msg(instance: Option<&str>, command: MsgCommand, started: Instant) -> Exi
                     if json {
                         println!(
                             "{}",
-                            serde_json::json!({"ok": true, "code": 0, "outcome": "committed", "message": out.message, "id": out.id, "delivery": out.delivery, "reason": out.reason})
+                            serde_json::json!({"ok": true, "code": 0, "outcome": "committed", "message": out.message, "id": out.id, "store": out.store, "delivery": out.delivery, "reason": out.reason})
                         );
                     } else {
                         println!("{}: {} ({})", out.message, out.delivery, out.reason);

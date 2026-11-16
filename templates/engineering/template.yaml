@@ -13,6 +13,7 @@ roles:
     prompt: lead.md
     interactive: true
     vendor: claude
+    remote_control: true
     start: true
   dev:
     template: dev-team

@@ -393,6 +393,8 @@ pub fn snapshot(bus: &Bus) -> Result<Snapshot, Failure> {
 /// Read a store by its paths.
 pub fn snapshot_of(paths: &StorePaths) -> Result<Snapshot, Failure> {
     let _lock = read_lock(paths)?;
+    #[cfg(feature = "test-support")]
+    mutation_pause("BORGCHART_TEST_SNAPSHOT_PAUSE")?;
     Ok(scan(paths))
 }
 
@@ -674,14 +676,137 @@ pub fn publish(bus: &Bus, caller: &Caller, draft_bytes: &[u8]) -> Result<Record,
             format!("`{missing}` names no record"),
         ));
     }
+    commit(
+        &bus,
+        &actor,
+        draft,
+        !recipient.is_some_and(|m| m.posture == "locked"),
+        &snap,
+    )
+}
+
+/// Both ends must be ordinary, parentless members of independent root teams.
+pub fn peer_actor(sender: &Bus, target: &Bus, caller: &Caller, to: &str) -> Result<Actor, Failure> {
+    let actor = actor_for(sender, caller)?;
+    let root = |bus: &Bus, member: &str| {
+        !bus.instance.contains('/')
+            && bus
+                .meta
+                .members
+                .get(member)
+                .is_some_and(|m| m.parent.is_none() && m.posture == "vendor")
+    };
+    if !matches!(caller, Caller::Member { member, .. } if root(sender, member))
+        || sender.instance == target.instance
+        || !to
+            .strip_prefix(&format!("{}/", target.instance))
+            .is_some_and(|m| root(target, m))
+    {
+        return Err(Failure::new(
+            Code::Refused,
+            "cross-tree messages require parentless vendor members of different top-level teams; address a vendor root member, or ask your tree's root lead to relay the request",
+        ));
+    }
+    Ok(actor)
+}
+
+/// Commit only in the recipient's store; never create a missing store or hold two locks.
+pub fn publish_peer(
+    sender: &Bus,
+    target: &Bus,
+    caller: &Caller,
+    draft_bytes: &[u8],
+) -> Result<Record, Failure> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut draft = parse_draft(draft_bytes)?;
+    let actor = peer_actor(sender, target, caller, &draft.to)?;
+    let healthy = |bus: &Bus, shared: bool| {
+        fsx::check_private_dir(&bus.state.root)
+            .and_then(|_| fsx::check_private_dir(&bus.paths.root))
+            .map_err(|e| {
+                Failure::new(
+                    Code::Corrupt,
+                    format!(
+                        "team `{}`: {}",
+                        bus.instance,
+                        bus.hide_paths(&e.to_string())
+                    ),
+                )
+            })?;
+        fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+            .open(bus.paths.bus_lock())
+            .map_err(|e| {
+                Failure::io(
+                    &format!("team `{}`: cannot open messages/lock", bus.instance),
+                    e,
+                )
+            })?;
+        let snap = if shared {
+            snapshot_of(&bus.paths)
+        } else {
+            Ok(scan(&bus.paths))
+        }
+        .map_err(|e| Failure::new(e.code, format!("team `{}`: {}", bus.instance, e.message)))?;
+        snap.require_healthy()
+            .map_err(|e| Failure::new(e.code, format!("team `{}`: {}", bus.instance, e.message)))?;
+        Ok::<_, Failure>(snap)
+    };
+    let own = healthy(sender, true)?;
+    for id in &mut draft.reply_to {
+        if own
+            .get(id)
+            .is_none_or(|r| r.from != draft.to || r.to != actor_label(&actor))
+        {
+            return Err(Failure::new(
+                Code::Invalid,
+                format!(
+                    "`{id}` is not a message from this peer to you; use an ID from `brg msg list` that this peer sent you"
+                ),
+            ));
+        }
+        *id = super::record::qualified_record_id(&sender.instance, id);
+    }
+    #[cfg(feature = "test-support")]
+    mutation_pause("BORGCHART_TEST_PUBLISH_PAUSE")?;
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .open(target.paths.bus_lock())
+        .map_err(|e| {
+            Failure::new(
+                Code::Error,
+                format!("team `{}`: cannot open messages/lock: {e}", target.instance),
+            )
+        })?;
+    lock.lock()
+        .map_err(|e| Failure::io("cannot lock messages/lock", e))?;
+    crate::address::instance(&target.instance).map_err(|e| Failure::new(Code::NotFound, e))?;
+    let target = open(&target.state)?;
+    let sender = open(&sender.state)?;
+    let actor = peer_actor(&sender, &target, caller, &draft.to)?;
+    let snap = healthy(&target, false)?;
+    recheck_authority(&sender, caller)?;
+    commit(&target, &actor, draft, true, &snap)
+}
+
+fn commit(
+    bus: &Bus,
+    actor: &Actor,
+    draft: Draft,
+    ack_required: bool,
+    snap: &Snapshot,
+) -> Result<Record, Failure> {
     let seq = snap.records.len() as u64 + 1;
     let rec = Record {
-        ack_required: !recipient.is_some_and(|m| m.posture == "locked"),
+        ack_required,
         schema: super::SCHEMA,
         id: record_id(seq),
         seq,
         at: time::utc_now(),
-        from: actor_label(&actor),
+        from: actor_label(actor),
         to: draft.to,
         reply_to: draft.reply_to,
         body: draft.body,

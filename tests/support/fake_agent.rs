@@ -6,9 +6,10 @@
 //! `$HOME/fake-agent/<member>.jsonl`.
 //!
 //! Submissions it understands: `work <secs>`, `dialog`, `mute`, `crash <code>`,
-//! `tool <shell command>`. Anything else is just logged.
+//! `tool <shell command>`, `unreadable`, `readable`, `normal`. Anything else is just logged.
 
 use std::collections::BTreeMap;
+use std::fs;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -39,6 +40,8 @@ struct Agent {
     pre_hooks: Vec<String>,
     mode: Mode,
     work_until: Option<Instant>,
+    unreadable: bool,
+    normal: bool,
     lines: Vec<String>,
     input: String,
     trust_choice: usize,
@@ -270,7 +273,7 @@ impl Agent {
                     format!("  {row}")
                 } else if self.vendor == Vendor::Claude {
                     if self.mode == Mode::Working {
-                        format!("\x1b[38;5;246m❯\u{a0}\x1b[39m{row}")
+                        format!("\x1b[38;2;153;153;153m❯\u{a0}\x1b[39m{row}")
                     } else {
                         format!("❯\u{a0}{row}")
                     }
@@ -282,7 +285,17 @@ impl Agent {
             }
             if self.vendor == Vendor::Claude {
                 body.push(rule);
-                body.push("  -- INSERT -- ⏵⏵ don't ask on (shift+tab to cycle)".into());
+                body.push(
+                    if self.normal {
+                        "  ⏵⏵ auto mode on"
+                    } else {
+                        "  -- INSERT -- ⏵⏵ don't ask on (shift+tab to cycle)"
+                    }
+                    .into(),
+                );
+                if self.unreadable {
+                    body.extend(["  extra vendor footer"; 4].map(String::from));
+                }
             } else {
                 body.push(String::new());
                 body.push("  ? for shortcuts · Vim: Insert".into());
@@ -353,6 +366,9 @@ impl Agent {
             }
             "dialog" => self.mode = Mode::Dialog,
             "mute" => self.mode = Mode::Mute,
+            "unreadable" => self.unreadable = true,
+            "readable" => self.unreadable = false,
+            "normal" => self.normal = true,
             "crash" => {
                 let code: i32 = rest.trim().parse().unwrap_or(1);
                 log_event(
@@ -468,6 +484,29 @@ fn main() {
     if fake_usage::run(args) {
         return;
     }
+    if vendor == Vendor::Codex && args.first().is_some_and(|a| a == "queue") {
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap());
+        let [_, thread_flag, thread, message_flag, message] = args else {
+            panic!("bad fake queue args");
+        };
+        assert_eq!(thread_flag, "--thread");
+        assert_eq!(message_flag, "--message");
+        let member =
+            fs::read_to_string(home.join("fake-agent").join(format!("session-{thread}"))).unwrap();
+        let queue = home.join("fake-agent").join(format!("queue-{member}"));
+        fs::create_dir_all(&queue).unwrap();
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        fs::write(
+            queue.join(format!("{stamp}-{}", std::process::id())),
+            message,
+        )
+        .unwrap();
+        println!("Queued");
+        return;
+    }
     if args.iter().any(|a| a == "--version") {
         println!("fake-agent 0.0.0 ({name})");
         return;
@@ -501,6 +540,16 @@ fn main() {
             )
         }
     });
+    if vendor == Vendor::Codex {
+        fs::create_dir_all(PathBuf::from(&home).join("fake-agent")).unwrap();
+        fs::write(
+            PathBuf::from(&home)
+                .join("fake-agent")
+                .join(format!("session-{}", SESSION.get().unwrap().0)),
+            &member,
+        )
+        .unwrap();
+    }
     let skip_hooks = PathBuf::from(&home)
         .join("fake-agent")
         .join("no-hooks")
@@ -541,6 +590,8 @@ fn main() {
             Mode::Idle
         },
         work_until: None,
+        unreadable: false,
+        normal: false,
         lines: Vec::new(),
         input: String::new(),
         trust_choice: if flag("trust-yes") { 1 } else { 0 },
@@ -578,6 +629,23 @@ fn main() {
             agent.work_until = None;
             agent.mode = Mode::Idle;
             agent.draw();
+        }
+        if vendor == Vendor::Codex && agent.work_until.is_none() {
+            let queue = PathBuf::from(&home)
+                .join("fake-agent")
+                .join(format!("queue-{member}"));
+            let mut files = fs::read_dir(queue)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|e| e.path())
+                .collect::<Vec<_>>();
+            files.sort();
+            if let Some(path) = files.first() {
+                let text = fs::read_to_string(path).unwrap();
+                fs::remove_file(path).unwrap();
+                agent.submit(&text);
+            }
         }
         // Consume complete tokens from `pending`.
         loop {

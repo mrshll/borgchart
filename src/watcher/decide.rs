@@ -464,20 +464,19 @@ mod tests {
     // stops all wakes for good, and a dispatched one that suppresses the next
     // start's wake for still-unread messages.
     #[test]
-    fn unread_messages_survive_a_failed_wake_and_a_new_start() {
+    fn codex_unread_messages_survive_a_rejected_queue_and_a_new_start() {
         let mut obs = codex();
         assert_eq!(
             method(&scan(&mut obs, t(0), Outcome::Rejected)),
             Some(Method::Queue)
         );
         assert_eq!(
-            method(&scan(&mut obs, t(1), Outcome::Rejected)),
-            Some(Method::Typed)
+            decide_at(&obs, t(1)),
+            Action::NeedsPerson(NeedsPerson::Unreachable {
+                method: Method::Queue,
+                outcome: Outcome::Rejected,
+            })
         );
-        assert!(matches!(
-            decide_at(&obs, t(2)),
-            Action::NeedsPerson(NeedsPerson::Unreachable { .. })
-        ));
         // A new message is still owed a wake.
         obs.progress = progress(3, 1);
         assert_eq!(
@@ -494,6 +493,24 @@ mod tests {
             }
             other => panic!("expected a wake, got {other:?}"),
         }
+    }
+
+    // Catches: a rejected method not falling back to the next one listed.
+    #[test]
+    fn a_rejected_queue_can_still_use_a_configured_claude_typed_fallback() {
+        let rules = methods::parse(
+            "wake:\n  - vendor: claude\n    version: \"2.1.*\"\n    methods: [queue, typed]\n",
+            "test",
+        )
+        .unwrap();
+        let mut obs = claude();
+        let queued = intent(decide(&obs, &rules, &Policy::default(), t(0)));
+        assert_eq!(queued.method, Method::Queue);
+        obs.last = Some(queued.resolved(Outcome::Rejected));
+        assert_eq!(
+            method(&decide(&obs, &rules, &Policy::default(), t(1))),
+            Some(Method::Typed)
+        );
     }
 
     // Catches: a watcher that died between intent and outcome resending at

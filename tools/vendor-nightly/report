@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+"""Report latest/control evidence; --dry-run prints gh calls without executing them."""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+REQUIRED = set(re.findall(r'\("([\w-]+)", Who::', (ROOT / "tests/live/rules.rs").read_text()))
+
+
+def scrub(data: bytes) -> None:
+    patterns = [b"sk-ant-", b"sk-proj-", b"sk-svcacct-"]
+    for name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+        key = os.environ.get(name, "").encode()
+        patterns.extend((key, key[-16:]))
+    if any(p and p in data for p in patterns):
+        raise SystemExit("Refusing publication: credential pattern in evidence")
+
+
+def matrix(folder: Path) -> tuple[dict[str, tuple[str, str]], dict[str, str], bool]:
+    files = sorted(folder.rglob("matrix.md"))
+    text = files[-1].read_text() if len(files) == 1 else ""
+    rows = {
+        case: (result, detail)
+        for case, result, detail in re.findall(
+            r"^\| ([\w-]+) \| (PASS|FAIL|SKIP|BLOCKED) \| (.*) \|$", text, re.MULTILINE
+        )
+    }
+    versions = dict(re.findall(r"^- (claude|codex): (?:codex-cli )?(\d+\.\d+\.\d+[^\s]*)", text, re.MULTILINE))
+    complete = (
+        set(rows) == REQUIRED
+        and set(versions) == {"claude", "codex"}
+        and "**Verdict:**" in text
+        and "- selection: claude, codex\n" in text
+        and "DRY" not in text
+    )
+    return rows, versions, complete
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ("latest", "control", "latest_result", "control_result"):
+        parser.add_argument(name, type=Path if name in ("latest", "control") else str)
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+    if "cancelled" in (args.latest_result, args.control_result):
+        return
+    for folder in (args.latest, args.control):
+        for file in folder.rglob("*"):
+            if file.is_file():
+                scrub(file.read_bytes())
+    rows, versions, complete = matrix(args.latest)
+    controls, control_versions, control_complete = matrix(args.control)
+    bad = [case for case, (result, _) in rows.items() if result != "PASS"]
+    wake_skip = bad == ["claude-wake-matrix"] and rows[bad[0]][0] == "SKIP" and "isn't qualified" in rows[bad[0]][1]
+    patterns = re.findall(r'- vendor: (\w+)\s+version: "([^"]+)"', (ROOT / "rules/wake.yaml").read_text())
+    unknown = [
+        f"{v} {version}"
+        for v, version in versions.items()
+        if not any(
+            v == vendor and (version.startswith(p[:-1]) if p.endswith(".*") else version == p) for vendor, p in patterns
+        )
+    ]
+    desired: dict[str, str] = {}
+    wake_skip = wake_skip and any(v.startswith("claude ") for v in unknown)
+    conclusive = args.latest_result == "success" and complete and (not bad or wake_skip)
+    if not conclusive:
+        regression = (
+            versions != control_versions
+            and args.control_result == "success"
+            and control_complete
+            and all(r == "PASS" for r, _ in controls.values())
+        )
+        kind = "regression" if regression else "harness"
+        desired[kind] = (
+            f"vendor-nightly: {', '.join(f'{v} {n}' for v, n in versions.items()) or 'latest'} breaks {', '.join(bad) or '(no latest evidence)'}"
+            if regression
+            else "vendor-nightly: harness red on verified versions"
+        )
+    elif unknown:
+        desired["qualification"] = f"vendor-nightly: {', '.join(unknown)} passed, not on rules/wake.yaml"
+    run = f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{os.environ.get('GITHUB_REPOSITORY', 'example/project')}/actions/runs/{os.environ.get('GITHUB_RUN_ID', 'local')}"
+    body = f"@{os.environ.get('GITHUB_REPOSITORY_OWNER', 'owner')}\n\nRun: {run}\nLatest: {args.latest_result}; control: {args.control_result}\nVersions: {versions}\n\n| case | result | detail |\n| --- | --- | --- |\n"
+    body += "\n".join(f"| {c} | {r} | {d} |" for c, (r, d) in rows.items())
+    if wake_skip:
+        body += "\nTyped submissions were skipped: qualification needs a rules/wake.yaml entry and then a full run."
+    elif "qualification" in desired:
+        entries = ", ".join(f'`version: "{v.split()[1]}"` ({v.split()[0]})' for v in unknown)
+        body += f"\nSuggested version lines in rules/wake.yaml: {entries}. Review them and update control pins by hand."
+    scrub(body.encode())
+
+    def gh(*parts: str) -> str:
+        if args.dry_run:
+            print(json.dumps(["gh", *parts]))
+            return "[]"
+        return subprocess.check_output(["gh", *parts], text=True)
+
+    existing = json.loads(
+        gh("issue", "list", "--label", "vendor-nightly", "--state", "open", "--limit", "100", "--json", "number,body")
+    )
+    for kind in ("regression", "harness", "qualification"):
+        marker = f"<!-- vendor-nightly:{kind} -->"
+        issues = [i for i in existing if marker in (i.get("body") or "")]
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md") as issue:
+            issue.write(marker + "\n" + ("This kind cleared on this run.\n" if kind not in desired else "") + body)
+            issue.flush()
+            if kind in desired:
+                if issues:
+                    gh("issue", "comment", str(issues[0]["number"]), "--body-file", issue.name)
+                else:
+                    title = desired[kind]
+                    gh("issue", "create", "--label", "vendor-nightly", "--title", title, "--body-file", issue.name)
+            elif conclusive or (kind == "harness" and "regression" in desired):
+                for old in issues:
+                    gh("issue", "comment", str(old["number"]), "--body-file", issue.name)
+                    gh("issue", "close", str(old["number"]))
+
+
+if __name__ == "__main__":
+    main()

@@ -250,6 +250,9 @@ enum Command {
     },
     /// Show a team tree, or every top-level one, with nested child teams.
     ///
+    /// Delivery failures, missing Codex sessions and unreadable idle Claude boxes alert;
+    /// unverified vendor versions show a notice to run the live tier (CONTRIBUTING.md).
+    ///
     /// Each member's row shows its ID, vendor and model, state and any unacked
     /// messages. A role with no member shows only its state; its `--json` row
     /// also gives its vendor and model.

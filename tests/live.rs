@@ -1,6 +1,6 @@
 //! The live tier: the real `claude` and `codex`, started by real `brg up`
 //! with your own login and configuration in place. Ignored by default;
-//! local only.
+//! local by default, with a throwaway-home nightly in CI.
 //!
 //! ```text
 //! BORGCHART_LIVE=1 cargo test --locked --test live -- --ignored --nocapture --test-threads=1
@@ -8,8 +8,8 @@
 //!
 //! - `BORGCHART_LIVE_VENDORS=claude` (or `codex`) limits the run, which is
 //!   then partial and qualifies nothing. An empty or unknown name is refused.
-//! - `BORGCHART_LIVE_SUBMIT=0` skips the wake matrix's two real submissions
-//!   per vendor (also partial).
+//! - `BORGCHART_LIVE_SUBMIT=0` skips the wake matrix's real submission
+//!   for Claude (also partial).
 //! - `BORGCHART_LIVE_DRY=1` runs the same harness against owned fake CLIs
 //!   instead, and wins over `BORGCHART_LIVE`. The default tier runs it too
 //!   (`dry_run_reaches_every_expected_result`).
@@ -18,7 +18,7 @@
 //! test's guard, under a watchdog that stops it if the run dies or
 //! overruns. Nothing of your vendor configuration is copied or written by
 //! brg: Codex gets session-only trust (`-c projects=…`), and every Claude
-//! deployment sets `auto_trust: false`. Claude cases other than trust run in
+//! deployment defaults to `auto_trust: false`. Claude cases other than trust run in
 //! `target/live/<run>/work/`, which must be inside a folder Claude already
 //! trusts (this checkout or a parent); the trust cases use fresh folders
 //! under the system temp directory. No tool approval is ever answered: one
@@ -41,6 +41,8 @@ mod seat_qualification;
 
 #[path = "live/cases.rs"]
 mod cases;
+#[path = "live/queue.rs"]
+mod queue;
 #[path = "live/rules.rs"]
 mod rules;
 #[path = "live/wake_matrix.rs"]
@@ -54,12 +56,14 @@ fn send_midturn_probe() {
     if std::env::var("BORGCHART_LIVE").as_deref() != Ok("1") {
         return;
     }
-    let mut w = world::World::live();
     let (who, vendor) = match std::env::var("BORGCHART_LIVE_VENDORS").as_deref() {
         Ok("claude") => (rules::Who::Claude, borgchart::team::Vendor::Claude),
-        Ok("codex") | Err(_) => (rules::Who::Codex, borgchart::team::Vendor::Codex),
-        _ => panic!("send probe requires exactly claude or codex"),
+        _ => {
+            println!("SKIP: Claude-only probe; set BORGCHART_LIVE_VENDORS=claude");
+            return;
+        }
     };
+    let mut w = world::World::live();
     w.preflight(&[who]);
     let version = w.versions[&who].clone().unwrap();
     wake_matrix::set_dirs(wake_matrix::Dirs {
@@ -99,8 +103,10 @@ fn send_composer_matrix() {
     }
     let (who, vendor) = match std::env::var("BORGCHART_LIVE_VENDORS").as_deref() {
         Ok("claude") => (rules::Who::Claude, borgchart::team::Vendor::Claude),
-        Ok("codex") => (rules::Who::Codex, borgchart::team::Vendor::Codex),
-        _ => panic!("select exactly one vendor"),
+        _ => {
+            println!("SKIP: Claude-only probe; set BORGCHART_LIVE_VENDORS=claude");
+            return;
+        }
     };
     let mut w = world::World::live();
     w.preflight(&[who]);
@@ -128,8 +134,10 @@ fn direct_vendor_context_probe() {
     }
     let (who, vendor) = match std::env::var("BORGCHART_LIVE_VENDORS").as_deref() {
         Ok("claude") => (rules::Who::Claude, borgchart::team::Vendor::Claude),
-        Ok("codex") => (rules::Who::Codex, borgchart::team::Vendor::Codex),
-        _ => panic!("select exactly one vendor"),
+        _ => {
+            println!("SKIP: Claude-only probe; set BORGCHART_LIVE_VENDORS=claude");
+            return;
+        }
     };
     let mut w = world::World::live();
     w.preflight(&[who]);
@@ -151,8 +159,10 @@ fn send_near_limit_probe() {
     }
     let (who, vendor) = match std::env::var("BORGCHART_LIVE_VENDORS").as_deref() {
         Ok("claude") => (rules::Who::Claude, borgchart::team::Vendor::Claude),
-        Ok("codex") => (rules::Who::Codex, borgchart::team::Vendor::Codex),
-        _ => panic!("select exactly one vendor"),
+        _ => {
+            println!("SKIP: Claude-only probe; set BORGCHART_LIVE_VENDORS=claude");
+            return;
+        }
     };
     let mut w = world::World::live();
     w.preflight(&[who]);
@@ -328,11 +338,8 @@ fn case(w: &World, id: &str, submit: bool) -> Vec<(String, Outcome)> {
         "claude-env-colour" => one(cases::env_colour(w, Who::Claude)),
         "codex-env-colour" => one(cases::env_colour(w, Who::Codex)),
         "claude-background-wait" => one(cases::background_wait(w)),
-        "codex-queue" => one(Outcome::Skip(
-            "`codex queue` isn't available until #20".into(),
-        )),
+        "codex-queue" => one(queue::run(w)),
         "claude-wake-matrix" => one(matrix_case(w, Vendor::Claude, submit)),
-        "codex-wake-matrix" => one(matrix_case(w, Vendor::Codex, submit)),
         other => one(Outcome::Fail(format!("no such case {other}"))),
     };
     catch_unwind(AssertUnwindSafe(run))
@@ -531,12 +538,7 @@ fn dry_run_reaches_every_expected_result() {
 
     // Every case, all fakes well behaved.
     let results = run_cases(&w, &both, true, &matrix);
-    let skips = [
-        "claude-trust-on",
-        "codex-queue",
-        "claude-wake-matrix",
-        "codex-wake-matrix",
-    ];
+    let skips = ["claude-trust-on", "claude-wake-matrix"];
     for (id, _) in REQUIRED {
         let want = if skips.contains(id) { "SKIP" } else { "PASS" };
         check(id, id, want, results.get(*id));
@@ -675,4 +677,40 @@ fn time_limited_calls_end_their_group_and_never_wait_on_held_pipes() {
         start.elapsed()
     );
     assert!(out.status.success());
+}
+
+#[test]
+fn codex_queue_dry_run_checks_both_postures_and_post_tool_delivery() {
+    let keep = tempfile::tempdir().unwrap();
+    let w = World::dry(keep.path());
+    let outcome = queue::run(&w);
+    assert!(matches!(outcome, Outcome::Pass(_)), "{outcome:?}");
+    // Controls must fail when exit 0 silently loses the turn or the
+    // granted action runs without its PostToolUse delivery.
+    w.fake_file("drop-queue", Some(""));
+    let outcome = queue::run(&w);
+    assert!(
+        matches!(outcome, Outcome::Fail(_)),
+        "lost queue: {outcome:?}"
+    );
+    w.fake_file("drop-queue", None);
+    w.scenario("queue-locked", "no-post");
+    let outcome = queue::run(&w);
+    assert!(
+        matches!(outcome, Outcome::Fail(_)),
+        "missing post hook: {outcome:?}"
+    );
+}
+
+#[test]
+#[ignore = "launches real Codex; set BORGCHART_LIVE=1"]
+fn codex_queue() {
+    if std::env::var("BORGCHART_LIVE").as_deref() != Ok("1") {
+        return;
+    }
+    let mut w = World::live();
+    w.preflight(&[Who::Codex]);
+    let outcome = case(&w, "codex-queue", true).remove(0).1;
+    println!("codex-queue: {}: {}", outcome.label(), outcome.detail());
+    assert!(matches!(outcome, Outcome::Pass(_)), "{outcome:?}");
 }

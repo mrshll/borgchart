@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Usage: install <claude-version|latest> <codex-version|latest>
+set -euo pipefail
+export CODEX_HOME="$HOME/.codex"
+mkdir -p "$HOME/.local/bin"
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+# Native installers document positional Claude pins and Codex --release pins.
+curl -fsSL https://claude.ai/install.sh -o "$work/claude"
+curl -fsSL https://chatgpt.com/codex/install.sh -o "$work/codex"
+bash "$work/claude" "${1:?Claude version required}"
+CODEX_NON_INTERACTIVE=1 sh "$work/codex" --release "${2:?Codex version required}"
+"$HOME/.local/bin/claude" --version
+"$HOME/.local/bin/codex" --version

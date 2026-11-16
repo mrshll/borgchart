@@ -1,9 +1,9 @@
-//! The guarded wake's input-box matrix against the real CLIs (formerly
-//! `tests/qualify.rs`): how `wake` reads and treats their input boxes.
-//! Typing without submitting costs nothing; each vendor gets two real
-//! submissions of the reminder (vim insert mode, with clients attached and a
-//! resize during the attempt; and vim normal mode). Approval prompts are
-//! never answered: one that appears is recorded and left.
+//! The guarded wake's input-box matrix against Claude Code: how `wake`
+//! reads and treats its input box. Typing without submitting costs nothing;
+//! Claude gets one real reminder submission in vim insert mode, with clients
+//! attached and a resize during the attempt. An empty vim normal-mode box must
+//! defer without typing. Approval prompts are never answered: one that appears
+//! is recorded and left.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -25,8 +25,8 @@ use super::common;
 const SESSION: &str = "brg-qualify";
 const WINDOW: &str = "member";
 
-/// Where the matrix works: `work` is inside a folder Claude already trusts
-/// (Codex gets session-only trust for it); screens and state are kept
+/// Where the matrix works: `work` is inside a folder Claude already trusts;
+/// screens and state are kept
 /// beside the run's matrix.
 pub struct Dirs {
     pub work: PathBuf,
@@ -56,14 +56,7 @@ fn root() -> PathBuf {
 fn base_env() -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
     // Your own configuration homes, in place (nothing is copied).
-    for key in [
-        "HOME",
-        "USER",
-        "LANG",
-        "PATH",
-        "CLAUDE_CONFIG_DIR",
-        "CODEX_HOME",
-    ] {
+    for key in ["HOME", "USER", "LANG", "PATH", "CLAUDE_CONFIG_DIR"] {
         if let Ok(v) = std::env::var(key) {
             env.insert(key.to_string(), v);
         }
@@ -497,7 +490,7 @@ pub fn direct_context_probe(vendor: Vendor, version: String) {
     let state = rules
         .read(&s.title, &composer::plain(&composer::parse(&s.screen)))
         .state;
-    let view = composer::view(vendor, &s.screen, Some(s.geometry)).unwrap();
+    let view = composer::view(&s.screen, Some(s.geometry)).unwrap();
     let exact = view.holds(prompt);
     std::fs::write(root().join("context-enter-guards.txt"), format!(
         "state={state:?}\nnot_blocked={}\nnot_copy_mode={}\nnot_busy={}\nexact={exact}\ngeometry={:?}\nview={view:?}\n",
@@ -527,9 +520,7 @@ pub fn direct_context_probe(vendor: Vendor, version: String) {
                 && !plain.contains("BLOCKED_absolute_"),
             "BLOCKED: tool context mismatch"
         );
-        if start.elapsed() > Duration::from_secs(10)
-            && wake::before_paste(vendor, &rules, &s).is_none()
-        {
+        if start.elapsed() > Duration::from_secs(10) && wake::before_paste(&rules, &s).is_none() {
             println!(
                 "Context turn ended; owned session tool output still requires verification. No wake submitted."
             );
@@ -579,7 +570,7 @@ pub fn send_midturn_probe(vendor: Vendor, version: String) {
         Reading::Empty,
         "BLOCKED: startup composer not empty"
     );
-    let view = composer::view(vendor, &s.screen, Some(s.geometry)).unwrap();
+    let view = composer::view(&s.screen, Some(s.geometry)).unwrap();
     std::fs::write(
         root().join("send-mode.txt"),
         format!(
@@ -591,24 +582,17 @@ pub fn send_midturn_probe(vendor: Vendor, version: String) {
     let nonce = super::world::nonce();
     let completion = format!("ORIGINAL_DONE_{nonce}");
     let receipt = format!("RECEIVED_{nonce}");
-    let prompt = match vendor {
-        Vendor::Codex => format!(
-            "Isolated input delivery test. Do not read files, use network, or change files. Run `sleep 60`, wait for completion, then include {completion} in your reply. Also act on any tagged input received during this turn."
-        ),
-        Vendor::Claude => {
-            std::fs::create_dir_all(work().join("fixtures")).unwrap();
-            for n in 1..=96 {
-                std::fs::write(
-                    work().join(format!("fixtures/fixture-{n:02}.txt")),
-                    format!("Synthetic test fixture {n}.\nValue: {n}\n"),
-                )
-                .unwrap();
-            }
-            format!(
-                "Read only the 96 synthetic files fixtures/fixture-01.txt through fixtures/fixture-96.txt, in order using individual Read tool calls. Sum their Value fields and report the total plus {completion}. No shell, network, other files or edits. Also act on tagged input during this task."
-            )
-        }
-    };
+    std::fs::create_dir_all(work().join("fixtures")).unwrap();
+    for n in 1..=96 {
+        std::fs::write(
+            work().join(format!("fixtures/fixture-{n:02}.txt")),
+            format!("Synthetic test fixture {n}.\nValue: {n}\n"),
+        )
+        .unwrap();
+    }
+    let prompt = format!(
+        "Read only the 96 synthetic files fixtures/fixture-01.txt through fixtures/fixture-96.txt, in order using individual Read tool calls. Sum their Value fields and report the total plus {completion}. No shell, network, other files or edits. Also act on tagged input during this task."
+    );
     let payload = format!(
         "[brg test message {nonce} from external:live-probe]\nDuring this current turn, include {receipt} in your next reply alongside the original completion marker.\n[/brg test message {nonce}]"
     );
@@ -629,13 +613,11 @@ pub fn send_midturn_probe(vendor: Vendor, version: String) {
     );
     assert!(!s.in_mode);
     assert!(
-        !composer::view(vendor, &s.screen, Some(s.geometry))
-            .unwrap()
-            .busy,
+        !composer::view(&s.screen, Some(s.geometry)).unwrap().busy,
         "BLOCKED: turn started before initial Enter"
     );
     assert!(
-        composer::view(vendor, &s.screen, Some(s.geometry))
+        composer::view(&s.screen, Some(s.geometry))
             .unwrap()
             .holds(&prompt),
         "BLOCKED: initial text not exact"
@@ -671,14 +653,9 @@ pub fn send_midturn_probe(vendor: Vendor, version: String) {
             !s.screen.contains("You interrupted"),
             "FAIL: active turn interrupted"
         );
-        let active_task = || match vendor {
-            Vendor::Codex => super::world::tree(run.pane().pane_pid)
-                .iter()
-                .any(|p| p.argv == ["sleep", "60"]),
-            Vendor::Claude => {
-                let plain = composer::plain(&composer::parse(&run.screen()));
-                fixture_read.is_match(&plain)
-            }
+        let active_task = || {
+            let plain = composer::plain(&composer::parse(&run.screen()));
+            fixture_read.is_match(&plain)
         };
         if !pasted && reading.state == rules::State::Working && active_task() {
             review("send-working-review");
@@ -692,10 +669,6 @@ pub fn send_midturn_probe(vendor: Vendor, version: String) {
                 rules::State::Working,
                 "BLOCKED: not working before paste"
             );
-            assert!(
-                vendor == Vendor::Claude || active_task(),
-                "BLOCKED: active task evidence missing before paste"
-            );
             run.paste(&payload);
             review("send-before-enter");
             let s = run.snap();
@@ -707,15 +680,10 @@ pub fn send_midturn_probe(vendor: Vendor, version: String) {
                 rules::State::Working,
                 "BLOCKED: state changed before Enter"
             );
-            assert!(
-                vendor == Vendor::Claude || active_task(),
-                "BLOCKED: active task evidence missing before Enter"
-            );
             // holds() deliberately rejects busy composers and hard newlines.
             // This bounded payload has three short, unwrapped lines; compare
             // those directly while separately requiring Working above.
-            let view = composer::view(vendor, &s.screen, Some(s.geometry)).unwrap();
-            assert!(!view.placeholder);
+            let view = composer::view(&s.screen, Some(s.geometry)).unwrap();
             assert_eq!(
                 view.lines.join("\n"),
                 payload,
@@ -750,7 +718,7 @@ pub fn near_limit_probe(vendor: Vendor, version: String) {
     let before = run.snap();
     run.save("near-limit-before");
     assert!(
-        wake::before_paste(vendor, &rules, &before).is_none(),
+        wake::before_paste(&rules, &before).is_none(),
         "BLOCKED: not positively empty/idle"
     );
     let line = "Synthetic payload line; harmless fixture data only. 0123456789abcdef\n";
@@ -763,7 +731,7 @@ pub fn near_limit_probe(vendor: Vendor, version: String) {
     run.paste(&text);
     run.save("near-limit-pasted-no-enter");
     let s = run.snap();
-    let view = composer::view(vendor, &s.screen, Some(s.geometry));
+    let view = composer::view(&s.screen, Some(s.geometry));
     let detail = format!(
         "body_bytes={} envelope_bytes={}\nlaunch={:?}\nreading={:?}\nview={view:?}\nNO ENTER SENT; no delivery claim\n",
         body.len(),
@@ -780,6 +748,11 @@ pub fn near_limit_probe(vendor: Vendor, version: String) {
 
 impl Run {
     fn new(vendor: Vendor, version: Option<String>) -> Run {
+        assert_eq!(
+            vendor,
+            Vendor::Claude,
+            "the composer matrix requires Claude"
+        );
         let private = common::PrivateTmux::with_watchdog(dirs().limit);
         let socket = private.socket(&format!("brg-qualify-{}", vendor.as_str()));
         std::fs::create_dir_all(work()).unwrap();
@@ -788,24 +761,8 @@ impl Run {
         std::fs::write(&conf, tmux::CONFIG).unwrap();
         let tmux_env = direct_run_env(&private, &socket, &root(), base_env());
         let tmux = Tmux::on_socket(&socket, &conf, tmux_env);
-        let argv: Vec<String> = match vendor {
-            Vendor::Claude => vec!["claude".into()],
-            // The update check would show a startup dialog; brg answers none.
-            // Trust for the work folder is for this session only, as
-            // `auto_trust` passes it: nothing is written to your config.
-            Vendor::Codex => vec![
-                "codex".into(),
-                "--sandbox".into(),
-                "danger-full-access".into(),
-                "--ask-for-approval".into(),
-                "never".into(),
-                "-c".into(),
-                "check_for_update_on_startup=false".into(),
-                "-c".into(),
-                borgchart::launch::codex_trust_config(&work()),
-            ],
-        };
-        let facts = LaunchFacts::measure(vendor, version, &argv, &work(), &base_env());
+        let argv: Vec<String> = vec!["claude".into()];
+        let facts = LaunchFacts::measure(version, &argv, &work(), &base_env());
         Run {
             private,
             vendor,
@@ -865,9 +822,9 @@ impl Run {
         let startup_rules = rules::load(self.vendor).unwrap();
         while start.elapsed() < Duration::from_secs(30) {
             std::thread::sleep(Duration::from_millis(500));
-            if wake::before_paste(self.vendor, &startup_rules, &self.snap()).is_none() {
+            if wake::before_paste(&startup_rules, &self.snap()).is_none() {
                 std::thread::sleep(Duration::from_millis(1500));
-                if wake::before_paste(self.vendor, &startup_rules, &self.snap()).is_none() {
+                if wake::before_paste(&startup_rules, &self.snap()).is_none() {
                     return;
                 }
             }
@@ -916,7 +873,7 @@ impl Run {
 
     fn reading(&self) -> Reading {
         let s = self.snap();
-        composer::read(self.vendor, &s.screen, Some(s.geometry))
+        composer::read(&s.screen, Some(s.geometry))
     }
 
     fn save(&self, case: &str) {
@@ -935,10 +892,7 @@ impl Run {
     }
 
     fn newline(&self) {
-        match self.vendor {
-            Vendor::Claude => self.keys(&["S-Enter"]),
-            Vendor::Codex => self.keys(&["C-j"]),
-        }
+        self.keys(&["S-Enter"]);
     }
 
     fn attempt(&self) -> (WakeResult, u32) {
@@ -948,7 +902,6 @@ impl Run {
             &self.state,
             WINDOW,
             &self.pane(),
-            self.vendor,
             &self.facts,
             &mut || {
                 calls += 1;
@@ -990,29 +943,30 @@ impl Run {
 
     /// An attempt on a draft must defer and leave the draft as it was.
     fn draft_case(&mut self, case: &str) {
+        self.deferred_case(case, "deferred:draft");
+    }
+
+    /// A deferred attempt must preserve the input and record no intent.
+    fn deferred_case(&mut self, case: &str, want: &str) {
         std::thread::sleep(Duration::from_millis(500));
         let before = self.snap();
         let (r, calls) = if self.qualified {
             self.attempt()
         } else {
             let rules = rules::load(self.vendor).unwrap();
-            let r = wake::before_paste(self.vendor, &rules, &before);
+            let r = wake::before_paste(&rules, &before);
             (r.unwrap_or(WakeResult::Submitted), 0)
         };
         std::thread::sleep(Duration::from_millis(300));
         let after = self.snap();
-        let lines = |s: &Snapshot| {
-            composer::view(self.vendor, &s.screen, None)
-                .ok()
-                .map(|v| v.lines)
-        };
+        let lines = |s: &Snapshot| composer::view(&s.screen, None).ok().map(|v| v.lines);
         let untouched = lines(&before) == lines(&after)
             && (before.geometry.cursor_x, before.geometry.cursor_y)
                 == (after.geometry.cursor_x, after.geometry.cursor_y);
         self.save(case);
         self.record_checked(
             case,
-            "deferred:draft",
+            want,
             show(&r),
             &[
                 ("no intent recorded", calls == 0),
@@ -1027,7 +981,7 @@ impl Run {
         let rules = rules::load(self.vendor).unwrap();
         let s = self.snap();
         self.save(case);
-        let got = match wake::before_paste(self.vendor, &rules, &s) {
+        let got = match wake::before_paste(&rules, &s) {
             None => "would paste".to_string(),
             Some(r) => show(&r),
         };
@@ -1059,7 +1013,7 @@ impl Run {
         let s = self.snap();
         self.save(case);
         let g = s.geometry;
-        let got = match wake::before_enter(self.vendor, &rules, &s) {
+        let got = match wake::before_enter(&rules, &s) {
             None => format!("would press Enter (cursor {},{})", g.cursor_x, g.cursor_y),
             Some(why) => format!("withheld: {why}"),
         };
@@ -1072,7 +1026,7 @@ impl Run {
         let rules = rules::load(self.vendor).unwrap();
         while start.elapsed() < Duration::from_secs(180) {
             std::thread::sleep(Duration::from_secs(2));
-            match wake::before_paste(self.vendor, &rules, &self.snap()) {
+            match wake::before_paste(&rules, &self.snap()) {
                 None => return "idle".into(),
                 Some(WakeResult::Blocked(rule)) => {
                     return format!("blocked:{rule} (left unanswered)");
@@ -1094,9 +1048,9 @@ pub fn qualify(vendor: Vendor, version: Option<String>, submit: bool) -> (Vec<[S
         run.facts.vendor_version,
         run.facts.editor,
         run.facts.suggestions,
-        wake::qualification(vendor, &run.facts)
+        wake::qualification(&run.facts)
     );
-    let qualified = wake::qualification(vendor, &run.facts) == Qualification::Qualified;
+    let qualified = wake::qualification(&run.facts) == Qualification::Qualified;
     run.qualified = qualified;
     let mut facts_row = format!("{:?}", run.facts.vendor_version.as_deref().unwrap_or("?"));
     let _ = write!(facts_row, " editor={:?}", run.facts.editor);
@@ -1113,7 +1067,7 @@ pub fn qualify(vendor: Vendor, version: Option<String>, submit: bool) -> (Vec<[S
     run.start(200, 50);
     run.save("empty");
     let rules = rules::load(vendor).unwrap();
-    let got = match wake::before_paste(vendor, &rules, &run.snap()) {
+    let got = match wake::before_paste(&rules, &run.snap()) {
         None => "would paste".to_string(),
         Some(r) => show(&r),
     };
@@ -1151,21 +1105,13 @@ pub fn qualify(vendor: Vendor, version: Option<String>, submit: bool) -> (Vec<[S
     ]);
     run.draft_case("draft wrapped");
 
-    // History recall.
-    run.start(200, 50);
-    run.keys(&["Up"]);
-    std::thread::sleep(Duration::from_millis(500));
-    let got = show_reading(&run.reading());
-    run.save("history-up");
-    run.record("history recall (Up)", "draft", got.clone());
-
     // A draft that clears: draft, then (after a person clears it) empty.
     run.start(200, 50);
     run.keys(&["-l", "temporary"]);
     run.draft_case("draft clears: first attempt");
     run.keys(&["C-u"]);
     std::thread::sleep(Duration::from_millis(500));
-    let got = match wake::before_paste(vendor, &rules, &run.snap()) {
+    let got = match wake::before_paste(&rules, &run.snap()) {
         None => "would paste".to_string(),
         Some(r) => show(&r),
     };
@@ -1263,7 +1209,7 @@ pub fn qualify(vendor: Vendor, version: Option<String>, submit: bool) -> (Vec<[S
     let r = if run.qualified {
         run.attempt().0
     } else {
-        wake::before_paste(vendor, &rules, &run.snap()).unwrap_or(WakeResult::Submitted)
+        wake::before_paste(&rules, &run.snap()).unwrap_or(WakeResult::Submitted)
     };
     run.record("pane 100x12", "deferred:uncertain", show(&r));
     let _ = control.kill();
@@ -1271,11 +1217,16 @@ pub fn qualify(vendor: Vendor, version: Option<String>, submit: bool) -> (Vec<[S
     let _ = run.client(&outer).arg("kill-server").output();
 
     if !qualified || !submit {
+        run.record(
+            "history recall (Up)",
+            "unavailable",
+            "unavailable: submissions disabled or unqualified".into(),
+        );
         run.record("submissions", "", "skipped".into());
         return (std::mem::take(&mut run.rows), qualified);
     }
 
-    // Submission 1: insert mode, clients attached, resize during the attempt.
+    // Insert-mode submission: clients attached, resize during the attempt.
     run.start(200, 50);
     let _ = run
         .client(&outer)
@@ -1347,31 +1298,39 @@ pub fn qualify(vendor: Vendor, version: Option<String>, submit: bool) -> (Vec<[S
             ),
         );
     }
-    let end = run.wait_turn();
+    let end = if submitted {
+        run.wait_turn()
+    } else {
+        "unavailable: no submission".into()
+    };
     run.save("after-turn-1");
-    run.record("turn 1 ended", "idle", end);
+    run.record("turn 1 ended", "idle", end.clone());
+    if submitted && end == "idle" {
+        // History needs a completed submission in this run's working directory.
+        run.keys(&["Up"]);
+        std::thread::sleep(Duration::from_millis(500));
+        let got = show_reading(&run.reading());
+        run.save("history-up");
+        run.record("history recall (Up)", "draft", got);
+    } else {
+        run.record(
+            "history recall (Up)",
+            "unavailable",
+            "unavailable: first submission did not complete".into(),
+        );
+    }
     let _ = control.kill();
     let _ = control.wait();
     let _ = run.client(&outer).arg("kill-server").output();
 
-    // Submission 2: vim normal mode.
+    // Vim normal mode must defer without submitting or changing the input.
     run.start(200, 50);
     run.keys(&["Escape"]);
     std::thread::sleep(Duration::from_millis(500));
-    let mode = composer::view(vendor, &run.screen(), None)
-        .ok()
-        .and_then(|v| v.vim);
+    let mode = composer::view(&run.screen(), None).ok().and_then(|v| v.vim);
     run.record("normal mode shown", "Some(Normal)", format!("{mode:?}"));
-    let (r, _) = run.attempt();
     // Claude can't tell an empty box from one space in normal mode, so it defers.
-    let want = match vendor {
-        Vendor::Claude => "deferred:uncertain",
-        Vendor::Codex => "submitted",
-    };
-    run.record("submit: vim normal", want, show(&r));
-    let end = run.wait_turn();
-    run.save("after-turn-2");
-    run.record("turn 2 ended", "idle", end);
+    run.deferred_case("attempt: vim normal", "deferred:uncertain");
     (std::mem::take(&mut run.rows), qualified)
 }
 
