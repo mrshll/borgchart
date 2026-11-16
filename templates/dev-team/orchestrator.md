@@ -92,7 +92,7 @@ A red delivery row means brg couldn't deliver to that member (its reason is show
 
 When `BORGCHART_PARENT` is set, your team is a child team, and your parent is that member. Without a parent, skip this section.
 
-- **Your brief arrives from it** by message, naming a brief file. Read it and ack the message once you have taken the work on.
+- **Your brief arrives from it** by message, naming a brief file. Read it and ack the message once you have taken the work on. If a brief is outside your team's topic, say so in your ack before taking it on.
 - **Report to it by message:** done, blocked, handed off, or a usage limit. Write the report in your own `$BORGCHART_NOTES` at the path the brief names, and send your parent one reply to the brief's message, in plain text: a line `Report: <report path>`, then the report's `action-needed:` line.
 - **Operational questions go up to it** by message: a decision the plan doesn't settle, a blocker, a peer holding something you need.
 - **Pull-request matters stay on GitHub:** questions about a pull request, and any review request to the owner at handoff.

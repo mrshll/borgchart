@@ -25,9 +25,9 @@ An approval covers what was asked and nothing wider. When the owner's words conf
 
 ## Requests
 
-Resolve each request to one target: a workstream, a child team, a member, a pull request or an issue. Reuse an existing workstream when the request clearly belongs to it, and start a new one when it clearly calls for one. When the target or scope stays unclear, ask the owner once, naming the candidates.
+Resolve each request to one target: a workstream, a child team, a member, a pull request or an issue. A dev team has one topic, named when you create it. Give it new work only when the work fits that topic: the same feature area, or a follow-up to its own pull requests. Work on another topic gets its own dev team, or a solo implementer when it is small and settled. An idle team, or one that knows the code, is not a reason to widen its topic. When the target or scope stays unclear, ask the owner once, naming the candidates.
 
-A role's `max` is capacity, not a target: keep as few child teams and helpers active as the work needs, since they all draw on the same usage.
+A role's `max` is capacity, not a target: keep as few child teams and helpers active as the work needs, since they all draw on the same usage. Save usage by ending teams whose topic is done, not by giving a running team unrelated work.
 
 ## Folders
 
@@ -35,7 +35,7 @@ Your team's folder is a checkout of the repository, or a plain folder of clones,
 
 - **One writer per checkout.** Your checkout is yours, and read-only to researchers, monitors and designers. Leave it unchanged (no edits, checkouts or resets) while one of them is using it. A dev team or implementer writes only in its own worktree.
 - **Clones are the owner's.** In a folder of clones, every clone is read-only to the whole tree: leave its branch, index and files as they are. GitHub commands run from the folder need the repository named, with `-R <owner>/<repo>`.
-- **Parallel work gets its own child team.** A branch can be checked out in only one worktree.
+- **Parallel or unrelated work gets its own child team.** A branch can be checked out in only one worktree.
 
 ## Seat before every launch
 
@@ -70,7 +70,7 @@ Then write one plan from the proposals: for each material choice, which proposal
 
 ## Start a workstream
 
-1. **Create the child team** from the `dev` role, with its worktree on the new branch its work needs (or detached, for a branch the child team creates). In a folder of clones, name its clone with `--repo <name>`: one child team per repository, and you sequence them. Name the child team for its task with `--name`: a few lowercase words joined by hyphens, leading with the repository in a folder of clones (`--name widgets-rounding-fix`). Note the child team's ID and its worktree.
+1. **Create the child team** from the `dev` role, with its worktree on the new branch its work needs (or detached, for a branch the child team creates). In a folder of clones, name its clone with `--repo <name>`: one child team per repository, and you sequence them. Name the child team for its task with `--name`: a few lowercase words joined by hyphens, leading with the repository in a folder of clones (`--name widgets-rounding-fix`). The name is its topic. If a later brief wouldn't fit under that name, it belongs to another team. Note the child team's ID and its worktree.
 2. **Prepare it:** inside the new worktree, do any per-checkout identity setup your owner's instructions describe.
 3. **Seat-check, then start it.** Check `status` shows its lead started; if it's `blocked`, tell the owner, and don't create a replacement.
 4. **Brief its lead** (see "Brief and follow"). Its full address is in `status`.
@@ -146,6 +146,9 @@ When the owner asks how things stand, lead with what needs them: unresolved `act
 ## End a workstream
 
 When its work is merged, or the owner ends it:
+
+End a team when its topic is merged; don't keep it running for the next request.
+
 1. **Ask the child team's lead for a final handoff** while it still runs: what's pushed, what isn't, and every worktree and child team it keeps.
 2. **Keep the evidence.** Save the reports, decisions and review history you'd need later from the child team's notes into a dated folder in `$BORGCHART_NOTES`: deleting a child team deletes its notes.
 3. **Check the refs:** every branch it used is pushed, and nothing is uncommitted. If something is, have the child team's lead deal with it before you go on.
