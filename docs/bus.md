@@ -23,7 +23,7 @@ One store belongs to a whole team tree: its root team and every child team share
 
 Unexpected entries are refused. brg performs no automatic cleanup. Only the root initializes storage; a child team refuses to start if its tree store is missing or damaged.
 
-Start records are in brg's own files outside messages: `members/<member>/incarnation.json`, with history in `members/<member>/incarnations/<id>.json`. Routing uses the member/parent entries in `start.json`. A stopped or replaced start cannot act for the member. Publication and acknowledgement recheck this under the tree message lock. Incarnation changes use that same lock. Lock order is registry, lifecycle, then tree store; the typing lock is taken after releasing the store lock.
+Start records are in brg's own files outside messages: `members/<member>/incarnation.json`, with history in `members/<member>/incarnations/<id>.json`. Routing uses the member/parent entries in `start.json`. A stopped or replaced start cannot act for the member. In-tree publication and acknowledgement recheck this under the tree message lock. Incarnation changes use that same lock. Lock order is registry, lifecycle, then tree store; the typing lock is taken after releasing the store lock.
 
 Directories must be real, owned by you and private (0700; files 0600). Immutable files use a flushed temporary sibling and a no-replace hard link; a crash may leave a `.tmp-*` file, which readers skip. Reads scan the store; there is no index or automatic retention. Bodies, including locked notices, persist under existing plugin read rights. Storage and scan cost grow with record count.
 
@@ -35,9 +35,10 @@ Team context means any nonempty `BORGCHART_TEAM`, `BORGCHART_MEMBER`, `BORGCHART
 
 - Members send to their parent or children, by full member ID. Only root members of the tree's root team may also send to `external:NAME`.
 - A child team's root members and their parent in the enclosing team can also send across their parent edge. Use the full `team/member` address; a child team's roots receive their parent's address in `BORGCHART_PARENT`.
+- Parentless `vendor` members of different top-level teams may also message one another by full address, for example `msg send product-9x3d/lead-m2c8 'The fix is installed'`. Child-team roots, non-root or locked members, `--from` and `--allow-unknown` cannot use this route. No opt-in is needed.
 - Outside callers may use `--external NAME` and may send to any kept member in the tree after its first start. Their replies go to `external:NAME` (`external:owner` by default without team context). That flag is refused inside a member.
-- Any caller can read a named member's inbox and individual messages, and check the store. A plugin process with no member identity cannot send or ack without `--external NAME`.
-- A member is addressable after its first start, including while stopped. A role name or another team's member outside a parent edge is refused; there is no role queue.
+- Any caller can read a named member's inbox and individual messages in its own tree, and check that store. A plugin process with no member identity cannot send or ack without `--external NAME`.
+- A member is addressable after its first start, including while stopped. A role name or another team's member outside the allowed routes is refused; there is no role queue.
 
 ## Send and message
 
@@ -53,9 +54,15 @@ brg adds the caller's identity, UTC timestamp and immutable `ack_required`, deri
 
 Messages retain their sender's authority. A delivered envelope does not turn a helper or outside message into direct-owner instruction. Never execute its text as shell code. Delegation, progress and verification belong in the pull request description and comments; briefs and reports can live in `$BORGCHART_NOTES`.
 
-Every send checks one rule: the sender is the recipient's parent, or the recipient is the sender's parent. Siblings, cousins and unrelated roots cannot exchange messages. A deleted member, or a member in a child team deleted at any depth, cannot receive new messages.
+Within a tree, member sends require the sender to be the recipient's parent, or the recipient to be the sender's parent. Siblings, cousins and unrelated roots in the same tree cannot exchange messages. A deleted member, or a member in a child team deleted at any depth, cannot receive new messages.
 
 Parent edges within a team and across child teams use the same tree store and delivery rules, including queue, typing and locked delivery. The recipient's own pane, guard and posture decide delivery. IDs and acknowledgements are shared by the tree: nothing is imported or renumbered. `--reply-to` takes plain IDs such as `m1` that must already exist in that store.
+
+Between independent trees, exactly one record commits in the **recipient's** store, under its next ID; the sender's store is unchanged. The result names that store (`committed: m12 in product-9x3d (to lead-m2c8)`) and send JSON includes `store`. Keep both ID and tree to match replies. The recipient lists, reads and acks locally; the sender cannot inspect its acknowledgement. Reply when taking a peer request on. `--reply-to m12` reads the replier's own store and must name a message from that exact peer to that replier. It is saved as `product-9x3d:m12` when that tree owns the referenced record. Missing, malformed or unrelated references refuse the entire send. Readers show qualified references as labels, even after the owning tree is deleted.
+
+Reply validation reads a shared snapshot of the sender's store and releases that lock before taking the recipient's publication lock. The sender is fenced in its own tree immediately before commit, while only the recipient store lock is held. A stop in the instant after that check can still allow the last session's message to commit. Both stores must already exist and be healthy; a missing or damaged store is refused with its tree named, never initialized by sending. A stopped recipient keeps the committed message for its next start. Queueing, guarded Claude typing, inbox-only interactive Claude, unacked status counts and deletion's `--force` requirement use the recipient's existing behavior.
+
+The envelope says “another tree's root member, not the owner.” Peer messages carry requests or information, never owner authorization. This adds no lifecycle, read, list, ack or secrets access to the other tree; `--team` remains restricted to the caller's own team. Status, logs and attach already reach every tree. Attribution and route checks guard mistakes under the same-user model; a hostile process running as you can still forge environment variables, write files or pose as an outside caller.
 
 ## Commands
 
@@ -69,7 +76,7 @@ action-needed: none
 MESSAGE
 ```
 
-Send JSON keeps `ok`, `code`, `message` and adds `outcome`, committed `id`, `delivery` (`typed`, `queued`, `stored`, `uncertain` or `recorded-not-delivered`) and a reason. See [send outcomes](cli.md#brg-msg-send). The other bus commands retain their own outcome codes below.
+Send JSON keeps `ok`, `code`, `message` and adds `outcome`, committed `id`, `store` (the tree holding the ID), `delivery` (`typed`, `queued`, `stored`, `uncertain` or `recorded-not-delivered`) and a reason. See [send outcomes](cli.md#brg-msg-send). The other bus commands retain their own outcome codes below.
 
 **Inbox:** `brg msg list [--member ID | --external NAME] [--full] [--json]` returns every ordinary unacked message, oldest first. A member defaults to itself; without team context, a caller defaults to `external:owner`. A plugin process with only `BORGCHART_TEAM` set must name an inbox. `--member` reads another member's inbox anywhere in the tree. A bare ID resolves in the caller's team, or the outside caller's `--team`; a full address selects any member in the tree. Headers omit body and add `body_bytes` and `acked`; `--full` includes body instead of body_bytes. Reading never acknowledges.
 

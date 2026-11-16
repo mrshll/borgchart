@@ -72,6 +72,11 @@ pub fn record_id(seq: u64) -> String {
     format!("m{seq}")
 }
 
+/// Preserve the owning tree when a reply reference leaves its store.
+pub fn qualified_record_id(tree: &str, id: &str) -> String {
+    format!("{tree}:{id}")
+}
+
 /// The sequence number in a record ID (`m42` → 42).
 pub fn parse_record_id(id: &str) -> Option<u64> {
     let digits = id.strip_prefix('m')?;

@@ -75,14 +75,25 @@ pub fn send() -> String {
 BORGCHART_INCARNATION, BORGCHART_ROLE, BORGCHART_NOTES and BORGCHART_PARENT
 all unset or empty), outside callers default to external:owner; --external NAME
 overrides it. A plugin process with only BORGCHART_TEAM set must name
---external NAME. Members use their launch identity and may send only to their
-parent or children. Across a child team's parent edge, name the full
+--external NAME. Members use their launch identity; within their tree they send
+to their parent or children. Across a child team's parent edge, name the full
 team/member address (a child team's roots find their parent's in
 BORGCHART_PARENT). The tree shares one store and message IDs; queue, typing and
 locked delivery work across edges too. Only root members of the tree's root team
 may address external:NAME. --from asserts a parent route within one team, not
 authorship. --reply-to takes plain existing IDs such as m1.
 This command takes no --team; name the target as <team>/<member>.
+
+Parentless vendor members of different top-level teams may also send to each
+other by full address. Child-team roots, non-root or locked members, --from
+and --allow-unknown cannot use this route. One record belongs to the recipient
+tree; the sender keeps its printed ID and store. --reply-to m1 names a message
+from that peer to you in your own store, saved as <your-tree>:m1. The sender
+cannot read or ack the other tree's records; reply when taking a request on.
+The envelope identifies another tree's root member, not the owner. These checks
+prevent mistakes, not hostile processes running as the same user. This adds no
+other-tree --team, lifecycle, read, list, ack or secrets access; status, logs
+and attach already reach every tree.
 
 Ordinary messages commit before delivery. Exit 0 means committed even when
 stored or uncertain; never automatically republish. Every Codex recipient gets
@@ -114,7 +125,7 @@ dialogs, copy mode and unverified pasted text never get Enter or clearing.
 
 Outcomes: committed (0); usage (2); unaddressable/locked not running (3);
 locked Claude dialog or copy mode (4); validation, fence, storage or locked
-input failure (5). --json includes ok, code, message, and a committed id plus
+input failure (5). --json includes ok, code, message, and a committed id, store,
 delivery and reason when present. Delivery: typed, queued, stored, uncertain,
 recorded-not-delivered.",
         crate::runtime::MAX_SEND_BYTES

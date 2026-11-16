@@ -2726,6 +2726,8 @@ pub fn delete(mut inst: Instance, force: bool) -> Result<Vec<String>, String> {
     lock.save(&registry)?;
     drop(bus_lock);
     drop(state_lock);
+    #[cfg(feature = "test-support")]
+    store::mutation_pause("BORGCHART_TEST_DELETE_REMOVE_PAUSE").map_err(|e| e.message)?;
     std::fs::remove_dir_all(&inst.state.root)
         .map_err(|e| format!("cannot remove {}: {e}", inst.state.root.display()))?;
     let own_worktree = crate::worktree::path(&inst.id);
@@ -4741,6 +4743,7 @@ pub fn check_text(text: &str) -> Result<(), SendError> {
 #[derive(Debug, Serialize)]
 pub struct SendOutcome {
     pub id: String,
+    pub store: String,
     pub delivery: &'static str,
     pub reason: String,
     pub message: String,
@@ -4784,9 +4787,10 @@ pub fn send(
             }
         })
         .map_err(send_failure)?;
-    if own.split('/').next() != inst.id.split('/').next() {
+    let peer = own.split('/').next() != inst.id.split('/').next();
+    if peer && (from.is_some() || force) {
         return Err(SendError::Refused(
-            "messages cannot cross independent team trees".into(),
+            "cross-tree messages do not allow --from or --allow-unknown".into(),
         ));
     }
     if from.is_some() && own != inst.id {
@@ -4829,6 +4833,9 @@ pub fn send(
         return Err(SendError::NotAlive(format!(
             "`{to}` has no recorded start; start it before sending"
         )));
+    }
+    if peer {
+        store::peer_actor(&bus, &target_bus, &caller, &full_to).map_err(send_failure)?;
     }
     let locked = target_meta.is_some_and(|m| m.posture == "locked");
     let interactive = target_meta.is_some_and(|m| m.interactive);
@@ -4895,6 +4902,7 @@ pub fn send(
             from.as_deref(),
             text,
             false,
+            false,
         );
         if !view.can_verify_submission(&preview, before.screen.lines().count()) {
             return Err(SendError::Refused(
@@ -4909,12 +4917,23 @@ pub fn send(
         reply_to: reply_to.to_vec(),
     })
     .map_err(|e| SendError::Refused(e.to_string()))?;
-    let record = store::publish(&bus, &caller, &draft).map_err(send_failure)?;
+    let record = if peer {
+        store::publish_peer(&bus, &target_bus, &caller, &draft)
+    } else {
+        store::publish(&bus, &caller, &draft)
+    }
+    .map_err(send_failure)?;
+    let store = inst.id.split('/').next().expect("tree ID").to_string();
     let mut outcome = SendOutcome {
         id: record.id.clone(),
+        store: store.clone(),
         delivery: "stored",
         reason: "recipient is not running".into(),
-        message: format!("committed: {} (to {to})", record.id),
+        message: if peer {
+            format!("committed: {} in {store} (to {to})", record.id)
+        } else {
+            format!("committed: {} (to {to})", record.id)
+        },
     };
     if target_meta.is_none() {
         outcome.reason = "external inbox".into();
@@ -4930,6 +4949,7 @@ pub fn send(
         from.as_deref(),
         &record.body,
         record.ack_required,
+        peer,
     );
     let mut send_lock = None;
     let typed = (|| {
@@ -5139,10 +5159,14 @@ fn send_envelope(
     from: Option<&str>,
     body: &str,
     ack_required: bool,
+    peer: bool,
 ) -> String {
-    let relay = from
+    let mut relay = from
         .map(|from| format!("; relayed for {from}"))
         .unwrap_or_default();
+    if peer {
+        relay.push_str("; another tree's root member, not the owner");
+    }
     if ack_required {
         format!(
             "[brg {id} from {author}{relay}]\n{body}\n[Ignore duplicate delivery if already acked; otherwise brg msg ack {id} when taking responsibility.]"
