@@ -42,7 +42,7 @@ You, reviewers, researchers and monitors use the team's shared checkout. Each im
 A member must exist before briefing, with work waiting before it starts.
 
 1. **Seat-check** before each `create` or `start`: run `brg-seat route <vendor> <model>` for its launch, using `status --json`'s `vendor` and `model`. For a new member with `--set`, use the set vendor and model, or the role's `models.<vendor>` pin if no model is set. Launch only on `go`. On `wait`, unknown answers or errors, check later; don't switch vendor or model.
-2. **Create once** from its role with `create`. Name it for the task with `--name`: lowercase hyphenated words, e.g. `--name rounding-fix`; throwaway helpers keep the random default. Put implementers on the needed new branch, or leave detached for them to create it. `create` starts the member: stop it and note its ID, which survives stops.
+2. **Create once** from its role with `create`. Name it for the task with `--name`: lowercase hyphenated words, e.g. `--name rounding-fix`; throwaway helpers keep the random default. Put implementers on the needed new branch, or leave detached for them to create it. `create` starts the member: stop it and note its ID.
 3. **Prepare implementer worktrees:** perform the owner's per-checkout identity setup inside them.
 4. **Write the brief** in `$BORGCHART_NOTES`, by rename: task, scope, non-goals, checks, branch, checkout, report path, deadline and teammates; for monitors, interval and trigger. Say whether implementers may run checks now or must report `ready for checks` and wait. Send one message: `Read <brief path>; take on the work and report there as directed.`
 5. **Start it**, and check `status`. If it is `blocked` (at a folder-trust screen, say), tell the owner and leave it for a person.
@@ -58,8 +58,8 @@ A member must exist before briefing, with work waiting before it starts.
   A send returning 0 is committed: never resend it.
 - **Verify.** Read the report, diff and evidence; run the development rules' checks yourself in that checkout.
 - **Push** from the member's worktree (`git -C <member-worktree> push …`), which pre-push hooks check. Where CI runs full checks, watch the pushed head; send failures back to the implementer with the job log.
-- **Stop and check.** Stop the helper and confirm `status` says `stopped` before changing/removing its worktree or giving its checkout to anyone else. To redo finished work, send a new brief and restart it.
-- **Delete a member** after its work is pushed and, where CI runs full checks, green on its head. Never use `--force`: if `delete` refuses, first commit, push or report the found work. Check unacked work before deletion.
+- **Stop and check.** Stop the helper and confirm `status` says `stopped` before changing/removing its worktree or giving its checkout to anyone else. To redo finished work, send a new brief to a new or retained member, then start it.
+- **Delete members** under the cleanup rules below; code must be pushed and required CI green. Never use `--force`: if `delete` refuses, first commit, push or report the found work. Check unacked work before deletion.
 
 ## Review
 

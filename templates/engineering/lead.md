@@ -77,11 +77,7 @@ Combine proposals into one plan: for each material choice, source proposal, adop
 
 The lead plans, builds, reviews and hands off its pull requests. It acks your brief and messages reports: done, blocked, handed off, or usage limit.
 
-**Researchers and monitors** belong to your team; `create` starts them:
-1. **First time:** seat-check, create from the role, note the ID, then stop it. If `create` fails partway, check `status` before retrying; the member may exist.
-2. **Each piece of work:** send the brief to that ID, seat-check, then start.
-
-Stopped members keep their IDs. Watches run until their own deadlines regardless of the requesting workstream.
+**Researchers and monitors:** seat-check, `create`, note the ID and stop. On partial failure, check `status` before retrying. Send the brief, seat-check, then start.
 
 ## Solo work
 
