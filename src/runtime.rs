@@ -55,7 +55,7 @@ const BASE_ENV: &[&str] = &[
     state::ENV_TMUX_TMPDIR,
 ];
 
-/// How long a start waits for a `locked` member's gate to report in.
+/// How long a start waits for a restricted member's gate to report in.
 fn gate_wait() -> Duration {
     std::env::var("BORGCHART_GATE_WAIT_MS")
         .ok()
@@ -408,7 +408,7 @@ fn start_members(
         .any(char::is_whitespace)
     {
         return Err(format!(
-            "the state folder {} contains whitespace, which `locked` command rules can't match; set BORGCHART_STATE_HOME to a path without spaces",
+            "the state folder {} contains whitespace, which restricted command rules can't match; set BORGCHART_STATE_HOME to a path without spaces",
             state.root.display()
         ));
     }
@@ -498,7 +498,7 @@ fn start_members(
         if overlaps(cwd, &v.team.dir) {
             if v.posture(&member.id) == Posture::Locked {
                 return Err(format!(
-                    "{} is `locked`, and its folder {} overlaps the template folder {}, so it could change its own role files; give it a folder apart from the template. Nothing was started",
+                    "{} is restricted, and its folder {} overlaps the template folder {}, so it could change its own role files; give it a folder apart from the template. Nothing was started",
                     inst.at(id),
                     cwd.display(),
                     v.team.dir.display()
@@ -589,7 +589,7 @@ fn start_members(
                             .is_empty()
                     {
                         return Err(format!(
-                            "{}/{member} has unacknowledged messages; settle them before changing to locked posture",
+                            "{}/{member} has unacknowledged messages; settle them before restricting it",
                             state.id
                         ));
                     }
@@ -786,7 +786,7 @@ fn start_members(
         }
 
         let auto_trust = v.config.auto_trust;
-        // Codex's sandbox can write its cwd, so a `locked` Codex member
+        // Codex's sandbox can write its cwd, so a restricted Codex member
         // without its own worktree starts in its temp dir, not the folder.
         let cwd =
             if !member.worktree && posture == Posture::Locked && member.vendor == Vendor::Codex {
@@ -796,14 +796,14 @@ fn start_members(
             };
         let in_folder = cwd != state.member_tmp(id);
         // Claude: brg answers its trust dialog for the member's folder. By
-        // default only for `locked` members, which ignore project settings.
+        // default only for restricted members, which ignore project settings.
         let trust_dir = (in_folder
             && member.vendor == Vendor::Claude
             && auto_trust.unwrap_or(posture == Posture::Locked))
         .then(|| cwd.clone());
         // Codex: trust passed as session config, only with `auto_trust: true`
-        // and only in `vendor` posture. A trusted folder's `.codex/` loads, and a
-        // `locked` Codex member can write its folder, so it could configure its
+        // and only without restricted access. A trusted folder's `.codex/` loads, and a
+        // restricted Codex member can write its folder, so it could configure its
         // own next start outside its gate. The role's own `projects` setting
         // wins.
         let codex_trust = (in_folder
@@ -966,7 +966,7 @@ fn start_members(
             set(
                 &mut outcomes,
                 id,
-                "stopped: brg couldn't read its pane, so its `locked` gate couldn't be checked"
+                "stopped: brg couldn't read its pane, so its restricted-access gate couldn't be checked"
                     .to_string(),
             );
             failed = true;
@@ -1266,7 +1266,7 @@ fn start_members(
                     set(
                         &mut outcomes,
                         id,
-                        "stopped: it was at a prompt before its `locked` gate reported in"
+                        "stopped: it was at a prompt before its restricted-access gate reported in"
                             .to_string(),
                     );
                     failed = true;
@@ -1303,7 +1303,7 @@ fn start_members(
                     set(
                         &mut outcomes,
                         id,
-                        "stopped: its `locked` gate did not report in, so it would be unprotected"
+                        "stopped: its restricted-access gate did not report in, so it would be unprotected"
                             .to_string(),
                     );
                     failed = true;
@@ -1436,7 +1436,7 @@ fn member_nodes(
     nodes
 }
 
-/// The folders every `vendor`-posture member may write: the tree's
+/// The folders every unrestricted member may write: the tree's
 /// `messages/` and the team's `notes/`, never brg's own files. Each must be a real
 /// folder (not a symlink), yours, and not writable by group or others, and
 /// resolve to exactly its own place in the team's state folder: anything
@@ -1492,7 +1492,7 @@ fn project_settings_note(v: &Validated, member: &crate::team::Role, cwd: &Path) 
     match member.vendor {
         Vendor::Claude if cwd.join(".claude").exists() || cwd.join(".mcp.json").exists() => {
             Some(format!(
-                "`auto_trust: true` trusts {}, which has project settings (`.claude/` or `.mcp.json`) that will load in `vendor` posture",
+                "`auto_trust: true` trusts {}, which has project settings (`.claude/` or `.mcp.json`) that will load without restricted access",
                 cwd.display()
             ))
         }
@@ -3649,7 +3649,7 @@ pub struct StatusRow {
     /// team path that a nested root belongs to. Rows are in tree order.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
-    pub posture: Option<String>,
+    pub restricted_access: bool,
     pub state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rule: Option<String>,
@@ -3882,10 +3882,7 @@ fn status_with_counts(
                     .and_then(|m| m.effort.clone()),
                 overrides: inst.record.overrides.get(id).cloned().unwrap_or_default(),
                 parent: nodes[i].parent.clone(),
-                posture: Some(match member.posture {
-                    Posture::Vendor => "vendor".into(),
-                    Posture::Locked => "locked".into(),
-                }),
+                restricted_access: member.posture == Posture::Locked,
                 state: not_created(member),
                 rule: None,
                 activity: None,
@@ -3943,10 +3940,7 @@ fn status_with_counts(
                 .ok()
                 .and_then(|i| i.as_ref())
                 .map(|inc| lifecycle::liveness(state, id, &inc.incarnation)),
-            posture: Some(match posture {
-                Posture::Vendor => "vendor".into(),
-                Posture::Locked => "locked".into(),
-            }),
+            restricted_access: posture == Posture::Locked,
             state: if ran { STOPPED } else { NOT_STARTED }.into(),
             unacked: counts.map(|all| all.get(&inst.at(id)).copied().unwrap_or_default().unread),
             running: None,
@@ -4122,7 +4116,7 @@ fn status_with_counts(
             overrides: Default::default(),
             parent: None,
             liveness: None,
-            posture: None,
+            restricted_access: false,
             state: "stopped".into(),
             rule: None,
             activity: None,
@@ -4198,7 +4192,7 @@ fn status_with_counts(
                 effort: None,
                 overrides: Default::default(),
                 parent: parent.clone(),
-                posture: None,
+                restricted_access: false,
                 state: if role.max > 1 {
                     ON_DEMAND.into()
                 } else {
@@ -4258,7 +4252,7 @@ fn status_with_counts(
                     .as_ref()
                     .and_then(|copy| copy.record.parent.clone())
                     .or_else(|| parent.as_deref().map(|parent| inst.at(parent))),
-                posture: None,
+                restricted_access: false,
                 state: if error.is_some() {
                     "unreadable"
                 } else if copy.as_ref().is_some_and(|copy| copy.record.stopping) {
@@ -4378,8 +4372,8 @@ pub fn status_cells(r: &StatusRow, short: bool) -> Vec<String> {
         _ => return vec![r.state.clone(), r.detail.clone().unwrap_or_default()],
     }
     let mut detail = Vec::new();
-    if r.posture.as_deref() == Some("locked") {
-        detail.push("locked".to_string());
+    if r.restricted_access {
+        detail.push("restricted".to_string());
     }
     // A turn's topic leads; an idle member's would be its last one.
     if matches!(r.state.as_str(), "working" | "blocked") {
@@ -4864,7 +4858,7 @@ pub fn send(
         }
         if !inst.state.gate_marker(&to).exists() {
             return Err(SendError::Refused(
-                "locked recipient's gate is not active".into(),
+                "the member's restricted-access gate is not active".into(),
             ));
         }
         wait_codex_session(
@@ -4891,7 +4885,7 @@ pub fn send(
         view.busy = false;
         if view.reading() != crate::composer::Reading::Empty {
             return Err(SendError::Refused(
-                "locked input box is not positively empty; draft preserved".into(),
+                "restricted input box is not positively empty; draft preserved".into(),
             ));
         }
         let actor = store::actor_for(&bus, &caller).map_err(send_failure)?;
@@ -4906,7 +4900,7 @@ pub fn send(
         );
         if !view.can_verify_submission(&preview, before.screen.lines().count()) {
             return Err(SendError::Refused(
-                "message exceeds the locked screen-verification budget; nothing recorded or pasted"
+                "message exceeds the restricted screen-verification budget; nothing recorded or pasted"
                     .into(),
             ));
         }
@@ -4980,7 +4974,7 @@ pub fn send(
             .is_none_or(|m| m.interactive != interactive || (m.posture == "locked") != locked)
         {
             return Err(SendError::Refused(
-                "recipient delivery posture changed after commit".into(),
+                "recipient delivery restrictions changed after commit".into(),
             ));
         }
         if vendor == Vendor::Codex {
@@ -5186,7 +5180,7 @@ fn send_snapshot(
 ) -> Result<crate::wake::Snapshot, SendError> {
     if locked && !state.gate_marker(member).exists() {
         return Err(SendError::Refused(
-            "locked recipient's gate is not active".into(),
+            "the member's restricted-access gate is not active".into(),
         ));
     }
     let snap = crate::wake::snapshot(tmux, pane)
@@ -5415,7 +5409,7 @@ mod tests {
             effort: None,
             overrides: Default::default(),
             parent: None,
-            posture: None,
+            restricted_access: false,
             state: "working".into(),
             rule: None,
             activity: Some("Review issues".into()),
@@ -5471,7 +5465,7 @@ mod tests {
             effort: None,
             overrides: Default::default(),
             parent: None,
-            posture: None,
+            restricted_access: false,
             state: "idle".into(),
             rule: None,
             activity: None,
@@ -5516,7 +5510,7 @@ mod tests {
             effort: None,
             overrides: Default::default(),
             parent: None,
-            posture: None,
+            restricted_access: false,
             state: state.into(),
             rule: None,
             activity: None,
@@ -5574,7 +5568,7 @@ mod tests {
                     effort: None,
                     overrides: Default::default(),
                     parent: parent.map(Into::into),
-                    posture: None,
+                    restricted_access: false,
                     state: state.into(),
                     rule: None,
                     activity: None,

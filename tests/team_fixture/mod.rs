@@ -38,13 +38,11 @@ roles:
   triager:
     prompt: triager.md
     parent: lead
-    posture: locked
-    untrusted_input: true
+    restricted_access: true
     plugins: {slackbot: [read, escalate]}
   lead:
     prompt: lead.md
-    posture: locked
-    untrusted_input: true
+    restricted_access: true
     plugins: {slackbot: [read, reply]}
 "#,
         );

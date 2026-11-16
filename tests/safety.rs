@@ -324,12 +324,12 @@ fn locked_members_cant_work_around_the_team_folder_and_vendor_ones_get_a_note() 
         "templates/oncall/template.yaml",
         &TEAM.replace(
             "  lead:\n    prompt: lead.md\n",
-            "  lead:\n    prompt: lead.md\n    posture: locked\n",
+            "  lead:\n    prompt: lead.md\n    restricted_access: true\n",
         ),
     );
     let err = env.fails(&["create", "oncall", &env.folder("templates")]);
     assert!(
-        err.contains("locked") && err.contains("template folder"),
+        err.contains("restricted") && err.contains("template folder"),
         "{err}"
     );
 }

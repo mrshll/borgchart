@@ -15,7 +15,7 @@ later polls deliver new human posts and thread replies, including broadcast
 replies, skipping bots, other subtypes and edits. Each poll sends at most six
 items and 900 bytes.
 
-Both agents are `locked`: the triager can `read`, `thread` and `promote`; the lead
+Both agents are restricted: the triager can `read`, `thread` and `promote`; the lead
 can `read`, `thread` and `reply`. Neither sees the bot token in its environment;
 plugin shims hold it. Promotions carry a timestamp and one fixed reason:
 `outage`, `deploy`, `security`, `question`, `other`. Slack text never travels
@@ -23,9 +23,9 @@ between agents. Promotions send once with `--from` so brg checks the parent
 route; a failed action reports brg's error for the triager to retry. See the
 plugin's delivery documentation for retry and crash limits.
 
-Every team has a bus. Locked notices remain readable history with
+Every team has a bus. Restricted notices remain readable history with
 `ack_required: false`, labelled “ack not required,” and are excluded from pending
-inbox/wait/unacked counts. Locked recipients get no bus commands or inbox
+inbox/wait/unacked counts. Restricted recipients get no bus commands or inbox
 recovery. Bodies persist under existing plugin read rights, and store size/scan
 cost grow without automatic retention. Code 0 means committed and is never
 republished. Failed intake sends stay pending for the next poll and can repeat
@@ -71,7 +71,7 @@ separate watch entry can set `SLACK_SKIP_MENTIONS: "true"` to coexist with it.
 
 ### First run
 
-Claude may ask for folder trust; brg normally answers it for locked members.
+Claude may ask for folder trust; brg normally answers it for restricted members.
 With `auto_trust: false`, attach and answer it yourself before expecting input.
 With API key auth, answer any first-use key prompt in a plain Claude session
 before starting the team, or use login auth.
@@ -88,8 +88,8 @@ triager should promote it and the lead should reply in its thread. Post
 should also reach the triager. `brg status slack-devops-k3f9` shows the `slack`
 plugin alive, with both members idle between notices.
 
-To let the lead use vendor settings and more tools, set `posture: vendor` and
-`accept_risk: true` locally. Anyone posting in the channel can then try to steer
+To let the lead use vendor settings and more tools, leave out
+`restricted_access: true` locally. Anyone posting in the channel can then try to steer
 an agent with shell access and credentials; choose the channel accordingly.
 
 ## Tests

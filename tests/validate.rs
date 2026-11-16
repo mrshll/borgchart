@@ -61,6 +61,32 @@ fn slack_readme_example_does_not_fail_validation() {
 }
 
 #[test]
+fn restricted_access_refuses_interactive_members_while_default_and_false_allow_them() {
+    let f = Fixture::new();
+    for (access, restricted) in [
+        ("", false),
+        (", restricted_access: false", false),
+        (", restricted_access: true", true),
+    ] {
+        for interactive in [false, true] {
+            f.write(
+                "template.yaml",
+                &format!(
+                    "roles:\n  lead: {{prompt: lead.md, interactive: {interactive}{access}}}\n"
+                ),
+            );
+            let (report, validated) = f.run();
+            assert_eq!(
+                validated.is_some(),
+                !(interactive && restricted),
+                "interactive={interactive}{access}: {}",
+                errors(&report)
+            );
+        }
+    }
+}
+
+#[test]
 fn valid_team_loads() {
     let f = Fixture::new();
     let (report, validated) = f.run();
@@ -314,18 +340,17 @@ fn team_roles_refuse_agent_fields_including_empty_and_false_values() {
     for field in [
         "prompt: lead.md",
         "vendor: claude",
-        "posture: vendor",
+        "restricted_access: true",
+        "restricted_access: false",
         "plugins: {}",
         "args: []",
         "connectors: []",
-        "untrusted_input: false",
-        "accept_risk: false",
         "interactive: true",
         "interactive: false",
         "prompt: null",
         "connectors: null",
         "vendor: null",
-        "posture: null",
+        "restricted_access: null",
     ] {
         let f = nested_team();
         f.edit(
@@ -648,57 +673,16 @@ fn delivers_to_must_be_a_role() {
 }
 
 #[test]
-fn unknown_and_reserved_postures_are_errors() {
-    let f = Fixture::new();
-    f.edit(
-        "template.yaml",
-        "    posture: locked\n    untrusted_input: true\n    plugins: {slackbot: [read, reply]}",
-        "    posture: open\n    plugins: {slackbot: [read, reply]}",
-    );
-    expect_error(&f, "unknown posture `open`");
-
-    let f = Fixture::new();
-    f.edit(
-        "template.yaml",
-        "    posture: locked\n    untrusted_input: true\n    plugins: {slackbot: [read, reply]}",
-        "    posture: sandboxed\n    plugins: {slackbot: [read, reply]}",
-    );
-    expect_error(&f, "reserved for hosting");
-}
-
-#[test]
-fn untrusted_input_needs_locked_or_accept_risk() {
-    let f = Fixture::new();
-    f.edit(
-        "template.yaml",
-        "    prompt: lead.md\n    posture: locked\n",
-        "    prompt: lead.md\n    posture: vendor\n",
-    );
-    expect_error(&f, "must be `locked`");
-
-    let f = Fixture::new();
-    f.edit(
-        "template.yaml",
-        "    prompt: lead.md\n    posture: locked\n",
-        "    prompt: lead.md\n    posture: vendor\n    accept_risk: true\n",
-    );
-    let (report, validated) = f.run();
-    assert!(validated.is_some(), "{}", errors(&report));
-    let w = warnings(&report);
-    assert!(w.contains("background process"), "{w}");
-}
-
-#[test]
 fn vendor_warnings_cover_targets_and_parents() {
     let f = Fixture::new();
     f.edit(
         "template.yaml",
-        "    posture: locked\n    untrusted_input: true\n    plugins: {slackbot: [read, escalate]}",
+        "    restricted_access: true\n    plugins: {slackbot: [read, escalate]}",
         "    plugins: {slackbot: [read, escalate]}",
     );
     f.edit(
         "template.yaml",
-        "    prompt: lead.md\n    posture: locked\n    untrusted_input: true\n    plugins: {slackbot: [read, reply]}",
+        "    prompt: lead.md\n    restricted_access: true\n    plugins: {slackbot: [read, reply]}",
         "    prompt: lead.md",
     );
     let (report, validated) = f.run();
@@ -799,8 +783,8 @@ fn auto_trust_warns_about_locked_codex_members() {
     let f = Fixture::new();
     f.edit(
         "template.yaml",
-        "    prompt: lead.md\n    posture: locked\n",
-        "    prompt: lead.md\n    vendor: codex\n    posture: locked\n",
+        "    prompt: lead.md\n    restricted_access: true\n",
+        "    prompt: lead.md\n    vendor: codex\n    restricted_access: true\n",
     );
     f.edit(
         "config.yaml",
@@ -1012,7 +996,7 @@ fn universal_bus_accepts_locked_members_without_expanding_posture() {
     f.edit(
         "team/template.yaml",
         "    prompt: helper.md\n",
-        "    prompt: helper.md\n    posture: locked\n",
+        "    prompt: helper.md\n    restricted_access: true\n",
     );
     let (report, validated) = run_bus(&f);
     let v = validated.unwrap_or_else(|| panic!("{}", errors(&report)));
@@ -1036,12 +1020,12 @@ fn interactive_is_opt_in_and_invalid_for_locked_recipients() {
     f.edit(
         "team/template.yaml",
         "    interactive: true\n",
-        "    interactive: true\n    posture: locked\n",
+        "    interactive: true\n    restricted_access: true\n",
     );
     let (report, validated) = run_bus(&f);
     assert!(validated.is_none());
     assert!(
-        errors(&report).contains("`interactive` cannot be used with `locked`"),
+        errors(&report).contains("`interactive` cannot be used with `restricted_access: true`"),
         "{}",
         errors(&report)
     );

@@ -485,7 +485,11 @@ mod tests {
     fn columns_align_and_plugins_follow() {
         let nodes = [
             node("lead", None, &["claude default", "idle", ""]),
-            node("helper", Some("lead"), &["codex o3", "stopped", "locked"]),
+            node(
+                "helper",
+                Some("lead"),
+                &["codex o3", "stopped", "restricted"],
+            ),
         ];
         let plugins = [
             (
@@ -503,7 +507,7 @@ mod tests {
             render("team", &nodes, &plugins, false),
             "team\n\
              └─ lead      claude default  idle\n   \
-             └─ helper codex o3        stopped  locked\n\
+             └─ helper codex o3        stopped  restricted\n\
              plugin slackbot alive    ok\n\
              plugin pager    stopped\n"
         );

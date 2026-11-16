@@ -786,7 +786,7 @@ pub(crate) mod tests {
             effort: None,
             overrides: Default::default(),
             parent: parent.map(Into::into),
-            posture: None,
+            restricted_access: false,
             state: "idle".into(),
             rule: None,
             activity: None,

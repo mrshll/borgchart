@@ -1561,7 +1561,7 @@ fn a_stale_gate_waiter_leaves_a_replacement_alone() {
         "oncall/template.yaml",
         &TEAM.replace(
             "    prompt: lead.md\n",
-            "    prompt: lead.md\n    posture: locked\n",
+            "    prompt: lead.md\n    restricted_access: true\n",
         ),
     );
     fs::create_dir_all(env.path("home/fake-agent")).unwrap();
@@ -1627,7 +1627,7 @@ fn a_stale_gate_waiter_leaves_a_replacement_alone() {
     let second = second.wait_with_output().unwrap();
     assert_eq!(
         outcomes(&stdout(&second), &env.m("lead")),
-        ["stopped: its `locked` gate did not report in, so it would be unprotected"],
+        ["stopped: its restricted-access gate did not report in, so it would be unprotected"],
         "{}",
         both(&second)
     );

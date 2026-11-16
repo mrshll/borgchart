@@ -886,7 +886,7 @@ mod tests {
                 effort: None,
                 overrides: Default::default(),
                 parent: None,
-                posture: None,
+                restricted_access: false,
                 state: "working".into(),
                 rule: None,
                 activity: None,
@@ -926,7 +926,7 @@ mod tests {
                 ..Default::default()
             },
             parent: None,
-            posture: Some("vendor".into()),
+            restricted_access: false,
             state: crate::runtime::ON_DEMAND.into(),
             rule: None,
             activity: None,

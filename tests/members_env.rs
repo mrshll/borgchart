@@ -106,15 +106,14 @@ fn vendor_codex_has_full_access_and_claude_gets_added_folders() {
 #[test]
 fn locked_members_keep_their_launch() {
     let env = Env::new();
-    // No bus: a team with one can't have `locked` members.
     env.write(
         "templates/oncall/template.yaml",
         &TEAM.replace("bus: {}\n", "").replace(
             "    vendor: codex\n    parent: lead\n    start: false\n",
-            "    vendor: codex\n    parent: lead\n    start: false\n    posture: locked\n",
+            "    vendor: codex\n    parent: lead\n    start: false\n    restricted_access: true\n",
         ),
     );
-    env.role_extra("lead", "    posture: locked\n");
+    env.role_extra("lead", "    restricted_access: true\n");
     env.config("auto_trust: true\n");
     fs::create_dir_all(env.path("work/a/.codex")).unwrap();
     fs::create_dir_all(env.path("work/a/.claude")).unwrap();

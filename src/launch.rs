@@ -1,5 +1,5 @@
 //! Building what a member launches with: its opening prompt, its vendor CLI
-//! arguments, its plugin shims and, in `locked` posture, its gate.
+//! arguments, its plugin shims and, with restricted access, its gate.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -286,7 +286,7 @@ pub fn codex_hook_config(brg: &Path, state: &StateDir, member: &str) -> String {
 
 /// Codex `-c` values for a member without a gate: a SessionStart hook that
 /// only records the session, trusted for this session alone. Only these
-/// two keys are set, not the whole `hooks` table a `locked` member gets.
+/// two keys are set, not the whole `hooks` table a restricted member gets.
 pub fn codex_session_hook_config(brg: &Path, state: &StateDir, member: &str) -> [String; 2] {
     let start = hook_command(brg, "session", state, member);
     [
@@ -309,7 +309,7 @@ pub const RESUME_NOTE: &str = "brg restarted you after your session ended, and y
 
 /// What a sandboxed member's plugin commands may write: each granted plugin's
 /// own state directory and its own temp directory. Codex also makes the
-/// session's cwd writable; a start puts a `locked` Codex member without
+/// session's cwd writable; a start puts a restricted Codex member without
 /// `worktree: true` in its temp directory. Never the directories
 /// holding gate rules, shims, launch files or plugin secrets.
 pub fn writable_roots(state: &StateDir, member: &str, granted: &[Granted]) -> Vec<PathBuf> {
@@ -402,7 +402,7 @@ pub fn member_launch(
             {
                 argv.push("--strict-mcp-config".into());
             }
-            // `vendor` posture: the team's messages and notes, as
+            // Unrestricted: the team's messages and notes, as
             // added folders, unless the role's own args add folders.
             if posture == Posture::Vendor
                 && !extra_args

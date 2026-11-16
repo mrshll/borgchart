@@ -75,7 +75,7 @@ impl<'w> Team<'w> {
                 m = s.member,
                 v = s.who.as_str(),
                 posture = if s.locked {
-                    "    posture: locked\n"
+                    "    restricted_access: true\n"
                 } else {
                     ""
                 },

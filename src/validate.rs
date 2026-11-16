@@ -9,7 +9,7 @@ use serde::Serialize;
 use crate::config::{self, Auth, Config};
 use crate::diag::Report;
 use crate::paths::{find_on_path, is_executable, resolve_within};
-use crate::team::{self, Grant, Plugin, PluginLocation, Posture, Team, Vendor};
+use crate::team::{self, Grant, Plugin, PluginLocation, Posture, RESTRICTED_KEY, Team, Vendor};
 
 #[derive(Debug, Serialize)]
 pub struct Validated {
@@ -166,7 +166,7 @@ fn cross_check(v: &Validated, report: &mut Report) {
             report.warning(
                 config_file,
                 format!(
-                    "member `{id}`: `auto_trust: true` doesn't trust the folder of a `locked` Codex member, which can write that folder; a trusted folder's `.codex/` loads outside its gate. Its trust screen is left for you"
+                    "member `{id}`: `auto_trust: true` doesn't trust the folder of a restricted Codex member, which can write that folder; a trusted folder's `.codex/` loads outside its gate. Its trust screen is left for you"
                 ),
             );
         }
@@ -176,7 +176,9 @@ fn cross_check(v: &Validated, report: &mut Report) {
         if role.interactive && v.posture(id) == Posture::Locked {
             report.error(
                 team_file,
-                format!("member `{id}`: `interactive` cannot be used with `locked`"),
+                format!(
+                    "member `{id}`: `interactive` cannot be used with `{RESTRICTED_KEY}: true`"
+                ),
             );
         }
     }
@@ -201,26 +203,19 @@ fn cross_check(v: &Validated, report: &mut Report) {
         let posture = v.posture(id);
         let at = |msg: &str| format!("role `{id}`: {msg}");
 
-        if member.untrusted_input && posture != Posture::Locked && !member.accept_risk {
-            report.error(
-                team_file,
-                at("`untrusted_input` members must be `locked`, or say `accept_risk: true`"),
-            );
-        }
-
         if posture == Posture::Locked
             && !member.connectors.is_empty()
             && !member.connectors.with_tools
         {
             report.error(
                 team_file,
-                at("`locked` members must list connector tools: `connectors: {<server>: [<tool>, …]}`"),
+                at("restricted members must list connector tools: `connectors: {<server>: [<tool>, …]}`"),
             );
         }
         if posture == Posture::Vendor && member.connectors.with_tools {
             report.warning(
                 team_file,
-                at("connector tool lists only apply in `locked` posture; in `vendor` posture every tool of the server is available"),
+                at("connector tool lists only apply to restricted members; an unrestricted member can use every tool of the server"),
             );
         }
 
@@ -255,7 +250,7 @@ fn cross_check(v: &Validated, report: &mut Report) {
                     report.warning(
                         team_file,
                         at(&format!(
-                            "`locked` with an all-actions grant of `{plugin_name}`, which has no action lines, allows every `{}` subcommand",
+                            "restricted access with an all-actions grant of `{plugin_name}`, which has no action lines, allows every `{}` subcommand",
                             plugin.command.as_deref().unwrap_or(plugin_name)
                         )),
                     );
@@ -267,7 +262,7 @@ fn cross_check(v: &Validated, report: &mut Report) {
             if targets.contains(id.as_str()) {
                 report.warning(
                     team_file,
-                    at("receives work from a plugin process but runs in `vendor` posture; text it reads can steer it"),
+                    at("receives work from a plugin process but is unrestricted; text it reads can steer it"),
                 );
             }
             let parent_of_target = v
@@ -278,7 +273,7 @@ fn cross_check(v: &Validated, report: &mut Report) {
             if parent_of_target {
                 report.warning(
                     team_file,
-                    at("is the parent of a member that receives plugin work, but runs in `vendor` posture"),
+                    at("is the parent of a member that receives plugin work, but is unrestricted"),
                 );
             }
             for plugin_name in member.grants.keys() {
@@ -290,7 +285,7 @@ fn cross_check(v: &Validated, report: &mut Report) {
                     report.warning(
                         team_file,
                         at(&format!(
-                            "is granted `{plugin_name}`, which runs a background process, but runs in `vendor` posture"
+                            "is granted `{plugin_name}`, which runs a background process, but is unrestricted"
                         )),
                     );
                 }
