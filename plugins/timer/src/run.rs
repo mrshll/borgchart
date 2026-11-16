@@ -17,7 +17,7 @@ use std::{
 
 pub fn notice(batch: &[String]) -> String {
     format!(
-        "Checks: {} signal(s). Look with brg-checks last <name>.\n{}",
+        "Timer: {} signal(s). Look with brg-timer last <name>.\n{}",
         batch.len(),
         batch.join("\n")
     )
@@ -31,7 +31,7 @@ fn deliver(state: &mut Snapshot) -> String {
         return "set BORGCHART_DELIVER_TO to the intake member's ID".into();
     }
     let batch = &state.pending[..state.pending.len().min(6)];
-    match plugin::send("checks", &target, &notice(batch), None) {
+    match plugin::send("timer", &target, &notice(batch), None) {
         Ok(_) => {
             state.pending.drain(..batch.len());
             String::new()

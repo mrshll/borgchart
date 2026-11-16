@@ -1,10 +1,10 @@
-# Checks timer — `brg-checks`
+# Timer — `brg-timer`
 
 Run commands on an interval and wake a member when their output changes, fails,
 or recovers. Notices contain check names and statuses; output stays in local
 state for `last` to read as untrusted evidence. This is a Rust workspace crate;
-`make install` installs it on PATH alongside `brg-slack`. To install just checks
-from a checkout, use `cargo install --path plugins/checks`.
+`make install` installs it on PATH alongside `brg-slack`. To install just timer
+from a checkout, use `cargo install --path plugins/timer`.
 
 The process runs in the team's template folder. `CHECKS_FILE` defaults to
 `checks.yaml`, relative to that working directory:
@@ -37,14 +37,14 @@ and working directory. Configure the plugin without `path:`:
 
 ```yaml
 plugins:
-  checks:
-    process: [brg-checks, run]
+  timer:
+    process: [brg-timer, run]
     delivers_to: triager
     env:
       CHECKS_FILE: checks.yaml
     actions:
-      last: brg-checks last <name>
-      promote: brg-checks promote <name> <reason>
+      last: brg-timer last <name>
+      promote: brg-timer promote <name> <reason>
 ```
 
 The process waits 30 seconds between ticks. All checks run on the first
@@ -78,13 +78,13 @@ reload a changed checks file.
 
 Actions run in the calling member's folder and use the same state directory:
 
-- `brg-checks last <name>` reads committed evidence without waiting for a running
+- `brg-timer last <name>` reads committed evidence without waiting for a running
   check's lock. It prints an untrusted-data header, command, last run, status/exit,
   stderr, current output and previous distinct successful output. While failing,
   the previous successful evidence is the last good output. Output lines start
   with `| ` and control characters are escaped. Unknown names exit 2 and list
   known checks.
-- `brg-checks promote <name> <reason>` sends the check ID and a reason
+- `brg-timer promote <name> <reason>` sends the check ID and a reason
   to `BORGCHART_PARENT` with `--from BORGCHART_MEMBER`, so brg checks the parent
   route. Reasons are fixed: `outage`, `alert`, `question`, `other`. Success
   prints brg's output, including its ID, and exits 0. For restricted Codex members,
@@ -96,7 +96,7 @@ Actions run in the calling member's folder and use the same state directory:
   retrying (see [bus delivery](../../docs/bus.md#attention)). Other failures
   print brg's error and exit 1; inspect any committed ID before retrying.
 
-`brg-checks run --once` runs one tick, useful for testing. It exits nonzero for
+`brg-timer run --once` runs one tick, useful for testing. It exits nonzero for
 invalid startup configuration; check or delivery failures appear in health.
 `CHECKS_TIMEOUT_SECONDS` overrides the command timeout for tests only; production
 uses the fixed 60-second default. There are no cron triggers. A check whose
@@ -113,15 +113,15 @@ lead, and puts `[]` in `checks.yaml`. It needs no `delivers_to`:
 
 ```yaml
 plugins:
-  checks:
-    process: [brg-checks, run]
+  timer:
+    process: [brg-timer, run]
     actions:
-      alarm-set: brg-checks alarm set <when> <note>
-      alarm-show: brg-checks alarm show
-      alarm-clear: brg-checks alarm clear
+      alarm-set: brg-timer alarm set <when> <note>
+      alarm-show: brg-timer alarm show
+      alarm-clear: brg-timer alarm clear
 ```
 
-`brg-checks alarm set <when> <note>` replaces your alarm. Use 1–10080 whole
+`brg-timer alarm set <when> <note>` replaces your alarm. Use 1–10080 whole
 minutes or a future `YYYY-MM-DDTHH:MMZ` within 7 days, and one non-empty line
 of at most 200 bytes without control characters. `alarm show` shows it;
 `alarm clear` removes it. The shim supplies your verified team/member identity.
@@ -138,14 +138,14 @@ alarm, including when brg reports `stored` or `uncertain`. A failed send keeps
 it for the next tick and marks health not ok. Overdue alarms fire on restart.
 If delivery keeps failing, use `alarm clear` to remove your own alarm. For a
 member that no longer exists, the owner removes `alarms/<member>.json` from
-the plugin's state directory, `<team state>/plugins/checks/`.
+the plugin's state directory, `<team state>/plugins/timer/`.
 
-Build with `tools/cargo-slot cargo build -p brg-checks --locked`.
+Build with `tools/cargo-slot cargo build -p brg-timer --locked`.
 For a local demonstration without a real bus, from the checkout root run these
 single-line commands in the same shell (the sample uses a local file as input):
 
 ```sh
-demo=$(mktemp -d); printf 'first\n' > "$demo/value"; CHECKS_FILE="$PWD/plugins/checks/tests/sample.yaml" BORGCHART_BIN="$PWD/plugins/checks/tests/fake-brg" BORGCHART_STATE_DIR="$demo/state" BORGCHART_DELIVER_TO=triager-test CHECKS_SAMPLE_FILE="$demo/value" CHECKS_SAMPLE_NOTICE="$demo/notice" target/debug/brg-checks run --once
-printf 'second\n' > "$demo/value"; CHECKS_FILE="$PWD/plugins/checks/tests/sample.yaml" BORGCHART_BIN="$PWD/plugins/checks/tests/fake-brg" BORGCHART_STATE_DIR="$demo/state" BORGCHART_DELIVER_TO=triager-test CHECKS_SAMPLE_FILE="$demo/value" CHECKS_SAMPLE_NOTICE="$demo/notice" target/debug/brg-checks run --once && cat "$demo/notice"
-BORGCHART_STATE_DIR="$demo/state" target/debug/brg-checks last sample
+demo=$(mktemp -d); printf 'first\n' > "$demo/value"; CHECKS_FILE="$PWD/plugins/timer/tests/sample.yaml" BORGCHART_BIN="$PWD/plugins/timer/tests/fake-brg" BORGCHART_STATE_DIR="$demo/state" BORGCHART_DELIVER_TO=triager-test CHECKS_SAMPLE_FILE="$demo/value" CHECKS_SAMPLE_NOTICE="$demo/notice" target/debug/brg-timer run --once
+printf 'second\n' > "$demo/value"; CHECKS_FILE="$PWD/plugins/timer/tests/sample.yaml" BORGCHART_BIN="$PWD/plugins/timer/tests/fake-brg" BORGCHART_STATE_DIR="$demo/state" BORGCHART_DELIVER_TO=triager-test CHECKS_SAMPLE_FILE="$demo/value" CHECKS_SAMPLE_NOTICE="$demo/notice" target/debug/brg-timer run --once && cat "$demo/notice"
+BORGCHART_STATE_DIR="$demo/state" target/debug/brg-timer last sample
 ```

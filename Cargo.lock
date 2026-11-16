@@ -190,7 +190,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "brg-checks"
+name = "brg-timer"
 version = "0.0.0"
 dependencies = [
  "borgchart",
