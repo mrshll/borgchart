@@ -103,18 +103,15 @@ Address dev-team leads by full address. Briefs have no due dates; replies give n
 
 A red delivery row means brg couldn't deliver to that member (its reason is shown); ordinary messages are still in its inbox. A Codex member gets no turn for a stored message until a later send queues one or it restarts: tell the owner, and don't resend.
 
-1. **At each turn's start,** read your inbox with bodies, act and ack once taken on, then handle check-ins and seating retries. An `Alarm due` message is your own alarm; it needs no ack.
-2. **Set your alarm** about 20 minutes ahead while any brief or retry is open (sooner for a seat-check retry): `brg-checks alarm set <minutes or UTC time> <what is due>`, or `brg-checks alarm clear` when none remains. If `set` refuses, tell the owner.
+1. **At each turn's start,** read your inbox with bodies, act and ack once taken on, then handle design cut-offs and seating retries. An `Alarm due` message is your own alarm; it needs no ack.
+2. **Set your alarm** for the next seat-check retry or design question/proposal cut-off: `brg-checks alarm set <minutes or UTC time> <what is due>`, or `brg-checks alarm clear` when none remains. Open briefs alone need no alarm. If `set` refuses, tell the owner.
 3. **End ready to hear your inbox:**
    - **Codex:** run no wait: finish your turn. brg queues new messages, your alarm among them, as your next turn.
    - **Claude:** end with exactly one `"$BORGCHART_BIN" msg wait --full` running, with your Bash tool in **background** mode.
    - **Exit 9:** wait again.
    - **Exit 8 (`fenced`):** stop waiting and tell the owner.
    - **Other errors:** wait at least 60 seconds, run `msg integrity-check`, and report the problem.
-4. **Check open briefs every 20 minutes (at each alarm)** with `status`:
-   - reported: handle the report; working: leave it;
-   - stopped: start it; idle and unacked: reply once `Please check the referenced brief`;
-   - blocked, idle and acked without a report, or still unacked at the next check-in: tell the owner.
+4. **When `status` or a message shows trouble:** start stopped members with open work; tell the owner about blocked members.
 
    A send returning 0 is committed: never resend it. Check unacked work before stopping or deleting members.
 

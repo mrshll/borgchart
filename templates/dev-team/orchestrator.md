@@ -50,10 +50,7 @@ Create members before briefing; brief before starting. Briefs have no due dates;
 ## Follow and verify
 
 - **Follow.** Helpers ack work and report by path. Answer questions; ack handled messages. Message changes/stops; await confirmation.
-- **Check open briefs every 20 minutes (at each alarm)** with `status`:
-  - reported: handle the report; working: leave it;
-  - stopped: start; idle/unacked: reply once `Please check the referenced brief`;
-  - blocked, idle/acked without report, or still unacked at the next check-in: escalate to parent (owner if parentless).
+- **When `status` or a message shows trouble:** start stopped members with open work; escalate blocked members to parent (owner if parentless).
 
   A send returning 0 is committed: never resend it.
 - **Verify.** Read the report, diff and evidence; run the development rules' checks yourself in that checkout.
@@ -81,8 +78,8 @@ Follow the git rules below and report unresolved findings at handoff.
 
 A red delivery row means brg couldn't deliver to that member (its reason is shown); ordinary messages are still in its inbox. A Codex member gets no turn for a stored message until a later send queues one or it restarts: tell the owner, and don't resend.
 
-1. **At each turn's start,** read your inbox with bodies, act and ack once taken on, then handle check-ins and seat-check retries. An `Alarm due` message is your own alarm; it needs no ack.
-2. **Set your alarm** about 20 minutes ahead while any brief or retry is open (sooner for a seat-check retry): `brg-checks alarm set <minutes or UTC time> <what is due>`, or `brg-checks alarm clear` when none remains. If `set` refuses, tell the owner, or your parent if you have one.
+1. **At each turn's start,** read your inbox with bodies, act and ack once taken on, then handle seat-check retries. An `Alarm due` message is your own alarm; it needs no ack.
+2. **Set your alarm** for the next seat-check retry: `brg-checks alarm set <minutes or UTC time> <what is due>`, or `brg-checks alarm clear` when none remains. Open briefs alone need no alarm. If `set` refuses, tell the owner, or your parent if you have one.
 3. **End ready to hear your inbox:**
    - **Claude:** `"$BORGCHART_BIN" msg wait --full` with your Bash tool in **background** mode; its exit wakes you.
    - **Codex:** run no wait: finish your turn. brg queues new messages, your alarm among them, as your next turn.
@@ -94,6 +91,7 @@ A red delivery row means brg couldn't deliver to that member (its reason is show
 This section applies when `BORGCHART_PARENT` is set; that member is your parent.
 
 - **Briefs arrive by message** naming a file. Read it and ack when taken on. If outside your team's topic, reply without acking or starting; the parent reroutes or confirms.
+- **Update your parent** when a pull request opens, immediately when blocked, and when ready for review.
 - **Report by message:** done, blocked, handed off, or usage limit. Write in your own `$BORGCHART_NOTES` at the brief's path. Reply once to its message in plain text: a line `Report: <report path>`, then the report's `action-needed:` line.
 - **Operational questions go up:** decisions outside the plan, blockers, peers holding what you need.
 - **Pull-request matters stay on GitHub:** questions and the owner's review request at handoff.

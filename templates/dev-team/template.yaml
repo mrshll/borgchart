@@ -18,7 +18,7 @@ roles:
     plugins: {seat: [route], checks: [alarm-set, alarm-show, alarm-clear]}
     prompt: orchestrator.md
     interactive: true
-    vendor: claude      # lead ends turns with an alarm and, on Claude, a background msg wait
+    vendor: claude      # Claude leads end turns with a background msg wait
     start: true
   implementer:
     prompt: implementer.md
