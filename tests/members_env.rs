@@ -106,7 +106,6 @@ fn vendor_codex_has_full_access_and_claude_gets_added_folders() {
 #[test]
 fn locked_members_keep_their_launch() {
     let env = Env::new();
-    // No bus: a team with one can't have `locked` members.
     env.write(
         "templates/oncall/template.yaml",
         &TEAM.replace("bus: {}\n", "").replace(

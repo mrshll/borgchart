@@ -1627,7 +1627,7 @@ fn a_stale_gate_waiter_leaves_a_replacement_alone() {
     let second = second.wait_with_output().unwrap();
     assert_eq!(
         outcomes(&stdout(&second), &env.m("lead")),
-        ["stopped: its restricted gate did not report in, so it would be unprotected"],
+        ["stopped: its restricted-access gate did not report in, so it would be unprotected"],
         "{}",
         both(&second)
     );

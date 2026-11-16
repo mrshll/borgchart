@@ -786,7 +786,7 @@ fn start_members(
         }
 
         let auto_trust = v.config.auto_trust;
-        // Codex's sandbox can write its cwd, so a `locked` Codex member
+        // Codex's sandbox can write its cwd, so a restricted Codex member
         // without its own worktree starts in its temp dir, not the folder.
         let cwd =
             if !member.worktree && posture == Posture::Locked && member.vendor == Vendor::Codex {
@@ -796,14 +796,14 @@ fn start_members(
             };
         let in_folder = cwd != state.member_tmp(id);
         // Claude: brg answers its trust dialog for the member's folder. By
-        // default only for `locked` members, which ignore project settings.
+        // default only for restricted members, which ignore project settings.
         let trust_dir = (in_folder
             && member.vendor == Vendor::Claude
             && auto_trust.unwrap_or(posture == Posture::Locked))
         .then(|| cwd.clone());
         // Codex: trust passed as session config, only with `auto_trust: true`
         // and only without restricted access. A trusted folder's `.codex/` loads, and a
-        // `locked` Codex member can write its folder, so it could configure its
+        // restricted Codex member can write its folder, so it could configure its
         // own next start outside its gate. The role's own `projects` setting
         // wins.
         let codex_trust = (in_folder
@@ -966,7 +966,7 @@ fn start_members(
             set(
                 &mut outcomes,
                 id,
-                "stopped: brg couldn't read its pane, so its restricted gate couldn't be checked"
+                "stopped: brg couldn't read its pane, so its restricted-access gate couldn't be checked"
                     .to_string(),
             );
             failed = true;
@@ -1266,7 +1266,7 @@ fn start_members(
                     set(
                         &mut outcomes,
                         id,
-                        "stopped: it was at a prompt before its restricted gate reported in"
+                        "stopped: it was at a prompt before its restricted-access gate reported in"
                             .to_string(),
                     );
                     failed = true;
@@ -1303,7 +1303,7 @@ fn start_members(
                     set(
                         &mut outcomes,
                         id,
-                        "stopped: its restricted gate did not report in, so it would be unprotected"
+                        "stopped: its restricted-access gate did not report in, so it would be unprotected"
                             .to_string(),
                     );
                     failed = true;

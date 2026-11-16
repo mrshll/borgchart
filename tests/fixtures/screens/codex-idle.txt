@@ -29,10 +29,10 @@
   └ slackbot ok: read 77
 
 • Blocked by hook
-  └ borgchart restricted: not a granted command
+  └ borgchart locked: not a granted command
 
 • Blocked by hook
-  └ borgchart restricted: not a granted command
+  └ borgchart locked: not a granted command
 
 • DONE. First command ran. The second command and MCP call were blocked by the borgchart PreToolUse hook.
 

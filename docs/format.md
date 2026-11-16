@@ -49,7 +49,7 @@ roles:
     parent: lead                # optional; another role
     start: true                 # optional; false = its member is made with `brg create <team>/triager`
     max: 1                      # optional; limit on kept members, running or stopped (default 1)
-    restricted_access: true     # only its granted plugin commands may run
+    restricted_access: true     # optional: true = only granted plugin commands and listed connector tools may run
     worktree: false             # optional: true = each member gets its own git worktree
     remote_control: false       # optional: start Claude Remote Control, named by its full address
     args: []                    # optional: extra vendor launch arguments

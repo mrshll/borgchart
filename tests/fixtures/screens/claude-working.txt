@@ -6,16 +6,16 @@
 
 ● Bash(slackbot read 1; touch /tmp/example/side/i1)
   ⎿  Error: PreToolUse:Bash hook error: [uv run --no-project python
-     /tmp/example/gate.py]: borgchart restricted: not a granted command
+     /tmp/example/gate.py]: borgchart locked: not a granted command
 
 ● Bash(touch /tmp/example/side/i2)
   ⎿  Error: PreToolUse:Bash hook error: [uv run --no-project python
-     /tmp/example/gate.py]: borgchart restricted: not a granted command
+     /tmp/example/gate.py]: borgchart locked: not a granted command
 
 ● The first command ran, but the two touch commands were blocked by a PreToolUse hook.
 
   - slackbot read 42: ran and returned slackbot ok: read 42.
-  - slackbot read 1; touch .../side/i1: the slackbot read 1 part was not run, because the hook rejected the whole command. The hook error was borgchart restricted:
+  - slackbot read 1; touch .../side/i1: the slackbot read 1 part was not run, because the hook rejected the whole command. The hook error was borgchart locked:
     not a granted command from .../scratchpad/spike/gate.py.
   - touch .../side/i2: blocked by the same hook with the same error.
 
