@@ -45,6 +45,9 @@ struct Agent {
     lines: Vec<String>,
     input: String,
     trust_choice: usize,
+    /// Arrow keys the trust screen still drops, as Claude drops keys
+    /// pressed just after it draws that screen.
+    trust_dropped_keys: usize,
     start_hooks: Vec<String>,
 }
 
@@ -595,6 +598,14 @@ fn main() {
         lines: Vec::new(),
         input: String::new(),
         trust_choice: if flag("trust-yes") { 1 } else { 0 },
+        // The file holds how many keys to drop; empty drops one.
+        trust_dropped_keys: fs::read_to_string(
+            PathBuf::from(&home)
+                .join("fake-agent")
+                .join("trust-drops-keys"),
+        )
+        .map(|n| n.trim().parse().unwrap_or(1))
+        .unwrap_or(0),
         start_hooks,
     };
     agent.draw();
@@ -666,7 +677,9 @@ fn main() {
             if pending.starts_with(b"\x1b[B") || pending.starts_with(b"\x1b[A") {
                 let down = pending[2] == b'B';
                 pending.drain(..3);
-                if agent.mode == Mode::Trust {
+                if agent.mode == Mode::Trust && agent.trust_dropped_keys > 0 {
+                    agent.trust_dropped_keys -= 1;
+                } else if agent.mode == Mode::Trust {
                     agent.trust_choice = if down { 1 } else { 0 };
                     agent.draw();
                 }
