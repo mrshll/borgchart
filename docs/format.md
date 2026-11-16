@@ -152,7 +152,8 @@ A plugin is a plain script or program, in any language, that members run themsel
   - `path: shared:<name>`: `<plugins_dir>/<name>`, where `plugins_dir` is set in brg's configuration. Where it resolves is frozen while a team runs.
   - No `path`: the commands are whatever those names resolve to on `PATH` when the team starts. The plugin process runs in the template folder; actions run in the member's folder.
 - **`process`:** a long-running program, e.g. a watcher.
-  - A full `brg start` (and `create`) starts it and `brg stop` stops it; it is not restarted.
+  - A full `brg start <team>` (and `create`) starts it and `brg stop` stops it; an already running process is not restarted.
+  - On a running team, `brg start <team>` registers newly declared plugins and starts their processes, leaving running members alone; members gain a new plugin's actions at their next start. Changed or removed plugins, and changed values, still need a full stop and start.
   - It gets a small base environment plus the names in `env`, and `BORGCHART_DELIVER_TO` when `delivers_to` is set.
   - It may write `health.json` (`{"ok": true, "at": "<UTC time>", "detail": "…"}`) in its state directory, which `brg status` shows.
 - **`actions`:** named command lines.

@@ -89,12 +89,14 @@ fn setup(dir: &Path, text: &str) -> PathBuf {
     fs::write(&file, text).unwrap();
     fs::create_dir_all(dir.join("home")).unwrap();
     fs::create_dir_all(dir.join("pinned/bin")).unwrap();
-    let plugin = Path::new(env!("CARGO_BIN_EXE_brg")).with_file_name("brg-seat");
-    assert!(
-        plugin.is_file(),
-        "build workspace binaries before department tests"
-    );
-    std::os::unix::fs::symlink(&plugin, dir.join("pinned/bin/brg-seat")).unwrap();
+    for name in ["brg-seat", "brg-checks"] {
+        let plugin = Path::new(env!("CARGO_BIN_EXE_brg")).with_file_name(name);
+        assert!(
+            plugin.is_file(),
+            "build workspace binaries before department tests"
+        );
+        std::os::unix::fs::symlink(&plugin, dir.join("pinned/bin").join(name)).unwrap();
+    }
     file
 }
 
@@ -147,7 +149,7 @@ fn validate(dir: &Path, config: &Path, team: &str) -> Output {
 }
 
 /// What a reader copies from the guide works as written: the teams
-/// validate by its catalog paths, with no errors and no warnings.
+/// validate by its catalog paths, with only the alarm process warnings.
 #[test]
 fn the_readme_configuration_validates_cleanly() {
     let blocks = readme_configs();
@@ -170,16 +172,19 @@ fn the_readme_configuration_validates_cleanly() {
                 serde_json::json!([]),
                 "block {i} {team}: {report}"
             );
-            assert_eq!(
-                report["warnings"],
-                serde_json::json!([]),
-                "block {i} {team}: {report}"
+            alarm_process_warnings(
+                &report,
+                match team.as_str() {
+                    "engineering" => 2,
+                    "dev-team" => 1,
+                    _ => 0,
+                },
             );
         }
     }
 }
 /// The department validates from its folder, with the guide's
-/// configuration, cleanly.
+/// configuration, with only its own and the child team's alarm process warnings.
 #[test]
 fn the_parent_template_validates_cleanly() {
     let dir = tempfile::tempdir().unwrap();
@@ -189,7 +194,24 @@ fn the_parent_template_validates_cleanly() {
         .unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&out.stderr)));
     assert!(out.status.success(), "{report}");
     assert_eq!(report["errors"], serde_json::json!([]), "{report}");
-    assert_eq!(report["warnings"], serde_json::json!([]), "{report}");
+    alarm_process_warnings(&report, 2);
+}
+
+fn alarm_process_warnings(report: &serde_json::Value, count: usize) {
+    let warnings: Vec<_> = report["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["message"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        warnings,
+        vec![
+            "role `lead`: is granted `checks`, which runs a background process, but is unrestricted";
+            count
+        ],
+        "{report}"
+    );
 }
 
 /// Each team's member files, by the `prompt:` lines of its `template.yaml`.
@@ -1076,8 +1098,7 @@ mod round {
         );
 
         // The file exchange: each designer writes its questions and its
-        // proposal under the names designer.md gives, and the lead's
-        // documented wait finds them.
+        // proposal under the names designer.md gives, then notifies the lead.
         let designer_rule =
             fs::read_to_string(team_dir("dev-design-team").join("designer.md")).unwrap();
         for name in ["questions", "proposal"] {
@@ -1086,44 +1107,43 @@ mod round {
                 "designer.md names its {name} file by role"
             );
         }
+        let notify = documented(
+            &designer_rule,
+            "\"$BORGCHART_BIN\" msg send \"$BORGCHART_PARENT\"",
+        )
+        .replace("<file name>", "$f-$BORGCHART_ROLE.md");
         for designer in ["designer-claude", "designer-codex"] {
             let member = team.member_in(&panel, designer);
             let script = team.path(&format!("s/{designer}.sh"));
             fs::write(
                 &script,
-                "for f in questions proposal; do echo none > \"$BORGCHART_NOTES/.tmp-$f\"; mv \"$BORGCHART_NOTES/.tmp-$f\" \"$BORGCHART_NOTES/$f-$BORGCHART_ROLE.md\"; done\n",
+                format!("for f in questions proposal; do echo none > \"$BORGCHART_NOTES/.tmp-$f\"; mv \"$BORGCHART_NOTES/.tmp-$f\" \"$BORGCHART_NOTES/$f-$BORGCHART_ROLE.md\"; {notify}; done\n"),
             )
             .unwrap();
             team.run_tool(&member, &script);
         }
-        let wait = rule
-            .lines()
-            .find(|l| l.contains("until {") && l.contains("questions-designer-claude.md"))
-            .unwrap()
-            .trim()
-            .trim_matches('`')
-            .replace("<deadline seconds>", "20")
-            .replace("<dir>", &notes.display().to_string());
-        // Once the designers have written (four files), the documented
-        // wait must end at once: its first check finds them.
-        team.wait_for("the designers' files", || {
-            fs::read_dir(&notes).map(|d| d.count()).unwrap_or(0) >= 4
+        team.wait_for("the designers' notifications", || {
+            let out = team.brg(&["msg", "list", "--team", &inst, "--member", &lead, "--json"]);
+            serde_json::from_slice::<serde_json::Value>(&out.stdout)
+                .ok()
+                .and_then(|v| v["records"].as_array().map(Vec::len))
+                == Some(4)
         });
-        for (name, wait) in [
-            ("questions", wait.clone()),
-            ("proposal", wait.replace("questions-", "proposal-")),
-        ] {
-            let started = std::time::Instant::now();
-            let out = Command::new("sh").args(["-c", &wait]).output().unwrap();
-            let listed = String::from_utf8_lossy(&out.stdout).to_string();
-            assert!(
-                started.elapsed() < Duration::from_secs(20),
-                "{name}: waited out: {listed}"
-            );
+        let (inbox, code) = run("panel-files", "\"$BORGCHART_BIN\" msg list --full --json");
+        assert_eq!(code, 0, "{inbox}");
+        let inbox: serde_json::Value = serde_json::from_str(&inbox).unwrap();
+        let records = inbox["records"].as_array().unwrap();
+        assert_eq!(records.len(), 4);
+        for name in ["questions", "proposal"] {
             for designer in ["designer-claude", "designer-codex"] {
-                assert!(
-                    listed.contains(&format!("{name}-{designer}.md")),
-                    "{name}: {listed}"
+                let file = format!("{name}-{designer}.md");
+                assert!(notes.join(&file).is_file());
+                assert_eq!(
+                    records
+                        .iter()
+                        .filter(|r| r["body"] == format!("{file} written"))
+                        .count(),
+                    1
                 );
             }
         }

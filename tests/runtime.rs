@@ -471,6 +471,99 @@ fn up_twice_is_harmless() {
 }
 
 #[test]
+fn full_start_registers_new_plugins_without_restarting_members_or_resolving_known_values() {
+    let env = Env::new();
+    env.up();
+    let inst = env.instance().unwrap();
+    let incarnations = || {
+        ["alpha", "beta"].map(|role| {
+            fs::read(env.path(&format!(
+                "state/{inst}/members/{}/incarnation.json",
+                env.m(role)
+            )))
+            .unwrap()
+        })
+    };
+    let before = incarnations();
+    let template = fs::read_to_string(env.path("team/template.yaml")).unwrap();
+    env.write(
+        "team/template.yaml",
+        &template.replace(
+            "roles:\n",
+            "  clock:\n    path: plugins/clock\n    process: [./watch.sh]\n    env: {CLOCK_TOKEN: {from: 'fake://clock'}}\nroles:\n",
+        ),
+    );
+    env.script(
+        "team/plugins/clock/watch.sh",
+        "#!/bin/sh\ntest \"$CLOCK_TOKEN\" = fixture-token || exit 1\nprintf '{\"ok\":true,\"at\":\"now\"}' > \"$BORGCHART_STATE_DIR/health.json\"\nexec sleep 60\n",
+    );
+    env.script(
+        "bin/resolver",
+        "#!/bin/sh\nprintf 'run\\n' >> \"$HOME/resolver-runs\"\nshift\nexport BORGCHART_SECRET_0=fixture-token\nexec \"$@\"\n",
+    );
+    env.config("secrets: {resolver: [resolver, '{file}']}\n");
+    let out = env
+        .brg_cmd(&["start"])
+        .env("BORGCHART_MEMBER", env.m("alpha"))
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "{out:?}");
+    assert!(!env.path("home/resolver-runs").exists());
+    let out = env
+        .brg_cmd(&["start"])
+        .env_remove("PAGER_TOKEN")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    env.wait_for("new plugin process", |e| {
+        e.status()
+            .iter()
+            .any(|r| r["name"] == "clock" && r["state"] == "alive" && r["detail"] == "ok")
+    });
+    assert_eq!(incarnations(), before);
+    assert!(env.brg(&["start"]).status.success());
+    assert_eq!(
+        fs::read_to_string(env.path("home/resolver-runs")).unwrap(),
+        "run\n"
+    );
+    let settings = env.path(&format!("state/{inst}/secrets/clock.json"));
+    assert!(settings.is_file());
+    assert!(env.brg(&["stop"]).status.success());
+    assert!(!settings.exists());
+}
+
+#[test]
+fn stop_during_plugin_resolution_refuses_a_restart_with_incomplete_values() {
+    let env = Env::new();
+    env.up();
+    let template = fs::read_to_string(env.path("team/template.yaml")).unwrap();
+    env.write(
+        "team/template.yaml",
+        &template.replace(
+            "roles:\n",
+            "  clock:\n    path: plugins/clock\n    process: [./watch.sh]\n    env: {CLOCK_TOKEN: {from: 'fake://clock'}}\nroles:\n",
+        ),
+    );
+    env.script("team/plugins/clock/watch.sh", "#!/bin/sh\nexec sleep 60\n");
+    env.script(
+        "bin/resolver",
+        "#!/bin/sh\ntouch \"$HOME/resolving\"\nwhile [ ! -e \"$HOME/go\" ]; do sleep 0.05; done\nshift\nexport BORGCHART_SECRET_0=fixture-token\nexec \"$@\"\n",
+    );
+    env.config("secrets: {resolver: [resolver, '{file}']}\n");
+    let start = env
+        .brg_cmd(&["start"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    env.wait_for("resolver running", |e| e.path("home/resolving").exists());
+    assert!(env.brg(&["stop"]).status.success());
+    fs::write(env.path("home/go"), "").unwrap();
+    let out = start.wait_with_output().unwrap();
+    assert!(!out.status.success(), "{out:?}");
+}
+
+#[test]
 fn crash_shows_as_exited() {
     let env = Env::new();
     env.up();
@@ -2011,6 +2104,51 @@ fn status_of(env: &Env, name: &str) -> serde_json::Value {
         .into_iter()
         .find(|r| r["role"] == name)
         .unwrap()
+}
+
+#[test]
+fn status_distinguishes_alarm_dates_and_flags_two_minutes_overdue() {
+    let env = Env::new();
+    assert!(env.brg(&["start"]).status.success());
+    let path = format!(
+        "state/{}/plugins/pager/alarms/{}.json",
+        env.instance().unwrap(),
+        env.m("alpha")
+    );
+    let now = std::time::SystemTime::now();
+    let today = borgchart::bus::time::format_utc(now);
+    for (due, overdue) in [
+        (now + Duration::from_secs(600), false),
+        (now - Duration::from_secs(60), false),
+        (now - Duration::from_secs(180), true),
+        (now + Duration::from_secs(3 * 86400), false),
+        (now - Duration::from_secs(3 * 86400), true),
+    ] {
+        let due = borgchart::bus::time::format_utc(due);
+        env.write(&path, &serde_json::json!({"due":due}).to_string());
+        let detail = status_of(&env, "alpha")["detail"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let prefix = if overdue {
+            "alarm overdue since"
+        } else {
+            "alarm"
+        };
+        let when = if due[..10] == today[..10] {
+            due[11..16].to_owned()
+        } else {
+            format!("{} {}", &due[5..10], &due[11..16])
+        };
+        assert!(detail.contains(&format!("{prefix} {when}Z")), "{detail}");
+    }
+    env.write(&path, "unreadable alarm");
+    assert!(
+        !status_of(&env, "alpha")["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("alarm")
+    );
 }
 
 #[test]

@@ -33,6 +33,11 @@ pub fn helper() {
 
 /// Collect values before taking the registry lock or registering a team.
 pub fn values(v: &Validated, id: &str) -> Result<PluginValues, String> {
+    values_for(v, id, &v.team.plugins.keys().cloned().collect::<Vec<_>>())
+}
+
+/// Collect values only for the named plugins, leaving running plugins alone.
+pub fn values_for(v: &Validated, id: &str, names: &[String]) -> Result<PluginValues, String> {
     for entry in std::fs::read_dir(state::state_home())
         .into_iter()
         .flatten()
@@ -53,10 +58,16 @@ pub fn values(v: &Validated, id: &str) -> Result<PluginValues, String> {
         .team
         .plugins
         .iter()
+        .filter(|(name, _)| names.contains(name))
         .flat_map(|(p, plugin)| plugin.sources.iter().map(move |(n, r)| (p, n, r)))
         .collect();
     let mut all = BTreeMap::new();
-    for (name, plugin) in &v.team.plugins {
+    for (name, plugin) in v
+        .team
+        .plugins
+        .iter()
+        .filter(|(name, _)| names.contains(name))
+    {
         let mut values = plugin.values.clone();
         for n in plugin
             .secrets()
