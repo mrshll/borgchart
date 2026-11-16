@@ -136,7 +136,9 @@ Alarms persist in `alarms/<member>.json` and use a separate `alarms.lock`, so
 setting never waits behind checks. A successful send removes only the unchanged
 alarm, including when brg reports `stored` or `uncertain`. A failed send keeps
 it for the next tick and marks health not ok. Overdue alarms fire on restart.
-If delivery keeps failing, use `alarm clear` to remove the alarm named in health detail.
+If delivery keeps failing, use `alarm clear` to remove your own alarm. For a
+member that no longer exists, the owner removes `alarms/<member>.json` from
+the plugin's state directory, `<team state>/plugins/checks/`.
 
 Build with `tools/cargo-slot cargo build -p brg-checks --locked`.
 For a local demonstration without a real bus, from the checkout root run these

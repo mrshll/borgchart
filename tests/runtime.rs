@@ -2050,7 +2050,7 @@ fn status_of(env: &Env, name: &str) -> serde_json::Value {
 }
 
 #[test]
-fn status_exposes_the_next_alarm_and_flags_it_after_two_minutes_overdue() {
+fn status_distinguishes_alarm_dates_and_flags_two_minutes_overdue() {
     let env = Env::new();
     assert!(env.brg(&["start"]).status.success());
     let path = format!(
@@ -2059,10 +2059,13 @@ fn status_exposes_the_next_alarm_and_flags_it_after_two_minutes_overdue() {
         env.m("alpha")
     );
     let now = std::time::SystemTime::now();
+    let today = borgchart::bus::time::format_utc(now);
     for (due, overdue) in [
         (now + Duration::from_secs(600), false),
         (now - Duration::from_secs(60), false),
         (now - Duration::from_secs(180), true),
+        (now + Duration::from_secs(3 * 86400), false),
+        (now - Duration::from_secs(3 * 86400), true),
     ] {
         let due = borgchart::bus::time::format_utc(due);
         env.write(&path, &serde_json::json!({"due":due}).to_string());
@@ -2075,10 +2078,12 @@ fn status_exposes_the_next_alarm_and_flags_it_after_two_minutes_overdue() {
         } else {
             "alarm"
         };
-        assert!(
-            detail.contains(&format!("{prefix} {}Z", &due[11..16])),
-            "{detail}"
-        );
+        let when = if due[..10] == today[..10] {
+            due[11..16].to_owned()
+        } else {
+            format!("{} {}", &due[5..10], &due[11..16])
+        };
+        assert!(detail.contains(&format!("{prefix} {when}Z")), "{detail}");
     }
     env.write(&path, "unreadable alarm");
     assert!(

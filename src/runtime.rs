@@ -4135,7 +4135,10 @@ fn status_with_counts(
             } else {
                 "alarm"
             };
-            let detail = format!("{prefix} {}Z", &crate::bus::time::format_utc(due)[11..16]);
+            let due = crate::bus::time::format_utc(due);
+            let today = due[..10] == crate::bus::time::utc_now()[..10];
+            let when = if today { &due[11..16] } else { &due[5..16] };
+            let detail = format!("{prefix} {}Z", when.replace('T', " "));
             row.detail = Some(match row.detail.take() {
                 Some(other) => format!("{other}; {detail}"),
                 None => detail,
