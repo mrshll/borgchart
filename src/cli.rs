@@ -185,8 +185,8 @@ enum Command {
     /// manage only its subtree, using its latest running start. A child team's roots
     /// cannot delete their own child team.
     /// Unread messages, and a worktree brg added that holds uncommitted or
-    /// untracked changes or commits on no remote, need --force; child team history
-    /// stays in the tree store.
+    /// untracked changes or committed work not accounted for by remote-tracking
+    /// refs, need --force; child team history stays in the tree store.
     Delete {
         /// `<team>`, or `<team>/<member>`. A bare role is refused.
         #[arg(add = crate::complete::targets())]

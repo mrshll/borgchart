@@ -7,7 +7,7 @@
 //!   child team of a `worktree: true` role, at its fixed place beside brg's state
 //!   folder ([`crate::worktree::path`]). It is removed with `git worktree
 //!   remove` when it is clean: nothing modified, staged or untracked, and no
-//!   commit that no remote-tracking ref reaches, and when no registered
+//!   work not accounted for by remote-tracking refs, and when no registered
 //!   team, kept member or child team works at or inside it. A worktree with work
 //!   in it is listed and kept; a worktree git can't check fails the run.
 //! - **State of deleted members and child teams** inside a registered team's
@@ -247,8 +247,8 @@ fn worktree(root: Option<&Path>, address: &str, held: &[PathBuf], what: &str, ou
 ///   (`git worktree remove` would delete it with the rest);
 /// - no modified, staged or untracked (non-ignored) files, and no file git
 ///   is told to skip or assume unchanged;
-/// - no commit that no remote-tracking ref reaches, from its HEAD, its HEAD
-///   reflog or its own `refs/worktree/` refs.
+/// - work from HEAD, its reflog and `refs/worktree/` is remote-reachable or
+///   merges into a remote-tracking tip without changing that tip's tree.
 ///
 /// Every check runs against `admin`, the worktree's own folder in the
 /// repository (from [`crate::worktree::admin_dir`]), never through `dir`'s
@@ -296,14 +296,74 @@ pub(crate) fn clean_worktree(admin: &Path, dir: &Path) -> Result<Option<String>,
         &["for-each-ref", "--format=%(objectname)", "refs/worktree/"],
     )?);
     let tips: std::collections::BTreeSet<&str> = tips.split_whitespace().collect();
-    let mut args = vec!["rev-list", "--count"];
-    args.extend(tips);
+    let mut args = vec!["rev-list"];
+    args.extend(tips.iter().copied());
     args.extend(["--not", "--remotes"]);
     let unpushed = git(dir, &args)?;
-    match unpushed.trim() {
-        "0" => Ok(None),
-        n => Ok(Some(format!("{n} commit(s) on no remote"))),
+    if unpushed.trim().is_empty() {
+        return Ok(None);
     }
+    let remotes = git(
+        dir,
+        &["for-each-ref", "--format=%(objectname)", "refs/remotes/"],
+    )?;
+    let remotes: std::collections::BTreeSet<&str> = remotes.split_whitespace().collect();
+    if !remotes.is_empty() {
+        // Even an unused configured driver makes a content check unsafe. Git
+        // attributes can select it from any tree participating in the merge.
+        let keys = git(dir, &["config", "--null", "--name-only", "--list"])?;
+        if keys
+            .split('\0')
+            .any(|key| key.starts_with("merge.") && key.ends_with(".driver"))
+        {
+            return Err("cannot compare work with a configured merge driver; preserve the work or remove the driver configuration, then retry".into());
+        }
+        let mut remote_trees = Vec::new();
+        for remote in remotes {
+            remote_trees.push((
+                remote,
+                git(dir, &["rev-parse", &format!("{remote}^{{tree}}")])?,
+            ));
+        }
+        for tip in tips {
+            if !unpushed.lines().any(|oid| oid == tip) {
+                continue;
+            }
+            for (remote, tree) in &remote_trees {
+                // Renormalization could invoke repository-configured filters.
+                // Conflicts and all other command failures are not proof.
+                if let Ok(merged) = git(
+                    dir,
+                    &[
+                        "-c",
+                        "merge.renormalize=false",
+                        "merge-tree",
+                        "--write-tree",
+                        remote,
+                        tip,
+                    ],
+                ) && merged.lines().next() == Some(tree.trim())
+                {
+                    // A proven tip accounts for its ancestors too, just like
+                    // a pushed tip does (including multi-commit squashes).
+                    args.push(tip);
+                    break;
+                }
+            }
+        }
+    }
+    let remaining = git(dir, &args)?;
+    if remaining.trim().is_empty() {
+        return Ok(None);
+    }
+    let mut describe = vec!["log", "--no-walk", "--format=%h %s"];
+    describe.extend(remaining.lines());
+    let commits = git(dir, &describe)?;
+    Ok(Some(format!(
+        "{} commit(s) on no remote and not accounted for by content: {}; push or preserve this work, fetch remote updates, then retry",
+        remaining.lines().count(),
+        commits.lines().collect::<Vec<_>>().join("; ")
+    )))
 }
 
 /// Whether a `.git` (file or folder) sits anywhere below `dir`'s top,
