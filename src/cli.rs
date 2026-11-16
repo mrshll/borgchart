@@ -132,7 +132,7 @@ enum Command {
         /// team or another ID's suffix.
         #[arg(long)]
         name: Option<String>,
-        /// Choose vendor, model or effort at create (repeatable; comma lists allowed).
+        /// Choose vendor, model, effort or remote_control at create (repeatable; comma lists allowed).
         /// Agent role: --set vendor=codex. Team role: --set lead.vendor=codex.
         /// Other keys follow the current template at every start.
         #[arg(long = "set", value_name = "[ROLE.]KEY=VALUE")]
