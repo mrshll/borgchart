@@ -1192,7 +1192,7 @@ mod watch_tests {
         }
     }
     #[test]
-    fn grouped_watch_clips_boxes_without_hiding_nested_team_labels() {
+    fn grouped_watch_shows_only_eligible_team_box_titles() {
         let mut section = section();
         section.rows = crate::graph::layout::tests::grouped_rows();
         let dir = tempfile::tempdir().unwrap();
@@ -1236,13 +1236,12 @@ mod watch_tests {
                 .chunks(w as usize)
                 .map(|row| row.iter().map(|cell| cell.symbol()).collect())
                 .collect();
-            assert!(
-                lines[2].trim().is_empty(),
-                "foreign-node box must be omitted: {}",
-                lines[2]
-            );
             let text = lines.join("\n");
-            assert!(text.contains('╭') || text.contains('╰'), "{text}");
+            assert!(
+                text.contains("╭dev-build") && text.contains("╭dev-rank"),
+                "{text}"
+            );
+            assert!(!text.contains("dev-search─"), "{text}");
             for label in ["dev-search", "dev-build", "dev-rank"] {
                 assert!(text.contains(label), "missing {label}: {text}");
             }

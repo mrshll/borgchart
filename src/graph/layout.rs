@@ -1,4 +1,4 @@
-//! Deterministic radial clusters, easing and collision-free labels.
+//! Deterministic radial clusters, easing, collision-free labels and nested team boxes.
 
 use super::feed::Feed;
 use crate::runtime::StatusRow;

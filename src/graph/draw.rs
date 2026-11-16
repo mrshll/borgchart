@@ -1,4 +1,4 @@
-//! Braille routes, moving comets and body-free traffic facts.
+//! Braille routes, directed comets, lit newest routes, team boxes and body-free traffic facts.
 
 use super::{
     feed::{Feed, Kind},
@@ -20,7 +20,7 @@ fn rgb((r, g, b): crate::tree::Rgb) -> Color {
     Color::Rgb(r, g, b)
 }
 fn arrow(dx: f64, dy: f64) -> &'static str {
-    let octant = (dy.atan2(dx) * 4. / std::f64::consts::PI).round() as i32;
+    let octant = ((2. * dy).atan2(dx) * 4. / std::f64::consts::PI).round() as i32;
     ["→", "↘", "↓", "↙", "←", "↖", "↑", "↗"][octant.rem_euclid(8) as usize]
 }
 
@@ -412,6 +412,10 @@ mod tests {
         );
     }
     #[test]
+    fn shallow_upward_diagonal_uses_terminal_cell_aspect_ratio() {
+        assert_eq!(arrow(30., -10.), "↗");
+    }
+    #[test]
     fn sent_messages_fly_three_directed_passes_with_gaps_then_stop() {
         let dir = tempfile::tempdir().unwrap();
         let paths = crate::bus::layout::StorePaths::from_root(dir.path());
@@ -446,6 +450,11 @@ mod tests {
             for milliseconds in [1300, 2800, 4300, 4500, 9000] {
                 let buffer = render(&feed, &nodes, milliseconds);
                 assert_ne!(buffer[head].symbol(), arrow, "gap/end at {milliseconds}");
+                assert_eq!(
+                    dump(&buffer),
+                    dump(&render(&feed, &nodes, 9000)),
+                    "gap {seq} at {milliseconds}"
+                );
             }
         }
     }
