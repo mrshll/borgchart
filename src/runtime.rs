@@ -271,6 +271,12 @@ fn stored_choice_error(
         ("vendor", choice.vendor.map(|v| v.as_str())),
         ("model", choice.model.as_deref()),
         ("effort", choice.effort.as_deref()),
+        (
+            "remote_control",
+            choice
+                .remote_control
+                .map(|value| if value { "true" } else { "false" }),
+        ),
     ]
     .into_iter()
     .filter_map(|(key, value)| value.map(|value| format!("{prefix}{key}={value}")))

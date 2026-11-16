@@ -15,11 +15,16 @@ pub struct Overrides {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_control: Option<bool>,
 }
 
 impl Overrides {
     pub fn is_empty(&self) -> bool {
-        self.vendor.is_none() && self.model.is_none() && self.effort.is_none()
+        self.vendor.is_none()
+            && self.model.is_none()
+            && self.effort.is_none()
+            && self.remote_control.is_none()
     }
 
     /// The later layer replaces only keys it supplies.
@@ -28,17 +33,32 @@ impl Overrides {
             vendor: later.vendor.or(self.vendor),
             model: later.model.clone().or_else(|| self.model.clone()),
             effort: later.effort.clone().or_else(|| self.effort.clone()),
+            remote_control: later.remote_control.or(self.remote_control),
         }
     }
 
     pub fn resolve(&self, role: &Role, auth: Auth) -> Result<Role, String> {
-        apply(
+        let mut resolved = apply(
             role,
             self.vendor,
             self.model.as_deref(),
             self.effort.as_deref(),
             auth,
-        )
+        )?;
+        resolved.remote_control = self.remote_control.unwrap_or(role.remote_control);
+        if resolved.remote_control && resolved.vendor != Vendor::Claude {
+            return Err(format!(
+                "role `{}`: Remote Control is Claude-only; remove `remote_control`",
+                role.id
+            ));
+        }
+        if resolved.remote_control && auth == Auth::ApiKey {
+            return Err(format!(
+                "role `{}`: Remote Control needs your claude.ai login; remove `remote_control` or use `auth: login`",
+                role.id
+            ));
+        }
+        Ok(resolved)
     }
 
     pub fn keys(&self) -> Vec<&str> {
@@ -46,6 +66,7 @@ impl Overrides {
             ("vendor", self.vendor.is_some()),
             ("model", self.model.is_some()),
             ("effort", self.effort.is_some()),
+            ("remote_control", self.remote_control.is_some()),
         ]
         .into_iter()
         .filter_map(|(key, set)| set.then_some(key))
@@ -85,9 +106,16 @@ pub fn parse(values: &[String]) -> Result<BTreeMap<String, Overrides>, String> {
             }
             "effort" if EFFORTS.contains(&value) => choice.effort = Some(value.into()),
             "effort" => return Err(format!("choose an effort: {}", EFFORTS.join(", "))),
+            "remote_control" => {
+                choice.remote_control = Some(
+                    value
+                        .parse()
+                        .map_err(|_| "choose remote_control: true, false")?,
+                );
+            }
             _ => {
                 return Err(format!(
-                    "unknown key `{key}`; settable: vendor, model, effort"
+                    "unknown key `{key}`; settable: vendor, model, effort, remote_control"
                 ));
             }
         }
@@ -433,13 +461,16 @@ mod tests {
             vendor: Some(Vendor::Codex),
             model: Some("team-model".into()),
             effort: Some("medium".into()),
+            remote_control: Some(true),
         };
         let member = Overrides {
             model: Some("member-model".into()),
+            remote_control: Some(false),
             ..Overrides::default()
         };
         let resolved = team.merge(&member).resolve(&role(), Auth::Login).unwrap();
         assert_eq!(resolved.vendor, Vendor::Codex);
+        assert!(!resolved.remote_control);
         assert_eq!(
             resolved.model,
             Some(Model {

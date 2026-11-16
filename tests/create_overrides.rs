@@ -516,3 +516,122 @@ fn api_key_launch_requires_the_chosen_vendors_key() {
     assert!(event["env"]["ANTHROPIC_API_KEY"].is_null());
     env.ok(&["stop", &parent]);
 }
+
+fn remote_launch(env: &Env, team: &str, id: &str, count: usize, enabled: bool) {
+    env.wait_for("remote control launch", || env.starts(id).len() >= count);
+    let starts = env.starts(id);
+    let argv = starts[count - 1]["argv"].as_array().unwrap();
+    let remote = argv.iter().position(|arg| arg == "--remote-control");
+    assert_eq!(remote.is_some(), enabled, "{argv:?}");
+    if let Some(index) = remote {
+        assert_eq!(argv[index + 1], format!("{team}/{id}"));
+    }
+    if count > 1 {
+        assert!(argv.iter().any(|arg| arg == "--resume"), "{argv:?}");
+    }
+}
+
+#[test]
+fn remote_control_choices_survive_resume_and_false_masks_inherited_true() {
+    let (env, parent) = setup();
+    let child = child(&env, &parent, &["--set", "lead.remote_control=true"]);
+    env.ok(&["start", &child]);
+    let lead = env.member(&child, "lead");
+    remote_launch(&env, &child, &lead, 1, true);
+    let template = fs::read_to_string(env.path("templates/child/template.yaml")).unwrap();
+    for (name, value) in [("enabled", "true"), ("disabled", "false")] {
+        if name == "disabled" {
+            env.write(
+                "templates/child/template.yaml",
+                &template.replace(
+                    "prompt: worker.md,",
+                    "prompt: worker.md, remote_control: true,",
+                ),
+            );
+        }
+        env.ok(&[
+            "create",
+            &format!("{child}/worker"),
+            "--name",
+            name,
+            "--set",
+            &format!("remote_control={value}"),
+        ]);
+    }
+    for count in 1..=2 {
+        for (id, enabled) in [
+            (&lead[..], true),
+            ("worker-enabled", true),
+            ("worker-disabled", false),
+        ] {
+            remote_launch(&env, &child, id, count, enabled);
+        }
+        if count == 1 {
+            env.wait_for("Claude sessions recorded", || {
+                [&lead[..], "worker-enabled", "worker-disabled"]
+                    .iter()
+                    .all(|id| {
+                        env.path(&format!("state/{child}/members/{id}/session"))
+                            .exists()
+                    })
+            });
+            env.ok(&["stop", &child]);
+            env.ok(&["start", &child, "--resume"]);
+        }
+    }
+    env.ok(&["stop", &parent]);
+}
+
+#[test]
+fn remote_control_invalid_choices_refuse_before_creating_members() {
+    let (env, parent) = setup();
+    let child = child(&env, &parent, &[]);
+    env.ok(&["start", &child]);
+    let target = format!("{child}/worker");
+    let record = || fs::read(env.path(&format!("state/{child}/team.json"))).unwrap();
+    let before = record();
+    for choice in [
+        "remote_control=yes",
+        "remote_control=",
+        "remote_control=TRUE",
+        "remote_control=true,remote_control=false",
+        "vendor=codex,remote_control=true",
+    ] {
+        env.fails(&["create", &target, "--set", choice]);
+        assert_eq!(record(), before);
+    }
+    let template = fs::read_to_string(env.path("templates/child/template.yaml")).unwrap();
+    env.write(
+        "templates/child/template.yaml",
+        &template.replace("prompt: worker.md,", "prompt: worker.md, vendor: codex,"),
+    );
+    env.fails(&["create", &target, "--set", "remote_control=true"]);
+    assert_eq!(record(), before);
+    env.write("templates/child/template.yaml", &template);
+    env.ok(&["stop", &parent]);
+    env.config("auth: api_key\n");
+    let before = record();
+    let out = env
+        .cmd(&["create", &target, "--set", "remote_control=true"])
+        .env("ANTHROPIC_API_KEY", "fictional-test-key")
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "{}", both(&out));
+    assert_eq!(record(), before);
+    // The same role and credentials must launch when Remote Control is disabled.
+    let out = env
+        .cmd(&[
+            "create",
+            &target,
+            "--name",
+            "local",
+            "--set",
+            "remote_control=false",
+        ])
+        .env("ANTHROPIC_API_KEY", "fictional-test-key")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", both(&out));
+    remote_launch(&env, &child, "worker-local", 1, false);
+    env.ok(&["stop", &parent]);
+}
