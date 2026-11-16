@@ -211,11 +211,8 @@ fn delete_keeps_a_worktree_with_work_in_it() {
     let err = env.fails(&["delete", &format!("{inst}/{id}")]);
     assert!(err.contains("uncommitted or untracked changes"), "{err}");
     assert!(env.copies(&inst).contains(&id));
-    fs::remove_file(folder.join("draft.txt")).unwrap();
-    git(
-        &folder,
-        &["commit", "-q", "--allow-empty", "-m", "local only"],
-    );
+    git(&folder, &["add", "draft.txt"]);
+    git(&folder, &["commit", "-qm", "local only"]);
     let err = env.fails(&["delete", &format!("{inst}/{id}")]);
     assert!(err.contains("on no remote"), "{err}");
     let out = stdout(&env.ok(&["delete", &format!("{inst}/{id}"), "--force"]));
@@ -899,10 +896,9 @@ fn derived_members_inherit_the_child_team_commit_even_after_the_remote_moves() {
     let copy = repo_copy(&env, &inst, "widgets", Some("topic"));
     let other = repo_copy(&env, &inst, "gadgets", Some("topic"));
     let folder = env.worktree(&copy);
-    git(
-        &folder,
-        &["commit", "-q", "--allow-empty", "-m", "child team work"],
-    );
+    fs::write(folder.join("child.txt"), "child team work\n").unwrap();
+    git(&folder, &["add", "child.txt"]);
+    git(&folder, &["commit", "-qm", "child team work"]);
     let tip = git(&folder, &["rev-parse", "HEAD"]);
     let gadgets = env.path("work/a/gadgets");
     git(
