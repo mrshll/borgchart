@@ -471,6 +471,99 @@ fn up_twice_is_harmless() {
 }
 
 #[test]
+fn full_start_registers_new_plugins_without_restarting_members_or_resolving_known_values() {
+    let env = Env::new();
+    env.up();
+    let inst = env.instance().unwrap();
+    let incarnations = || {
+        ["alpha", "beta"].map(|role| {
+            fs::read(env.path(&format!(
+                "state/{inst}/members/{}/incarnation.json",
+                env.m(role)
+            )))
+            .unwrap()
+        })
+    };
+    let before = incarnations();
+    let template = fs::read_to_string(env.path("team/template.yaml")).unwrap();
+    env.write(
+        "team/template.yaml",
+        &template.replace(
+            "roles:\n",
+            "  clock:\n    path: plugins/clock\n    process: [./watch.sh]\n    env: {CLOCK_TOKEN: {from: 'fake://clock'}}\nroles:\n",
+        ),
+    );
+    env.script(
+        "team/plugins/clock/watch.sh",
+        "#!/bin/sh\ntest \"$CLOCK_TOKEN\" = fixture-token || exit 1\nprintf '{\"ok\":true,\"at\":\"now\"}' > \"$BORGCHART_STATE_DIR/health.json\"\nexec sleep 60\n",
+    );
+    env.script(
+        "bin/resolver",
+        "#!/bin/sh\nprintf 'run\\n' >> \"$HOME/resolver-runs\"\nshift\nexport BORGCHART_SECRET_0=fixture-token\nexec \"$@\"\n",
+    );
+    env.config("secrets: {resolver: [resolver, '{file}']}\n");
+    let out = env
+        .brg_cmd(&["start"])
+        .env("BORGCHART_MEMBER", env.m("alpha"))
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "{out:?}");
+    assert!(!env.path("home/resolver-runs").exists());
+    let out = env
+        .brg_cmd(&["start"])
+        .env_remove("PAGER_TOKEN")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    env.wait_for("new plugin process", |e| {
+        e.status()
+            .iter()
+            .any(|r| r["name"] == "clock" && r["state"] == "alive" && r["detail"] == "ok")
+    });
+    assert_eq!(incarnations(), before);
+    assert!(env.brg(&["start"]).status.success());
+    assert_eq!(
+        fs::read_to_string(env.path("home/resolver-runs")).unwrap(),
+        "run\n"
+    );
+    let settings = env.path(&format!("state/{inst}/secrets/clock.json"));
+    assert!(settings.is_file());
+    assert!(env.brg(&["stop"]).status.success());
+    assert!(!settings.exists());
+}
+
+#[test]
+fn stop_during_plugin_resolution_refuses_a_restart_with_incomplete_values() {
+    let env = Env::new();
+    env.up();
+    let template = fs::read_to_string(env.path("team/template.yaml")).unwrap();
+    env.write(
+        "team/template.yaml",
+        &template.replace(
+            "roles:\n",
+            "  clock:\n    path: plugins/clock\n    process: [./watch.sh]\n    env: {CLOCK_TOKEN: {from: 'fake://clock'}}\nroles:\n",
+        ),
+    );
+    env.script("team/plugins/clock/watch.sh", "#!/bin/sh\nexec sleep 60\n");
+    env.script(
+        "bin/resolver",
+        "#!/bin/sh\ntouch \"$HOME/resolving\"\nwhile [ ! -e \"$HOME/go\" ]; do sleep 0.05; done\nshift\nexport BORGCHART_SECRET_0=fixture-token\nexec \"$@\"\n",
+    );
+    env.config("secrets: {resolver: [resolver, '{file}']}\n");
+    let start = env
+        .brg_cmd(&["start"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    env.wait_for("resolver running", |e| e.path("home/resolving").exists());
+    assert!(env.brg(&["stop"]).status.success());
+    fs::write(env.path("home/go"), "").unwrap();
+    let out = start.wait_with_output().unwrap();
+    assert!(!out.status.success(), "{out:?}");
+}
+
+#[test]
 fn crash_shows_as_exited() {
     let env = Env::new();
     env.up();
