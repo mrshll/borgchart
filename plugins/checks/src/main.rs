@@ -12,7 +12,7 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Action {
-    /// Set, show or clear your deadline alarm
+    /// Set, show or clear your check-in alarm
     Alarm {
         #[command(subcommand)]
         action: alarm::Action,

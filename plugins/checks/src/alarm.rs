@@ -1,4 +1,4 @@
-//! One persistent deadline per member, delivered by the checks process.
+//! One persistent check-in alarm per member, delivered by the checks process.
 use crate::config;
 use borgchart::{bus::time, plugin};
 use clap::Subcommand;
@@ -155,7 +155,7 @@ pub fn fire(store: &plugin::State) -> Result<(), String> {
     };
     for (path, bytes, alarm) in alarms.into_iter().flatten() {
         let text = format!(
-            "Alarm due {}: {}. Check your recorded deadlines and retries.",
+            "Alarm due {}: {}. Check your open briefs and retries.",
             alarm.due,
             plugin::escape(&alarm.note)
         );

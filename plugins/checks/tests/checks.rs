@@ -23,13 +23,13 @@ fn alarm_fixture() -> Fixture {
     f
 }
 fn overdue(f: &Fixture) {
-    alarm(f, &["alarm", "set", "1", "review deadline"]);
+    alarm(f, &["alarm", "set", "1", "review check-in"]);
     let mut value = f.read("alarms/reader-test.json");
     value["due"] = json!("2020-01-01T12:34:00.000Z");
     f.write("state/alarms/reader-test.json", &value.to_string());
 }
 #[test]
-fn alarm_rejects_typos_and_out_of_range_deadlines_without_replacing_the_alarm() {
+fn alarm_rejects_typos_and_out_of_range_times_without_replacing_the_alarm() {
     let f = alarm_fixture();
     let utc =
         borgchart::bus::time::format_utc(std::time::SystemTime::now() + Duration::from_secs(86400));
@@ -61,7 +61,7 @@ fn alarm_rejects_typos_and_out_of_range_deadlines_without_replacing_the_alarm() 
     assert!(alarm(&f, &["alarm", "show"]).contains("valid"));
 }
 #[test]
-fn replacing_and_clearing_an_alarm_removes_the_previous_deadline() {
+fn replacing_and_clearing_an_alarm_removes_the_previous_alarm() {
     let f = alarm_fixture();
     alarm(&f, &["alarm", "set", "1", "old"]);
     alarm(&f, &["alarm", "set", "2", "replacement"]);
@@ -88,7 +88,7 @@ fn overdue_alarm_survives_restart_and_never_fires_twice_or_early() {
         assert_eq!(sends.len(), 1);
         let args = &sends[0];
         assert_eq!(args[args.len() - 2], "harbor-test/dev-test/reader-test");
-        assert!(args.last().unwrap().contains("review deadline"));
+        assert!(args.last().unwrap().contains("review check-in"));
         assert!(!f.path("state/alarms/reader-test.json").exists());
         assert!(f.path("state/alarms/later-test.json").exists());
     }
@@ -142,12 +142,12 @@ fn alarm_set_during_a_send_survives_and_does_not_wait_for_the_checks_lock() {
     let mut running = f.command(&["run", "--once"]).spawn().unwrap();
     wait_for(&f.path("state/sends"));
     let before = Instant::now();
-    alarm(&f, &["alarm", "set", "2", "new deadline"]);
+    alarm(&f, &["alarm", "set", "2", "new check-in"]);
     let elapsed = before.elapsed();
     f.write("state/release", "");
     assert!(running.wait().unwrap().success());
     assert!(elapsed < Duration::from_secs(2));
-    assert!(alarm(&f, &["alarm", "show"]).contains("new deadline"));
+    assert!(alarm(&f, &["alarm", "show"]).contains("new check-in"));
     f.tick();
     assert_eq!(f.sends().len(), 1);
 }
@@ -161,7 +161,7 @@ fn missing_or_stale_heartbeat_refuses_to_arm_an_alarm_against_a_dead_process() {
             fs::remove_file(f.path("state/health.json")).unwrap();
         }
         let out = f
-            .command(&["alarm", "set", "1", "deadline"])
+            .command(&["alarm", "set", "1", "check-in"])
             .env("BORGCHART_TEAM", "harbor-test")
             .output()
             .unwrap();
