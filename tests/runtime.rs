@@ -52,14 +52,12 @@ plugins:
 roles:
   alpha:
     prompt: alpha.md
-    posture: locked
-    untrusted_input: true
+    restricted_access: true
     plugins: {pager: [read]}
   beta:
     prompt: beta.md
     vendor: codex
     parent: alpha
-    accept_risk: true
   gamma:
     prompt: gamma.md
     start: false
@@ -383,7 +381,7 @@ fn up_status_send_logs_down() {
 
     let rows = env.status();
     let alpha = rows.iter().find(|r| r["role"] == "alpha").unwrap();
-    assert_eq!(alpha["posture"], "locked");
+    assert_eq!(alpha["restricted_access"], true);
     assert!(
         alpha.get("detail").is_none(),
         "gate should be active: {alpha}"
@@ -866,12 +864,12 @@ fn shim_refuses_wrong_member_identity_and_corrupt_settings_without_leaking() {
     );
 }
 
-fn plugin_sender(vendor: &str, posture: &str) -> Env {
+fn plugin_sender(vendor: &str, restricted_access: bool) -> Env {
     let env = Env::new();
     env.write(
         "team/template.yaml",
         &format!(
-            "plugins:\n  pager:\n    path: plugins/pager\n    actions:\n      promote: brg-slack promote <ts> <reason>\nroles:\n  alpha:\n    prompt: alpha.md\n    interactive: true\n  beta:\n    prompt: beta.md\n    vendor: {vendor}\n    posture: {posture}\n    parent: alpha\n    plugins: {{pager: [promote]}}\n"
+            "plugins:\n  pager:\n    path: plugins/pager\n    actions:\n      promote: brg-slack promote <ts> <reason>\nroles:\n  alpha:\n    prompt: alpha.md\n    interactive: true\n  beta:\n    prompt: beta.md\n    vendor: {vendor}\n    restricted_access: {restricted_access}\n    parent: alpha\n    plugins: {{pager: [promote]}}\n"
         ),
     );
     env.write(
@@ -954,7 +952,7 @@ fn parent_inbox(env: &Env) -> Vec<serde_json::Value> {
 
 #[test]
 fn locked_codex_promote_waits_for_hook_and_reaches_parent_once_as_member() {
-    let env = plugin_sender("codex", "locked");
+    let env = plugin_sender("codex", true);
     for ts in ["1700000000.000001", "1700000000.000002"] {
         let out = promote(&env, ts);
         assert!(out.status.success(), "{out:?}");
@@ -980,8 +978,8 @@ fn locked_codex_promote_waits_for_hook_and_reaches_parent_once_as_member() {
 
 #[test]
 fn locked_claude_and_vendor_codex_promote_send_without_a_hook() {
-    for (vendor, posture) in [("claude", "locked"), ("codex", "vendor")] {
-        let env = plugin_sender(vendor, posture);
+    for (vendor, restricted_access) in [("claude", true), ("codex", false)] {
+        let env = plugin_sender(vendor, restricted_access);
         let out = promote(&env, "1700000000.000001");
         assert!(out.status.success(), "{out:?}");
         assert_eq!(parent_inbox(&env).len(), 1);
@@ -990,7 +988,7 @@ fn locked_claude_and_vendor_codex_promote_send_without_a_hook() {
 
 #[test]
 fn post_hook_refuses_forged_sender_and_nonparent_requests() {
-    let env = plugin_sender("codex", "locked");
+    let env = plugin_sender("codex", true);
     let queue = sender_state(&env).join(format!("tmp/{}/send-queue", env.m("beta")));
     fs::create_dir_all(&queue).unwrap();
     for (id, sender, target) in [
@@ -1022,7 +1020,7 @@ fn replace_sender_brg(env: &Env, script: &str) {
 
 #[test]
 fn post_hook_does_not_resend_a_committed_id_with_nonzero_exit() {
-    let env = plugin_sender("codex", "locked");
+    let env = plugin_sender("codex", true);
     assert!(promote(&env, "1700000000.000001").status.success());
     // A committed ID wins even when delivery returns a nonzero exit.
     replace_sender_brg(
@@ -1040,7 +1038,7 @@ fn post_hook_does_not_resend_a_committed_id_with_nonzero_exit() {
 
 #[test]
 fn post_hook_timeout_returns_promptly_without_retrying_uncertain_send() {
-    let env = plugin_sender("codex", "locked");
+    let env = plugin_sender("codex", true);
     assert!(promote(&env, "1700000000.000001").status.success());
     replace_sender_brg(&env, "#!/bin/sh\nsleep 120\n");
     let before = Instant::now();
@@ -1064,7 +1062,7 @@ fn post_hook_timeout_returns_promptly_without_retrying_uncertain_send() {
 
 #[test]
 fn overlapping_post_hooks_do_not_send_the_same_request_twice() {
-    let env = plugin_sender("codex", "locked");
+    let env = plugin_sender("codex", true);
     assert!(promote(&env, "1700000000.000001").status.success());
     replace_sender_brg(
         &env,
@@ -1090,7 +1088,7 @@ fn overlapping_post_hooks_do_not_send_the_same_request_twice() {
 
 #[test]
 fn post_hook_does_not_claim_files_through_a_queue_symlink() {
-    let env = plugin_sender("codex", "locked");
+    let env = plugin_sender("codex", true);
     let queue = sender_state(&env).join(format!("tmp/{}/send-queue", env.m("beta")));
     let outside = env.path("outside");
     fs::create_dir_all(&outside).unwrap();
@@ -1102,7 +1100,7 @@ fn post_hook_does_not_claim_files_through_a_queue_symlink() {
 
 #[test]
 fn post_hook_commits_slow_successful_send_instead_of_abandoning_it() {
-    let env = plugin_sender("codex", "locked");
+    let env = plugin_sender("codex", true);
     assert!(promote(&env, "1700000000.000001").status.success());
     replace_sender_brg(
         &env,
@@ -1119,7 +1117,7 @@ fn post_hook_commits_slow_successful_send_instead_of_abandoning_it() {
 
 #[test]
 fn post_hook_leaves_requests_above_its_budget_for_next_tool() {
-    let env = plugin_sender("codex", "locked");
+    let env = plugin_sender("codex", true);
     for suffix in 1..=9 {
         assert!(
             promote(&env, &format!("1700000000.{suffix:06}"))
@@ -1135,7 +1133,7 @@ fn post_hook_leaves_requests_above_its_budget_for_next_tool() {
 
 #[test]
 fn post_hook_does_not_follow_a_queue_swapped_during_delivery() {
-    let env = plugin_sender("codex", "locked");
+    let env = plugin_sender("codex", true);
     for ts in ["1700000000.000001", "1700000000.000002"] {
         assert!(promote(&env, ts).status.success());
     }
@@ -1190,7 +1188,7 @@ fn post_hook_does_not_follow_a_queue_swapped_during_delivery() {
 
 #[test]
 fn post_hook_delivers_option_like_text_as_a_message() {
-    let env = plugin_sender("codex", "locked");
+    let env = plugin_sender("codex", true);
     assert!(promote(&env, "1700000000.000001").status.success());
     let queue = sender_state(&env).join(format!("tmp/{}/send-queue", env.m("beta")));
     let request = fs::read_dir(queue).unwrap().next().unwrap().unwrap().path();
@@ -1206,7 +1204,7 @@ fn post_hook_delivers_option_like_text_as_a_message() {
 
 #[test]
 fn post_hook_reports_retry_for_a_send_that_never_started() {
-    let env = plugin_sender("codex", "locked");
+    let env = plugin_sender("codex", true);
     assert!(promote(&env, "1700000000.000001").status.success());
     replace_sender_brg(&env, "#!/bin/sh\nexit 0\n");
     fs::remove_file(env.path("send-brg")).unwrap();
@@ -1234,7 +1232,7 @@ fn hook_context(output: &Output) -> String {
 
 #[test]
 fn post_hook_reports_permanent_refusals_and_delivers_later_requests() {
-    let env = plugin_sender("codex", "locked");
+    let env = plugin_sender("codex", true);
     for ts in [
         "1700000000.000001",
         "1700000000.000002",
@@ -1276,7 +1274,7 @@ fn post_hook_reports_permanent_refusals_and_delivers_later_requests() {
 
 #[test]
 fn post_hook_reports_identity_mismatch_and_retries_with_the_right_identity() {
-    let env = plugin_sender("codex", "locked");
+    let env = plugin_sender("codex", true);
     assert!(promote(&env, "1700000000.000001").status.success());
     let args = [
         "_gate",
@@ -1298,7 +1296,7 @@ fn post_hook_reports_identity_mismatch_and_retries_with_the_right_identity() {
 
 #[test]
 fn post_hook_reports_claim_failure_and_retries_when_the_queue_is_writable() {
-    let env = plugin_sender("codex", "locked");
+    let env = plugin_sender("codex", true);
     assert!(promote(&env, "1700000000.000001").status.success());
     let queue = sender_state(&env).join(format!("tmp/{}/send-queue", env.m("beta")));
     fs::set_permissions(&queue, fs::Permissions::from_mode(0o500)).unwrap();
@@ -1606,11 +1604,11 @@ fn empty_connectors_refusals_do_not_leave_an_earlier_locked_member_without_its_g
 
 #[test]
 fn empty_connectors_disable_listed_codex_servers_in_member_environment() {
-    for posture in ["vendor", "locked"] {
+    for restricted_access in [false, true] {
         let env = Env::new();
         env.role_extra(
             "beta",
-            &format!("    connectors: []\n    posture: {posture}\n"),
+            &format!("    connectors: []\n    restricted_access: {restricted_access}\n"),
         );
         env.write(
             "codex-home/servers.json",

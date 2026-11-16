@@ -63,10 +63,10 @@ request inline to the fixed member from `external:slack`, with its ID, reply and
 thread commands, and a reminder to ignore a copy already taken. The request is
 the listed person's ask under the member's standing rules. Earlier thread text,
 including that person's earlier messages, is framed evidence with no authority.
-A vendor recipient with host tools therefore receives other people's text;
-framing cannot prevent all attempts to steer it. Set `untrusted_input: true`
-and `accept_risk: true` on that role; brg validation warns about a plugin target
-in vendor posture.
+An unrestricted recipient with host tools therefore receives other people's text;
+framing cannot prevent all attempts to steer it. To let the lead use vendor
+settings, leave out `restricted_access: true`; brg validation warns about an
+unrestricted plugin target.
 
 Request IDs look like `C0000EXAMPLE-1700000000.000100`. `thread`, `reply` and
 `react` accept them: reads/replies use the recorded channel and root thread;
@@ -128,7 +128,7 @@ mention intake.
   escapes control characters except newline/tab, and redacts both Slack tokens.
 - `promote <ts> <reason>`: send a fixed notice to the member's parent, with
   `--from` validating that route. The reasons are `outage`, `deploy`,
-  `security`, `question`, `other`. No Slack text is forwarded. For locked Codex,
+  `security`, `question`, `other`. No Slack text is forwarded. For restricted Codex,
   success prints `queued; brg sends it when the command returns`; brg's
   PostToolUse hook sends as the member to its parent only and reports failures as
   extra context. Permanent refusals are removed. If brg cannot start, the send
@@ -191,7 +191,7 @@ State files are created with mode 0600. One plugin state lock serializes polling
 cursor and health snapshots use a temporary file and rename. A crash after an
 intake send but before saving its removal, or a failed send that already reached
 brg, can repeat an ID notice. Pending items remain available for the next poll.
-Locked recipients have no inbox recovery; check plugin health after failures.
+Restricted recipients have no inbox recovery; check plugin health after failures.
 
 Edits are not delivered. Threads whose roots left the window are not watched,
 and pending items expire with that window. History scans one page of 200; more

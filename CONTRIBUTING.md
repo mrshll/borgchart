@@ -38,7 +38,7 @@ A test that starts a process (tmux, `brg`, a child) belongs in a default-tier ta
 
 The tests may run inside a team member, where `BORGCHART_*` and `TMUX` point at that member's real team. Start every program through `tests/common` (`common::command`), or with `env_clear()`. Each test's tmux servers live in its own `common::PrivateTmux`: a private directory with a guard that refuses any tmux call outside it. Run tmux through `PrivateTmux::tmux`, point brg at it with `brg_env`, and put the guard first on brg's `PATH` with `path_with`; dropping it stops the servers and removes the directory. Give brg an explicit `BORGCHART_STATE_HOME` and `BORGCHART_CONFIG` (a test configuration, or a missing file for the defaults), and call library functions that read the configuration through `validate_with` and friends, never the caller's. `.githooks/checks test` runs the tests with `BORGCHART_*` (including `BORGCHART_CONFIG` and `BORGCHART_TEAM`) pointing nowhere, so a test that forgets fails there.
 
-**The manual vendor qualification** (the live tier) also checks, by hand until it is automated, that a real `vendor`-posture Codex member can write the team's notes (`touch "$BORGCHART_NOTES/x"`) and publish a message, with full host access and no tool approvals. Vendor Codex can also write brg's own files; do not expect a sandbox refusal. Locked members retain their gate and sandbox. Record the result with the matrix.
+**The manual vendor qualification** (the live tier) also checks, by hand until it is automated, that a real unrestricted Codex member can write the team's notes (`touch "$BORGCHART_NOTES/x"`) and publish a message, with full host access and no tool approvals. Unrestricted Codex can also write brg's own files; do not expect a sandbox refusal. Restricted members retain their gate and sandbox. Record the result with the matrix.
 
 A test that may be killed or hang before it drops its `common::PrivateTmux` (as a live run can) starts it with `PrivateTmux::with_watchdog(limit)`: if the test process dies or `limit` passes, a detached watchdog stops the servers in the private directory and removes it. Register files the test keeps outside that directory (a work folder, say) with `also_remove(path)`; they go on a normal drop too.
 
@@ -70,7 +70,7 @@ The three aren't self-contained, so they travel together:
 
 The template files hold no project rules and no owner. Members get both from their vendor's own instruction files, which load as normal:
 
-- **The project's rules** come from the repository's instruction file: here, [AGENTS.md](AGENTS.md), which `CLAUDE.md` imports so both vendors read one text. It names the build wrapper, the checks, the code style and what may appear in public. A `locked` Codex member without `worktree: true` starts in its temp folder and doesn't load it; none of these teams has one.
+- **The project's rules** come from the repository's instruction file: here, [AGENTS.md](AGENTS.md), which `CLAUDE.md` imports so both vendors read one text. It names the build wrapper, the checks, the code style and what may appear in public. A restricted Codex member without `worktree: true` starts in its temp folder and doesn't load it; none of these teams has one.
 - **The owner** is whoever runs the team. Their own user-level instructions (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`) name their GitHub login and say how members commit, push and run GitHub commands: as the owner, or as a separate account, with any per-checkout identity setup. Leads request the owner's review only under a separate account.
 
 ### Setup

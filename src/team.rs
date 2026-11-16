@@ -56,20 +56,6 @@ pub enum Posture {
     Locked,
 }
 
-/// Parse a posture name. `sandboxed` is reserved for hosting.
-pub fn parse_posture(value: &str) -> Result<Posture, String> {
-    match value {
-        "vendor" => Ok(Posture::Vendor),
-        "locked" => Ok(Posture::Locked),
-        "sandboxed" => {
-            Err("posture `sandboxed` is reserved for hosting and not available in v0".into())
-        }
-        other => Err(format!(
-            "unknown posture `{other}` (expected `vendor` or `locked`)"
-        )),
-    }
-}
-
 // ---- raw file shapes -------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
@@ -109,6 +95,9 @@ struct PluginRaw {
     actions: BTreeMap<String, String>,
 }
 
+/// The template key that enables restricted access.
+pub const RESTRICTED_KEY: &str = "restricted_access";
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RoleRaw {
@@ -123,11 +112,8 @@ struct RoleRaw {
     #[serde(default)]
     remote_control: bool,
     max: Option<usize>,
-    posture: Option<String>,
-    #[serde(default)]
-    untrusted_input: bool,
-    #[serde(default)]
-    accept_risk: bool,
+    #[serde(rename = "restricted_access")]
+    restricted_access: Option<bool>,
     #[serde(default)]
     plugins: BTreeMap<String, Vec<String>>,
     connectors: Option<ConnectorsRaw>,
@@ -326,8 +312,6 @@ pub struct Role {
     /// Kept members, running or stopped, allowed for this role.
     pub max: usize,
     pub posture: Posture,
-    pub untrusted_input: bool,
-    pub accept_risk: bool,
     pub grants: BTreeMap<String, Grant>,
     pub connectors: Connectors,
     pub prompt_file: PathBuf,
@@ -394,7 +378,7 @@ pub struct Connectors {
     /// Whether the role explicitly declared connectors, including an empty list.
     pub declared: bool,
     /// Server names as the vendor's `mcp list` prints them, each with the
-    /// tools allowed in `locked` posture (empty when only names were given).
+    /// tools allowed in restricted access (empty when only names were given).
     pub servers: BTreeMap<String, Vec<String>>,
     /// Whether tool names were given (the map form).
     pub with_tools: bool,
@@ -963,12 +947,10 @@ fn load_role(
     }
     let vendor = m.vendor.unwrap_or(default_vendor);
 
-    let posture = match m.posture.as_deref().map(parse_posture).transpose() {
-        Ok(p) => p.unwrap_or(Posture::Vendor),
-        Err(e) => {
-            report.error(Some(team_file), at(e));
-            Posture::Vendor
-        }
+    let posture = if m.restricted_access.unwrap_or(false) {
+        Posture::Locked
+    } else {
+        Posture::Vendor
     };
 
     // Grants.
@@ -1131,8 +1113,6 @@ fn load_role(
         remote_control: m.remote_control,
         max,
         posture,
-        untrusted_input: m.untrusted_input,
-        accept_risk: m.accept_risk,
         grants,
         connectors,
         prompt_file: dir.join(prompt),
@@ -1501,12 +1481,5 @@ mod tests {
         assert_eq!(parse_model("haiku").unwrap().effort, None);
         assert!(parse_model("opus extreme").is_err());
         assert!(parse_model("a b c").is_err());
-    }
-
-    #[test]
-    fn postures() {
-        assert_eq!(parse_posture("locked").unwrap(), Posture::Locked);
-        assert!(parse_posture("sandboxed").unwrap_err().contains("reserved"));
-        assert!(parse_posture("open").is_err());
     }
 }

@@ -247,7 +247,7 @@ fn locked_send_failure_after_commit_raises_a_delivery_alert() {
     let e = Env::new();
     e.write(
         "templates/oncall/template.yaml",
-        "roles:\n  lead: {prompt: lead.md, posture: locked}\n",
+        "roles:\n  lead: {prompt: lead.md, restricted_access: true}\n",
     );
     let team = e.create("oncall", "work/a");
     let member = e.member(&team, "lead");
@@ -447,8 +447,7 @@ fn codex_failed_queue_alert_clears_after_a_successful_queue() {
         e.write(
             "templates/oncall/template.yaml",
             &format!(
-                "roles:\n  lead: {{prompt: lead.md, vendor: codex, posture: {}}}\n",
-                if locked { "locked" } else { "vendor" }
+                "roles:\n  lead: {{prompt: lead.md, vendor: codex, restricted_access: {locked}}}\n"
             ),
         );
         e.write(

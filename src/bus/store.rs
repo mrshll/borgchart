@@ -665,7 +665,7 @@ pub fn publish(bus: &Bus, caller: &Caller, draft_bytes: &[u8]) -> Result<Record,
     {
         return Err(Failure::new(
             Code::Refused,
-            "recipient posture changed before commit; retry",
+            "recipient restrictions changed before commit; retry",
         ));
     }
     let snap = scan(&bus.paths);

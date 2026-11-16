@@ -79,13 +79,13 @@ overrides it. A plugin process with only BORGCHART_TEAM set must name
 to their parent or children. Across a child team's parent edge, name the full
 team/member address (a child team's roots find their parent's in
 BORGCHART_PARENT). The tree shares one store and message IDs; queue, typing and
-locked delivery work across edges too. Only root members of the tree's root team
-may address external:NAME. --from asserts a parent route within one team, not
+restricted delivery work across edges too. Only root members of the tree's root
+team may address external:NAME. --from asserts a parent route within a team, not
 authorship. --reply-to takes plain existing IDs such as m1.
 This command takes no --team; name the target as <team>/<member>.
 
-Parentless vendor members of different top-level teams may also send to each
-other by full address. Child-team roots, non-root or locked members, --from
+Parentless unrestricted members of different top-level teams may send to each
+other by full address. Child-team roots, non-root or restricted members, --from
 and --allow-unknown cannot use this route. One record belongs to the recipient
 tree; the sender keeps its printed ID and store. --reply-to m1 names a message
 from that peer to you in your own store, saved as <your-tree>:m1. The sender
@@ -110,9 +110,9 @@ Other Claude recipients get guarded typing, possibly during the current turn.
 Delivery never acknowledges: use `msg ack ID` when taking responsibility,
 and ignore an already-acked duplicate from `msg wait`.
 
-Locked Codex requires a live start with a pane, active gate marker and current
-session before recording. Locked Claude requires a live, guarded, empty
-composer and the typing budget. Locked records need no ack and have no inbox
+Restricted Codex needs a live start with a pane, active gate marker and current
+session before recording. Restricted Claude requires a live, guarded, empty
+composer and the typing budget. Restricted records need no ack and have no inbox
 recovery. Postcommit failures are recorded-not-delivered or uncertain, return
 nonzero and include the ID; retry may duplicate recorded or submitted input.
 
@@ -120,11 +120,11 @@ TEXT of - reads stdin. Body limit: {} bytes; repeat --reply-to for up to 32
 existing record IDs. Controls other than newline/tab and leading / or ! refuse.
 Claude typing uses a smaller screen-verification budget: 1024 envelope bytes
 and at most ten estimated lines. Larger ordinary Claude messages remain stored;
-locked Claude messages outside that budget refuse before committing. Drafts,
+restricted Claude messages outside that budget refuse before committing. Drafts,
 dialogs, copy mode and unverified pasted text never get Enter or clearing.
 
-Outcomes: committed (0); usage (2); unaddressable/locked not running (3);
-locked Claude dialog or copy mode (4); validation, fence, storage or locked
+Outcomes: committed (0); usage (2); unaddressable/restricted not running (3);
+restricted Claude dialog/copy mode (4); validation, fence, storage or restricted
 input failure (5). --json includes ok, code, message, and a committed id, store,
 delivery and reason when present. Delivery: typed, queued, stored, uncertain,
 recorded-not-delivered.",

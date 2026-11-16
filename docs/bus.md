@@ -8,7 +8,7 @@ This is trusted, same-user operation: callers identify themselves through their 
 
 No bus opt-in is needed. Use `bus: {alert: {plugin: notify, action: alert}}` only to configure a real alert action; automatic alert dispatch is not wired.
 
-Codex `vendor` members have full host access and no tool approvals; Claude `vendor` members get messages and notes as added folders. Locked recipients get no new bus commands, directories or sandbox grants.
+Unrestricted Codex members have full host access and no tool approvals; unrestricted Claude members get messages and notes as added folders. Restricted recipients get no new bus commands, directories or sandbox grants.
 
 ## Storage
 
@@ -25,7 +25,7 @@ Unexpected entries are refused. brg performs no automatic cleanup. Only the root
 
 Start records are in brg's own files outside messages: `members/<member>/incarnation.json`, with history in `members/<member>/incarnations/<id>.json`. Routing uses the member/parent entries in `start.json`. A stopped or replaced start cannot act for the member. In-tree publication and acknowledgement recheck this under the tree message lock. Incarnation changes use that same lock. Lock order is registry, lifecycle, then tree store; the typing lock is taken after releasing the store lock.
 
-Directories must be real, owned by you and private (0700; files 0600). Immutable files use a flushed temporary sibling and a no-replace hard link; a crash may leave a `.tmp-*` file, which readers skip. Reads scan the store; there is no index or automatic retention. Bodies, including locked notices, persist under existing plugin read rights. Storage and scan cost grow with record count.
+Directories must be real, owned by you and private (0700; files 0600). Immutable files use a flushed temporary sibling and a no-replace hard link; a crash may leave a `.tmp-*` file, which readers skip. Reads scan the store; there is no index or automatic retention. Bodies, including restricted notices, persist under existing plugin read rights. Storage and scan cost grow with record count.
 
 ## Callers and recipients
 
@@ -35,7 +35,7 @@ Team context means any nonempty `BORGCHART_TEAM`, `BORGCHART_MEMBER`, `BORGCHART
 
 - Members send to their parent or children, by full member ID. Only root members of the tree's root team may also send to `external:NAME`.
 - A child team's root members and their parent in the enclosing team can also send across their parent edge. Use the full `team/member` address; a child team's roots receive their parent's address in `BORGCHART_PARENT`.
-- Parentless `vendor` members of different top-level teams may also message one another by full address, for example `msg send product-9x3d/lead-m2c8 'The fix is installed'`. Child-team roots, non-root or locked members, `--from` and `--allow-unknown` cannot use this route. No opt-in is needed.
+- Parentless unrestricted members of different top-level teams may also message one another by full address, for example `msg send product-9x3d/lead-m2c8 'The fix is installed'`. Child-team roots, non-root or restricted members, `--from` and `--allow-unknown` cannot use this route. No opt-in is needed.
 - Outside callers may use `--external NAME` and may send to any kept member in the tree after its first start. Their replies go to `external:NAME` (`external:owner` by default without team context). That flag is refused inside a member.
 - Any caller can read a named member's inbox and individual messages in its own tree, and check that store. A plugin process with no member identity cannot send or ack without `--external NAME`.
 - A member is addressable after its first start, including while stopped. A role name or another team's member outside the allowed routes is refused; there is no role queue.
@@ -44,7 +44,7 @@ Team context means any nonempty `BORGCHART_TEAM`, `BORGCHART_MEMBER`, `BORGCHART
 
 Use `msg send TARGET TEXT`, or `msg send TARGET -` to read the body from stdin. Repeat `--reply-to ID` to reference existing records (up to 32). The body is at most 16 KiB; newline and tab are allowed, other control characters and a leading `/` or `!` are refused. The bounded delivery envelope is additional to the body limit.
 
-brg adds the caller's identity, UTC timestamp and immutable `ack_required`, derived from the target's frozen posture:
+brg adds the caller's identity, UTC timestamp and immutable `ack_required`, derived from the target's frozen access restrictions:
 
 ```json
 {"schema": 4, "id": "m2", "seq": 2, "at": "2026-11-08T00:00:00Z", "from": "dev-team-k3f9/implementer-x7k2", "to": "dev-team-k3f9/lead-q8m3", "reply_to": ["m1"], "body": "Report: notes/change-report.md", "ack_required": true}
@@ -56,7 +56,7 @@ Messages retain their sender's authority. A delivered envelope does not turn a h
 
 Within a tree, member sends require the sender to be the recipient's parent, or the recipient to be the sender's parent. Siblings, cousins and unrelated roots in the same tree cannot exchange messages. A deleted member, or a member in a child team deleted at any depth, cannot receive new messages.
 
-Parent edges within a team and across child teams use the same tree store and delivery rules, including queue, typing and locked delivery. The recipient's own pane, guard and posture decide delivery. IDs and acknowledgements are shared by the tree: nothing is imported or renumbered. `--reply-to` takes plain IDs such as `m1` that must already exist in that store.
+Parent edges within a team and across child teams use the same tree store and delivery rules, including queue, typing and restricted delivery. The recipient's own pane, guard and access restrictions decide delivery. IDs and acknowledgements are shared by the tree: nothing is imported or renumbered. `--reply-to` takes plain IDs such as `m1` that must already exist in that store.
 
 Between independent trees, exactly one record commits in the **recipient's** store, under its next ID; the sender's store is unchanged. The result names that store (`committed: m12 in product-9x3d (to lead-m2c8)`) and send JSON includes `store`. Keep both ID and tree to match replies. The recipient lists, reads and acks locally; the sender cannot inspect its acknowledgement. Reply when taking a peer request on. `--reply-to m12` reads the replier's own store and must name a message from that exact peer to that replier. It is saved as `product-9x3d:m12` when that tree owns the referenced record. Missing, malformed or unrelated references refuse the entire send. Readers show qualified references as labels, even after the owning tree is deleted.
 
@@ -108,7 +108,7 @@ brg msg read m1 --team dev-team-k3f9 --json
 {"ok": true, "code": 0, "outcome": "ok", "acked": [{"id": "m1", "outcome": "acked"}]}
 ```
 
-Repeating an ack returns `already` for that ID. Locked records have `ack_required: false`: an authorized ack returns `not-required` without creating an ack file. They are readable history labelled “ack not required,” not “recipient acked,” and are excluded from msg waits, unacked counts and pending-work deletion checks. The property never changes when posture changes. Settle ordinary unacked work before changing a recipient to locked.
+Repeating an ack returns `already` for that ID. Restricted records have `ack_required: false`: an authorized ack returns `not-required` without creating an ack file. They are readable history labelled “ack not required,” not “recipient acked,” and are excluded from msg waits, unacked counts and pending-work deletion checks. The property never changes when access restrictions change. Settle ordinary unacked work before restricting a recipient.
 
 **Wait:** `brg msg wait [--external NAME] [--timeout SECONDS] [--full] [--json]` waits for your own inbox or the named outside recipient. Its success JSON is exactly the inbox object above.
 
@@ -147,7 +147,7 @@ Delete needs `--force` for unacked messages to the team's kept members, unacked 
 
 An ordinary send commits first, then rechecks the current start and pane before delivery. Every Codex member gets the message through `codex queue`, using the recipient's recorded base environment and the session recorded for its current start. It runs as the next turn after any current one; it does not steer the running turn. `interactive` and `--allow-unknown` do not change Codex delivery. Queueing relies on Codex's local app-server. A stopped or replaced start is never queued, and brg never passes `--resume` to the queue command.
 
-If a start is under 30 seconds old, send waits up to five seconds for its session. An ordinary message with no current session or a failed queue call stays `stored`. A queue call without an answer within ten seconds is `uncertain`: it may have been queued; do not resend. A queued turn can run while a UI picker is open in the pane; queueing leaves the picker unanswered and existing drafts alone. Non-locked opening and resume prompts tell members to read their inbox with message bodies before carrying on.
+If a start is under 30 seconds old, send waits up to five seconds for its session. An ordinary message with no current session or a failed queue call stays `stored`. A queue call without an answer within ten seconds is `uncertain`: it may have been queued; do not resend. A queued turn can run while a UI picker is open in the pane; queueing leaves the picker unanswered and existing drafts alone. Unrestricted opening and resume prompts tell members to read their inbox with message bodies before carrying on.
 
 Claude keeps guarded typing: `interactive: true` makes it inbox-only, even with `--allow-unknown`; default false permits typing. Drafts, copy mode and visible dialogs prevent typed input. The exact pasted composer is checked again before Enter. Claude mid-turn delivery may steer or join the current turn. No guard eliminates the final-check/Enter race.
 
@@ -157,9 +157,9 @@ Typing never acknowledges ordinary work. Inbox waits and typing can deliver the 
 
 At the existing brief deadline, check ordinary work's ack/status. Start a stopped recipient; if idle and still unacked, send one follow-up with `--reply-to ID`; otherwise escalate. Do not busy-poll or republish a successful stored send. Inspect unacked work before stopping or deleting members; avoid routine force-deletes and unnecessary closing messages.
 
-Locked Codex sends preflight the live start with a pane, active gate marker and session recorded for that start, from brg’s files, before recording a no-ack-required message. Missing readiness refuses before recording. They use the same queue path and 16 KiB body limit as ordinary Codex sends. Locked Claude keeps live-pane, gate, empty-composer and typing-budget preflight. Ordinary Claude messages outside the typing budget remain stored for the next inbox read. A queue failure after recording is `recorded-not-delivered`; a timeout is `uncertain`. Both return nonzero with the committed ID; retry can duplicate history and uncertain input. There is no inbox recovery and no new locked permission. The fixed reminder qualification helper remains separate from send delivery.
+Restricted Codex sends preflight the live start with a pane, active gate marker and session recorded for that start, from brg’s files, before recording a no-ack-required message. Missing readiness refuses before recording. They use the same queue path and 16 KiB body limit as ordinary Codex sends. Restricted Claude keeps live-pane, gate, empty-composer and typing-budget preflight. Ordinary Claude messages outside the typing budget remain stored for the next inbox read. A queue failure after recording is `recorded-not-delivered`; a timeout is `uncertain`. Both return nonzero with the committed ID; retry can duplicate history and uncertain input. There is no inbox recovery and no new restricted permission. The fixed reminder qualification helper remains separate from send delivery.
 
-A locked Codex member's granted plugin action queues sends in `<team-state>/tmp/<member>/send-queue`. Its PostToolUse hook opens that directory once, refuses symlinks, and works relative to the open directory even if its path changes. It sends through the ordinary bus as the member, to its parent only, oldest first: up to eight requests per hook, with 30 seconds per send and 60 seconds total. Committed requests and permanent refusals are removed. If brg cannot start, the request stays queued. A queued send is only retried at the member's next tool call, which may be its next wake.
+A restricted Codex member's granted plugin action queues sends in `<team-state>/tmp/<member>/send-queue`. Its PostToolUse hook opens that directory once, refuses symlinks, and works relative to the open directory even if its path changes. It sends through the ordinary bus as the member, to its parent only, oldest first: up to eight requests per hook, with 30 seconds per send and 60 seconds total. Committed requests and permanent refusals are removed. If brg cannot start, the request stays queued. A queued send is only retried at the member's next tool call, which may be its next wake.
 
 The hook reports each refusal or transient failure as extra context for the member. It prints nothing when all sends succeed. A timeout or unknown outcome leaves a `.sending` file and reports that inspection is needed; interrupted hooks can also leave `.sending` files. These files are never retried automatically: inspect the bus history before retrying. Claude plugin sends remain direct.
 
