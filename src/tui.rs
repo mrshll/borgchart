@@ -1130,6 +1130,67 @@ mod watch_tests {
         }
     }
     #[test]
+    fn watch_keeps_the_latest_route_visible_after_the_flights_end() {
+        let mut section = section();
+        for name in ["alpha-abcd", "beta-abcd", "gamma-abcd"] {
+            section.rows.push(crate::graph::layout::tests::row(
+                "demo",
+                name,
+                Some("lead-abcd"),
+            ));
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::bus::layout::StorePaths::from_root(dir.path());
+        let mut feed = crate::graph::feed::Feed::open(paths.clone()).unwrap();
+        let record = crate::bus::record::Record {
+            schema: crate::bus::SCHEMA,
+            id: "m1".into(),
+            seq: 1,
+            from: "demo/gamma-abcd".into(),
+            to: "demo/beta-abcd".into(),
+            at: "2026-01-01T00:00:00.000Z".into(),
+            ack_required: false,
+            body: "PRIVATE-MARKER-7f49".into(),
+            reply_to: vec![],
+        };
+        crate::bus::fsx::write_new(&paths.record(1), &serde_json::to_vec(&record).unwrap())
+            .unwrap();
+        feed.poll(Duration::ZERO).unwrap();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        for milliseconds in [1980, 9000] {
+            terminal
+                .draw(|f| {
+                    watch_draw(
+                        f,
+                        std::slice::from_ref(&section),
+                        false,
+                        true,
+                        Some("demo"),
+                        Some(&feed),
+                        &mut crate::graph::layout::Motion::default(),
+                        Duration::from_millis(milliseconds),
+                        ["", ""],
+                        0,
+                    )
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let graph: String = buffer.content[160..1600]
+                .iter()
+                .map(|c| c.symbol())
+                .collect();
+            assert!(graph.contains("m1") && graph.contains('→'), "{graph}");
+            let lines: Vec<String> = buffer
+                .content
+                .chunks(80)
+                .map(|row| row.iter().map(|c| c.symbol()).collect())
+                .collect();
+            assert!(!lines.join("\n").contains(&record.body));
+            println!("watch at {milliseconds}ms 80x24:\n{}", lines.join("\n"));
+        }
+    }
+    #[test]
     fn selected_team_without_a_feed_shows_the_follower_error() {
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();

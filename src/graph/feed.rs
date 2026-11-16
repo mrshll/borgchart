@@ -49,11 +49,17 @@ pub(crate) struct Feed {
     pub waiting: BTreeMap<u64, Msg>,
     pub routes: BTreeSet<(String, String)>,
     pub events: VecDeque<Event>,
+    pub last: Option<Msg>,
 }
 impl Feed {
     pub fn open(paths: StorePaths) -> Result<Self, String> {
         let snap = store::snapshot_of(&paths).map_err(|e| e.message)?;
         let next = snap.records.keys().next_back().copied().unwrap_or(0) + 1;
+        let last = snap
+            .records
+            .values()
+            .rev()
+            .find_map(|r| Msg::read(r.clone()));
         let waiting: BTreeMap<_, _> = snap
             .records
             .into_iter()
@@ -62,6 +68,7 @@ impl Feed {
             .collect();
         let routes = waiting
             .values()
+            .chain(last.iter())
             .map(|m| (m.from.clone(), m.to.clone()))
             .collect();
         Ok(Self {
@@ -70,6 +77,7 @@ impl Feed {
             waiting,
             routes,
             events: VecDeque::new(),
+            last,
         })
     }
     fn event(&mut self, msg: Msg, kind: Kind, observed: Duration) {
@@ -91,6 +99,7 @@ impl Feed {
                 continue;
             };
             self.routes.insert((msg.from.clone(), msg.to.clone()));
+            self.last = Some(msg.clone());
             self.event(msg.clone(), Kind::Sent, now);
             if msg.ack_required {
                 self.waiting.insert(msg.seq, msg);
@@ -119,7 +128,7 @@ impl Feed {
         self.events.iter().any(|e| {
             now.saturating_sub(e.observed)
                 < match e.kind {
-                    Kind::Sent => Duration::from_millis(800),
+                    Kind::Sent => Duration::from_millis(4500),
                     Kind::Acked(_) => Duration::from_secs(2),
                     Kind::Delivered => Duration::ZERO,
                 }
@@ -158,6 +167,26 @@ mod tests {
             at: time::format_utc(UNIX_EPOCH + Duration::from_secs(141)),
         };
         fsx::write_new(&paths.ack(&a.id), &serde_json::to_vec(&a).unwrap()).unwrap();
+    }
+    #[test]
+    fn redraws_cover_all_three_flights_and_stop_at_the_final_gap_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = StorePaths::from_root(dir.path());
+        let mut feed = Feed::open(paths.clone()).unwrap();
+        record(&paths, 1, "external:owner", false);
+        feed.poll(Duration::from_secs(1)).unwrap();
+        for milliseconds in [1000, 1480, 2300, 2980, 3800, 4480, 5300, 5499] {
+            assert!(
+                feed.moving(Duration::from_millis(milliseconds)),
+                "{milliseconds}"
+            );
+        }
+        for milliseconds in [5500, 9000] {
+            assert!(
+                !feed.moving(Duration::from_millis(milliseconds)),
+                "{milliseconds}"
+            );
+        }
     }
     #[test]
     fn opening_does_not_replay_history_or_keep_consumed_messages() {

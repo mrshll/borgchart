@@ -19,6 +19,10 @@ use std::time::{Duration, SystemTime};
 fn rgb((r, g, b): crate::tree::Rgb) -> Color {
     Color::Rgb(r, g, b)
 }
+fn arrow(dx: f64, dy: f64) -> &'static str {
+    let octant = (dy.atan2(dx) * 4. / std::f64::consts::PI).round() as i32;
+    ["→", "↘", "↓", "↙", "←", "↖", "↑", "↗"][octant.rem_euclid(8) as usize]
+}
 
 pub(crate) fn draw(
     frame: &mut ratatui::Frame,
@@ -39,19 +43,28 @@ pub(crate) fn draw(
         *waiting.entry(msg.to.clone()).or_default() += 1;
     }
     let (labels, hidden) = layout::labels(nodes, &points, area.width, h, &waiting);
+    let last = feed
+        .last
+        .as_ref()
+        .and_then(|m| Some((m, *points.get(&m.from)?, *points.get(&m.to)?)));
     let flights: Vec<_> = feed
         .events
         .iter()
         .filter(|e| {
             matches!(e.kind, Kind::Sent)
-                && now.saturating_sub(e.observed) < Duration::from_millis(800)
+                && now.saturating_sub(e.observed) < Duration::from_millis(4500)
+                && now.saturating_sub(e.observed).as_millis() % 1500 < 1200
         })
         .filter_map(|e| {
             let a = *points.get(&e.msg.from)?;
             let b = *points.get(&e.msg.to)?;
-            let t = now.saturating_sub(e.observed).as_secs_f64() / 0.8;
+            let t = (now.saturating_sub(e.observed).as_secs_f64() % 1.5) / 1.2;
             let lerp = |t: f64| (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
-            Some((lerp((t - 0.2).max(0.)), lerp(t)))
+            Some((
+                lerp((t - 0.2).max(0.)),
+                lerp(t),
+                arrow(b.0 - a.0, b.1 - a.1),
+            ))
         })
         .collect();
     let canvas = Canvas::default()
@@ -81,7 +94,11 @@ pub(crate) fn draw(
                 }
             }
             ctx.layer();
-            for &(tail, head) in &flights {
+            if let Some((_, a, b)) = last {
+                ctx.draw(&segment(a, b, rgb(palette::MESSAGE)));
+            }
+            ctx.layer();
+            for &(tail, head, _) in &flights {
                 ctx.draw(&segment(tail, head, rgb(palette::MESSAGE)));
             }
         });
@@ -95,11 +112,34 @@ pub(crate) fn draw(
             );
         }
     };
-    for (_, head) in flights {
+    if let Some((msg, a, b)) = last {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let length = dx.hypot(dy).max(1.);
+        put(
+            (b.0 - dx / length).round() as u16,
+            (b.1 - dy / length).round() as u16,
+            arrow(dx, dy).into(),
+            rgb(palette::MESSAGE),
+        );
+        let x = ((a.0 + b.0) / 2.).round() as u16;
+        let y = ((a.1 + b.1) / 2.).round() as u16;
+        let end = x.saturating_add(msg.id.len() as u16);
+        if end <= area.width
+            && !labels.iter().any(|l| {
+                l.y == y && x <= l.x + l.text.chars().count() as u16 && end > l.x.saturating_sub(1)
+            })
+            && !points
+                .values()
+                .any(|&(px, py)| py.round() as u16 == y && (x..end).contains(&(px.round() as u16)))
+        {
+            put(x, y, msg.id.clone(), rgb(palette::MESSAGE));
+        }
+    }
+    for (_, head, direction) in flights {
         put(
             head.0.round() as u16,
             head.1.round() as u16,
-            "•".into(),
+            direction.into(),
             rgb(palette::MESSAGE),
         );
     }
@@ -108,7 +148,9 @@ pub(crate) fn draw(
             label.x.saturating_sub(1),
             label.y,
             format!(" {} ", label.text),
-            if waiting.contains_key(&label.id) {
+            if waiting.contains_key(&label.id)
+                || last.is_some_and(|(m, _, _)| m.from == label.id || m.to == label.id)
+            {
                 rgb(palette::MESSAGE)
             } else {
                 Color::Reset
@@ -224,6 +266,300 @@ mod tests {
     };
     use ratatui::{Terminal, backend::TestBackend};
     use std::time::UNIX_EPOCH;
+    fn route_nodes(feed: &Feed) -> Vec<Node> {
+        layout::nodes(
+            &[
+                layout::tests::row("demo", "lead-abcd", None),
+                layout::tests::row("demo", "alpha-abcd", Some("lead-abcd")),
+                layout::tests::row("demo", "beta-abcd", Some("lead-abcd")),
+                layout::tests::row("demo", "gamma-abcd", Some("lead-abcd")),
+            ],
+            "demo",
+            None,
+            feed,
+        )
+    }
+    fn send(paths: &crate::bus::layout::StorePaths, seq: u64, from: &str, to: &str) {
+        let record = Record {
+            schema: crate::bus::SCHEMA,
+            id: format!("m{seq}"),
+            seq,
+            from: from.into(),
+            to: to.into(),
+            at: time::format_utc(UNIX_EPOCH),
+            ack_required: true,
+            body: "PRIVATE-MARKER-7f49".into(),
+            reply_to: vec![],
+        };
+        fsx::write_new(&paths.record(seq), &serde_json::to_vec(&record).unwrap()).unwrap();
+    }
+    fn render(feed: &Feed, nodes: &[Node], milliseconds: u64) -> ratatui::buffer::Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|f| {
+                draw(
+                    f,
+                    f.area(),
+                    nodes,
+                    feed,
+                    &mut Motion::default(),
+                    Duration::from_millis(milliseconds),
+                    UNIX_EPOCH,
+                )
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+    fn dump(buffer: &ratatui::buffer::Buffer) -> String {
+        buffer
+            .content
+            .chunks(buffer.area.width as usize)
+            .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    #[test]
+    fn sent_messages_fly_three_directed_passes_with_gaps_then_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::bus::layout::StorePaths::from_root(dir.path());
+        let mut feed = Feed::open(paths.clone()).unwrap();
+        for (seq, from, to, arrow) in [
+            (1, "demo/gamma-abcd", "demo/beta-abcd", "→"),
+            (2, "demo/lead-abcd", "demo/alpha-abcd", "↑"),
+        ] {
+            send(&paths, seq, from, to);
+            feed.poll(Duration::ZERO).unwrap();
+            let nodes = route_nodes(&feed);
+            let points = layout::positions(&nodes, 80, 21);
+            let a = points[from];
+            let b = points[to];
+            let head = (
+                (a.0 + (b.0 - a.0) * 0.4).round() as u16,
+                (a.1 + (b.1 - a.1) * 0.4).round() as u16,
+            );
+            for milliseconds in [480, 1980, 3480] {
+                let buffer = render(&feed, &nodes, milliseconds);
+                assert_eq!(
+                    buffer[head].symbol(),
+                    arrow,
+                    "pass at {milliseconds}:\n{}",
+                    dump(&buffer)
+                );
+                assert_eq!(buffer[head].fg, rgb(palette::MESSAGE));
+                if seq == 1 && milliseconds == 1980 {
+                    println!("mid-flight 80x24:\n{}", dump(&buffer));
+                }
+            }
+            for milliseconds in [1300, 2800, 4300, 4500, 9000] {
+                let buffer = render(&feed, &nodes, milliseconds);
+                assert_ne!(buffer[head].symbol(), arrow, "gap/end at {milliseconds}");
+            }
+        }
+    }
+    #[test]
+    fn newest_acked_snapshot_lights_its_route_and_id_without_replaying_or_leaking() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::bus::layout::StorePaths::from_root(dir.path());
+        send(&paths, 1, "demo/lead-abcd", "demo/alpha-abcd");
+        send(&paths, 2, "demo/gamma-abcd", "demo/beta-abcd");
+        let ack = crate::bus::store::Ack {
+            schema: crate::bus::SCHEMA,
+            id: "m2".into(),
+            by: crate::bus::context::Actor::Member {
+                member: "demo/beta-abcd".into(),
+                incarnation: "example.1".into(),
+            },
+            at: time::format_utc(UNIX_EPOCH),
+        };
+        fsx::write_new(&paths.ack("m2"), &serde_json::to_vec(&ack).unwrap()).unwrap();
+        send(&paths, 3, "external:\x1b[31m", "demo/beta-abcd");
+        let feed = Feed::open(paths).unwrap();
+        let nodes = route_nodes(&feed);
+        assert!(!feed.moving(Duration::ZERO));
+        for milliseconds in [0, 4500, 9000] {
+            let buffer = render(&feed, &nodes, milliseconds);
+            let graph: String = buffer.content[..80 * 21]
+                .iter()
+                .map(|c| c.symbol())
+                .collect();
+            assert!(graph.contains("m2"), "{}", dump(&buffer));
+            assert!(!graph.contains("m1"));
+            assert!(!dump(&buffer).contains("PRIVATE-MARKER-7f49"));
+            let (labels, _) = layout::labels(
+                &nodes,
+                &layout::positions(&nodes, 80, 21),
+                80,
+                21,
+                &BTreeMap::from([("demo/alpha-abcd".into(), 1)]),
+            );
+            for label in labels
+                .iter()
+                .filter(|label| ["demo/beta-abcd", "demo/gamma-abcd"].contains(&label.id.as_str()))
+            {
+                assert_eq!(buffer[(label.x, label.y)].fg, rgb(palette::MESSAGE));
+            }
+            let id = buffer.content[..80 * 21]
+                .windows(2)
+                .find(|pair| pair[0].symbol() == "m" && pair[1].symbol() == "2")
+                .unwrap();
+            assert!(id.iter().all(|cell| cell.fg == rgb(palette::MESSAGE)));
+            assert!(buffer.content[..80 * 21].iter().any(|cell| {
+                cell.fg == rgb(palette::MESSAGE)
+                    && cell
+                        .symbol()
+                        .chars()
+                        .any(|ch| ('\u{2801}'..='\u{28ff}').contains(&ch))
+            }));
+            if milliseconds == 9000 {
+                println!("after flights 80x24:\n{}", dump(&buffer));
+            }
+        }
+    }
+    #[test]
+    fn newest_polled_route_replaces_the_old_highlight_after_flights() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::bus::layout::StorePaths::from_root(dir.path());
+        let mut feed = Feed::open(paths.clone()).unwrap();
+        send(&paths, 1, "demo/lead-abcd", "demo/alpha-abcd");
+        send(&paths, 2, "demo/gamma-abcd", "demo/beta-abcd");
+        feed.poll(Duration::ZERO).unwrap();
+        let nodes = route_nodes(&feed);
+        let buffer = render(&feed, &nodes, 9000);
+        let graph: String = buffer.content[..80 * 21]
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            graph.contains("m2") && !graph.contains("m1"),
+            "{}",
+            dump(&buffer)
+        );
+        assert!(feed.moving(Duration::from_millis(4499)));
+        assert!(!feed.moving(Duration::from_millis(4500)));
+    }
+    #[test]
+    fn snapshot_route_keeps_its_outside_sender_after_acknowledgement() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::bus::layout::StorePaths::from_root(dir.path());
+        send(&paths, 1, "external:owner", "demo/lead-abcd");
+        let ack = crate::bus::store::Ack {
+            schema: crate::bus::SCHEMA,
+            id: "m1".into(),
+            by: crate::bus::context::Actor::Member {
+                member: "demo/lead-abcd".into(),
+                incarnation: "example.1".into(),
+            },
+            at: time::format_utc(UNIX_EPOCH),
+        };
+        fsx::write_new(&paths.ack("m1"), &serde_json::to_vec(&ack).unwrap()).unwrap();
+        let feed = Feed::open(paths).unwrap();
+        let nodes = layout::nodes(
+            &[layout::tests::row("demo", "lead-abcd", None)],
+            "demo",
+            None,
+            &feed,
+        );
+        let buffer = render(&feed, &nodes, 0);
+        let text = dump(&buffer);
+        assert!(
+            text.contains("owner") && text.contains("m1") && text.contains('↓'),
+            "{text}"
+        );
+        assert!(!text.contains("PRIVATE-MARKER-7f49") && !feed.moving(Duration::ZERO));
+    }
+    #[test]
+    fn persistent_id_omits_colliding_nodes_and_labels_without_overwriting_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::bus::layout::StorePaths::from_root(dir.path());
+        let mut feed = Feed::open(paths.clone()).unwrap();
+        send(&paths, 1, "demo/alpha-abcd", "demo/delta-abcd");
+        feed.poll(Duration::ZERO).unwrap();
+        let nodes = layout::nodes(
+            &[
+                layout::tests::row("demo", "lead-abcd", None),
+                layout::tests::row("demo", "alpha-abcd", Some("lead-abcd")),
+                layout::tests::row("demo", "beta-abcd", Some("lead-abcd")),
+                layout::tests::row("demo", "gamma-abcd", Some("lead-abcd")),
+                layout::tests::row("demo", "delta-abcd", Some("lead-abcd")),
+            ],
+            "demo",
+            None,
+            &feed,
+        );
+        let buffer = render(&feed, &nodes, 9000);
+        let points = layout::positions(&nodes, 80, 21);
+        let waiting = BTreeMap::from([("demo/delta-abcd".into(), 1)]);
+        let (labels, hidden) = layout::labels(&nodes, &points, 80, 21, &waiting);
+        assert_eq!(hidden, 0);
+        let root = points["demo/lead-abcd"];
+        assert_eq!(
+            buffer[(root.0.round() as u16, root.1.round() as u16)].symbol(),
+            "○"
+        );
+        let graph: String = buffer.content[..80 * 21]
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(!graph.contains("m1"), "{}", dump(&buffer));
+        for label in labels {
+            let actual: String = (label.x..label.x + label.text.len() as u16)
+                .map(|x| buffer[(x, label.y)].symbol())
+                .collect();
+            assert_eq!(actual, label.text);
+            if label.id == "demo/alpha-abcd" {
+                assert_eq!(buffer[(label.x, label.y)].fg, rgb(palette::MESSAGE));
+            }
+            if label.id == "demo/lead-abcd" {
+                assert_eq!(buffer[(label.x, label.y)].fg, Color::Reset);
+            }
+        }
+        // Pick a real route whose midpoint meets an existing label, away from nodes.
+        let nodes = layout::tests::fixture();
+        let points = layout::positions(&nodes, 80, 21);
+        let (labels, _) = layout::labels(&nodes, &points, 80, 21, &BTreeMap::new());
+        let (from, to) = nodes
+            .iter()
+            .flat_map(|a| nodes.iter().map(move |b| (a, b)))
+            .find(|(a, b)| {
+                let a = points[&a.id];
+                let b = points[&b.id];
+                let (x, y) = (
+                    ((a.0 + b.0) / 2.).round() as u16,
+                    ((a.1 + b.1) / 2.).round() as u16,
+                );
+                labels.iter().any(|l| {
+                    l.y == y && x <= l.x + l.text.len() as u16 && x + 2 > l.x.saturating_sub(1)
+                }) && !points.values().any(|&(px, py)| {
+                    py.round() as u16 == y && (x..x + 2).contains(&(px.round() as u16))
+                })
+            })
+            .expect("fixture has a route through a label");
+        let record = Record {
+            schema: crate::bus::SCHEMA,
+            id: "m2".into(),
+            seq: 2,
+            from: from.id.clone(),
+            to: to.id.clone(),
+            at: time::format_utc(UNIX_EPOCH),
+            ack_required: false,
+            body: "PRIVATE-MARKER-7f49".into(),
+            reply_to: vec![],
+        };
+        fsx::write_new(&paths.record(2), &serde_json::to_vec(&record).unwrap()).unwrap();
+        feed.poll(Duration::ZERO).unwrap();
+        let buffer = render(&feed, &nodes, 9000);
+        for label in labels {
+            let actual: String = (label.x..label.x + label.text.len() as u16)
+                .map(|x| buffer[(x, label.y)].symbol())
+                .collect();
+            assert_eq!(actual, label.text);
+        }
+        let graph: String = buffer.content[..80 * 21]
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(!graph.contains("m2"), "{}", dump(&buffer));
+    }
     #[test]
     fn traffic_frame_shows_comet_waiting_and_ack_without_private_text() {
         let dir = tempfile::tempdir().unwrap();
@@ -254,7 +590,7 @@ mod tests {
                     &nodes,
                     &feed,
                     &mut motion,
-                    Duration::from_millis(400),
+                    Duration::from_millis(600),
                     UNIX_EPOCH + Duration::from_secs(141),
                 )
             })
@@ -277,7 +613,7 @@ mod tests {
                 ((a.1 + b.1) / 2.).round() as u16
             )]
                 .symbol(),
-            "•"
+            "↓"
         );
         assert!(buffer.content.iter().any(|c| {
             c.fg == rgb(crate::tree::palette::MESSAGE)
