@@ -119,7 +119,7 @@ mention intake.
 - `watch [--once]`: snapshot the first window without delivering it, then poll
   new top-level posts and replies to tracked threads. Notices contain timestamps
   and fixed labels, never Slack text. Edits and subtypes are skipped, except
-  human `thread_broadcast` replies and explicitly allowlisted bots' `bot_message`
+  `thread_broadcast` replies and explicitly allowlisted bots' `bot_message`
   posts. The plugin's own bot is always skipped. Without an allowlist, every
   human qualifies.
 - `read <ts>`: read a top-level post. `thread <ts-or-request-id>`: read up to 200 thread
@@ -194,7 +194,9 @@ brg, can repeat an ID notice. Pending items remain available for the next poll.
 Locked recipients have no inbox recovery; check plugin health after failures.
 
 Edits are not delivered. Threads whose roots left the window are not watched,
-and pending items expire with that window. History scans one page of 200; more
+but thread replies also sent to the channel are delivered as replies, even
+when their roots are outside the window. Pending items expire with that window.
+History scans one page of 200; more
 than 200 posts in the window leave older posts unscanned. Thread reads return at
 most 200 messages; the watcher fetches replies in pages of at most 200, advancing
 its timestamp until it catches the advertised latest reply. Slack rate limits
