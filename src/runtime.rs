@@ -5050,9 +5050,10 @@ pub fn send(
             .map_err(SendError::Refused)?;
         view.busy = false; // Working is allowed; the input box must still be empty.
         if view.reading() != crate::composer::Reading::Empty {
-            return Err(SendError::Refused(
-                "input box is not positively empty; draft preserved".into(),
-            ));
+            return Err(SendError::Blocked(format!(
+                "input box holds unsent text; typed messages wait until a person submits or clears it: brg attach {}",
+                inst.at(&to)
+            )));
         }
         let pointer = !view.can_verify_submission(&envelope, before.screen.lines().count());
         let text = if pointer {
@@ -5077,6 +5078,8 @@ pub fn send(
         Err(error) => (
             if matches!(error, SendError::Uncertain(_)) {
                 "uncertain"
+            } else if matches!(error, SendError::Blocked(_)) {
+                "blocked"
             } else {
                 "stored"
             },
@@ -5111,6 +5114,15 @@ pub fn send(
                     Err(e)
                 }
             })
+        } else if std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Delivery>(&bytes).ok())
+            .is_some_and(|d| {
+                d.incarnation == inc.incarnation
+                    && matches!(d.outcome.as_str(), "blocked" | "uncertain")
+            })
+        {
+            Ok(())
         } else {
             write_private(&path, &serde_json::to_vec(&serde_json::json!({
                 "outcome": delivery, "reason": reason, "at": utc_now(), "id": record.id, "incarnation": inc.incarnation
@@ -5139,7 +5151,7 @@ pub fn send(
                     message: reason,
                 })
             } else {
-                outcome.delivery = if uncertain { "uncertain" } else { "stored" };
+                outcome.delivery = delivery;
                 outcome.reason = reason;
                 Ok(outcome)
             }

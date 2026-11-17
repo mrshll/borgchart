@@ -394,7 +394,7 @@ impl Env {
             "new-session",
             "-d",
             "-s",
-            "s",
+            "brg-state",
             "-n",
             "m",
             "-x",
@@ -424,7 +424,7 @@ impl Env {
                 "display-message",
                 "-p",
                 "-t",
-                "=s:=m",
+                "=brg-state:=m",
                 "#{pane_id} #{pane_pid}",
             ])
             .unwrap();
@@ -432,11 +432,17 @@ impl Env {
         PaneIdentity {
             socket: self
                 .tmux
-                .ok(&["display-message", "-p", "-t", "=s:=m", "#{socket_path}"])
+                .ok(&[
+                    "display-message",
+                    "-p",
+                    "-t",
+                    "=brg-state:=m",
+                    "#{socket_path}",
+                ])
                 .unwrap()
                 .trim()
                 .into(),
-            session: "s".into(),
+            session: "brg-state".into(),
             window: "m".into(),
             pane_id: id.into(),
             pane_pid: pid.parse().unwrap(),
@@ -456,7 +462,7 @@ impl Env {
     }
 
     fn keys(&self, args: &[&str]) {
-        let mut a = vec!["send-keys", "-t", "=s:=m"];
+        let mut a = vec!["send-keys", "-t", "=brg-state:=m"];
         a.extend_from_slice(args);
         self.tmux.ok(&a).unwrap();
     }
@@ -472,7 +478,7 @@ impl Env {
     /// The fake's screen as tmux shows it.
     fn screen(&self) -> String {
         self.tmux
-            .ok(&["capture-pane", "-p", "-t", "=s:=m"])
+            .ok(&["capture-pane", "-p", "-t", "=brg-state:=m"])
             .unwrap_or_default()
     }
 
@@ -673,13 +679,21 @@ fn an_attached_client_and_a_resize_do_not_matter() {
     let mut client = e
         .private
         .tmux(&e.socket)
-        .args(["-C", "attach", "-t", "s"])
+        .args(["-C", "attach", "-t", "brg-state"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .spawn()
         .unwrap();
     e.tmux
-        .ok(&["resize-window", "-t", "=s:=m", "-x", "90", "-y", "30"])
+        .ok(&[
+            "resize-window",
+            "-t",
+            "=brg-state:=m",
+            "-x",
+            "90",
+            "-y",
+            "30",
+        ])
         .unwrap();
     // Let the program redraw at the new size (mid-redraw reads defer).
     std::thread::sleep(Duration::from_millis(400));
@@ -704,7 +718,13 @@ fn a_pane_is_found_by_its_socket_path() {
     let e = Env::new(Vendor::Claude);
     let path = e
         .tmux
-        .ok(&["display-message", "-p", "-t", "=s:=m", "#{socket_path}"])
+        .ok(&[
+            "display-message",
+            "-p",
+            "-t",
+            "=brg-state:=m",
+            "#{socket_path}",
+        ])
         .unwrap();
     let mut p = e.pane();
     p.socket = path.trim().to_string();
@@ -723,6 +743,19 @@ impl Env {
             borgchart::state::write_private(path, &serde_json::to_vec(&value).unwrap()).unwrap();
         };
         let folder = self.dir.path();
+        fs::write(
+            folder.join("template.yaml"),
+            format!(
+                "roles:\n  worker: {{vendor: {}, prompt: worker.md}}\n",
+                vendor.as_str()
+            ),
+        )
+        .unwrap();
+        fs::write(
+            folder.join("worker.md"),
+            "---\nmodels: {claude: haiku, codex: gpt-6-astra}\n---\nDo the task.\n",
+        )
+        .unwrap();
         write(
             &folder.join("registry.json"),
             json!({"schema":2,"teams":{"state":{
@@ -758,7 +791,7 @@ impl Env {
         }
     }
 
-    fn send_message(&self, text: &str, extra: &[&str]) -> (i32, serde_json::Value) {
+    fn brg(&self, args: &[&str]) -> std::process::Output {
         let mut cmd = common::command(env!("CARGO_BIN_EXE_brg"));
         cmd.env_clear()
             .env(
@@ -774,18 +807,30 @@ impl Env {
             .env("QUEUE_SENDER_MARKER", "sender-only")
             .env("BORGCHART_STATE_HOME", self.dir.path())
             .env("BORGCHART_CONFIG", self.dir.path().join("unused.yaml"))
-            .args([
-                "msg",
-                "send",
-                "state/m",
-                text,
-                "--external",
-                "test",
-                "--json",
-            ])
-            .args(extra);
+            .args(args);
         self.private.brg_env(&mut cmd, &self.socket);
-        let out = cmd.output().unwrap();
+        cmd.output().unwrap()
+    }
+
+    fn status_row(&self) -> serde_json::Value {
+        let out = self.brg(&["status", "state", "--json"]);
+        assert!(out.status.success(), "{out:?}");
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+        rows.into_iter().find(|r| r["member"] == "m").unwrap()
+    }
+
+    fn send_message(&self, text: &str, extra: &[&str]) -> (i32, serde_json::Value) {
+        let mut args = vec![
+            "msg",
+            "send",
+            "state/m",
+            text,
+            "--external",
+            "test",
+            "--json",
+        ];
+        args.extend_from_slice(extra);
+        let out = self.brg(&args);
         let value = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{out:?}"));
         (out.status.code().unwrap(), value)
     }
@@ -839,7 +884,11 @@ fn unified_send_preserves_drafts_and_skips_interactive_messages() {
         }
         let (code, out) = e.send_message(&text, &["--allow-unknown"]);
         assert_eq!(code, 0, "{out}");
-        assert_eq!(out["delivery"], "stored", "{out}");
+        assert_eq!(
+            out["delivery"],
+            if draft { "blocked" } else { "stored" },
+            "{out}"
+        );
         assert!(e.events("paste").is_empty());
         assert!(e.events("submit").is_empty());
         if draft {
@@ -890,6 +939,58 @@ fn claude_short_message_is_still_typed_in_full() {
     assert_eq!(submitted.len(), 1);
     assert!(submitted[0].contains("\nhello\n"));
     assert!(!submitted[0].contains("msg read"));
+}
+
+#[test]
+fn claude_draft_makes_later_sends_blocked_and_status_keeps_the_first_cause() {
+    let e = Env::new(Vendor::Claude);
+    e.send_setup(Vendor::Claude, false, false);
+    e.control("on_paste=append: leftover");
+    let (code, first) = e.send_message("first", &[]);
+    assert_eq!(code, 0, "{first}");
+    assert_eq!(first["delivery"], "uncertain", "{first}");
+    let first_status = e.status_row()["delivery"].clone();
+    assert_eq!(first_status["id"], first["id"]);
+    assert!(first_status["at"].is_string());
+    for text in ["second", "third"] {
+        let (code, later) = e.send_message(text, &[]);
+        assert_eq!(code, 0, "{later}");
+        assert_eq!(later["delivery"], "blocked", "{later}");
+        assert_eq!(e.status_row()["delivery"], first_status);
+    }
+    assert_eq!(e.events("paste").len(), 1);
+    assert!(e.events("submit").is_empty());
+    let bus = borgchart::bus::store::open(&e.state).unwrap();
+    assert_eq!(
+        borgchart::bus::store::snapshot(&bus).unwrap().records.len(),
+        3
+    );
+    e.control("on_paste=none");
+    e.keys(&["C-u"]);
+    e.wait_for("the draft to clear", |e| !e.events("clear").is_empty());
+    assert_eq!(e.send_message("resume", &[]).1["delivery"], "typed");
+    assert!(e.status_row().get("delivery").is_none());
+}
+
+#[test]
+fn claude_dialog_and_copy_mode_block_delivery_without_typing() {
+    for mode in ["dialog", "copy"] {
+        let e = Env::new(Vendor::Claude);
+        e.send_setup(Vendor::Claude, false, false);
+        if mode == "dialog" {
+            e.control("mode=dialog");
+        } else {
+            e.tmux.ok(&["copy-mode", "-t", "=brg-state:=m"]).unwrap();
+        }
+        let (code, out) = e.send_message("hello", &[]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(out["delivery"], "blocked", "{out}");
+        assert!(e.events("paste").is_empty());
+        let first_status = e.status_row()["delivery"].clone();
+        assert_eq!(first_status["id"], out["id"]);
+        assert_eq!(e.send_message("next", &[]).1["delivery"], "blocked");
+        assert_eq!(e.status_row()["delivery"], first_status);
+    }
 }
 
 impl Env {
@@ -1345,7 +1446,7 @@ fn locked_codex_missing_readiness_refuses_without_recording() {
             borgchart::lifecycle::end_incarnation(&e.state, "m", "stopped").unwrap();
         }
         if case == "dead pane" {
-            e.tmux.ok(&["kill-pane", "-t", "=s:=m"]).unwrap();
+            e.tmux.ok(&["kill-pane", "-t", "=brg-state:=m"]).unwrap();
         }
         let (code, out) = e.send_message("hello", &["--allow-unknown"]);
         assert_ne!(code, 0, "{case}: {out}");
@@ -1482,7 +1583,7 @@ fn codex_queue_never_targets_a_dead_pane_or_a_start_replaced_during_session_wait
         borgchart::lifecycle::begin_incarnation(&e.state, &inc).unwrap();
         if case == "dead pane" {
             e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20");
-            e.tmux.ok(&["kill-pane", "-t", "=s:=m"]).unwrap();
+            e.tmux.ok(&["kill-pane", "-t", "=brg-state:=m"]).unwrap();
         }
         std::thread::scope(|s| {
             if case != "dead pane" {
@@ -1517,7 +1618,7 @@ fn codex_queue_delivers_through_dialog_and_copy_mode_without_answering_them() {
             if mode == "dialog" {
                 e.control("mode=dialog");
             } else {
-                e.tmux.ok(&["copy-mode", "-t", "=s:=m"]).unwrap();
+                e.tmux.ok(&["copy-mode", "-t", "=brg-state:=m"]).unwrap();
             }
             let (code, out) = e.send_message("hello", &["--allow-unknown"]);
             assert_eq!(code, 0, "{locked} {mode}: {out}");
