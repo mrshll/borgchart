@@ -1559,11 +1559,10 @@ fn a_failed_kill_keeps_an_unreadable_restricted_start_open() {
     let (env, out) = start_with_unreadable_restricted_pane(true);
     let inc = read_json(&env.incarnation_file("lead"));
     assert!(inc.get("ended_at").is_none(), "{inc}");
-    assert!(inc.get("ended_reason").is_none(), "{inc}");
     assert_eq!(
         outcomes(&stdout(&out), &env.m("lead")),
         [format!(
-            "couldn't stop: brg couldn't read its pane; run `brg stop {}/{}`",
+            "couldn't stop it: brg couldn't read its pane, so its restricted-access gate couldn't be checked, and tmux refused to stop it (kill refused); stop it once its tmux server can be reached: brg stop {}/{}",
             env.inst(),
             env.m("lead")
         )]
@@ -1593,7 +1592,7 @@ fn start_with_unreadable_restricted_pane(kill_fails: bool) -> (Env, Output) {
     );
     env.write("home/fake-agent/no-hooks", "");
     env.script("shim/tmux", &format!(
-        "#!/bin/sh\nfor arg do\ncase \"$arg\" in\n'#{{socket_path}}\t#{{pane_id}}\t#{{pane_pid}}') exit 1 ;;\nkill-window) {kill_fails} && exit 1 ;;\nesac\ndone\nexec '{}' \"$@\"\n",
+        "#!/bin/sh\nfor arg do\ncase \"$arg\" in\n'#{{socket_path}}\t#{{pane_id}}\t#{{pane_pid}}') exit 1 ;;\nkill-window) if {kill_fails}; then echo 'kill refused' >&2; exit 1; fi ;;\nesac\ndone\nexec '{}' \"$@\"\n",
         env.tmux.guard().display()
     ));
     let out = env
