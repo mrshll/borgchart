@@ -637,6 +637,24 @@ mod tests {
     }
 
     #[test]
+    fn claude_add_dir_dialog_is_blocked() {
+        for screen in [
+            include_str!("../tests/fixtures/screens/claude-2.1.326-add-dir.txt"),
+            include_str!("../tests/fixtures/screens/claude-2.1.326-add-dir-notes.txt"),
+            include_str!("../tests/fixtures/screens/claude-2.1.326-add-dir-yes.txt"),
+            include_str!("../tests/fixtures/screens/claude-2.1.326-add-dir-hint.txt"),
+        ] {
+            let reading = claude().read("", screen);
+            assert_eq!(reading.state, State::Blocked, "{screen}");
+            assert_eq!(reading.rule.as_deref(), Some("add-dir-dialog"), "{screen}");
+        }
+        assert_eq!(
+            claude().read("", CLAUDE_TRUST).rule.as_deref(),
+            Some("trust-dialog")
+        );
+    }
+
+    #[test]
     fn codex_trust_screen_is_blocked() {
         // Recorded from codex-cli 0.165.0 at startup in an untrusted Git
         // repository, at 120 and 80 columns; the title is the host name.

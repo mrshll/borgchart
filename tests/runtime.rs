@@ -2255,6 +2255,34 @@ fn codex_trust_screen_is_left_for_a_person_unless_auto_trust_covers_the_folder()
 }
 
 #[test]
+fn a_role_added_folder_dialog_is_left_for_a_person() {
+    let env = Env::new();
+    env.config("auto_trust: true\n");
+    env.write("home/fake-agent/add-dir", "");
+    env.write(
+        "team/template.yaml",
+        "roles:\n  alpha:\n    prompt: alpha.md\n    args: [--add-dir, /srv/example]\n",
+    );
+    let out = env.brg(&["start"]);
+    assert!(out.status.success(), "{}", stdout(&out));
+    let text = stdout(&env.brg(&["status"]));
+    assert!(text.contains("blocked (new folder)"), "{text}");
+    assert!(
+        text.contains(&format!(
+            "waiting at Claude's \"Adding a new directory\" prompt: `brg attach {}/{}`",
+            env.instance().unwrap(),
+            env.m("alpha")
+        )),
+        "{text}"
+    );
+    assert!(
+        !env.events("alpha")
+            .iter()
+            .any(|e| e["event"] == "add-dir-key")
+    );
+}
+
+#[test]
 fn status_shows_members_waiting_at_folder_trust_with_an_attach_hint() {
     // Catches: a member at its vendor's folder-trust screen reading as a
     // plain `blocked` (Claude) or `unknown` (Codex), with nothing saying

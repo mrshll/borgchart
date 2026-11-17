@@ -32,6 +32,11 @@ fn argv(start: &Value) -> Vec<String> {
         .collect()
 }
 
+fn settings(argv: &[String]) -> Value {
+    let path = &argv.windows(2).find(|w| w[0] == "--settings").unwrap()[1];
+    serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
+}
+
 impl Env {
     fn folder(&self, rel: &str) -> String {
         self.path(rel).display().to_string()
@@ -94,12 +99,14 @@ fn vendor_codex_has_full_access_and_claude_gets_added_folders() {
     // Claude: added folders.
     let lead = env.member(&a, "lead");
     let claude = argv(&env.starts(&lead)[0]);
-    let added: Vec<&String> = claude
-        .windows(2)
-        .filter(|w| w[0] == "--add-dir")
-        .map(|w| &w[1])
-        .collect();
-    assert_eq!(added, [&messages, &notes], "{claude:?}");
+    assert!(
+        !claude.iter().any(|a| a.starts_with("--add-dir")),
+        "{claude:?}"
+    );
+    assert_eq!(
+        settings(&claude)["permissions"]["additionalDirectories"],
+        json!([messages, notes])
+    );
     env.ok(&["stop", &a]);
 }
 
@@ -136,6 +143,7 @@ fn locked_members_keep_their_launch() {
         assert!(claude.iter().any(|a| a == flag), "{flag}: {claude:?}");
     }
     assert!(!claude.iter().any(|a| a == "--add-dir"), "{claude:?}");
+    assert!(settings(&claude)["permissions"]["additionalDirectories"].is_null());
 
     // Codex: no trust, only plugin data and its temp folder writable, and
     // it starts in its temp folder.
@@ -491,6 +499,7 @@ fn a_roles_added_folders_replace_brgs_in_either_form() {
         env.role_extra("lead", &format!("    args: {args}\n"));
         let a = env.create("oncall", "work/a");
         let claude = argv(&env.starts(&env.member(&a, "lead"))[0]);
+        assert!(settings(&claude)["permissions"]["additionalDirectories"].is_null());
         let state = env.path(&format!("state/{a}")).canonicalize().unwrap();
         assert!(
             !claude
