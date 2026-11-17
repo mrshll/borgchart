@@ -14,6 +14,23 @@ pub(crate) struct Node {
     pub outside: bool,
     pub state: String,
 }
+// Records lack a plugin's originating team; use the nearest declaring ancestor.
+pub(crate) fn endpoint(nodes: &[Node], from: &str, to: &str) -> String {
+    if let Some(name) = from
+        .strip_prefix("external:")
+        .filter(|name| *name != "owner")
+    {
+        let mut ancestor = to.rsplit_once('/').map(|(team, _)| team);
+        while let Some(team) = ancestor {
+            let id = format!("{team}/plugin:{name}");
+            if nodes.iter().any(|n| n.id == id) {
+                return id;
+            }
+            ancestor = team.rsplit_once('/').map(|(parent, _)| parent);
+        }
+    }
+    from.into()
+}
 pub(crate) fn nodes(
     rows: &[StatusRow],
     scope: &str,
@@ -68,7 +85,33 @@ pub(crate) fn nodes(
             )
         })
         .collect();
+    // Status emits only process plugins, never actions-only declarations.
+    for r in rows.iter().filter(|r| {
+        r.kind == "plugin" && (r.instance == scope || r.instance.starts_with(&format!("{scope}/")))
+    }) {
+        let parent = rows.iter().find(|m| {
+            m.kind == "member"
+                && m.instance == r.instance
+                && m.parent.as_deref().is_none_or(|p| p == m.instance)
+        });
+        let id = crate::runtime::status_key(r);
+        out.insert(
+            id.clone(),
+            Node {
+                id,
+                parent: parent.map(crate::runtime::status_key),
+                label: crate::runtime::status_name(r),
+                outside: false,
+                state: if r.detail.as_deref().is_some_and(|s| s.starts_with("error:")) {
+                    "error".into()
+                } else {
+                    r.state.clone()
+                },
+            },
+        );
+    }
     let members: BTreeSet<_> = out.keys().cloned().collect();
+    let inside: Vec<_> = out.values().cloned().collect();
     let mut outside: BTreeSet<String> = feed
         .routes
         .iter()
@@ -76,7 +119,8 @@ pub(crate) fn nodes(
             [(a, b), (b, a)]
                 .into_iter()
                 .filter(|(a, b)| a.starts_with("external:") && members.contains(*b))
-                .map(|(a, _)| a.clone())
+                .map(|(a, b)| endpoint(&inside, a, b))
+                .filter(|a| a.starts_with("external:"))
         })
         .collect();
     if let Some(parent) = parent {

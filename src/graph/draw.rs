@@ -40,6 +40,7 @@ pub(crate) fn draw(
         return;
     }
     let points = motion.at(nodes, area.width, h, now);
+    let point = |a: &str, b: &str| points.get(&layout::endpoint(nodes, a, b)).copied();
     let mut waiting: BTreeMap<String, usize> = BTreeMap::new();
     for msg in feed.waiting.values() {
         *waiting.entry(msg.to.clone()).or_default() += 1;
@@ -71,7 +72,7 @@ pub(crate) fn draw(
     let last = feed
         .last
         .as_ref()
-        .and_then(|m| Some((m, *points.get(&m.from)?, *points.get(&m.to)?)));
+        .and_then(|m| Some((m, point(&m.from, &m.to)?, point(&m.to, &m.from)?)));
     let flights: Vec<_> = feed
         .events
         .iter()
@@ -81,8 +82,8 @@ pub(crate) fn draw(
                 && now.saturating_sub(e.observed).as_millis() % 1500 < 1200
         })
         .filter_map(|e| {
-            let a = *points.get(&e.msg.from)?;
-            let b = *points.get(&e.msg.to)?;
+            let a = point(&e.msg.from, &e.msg.to)?;
+            let b = point(&e.msg.to, &e.msg.from)?;
             let t = (now.saturating_sub(e.observed).as_secs_f64() % 1.5) / 1.2;
             let lerp = |t: f64| (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
             Some((
@@ -114,7 +115,7 @@ pub(crate) fn draw(
                         .map(|(a, b)| (a, b)),
                 )
             {
-                if let (Some(&a), Some(&b)) = (points.get(a), points.get(b)) {
+                if let (Some(a), Some(b)) = (point(a, b), point(b, a)) {
                     ctx.draw(&segment(a, b, rgb(palette::FADED)));
                 }
             }
@@ -174,7 +175,9 @@ pub(crate) fn draw(
             label.y,
             format!(" {} ", label.text),
             if waiting.contains_key(&label.id)
-                || last.is_some_and(|(m, _, _)| m.from == label.id || m.to == label.id)
+                || last.is_some_and(|(m, _, _)| {
+                    layout::endpoint(nodes, &m.from, &m.to) == label.id || m.to == label.id
+                })
             {
                 rgb(palette::MESSAGE)
             } else {
@@ -191,6 +194,20 @@ pub(crate) fn draw(
             });
             let (glyph, color) = if n.outside {
                 ("◇", palette::FADED)
+            } else if n
+                .id
+                .rsplit('/')
+                .next()
+                .is_some_and(|id| id.starts_with("plugin:"))
+            {
+                (
+                    "◆",
+                    match n.state.as_str() {
+                        "error" | "exited" => palette::ALERT,
+                        "stopped" | "stopping" => palette::FADED,
+                        _ => palette::BUSY,
+                    },
+                )
             } else {
                 match n.state.as_str() {
                     "working" => ("●", palette::BUSY),
@@ -343,6 +360,114 @@ mod tests {
             .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+    fn plugin_rows() -> Vec<crate::runtime::StatusRow> {
+        let mut rows = vec![layout::tests::row("demo", "lead", None)];
+        for name in ["amber", "birch", "coral", "dune", "elm", "fern"] {
+            let team = format!("demo/{name}");
+            let mut child = layout::tests::row(&team, name, Some("demo/lead"));
+            child.kind = "team";
+            rows.push(child);
+            rows.push(layout::tests::row(&team, "lead", Some(&team)));
+            let mut plugin = layout::tests::row(&team, "timer", None);
+            plugin.kind = "plugin";
+            plugin.state = "alive".into();
+            rows.push(plugin);
+        }
+        rows
+    }
+    fn plugin_frame(feed: &Feed, nodes: &[Node], milliseconds: u64) -> ratatui::buffer::Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(160, 45)).unwrap();
+        terminal
+            .draw(|f| {
+                draw(
+                    f,
+                    f.area(),
+                    nodes,
+                    "demo",
+                    feed,
+                    &mut Motion::default(),
+                    Duration::from_millis(milliseconds),
+                    UNIX_EPOCH,
+                )
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+    #[test]
+    fn silent_plugins_render_inside_their_declaring_team_boxes() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::bus::layout::StorePaths::from_root(dir.path());
+        send(&paths, 1, "external:owner", "demo/lead");
+        send(&paths, 2, "external:timer", "demo/amber/lead");
+        let feed = Feed::open(paths).unwrap();
+        let nodes = layout::nodes(&plugin_rows(), "demo", None, &feed);
+        let buffer = plugin_frame(&feed, &nodes, 9000);
+        println!("six teams 160x45:\n{}", dump(&buffer));
+        let points = layout::positions(&nodes, 160, 42);
+        let (labels, hidden) = layout::labels(&nodes, &points, 160, 42, &BTreeMap::new());
+        assert_eq!(hidden, 0);
+        let boxes = layout::team_boxes(&nodes, &points, &labels, "demo");
+        for name in ["amber", "birch", "coral", "dune", "elm", "fern"] {
+            let team = format!("demo/{name}");
+            let id = format!("{team}/plugin:timer");
+            let &(x, y) = points.get(&id).expect("silent plugin must be drawn");
+            let (_, [l, t, r, b]) = boxes.iter().find(|(id, _)| id == &team).expect("team box");
+            assert!(*l < x.round() as i32 && (x.round() as i32) < *r);
+            assert!(*t < y.round() as i32 && (y.round() as i32) < *b);
+            assert_eq!(buffer[(x.round() as u16, y.round() as u16)].symbol(), "◆");
+            let (ox, oy) = points["external:owner"];
+            assert!(
+                !((*l..=*r).contains(&(ox.round() as i32))
+                    && (*t..=*b).contains(&(oy.round() as i32)))
+            );
+        }
+    }
+    #[test]
+    fn same_named_plugin_routes_stay_with_the_recipient_team_and_outsiders_stay_outside() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::bus::layout::StorePaths::from_root(dir.path());
+        let mut feed = Feed::open(paths.clone()).unwrap();
+        let mut rows = plugin_rows();
+        for name in ["clock", "timer", "owner"] {
+            let mut root_plugin = layout::tests::row("demo", name, None);
+            root_plugin.kind = "plugin";
+            rows.push(root_plugin);
+        }
+        for (seq, sender, target, source) in [
+            (1, "timer", "amber", "demo/amber/plugin:timer"),
+            (2, "timer", "birch", "demo/birch/plugin:timer"),
+            (3, "clock", "coral", "demo/plugin:clock"),
+            (4, "owner", "dune", "external:owner"),
+            (5, "visitor", "elm", "external:visitor"),
+        ] {
+            let to = format!("demo/{target}/lead");
+            send(&paths, seq, &format!("external:{sender}"), &to);
+            feed.poll(Duration::from_secs(seq * 10)).unwrap();
+            let nodes = layout::nodes(&rows, "demo", None, &feed);
+            let points = layout::positions(&nodes, 160, 42);
+            let a = *points.get(source).expect("route source must be drawn");
+            let b = points[&to];
+            let buffer = plugin_frame(&feed, &nodes, seq * 10000 + 480);
+            let head = (
+                (a.0 + (b.0 - a.0) * 0.4).round() as u16,
+                (a.1 + (b.1 - a.1) * 0.4).round() as u16,
+            );
+            assert_eq!(
+                buffer[head].symbol(),
+                arrow(b.0 - a.0, b.1 - a.1),
+                "{source}\n{}",
+                dump(&buffer)
+            );
+            assert_eq!(buffer[head].fg, rgb(palette::MESSAGE));
+            let settled = plugin_frame(&feed, &nodes, seq * 10000 + 9000);
+            let (labels, _) = layout::labels(&nodes, &points, 160, 42, &BTreeMap::new());
+            let label = labels
+                .iter()
+                .find(|l| l.id == source)
+                .expect("source label");
+            assert_eq!(settled[(label.x, label.y)].fg, rgb(palette::MESSAGE));
+        }
     }
     #[test]
     fn grouping_borders_survive_except_where_routes_or_readable_labels_cover_them() {
