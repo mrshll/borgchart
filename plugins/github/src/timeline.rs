@@ -1,6 +1,7 @@
 //! Paged timelines and API-established owner actions; GitHub text stays here.
 use crate::{
     config::Guard,
+    delivery::Heads,
     discover::Changed,
     gh::{Api, Error},
     state::{Kind, PendingEvent},
@@ -14,6 +15,7 @@ const QUERY: &str = r#"query($owner: String!, $name: String!, $number: Int!, $si
   __typename
   ... on Issue { id author { ...actor } body createdAt lastEditedAt editor { ...actor }
    assignees(first: 20) { nodes { databaseId } }
+   closedByPullRequestsReferences(first: 10) { nodes { headRefName headRefOid } }
    timelineItems(since: $since, first: 100, after: $after, itemTypes: [ISSUE_COMMENT, ASSIGNED_EVENT]) {
     nodes { __typename
      ... on IssueComment { ...comment }
@@ -128,11 +130,12 @@ pub fn fetch(
     floor: SystemTime,
     since: SystemTime,
     guard: &Guard,
-) -> Result<Vec<PendingEvent>, Error> {
+) -> Result<(Vec<PendingEvent>, Heads), Error> {
     let (owner, name) = item.repository.split_once('/').ok_or_else(malformed)?;
     let since_text = format_utc(since);
     let mut after = String::new();
     let mut events = Vec::new();
+    let mut heads = Vec::new();
     loop {
         let mut strings = vec![
             ("owner", owner),
@@ -151,6 +154,22 @@ pub fn fetch(
         };
         if node_id(raw)? != item.node_id {
             return Err(malformed());
+        }
+        if after.is_empty() {
+            let linked = if pr {
+                vec![raw]
+            } else {
+                raw["closedByPullRequestsReferences"]["nodes"]
+                    .as_array()
+                    .map(|nodes| nodes.iter().collect())
+                    .unwrap_or_default()
+            };
+            for head in linked {
+                heads.push((
+                    string(head, "headRefName")?.into(),
+                    string(head, "headRefOid")?.into(),
+                ));
+            }
         }
         let assigned = nodes(&raw["assignees"])?
             .iter()
@@ -181,19 +200,24 @@ pub fn fetch(
                 "MergedEvent" if assigned => Some(Kind::Merged {
                     commit: oid(value)?,
                 }),
-                "PullRequestReview" if assigned => Some(Kind::Review {
-                    state: checked(string(value, "state")?, 1..=32, |b| {
-                        b.is_ascii_uppercase() || b == b'_'
-                    })?
-                    .into(),
-                    commit: oid(value)?,
-                }),
                 "PullRequestReview" => {
-                    let mut mentioned = mentions(value, guard)?;
-                    for comment in nodes(&value["comments"])? {
-                        mentioned |= mentions(comment, guard)?;
+                    let mut admitted = assigned || mentions(value, guard)?;
+                    if !assigned {
+                        for comment in nodes(&value["comments"])? {
+                            admitted |= mentions(comment, guard)?;
+                        }
                     }
-                    mentioned.then_some(Kind::Mention)
+                    if admitted {
+                        Some(Kind::Review {
+                            state: checked(string(value, "state")?, 1..=32, |b| {
+                                b.is_ascii_uppercase() || b == b'_'
+                            })?
+                            .into(),
+                            commit: oid(value)?,
+                        })
+                    } else {
+                        None
+                    }
                 }
                 "MergedEvent" => None,
                 _ => return Err(malformed()),
@@ -214,7 +238,7 @@ pub fn fetch(
             .as_bool()
             .ok_or_else(malformed)?
         {
-            return Ok(events);
+            return Ok((events, heads));
         }
         let next = string(&timeline["pageInfo"], "endCursor")?;
         if next.is_empty() || next == after {

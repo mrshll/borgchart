@@ -13,14 +13,14 @@ pub const OVERLAP: Duration = Duration::from_secs(300);
 /// timeline that lags its item's `updated_at`.
 const SETTLE: Duration = Duration::from_secs(60);
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Kind {
     Mention,
     Assigned,
     Review { state: String, commit: String },
     Merged { commit: String },
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PendingEvent {
     pub id: String,

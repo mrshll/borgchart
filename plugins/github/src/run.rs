@@ -85,6 +85,7 @@ impl<A: Api> Session<A> {
             errors: Vec::new(),
         };
         let mut attempted = 0;
+        let mut routing = None;
         for entry in &entries {
             if attempted == discover::POLL_CAP {
                 break;
@@ -99,11 +100,17 @@ impl<A: Api> Session<A> {
                         attempted += 1;
                         let guard = self.guard.as_ref().unwrap();
                         match timeline::fetch(&self.api, item, cursor.floor, since, guard) {
-                            Ok(events) => {
+                            Ok((events, heads)) => {
                                 for mut event in events {
                                     if !snapshot.seen.contains_key(&event.id) {
                                         snapshot.seen.insert(event.id.clone(), now);
-                                        (event.recipient, event.reason) = delivery::route(&event);
+                                        let routing =
+                                            routing.get_or_insert_with(delivery::Routing::load);
+                                        (event.recipient, event.reason) =
+                                            delivery::route(routing.as_ref(), &heads);
+                                        if let Some(copy) = delivery::approval_copy(&event) {
+                                            snapshot.pending.push(copy);
+                                        }
                                         snapshot.pending.push(event);
                                         poll.admitted += 1;
                                     }
@@ -472,7 +479,6 @@ mod tests {
         api.pages(&entry.key(), vec![json!([pr])]);
         let batch = discover::fetch(&api, &entry, &Cursor::new(now()), 20).unwrap();
         assert_eq!(batch.items[0].repository, "example-org/widgets");
-        assert!(batch.items[0].is_pull_request);
         assert!(api.calls()[0].starts_with("orgs/example-org/issues?filter=all&state=all"));
         let mut bad = item(1, now());
         bad["repository"]["full_name"] = json!("example-org/../widgets");

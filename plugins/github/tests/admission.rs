@@ -13,9 +13,16 @@ fn fixture() -> Fixture {
     f.write(
         "brg",
         r#"#!/bin/sh
+if [ "$1" = status ]; then
+  printf '%s\n' "$*" >> "$FIXTURE_DIR/status-calls"
+  [ ! -f "$FIXTURE_DIR/status-fail" ] || exit 1
+  /bin/cat "$FIXTURE_DIR/status"
+  exit 0
+fi
 /bin/cat "$FIXTURE_DIR/state/intake.json" >> "$FIXTURE_DIR/journal-at-send"
-for arg do text=$arg; done
+for arg do recipient=$text; text=$arg; done
 printf '%s\n---\n' "$text" >> "$FIXTURE_DIR/sent"
+printf '%s\n%s\n---\n' "$recipient" "$text" >> "$FIXTURE_DIR/deliveries"
 printf '%s\n' "$@" >> "$FIXTURE_DIR/brg-args"
 if [ -f "$FIXTURE_DIR/crash" ]; then
   /bin/rm "$FIXTURE_DIR/crash"
@@ -29,6 +36,8 @@ printf '{"delivery":"stored"}'
 "#,
     );
     fs::set_permissions(f.path("brg"), fs::Permissions::from_mode(0o755)).unwrap();
+    f.write("status", "[]");
+    std::os::unix::fs::symlink("/usr/bin/git", f.path("git")).unwrap();
     f
 }
 fn drive(f: &Fixture, times: &str) -> bool {
@@ -38,6 +47,7 @@ fn drive(f: &Fixture, times: &str) -> bool {
         .env("ADMISSION_CHILD", times)
         .env("BORGCHART_BIN", f.path("brg"))
         .env("BORGCHART_DELIVER_TO", "example-team/root")
+        .env("BORGCHART_TEAM", "example-team")
         .args(["--exact", "drive_fixture", "--nocapture"])
         .output()
         .unwrap();
@@ -93,6 +103,7 @@ fn item(pr: bool, nodes: Vec<Value>) -> Value {
     i["assignees"] = json!({"nodes":[{"databaseId":101}]});
     i["headRefName"] = json!("example-branch");
     i["headRefOid"] = json!("abcdef0123456789012345678901234567890123");
+    i["closedByPullRequestsReferences"] = json!({"nodes":[]});
     i["timelineItems"] = json!({"nodes":nodes,"pageInfo":{"hasNextPage":false,"endCursor":null}});
     i
 }
@@ -385,4 +396,214 @@ fn malformed_identifiers_and_timeline_rate_limits_never_advance_past_a_failed_it
     drive(&f, "0,60,120");
     assert_eq!(f.calls().matches("number=1").count(), 1);
     assert_eq!(f.health()["ok"], false);
+}
+fn git(path: &std::path::Path, args: &[&str]) -> String {
+    let output = Command::new("/usr/bin/git")
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("GIT_AUTHOR_NAME", "Example Bot")
+        .env("GIT_AUTHOR_EMAIL", "bot@example.invalid")
+        .env("GIT_COMMITTER_NAME", "Example Bot")
+        .env("GIT_COMMITTER_EMAIL", "bot@example.invalid")
+        .arg("-C")
+        .arg(path)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    String::from_utf8(output.stdout).unwrap().trim().into()
+}
+fn checkout(f: &Fixture, team: &str, kind: &str) -> Vec<Value> {
+    let path = f.path(kind);
+    fs::create_dir(&path).unwrap();
+    git(&path, &["init", "-b", "example-branch"]);
+    git(
+        &path,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "Example head",
+        ],
+    );
+    vec![
+        json!({"kind":kind,"team":team,"worktree":path}),
+        json!({"kind":"member","team":team,"member":"lead","role":"lead","liveness":"alive"}),
+    ]
+}
+fn deliveries(f: &Fixture) -> Vec<String> {
+    fs::read_to_string(f.path("deliveries"))
+        .unwrap_or_default()
+        .split("\n---\n")
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+#[test]
+fn checkout_heads_route_prs_and_linked_issues_and_copy_only_approvals() {
+    for mode in ["shared", "member", "detached", "issue", "root", "mention"] {
+        let f = fixture();
+        let team = if mode == "root" {
+            "example-team"
+        } else {
+            "example-team/widgets"
+        };
+        let kind = if mode == "member" || mode == "root" {
+            "member"
+        } else {
+            "team"
+        };
+        let mut rows = checkout(&f, team, kind);
+        if mode == "root" {
+            rows[1]["member"] = json!("root");
+        }
+        // Two checkouts in the same team are one owner, not an ambiguity.
+        rows.extend(checkout(&f, team, "second"));
+        rows[2]["kind"] = json!("member");
+        rows.pop();
+        f.write("status", &json!(rows).to_string());
+        let mut commented = event("PullRequestReview", "PRR_comment", 202, "");
+        commented["state"] = json!("COMMENTED");
+        let events = if mode == "issue" {
+            vec![event("AssignedEvent", "AE_linked", 202, "")]
+        } else {
+            vec![
+                event("PullRequestReview", "PRR_approved", 202, ""),
+                commented,
+            ]
+        };
+        changed(&f, &[(mode != "issue", events.clone())]);
+        let mut raw = item(mode != "issue", events);
+        if mode == "mention" {
+            raw["assignees"] = json!({"nodes":[]});
+            raw["timelineItems"]["nodes"][0]["body"] = json!("@example-bot");
+        }
+        if mode == "detached" {
+            let oid = git(&f.path(kind), &["rev-parse", "HEAD"]);
+            git(&f.path(kind), &["checkout", "--detach"]);
+            git(&f.path("second"), &["checkout", "--detach"]);
+            raw["headRefName"] = json!("UNTRUSTED_BRANCH_MARKER");
+            raw["headRefOid"] = json!(oid);
+        }
+        if mode == "issue" {
+            raw["closedByPullRequestsReferences"] = json!({"nodes":[
+                {"headRefName":"unheld","headRefOid":"0000000"},
+                {"headRefName":"example-branch","headRefOid":"1111111"}
+            ]});
+        }
+        answer(&f, 1, &raw);
+        drive(&f, "0,60");
+        let sent = deliveries(&f);
+        let recipient = if mode == "root" {
+            "example-team/root"
+        } else {
+            "example-team/widgets/lead"
+        };
+        let routed: Vec<_> = sent
+            .iter()
+            .filter(|s| s.starts_with(&format!("{recipient}\n")))
+            .collect();
+        assert_eq!(routed.len(), 1, "{mode}: {sent:?}");
+        assert!(routed[0].contains(&format!("team {team} holds the branch")));
+        assert_eq!(
+            fs::read_to_string(f.path("status-calls")).unwrap(),
+            "status example-team --json\n"
+        );
+        assert!(
+            !text(&f).contains("example-branch") && !text(&f).contains("UNTRUSTED_BRANCH_MARKER")
+        );
+        if mode != "issue" && mode != "root" {
+            let copy = sent
+                .iter()
+                .find(|s| s.starts_with("example-team/root\n"))
+                .unwrap();
+            assert!(copy.contains("approval copy; owning lead: example-team/widgets/lead"));
+            assert!(copy.contains("3f2a91c"));
+            assert_eq!(reads(copy, "PRR_approved"), 1);
+            assert_eq!(reads(copy, "PRR_comment"), 0);
+            assert_eq!(sent.len(), 2);
+        } else {
+            assert_eq!(sent.len(), 1, "{mode}: {sent:?}");
+        }
+    }
+}
+#[test]
+fn routing_fallbacks_deliver_and_retry_keeps_the_admitted_recipient() {
+    for mode in [
+        "missing",
+        "unheld",
+        "several",
+        "stopped",
+        "unavailable",
+        "retry",
+    ] {
+        let f = fixture();
+        let mut rows = checkout(&f, "example-team/widgets", "team");
+        let reason = match mode {
+            "unheld" => {
+                git(&f.path("team"), &["checkout", "-b", "other-branch"]);
+                "no team holds the branch"
+            }
+            "missing" => {
+                rows[0]["worktree"] = json!(f.path("missing"));
+                "no team holds the branch"
+            }
+            "several" => {
+                rows.extend(checkout(&f, "example-team/other", "member"));
+                "several teams hold the branch: example-team/other, example-team/widgets"
+            }
+            "stopped" => {
+                rows[1]["liveness"] = json!("gone");
+                "owning lead is stopped: example-team/widgets/lead"
+            }
+            "unavailable" => {
+                f.write("status-fail", "");
+                "routing unavailable"
+            }
+            _ => {
+                f.write("fail", "");
+                "team example-team/widgets holds the branch"
+            }
+        };
+        f.write("status", &json!(rows).to_string());
+        changed(
+            &f,
+            &[(
+                true,
+                vec![event("IssueComment", "IC_routed", 202, "@example-bot")],
+            )],
+        );
+        drive(&f, "120");
+        if mode == "retry" {
+            fs::remove_file(f.path("fail")).unwrap();
+            f.write("status", "[]");
+            drive(&f, "180");
+            assert_eq!(
+                fs::read_to_string(f.path("status-calls"))
+                    .unwrap()
+                    .lines()
+                    .count(),
+                1
+            );
+        }
+        let sent = deliveries(&f);
+        let recipient = if mode == "retry" {
+            "example-team/widgets/lead"
+        } else {
+            "example-team/root"
+        };
+        for notice in &sent {
+            assert!(
+                notice.starts_with(&format!("{recipient}\n")),
+                "{mode}: {sent:?}"
+            );
+            assert!(notice.contains(reason), "{mode}: {notice}");
+            assert_eq!(reads(notice, "IC_routed"), 1);
+        }
+        assert_eq!(sent.len(), if mode == "retry" { 2 } else { 1 });
+        assert_eq!(pending(&f), 0);
+        assert_eq!(f.health()["ok"], true);
+    }
 }

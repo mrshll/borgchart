@@ -14,7 +14,6 @@ pub struct Changed {
     pub repository: String,
     pub number: u64,
     pub node_id: String,
-    pub is_pull_request: bool,
     pub updated_at: SystemTime,
 }
 pub struct Batch {
@@ -26,7 +25,6 @@ struct RawItem {
     node_id: String,
     number: u64,
     updated_at: String,
-    pull_request: Option<serde_json::Value>,
     repository: Option<Repository>,
 }
 #[derive(Deserialize)]
@@ -67,7 +65,6 @@ pub fn fetch(api: &impl Api, entry: &Entry, cursor: &Cursor, limit: usize) -> Re
                 repository,
                 number: raw.number,
                 node_id: raw.node_id,
-                is_pull_request: raw.pull_request.is_some(),
                 updated_at,
             });
             if items.len() == limit {
