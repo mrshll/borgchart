@@ -261,6 +261,10 @@ impl Env {
         out
     }
 
+    fn kill_server(&self) {
+        self.tmux.kill_server(&self.socket);
+    }
+
     fn tmux(&self, args: &[&str]) -> String {
         let out = self.tmux.tmux(&self.socket).args(args).output().unwrap();
         String::from_utf8_lossy(&out.stdout).to_string()
@@ -1001,7 +1005,7 @@ fn liveness_is_alive_gone_or_unknown() {
     env.ok(&["stop", "helper"]);
     env.up();
     assert_eq!(live(&env.rows(), "lead"), "alive");
-    env.tmux(&["kill-server"]);
+    env.kill_server();
     let deadline = Instant::now() + Duration::from_secs(10);
     while live(&env.rows(), "lead") != "gone" {
         assert!(
@@ -1135,7 +1139,7 @@ fn a_previous_boot_stops_without_tmux_even_with_only_deferred_roles() {
                     .into();
             }
             fs::write(&file, serde_json::to_vec(&inc).unwrap()).unwrap();
-            env.tmux(&["kill-server"]);
+            env.kill_server();
             let args = if only {
                 vec!["stop", "lead"]
             } else {
@@ -1177,7 +1181,7 @@ fn a_member_with_no_live_start_stops_in_the_same_boot_without_tmux() {
                 meta["members"][env.m("helper")]["started"] = false.into();
                 fs::write(&meta_file, serde_json::to_vec(&meta).unwrap()).unwrap();
             }
-            env.tmux(&["kill-server"]);
+            env.kill_server();
             let out = env.brg(&["stop", "helper"]);
             assert_eq!(
                 out.status.success(),
@@ -1207,7 +1211,7 @@ fn boot_evidence_is_conservative_when_the_server_is_unreachable() {
         inc["boot_id"] = recorded.into();
         inc["pane"]["pane_pid"] = std::process::id().into();
         fs::write(&file, serde_json::to_vec(&inc).unwrap()).unwrap();
-        env.tmux(&["kill-server"]);
+        env.kill_server();
         for args in [vec!["stop", "lead"], vec!["stop"]] {
             let out = env
                 .brg_cmd(&args)
@@ -1231,7 +1235,7 @@ fn an_old_boot_releases_the_team_before_an_explicit_stop() {
     inc["boot_id"] = "previous-boot".into();
     inc["pane"]["pane_pid"] = std::process::id().into();
     fs::write(&file, serde_json::to_vec(&inc).unwrap()).unwrap();
-    env.tmux(&["kill-server"]);
+    env.kill_server();
     assert_eq!(env.row("lead")["liveness"], "gone");
     // Delete uses combined runtime liveness, before stopped_at can mask it.
     env.ok(&["delete", &env.inst()]);
@@ -1386,7 +1390,7 @@ fn killed_plugin_only_server_does_not_wedge_stop_or_start() {
         env.wait_for("the plugin's window", |e| {
             e.tmux(&["list-windows", "-a"]).contains("_pager")
         });
-        env.tmux(&["kill-server"]);
+        env.kill_server();
         env.ok(&["stop"]);
         env.ok(&["start"]);
         env.ok(&["stop"]);

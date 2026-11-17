@@ -20,10 +20,11 @@
 use std::ffi::OsStr;
 use std::io::Write;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Remove every inherited variable that could point at the caller's team or
 /// tmux server. Variables the test sets afterwards still apply.
@@ -292,6 +293,16 @@ rm -rf -- "$dir"
         cmd
     }
 
+    /// Stop the server and wait until it no longer accepts connections.
+    pub fn kill_server(&self, socket: &str) {
+        let _ = self.tmux(socket).arg("kill-server").output().unwrap();
+        let path = self.path.join(format!("tmux-{}", self.uid)).join(socket);
+        assert!(
+            wait_for_server_exit(&path, Duration::from_secs(10)),
+            "tmux server at {path:?} still accepts connections"
+        );
+    }
+
     /// Point brg (and the members and plugins it starts) at `socket` in the
     /// directory.
     pub fn brg_env<'a>(&self, cmd: &'a mut Command, socket: &str) -> &'a mut Command {
@@ -446,6 +457,7 @@ impl Drop for PrivateTmux {
     fn drop(&mut self) {
         let sockets = self.path.join(format!("tmux-{}", self.uid));
         let linked = std::fs::symlink_metadata(&sockets).is_ok_and(|m| m.is_symlink());
+        let mut stopped = Vec::new();
         for entry in std::fs::read_dir(&sockets)
             .into_iter()
             .filter(|_| !linked)
@@ -461,13 +473,19 @@ impl Drop for PrivateTmux {
                 .arg(entry.path())
                 .arg("kill-server")
                 .output();
+            stopped.push(entry.path());
+        }
+        for path in stopped {
+            let _ = wait_for_server_exit(&path, Duration::from_secs(5));
         }
         let also = std::fs::read_to_string(self.path.join(ALSO_REMOVE)).unwrap_or_default();
         for path in also.lines().filter(|p| !p.is_empty()) {
             remove(Path::new(path));
         }
         if let Some(mut watchdog) = self.watchdog.take() {
-            let _ = watchdog.kill();
+            if let Some(group) = rustix::process::Pid::from_raw(watchdog.id() as i32) {
+                let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+            }
             let _ = watchdog.wait();
         }
         let refused = self.refused();
@@ -479,6 +497,24 @@ impl Drop for PrivateTmux {
         } else {
             panic!("the tmux guard refused:\n{refused}");
         }
+    }
+}
+
+fn wait_for_server_exit(path: &Path, within: Duration) -> bool {
+    let deadline = Instant::now() + within;
+    loop {
+        if UnixStream::connect(path).is_err_and(|e| {
+            matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            )
+        }) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(25));
     }
 }
 

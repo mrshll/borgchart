@@ -27,6 +27,23 @@ fn alive(pid: u32) -> bool {
         .success()
 }
 
+fn live_in_group(group: u32) -> Vec<String> {
+    let out = common::command("ps")
+        .args(["-A", "-o", "pgid=,stat=,pid=,args="])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let pgid = fields.next()?.parse::<u32>().ok()?;
+            let state = fields.next()?;
+            (pgid == group && !state.starts_with('Z')).then(|| line.to_string())
+        })
+        .collect()
+}
+
 /// A short directory for the test's own files (socket paths stay short).
 fn root() -> tempfile::TempDir {
     let parent = std::env::var_os(common::ROOT_VAR)
@@ -279,7 +296,26 @@ fn dropping_it_cleans_up_and_stops_the_watchdog() {
     let s = start(&private, root.path());
     let watchdog = private.watchdog_pid().unwrap();
     assert!(alive(watchdog));
+    // Drop while the watchdog has a child that outlives a shell-only kill.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !live_in_group(watchdog)
+        .iter()
+        .any(|line| line.split_whitespace().skip(3).eq(["sleep", "1"]))
+    {
+        assert!(Instant::now() < deadline, "the watchdog never slept");
+        std::thread::sleep(Duration::from_millis(20));
+    }
     drop(private);
+    let deadline = Instant::now() + Duration::from_millis(200);
+    let mut remaining = live_in_group(watchdog);
+    while !remaining.is_empty() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+        remaining = live_in_group(watchdog);
+    }
+    assert!(
+        remaining.is_empty(),
+        "watchdog children still run: {remaining:?}"
+    );
     assert!(fs::symlink_metadata(&s.scratch).is_err(), "{:?}", s.scratch);
     cleaned_up(&s, root.path(), Duration::from_secs(5));
     assert!(!alive(watchdog), "the watchdog {watchdog} still runs");
