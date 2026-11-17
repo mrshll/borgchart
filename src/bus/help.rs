@@ -102,8 +102,9 @@ base environment and current session. Interactive and --allow-unknown have no
 effect for Codex. Stopped or replaced starts are never queued; queue never gets
 --resume. A start under 30 s old gets up to 5 s for its session. A nonzero queue
 exit leaves ordinary messages stored; no answer within 10 s is uncertain:
-may have been queued; do not resend. A queued turn can run while a UI picker
-is open, leaving it unanswered and drafts alone.
+may have been queued; do not resend. Queue leaves UI pickers unanswered and
+drafts alone. A recognized blocked pane reports blocked with its rule and an
+attach command: its queued turn waits for a person.
 
 Interactive Claude recipients are inbox-only, even with --allow-unknown.
 Other Claude recipients get guarded typing, possibly during the current turn.

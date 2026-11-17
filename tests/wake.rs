@@ -1656,9 +1656,58 @@ fn codex_queue_delivers_through_dialog_and_copy_mode_without_answering_them() {
             }
             let (code, out) = e.send_message("hello", &["--allow-unknown"]);
             assert_eq!(code, 0, "{locked} {mode}: {out}");
-            assert_eq!(out["delivery"], "queued", "{locked} {mode}: {out}");
+            assert_eq!(
+                out["delivery"],
+                if mode == "dialog" {
+                    "blocked"
+                } else {
+                    "queued"
+                },
+                "{locked} {mode}: {out}"
+            );
             assert!(e.events("paste").is_empty());
             assert!(e.events("enter").is_empty());
         }
     }
+}
+
+#[test]
+fn codex_blocked_pane_queues_and_reports_blocked() {
+    let e = Env::new(Vendor::Codex);
+    e.send_setup(Vendor::Codex, false, false);
+    e.fake_codex("exit 0");
+    e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20");
+    e.control("mode=dialog");
+    let (code, out) = e.send_message("task", &[]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(out["delivery"], "blocked", "{out}");
+    assert_eq!(
+        fs::read_to_string(e.dir.path().join("codex-args.calls"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+    assert!(e.codex_args().unwrap()[4].contains("task"));
+    let row = e.status_row();
+    assert_eq!(row["state"], "blocked", "{row}");
+    assert!(
+        row["detail"]
+            .as_str()
+            .unwrap()
+            .contains("brg attach state/m")
+    );
+    assert_eq!(row["delivery"]["id"], out["id"]);
+    assert!(e.events("enter").is_empty());
+    assert!(e.events("paste").is_empty());
+    e.control("mode=idle");
+    assert_eq!(e.send_message("next", &[]).1["delivery"], "queued");
+    assert!(e.status_row().get("delivery").is_none());
+    e.control("after_enter=garbage");
+    e.keys(&["Enter"]);
+    e.wait_for("the unreadable screen", |e| e.screen().contains('$'));
+    assert_eq!(
+        e.send_message("unreadable pane", &[]).1["delivery"],
+        "queued"
+    );
 }

@@ -5027,6 +5027,7 @@ pub fn send(
         peer,
     );
     let mut send_lock = None;
+    let mut queued_block = None;
     let typed = (|| {
         let pane = pane
             .as_ref()
@@ -5059,8 +5060,24 @@ pub fn send(
             ));
         }
         if vendor == Vendor::Codex {
+            queued_block = crate::wake::snapshot(&tmux.with_socket(&pane.socket), pane)
+                .and_then(|snap| {
+                    let rules = rules::load(Vendor::Codex).ok()?;
+                    let plain = crate::composer::plain(&crate::composer::parse(&snap.screen));
+                    let reading = rules.read(&snap.title, &plain);
+                    (reading.state == State::Blocked).then(|| format!(
+                        "queued behind {} in its pane; it runs after a person answers it: brg attach {}",
+                        reading.rule.unwrap_or_default(), inst.at(&to)
+                    ))
+                });
             let inc = current.as_ref().expect("checked above");
-            return queue_send(&inst.state, &to, inc, &meta.base_env, &envelope).map(|()| "queued");
+            return queue_send(&inst.state, &to, inc, &meta.base_env, &envelope).map(|()| {
+                if queued_block.is_some() {
+                    "blocked"
+                } else {
+                    "queued"
+                }
+            });
         }
         let tmux = tmux.with_socket(&pane.socket);
         let before = send_snapshot(&tmux, &inst.state, &to, pane, force, locked)?;
@@ -5091,6 +5108,7 @@ pub fn send(
     })();
     let (delivery, reason) = match &typed {
         Ok("queued") => ("queued", "codex queue: the member's next turn"),
+        Ok("blocked") => ("blocked", queued_block.as_deref().expect("blocked queue")),
         Ok("pointer") => ("typed", "message pointer typed and submitted"),
         Ok(delivery) => (*delivery, "submitted"),
         Err(error) => (
