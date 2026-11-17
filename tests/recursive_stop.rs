@@ -124,7 +124,7 @@ fn recursive_stop_in_the_same_boot_without_tmux_passes_members_with_no_live_star
         serde_json::from_slice(&std::fs::read(&meta_file).unwrap()).unwrap();
     meta["members"][&leaf]["started"] = false.into();
     std::fs::write(&meta_file, serde_json::to_vec(&meta).unwrap()).unwrap();
-    env.tmux(&["kill-server"]);
+    env.kill_server();
     // The walk requires each stopped member to read gone.
     env.ok(&["stop", "-r", &target]);
 }
