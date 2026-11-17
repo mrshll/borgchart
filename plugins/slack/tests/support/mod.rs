@@ -34,6 +34,8 @@ pub struct Slack {
     pub close_delay: Duration,
 }
 fn handle(mut stream: TcpStream, state: &Mutex<Slack>) -> std::io::Result<()> {
+    // macOS hands back accepted sockets non-blocking, like their listener; Linux doesn't.
+    stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_secs(3)))?;
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut line = String::new();
@@ -195,6 +197,8 @@ impl Harness {
                     }
                     Err(error) => panic!("{error}"),
                 };
+                // As in `handle`: block on reads, whatever the platform.
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(5)))
                     .unwrap();
