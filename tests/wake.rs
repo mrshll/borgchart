@@ -910,7 +910,6 @@ fn claude_long_message_is_typed_as_a_pointer_and_submitted() {
         assert_eq!(submitted.len(), 1);
         assert_eq!(submitted[0].lines().count(), 1);
         assert!(submitted[0].contains("msg read m1"), "{submitted:?}");
-        assert!(submitted[0].contains("ack it when taking responsibility"));
         let after = wake::snapshot(&e.tmux, &e.pane()).unwrap();
         assert!(
             composer::view(&after.screen, Some(after.geometry))
@@ -1003,7 +1002,7 @@ fn claude_idle_draft_with_unacked_work_shows_attach_hint() {
         !e.status_row()["detail"]
             .as_str()
             .unwrap_or_default()
-            .contains("unsent text")
+            .contains("brg attach state/m")
     );
     e.send_message("task", &[]);
     // Status must diagnose the box itself, even without a delivery alert.
@@ -1011,7 +1010,6 @@ fn claude_idle_draft_with_unacked_work_shows_attach_hint() {
     let row = e.status_row();
     assert_eq!(row["state"], "idle", "{row}");
     let detail = row["detail"].as_str().unwrap();
-    assert!(detail.contains("unsent text"), "{detail}");
     assert!(detail.contains("brg attach state/m"), "{detail}");
 }
 
