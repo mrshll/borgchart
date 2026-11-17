@@ -33,6 +33,8 @@ pub struct Slack {
     pub method_rate_limits: BTreeMap<String, String>,
     pub reply_delay: Duration,
     pub close_delay: Duration,
+    /// Envelope IDs sent but never acknowledged: `Harness::drop` fails on any.
+    pub missed_acks: Vec<String>,
 }
 fn handle(mut stream: TcpStream, state: &Mutex<Slack>) -> std::io::Result<()> {
     // macOS hands back accepted sockets non-blocking, like their listener; Linux doesn't.
@@ -190,7 +192,14 @@ fn serve_socket(
     for envelope in envelopes {
         socket.send(tungstenite::Message::text(envelope.to_string()))?;
         if envelope["envelope_id"].is_string() {
-            let ack: Value = serde_json::from_str(socket.read()?.to_text()?)?;
+            let ack = match read_ack(&mut socket) {
+                Ok(ack) => ack,
+                Err(error) => {
+                    let id = envelope["envelope_id"].as_str().unwrap_or("").to_string();
+                    state.lock().unwrap().missed_acks.push(id);
+                    return Err(error);
+                }
+            };
             let event = &envelope["payload"]["event"];
             let cursor: Value = fs::read(state_dir.join("cursor.json"))
                 .ok()
@@ -226,6 +235,12 @@ fn serve_socket(
     std::thread::sleep(delay);
     let _ = socket.close(None);
     Ok(())
+}
+
+fn read_ack(
+    socket: &mut tungstenite::WebSocket<TcpStream>,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    Ok(serde_json::from_str(socket.read()?.to_text()?)?)
 }
 
 pub struct Harness {
@@ -266,7 +281,7 @@ impl Harness {
                     Err(error) => panic!("{error}"),
                 };
                 // A connection the plugin drops (a listener killed mid-test) ends only
-                // that connection; a missing ack fails the test through its assertions.
+                // that connection; an envelope it never acknowledged fails the test on drop.
                 let _ = serve_socket(stream, &s, &state_dir);
             }
         });
@@ -351,6 +366,8 @@ impl Drop for Harness {
         if !std::thread::panicking() {
             server.unwrap();
             socket_server.unwrap();
+            let missed = &self.slack.lock().unwrap().missed_acks;
+            assert!(missed.is_empty(), "never acknowledged: {missed:?}");
         }
     }
 }
