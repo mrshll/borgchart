@@ -24,6 +24,8 @@ pub struct Record {
 pub struct Snapshot {
     pub checks: BTreeMap<String, Record>,
     pub pending: Vec<String>,
+    pub schedules: BTreeMap<String, crate::schedule::Record>,
+    pub schedule_sends: Vec<String>,
 }
 impl Snapshot {
     pub fn read(store: &plugin::State) -> Self {
@@ -39,6 +41,29 @@ impl Snapshot {
                         .ok()
                         .map(|v| (name.clone(), v))
                 })
+                .collect(),
+            schedules: raw["schedules"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .filter(|(n, _)| config::valid_name(n))
+                .filter_map(|(n, v)| {
+                    serde_json::from_value::<crate::schedule::Record>(v.clone())
+                        .ok()
+                        .filter(crate::schedule::Record::valid)
+                        .map(|r| (n.clone(), r))
+                })
+                .collect(),
+            schedule_sends: raw["schedule_sends"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|v| {
+                    v.as_str()
+                        .filter(|s| borgchart::bus::time::parse_utc(s).is_some())
+                        .map(str::to_owned)
+                })
+                .take(6)
                 .collect(),
             pending: raw["pending"]
                 .as_array()
@@ -82,6 +107,7 @@ impl Snapshot {
                 "detail": plugin::escape(&message),
                 "pending_sends": self.pending.len(),
                 "checks": checks,
+                "schedules": self.schedules,
             }),
         )
     }
@@ -168,6 +194,7 @@ mod tests {
     fn baseline_failure_recovery_and_changed_signals_use_the_last_good_digest() {
         let check = config::parse("- {name: probe, run: [printf], every_minutes: 1}")
             .unwrap()
+            .checks
             .remove(0);
         let mut record = Record::default();
         assert!(update(&mut record, &check, b"first", b"", json!(0)).is_empty());
@@ -189,6 +216,7 @@ mod tests {
             "- {name: probe, run: [printf], every_minutes: 1, ignore: 'volatile:[0-9]+'}",
         )
         .unwrap()
+        .checks
         .remove(0);
         let mut record = Record::default();
         update(&mut record, &check, b"\xff volatile:1", b"", json!(0));

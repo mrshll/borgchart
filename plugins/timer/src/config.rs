@@ -79,10 +79,16 @@ pub fn command_path(value: &str) -> Result<String, String> {
     }
     Ok(value.to_string())
 }
-pub fn parse(text: &str) -> Result<Vec<Check>, String> {
+pub struct Config {
+    pub checks: Vec<Check>,
+    pub schedules: Vec<crate::schedule::Schedule>,
+}
+pub fn parse(text: &str) -> Result<Config, String> {
     let raw: Vec<Raw> = borgchart::yaml::parse(text).map_err(|e| format!("checks file: {e}"))?;
     let mut names = BTreeSet::new();
-    raw.into_iter()
+    let mut schedules = Vec::new();
+    let checks = raw
+        .into_iter()
         .enumerate()
         .map(|(i, raw)| {
             let label = if let Raw::Map(m) = &raw {
@@ -91,21 +97,45 @@ pub fn parse(text: &str) -> Result<Vec<Check>, String> {
                 "?"
             };
             let label = format!("check {} ({label})", i + 1);
-            let validate = || -> Result<Check, String> {
+            let validate = || -> Result<Option<Check>, String> {
                 let Raw::Map(m) = raw else {
                     return Err("use check mappings".into());
                 };
-                if m.keys()
-                    .any(|k| !["name", "run", "every_minutes", "ignore"].contains(&k.as_str()))
-                {
-                    return Err("use only name, run, every_minutes and ignore".into());
-                }
                 let name = m
                     .get("name")
                     .and_then(Raw::text)
                     .filter(|n| valid_name(n) && !names.contains(*n))
                     .ok_or("use a unique name matching [a-z][a-z0-9-]{0,31}")?
                     .to_string();
+                names.insert(name.clone());
+                if m.contains_key("cron") {
+                    if m.keys()
+                        .any(|k| !["name", "cron", "missed"].contains(&k.as_str()))
+                    {
+                        return Err("use only name, cron and missed for a schedule".into());
+                    }
+                    let cron = crate::cron::Cron::parse(
+                        m.get("cron")
+                            .and_then(Raw::text)
+                            .ok_or("write cron as a five-field string")?,
+                    )?;
+                    let catch_up = match m.get("missed").map(Raw::text) {
+                        None | Some(Some("skip")) => false,
+                        Some(Some("catch-up")) => true,
+                        _ => return Err("write missed: skip or missed: catch-up".into()),
+                    };
+                    schedules.push(crate::schedule::Schedule {
+                        name,
+                        cron,
+                        catch_up,
+                    });
+                    return Ok(None);
+                }
+                if m.keys()
+                    .any(|k| !["name", "run", "every_minutes", "ignore"].contains(&k.as_str()))
+                {
+                    return Err("use only name, run, every_minutes and ignore for a check".into());
+                }
                 let run = match m.get("run") {
                     Some(Raw::List(list)) if !list.is_empty() => list
                         .iter()
@@ -127,28 +157,67 @@ pub fn parse(text: &str) -> Result<Vec<Check>, String> {
                             .and_then(|s| Regex::new(s).map_err(|_| "ignore must be a valid regex"))
                     })
                     .transpose()?;
-                Ok(Check {
+                Ok(Some(Check {
                     name,
                     run,
                     every_minutes,
                     ignore,
-                })
+                }))
             };
             let check = validate().map_err(|e| format!("{label}: {e}"))?;
-            names.insert(check.name.clone());
             Ok(check)
         })
-        .collect()
+        .collect::<Result<Vec<_>, String>>()?
+        .into_iter()
+        .flatten()
+        .collect();
+    Ok(Config { checks, schedules })
 }
-pub fn load() -> Result<Vec<Check>, String> {
-    let path = std::env::var_os("CHECKS_FILE").unwrap_or("checks.yaml".into());
-    let text = fs::read_to_string(path)
-        .map_err(|_| "checks file: cannot read YAML; fix CHECKS_FILE and retry")?;
-    parse(&text)
+pub fn path() -> std::path::PathBuf {
+    std::env::var_os("CHECKS_FILE")
+        .unwrap_or("checks.yaml".into())
+        .into()
+}
+pub fn load(path: &Path) -> Result<Config, String> {
+    parse_bytes(
+        &fs::read(path).map_err(|_| "checks file: cannot read YAML; fix CHECKS_FILE and retry")?,
+    )
+}
+pub fn parse_bytes(bytes: &[u8]) -> Result<Config, String> {
+    parse(std::str::from_utf8(bytes).map_err(|_| "checks file: write UTF-8 YAML")?)
+}
+pub fn delivery(config: &Config) -> Result<(), String> {
+    if !config.schedules.is_empty()
+        && !matches(
+            "[a-z][a-z0-9_-]{0,79}(?:/[a-z][a-z0-9_-]{0,79})*",
+            &std::env::var("BORGCHART_DELIVER_TO").unwrap_or_default(),
+        )
+    {
+        return Err("set delivers_to to a valid member ID for schedules".into());
+    }
+    Ok(())
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[rustfmt::skip]
+    fn schedule_entries_reject_mixed_unknown_and_duplicate_fields() {
+        for bad in [
+            "- {name: review, cron: '0 0 * * *', run: [printf]}",
+            "- {name: review, cron: '0 0 * * *', every_minutes: 1}",
+            "- {name: review, cron: '0 0 * * *', ignore: x}",
+            "- {name: review, cron: '0 0 * * *', at: '00:00'}",
+            "- {name: review, cron: '0 0 * * *', missed: all}",
+            "- {name: review, cron: '0 0 * * *', missed: true}",
+            "- {name: review, cron: 0}",
+            "- {name: review, cron: '0 0 * * *', cron: '0 1 * * *'}",
+            "- {name: review, cron: '0 0 * * *'}\n- {name: review, run: [printf], every_minutes: 1}",
+            "- {name: review, cron: '0 0 * * *'}\n- {name: review, cron: '0 1 * * *'}",
+            "- {name: review, missed: skip, run: [printf], every_minutes: 1}",
+        ] { assert!(parse(bad).is_err(), "{bad}"); }
+        assert!(parse("- {name: probe, run: [printf], every_minutes: 1}\n- {name: review, cron: '0 0 * * *'}").is_ok());
+    }
     #[test]
     fn intervals_cannot_accept_booleans_strings_or_nonfinite_values() {
         for value in ["true", "yes", "'1'", ".inf", ".nan", "0", "-1"] {

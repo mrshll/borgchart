@@ -12,7 +12,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     os::unix::process::ExitStatusExt,
     process::Command,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 pub fn notice(batch: &[String]) -> String {
@@ -96,8 +96,13 @@ fn collect(check: &Check, state: &mut Snapshot, timeout: Duration) {
         .extend(update(record, check, &output, &errors, code));
 }
 pub fn run(store: &plugin::State, once: bool) -> Result<(), String> {
+    let started = SystemTime::now();
     let setup = || {
-        let checks = config::load()?;
+        let path = config::path();
+        let bytes = std::fs::read(&path)
+            .map_err(|_| "checks file: cannot read YAML; fix CHECKS_FILE and retry")?;
+        let checks = config::parse_bytes(&bytes)?;
+        config::delivery(&checks)?;
         let seconds: f64 = std::env::var("CHECKS_TIMEOUT_SECONDS")
             .unwrap_or("60".into())
             .parse()
@@ -107,35 +112,70 @@ pub fn run(store: &plugin::State, once: bool) -> Result<(), String> {
             .filter(|d| !d.is_zero() && Instant::now().checked_add(*d).is_some());
         let timeout = timeout
             .ok_or("set CHECKS_TIMEOUT_SECONDS to a positive finite number (test hook only)")?;
-        Ok::<_, String>((checks, timeout))
+        Ok::<_, String>((checks, timeout, Some(bytes)))
     };
-    let (checks, timeout) = setup().inspect_err(|e| {
+    let (mut config, timeout, mut bytes) = setup().inspect_err(|e| {
         let _lock = store.lock();
         let _ = Snapshot::read(store).health(store, &one_line(e));
     })?;
-    let names: BTreeSet<_> = checks.iter().map(|c| c.name.clone()).collect();
-    let mut due = BTreeMap::<String, (Instant, f64)>::new();
+    let mut reload_error = String::new();
+    let mut due = BTreeMap::<String, Instant>::new();
     loop {
         {
             let _lock = store
                 .lock()
                 .map_err(|_| "cannot lock plugin state; check permissions")?;
             let mut state = Snapshot::read(store);
+            let current = std::fs::read(config::path()).ok();
+            if current != bytes {
+                bytes = current;
+                match bytes
+                    .as_ref()
+                    .ok_or("checks file: cannot read YAML; fix CHECKS_FILE and retry".into())
+                    .and_then(|b| config::parse_bytes(b))
+                    .and_then(|c| config::delivery(&c).map(|_| c))
+                {
+                    Ok(updated) => {
+                        config = updated;
+                        reload_error.clear();
+                    }
+                    Err(e) => reload_error = format!("{e}; last good file is still in use"),
+                }
+            }
+            let names: BTreeSet<_> = config.checks.iter().map(|c| c.name.clone()).collect();
             state.prune(&names);
-            for check in &checks {
+            due.retain(|n, _| names.contains(n));
+            for check in &config.checks {
                 if due
                     .get(&check.name)
-                    .is_none_or(|(last, interval)| last.elapsed().as_secs_f64() >= interval * 60.0)
+                    .is_none_or(|last| last.elapsed().as_secs_f64() >= check.every_minutes * 60.0)
                 {
                     collect(check, &mut state, timeout);
-                    due.insert(check.name.clone(), (Instant::now(), check.every_minutes));
+                    due.insert(check.name.clone(), Instant::now());
                     state
                         .save(store)
-                        .and_then(|_| state.health(store, ""))
+                        .and_then(|_| state.health(store, &reload_error))
                         .map_err(|_| "cannot save plugin state; check permissions")?;
                 }
             }
-            let mut detail = deliver(&mut state);
+            let mut details = vec![reload_error.clone(), deliver(&mut state)];
+            let now = SystemTime::now();
+            crate::schedule::prepare(&mut state, &config, now, started)?;
+            let target = std::env::var("BORGCHART_DELIVER_TO").unwrap_or_default();
+            details.push(crate::schedule::send(
+                &mut state,
+                SystemTime::now,
+                |s| {
+                    s.save(store)
+                        .map_err(|_| "cannot save plugin state; check permissions".into())
+                },
+                |body| plugin::send("timer", &target, body, None).map(|_| ()),
+            )?);
+            let mut detail = details
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join("; ");
             if let Err(error) = crate::alarm::fire(store) {
                 if !detail.is_empty() {
                     detail.push_str("; ");
