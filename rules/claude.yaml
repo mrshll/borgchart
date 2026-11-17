@@ -22,6 +22,11 @@ rules:
     priority: 100
     bottom: 30
     all: ['^ +(❯ )?Yes, I trust this folder$', '^ Enter to confirm · Esc to cancel$']
+  - id: imports-dialog
+    state: blocked
+    priority: 100
+    bottom: 30
+    all: ['^  Allow external CLAUDE\.md file imports\?$', '^  Enter to confirm · Esc to cancel$']
   # The rules below read the input box: its top rule (ending in the
   # session's name when it has one), a `❯` line, indented draft lines, its
   # closing rule, then only indented footer lines to the end of the screen.

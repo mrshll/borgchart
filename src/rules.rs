@@ -637,6 +637,60 @@ mod tests {
     }
 
     #[test]
+    fn claude_external_imports_dialog_is_blocked() {
+        let screen = include_str!("../tests/fixtures/screens/claude-2.1.326-imports.txt");
+        let reading = claude().read("example-host", screen);
+        assert_eq!(reading.state, State::Blocked);
+        assert_eq!(reading.rule.as_deref(), Some("imports-dialog"));
+        for marker in [
+            "  Allow external CLAUDE.md file imports?",
+            "  Enter to confirm · Esc to cancel",
+        ] {
+            assert!(screen.contains(marker));
+            assert_ne!(
+                claude()
+                    .read("example-host", &screen.replace(marker, ""))
+                    .rule
+                    .as_deref(),
+                Some("imports-dialog"),
+                "without {marker}"
+            );
+        }
+        assert_eq!(
+            claude().read("example-host", CLAUDE_TRUST).rule.as_deref(),
+            Some("trust-dialog")
+        );
+    }
+
+    #[test]
+    fn codex_0_169_trust_screen_is_blocked() {
+        for screen in [
+            include_str!("../tests/fixtures/screens/codex-0.169-trust-120.txt"),
+            include_str!("../tests/fixtures/screens/codex-0.169-trust-80.txt"),
+        ] {
+            let reading = codex().read("example-host", screen);
+            assert_eq!(reading.state, State::Blocked);
+            assert_eq!(reading.rule.as_deref(), Some("trust-dialog"));
+            for marker in [
+                "  Folder access",
+                "› 1. Trust and continue",
+                "  2. Back to Agent Command Center",
+                "  enter continue · esc back",
+            ] {
+                assert!(screen.contains(marker));
+                assert_ne!(
+                    codex()
+                        .read("example-host", &screen.replace(marker, ""))
+                        .rule
+                        .as_deref(),
+                    Some("trust-dialog"),
+                    "without {marker}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn codex_trust_screen_is_blocked() {
         // Recorded from codex-cli 0.165.0 at startup in an untrusted Git
         // repository, at 120 and 80 columns; the title is the host name.

@@ -1,5 +1,5 @@
 # State rules for Codex, written from screens recorded through tmux
-# (codex-cli 0.165.0). Higher priority wins; no match means `unknown`.
+# (codex-cli 0.165.0 and 0.169.0). Higher priority wins; no match means `unknown`.
 # The working bullet alternates between • and ◦.
 vendor: codex
 rules:
@@ -29,7 +29,7 @@ rules:
     # Its heading is 13 lines above the footer at 80 columns, more when the
     # folder or the text wraps further.
     bottom: 30
-    all: ['^  Folder access\s*$', '^[› ] 1\. Trust and continue\s*$', '^[› ] 2\. Quit\s*$', '^  enter continue · esc quit[ \t]*\z']
+    all: ['^  Folder access\s*$', '^[› ] 1\. Trust and continue\s*$', '^[› ] 2\. (Quit|Back to Agent Command Center)\s*$', '^  enter continue · esc (quit|back)[ \t]*\z']
   - id: working-title
     state: working
     priority: 50
