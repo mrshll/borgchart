@@ -557,7 +557,7 @@ fn ambiguous_catalog_does_not_block_status_but_refuses_new_child_teams() {
 #[test]
 fn unclean_restart_refuses_missing_named_child() {
     let (env, dept) = department();
-    env.tmux(&["kill-server"]);
+    env.kill_server();
     fs::rename(env.path("templates/dev"), env.path("saved-dev")).unwrap();
     let output = env.brg(&["start", &dept]);
     assert!(!output.status.success(), "{}", both(&output));

@@ -115,7 +115,7 @@ fn killed_server_holds_checkout_until_full_stop_confirms_processes_gone() {
     let env = Env::new();
     let a = env.create("oncall", "work/a");
     // brg can no longer reach the server that ran A.
-    env.tmux(&["kill-server"]);
+    env.kill_server();
     let err = env.fails(&["create", "oncall", &env.folder("work/a")]);
     assert!(err.contains(&a), "{err}");
     let err = env.fails(&["delete", &a, "--force"]);

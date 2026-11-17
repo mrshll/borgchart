@@ -229,7 +229,7 @@ fn unreachable_server_with_exited_processes_clears_stop_marks() {
     let dept = env.create("oncall", "work/a");
     let (dev, _) = prepared_copy(&env, &dept, "dev");
     start(&env, &dev);
-    env.tmux(&["kill-server"]);
+    env.kill_server();
     env.ok(&["stop", &dept]);
     start(&env, &dept);
     start(&env, &dev);
@@ -276,7 +276,7 @@ fn killed_ordinary_server_can_stop_and_restart(missing_pane: bool) {
         record["pane"] = serde_json::Value::Null;
         fs::write(path, serde_json::to_vec(&record).unwrap()).unwrap();
     }
-    env.tmux(&["kill-server"]);
+    env.kill_server();
     if missing_pane {
         // Exercise an absent socket as well as tmux's refused stale one.
         fs::remove_file(recorded_socket(&env, &inst)).unwrap();
@@ -317,7 +317,7 @@ fn surviving_process_blocks_stop(nested: bool) {
     let pid = survivor.id();
     record["pane"]["pane_pid"] = pid.into();
     fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
-    env.tmux(&["kill-server"]);
+    env.kill_server();
     let out = env.brg(&["stop", &dept]);
     survivor.kill().unwrap();
     survivor.wait().unwrap();
@@ -389,7 +389,9 @@ fn full_start_skips_running_child_team_validation_but_checks_stopped_restores() 
     fs::remove_dir_all(&folder).unwrap();
     let refused = env.fails(&["start", &dept]);
     assert!(refused.contains(&dev), "{refused}");
-    assert_eq!(env.state_of(&dept, "lead"), "idle");
+    env.wait_for("parent lead idle after child restore refused", || {
+        env.state_of(&dept, "lead") == "idle"
+    });
     env.ok(&["stop", &dept]);
 }
 
