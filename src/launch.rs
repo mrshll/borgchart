@@ -183,7 +183,8 @@ fn hook_command(brg: &Path, event: &str, state: &StateDir, member: &str) -> Stri
     )
 }
 
-/// Claude `--settings` JSON for session recording without a gate.
+/// Claude `--settings` JSON for a member without a gate: it only records
+/// the session.
 pub fn claude_session_settings(brg: &Path, state: &StateDir, member: &str) -> serde_json::Value {
     serde_json::json!({
         "hooks": {

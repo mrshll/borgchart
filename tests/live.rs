@@ -332,6 +332,7 @@ fn case(w: &World, id: &str, submit: bool) -> Vec<(String, Outcome)> {
     let run = || match id {
         "claude-trust-off" => cases::claude_trust(w, false),
         "claude-trust-on" => cases::claude_trust(w, true),
+        "claude-add-dir-status" => one(cases::claude_add_dir_status(w)),
         "codex-trust-on" => cases::codex_trust(w, Some(true)),
         "codex-trust-off" => cases::codex_trust(w, Some(false)),
         "codex-locked-trust" => cases::codex_trust(w, None),
@@ -577,6 +578,12 @@ fn dry_run_reaches_every_expected_result() {
         ("claude-background-wait", cases::WAITER, "same-poll", "FAIL"),
         ("claude-env-colour", "painter", "nocolour", "FAIL"),
         ("claude-env-colour", "painter", "wrongenv", "FAIL"),
+        (
+            "claude-add-dir-status",
+            "folder-reader",
+            "approval",
+            "BLOCKED",
+        ),
         ("codex-env-colour", "painter", "nocolour", "FAIL"),
         ("codex-env-colour", "painter", "wrongenv", "FAIL"),
         ("codex-trust-off", "truster", "write-config", "FAIL"),

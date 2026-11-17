@@ -28,6 +28,7 @@ pub const REQUIRED: &[(&str, Who)] = &[
     ("claude-trust-off", Who::Claude),
     ("claude-trust-status", Who::Claude),
     ("claude-trust-on", Who::Claude),
+    ("claude-add-dir-status", Who::Claude),
     ("codex-trust-on", Who::Codex),
     ("codex-trust-off", Who::Codex),
     ("codex-trust-status", Who::Codex),
