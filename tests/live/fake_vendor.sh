@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # The live tier's dry-run stand-in for `claude` and `codex` (installed under
 # those names). It draws just enough of each vendor's screen for brg's state
 # rules, and acts out one scenario per member, named in
@@ -54,7 +54,7 @@ scenario=ok
 [ -n "$member" ] && [ -f "$fake/scenario-$member" ] && scenario=$(cat "$fake/scenario-$member")
 
 if [ "$scenario" = wrongenv ] && [ -z "${FAKE_REEXEC:-}" ]; then
-  exec env -u COLORTERM TERM=dumb FAKE_REEXEC=1 /bin/sh "$0" "$@"
+  exec env -u COLORTERM TERM=dumb FAKE_REEXEC=1 /bin/bash "$0" "$@"
 fi
 if [ "$scenario" = write-at-exit ] && [ -n "${CODEX_HOME:-}" ]; then
   trap 'echo "# written at exit by the fake" >>"$CODEX_HOME/config.toml"; exit 0' HUP TERM INT
@@ -67,6 +67,7 @@ colour='\033[38;2;215;119;87m'
 [ "$scenario" = nocolour ] && colour='\033[38;5;208m'
 rule=────────────────────────────────────────────────────────────
 lines=
+buffer=
 
 # Stay running as this process, so its argv and environment stay readable.
 forever() { while :; do sleep 5; done; }
@@ -80,7 +81,12 @@ draw() { # draw <mode>: idle | working | trust | codex-trust | approval
     trust)
       printf '\033]0;\007%s\r\n Accessing workspace:\r\n\r\n %s\r\n\r\n' "$rule" "$PWD"
       printf ' Quick safety check: Is this a project you created or one you trust?\r\n\r\n'
-      printf ' ❯ No, exit\r\n   Yes, I trust this folder\r\n\r\n Enter to confirm · Esc to cancel\r\n'
+      if [ "${selected:-no}" = yes ]; then
+        printf '   No, exit\r\n ❯ Yes, I trust this folder\r\n'
+      else
+        printf ' ❯ No, exit\r\n   Yes, I trust this folder\r\n'
+      fi
+      printf '\r\n Enter to confirm · Esc to cancel\r\n'
       return ;;
     codex-trust)
       printf '\033]0;\007  Folder access\r\n  %s\r\n' "$PWD"
@@ -96,7 +102,7 @@ draw() { # draw <mode>: idle | working | trust | codex-trust | approval
     printf "${colour}▝▜██████▀\033[0m  Fake Claude\r\n"
     printf '%s' "$lines" | while IFS= read -r l; do printf '%s\r\n' "$l"; done
     case $1 in
-      idle) printf '%s\r\n❯ \r\n%s\r\n  ⏵⏵ accept edits on\r\n' "$rule" "$rule" ;;
+      idle) printf '%s\r\n❯ %s\r\n%s\r\n  -- INSERT -- ⏵⏵ accept edits on\r\n' "$rule" "${buffer//$'\n'/$'\n  '}" "$rule" ;;
       working) printf '✻ Working… (1s)\r\n%s\r\n❯ \r\n%s\r\n  esc to interrupt\r\n' "$rule" "$rule" ;;
       approval)
         printf ' Bash command\r\n This command requires approval\r\n Do you want to proceed?\r\n'
@@ -112,6 +118,10 @@ draw() { # draw <mode>: idle | working | trust | codex-trust | approval
       approval) printf '  Would you like to run the following command?\r\n› 1. Yes, proceed (y)\r\n  Press enter to confirm or esc to cancel\r\n' ;;
     esac
   fi
+  if { [ "$member" = typer ] || [ "$member" = waiter ]; } && [ "$1" = idle ]; then
+    last=${buffer##*$'\n'}
+    printf '\033[3A\033[%sG' "$((${#last} + 3))"
+  fi
 }
 
 trusted() {
@@ -124,20 +134,35 @@ trusted() {
 
 # The trust screen, left unanswered (or, for the controls, not kept).
 at_trust() {
+  stty raw -echo
   draw "$1"
+  if [ "$scenario" = trust-key ]; then
+    TMUX_TMPDIR="$BORGCHART_TMUX_TMPDIR" tmux -L "$BORGCHART_TMUX_SOCKET" send-keys -t "=brg-$BORGCHART_TEAM:=$BORGCHART_MEMBER" x
+  fi
   case $scenario in
     trust-exit) sleep 1; exit 1 ;;
     trust-unknown) sleep 1; printf '\033[2J\033[H  something else entirely\r\n' ;;
   esac
-  forever
+  [ "$1" = trust ] || forever
+  selected=no
+  dropped=
+  while IFS= read -r -n 1 -d '' key; do
+    case $key in
+      F|'~')
+        if [ "$scenario" = trust-drops-key ] && [ -z "$dropped" ]; then dropped=1; continue; fi
+        selected=yes; draw trust ;;
+      $'\r'|$'\n') [ "$selected" = yes ] && return ;;
+    esac
+  done
 }
 
 if [ "$member" != queue-locked ] && ! trusted; then
-  [ "$vendor" = claude ] && at_trust trust
+  if [ "$vendor" = claude ]; then at_trust trust; else
   want="projects={\"$PWD\"={trust_level=\"trusted\"}}"
   ok=
   for a in "$@"; do [ "$a" = "$want" ] && ok=1; done
   [ -z "$ok" ] && at_trust codex-trust
+  fi
 fi
 
 if [ "$scenario" = approval ]; then
@@ -168,7 +193,7 @@ case $member in queue-*)
   for a in "$@"; do
     case $a in *'brg restarted you'*'msg list --full'*)
       for word in $("$BORGCHART_BIN" msg list --full | sed -n 's/.*nonce \([0-9a-z]*\).*/\1/p'); do
-        say "● REPLY-$word"
+        say "• REPLY-$word"
       done ;;
     esac
   done
@@ -198,14 +223,23 @@ case $member in queue-*)
           ts=$(printf '%s' "$body" | sed -n 's/.*ts=\([^ ]*\).*/\1/p')
           say "● PROMOTED-$ts" ;;
         *'nonce '*)
+          marker=•
           for word in $(printf '%s' "$body" | sed -n 's/.*nonce \([0-9a-z]*\).*/\1/p'); do
-            say "● REPLY-$word"
+            [ "$scenario" = echo-reply ] && marker=›
+            say "$marker REPLY-$word"
+            marker=' '
           done ;;
         *'promote '*)
           ts=$(printf '%s' "$body" | sed -n 's/.*promote \([0-9.]*\).*/\1/p' | head -1)
           promote "$ts"
           say '● SENT' ;;
       esac
+      if [ "$scenario" = late-idle ] && [ -z "${late_once:-}" ]; then
+        late_once=1
+        draw working
+        sleep 1
+        rm -f "$inbox"/[0-9]*
+      fi
       draw idle
     done
     sleep 0.05
@@ -215,6 +249,27 @@ esac
 nonce_word() { # the nonce from the inbox, read without marking it shown
   "$BORGCHART_BIN" msg list --member "$BORGCHART_MEMBER" --full | grep -o 'nonce [0-9a-z]*' | tail -1 | cut -d' ' -f2
 }
+
+if [ "$member" = typer ]; then
+  stty raw -echo opost onlcr
+  printf '\033[?2004h'
+  draw idle
+  while IFS= read -r -n 1 -d '' key; do
+    case $key in
+      $'\033')
+        IFS= read -r -n 5 sequence
+        IFS= read -r -d $'\033' buffer
+        IFS= read -r -n 5 sequence
+        buffer=$(printf '%s' "$buffer" | tr '\r' '\n')
+        draw idle ;;
+      $'\r'|$'\n')
+        word=$(printf '%s' "$buffer" | sed -n 's/.*nonce \([0-9a-z]*\).*/\1/p')
+        buffer=
+        [ "$scenario" != drop-turn ] && say "● REPLY-$word"
+        draw idle ;;
+    esac
+  done
+fi
 
 reply() { say "● REPLY $(printf '%s' "$1" | rev)"; draw idle; }
 
@@ -252,6 +307,7 @@ if [ "$member" = waiter ]; then
       wait $! ;;
   esac
   # The new turn, after the wait ended.
+  sleep 0.3 # Keep the composer available long enough to expose accidental typing.
   draw working
   sleep 1
   if [ "$scenario" = stale ]; then
