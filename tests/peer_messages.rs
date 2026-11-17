@@ -452,7 +452,7 @@ fn peer_claude_typing_attributes_the_other_lead_and_preserves_a_draft() {
             .tmux(&["capture-pane", "-p", "-t", &pane])
             .contains("draft text")
     });
-    assert_eq!(value(peers.send(0, &[]))["delivery"], "stored");
+    assert_eq!(value(peers.send(0, &[]))["delivery"], "blocked");
     assert!(
         peers
             .env

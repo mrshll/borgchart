@@ -198,6 +198,10 @@ pub enum Reading {
 }
 
 impl View {
+    pub fn shows_queued_placeholder(&self) -> bool {
+        self.lines == ["Press up to edit queued messages"]
+    }
+
     pub fn reading(&self) -> Reading {
         if self.busy {
             return Reading::Busy;
@@ -262,14 +266,18 @@ impl View {
         false
     }
 
-    /// Conservative ASCII-width estimate, not a vendor paste limit.
+    /// Conservative ASCII-width estimate within Claude's paste limits.
     /// Wide/combining characters can fail the exact post-paste check.
-    /// Larger messages remain in the inbox without leaving a collapsed draft.
     pub fn can_verify_submission(&self, text: &str, rows: usize) -> bool {
+        // Claude Code 2.1.326 folds a paste of more than 3 lines or more than
+        // 800 characters into `[Pasted text #N +K lines]`. Bytes are conservative.
+        const MAX_PASTE_LINES: usize = 3;
+        const MAX_PASTE_BYTES: usize = 800;
         let Some(width) = self.text_width.filter(|width| *width > 0) else {
             return false;
         };
-        text.len() <= 1024
+        text.len() <= MAX_PASTE_BYTES
+            && text.split('\n').count() <= MAX_PASTE_LINES
             && text
                 .split('\n')
                 .map(|line| line.chars().count().max(1).div_ceil(width))
@@ -470,6 +478,17 @@ mod tests {
             cursor: Some((last, lines[last].chars().count())),
             text_width: Some(width),
         }
+    }
+
+    #[test]
+    fn typing_budget_matches_claude_paste_folding() {
+        let v = view_of(&[""], 200);
+        assert!(v.can_verify_submission("one\ntwo\nthree", 40));
+        assert!(!v.can_verify_submission("one\ntwo\nthree\nfour", 40));
+        assert!(v.can_verify_submission(&"x".repeat(800), 40));
+        assert!(!v.can_verify_submission(&"x".repeat(801), 40));
+        assert!(!v.can_verify_submission(&"é".repeat(401), 40));
+        assert!(!view_of(&[""], 20).can_verify_submission(&"x".repeat(201), 40));
     }
 
     #[test]

@@ -2681,7 +2681,7 @@ fn plugin_send_without_external_author_is_refused_before_recording() {
 }
 
 #[test]
-fn long_ordinary_claude_body_is_stored_without_composer_submission() {
+fn long_ordinary_claude_body_is_stored_and_its_pointer_is_submitted() {
     let env = Env::new();
     let template = env.path("team/template.yaml");
     fs::write(
@@ -2711,9 +2711,11 @@ fn long_ordinary_claude_body_is_stored_without_composer_submission() {
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let record = record_for(&env, "beta", &body);
     assert_eq!(result["id"], record["id"]);
-    assert_eq!(result["delivery"], "stored");
+    assert_eq!(result["delivery"], "typed", "{result}");
     assert_eq!(record["ack_required"], true);
-    assert!(submissions(&env, "beta").is_empty());
+    let submitted = submissions(&env, "beta");
+    assert_eq!(submitted.len(), 1);
+    assert!(submitted[0].contains(&format!("msg read {}", record["id"].as_str().unwrap())));
 }
 
 /// The session `member`'s latest start recorded, if any.

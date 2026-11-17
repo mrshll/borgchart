@@ -178,7 +178,7 @@ fn acknowledging_failed_delivery_removes_the_alert() {
 }
 
 #[test]
-fn oversized_stored_message_does_not_raise_a_delivery_alert() {
+fn oversized_message_pointer_does_not_raise_a_delivery_alert() {
     let (e, team, member) = setup(false);
     let sent: Value = serde_json::from_slice(
         &e.ok(&[
@@ -193,7 +193,7 @@ fn oversized_stored_message_does_not_raise_a_delivery_alert() {
         .stdout,
     )
     .unwrap();
-    assert_eq!(sent["delivery"], "stored");
+    assert_eq!(sent["delivery"], "typed");
     assert!(
         !e.path(&format!("state/{team}/members/{member}/delivery.json"))
             .exists()

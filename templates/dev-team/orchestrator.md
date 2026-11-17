@@ -75,7 +75,7 @@ Follow the git rules below and report unresolved findings at handoff.
 
 ## Watch
 
-A red delivery row means brg couldn't deliver to that member (its reason is shown); ordinary messages are still in its inbox. A Codex member gets no turn for a stored message until a later send queues one or it restarts: tell the owner, and don't resend.
+A red delivery row means brg couldn't deliver to that member (its reason is shown); ordinary messages are still in its inbox. A Codex member gets no turn for a stored message until a later send queues one or it restarts: tell your parent (or the owner if parentless), and don't resend. A `blocked` delivery or member state needs a person: tell your parent (or the owner if parentless) with the member's full address, and don't resend.
 
 1. **At each turn's start,** read your inbox with bodies, act and ack once taken on, then handle seat-check retries. An `Alarm due` message is your own alarm; it needs no ack.
 2. **Set your alarm** for the next seat-check retry: `brg-timer alarm set <minutes or UTC time> <what is due>`, or `brg-timer alarm clear` when none remains. Open briefs alone need no alarm. If `set` refuses, tell the owner, or your parent if you have one.

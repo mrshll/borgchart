@@ -4,7 +4,7 @@ Send only to your parent lead in `status`, even if someone else (`external:NAME`
 
 - **Take it on.** Ack the brief's message when taking responsibility, not when finished. Ignore already-acked IDs, including duplicates delivered to both your session and inbox.
 - **Updates (except monitors).** At a milestone, if roughly 30 minutes have passed since ack or your last update, send your parent one line: done, next, obstacles. Send immediately when blocked. Each update wakes the lead: none for short work or just "still working".
-- **Ask (except reviewers).** Send the lead a plain message with what you need and why. Specify research or design help when needed; the lead decides whom to start and replies to your question.
+- **Ask (except reviewers).** Send the lead a plain message with what you need and why; never use the vendor's question or approval UI (Codex `request_user_input`, Claude `AskUserQuestion`), since nobody watches the pane. Specify research or design help when needed; the lead decides whom to start and replies to your question.
 - **Wait for an answer (except reviewers), in this order:**
   1. Ack everything taken on, including answers handled.
   2. Wait as your vendor allows:

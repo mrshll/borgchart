@@ -386,8 +386,8 @@ pub fn before_enter(rules: &rules::RuleSet, snap: &Snapshot) -> Option<String> {
     }
 }
 
-/// After Enter: `Ok` once the input box reads as empty (a turn may be running), so
-/// the reminder left it; otherwise why the outcome isn't known.
+/// After Enter: `Ok` once the input box is empty or shows Claude's queued-message
+/// placeholder (a turn may be running); otherwise why the outcome isn't known.
 pub fn after_enter(snap: Option<&Snapshot>) -> Result<(), String> {
     let snap = snap.ok_or("the pane changed or exited after Enter")?;
     if snap.in_mode {
@@ -395,7 +395,7 @@ pub fn after_enter(snap: Option<&Snapshot>) -> Result<(), String> {
     }
     let view = composer::view(&snap.screen, Some(snap.geometry))
         .map_err(|why| format!("the input box can't be read after Enter ({why})"))?;
-    if view.lines.iter().all(|l| l.trim().is_empty()) {
+    if view.lines.iter().all(|l| l.trim().is_empty()) || view.shows_queued_placeholder() {
         Ok(())
     } else if view.holds(REMINDER) {
         Err("Enter was pressed but the reminder is still in the input box".into())
@@ -543,6 +543,36 @@ pub fn attempt(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_queued_placeholder_confirms_submission_without_accepting_a_draft() {
+        let screen =
+            include_str!("../tests/fixtures/screens/claude-queued-placeholder-assembled.txt");
+        let placeholder = "Press up to edit queued messages";
+        let snapshot = |screen: String| Snapshot {
+            title: "✳ Example".into(),
+            screen,
+            geometry: composer::Geometry {
+                width: 80,
+                cursor_x: 2,
+                cursor_y: 35,
+            },
+            in_mode: false,
+        };
+        for screen in [
+            screen.to_string(),
+            screen.replace(placeholder, &format!("\x1b[2m{placeholder}\x1b[0m")),
+        ] {
+            assert_eq!(after_enter(Some(&snapshot(screen))), Ok(()));
+        }
+        for draft in [
+            "a draft",
+            "Press up to edit queued messages extra",
+            "Press up to edit queued messages\n  more text",
+        ] {
+            assert!(after_enter(Some(&snapshot(screen.replace(placeholder, draft)))).is_err());
+        }
+    }
 
     fn facts(version: &str, editor: &str, suggestions: Option<bool>) -> LaunchFacts {
         LaunchFacts {

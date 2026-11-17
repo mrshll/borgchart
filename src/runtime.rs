@@ -4086,24 +4086,36 @@ fn status_with_counts(
                             .and_then(|i| i.pane.as_ref()),
                     )
                     && let Some(snap) = crate::wake::snapshot(&tmux.with_socket(&pane.socket), pane)
-                    && let Err(reason) = crate::composer::view(&snap.screen, Some(snap.geometry))
                 {
-                    row.input_unreadable = true;
-                    details.push(format!(
-                        "brg can't read {} {}'s input box: {reason}",
-                        vendor.as_str(),
-                        row.vendor_version.as_deref().unwrap_or("unknown version")
-                    ));
+                    match crate::composer::view(&snap.screen, Some(snap.geometry)) {
+                        Err(reason) => {
+                            row.input_unreadable = true;
+                            details.push(format!(
+                                "brg can't read {} {}'s input box: {reason}",
+                                vendor.as_str(),
+                                row.vendor_version.as_deref().unwrap_or("unknown version")
+                            ));
+                        }
+                        Ok(view)
+                            if row.unacked.is_some_and(|n| n > 0)
+                                && view.reading() == crate::composer::Reading::Draft =>
+                        {
+                            details.push(format!(
+                                "input box holds unsent text; typed messages wait: brg attach {}",
+                                inst.at(id)
+                            ));
+                        }
+                        _ => {}
+                    }
                 }
                 // It waits for a person to answer it.
-                let prompt = match row.rule.as_deref() {
-                    Some(TRUST_RULE) => Some("folder trust"),
-                    Some(ADD_DIR_RULE) => Some("Claude's \"Adding a new directory\" prompt"),
-                    _ => None,
-                };
-                if row.state == "blocked"
-                    && let Some(prompt) = prompt
-                {
+                if row.state == "blocked" {
+                    let prompt = match row.rule.as_deref() {
+                        Some(TRUST_RULE) => "folder trust",
+                        Some(ADD_DIR_RULE) => "Claude's \"Adding a new directory\" prompt",
+                        Some(rule) => rule,
+                        None => "an unknown prompt",
+                    };
                     details.insert(
                         0,
                         format!("waiting at {prompt}: `brg attach {}`", inst.at(id)),
@@ -5028,6 +5040,7 @@ pub fn send(
         peer,
     );
     let mut send_lock = None;
+    let mut queued_block = None;
     let typed = (|| {
         let pane = pane
             .as_ref()
@@ -5060,32 +5073,85 @@ pub fn send(
             ));
         }
         if vendor == Vendor::Codex {
+            queued_block = crate::wake::snapshot(&tmux.with_socket(&pane.socket), pane)
+                .and_then(|snap| {
+                    let rules = rules::load(Vendor::Codex).ok()?;
+                    let plain = crate::composer::plain(&crate::composer::parse(&snap.screen));
+                    let reading = rules.read(&snap.title, &plain);
+                    (reading.state == State::Blocked).then(|| format!(
+                        "queued behind {} in its pane; it runs after a person answers it: brg attach {}",
+                        reading.rule.unwrap_or_default(), inst.at(&to)
+                    ))
+                });
             let inc = current.as_ref().expect("checked above");
-            return queue_send(&inst.state, &to, inc, &meta.base_env, &envelope).map(|()| "queued");
+            return queue_send(&inst.state, &to, inc, &meta.base_env, &envelope).map(|()| {
+                if queued_block.is_some() {
+                    "blocked"
+                } else {
+                    "queued"
+                }
+            });
         }
         let tmux = tmux.with_socket(&pane.socket);
         let before = send_snapshot(&tmux, &inst.state, &to, pane, force, locked)?;
         let mut view = crate::composer::view(&before.screen, Some(before.geometry))
             .map_err(SendError::Refused)?;
         view.busy = false; // Working is allowed; the input box must still be empty.
-        if view.reading() != crate::composer::Reading::Empty {
+        if view.shows_queued_placeholder() {
             return Err(SendError::Refused(
-                "input box is not positively empty; draft preserved".into(),
+                "Claude has queued input this turn; the message stays in its inbox".into(),
             ));
         }
-        if !view.can_verify_submission(&envelope, before.screen.lines().count()) {
+        match view.reading() {
+            crate::composer::Reading::Draft => {
+                return Err(SendError::Blocked(format!(
+                    "input box holds unsent text; typed messages wait until a person submits or clears it: brg attach {}",
+                    inst.at(&to)
+                )));
+            }
+            crate::composer::Reading::Unknown(why) => {
+                return Err(SendError::Refused(format!(
+                    "input box can't be read as empty ({why}); draft preserved"
+                )));
+            }
+            _ => {}
+        }
+        let pointer = !view.can_verify_submission(&envelope, before.screen.lines().count());
+        if pointer && locked {
             return Err(SendError::Refused(
-                "message exceeds the screen-verification budget; no text pasted".into(),
+                "message exceeds the restricted screen-verification budget; no text pasted".into(),
             ));
         }
-        paste_send(&tmux, &inst.state, &to, pane, locked, &envelope).map(|()| "typed")
+        let text = if pointer {
+            send_pointer(
+                &record.id,
+                &record.from,
+                from.as_deref(),
+                &record.body,
+                record.ack_required,
+                peer,
+            )
+        } else {
+            envelope.clone()
+        };
+        if pointer && !view.can_verify_submission(&text, before.screen.lines().count()) {
+            return Err(SendError::Refused(
+                "message pointer exceeds the screen-verification budget; no text pasted".into(),
+            ));
+        }
+        paste_send(&tmux, &inst.state, &to, pane, locked, &text)
+            .map(|()| if pointer { "pointer" } else { "typed" })
     })();
     let (delivery, reason) = match &typed {
         Ok("queued") => ("queued", "codex queue: the member's next turn"),
+        Ok("blocked") => ("blocked", queued_block.as_deref().expect("blocked queue")),
+        Ok("pointer") => ("typed", "message pointer typed and submitted"),
         Ok(delivery) => (*delivery, "submitted"),
         Err(error) => (
             if matches!(error, SendError::Uncertain(_)) {
                 "uncertain"
+            } else if matches!(error, SendError::Blocked(_)) {
+                "blocked"
             } else {
                 "stored"
             },
@@ -5094,7 +5160,6 @@ pub fn send(
     };
     let mut reason = reason.to_string();
     if let Some(inc) = &original
-        && !reason.starts_with("message exceeds the screen-verification budget")
         && lifecycle::load_incarnation(&inst.state, &to)
             .ok()
             .flatten()
@@ -5121,6 +5186,16 @@ pub fn send(
                     Err(e)
                 }
             })
+        } else if std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Delivery>(&bytes).ok())
+            .is_some_and(|d| {
+                d.incarnation == inc.incarnation
+                    && matches!(d.outcome.as_str(), "blocked" | "uncertain")
+                    && !target_bus.paths.ack(&d.id).exists()
+            })
+        {
+            Ok(())
         } else {
             write_private(&path, &serde_json::to_vec(&serde_json::json!({
                 "outcome": delivery, "reason": reason, "at": utc_now(), "id": record.id, "incarnation": inc.incarnation
@@ -5131,7 +5206,7 @@ pub fn send(
         }
     }
     match typed {
-        Ok(delivery) => {
+        Ok(_) => {
             outcome.delivery = delivery;
             outcome.reason = reason;
             Ok(outcome)
@@ -5149,7 +5224,7 @@ pub fn send(
                     message: reason,
                 })
             } else {
-                outcome.delivery = if uncertain { "uncertain" } else { "stored" };
+                outcome.delivery = delivery;
                 outcome.reason = reason;
                 Ok(outcome)
             }
@@ -5229,6 +5304,16 @@ fn queue_send(
     }
 }
 
+fn relay_label(from: Option<&str>, peer: bool) -> String {
+    let mut relay = from
+        .map(|from| format!("; relayed for {from}"))
+        .unwrap_or_default();
+    if peer {
+        relay.push_str("; another tree's root member, not the owner");
+    }
+    relay
+}
+
 fn send_envelope(
     id: &str,
     author: &str,
@@ -5237,12 +5322,7 @@ fn send_envelope(
     ack_required: bool,
     peer: bool,
 ) -> String {
-    let mut relay = from
-        .map(|from| format!("; relayed for {from}"))
-        .unwrap_or_default();
-    if peer {
-        relay.push_str("; another tree's root member, not the owner");
-    }
+    let relay = relay_label(from, peer);
     if ack_required {
         format!(
             "[brg {id} from {author}{relay}]\n{body}\n[Ignore duplicate delivery if already acked; otherwise brg msg ack {id} when taking responsibility.]"
@@ -5250,6 +5330,27 @@ fn send_envelope(
     } else {
         format!("[brg {id} from {author}{relay}; ack not required]\n{body}")
     }
+}
+
+fn send_pointer(
+    id: &str,
+    author: &str,
+    from: Option<&str>,
+    body: &str,
+    ack_required: bool,
+    peer: bool,
+) -> String {
+    let relay = relay_label(from, peer);
+    let ack = if ack_required {
+        ", and ack it when taking responsibility"
+    } else {
+        ""
+    };
+    format!(
+        "[brg {id} from {author}{relay}: {} lines, {} bytes; read it with \"$BORGCHART_BIN\" msg read {id}{ack}]",
+        body.split('\n').count(),
+        body.len()
+    )
 }
 
 fn send_snapshot(
@@ -5271,9 +5372,10 @@ fn send_snapshot(
     let plain = crate::composer::plain(&crate::composer::parse(&snap.screen));
     match rules.read(&snap.title, &plain).state {
         State::Blocked => {
-            return Err(SendError::Blocked(
-                "recipient is waiting at a dialog; no input sent".into(),
-            ));
+            return Err(SendError::Blocked(format!(
+                "recipient is waiting at a dialog; no input sent: brg attach {}/{member}",
+                state.id
+            )));
         }
         State::Unknown if !force => {
             return Err(SendError::Refused(
@@ -5283,7 +5385,10 @@ fn send_snapshot(
         _ => {}
     }
     if snap.in_mode {
-        return Err(SendError::Blocked("recipient pane is in copy mode".into()));
+        return Err(SendError::Blocked(format!(
+            "recipient pane is in copy mode: {}",
+            tmux::leave_mode_hint(&format!("{}/{member}", state.id))
+        )));
     }
     Ok(snap)
 }

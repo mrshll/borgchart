@@ -96,14 +96,16 @@ other-tree --team, lifecycle, read, list, ack or secrets access; status, logs
 and attach already reach every tree.
 
 Ordinary messages commit before delivery. Exit 0 means committed even when
-stored or uncertain; never automatically republish. Every Codex recipient gets
-its next turn through `codex queue`, after any current turn, using its recorded
-base environment and current session. Interactive and --allow-unknown have no
-effect for Codex. Stopped or replaced starts are never queued; queue never gets
---resume. A start under 30 s old gets up to 5 s for its session. A nonzero queue
-exit leaves ordinary messages stored; no answer within 10 s is uncertain:
-may have been queued; do not resend. A queued turn can run while a UI picker
-is open, leaving it unanswered and drafts alone.
+stored, blocked or uncertain; never automatically republish. Every Codex
+recipient gets its next turn through `codex queue`, after any current turn,
+using its recorded base environment and current session. Interactive and
+--allow-unknown have no effect for Codex. Stopped or replaced starts are
+never queued; queue never gets --resume. A start under 30 s old gets up to 5
+s for its session. A nonzero queue exit leaves ordinary messages stored; no
+answer within 10 s is uncertain: may have been queued; do not resend. Queue
+leaves UI pickers unanswered and drafts alone. A recognized blocked pane
+reports blocked with its rule and an attach command: its queued turn waits
+for a person.
 
 Interactive Claude recipients are inbox-only, even with --allow-unknown.
 Other Claude recipients get guarded typing, possibly during the current turn.
@@ -118,16 +120,18 @@ nonzero and include the ID; retry may duplicate recorded or submitted input.
 
 TEXT of - reads stdin. Body limit: {} bytes; repeat --reply-to for up to 32
 existing record IDs. Controls other than newline/tab and leading / or ! refuse.
-Claude typing uses a smaller screen-verification budget: 1024 envelope bytes
-and at most ten estimated lines. Larger ordinary Claude messages remain stored;
+Claude typing uses at most 3 envelope lines and 800 bytes, plus a screen-row
+budget. Larger ordinary Claude messages get a one-line pointer to `msg read ID`;
 restricted Claude messages outside that budget refuse before committing. Drafts,
 dialogs, copy mode and unverified pasted text never get Enter or clearing.
 
-Outcomes: committed (0); usage (2); unaddressable/restricted not running (3);
-restricted Claude dialog/copy mode (4); validation, fence, storage or restricted
-input failure (5). --json includes ok, code, message, and a committed id, store,
-delivery and reason when present. Delivery: typed, queued, stored, uncertain,
-recorded-not-delivered.",
+Outcomes: committed (0); usage (2); unaddressable/restricted not running
+(3); restricted Claude dialog/copy mode (4); validation, fence, storage or
+restricted input failure (5). --json includes ok, code, message, and a
+committed id, store, delivery and reason when present. Delivery: typed,
+queued, stored, blocked, uncertain, recorded-not-delivered. Blocked means
+committed but waiting for a person; do not resend. Status keeps the first
+blocked or uncertain event until its message is acked or delivery succeeds.",
         crate::runtime::MAX_SEND_BYTES
     )
 }

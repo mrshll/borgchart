@@ -57,12 +57,12 @@ Seat a design panel before a dev team for costly-to-reverse architecture choices
 
 Two designers, one per vendor, independently propose from the same brief without seeing each other's work. Exchange files in `"$(dirname "$BORGCHART_NOTES")/<child-team>/notes"`, where `<child-team>` is the child ID's last part (`design-k3f9`).
 
-1. **Create** from `design`; note the team ID. Keep your checkout at baseline until both proposals arrive or the panel is stopped at its proposals deadline. In a folder of clones, each clone has its own baseline commit.
+1. **Create** from `design`; note the team ID. Keep your checkout at baseline until both proposals arrive or the panel is stopped at your proposals cut-off. In a folder of clones, each clone has its own baseline commit.
 2. **Seat-check, then start.** Both designers wait for a brief.
-3. **Write `brief.md`** in the panel's notes by rename: goals, owner preferences and constraints, facts, unknowns, exact baseline commit, file allowlist, questions deadline and proposals deadline. For clones, give each repository's baseline, allowlist and whether it is clean. Omit all candidate designs, yours and the requester's, to preserve independence.
-4. **Wait for both question files** (`questions-designer-claude.md`, `questions-designer-codex.md`): record the questions deadline. Each designer messages when its file lands; on each message or alarm, check which files exist. At deadline, proceed with what exists and name what's missing.
-5. **Answer by the questions deadline** in shared `answers.md`, by rename: only facts and owner preferences.
-6. **Wait for both proposals** (`proposal-designer-claude.md`, `proposal-designer-codex.md`): record the proposals deadline. On each designer message or alarm, check which files exist. At deadline, proceed with existing proposals and name any missing.
+3. **Write `brief.md`** in the panel's notes by rename: goals, owner preferences and constraints, facts, unknowns, exact baseline commit and file allowlist; no deadlines. For clones, give each repository's baseline, allowlist and whether it is clean. Omit all candidate designs, yours and the requester's, to preserve independence. Message each designer when it lands.
+4. **Wait for both question files** (`questions-designer-claude.md`, `questions-designer-codex.md`): keep your questions cut-off in your own alarm, never the brief. Each designer messages when its file lands; on each message or alarm, check which files exist. At the cut-off, proceed with what exists and name what's missing.
+5. **Answer by your questions cut-off** in shared `answers.md`, by rename: only facts and owner preferences. Always write it, possibly `none`, and message each designer when it lands. At the cut-off, write the answers or stop the panel.
+6. **Wait for both proposals** (`proposal-designer-claude.md`, `proposal-designer-codex.md`): keep your proposals cut-off in your own alarm, never the brief. On each designer message or alarm, check which files exist. At the cut-off, proceed with existing proposals and name any missing, or stop the panel.
 7. **File and remove:** save panel files in `$BORGCHART_NOTES/design/<YYYY-MM-DD>-<topic>/`, then stop and delete the child team.
 
 Combine proposals into one plan: for each material choice, source proposal, adoption or rejection, and why. Submit the plan and await owner approval before seating the dev team with that plan in its brief; for in-flight work, send the approved plan to its lead.
@@ -100,7 +100,7 @@ Address dev-team leads by full address. Briefs have no due dates; replies give n
 
 ## Watch
 
-A red delivery row means brg couldn't deliver to that member (its reason is shown); ordinary messages are still in its inbox. A Codex member gets no turn for a stored message until a later send queues one or it restarts: tell the owner, and don't resend.
+A red delivery row means brg couldn't deliver to that member (its reason is shown); ordinary messages are still in its inbox. A Codex member gets no turn for a stored message until a later send queues one or it restarts: tell the owner, and don't resend. A `blocked` delivery or member state needs a person: tell the owner with the member's full address, and don't resend.
 
 1. **At each turn's start,** read your inbox with bodies, act and ack once taken on, then handle design cut-offs and seating retries. An `Alarm due` message is your own alarm; it needs no ack.
 2. **Set your alarm** for the next seat-check retry or design question/proposal cut-off: `brg-timer alarm set <minutes or UTC time> <what is due>`, or `brg-timer alarm clear` when none remains. Open briefs alone need no alarm. If `set` refuses, tell the owner.
