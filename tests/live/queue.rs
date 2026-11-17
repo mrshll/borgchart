@@ -132,6 +132,7 @@ fn posture(w: &World, locked: bool) -> Result<(), Outcome> {
                 "queue-vendor"
             },
             locked,
+            worktree: false,
             cwd: &folder,
             auto_trust: true,
             args: &[],

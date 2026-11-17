@@ -752,6 +752,7 @@ fn folder_trust_on_and_off_are_checked_in_dry_mode() {
         "claude-trust-off",
         "codex-trust-on",
         "codex-trust-off",
+        "codex-locked-trust",
     ] {
         for (case, outcome) in case(&w, id, true) {
             assert!(matches!(outcome, Outcome::Pass(_)), "{case}: {outcome:?}");

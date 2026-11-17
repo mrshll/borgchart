@@ -55,6 +55,7 @@ pub struct Spec<'a> {
     pub who: Who,
     pub member: &'a str,
     pub locked: bool,
+    pub worktree: bool,
     pub cwd: &'a Path,
     pub auto_trust: bool,
     pub args: &'a [&'a str],
@@ -76,7 +77,8 @@ impl<'w> Team<'w> {
         std::fs::write(
             dir.join("template.yaml"),
             format!(
-                "{bus}roles:\n  {m}:\n    prompt: {m}.md\n    vendor: {v}\n    args: {args}\n{posture}{interactive}",
+                "{bus}roles:\n  {m}:\n    prompt: {m}.md\n    vendor: {v}\n    args: {args}\n    worktree: {worktree}\n{posture}{interactive}",
+                worktree = s.worktree,
                 interactive = if s.member == WAITER { "    interactive: true\n" } else { "" },
                 bus = if s.bus { "bus: {}\n" } else { "" },
                 m = s.member,
@@ -368,7 +370,25 @@ fn fresh_repo(w: &World, what: &str) -> PathBuf {
         .current_dir(&d)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_NOSYSTEM", "1");
-    let _ = limited(&mut git, w.limits.brg);
+    assert!(limited(&mut git, w.limits.brg).unwrap().status.success());
+    let mut commit = w.command("git");
+    commit
+        .current_dir(&d)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .args([
+            "-c",
+            "user.name=Example",
+            "-c",
+            "user.email=example@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "Initial",
+        ]);
+    assert!(limited(&mut commit, w.limits.brg).unwrap().status.success());
     d
 }
 
@@ -458,6 +478,7 @@ fn claude_trust_case(w: &World, on: bool, id: &str, status: &mut Outcome) -> Out
             who: Who::Claude,
             member: "truster",
             locked: false,
+            worktree: false,
             cwd: &folder,
             auto_trust: on,
             args: &[],
@@ -538,6 +559,7 @@ fn codex_trust_case(w: &World, trust: Option<bool>, id: &str, status: &mut Outco
             who: Who::Codex,
             member: "truster",
             locked: trust.is_none(),
+            worktree: trust.is_none(),
             cwd: &repo,
             auto_trust: trust != Some(false),
             args: &[],
@@ -554,7 +576,7 @@ fn codex_trust_case(w: &World, trust: Option<bool>, id: &str, status: &mut Outco
     let (seen, held, up) = std::thread::scope(|s| {
         let up = s.spawn(|| t.up());
         // While `up` runs (a locked member keeps it waiting for its gate):
-        // the first look that shows the trust screen, idle or a prompt.
+        // stop at trust, a prompt, or idle held through the startup race.
         let end = Instant::now() + w.limits.start;
         let mut idle_since = None;
         let seen = loop {
@@ -670,6 +692,7 @@ pub fn env_colour(w: &World, who: Who) -> Outcome {
             who,
             member: "painter",
             locked: false,
+            worktree: false,
             cwd: &folder,
             auto_trust: who == Who::Codex,
             args: &[],
@@ -755,6 +778,7 @@ pub fn typed_send(w: &World) -> Outcome {
             who: Who::Claude,
             member: "typer",
             locked: false,
+            worktree: false,
             cwd: &folder,
             auto_trust: false,
             args: &[],
@@ -820,6 +844,7 @@ pub fn background_wait(w: &World) -> Outcome {
             who: Who::Claude,
             member: WAITER,
             locked: false,
+            worktree: false,
             cwd: &folder,
             auto_trust: false,
             args: &["--allowedTools", WAITER_TOOLS],

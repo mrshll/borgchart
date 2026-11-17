@@ -167,6 +167,7 @@ if [ "$member" != queue-locked ] && ! trusted; then
   want="projects={\"$PWD\"={trust_level=\"trusted\"}}"
   ok=
   for a in "$@"; do [ "$a" = "$want" ] && ok=1; done
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || ok=1
   [ "$scenario" = late-trust-no-session ] && ok=
   [ -z "$ok" ] && at_trust codex-trust
   fi
