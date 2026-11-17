@@ -20,7 +20,8 @@
 //! brg: Codex gets session-only trust (`-c projects=…`), and every Claude
 //! deployment defaults to `auto_trust: false`. Claude cases other than trust run in
 //! `target/live/<run>/work/`, which must be inside a folder Claude already
-//! trusts (this checkout or a parent); the trust cases use fresh folders
+//! trusts (this checkout or a parent), with its CLAUDE.md imports approved;
+//! the trust cases use fresh folders
 //! under the system temp directory. No tool approval is ever answered: one
 //! that appears ends its case BLOCKED.
 //!
@@ -717,6 +718,29 @@ fn codex_queue_dry_run_checks_both_postures_and_post_tool_delivery() {
     w.scenario("queue-vendor", "echo-reply");
     w.scenario("queue-locked", "ok");
     assert!(matches!(queue::run(&w), Outcome::Fail(_)));
+}
+
+#[test]
+fn codex_nontrust_config_changes_do_not_fail_the_case() {
+    let keep = tempfile::tempdir().unwrap();
+    let w = World::dry(keep.path());
+    w.scenario("truster", "write-settings");
+    let outcomes = cases::codex_trust(&w, Some(true));
+    assert!(matches!(outcomes[0].1, Outcome::Pass(_)), "{outcomes:?}");
+}
+
+#[test]
+fn codex_startup_composer_cannot_pass_for_session_trust() {
+    let keep = tempfile::tempdir().unwrap();
+    let w = World::dry(keep.path());
+    w.scenario("truster", "late-trust");
+    for trust in [false, true] {
+        let outcomes = cases::codex_trust(&w, Some(trust));
+        assert!(matches!(outcomes[0].1, Outcome::Pass(_)), "{outcomes:?}");
+    }
+    w.scenario("truster", "late-trust-no-session");
+    let outcomes = cases::codex_trust(&w, Some(true));
+    assert!(matches!(outcomes[0].1, Outcome::Fail(_)), "{outcomes:?}");
 }
 
 #[test]

@@ -352,21 +352,26 @@ impl World {
         }
     }
 
-    /// The effective Codex `config.toml` (honouring `CODEX_HOME`) as a
-    /// SHA-256, or `missing`. Its contents are never shown.
-    pub fn codex_config_hash(&self) -> String {
+    /// Trust entries and a fingerprint of the effective Codex config.
+    /// Other settings are never shown.
+    pub fn codex_config_trust(&self) -> (String, String) {
         let home = match self.env.get("CODEX_HOME") {
             Some(h) => PathBuf::from(h),
             None => PathBuf::from(self.env.get("HOME").cloned().unwrap_or_default()).join(".codex"),
         };
-        match std::fs::read(home.join("config.toml")) {
-            Ok(bytes) => Sha256::digest(&bytes)
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect(),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => "missing".into(),
-            Err(e) => format!("unreadable ({})", e.kind()),
+        match std::fs::read_to_string(home.join("config.toml")) {
+            Ok(text) => (
+                codex_trust_entries(&text),
+                format!("{:x}", Sha256::digest(text.as_bytes())),
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), "missing".into()),
+            Err(e) => (format!("unreadable ({})", e.kind()), "unreadable".into()),
         }
+    }
+
+    /// The seating probe still guards the whole config.
+    pub fn codex_config_hash(&self) -> String {
+        self.codex_config_trust().1
     }
 
     /// Dry only: set a member's fake scenario (`ok` clears it).
@@ -399,6 +404,54 @@ impl World {
             .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
             .unwrap_or_default()
     }
+}
+
+fn codex_trust_entries(config: &str) -> String {
+    let mut top = true;
+    let mut projects = false;
+    config
+        .lines()
+        .filter(|line| {
+            let text = line.trim();
+            if text.starts_with('[') {
+                top = false;
+                let table = text.trim_start_matches('[').trim_start();
+                projects = table
+                    .strip_prefix("projects")
+                    .is_some_and(|rest| rest.trim_start().starts_with(['.', ']']));
+            }
+            projects
+                || (top
+                    && text
+                        .strip_prefix("projects")
+                        .is_some_and(|rest| rest.trim_start().starts_with(['.', '='])))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn codex_trust_entries_ignore_other_tables() {
+    let base = "model = \"example\"\n";
+    let settings = format!("{base}[tui]\nscreen_reader_detection_done = true\n");
+    assert_eq!(codex_trust_entries(base), codex_trust_entries(&settings));
+    for trust in [
+        "[projects.\"/tmp/x\"]\ntrust_level = \"trusted\"\n",
+        "projects = {}\n",
+        "projects.\"/tmp/x\".trust_level = \"trusted\"\n",
+    ] {
+        assert_ne!(
+            codex_trust_entries(base),
+            codex_trust_entries(&format!("{trust}{settings}"))
+        );
+    }
+    let trust = "[projects.\"/tmp/x\"]\ntrust_level = \"trusted\"\n";
+    assert_eq!(
+        codex_trust_entries(trust),
+        codex_trust_entries(&format!(
+            "{trust}[tui]\nscreen_reader_detection_done = true\n"
+        ))
+    );
 }
 
 /// Run `cmd` to completion within `limit`, or kill it.

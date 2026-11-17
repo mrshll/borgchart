@@ -530,7 +530,7 @@ pub fn codex_trust(w: &World, trust: Option<bool>) -> Vec<(String, Outcome)> {
 
 fn codex_trust_case(w: &World, trust: Option<bool>, id: &str, status: &mut Outcome) -> Outcome {
     let repo = fresh_repo(w, "repo");
-    let before = w.codex_config_hash();
+    let before = w.codex_config_trust();
     let t = Team::new(
         w,
         id,
@@ -556,6 +556,7 @@ fn codex_trust_case(w: &World, trust: Option<bool>, id: &str, status: &mut Outco
         // While `up` runs (a locked member keeps it waiting for its gate):
         // the first look that shows the trust screen, idle or a prompt.
         let end = Instant::now() + w.limits.start;
+        let mut idle_since = None;
         let seen = loop {
             let look = t.look();
             let (state, rule) = t.read(&look);
@@ -563,10 +564,18 @@ fn codex_trust_case(w: &World, trust: Option<bool>, id: &str, status: &mut Outco
                 break Seen::Trust;
             }
             match state {
-                State::Idle => break Seen::Idle,
+                State::Idle => {
+                    if idle_since.get_or_insert_with(Instant::now).elapsed()
+                        >= Duration::from_secs(2)
+                    {
+                        break Seen::Idle;
+                    }
+                }
                 State::Blocked => break Seen::Blocked(rule),
-                _ if Instant::now() > end => break Seen::Nothing(format!("{state:?}")),
-                _ => {}
+                _ => idle_since = None,
+            }
+            if Instant::now() > end {
+                break Seen::Nothing(format!("{state:?}"));
             }
             std::thread::sleep(HOLD_POLL);
         };
@@ -626,17 +635,24 @@ fn codex_trust_case(w: &World, trust: Option<bool>, id: &str, status: &mut Outco
         )),
         (_, Seen::Trust, None) => unreachable!(),
     };
-    // The config is hashed again only after the team is down, so a write
+    // The config is checked again only after the team is down, so a write
     // at shutdown counts too.
     drop(t);
-    let after = w.codex_config_hash();
-    if before != after {
-        return Outcome::Fail(format!(
-            "the Codex config.toml changed during the case (sha256 {before} → {after}); not restored"
-        ));
+    let after = w.codex_config_trust();
+    if before.0 != after.0 {
+        return Outcome::Fail(
+            "the Codex config.toml trust entries changed during the case; not restored".into(),
+        );
     }
     match outcome {
-        Outcome::Pass(d) => Outcome::Pass(format!("{d}; config.toml unchanged after teardown")),
+        Outcome::Pass(d) => Outcome::Pass(format!(
+            "{d}; {}",
+            if before.1 == after.1 {
+                "config.toml unchanged after teardown"
+            } else {
+                "Codex changed other config.toml settings"
+            }
+        )),
         o => o,
     }
 }

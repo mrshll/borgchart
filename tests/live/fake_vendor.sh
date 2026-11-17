@@ -14,6 +14,8 @@
 #   write-at-exit append to $CODEX_HOME/config.toml when stopped
 #   trust-exit   show the trust screen briefly, then exit
 #   trust-unknown show the trust screen briefly, then an unknown screen
+#   late-trust   draw the startup composer before checking session trust
+#   late-trust-no-session ignore session trust after the startup composer
 #   early-turn   `waiter` starts its turn on the message while its wait
 #                still runs, and replies after the wait ends
 #   same-poll    `waiter`, already working, replies just before its wait
@@ -57,10 +59,13 @@ if [ "$scenario" = wrongenv ] && [ -z "${FAKE_REEXEC:-}" ]; then
   exec env -u COLORTERM TERM=dumb FAKE_REEXEC=1 /bin/bash "$0" "$@"
 fi
 if [ "$scenario" = write-at-exit ] && [ -n "${CODEX_HOME:-}" ]; then
-  trap 'echo "# written at exit by the fake" >>"$CODEX_HOME/config.toml"; exit 0' HUP TERM INT
+  trap 'printf "\n[projects.\"/tmp/example\"]\ntrust_level = \"trusted\"\n" >>"$CODEX_HOME/config.toml"; exit 0' HUP TERM INT
 fi
 if [ "$scenario" = write-config ] && [ -n "${CODEX_HOME:-}" ]; then
-  echo "# written by the fake" >>"$CODEX_HOME/config.toml"
+  printf '\n[projects."/tmp/example"]\ntrust_level = "trusted"\n' >>"$CODEX_HOME/config.toml"
+fi
+if [ "$scenario" = write-settings ] && [ -n "${CODEX_HOME:-}" ]; then
+  printf '\nscreen_reader_detection_done = true\n' >>"$CODEX_HOME/config.toml"
 fi
 
 colour='\033[38;2;215;119;87m'
@@ -156,11 +161,13 @@ at_trust() {
   done
 }
 
+if [[ "$scenario" = late-trust* ]]; then draw idle; sleep 0.3; fi
 if [ "$member" != queue-locked ] && ! trusted; then
   if [ "$vendor" = claude ]; then at_trust trust; else
   want="projects={\"$PWD\"={trust_level=\"trusted\"}}"
   ok=
   for a in "$@"; do [ "$a" = "$want" ] && ok=1; done
+  [ "$scenario" = late-trust-no-session ] && ok=
   [ -z "$ok" ] && at_trust codex-trust
   fi
 fi
