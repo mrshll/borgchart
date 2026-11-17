@@ -39,10 +39,10 @@
 <p><b>Members act as you.</b> They use your logged-in vendor accounts, your git and GitHub credentials, and the MCP connectors set up in each CLI.</p>
 <p><b>Every member draws on your vendor usage:</b> your Claude or Codex plan's allowance, or API spend. brg sets no spending cap.</p>
 <p><b>brg destroy deletes a team's notes and messages, without asking.</b> <b>brg stop</b> keeps them.</p>
-<p>Start in a disposable folder, as below, not in a checkout you care about.</p>
+<p>Start in a disposable folder, as below, not in a checkout you care about. First, set out <a href="https://github.com/mrshll/borgchart/blob/main/README.md#what-your-own-instruction-files-should-say">your own instruction-file rules</a> for accounts, pull-request handoff, merge approval, secrets, public content and conventions.</p>
 
 <h2>QUICK START</h2>
-<p>This runs the example team, templates/engineering: a Claude lead that starts Codex helpers when its work needs them. You need Rust 1.89 or newer, tmux 3.2 or newer, git with your name and email set (git config --global user.name and user.email: members commit as you), and the <b>claude</b> and <b>codex</b> CLIs, each logged in to a plan that offers the models the role files pin: the models: lines at the top of each templates/engineering/*.md (the lead runs Claude fable, helpers run Codex gpt-6-astra and others). Before each launch the lead asks the seating plugin, <b>brg-seat</b>, whether that plan has room, and waits when it can't tell.</p>
+<p>This runs the example team, templates/engineering: a Claude lead that starts Codex helpers when its work needs them. You need Rust 1.89 or newer, tmux 3.2 or newer, git with a commit name and email set (git config --global user.name and user.email), and the <b>claude</b> and <b>codex</b> CLIs, each logged in to a plan that offers the models the role files pin: the models: lines at the top of each templates/engineering/*.md (the lead runs Claude fable, helpers run Codex gpt-6-astra and others). Before each launch the lead asks the seating plugin, <b>brg-seat</b>, whether that plan has room, and waits when it can't tell.</p>
 <p>Install brg and the seating plugin from a clone, which also holds the templates:</p>
 <pre class="block"><span class="faded">$</span> git clone https://github.com/mrshll/borgchart ~/borgchart
 <span class="faded">$</span> cd ~/borgchart
