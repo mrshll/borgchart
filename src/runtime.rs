@@ -4074,20 +4074,38 @@ fn status_with_counts(
                             .and_then(|i| i.pane.as_ref()),
                     )
                     && let Some(snap) = crate::wake::snapshot(&tmux.with_socket(&pane.socket), pane)
-                    && let Err(reason) = crate::composer::view(&snap.screen, Some(snap.geometry))
                 {
-                    row.input_unreadable = true;
-                    details.push(format!(
-                        "brg can't read {} {}'s input box: {reason}",
-                        vendor.as_str(),
-                        row.vendor_version.as_deref().unwrap_or("unknown version")
-                    ));
+                    match crate::composer::view(&snap.screen, Some(snap.geometry)) {
+                        Err(reason) => {
+                            row.input_unreadable = true;
+                            details.push(format!(
+                                "brg can't read {} {}'s input box: {reason}",
+                                vendor.as_str(),
+                                row.vendor_version.as_deref().unwrap_or("unknown version")
+                            ));
+                        }
+                        Ok(view)
+                            if row.unacked.is_some_and(|n| n > 0)
+                                && view.reading() == crate::composer::Reading::Draft =>
+                        {
+                            details.push(format!(
+                                "input box holds unsent text; typed messages wait: brg attach {}",
+                                inst.at(id)
+                            ));
+                        }
+                        _ => {}
+                    }
                 }
                 // It waits for a person to answer it.
-                if row.state == "blocked" && row.rule.as_deref() == Some(TRUST_RULE) {
+                if row.state == "blocked" {
+                    let rule = match row.rule.as_deref() {
+                        Some(TRUST_RULE) => "folder trust",
+                        Some(rule) => rule,
+                        None => "unknown prompt",
+                    };
                     details.insert(
                         0,
-                        format!("waiting at folder trust: `brg attach {}`", inst.at(id)),
+                        format!("waiting at {rule}: `brg attach {}`", inst.at(id)),
                     );
                 }
                 if posture == Posture::Locked && !state.gate_marker(id).exists() {

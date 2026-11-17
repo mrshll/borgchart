@@ -993,6 +993,40 @@ fn claude_dialog_and_copy_mode_block_delivery_without_typing() {
     }
 }
 
+#[test]
+fn claude_idle_draft_with_unacked_work_shows_attach_hint() {
+    let e = Env::new(Vendor::Claude);
+    e.send_setup(Vendor::Claude, false, false);
+    e.keys(&["draft"]);
+    e.wait_for("the draft", |e| e.screen().contains("draft"));
+    assert!(
+        !e.status_row()["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("unsent text")
+    );
+    e.send_message("task", &[]);
+    // Status must diagnose the box itself, even without a delivery alert.
+    fs::remove_file(e.state.member_dir("m").join("delivery.json")).unwrap();
+    let row = e.status_row();
+    assert_eq!(row["state"], "idle", "{row}");
+    let detail = row["detail"].as_str().unwrap();
+    assert!(detail.contains("unsent text"), "{detail}");
+    assert!(detail.contains("brg attach state/m"), "{detail}");
+}
+
+#[test]
+fn claude_dialog_status_shows_its_rule_and_attach_hint() {
+    let e = Env::new(Vendor::Claude);
+    e.send_setup(Vendor::Claude, false, false);
+    e.control("mode=dialog");
+    let row = e.status_row();
+    assert_eq!(row["state"], "blocked", "{row}");
+    let detail = row["detail"].as_str().unwrap();
+    assert!(detail.contains(row["rule"].as_str().unwrap()), "{detail}");
+    assert!(detail.contains("brg attach state/m"), "{detail}");
+}
+
 impl Env {
     /// A stand-in `codex` on the sender's PATH that records its arguments
     /// and then runs `then` (a shell snippet: `exit 0`, `exit 3`, `exec sleep 60`).
