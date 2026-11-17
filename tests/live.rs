@@ -18,10 +18,9 @@
 //! test's guard, under a watchdog that stops it if the run dies or
 //! overruns. Nothing of your vendor configuration is copied or written by
 //! brg: Codex gets session-only trust (`-c projects=…`), and every Claude
-//! deployment defaults to `auto_trust: false`. Claude cases other than trust run in
-//! `target/live/<run>/work/`, which must be inside a folder Claude already
-//! trusts (this checkout or a parent), with its CLAUDE.md imports approved;
-//! the trust cases use fresh folders
+//! deployment defaults to `auto_trust: false`. Non-trust cases run in
+//! `target/live/<run>/work/`, inside a folder both vendors already trust,
+//! with Claude's CLAUDE.md imports approved. The trust cases use fresh folders
 //! under the system temp directory. No tool approval is ever answered: one
 //! that appears ends its case BLOCKED.
 //!
