@@ -36,6 +36,7 @@ pub const REQUIRED: &[(&str, Who)] = &[
     ("claude-env-colour", Who::Claude),
     ("codex-env-colour", Who::Codex),
     ("claude-background-wait", Who::Claude),
+    ("claude-typed-send", Who::Claude),
     ("codex-queue", Who::Codex),
     ("claude-wake-matrix", Who::Claude),
 ];

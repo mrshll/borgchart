@@ -64,13 +64,20 @@ pub struct Spec<'a> {
 
 impl<'w> Team<'w> {
     pub fn new(w: &'w World, case: &str, s: &Spec) -> Team<'w> {
+        let audit = w.private.dir().join("audit-input");
+        let _ = std::fs::remove_file(&audit);
+        if (s.member == "truster" && !s.auto_trust) || s.member == WAITER {
+            std::fs::write(w.private.dir().join("input-calls"), "").unwrap();
+            std::fs::write(audit, "").unwrap();
+        }
         let dir = w.scratch.join(w.fresh(case));
         std::fs::create_dir_all(&dir).unwrap();
         let args = serde_json::to_string(s.args).unwrap();
         std::fs::write(
             dir.join("template.yaml"),
             format!(
-                "{bus}roles:\n  {m}:\n    prompt: {m}.md\n    vendor: {v}\n    args: {args}\n{posture}",
+                "{bus}roles:\n  {m}:\n    prompt: {m}.md\n    vendor: {v}\n    args: {args}\n{posture}{interactive}",
+                interactive = if s.member == WAITER { "    interactive: true\n" } else { "" },
                 bus = if s.bus { "bus: {}\n" } else { "" },
                 m = s.member,
                 v = s.who.as_str(),
@@ -301,10 +308,20 @@ impl Team<'_> {
     /// final look, with the member's pane alive. `Err` says how it left.
     pub fn hold_trust(&self, at_trust: impl Fn(&Self, &Look) -> bool) -> Result<u32, String> {
         let end = Instant::now() + self.w.limits.hold;
+        let initial = self.look().screen;
         let mut polls = 0;
         loop {
             let last = Instant::now() >= end;
             let look = self.look();
+            if self.w.private.dir().join("audit-input").exists()
+                && (!std::fs::read_to_string(self.w.private.dir().join("input-calls"))
+                    .unwrap()
+                    .is_empty()
+                    || look.screen != initial
+                    || self.row()["state"] != "blocked")
+            {
+                return Err("trust-off received input or changed its blocked screen".into());
+            }
             polls += 1;
             if look.gone {
                 return Err(format!("its window was gone at poll {polls}"));
@@ -420,15 +437,16 @@ pub fn claude_trust(w: &World, on: bool) -> Vec<(String, Outcome)> {
 }
 
 fn claude_trust_case(w: &World, on: bool, id: &str, status: &mut Outcome) -> Outcome {
-    let enabled = match super::rules::throwaway(
-        std::env::var("BORGCHART_LIVE_THROWAWAY").ok().as_deref(),
-        &["HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME"]
-            .map(|k| std::env::var_os(k).map(PathBuf::from)),
-        &std::env::temp_dir().canonicalize().unwrap(),
-    ) {
-        Ok(enabled) => enabled,
-        Err(why) => return Outcome::Blocked(why),
-    };
+    let enabled = w.mode == super::rules::Mode::Dry
+        || match super::rules::throwaway(
+            std::env::var("BORGCHART_LIVE_THROWAWAY").ok().as_deref(),
+            &["HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME"]
+                .map(|k| std::env::var_os(k).map(PathBuf::from)),
+            &std::env::temp_dir().canonicalize().unwrap(),
+        ) {
+            Ok(enabled) => enabled,
+            Err(why) => return Outcome::Blocked(why),
+        };
     if on && !enabled {
         return Outcome::Skip("would save trust to your Claude config".into());
     }
@@ -772,6 +790,67 @@ fn still_runs(pid: u32) -> bool {
     })
 }
 
+pub fn typed_send(w: &World) -> Outcome {
+    let folder = fresh_dir(&w.trusted, w, "typed");
+    let t = Team::new(
+        w,
+        "claude-typed-send",
+        &Spec {
+            who: Who::Claude,
+            member: "typer",
+            locked: false,
+            cwd: &folder,
+            auto_trust: false,
+            args: &[],
+            bus: true,
+            instruction: "Reply READY and stop. On a later message containing nonce WORD, reply REPLY-WORD with WORD copied verbatim. Use no tools.",
+        },
+    );
+    let run = || -> Result<(), String> {
+        let (ok, out) = t.up()?;
+        if !ok || t.settle().0 != "idle" {
+            return Err(format!("not idle after create: {out}"));
+        }
+        let nonce = world::nonce();
+        let (ok, out) = t.brg(
+            &[
+                "msg",
+                "send",
+                &format!("{}/{}", t.instance(), t.member()),
+                &format!("nonce {nonce}"),
+                "--external",
+                "live",
+                "--json",
+            ],
+            w.limits.brg,
+        )?;
+        let result: Value = serde_json::from_str(&out).unwrap_or(Value::Null);
+        if !ok || result["delivery"] != "typed" {
+            return Err(format!("expected typed delivery: {out}"));
+        }
+        let end = Instant::now() + w.limits.reply;
+        loop {
+            if t.look()
+                .screen
+                .lines()
+                .any(|l| l.trim() == format!("● REPLY-{nonce}"))
+            {
+                return Ok(());
+            }
+            if Instant::now() >= end {
+                return Err("no assistant reply after typed send".into());
+            }
+            std::thread::sleep(POLL);
+        }
+    };
+    let result = run();
+    t.save("claude-typed-send");
+    match result {
+        Ok(()) => Outcome::Pass("typed message to idle member produced its nonce reply".into()),
+        Err(e) => Outcome::Fail(e),
+    }
+}
+
 pub fn background_wait(w: &World) -> Outcome {
     let id = "claude-background-wait";
     if !world::has_proc() {
@@ -866,6 +945,13 @@ pub fn background_wait(w: &World) -> Outcome {
     };
     if published["ok"] != true {
         return Outcome::Fail(format!("publish failed: {published}"));
+    }
+    if published["delivery"] != "stored"
+        || !std::fs::read_to_string(w.private.dir().join("input-calls"))
+            .unwrap()
+            .is_empty()
+    {
+        return Outcome::Fail(format!("expected inbox-only delivery: {published}"));
     }
     // 4. A new assistant turn naming the nonce, started after the wait
     // exited. Each poll checks the wait before and after one look of the
