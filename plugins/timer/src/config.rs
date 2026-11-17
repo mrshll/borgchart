@@ -110,9 +110,9 @@ pub fn parse(text: &str) -> Result<Config, String> {
                 names.insert(name.clone());
                 if m.contains_key("cron") {
                     if m.keys()
-                        .any(|k| !["name", "cron", "missed"].contains(&k.as_str()))
+                        .any(|k| !["name", "cron", "missed", "prompt"].contains(&k.as_str()))
                     {
-                        return Err("use only name, cron and missed for a schedule".into());
+                        return Err("use only name, cron, missed and prompt for a schedule".into());
                     }
                     let cron = crate::cron::Cron::parse(
                         m.get("cron")
@@ -124,10 +124,16 @@ pub fn parse(text: &str) -> Result<Config, String> {
                         Some(Some("catch-up")) => true,
                         _ => return Err("write missed: skip or missed: catch-up".into()),
                     };
+                    let prompt = m.get("prompt").map(|v| {
+                        v.text().filter(|s| !s.chars().any(char::is_control))
+                            .map(str::trim).filter(|s| !s.is_empty() && s.len() <= 300)
+                            .map(str::to_owned).ok_or("write prompt as one non-empty string, at most 300 UTF-8 bytes after trimming, without newlines or control characters; point to a file for longer jobs")
+                    }).transpose()?;
                     schedules.push(crate::schedule::Schedule {
                         name,
                         cron,
                         catch_up,
+                        prompt,
                     });
                     return Ok(None);
                 }
