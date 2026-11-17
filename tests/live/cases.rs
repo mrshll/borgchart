@@ -619,6 +619,9 @@ pub fn codex_trust(w: &World, trust: Option<bool>) -> Vec<(String, Outcome)> {
 fn codex_trust_case(w: &World, trust: Option<bool>, id: &str, status: &mut Outcome) -> Outcome {
     let repo = fresh_repo(w, "repo");
     let before = w.codex_config_trust();
+    if let Err(e) = &before.0 {
+        return Outcome::Fail(e.clone());
+    }
     let t = Team::new(
         w,
         id,
@@ -728,6 +731,9 @@ fn codex_trust_case(w: &World, trust: Option<bool>, id: &str, status: &mut Outco
     // at shutdown counts too.
     drop(t);
     let after = w.codex_config_trust();
+    if let Err(e) = &after.0 {
+        return Outcome::Fail(e.clone());
+    }
     if before.0 != after.0 {
         return Outcome::Fail(
             "the Codex config.toml trust entries changed during the case; not restored".into(),

@@ -610,10 +610,13 @@ fn dry_run_reaches_every_expected_result() {
         ("codex-locked-trust", "truster", "trust-unknown", "FAIL"),
     ];
     w.fake_file("stale-nonce", Some("n0123456789abcdefz"));
+    let config = std::path::Path::new(&w.env["CODEX_HOME"]).join("config.toml");
+    let config_before = std::fs::read(&config).unwrap();
     let mut control = |w: &World, id: &str, what: &str, want: &'static str| {
         let got = case(w, id, true).remove(0).1;
         matrix.row(&format!("control {id} ({what})"), &got);
         check(&format!("control {id} ({what})"), id, want, Some(&got));
+        std::fs::write(&config, &config_before).unwrap();
     };
     for (id, member, scenario, want) in controls {
         w.scenario(member, scenario);
@@ -733,6 +736,19 @@ fn codex_nontrust_config_changes_do_not_fail_the_case() {
     w.scenario("truster", "write-settings");
     let outcomes = cases::codex_trust(&w, Some(true));
     assert!(matches!(outcomes[0].1, Outcome::Pass(_)), "{outcomes:?}");
+}
+
+#[test]
+fn codex_invalid_config_cannot_pass_trust_check() {
+    let keep = tempfile::tempdir().unwrap();
+    let w = World::dry(keep.path());
+    std::fs::write(
+        std::path::Path::new(&w.env["CODEX_HOME"]).join("config.toml"),
+        "[invalid",
+    )
+    .unwrap();
+    let outcomes = cases::codex_trust(&w, Some(true));
+    assert!(matches!(outcomes[0].1, Outcome::Fail(_)), "{outcomes:?}");
 }
 
 #[test]

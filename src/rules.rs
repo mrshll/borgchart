@@ -688,8 +688,8 @@ mod tests {
             );
         }
         assert_eq!(
-            claude().read("example-host", CLAUDE_TRUST).rule.as_deref(),
-            Some("trust-dialog")
+            claude().read("✳ Example", "● The dialog says:\n\n  Allow external CLAUDE.md file imports?\n  Enter to confirm · Esc to cancel\n\n✻ Done for 1s\n\n──────────\n❯ \n──────────\n  ? for shortcuts\n").state,
+            State::Idle
         );
     }
 

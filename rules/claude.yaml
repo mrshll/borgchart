@@ -26,7 +26,7 @@ rules:
     state: blocked
     priority: 100
     bottom: 30
-    all: ['^  Allow external CLAUDE\.md file imports\?$', '^  Enter to confirm · Esc to cancel$']
+    all: ['^  Allow external CLAUDE\.md file imports\?$', '^  Enter to confirm · Esc to cancel[ \t]*\z']
   - id: add-dir-dialog
     state: blocked
     priority: 100

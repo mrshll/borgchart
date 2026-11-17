@@ -266,12 +266,13 @@ impl World {
         let state = if w.mode == Mode::Live {
             // Real brg refuses age-cleaned state homes. Keep live test state
             // in this run's owned evidence tree, under the same cleanup guard.
-            let state = w.evidence.join("state");
-            w.private.also_remove(&state);
-            state
+            w.evidence.join("state")
         } else {
             w.scratch.join("state")
         };
+        w.private.also_remove(&state);
+        w.private
+            .also_remove(state.with_file_name("state-worktrees"));
         w.env
             .insert("BORGCHART_STATE_HOME".into(), state.display().to_string());
         w.env.insert(
@@ -354,7 +355,7 @@ impl World {
 
     /// Trust entries and a fingerprint of the effective Codex config.
     /// Other settings are never shown.
-    pub fn codex_config_trust(&self) -> (String, String) {
+    pub fn codex_config_trust(&self) -> (Result<Option<toml::Value>, String>, String) {
         let home = match self.env.get("CODEX_HOME") {
             Some(h) => PathBuf::from(h),
             None => PathBuf::from(self.env.get("HOME").cloned().unwrap_or_default()).join(".codex"),
@@ -364,8 +365,11 @@ impl World {
                 codex_trust_entries(&text),
                 format!("{:x}", Sha256::digest(text.as_bytes())),
             ),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), "missing".into()),
-            Err(e) => (format!("unreadable ({})", e.kind()), "unreadable".into()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Ok(None), "missing".into()),
+            Err(e) => (
+                Err(format!("cannot read Codex config.toml: {e}")),
+                "unreadable".into(),
+            ),
         }
     }
 
@@ -406,28 +410,11 @@ impl World {
     }
 }
 
-fn codex_trust_entries(config: &str) -> String {
-    let mut top = true;
-    let mut projects = false;
+fn codex_trust_entries(config: &str) -> Result<Option<toml::Value>, String> {
     config
-        .lines()
-        .filter(|line| {
-            let text = line.trim();
-            if text.starts_with('[') {
-                top = false;
-                let table = text.trim_start_matches('[').trim_start();
-                projects = table
-                    .strip_prefix("projects")
-                    .is_some_and(|rest| rest.trim_start().starts_with(['.', ']']));
-            }
-            projects
-                || (top
-                    && text
-                        .strip_prefix("projects")
-                        .is_some_and(|rest| rest.trim_start().starts_with(['.', '='])))
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .parse::<toml::Table>()
+        .map(|mut table| table.remove("projects"))
+        .map_err(|_| "Codex config.toml isn't valid TOML".into())
 }
 
 #[test]
@@ -437,8 +424,8 @@ fn codex_trust_entries_ignore_other_tables() {
     assert_eq!(codex_trust_entries(base), codex_trust_entries(&settings));
     for trust in [
         "[projects.\"/tmp/x\"]\ntrust_level = \"trusted\"\n",
-        "projects = {}\n",
-        "projects.\"/tmp/x\".trust_level = \"trusted\"\n",
+        "[\"projects\".\"/tmp/x\"]\ntrust_level = \"trusted\"\n",
+        "projects = { \"/tmp/x\" = { trust_level = \"trusted\" } }\n",
     ] {
         assert_ne!(
             codex_trust_entries(base),
@@ -448,9 +435,7 @@ fn codex_trust_entries_ignore_other_tables() {
     let trust = "[projects.\"/tmp/x\"]\ntrust_level = \"trusted\"\n";
     assert_eq!(
         codex_trust_entries(trust),
-        codex_trust_entries(&format!(
-            "{trust}[tui]\nscreen_reader_detection_done = true\n"
-        ))
+        codex_trust_entries(&format!("{trust}# ordinary comment\n"))
     );
 }
 
