@@ -395,23 +395,20 @@ pub fn member_launch(
                 gate = Some(rules);
             } else {
                 argv.extend(["--settings".into(), settings_path.display().to_string()]);
-                settings = Some(claude_session_settings(brg, state, member_id));
+                let mut session = claude_session_settings(brg, state, member_id);
+                // The role's own added folders replace the shared file access.
+                if !extra_args
+                    .iter()
+                    .any(|a| a == "--add-dir" || a.starts_with("--add-dir="))
+                {
+                    session["permissions"] = serde_json::json!({"additionalDirectories": shared});
+                }
+                settings = Some(session);
             }
             if member.connectors.is_empty()
                 && (member.connectors.declared || posture == Posture::Locked)
             {
                 argv.push("--strict-mcp-config".into());
-            }
-            // Unrestricted: the team's messages and notes, as
-            // added folders, unless the role's own args add folders.
-            if posture == Posture::Vendor
-                && !extra_args
-                    .iter()
-                    .any(|a| a == "--add-dir" || a.starts_with("--add-dir="))
-            {
-                for dir in shared {
-                    argv.extend(["--add-dir".into(), dir.display().to_string()]);
-                }
             }
             argv.extend(extra_args);
             if member.remote_control {
