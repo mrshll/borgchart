@@ -1986,10 +1986,10 @@ fn folder_trust_is_accepted_when_the_dialog_drops_the_first_key() {
 
 #[test]
 fn folder_trust_with_slow_keys_is_accepted_and_never_declined() {
-    // Each key takes longer than brg waits to read the dialog again, so
-    // brg presses a second time before the first one shows.
+    // Selection keys take longer than brg's reads, and Enter queues behind
+    // them. Start must wait until the dialog actually accepts it.
     let env = trust_env("");
-    fs::write(env.path("home/fake-agent/trust-delays-keys"), "").unwrap();
+    fs::write(env.path("home/fake-agent/trust-delays-keys"), "600").unwrap();
     let out = env.brg(&["start"]);
     let events: Vec<_> = env
         .events("alpha")
@@ -1998,6 +1998,43 @@ fn folder_trust_with_slow_keys_is_accepted_and_never_declined() {
         .filter(|e| e.starts_with("trust-"))
         .collect();
     assert_eq!(events, ["trust-accepted"], "{}", stdout(&out));
+}
+
+#[test]
+fn folder_trust_that_drops_enter_returns_with_attach_hint_without_retrying() {
+    let env = trust_env("");
+    env.write("home/fake-agent/trust-drops-enter", "");
+    let start = env
+        .brg_cmd(&["start"])
+        .env("BORGCHART_GATE_WAIT_MS", "1500")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let out = finish(start, Duration::from_secs(5));
+    assert!(
+        out.status.success(),
+        "{}{}",
+        stdout(&out),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout(&out).contains(&format!(
+            "waiting at Claude's folder-trust prompt; answer it with `brg attach {}/{}`",
+            env.instance().unwrap(),
+            env.m("alpha")
+        )),
+        "{}",
+        stdout(&out)
+    );
+    let events: Vec<_> = env
+        .events("alpha")
+        .into_iter()
+        .filter_map(|e| e["event"].as_str().map(str::to_string))
+        .filter(|e| e.starts_with("trust-"))
+        .collect();
+    assert_eq!(events, ["trust-enter-dropped"], "{}", stdout(&out));
+    assert_eq!(env.state_of("alpha"), "blocked");
 }
 
 #[test]

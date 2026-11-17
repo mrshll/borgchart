@@ -708,8 +708,14 @@ fn main() {
                 if agent.mode == Mode::Trust && agent.trust_dropped_keys > 0 {
                     agent.trust_dropped_keys -= 1;
                 } else if agent.mode == Mode::Trust {
-                    if flag("trust-delays-keys") {
-                        std::thread::sleep(Duration::from_millis(350));
+                    if let Ok(delay) = fs::read_to_string(
+                        PathBuf::from(&home)
+                            .join("fake-agent")
+                            .join("trust-delays-keys"),
+                    ) {
+                        std::thread::sleep(Duration::from_millis(
+                            delay.trim().parse().unwrap_or(350),
+                        ));
                     }
                     agent.trust_choice = if end { 1 } else { 1 - agent.trust_choice };
                     agent.draw();
@@ -738,6 +744,13 @@ fn main() {
                     agent.draw();
                 }
                 b'\r' | b'\n' if agent.mode == Mode::Trust => {
+                    if flag("trust-drops-enter") {
+                        log_event(
+                            &agent.log,
+                            serde_json::json!({"event": "trust-enter-dropped"}),
+                        );
+                        continue;
+                    }
                     if agent.trust_choice == 1 {
                         log_event(&agent.log, serde_json::json!({"event": "trust-accepted"}));
                         agent.mode = Mode::Idle;

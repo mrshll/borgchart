@@ -5,6 +5,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::process::{Command, Output};
 use std::sync::{
     Arc, Mutex,
@@ -32,8 +33,12 @@ pub struct Slack {
     pub method_rate_limits: BTreeMap<String, String>,
     pub reply_delay: Duration,
     pub close_delay: Duration,
+    /// Envelope IDs sent but never acknowledged: `Harness::drop` fails on any.
+    pub missed_acks: Vec<String>,
 }
 fn handle(mut stream: TcpStream, state: &Mutex<Slack>) -> std::io::Result<()> {
+    // macOS hands back accepted sockets non-blocking, like their listener; Linux doesn't.
+    stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_secs(3)))?;
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut line = String::new();
@@ -158,6 +163,86 @@ fn handle(mut stream: TcpStream, state: &Mutex<Slack>) -> std::io::Result<()> {
     )
 }
 
+/// One Socket Mode connection: hello, then this connection's envelopes, reading
+/// each ack and noting whether the event was journaled first.
+fn serve_socket(
+    stream: TcpStream,
+    state: &Mutex<Slack>,
+    state_dir: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // As in `handle`: block on reads, whatever the platform.
+    stream.set_nonblocking(false)?;
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let mut socket = tungstenite::accept(stream)?;
+    let envelopes = {
+        let mut state = state.lock().unwrap();
+        if state.connections.is_empty() {
+            vec![]
+        } else {
+            state.connections.remove(0)
+        }
+    };
+    let hello = state
+        .lock()
+        .unwrap()
+        .hello
+        .clone()
+        .unwrap_or(json!({"type":"hello"}));
+    socket.send(tungstenite::Message::text(hello.to_string()))?;
+    for envelope in envelopes {
+        socket.send(tungstenite::Message::text(envelope.to_string()))?;
+        if envelope["envelope_id"].is_string() {
+            let ack = match read_ack(&mut socket) {
+                Ok(ack) => ack,
+                Err(error) => {
+                    let id = envelope["envelope_id"].as_str().unwrap_or("").to_string();
+                    state.lock().unwrap().missed_acks.push(id);
+                    return Err(error);
+                }
+            };
+            let event = &envelope["payload"]["event"];
+            let cursor: Value = fs::read(state_dir.join("cursor.json"))
+                .ok()
+                .and_then(|data| serde_json::from_slice(&data).ok())
+                .unwrap_or(Value::Null);
+            let journaled = cursor["seen"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|ts| ts == &event["ts"])
+                || cursor["pending"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|item| item["ts"] == event["ts"]);
+            let exists = journaled
+                || state_dir
+                    .join(format!(
+                        "req-{}-{}.json",
+                        event["channel"].as_str().unwrap_or(""),
+                        event["ts"].as_str().unwrap_or("")
+                    ))
+                    .exists();
+            let mut state = state.lock().unwrap();
+            state.acks.push((ack, Instant::now()));
+            state.journal_before_ack.push(exists);
+        }
+        if envelope["type"] == "disconnect" {
+            break;
+        }
+    }
+    let delay = state.lock().unwrap().close_delay;
+    std::thread::sleep(delay);
+    let _ = socket.close(None);
+    Ok(())
+}
+
+fn read_ack(
+    socket: &mut tungstenite::WebSocket<TcpStream>,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    Ok(serde_json::from_str(socket.read()?.to_text()?)?)
+}
+
 pub struct Harness {
     pub dir: tempfile::TempDir,
     pub slack: Arc<Mutex<Slack>>,
@@ -195,69 +280,9 @@ impl Harness {
                     }
                     Err(error) => panic!("{error}"),
                 };
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(5)))
-                    .unwrap();
-                let mut socket = tungstenite::accept(stream).unwrap();
-                let envelopes = {
-                    let mut state = s.lock().unwrap();
-                    if state.connections.is_empty() {
-                        vec![]
-                    } else {
-                        state.connections.remove(0)
-                    }
-                };
-                let hello = s
-                    .lock()
-                    .unwrap()
-                    .hello
-                    .clone()
-                    .unwrap_or(json!({"type":"hello"}));
-                socket
-                    .send(tungstenite::Message::text(hello.to_string()))
-                    .unwrap();
-                for envelope in envelopes {
-                    socket
-                        .send(tungstenite::Message::text(envelope.to_string()))
-                        .unwrap();
-                    if envelope["envelope_id"].is_string() {
-                        let ack: Value =
-                            serde_json::from_str(socket.read().unwrap().to_text().unwrap())
-                                .unwrap();
-                        let event = &envelope["payload"]["event"];
-                        let cursor: Value = fs::read(state_dir.join("cursor.json"))
-                            .ok()
-                            .and_then(|data| serde_json::from_slice(&data).ok())
-                            .unwrap_or(Value::Null);
-                        let journaled = cursor["seen"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .any(|ts| ts == &event["ts"])
-                            || cursor["pending"]
-                                .as_array()
-                                .into_iter()
-                                .flatten()
-                                .any(|item| item["ts"] == event["ts"]);
-                        let exists = journaled
-                            || state_dir
-                                .join(format!(
-                                    "req-{}-{}.json",
-                                    event["channel"].as_str().unwrap_or(""),
-                                    event["ts"].as_str().unwrap_or("")
-                                ))
-                                .exists();
-                        let mut state = s.lock().unwrap();
-                        state.acks.push((ack, Instant::now()));
-                        state.journal_before_ack.push(exists);
-                    }
-                    if envelope["type"] == "disconnect" {
-                        break;
-                    }
-                }
-                let delay = s.lock().unwrap().close_delay;
-                std::thread::sleep(delay);
-                let _ = socket.close(None);
+                // A connection the plugin drops (a listener killed mid-test) ends only
+                // that connection; an envelope it never acknowledged fails the test on drop.
+                let _ = serve_socket(stream, &s, &state_dir);
             }
         });
         let (s, flag) = (slack.clone(), stop.clone());
@@ -335,8 +360,15 @@ impl Harness {
 impl Drop for Harness {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        self.server.take().unwrap().join().unwrap();
-        self.socket_server.take().unwrap().join().unwrap();
+        let server = self.server.take().unwrap().join();
+        let socket_server = self.socket_server.take().unwrap().join();
+        // A failing test reports its own assertion, not a second panic that aborts the file.
+        if !std::thread::panicking() {
+            server.unwrap();
+            socket_server.unwrap();
+            let missed = &self.slack.lock().unwrap().missed_acks;
+            assert!(missed.is_empty(), "never acknowledged: {missed:?}");
+        }
     }
 }
 pub fn success(output: Output) -> String {

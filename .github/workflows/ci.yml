@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # `gh workflow run ci --ref <branch>` runs every job, macOS too, on a branch.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -17,8 +19,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macOS runs only on pushes to main; pull requests are gated on Linux.
-        os: ${{ github.event_name == 'push' && fromJSON('["ubuntu-22.04", "ubuntu-24.04", "macos-15"]') || fromJSON('["ubuntu-22.04", "ubuntu-24.04"]') }}
+        # macOS runs on pushes to main and manual runs; pull requests are gated on Linux.
+        os: ${{ github.event_name != 'pull_request' && fromJSON('["ubuntu-22.04", "ubuntu-24.04", "macos-15"]') || fromJSON('["ubuntu-22.04", "ubuntu-24.04"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
