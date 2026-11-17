@@ -23,14 +23,21 @@ printf '%s\n' '--end--' >> "$FIXTURE_DIR/calls"
 printf '%s\n' "${GH_TOKEN-unset}" "${GITHUB_TOKEN-unset}" "${GH_ENTERPRISE_TOKEN-unset}" "${GITHUB_ENTERPRISE_TOKEN-unset}" "${GH_HOST-unset}" "${GH_REPO-unset}" "${GH_DEBUG-unset}" > "$FIXTURE_DIR/environment"
 printf '%s' "$GH_CONFIG_DIR" > "$FIXTURE_DIR/config-dir"
 response=unexpected
+number=
+after=
 for arg do
   case "$arg" in
     user) response=machine ;;
     users/*) response=owner ;;
     repos/*|orgs/*) response=issues ;;
     graphql) response=graphql ;;
+    number=*) number=${arg#number=} ;;
+    after=*) after=${arg#after=} ;;
   esac
 done
+if [ "$response" = graphql ] && [ -n "$number" ]; then
+  response=graphql-$number${after:+-$after}
+fi
 /bin/cat "$FIXTURE_DIR/$response"
 exit "$(/bin/cat "$FIXTURE_DIR/$response-code")"
 "#);
