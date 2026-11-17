@@ -35,7 +35,7 @@ for arg do
     after=*) after=${arg#after=} ;;
   esac
 done
-if [ "$response" = graphql ] && [ -n "$number" ]; then
+if [ "$response" = graphql ] && [ -n "$number" ] && [ -f "$FIXTURE_DIR/graphql-$number${after:+-$after}" ]; then
   response=graphql-$number${after:+-$after}
 fi
 /bin/cat "$FIXTURE_DIR/$response"

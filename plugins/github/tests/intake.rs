@@ -148,8 +148,7 @@ fn start_and_restart_skip_old_activity_keep_admitted_events_and_say_so() {
     assert_eq!(health["ok"], true);
     let detail = health["detail"].as_str().unwrap();
     assert!(
-        detail.contains("0 changed item(s) processed; activity before")
-            && detail.contains("is not delivered"),
+        detail.contains("0 changed item(s) processed;") && detail.contains("is not delivered"),
         "{detail}"
     );
     let state = f.json("state/intake.json");

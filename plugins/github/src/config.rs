@@ -84,6 +84,7 @@ pub fn load(path: &Path) -> Result<Vec<Entry>, String> {
 const GUARD_ERROR: &str = "GitHub identity is unsafe or changed; start brg with GH_CONFIG_DIR naming the machine account's login";
 pub struct Guard {
     pub machine_id: u64,
+    pub machine_login: String,
     pub owner_id: u64,
     checked: SystemTime,
     stopped: bool,
@@ -97,7 +98,13 @@ fn id(value: &serde_json::Value) -> Result<u64, Error> {
 }
 impl Guard {
     pub fn start(api: &impl Api, owner: &str, now: SystemTime) -> Result<Self, Error> {
-        let machine_id = id(&api.get(Rest::Machine)?)?;
+        let machine = api.get(Rest::Machine)?;
+        let machine_id = id(&machine)?;
+        let machine_login = machine["login"]
+            .as_str()
+            .filter(|s| valid_login(s))
+            .ok_or_else(|| Error::Other(GUARD_ERROR.into()))?
+            .to_string();
         let owner_id = id(&api.get(Rest::Owner(owner)).map_err(|e| match e {
             Error::NotFound => Error::Other(
                 "unknown GITHUB_OWNER; set it to the owner's GitHub login and restart".into(),
@@ -109,6 +116,7 @@ impl Guard {
         }
         Ok(Self {
             machine_id,
+            machine_login,
             owner_id,
             checked: now,
             stopped: false,

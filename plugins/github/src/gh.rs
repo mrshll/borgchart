@@ -60,9 +60,15 @@ impl Rest<'_> {
         }
     }
 }
-/// A narrow seam for discovery and identity checks; process tests exercise Gh itself.
+/// API boundary for identity, discovery and timelines; process tests exercise Gh itself.
 pub trait Api {
     fn get(&self, request: Rest<'_>) -> Result<Value, Error>;
+    fn graphql(
+        &self,
+        query: &str,
+        strings: &[(&str, &str)],
+        integers: &[(&str, u64)],
+    ) -> Result<Value, Error>;
 }
 pub struct Gh;
 impl Gh {
@@ -131,6 +137,14 @@ impl Gh {
     }
 }
 impl Api for Gh {
+    fn graphql(
+        &self,
+        query: &str,
+        strings: &[(&str, &str)],
+        integers: &[(&str, u64)],
+    ) -> Result<Value, Error> {
+        Gh::graphql(self, query, strings, integers)
+    }
     fn get(&self, request: Rest<'_>) -> Result<Value, Error> {
         self.call(&["--method".into(), "GET".into(), request.path()])
     }

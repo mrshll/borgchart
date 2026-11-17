@@ -1,9 +1,10 @@
-//! One guarded polling session, health reporting and the processing seam.
+//! Guarded polling, journal admission before discovery advances, and delivery.
 use crate::{
     config::{self, Guard},
-    discover::{self, Changed},
+    delivery, discover,
     gh::{Api, Error, Gh},
     state::Snapshot,
+    timeline,
 };
 use borgchart::{bus::time::format_utc, plugin};
 use std::{
@@ -13,6 +14,7 @@ use std::{
 
 pub struct Poll {
     pub processed: usize,
+    pub admitted: usize,
     pub errors: Vec<String>,
 }
 pub struct Session<A: Api> {
@@ -79,26 +81,56 @@ impl<A: Api> Session<A> {
         snapshot.entries(&entries, if first { self.epoch } else { now });
         let mut poll = Poll {
             processed: 0,
+            admitted: 0,
             errors: Vec::new(),
         };
+        let mut attempted = 0;
         for entry in &entries {
-            if poll.processed == discover::POLL_CAP {
+            if attempted == discover::POLL_CAP {
                 break;
             }
             let cursor = snapshot.cursors.get_mut(&entry.key()).unwrap();
-            match discover::fetch(
-                &self.api,
-                entry,
-                cursor,
-                discover::POLL_CAP - poll.processed,
-            ) {
+            let original_at = cursor.at;
+            let since = cursor.since();
+            match discover::fetch(&self.api, entry, cursor, discover::POLL_CAP - attempted) {
                 Ok(batch) => {
+                    let mut failed = false;
                     for item in &batch.items {
-                        process_item(item)?;
+                        attempted += 1;
+                        let events = match timeline::fetch(
+                            &self.api,
+                            item,
+                            cursor.floor,
+                            since,
+                            self.guard.as_ref().unwrap(),
+                        ) {
+                            Ok(events) => events,
+                            Err(Error::RateLimited(retry)) => {
+                                cursor.at = original_at;
+                                return Err(Error::RateLimited(retry));
+                            }
+                            Err(error) => {
+                                failed = true;
+                                poll.errors
+                                    .push(format!("{}#{}: {error}", item.repository, item.number));
+                                continue;
+                            }
+                        };
+                        for mut event in events {
+                            if snapshot.seen.contains_key(&event.id) {
+                                continue;
+                            }
+                            (event.recipient, event.reason) = delivery::route(&event);
+                            snapshot.seen.insert(event.id.clone(), now);
+                            snapshot.pending.push(event);
+                            poll.admitted += 1;
+                        }
                         cursor.mark(item, now);
                         poll.processed += 1;
                     }
-                    if batch.exhausted {
+                    if failed {
+                        cursor.at = original_at;
+                    } else if batch.exhausted {
                         cursor.at = cursor.at.max(now);
                     }
                 }
@@ -116,29 +148,36 @@ impl<A: Api> Session<A> {
     pub fn tick(&mut self, store: &plugin::State, now: SystemTime) -> Result<(), String> {
         let result = self.poll(now);
         self.snapshot.save(store)?;
-        let (ok, detail) = match result {
-            Ok(poll) if poll.errors.is_empty() => (
-                true,
+        let (sent, delivery_error) = delivery::send(&mut self.snapshot, store)?;
+        let (mut errors, counts) = match result {
+            Ok(poll) => (
+                poll.errors,
                 format!(
-                    "{} changed item(s) processed; activity before {} is not delivered",
-                    poll.processed,
-                    format_utc(self.epoch)
+                    "{} changed item(s) processed; {} admitted; {sent} sent",
+                    poll.processed, poll.admitted
                 ),
             ),
-            Ok(poll) => (false, poll.errors.join("; ")),
-            Err(error) => (false, error.to_string()),
+            Err(error) => (vec![error.to_string()], format!("{sent} sent")),
         };
+        if !self.snapshot.pending.is_empty() {
+            errors.push(format!(
+                "{} pending event(s): {}",
+                self.snapshot.pending.len(),
+                delivery_error.unwrap_or_default()
+            ));
+        }
+        let ok = errors.is_empty();
+        errors.insert(0, counts);
+        errors.push(format!(
+            "activity before {} is not delivered",
+            format_utc(self.epoch)
+        ));
+        let detail = errors.join("; ");
         store.health(ok, &detail).map_err(|_| {
             "cannot write GitHub health; check state directory permissions".to_string()
         })
     }
 }
-/// Replace this function with timeline admission in the next stage. Discovery
-/// advances the cursor only after this returns successfully for the item.
-fn process_item(_item: &Changed) -> Result<(), Error> {
-    Ok(())
-}
-
 pub fn run(store: &plugin::State, once: bool) -> Result<(), String> {
     let result: Result<(), String> = (|| {
         let _lock = store
@@ -197,6 +236,28 @@ mod tests {
         }
     }
     impl Api for ApiFixture {
+        fn graphql(
+            &self,
+            _: &str,
+            _: &[(&str, &str)],
+            integers: &[(&str, u64)],
+        ) -> Result<Value, Error> {
+            let number = integers[0].1;
+            let pr = self
+                .0
+                .borrow()
+                .pages
+                .values()
+                .flatten()
+                .filter_map(Value::as_array)
+                .flatten()
+                .any(|v| v["number"] == number && v.get("pull_request").is_some());
+            Ok(json!({"data":{"repository":{"issueOrPullRequest":{
+                "__typename":if pr {"PullRequest"} else {"Issue"},"id":format!("I_{number}"),
+                "author":{"databaseId":202},"body":"","createdAt":format_utc(now()),"lastEditedAt":null,
+                "assignees":{"nodes":[]},"timelineItems":{"nodes":[],"pageInfo":{"hasNextPage":false}}
+            }}}}))
+        }
         fn get(&self, request: Rest<'_>) -> Result<Value, Error> {
             let path = request.path();
             let mut fake = self.0.borrow_mut();
