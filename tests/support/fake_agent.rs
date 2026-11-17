@@ -346,7 +346,7 @@ impl Agent {
         self.lines.push(format!("> {}", text.replace('\n', " / ")));
         // Interpret only the body of brg's deterministic test envelope; keep
         // the complete submitted text above for ID/author/ACK assertions.
-        let body = if text.starts_with("[brg ") {
+        let body = if text.starts_with("[brg ") && text.contains('\n') {
             let (header, body) = text.split_once('\n').expect("brg envelope body");
             assert!(header.ends_with(']'));
             if header.contains("; ack not required]") {
