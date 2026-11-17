@@ -1,11 +1,11 @@
-//! Run change-gated checks and read their evidence.
+//! Run checks and recurring wakes, and read check evidence.
 use borgchart::plugin;
 use brg_timer::{alarm, config, run, state};
 use clap::{Parser, Subcommand, error::ErrorKind};
 use state::{Snapshot, one_line};
 
 #[derive(Parser)]
-#[command(about = "Run change-gated checks and read their evidence")]
+#[command(about = "Run checks and recurring wakes, and read check evidence")]
 struct Cli {
     #[command(subcommand)]
     command: Action,
@@ -17,7 +17,9 @@ enum Action {
         #[command(subcommand)]
         action: alarm::Action,
     },
-    /// Run checks, waiting 30 seconds between ticks
+    /// Validate checks and schedules without running commands or sending
+    Validate { path: Option<std::path::PathBuf> },
+    /// Run checks and schedules, waiting 30 seconds between ticks
     Run {
         #[arg(long)]
         once: bool,
@@ -28,8 +30,18 @@ enum Action {
     Promote { name: String, reason: String },
 }
 fn action(action: Action) -> Result<(), (i32, String)> {
+    if let Action::Validate { path } = action {
+        let config = config::load(&path.unwrap_or_else(config::path)).map_err(|e| (1, e))?;
+        println!(
+            "valid: {} checks, {} schedules",
+            config.checks.len(),
+            config.schedules.len()
+        );
+        return Ok(());
+    }
     let store = plugin::State::from_env().map_err(|e| (1, e.to_string()))?;
     let (name, reason) = match action {
+        Action::Validate { .. } => unreachable!(),
         Action::Alarm { action } => return alarm::action(&store, action).map_err(|e| (1, e)),
         Action::Run { once } => return run::run(&store, once).map_err(|e| (1, e)),
         Action::Last { name } => (name, None),

@@ -1,8 +1,8 @@
 # Timer — `brg-timer`
 
 Run commands on an interval and wake a member when their output changes, fails,
-or recovers. Notices contain check names and statuses; output stays in local
-state for `last` to read as untrusted evidence. This is a Rust workspace crate;
+or recovers. Schedule recurring UTC wakes in the same file. Check notices contain
+names and statuses; output stays in local state for `last` to read as untrusted evidence. This is a Rust workspace crate;
 `make install` installs it on PATH alongside `brg-slack`. To install just timer
 from a checkout, use `cargo install --path plugins/timer`.
 
@@ -19,8 +19,8 @@ The process runs in the team's template folder. `CHECKS_FILE` defaults to
   every_minutes: 10
 ```
 
-The top level is a YAML list of check mappings (`[]` for no checks). Duplicate
-keys and merge keys are refused; YAML 1.1 booleans such as `yes` stay strings.
+The top level is a YAML list of check or schedule mappings (`[]` for neither).
+Duplicate keys and merge keys are refused; YAML 1.1 booleans such as `yes` stay strings.
 Names must be unique and
 match `[a-z][a-z0-9-]{0,31}`. `run` is a non-empty string list executed without a
 shell. Its first argument is a command on PATH or a relative executable containing
@@ -70,11 +70,15 @@ Newly created state folders are private; existing folder permissions are preserv
 State retains the command, last run and
 success times (UTC), status, exit code, `timeout` or `output-limit`, last stderr line (up to 500
 characters), current output, last good digest and previous distinct successful
-output. Removed checks and their queued signals are pruned at startup. After each
-check and tick, health reports `ok`, `at`, `detail`,
+output. Removed checks, schedules and their queued signals are pruned at startup
+and reload. After each check and tick, health reports `ok`, `at`, `detail`,
 `pending_sends`, and per-check `status` and `last_run`. A failing check, failed
-delivery or invalid configuration makes health not ok. Restart the process to
-reload a changed checks file.
+delivery or invalid configuration makes health not ok. Each tick compares the
+checks file's bytes with its last read. Valid edits replace checks and schedules; a newly
+added check runs on that tick. An invalid or unreadable edit keeps the last good
+configuration running, with an error in health saying the last good file is still
+in use. Bad bytes are not parsed again until they change. Invalid startup files
+still stop startup. Alarms continue through a bad edit.
 
 Actions run in the calling member's folder and use the same state directory:
 
@@ -99,12 +103,74 @@ Actions run in the calling member's folder and use the same state directory:
 `brg-timer run --once` runs one tick, useful for testing. It exits nonzero for
 invalid startup configuration; check or delivery failures appear in health.
 `CHECKS_TIMEOUT_SECONDS` overrides the command timeout for tests only; production
-uses the fixed 60-second default. There are no cron triggers. A check whose
-output changes every run wakes every interval, so use `ignore` for volatile data.
+uses the fixed 60-second default. A check whose output changes every run wakes
+every interval, so use `ignore` for volatile data.
 Checks run one after another, so slow commands delay the next check and tick.
 Each check captures at most 16 MiB of stdout and 1 MiB of stderr. Exceeding either
 cap kills the process group, discards its output and records `failing / output-limit`
 with a stderr hint to reduce the check's output.
+
+## Recurring schedules
+
+A schedule uses only `name`, `cron` and optional `missed`. Names are unique
+across checks and schedules; their fields cannot be mixed:
+
+```yaml
+- name: daily-review
+  cron: '0 13 * * 1-5'
+- name: release-notes
+  cron: '0 15 * * 1'
+  missed: catch-up
+```
+
+Cron has exactly five numeric fields, separated by spaces or tabs, in UTC:
+minute 0–59, hour 0–23, day of month 1–31, month 1–12, weekday 0–7.
+Both 0 and 7 mean Sunday, including in lists and ranges such as `6,7` or `5-7`.
+Each field is a comma list of `*`, `N` or `A-B`; stars and ranges can take
+`/S` with a positive whole step. Write `N-<max>/S` instead of `N/S`,
+and list both parts of a wrapping range instead of `22-2`. Empty list items,
+out-of-range values and zero steps are refused. Use numbers instead of names,
+five fields instead of nicknames such as `@daily`, and explicit days instead
+of `L`, `W`, `#` or `?`. Seconds and years are refused.
+
+Day matching follows **cronie's star rule**: if either day field begins with
+`*` (including `*/2`), both day fields must match. Otherwise either may match.
+Thus `0 0 1 * 1` fires on the 1st and every Monday, while `0 0 */2 * 1`
+fires only on odd-numbered Mondays. Impossible dates are refused after searching
+one 400-year Gregorian cycle. Expressions with more than five minute values are
+also refused: use at most five, such as `0,12,24,36,48`, instead of `*/5`.
+
+Schedules require a valid `delivers_to` at startup and on reload. Each occurrence
+sends exactly `<name> <YYYY-MM-DDTHH:MMZ>` as external `timer`, after check
+notices and before alarms, in time-then-name order. New schedules and edited
+expressions start after the current time and never fire retroactively.
+Whitespace-only edits do not reset an expression.
+
+`missed: skip` is the default for occurrences while the process was down;
+`catch-up` sends the latest missed occurrence once. Occurrences passed while
+running (including slow checks, suspend and forward clock jumps) send once as
+the latest, under either policy. There is at most one pending occurrence per
+schedule; newer occurrences replace it. Pending sends survive restart under
+either policy. State is saved before each send; interrupted sends may duplicate.
+
+A fixed cap allows **six schedule send attempts per rolling hour per timer
+process**, failed attempts included. Check notices and alarms do not count.
+Waiting messages persist until capacity returns. Health reports each schedule's
+`next` and `pending`, and is not ok on send failure or while the cap holds a
+message back. The persisted `next` is a high-water mark: setting the clock back
+cannot repeat an occurrence, but a large correction delays wakes until that mark
+passes. Editing the expression resets it. Send attempts outside the last hour,
+including future attempts after a clock correction, are discarded.
+
+`brg-timer validate [path]` parses a file without running commands or sending.
+Without a path it uses `CHECKS_FILE` (default `checks.yaml`). It needs no state
+directory, prints counts on success and exits 0; errors match startup and exit 1.
+Validation cannot know `delivers_to`; startup also requires it for schedules.
+
+After installing the new binary with `make install`, a running timer keeps its
+old binary. End only its timer process, then run `brg start <team>`: this restarts
+the dead plugin and leaves running members alone. Later valid file edits reload
+without another restart.
 
 ## Alarms
 
@@ -126,11 +192,12 @@ minutes or a future `YYYY-MM-DDTHH:MMZ` within 7 days, and one non-empty line
 of at most 200 bytes without control characters. `alarm show` shows it;
 `alarm clear` removes it. The shim supplies your verified team/member identity.
 Setting refuses a missing heartbeat or one older than 300 seconds; tell the
-owner. A broken `checks.yaml` stops the process; setting then refuses once its
-heartbeat becomes stale.
+owner. An invalid startup `checks.yaml` stops the process; setting then refuses
+once its heartbeat becomes stale. Invalid live edits keep the last good
+configuration and alarms running.
 
-Every tick writes health, even with `[]`. After checks and their delivery, due
-alarms send an ordinary `Alarm due` message to their own member. One slow pass
+Every tick writes health, even with `[]`. After checks, their delivery and schedules,
+due alarms send an ordinary `Alarm due` message to their own member. One slow pass
 of checks delays alarms by up to its length, plus the 30-second tick interval.
 Alarms persist in `alarms/<member>.json` and use a separate `alarms.lock`, so
 setting never waits behind checks. A successful send removes only the unchanged
