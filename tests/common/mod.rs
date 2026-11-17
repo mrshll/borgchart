@@ -340,6 +340,12 @@ rm -rf -- "$dir"
 dir='{canon}'
 lit='{literal}'
 all="$*"
+# Live trust cases opt in before launch, so even startup input is recorded.
+if [ -e "$dir/audit-input" ]; then
+  for a in "$@"; do
+    case $a in send-keys|paste-buffer|send) printf '%s\n' "$all" >>"$dir/input-calls"; break ;; esac
+  done
+fi
 refuse() {{
   printf 'refused (%s): TMUX_TMPDIR=%s tmux %s\n' "$1" "${{TMUX_TMPDIR-<unset>}}" "$all" >>"$dir/{REFUSED}"
   echo "tmux guard: refused ($1): tmux $all" >&2
