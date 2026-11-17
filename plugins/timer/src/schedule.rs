@@ -8,6 +8,7 @@ pub struct Schedule {
     pub name: String,
     pub cron: Cron,
     pub catch_up: bool,
+    pub prompt: Option<String>,
 }
 #[derive(Deserialize, Serialize)]
 pub struct Record {
@@ -86,6 +87,7 @@ pub fn prepare(
 }
 pub fn send(
     state: &mut Snapshot,
+    config: &Config,
     mut clock: impl FnMut() -> SystemTime,
     mut save: impl FnMut(&Snapshot) -> Result<(), String>,
     mut deliver: impl FnMut(&str) -> Result<(), String>,
@@ -114,7 +116,16 @@ pub fn send(
         }
         state.schedule_sends.push(time::format_utc(now));
         save(state)?;
-        let text = format!("{name} {}Z", &time::format_utc(occurrence)[..16]);
+        let mut text = format!("{name} {}Z", &time::format_utc(occurrence)[..16]);
+        if let Some(prompt) = config
+            .schedules
+            .iter()
+            .find(|s| s.name == name)
+            .and_then(|s| s.prompt.as_ref())
+        {
+            text.push('\n');
+            text.push_str(prompt);
+        }
         match deliver(&text) {
             Ok(()) => {
                 state.schedules.get_mut(&name).unwrap().pending = None;
@@ -158,6 +169,7 @@ mod tests {
             let mut messages = Vec::new();
             let detail = send(
                 &mut self.state,
+                &self.config,
                 || now,
                 |s| {
                     saved.borrow_mut().push(serde_json::to_value(s).unwrap());
@@ -180,6 +192,20 @@ mod tests {
             .unwrap();
             (messages, detail)
         }
+    }
+    #[test]
+    fn prompt_only_edit_preserves_next_occurrence_without_refiring() {
+        let mut t = Timer::new("skip");
+        t.tick(at(0, 0), true);
+        t.tick(at(1, 0), true);
+        t.config =
+            config::parse("- {name: review, cron: '0 * * * *', prompt: Review releases}").unwrap();
+        assert!(t.tick(at(1, 30), true).0.is_empty());
+        t.config.schedules[0].prompt = Some("Review releases now".into());
+        assert_eq!(
+            t.tick(at(2, 0), true).0,
+            ["review 2024-01-01T02:00Z\nReview releases now"]
+        );
     }
     #[test]
     fn new_or_edited_schedule_never_fires_retroactively() {
@@ -262,6 +288,7 @@ mod tests {
         let mut sent = 0;
         send(
             &mut t.state,
+            &t.config,
             || clock.get(),
             |_| Ok(()),
             |_| {

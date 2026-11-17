@@ -41,6 +41,37 @@ fn due_schedule_sends_only_name_and_time_to_the_delivery_target() {
 
 #[test]
 #[rustfmt::skip]
+fn schedule_prompt_is_delivered_on_the_second_line() {
+    let f = Fixture::new();
+    pending_schedule(&f);
+    f.write("checks.yaml", "- {name: review, cron: '0 * * * *', missed: catch-up, prompt: '  Follow notes/review.md  '}");
+    f.tick();
+    let sends = f.sends();
+    let (first, prompt) = sends[0].last().unwrap().split_once('\n').unwrap();
+    assert!(first.starts_with("review ") && first.ends_with(":00Z"));
+    assert_eq!(prompt, "Follow notes/review.md");
+}
+
+#[test]
+#[rustfmt::skip]
+fn validate_and_startup_refuse_invalid_prompts_with_a_fix() {
+    let f = Fixture::new();
+    for value in ["' '", "null", "42", "true", "[text]", "\"line\\nline\"", "\"\\ttext\"", "\"text\\u007f\"", &format!("'{}'", "é".repeat(151))] {
+        f.write("checks.yaml", &format!("- {{name: review, cron: '0 * * * *', prompt: {value}}}"));
+        let result = f.run(&["validate"]);
+        assert_eq!(result.status.code(), Some(1), "{value}");
+        assert!(String::from_utf8_lossy(&result.stderr).contains("write prompt as"), "{value}");
+        assert_eq!(result.stderr, f.run(&["run", "--once"]).stderr);
+    }
+    f.config(&["printf"], "  prompt: text");
+    assert_eq!(f.run(&["validate"]).status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&f.run(&["validate"]).stderr).contains("use only name, run, every_minutes and ignore"));
+    f.write("checks.yaml", &format!("- {{name: review, cron: '0 * * * *', prompt: ' {} '}}", "é".repeat(150)));
+    assert!(f.run(&["validate"]).status.success());
+}
+
+#[test]
+#[rustfmt::skip]
 fn validate_reports_counts_or_the_startup_error_without_running_anything() {
     let f = Fixture::new();
     f.write("checks.yaml", "- {name: probe, run: [touch, executed], every_minutes: 1}\n- {name: review, cron: '0 0 * * *'}");
@@ -187,7 +218,7 @@ fn invalid_reload_keeps_last_good_configuration_and_health_not_ok() {
     f.outcome(1, json!({"message":"bus unavailable"}));
     let _running = Running(f.command(&["run"]).spawn().unwrap());
     wait_until(|| f.path("state/health.json").exists() && f.read("health.json")["ok"] == false);
-    f.write("checks.yaml", "invalid: [");
+    f.write("checks.yaml", "- {name: review, cron: '0 * * * *', prompt: ''}");
     f.write("value", "second");
     std::fs::create_dir_all(f.path("state/alarms")).unwrap();
     f.write("state/alarms/reader-test.json", &json!({"team":"harbor-test","member":"reader-test","due":"2020-01-01T00:00:00Z","note":"review","set_at":"2020-01-01T00:00:00Z"}).to_string());

@@ -112,7 +112,7 @@ with a stderr hint to reduce the check's output.
 
 ## Recurring schedules
 
-A schedule uses only `name`, `cron` and optional `missed`. Names are unique
+A schedule uses only `name`, `cron` and optional `missed` and `prompt`. Names are unique
 across checks and schedules; their fields cannot be mixed:
 
 ```yaml
@@ -121,7 +121,13 @@ across checks and schedules; their fields cannot be mixed:
 - name: release-notes
   cron: '0 15 * * 1'
   missed: catch-up
+  prompt: Follow notes/weekly-release.md
 ```
+
+`prompt` is a non-empty string of at most 300 UTF-8 bytes after trimming, with
+no newlines or control characters; point to a file for longer jobs, which the member reads itself.
+The template folder's controller writes this standing instruction from the team's owner;
+check command output remains untrusted evidence.
 
 Cron has exactly five numeric fields, separated by spaces or tabs, in UTC:
 minute 0–59, hour 0–23, day of month 1–31, month 1–12, weekday 0–7.
@@ -141,10 +147,12 @@ one 400-year Gregorian cycle. Expressions with more than five minute values are
 also refused: use at most five, such as `0,12,24,36,48`, instead of `*/5`.
 
 Schedules require a valid `delivers_to` at startup and on reload. Each occurrence
-sends exactly `<name> <YYYY-MM-DDTHH:MMZ>` as external `timer`, after check
+sends `<name> <YYYY-MM-DDTHH:MMZ>` and, if set, the trimmed prompt on a second line as external `timer`, after check
 notices and before alarms, in time-then-name order. New schedules and edited
 expressions start after the current time and never fire retroactively.
 Whitespace-only edits do not reset an expression.
+Prompt-only edits preserve timing; the next send uses the new text. The hourly cap
+and catch-up rules below are unchanged, and existing per-notice limits still apply.
 
 `missed: skip` is the default for occurrences while the process was down;
 `catch-up` sends the latest missed occurrence once. Occurrences passed while
