@@ -532,6 +532,73 @@ fn claude_trust_case(w: &World, on: bool, id: &str, status: &mut Outcome) -> Out
     }
 }
 
+/// A role's own added folder waits for a person, with an attach hint.
+pub fn claude_add_dir_status(w: &World) -> Outcome {
+    let id = "claude-add-dir-status";
+    let folder = fresh_dir(&w.trusted, w, "work");
+    let added = fresh_dir(&w.scratch, w, "added");
+    let t = Team::new(
+        w,
+        id,
+        &Spec {
+            who: Who::Claude,
+            member: "folder-reader",
+            locked: false,
+            worktree: false,
+            cwd: &folder,
+            auto_trust: false,
+            args: &["--add-dir", added.to_str().unwrap()],
+            instruction: READY,
+            bus: false,
+        },
+    );
+    match t.up() {
+        Ok((true, _)) => {}
+        other => return Outcome::Fail(format!("create: {other:?}")),
+    }
+    let (state, rule) = t.settle();
+    t.save(id);
+    if rule == "trust-dialog" {
+        return blocked_at(&rule, &folder);
+    }
+    if state != "blocked" || rule != "add-dir-dialog" {
+        return match state.as_str() {
+            "idle" | "working" => Outcome::Blocked(
+                "the added folder is already trusted (a trusted parent folder covers it)".into(),
+            ),
+            "blocked" => blocked_at(&rule, &folder),
+            _ => Outcome::Fail(format!(
+                "no added-folder dialog (state `{state}`, rule `{rule}`)"
+            )),
+        };
+    }
+    let text = match t.brg(&["status", &t.instance()], w.limits.brg) {
+        Ok((true, text)) => text,
+        other => return Outcome::Fail(format!("status: {other:?}")),
+    };
+    let attach = format!("brg attach {}/{}", t.instance(), t.member());
+    if !text.contains("blocked (new folder)") || !text.contains(&attach) {
+        return Outcome::Fail(format!("missing folder status or attach hint: {text}"));
+    }
+    let held = t.hold_trust(|t, look| t.read(look).1 == "add-dir-dialog");
+    if let Some(home) = &w.fake_home {
+        let log = home
+            .parent()
+            .unwrap()
+            .join(format!("fake-agent/{}.jsonl", t.member()));
+        let log = std::fs::read_to_string(log).unwrap();
+        if log.contains("\"event\":\"add-dir-key\"") {
+            return Outcome::Fail("input reached the added-folder dialog".into());
+        }
+    }
+    match held {
+        Ok(polls) => Outcome::Pass(format!(
+            "folder prompt held unanswered on {polls} looks; {attach}"
+        )),
+        Err(e) => Outcome::Fail(e),
+    }
+}
+
 /// `trust`: `auto_trust` for a `vendor` member, or `None` for a `locked`
 /// member with `auto_trust: true`.
 pub fn codex_trust(w: &World, trust: Option<bool>) -> Vec<(String, Outcome)> {

@@ -180,6 +180,12 @@ if [ "$scenario" = approval ]; then
   forever
 fi
 
+if [ "$member" = folder-reader ]; then
+  mkdir -p "$HOME/fake-agent"
+  : > "$HOME/fake-agent/add-dir"
+  exec "$(dirname "$BORGCHART_BIN")/fake-agent" "$@"
+fi
+
 # The queue case's fakes exercise the real session/gate and plugin handlers.
 # Only the vendor turn itself is acted out; no typed input is read here.
 case $member in queue-*)

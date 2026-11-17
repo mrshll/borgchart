@@ -637,6 +637,37 @@ mod tests {
     }
 
     #[test]
+    fn claude_add_dir_dialog_is_blocked() {
+        let screen = include_str!("../tests/fixtures/screens/claude-2.1.326-add-dir.txt");
+        for screen in [
+            screen,
+            include_str!("../tests/fixtures/screens/claude-2.1.326-add-dir-yes.txt"),
+            include_str!("../tests/fixtures/screens/claude-2.1.326-add-dir-hint.txt"),
+        ] {
+            let reading = claude().read("", screen);
+            assert_eq!(reading.state, State::Blocked, "{screen}");
+            assert_eq!(reading.rule.as_deref(), Some("add-dir-dialog"), "{screen}");
+        }
+        for marker in [
+            " Adding a new directory:",
+            "   Yes, add it",
+            " Enter to confirm · Esc to cancel",
+        ] {
+            assert!(screen.contains(marker), "{marker}");
+            let without = screen.replace(marker, "");
+            assert_ne!(
+                claude().read("", &without).rule.as_deref(),
+                Some("add-dir-dialog"),
+                "without {marker}"
+            );
+        }
+        assert_eq!(
+            claude().read("", CLAUDE_TRUST).rule.as_deref(),
+            Some("trust-dialog")
+        );
+    }
+
+    #[test]
     fn claude_external_imports_dialog_is_blocked() {
         let screen = include_str!("../tests/fixtures/screens/claude-2.1.326-imports.txt");
         let reading = claude().read("example-host", screen);
