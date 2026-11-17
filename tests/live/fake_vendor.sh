@@ -14,6 +14,10 @@
 #   write-at-exit append to $CODEX_HOME/config.toml when stopped
 #   trust-exit   show the trust screen briefly, then exit
 #   trust-unknown show the trust screen briefly, then an unknown screen
+#   late-trust   draw the startup composer before checking session trust
+#   late-trust-no-session ignore session trust after the startup composer
+#   late-idle    queue replies finish later; an interrupted large turn
+#                loses the stored reply on resume
 #   early-turn   `waiter` starts its turn on the message while its wait
 #                still runs, and replies after the wait ends
 #   same-poll    `waiter`, already working, replies just before its wait
@@ -57,10 +61,13 @@ if [ "$scenario" = wrongenv ] && [ -z "${FAKE_REEXEC:-}" ]; then
   exec env -u COLORTERM TERM=dumb FAKE_REEXEC=1 /bin/bash "$0" "$@"
 fi
 if [ "$scenario" = write-at-exit ] && [ -n "${CODEX_HOME:-}" ]; then
-  trap 'echo "# written at exit by the fake" >>"$CODEX_HOME/config.toml"; exit 0' HUP TERM INT
+  trap 'printf "\n[projects.\"/tmp/example\"]\ntrust_level = \"trusted\"\n" >>"$CODEX_HOME/config.toml"; exit 0' HUP TERM INT
 fi
 if [ "$scenario" = write-config ] && [ -n "${CODEX_HOME:-}" ]; then
-  echo "# written by the fake" >>"$CODEX_HOME/config.toml"
+  printf '\n[projects."/tmp/example"]\ntrust_level = "trusted"\n' >>"$CODEX_HOME/config.toml"
+fi
+if [ "$scenario" = write-settings ] && [ -n "${CODEX_HOME:-}" ]; then
+  printf '\nscreen_reader_detection_done = true\n' >>"$CODEX_HOME/config.toml"
 fi
 
 colour='\033[38;2;215;119;87m'
@@ -156,11 +163,14 @@ at_trust() {
   done
 }
 
+if [[ "$scenario" = late-trust* ]]; then draw idle; sleep 0.3; fi
 if [ "$member" != queue-locked ] && ! trusted; then
   if [ "$vendor" = claude ]; then at_trust trust; else
   want="projects={\"$PWD\"={trust_level=\"trusted\"}}"
   ok=
   for a in "$@"; do [ "$a" = "$want" ] && ok=1; done
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || ok=1
+  [ "$scenario" = late-trust-no-session ] && ok=
   [ -z "$ok" ] && at_trust codex-trust
   fi
 fi
@@ -198,6 +208,7 @@ case $member in queue-*)
   sleep 1
   for a in "$@"; do
     case $a in *'brg restarted you'*'msg list --full'*)
+      [ -e "$fake/unfinished-$BORGCHART_MEMBER" ] && continue
       for word in $("$BORGCHART_BIN" msg list --full | sed -n 's/.*nonce \([0-9a-z]*\).*/\1/p'); do
         say "• REPLY-$word"
       done ;;
@@ -245,6 +256,12 @@ case $member in queue-*)
         draw working
         sleep 1
         rm -f "$inbox"/[0-9]*
+      fi
+      if [ "$scenario" = late-idle ] && [ "${#body}" -ge 16000 ]; then
+        touch "$fake/unfinished-$BORGCHART_MEMBER"
+        draw working
+        sleep 1
+        rm "$fake/unfinished-$BORGCHART_MEMBER"
       fi
       draw idle
     done

@@ -22,6 +22,11 @@ rules:
     priority: 100
     bottom: 30
     all: ['^ +(❯ )?Yes, I trust this folder$', '^ Enter to confirm · Esc to cancel$']
+  - id: imports-dialog
+    state: blocked
+    priority: 100
+    bottom: 30
+    all: ['^  Allow external CLAUDE\.md file imports\?$', '^  Enter to confirm · Esc to cancel[ \t]*\z']
   - id: add-dir-dialog
     state: blocked
     priority: 100

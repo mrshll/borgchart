@@ -18,9 +18,9 @@
 //! test's guard, under a watchdog that stops it if the run dies or
 //! overruns. Nothing of your vendor configuration is copied or written by
 //! brg: Codex gets session-only trust (`-c projects=…`), and every Claude
-//! deployment defaults to `auto_trust: false`. Claude cases other than trust run in
-//! `target/live/<run>/work/`, which must be inside a folder Claude already
-//! trusts (this checkout or a parent); the trust cases use fresh folders
+//! deployment defaults to `auto_trust: false`. Non-trust cases run in
+//! `target/live/<run>/work/`, inside a folder both vendors already trust,
+//! with Claude's CLAUDE.md imports approved. The trust cases use fresh folders
 //! under the system temp directory. No tool approval is ever answered: one
 //! that appears ends its case BLOCKED.
 //!
@@ -610,10 +610,13 @@ fn dry_run_reaches_every_expected_result() {
         ("codex-locked-trust", "truster", "trust-unknown", "FAIL"),
     ];
     w.fake_file("stale-nonce", Some("n0123456789abcdefz"));
+    let config = std::path::Path::new(&w.env["CODEX_HOME"]).join("config.toml");
+    let config_before = std::fs::read(&config).unwrap();
     let mut control = |w: &World, id: &str, what: &str, want: &'static str| {
         let got = case(w, id, true).remove(0).1;
         matrix.row(&format!("control {id} ({what})"), &got);
         check(&format!("control {id} ({what})"), id, want, Some(&got));
+        std::fs::write(&config, &config_before).unwrap();
     };
     for (id, member, scenario, want) in controls {
         w.scenario(member, scenario);
@@ -727,6 +730,42 @@ fn codex_queue_dry_run_checks_both_postures_and_post_tool_delivery() {
 }
 
 #[test]
+fn codex_nontrust_config_changes_do_not_fail_the_case() {
+    let keep = tempfile::tempdir().unwrap();
+    let w = World::dry(keep.path());
+    w.scenario("truster", "write-settings");
+    let outcomes = cases::codex_trust(&w, Some(true));
+    assert!(matches!(outcomes[0].1, Outcome::Pass(_)), "{outcomes:?}");
+}
+
+#[test]
+fn codex_invalid_config_cannot_pass_trust_check() {
+    let keep = tempfile::tempdir().unwrap();
+    let w = World::dry(keep.path());
+    std::fs::write(
+        std::path::Path::new(&w.env["CODEX_HOME"]).join("config.toml"),
+        "[invalid",
+    )
+    .unwrap();
+    let outcomes = cases::codex_trust(&w, Some(true));
+    assert!(matches!(outcomes[0].1, Outcome::Fail(_)), "{outcomes:?}");
+}
+
+#[test]
+fn codex_startup_composer_cannot_pass_for_session_trust() {
+    let keep = tempfile::tempdir().unwrap();
+    let w = World::dry(keep.path());
+    w.scenario("truster", "late-trust");
+    for trust in [false, true] {
+        let outcomes = cases::codex_trust(&w, Some(trust));
+        assert!(matches!(outcomes[0].1, Outcome::Pass(_)), "{outcomes:?}");
+    }
+    w.scenario("truster", "late-trust-no-session");
+    let outcomes = cases::codex_trust(&w, Some(true));
+    assert!(matches!(outcomes[0].1, Outcome::Fail(_)), "{outcomes:?}");
+}
+
+#[test]
 fn folder_trust_on_and_off_are_checked_in_dry_mode() {
     let keep = tempfile::tempdir().unwrap();
     let w = World::dry(keep.path());
@@ -736,6 +775,7 @@ fn folder_trust_on_and_off_are_checked_in_dry_mode() {
         "claude-trust-off",
         "codex-trust-on",
         "codex-trust-off",
+        "codex-locked-trust",
     ] {
         for (case, outcome) in case(&w, id, true) {
             assert!(matches!(outcome, Outcome::Pass(_)), "{case}: {outcome:?}");

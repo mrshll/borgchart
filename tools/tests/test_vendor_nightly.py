@@ -75,8 +75,13 @@ def test_secret_in_evidence_prevents_any_gh_call(tmp_path: Path) -> None:
 
 def test_seed_keeps_keys_private_and_scrub_blocks_planted_copy(tmp_path: Path) -> None:
     fake = tmp_path / "codex"
-    fake.write_text('#!/bin/sh\ncat > "$HOME/.codex/auth.json"\necho "login diagnostic" >&2\n')
+    fake.write_text(
+        '#!/bin/sh\ncase "$1" in\nlogin) cat > "$HOME/.codex/auth.json"; echo "login diagnostic" >&2;;\nexec) exit 0;;\n*) exit 1;;\nesac\n'
+    )
     fake.chmod(0o700)
+    claude = tmp_path / "claude"
+    claude.write_text("#!/bin/sh\nexit 0\n")
+    claude.chmod(0o700)
     home = tmp_path / "home"
     home.mkdir()
     env = {
@@ -108,6 +113,10 @@ def test_seed_keeps_keys_private_and_scrub_blocks_planted_copy(tmp_path: Path) -
             [str(seed), "--scrub", str(evidence)], env=env, text=True, capture_output=True, check=False
         )
         assert result.returncode == 1 and planted not in result.stdout + result.stderr
+    claude.write_text('#!/bin/sh\nprintf "Startup banner\\nRequest denied: %s\\n\\n" "$ANTHROPIC_API_KEY" >&2\nexit 1\n')
+    result = subprocess.run([str(seed)], env=env, text=True, capture_output=True, check=False)
+    assert result.returncode != 0 and "API request refused for claude: Request denied:" in result.stderr
+    assert "[redacted]" in result.stderr and env["ANTHROPIC_API_KEY"] not in result.stdout + result.stderr
 
 
 def test_repeats_comment_and_cleared_kinds_close_without_creating_duplicates(tmp_path: Path) -> None:

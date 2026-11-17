@@ -28,7 +28,7 @@ fn screen(w: &World, t: &Team<'_>, member: &str) -> String {
 fn wait_for(
     w: &World,
     t: &Team<'_>,
-    member: &str,
+    member: Option<&str>,
     what: &str,
     ready: impl Fn() -> bool,
 ) -> Result<(), Outcome> {
@@ -37,7 +37,8 @@ fn wait_for(
         if ready() {
             return Ok(());
         }
-        let text = screen(w, t, member);
+        let member = member.map(String::from).unwrap_or_else(|| t.member());
+        let text = screen(w, t, &member);
         let vendor = borgchart::rules::load(borgchart::team::Vendor::Codex).unwrap();
         if vendor.read("", &text).state == borgchart::rules::State::Blocked {
             return Err(Outcome::Blocked(format!(
@@ -45,7 +46,12 @@ fn wait_for(
             )));
         }
         if Instant::now() >= end {
-            t.save(&format!("codex-queue-{member}-failed"));
+            let _ = std::fs::write(
+                w.evidence
+                    .join("screens")
+                    .join(format!("codex-queue-{member}-failed.ansi")),
+                &text,
+            );
             return Err(Outcome::Fail(format!(
                 "{member}: timed out waiting for {what}; screen: {text}"
             )));
@@ -79,7 +85,7 @@ fn send(w: &World, t: &Team<'_>, body: &str, delivery: &str) -> Result<Value, Ou
 
 fn reply(w: &World, t: &Team<'_>, nonce: &str) -> Result<(), Outcome> {
     let want = format!("REPLY-{nonce}");
-    wait_for(w, t, &t.member(), &want, || {
+    wait_for(w, t, None, &want, || {
         screen(w, t, &t.member())
             .lines()
             .scan(false, |assistant, l| {
@@ -126,6 +132,7 @@ fn posture(w: &World, locked: bool) -> Result<(), Outcome> {
                 "queue-vendor"
             },
             locked,
+            worktree: false,
             cwd: &folder,
             auto_trust: true,
             args: &[],
@@ -169,14 +176,22 @@ fn posture(w: &World, locked: bool) -> Result<(), Outcome> {
     let early = world::nonce();
     std::thread::scope(|s| -> Result<(), Outcome> {
         let up = s.spawn(|| t.up());
-        wait_for(w, &t, &t.member(), "start readiness", || {
+        let readiness = wait_for(w, &t, None, "start readiness", || {
             let state = state_dir(w, &t);
             borgchart::lifecycle::load_incarnation(&state, &t.member())
                 .ok()
                 .flatten()
                 .is_some_and(|i| i.pane.is_some())
                 && (!locked || state.gate_marker(&t.member()).exists())
-        })?;
+        });
+        if let Err(outcome) = readiness {
+            let output = up.join().unwrap();
+            let _ = std::fs::write(
+                w.evidence.join("screens/codex-queue-up.txt"),
+                format!("{output:?}"),
+            );
+            return Err(outcome);
+        }
         send(w, &t, &format!("nonce {early}"), "queued")?;
         let (ok, text) = up.join().unwrap().map_err(Outcome::Fail)?;
         if !ok {
@@ -185,18 +200,14 @@ fn posture(w: &World, locked: bool) -> Result<(), Outcome> {
         Ok(())
     })?;
     reply(w, &t, &early)?;
-    wait_for(w, &t, &t.member(), "idle before nonce", || {
-        t.state().0 == "idle"
-    })?;
+    wait_for(w, &t, None, "idle before nonce", || t.state().0 == "idle")?;
     let idle = world::nonce();
     send(w, &t, &format!("nonce {idle}"), "queued")?;
     reply(w, &t, &idle)?;
 
     let hold = world::nonce();
     send(w, &t, &format!("HOLD nonce {hold}"), "queued")?;
-    wait_for(w, &t, &t.member(), "a running turn", || {
-        t.state().0 == "working"
-    })?;
+    wait_for(w, &t, None, "a running turn", || t.state().0 == "working")?;
     let middle = world::nonce();
     send(w, &t, &format!("nonce {middle}"), "queued")?;
     reply(w, &t, &middle)?;
@@ -237,7 +248,7 @@ fn posture(w: &World, locked: bool) -> Result<(), Outcome> {
         wait_for(
             w,
             &t,
-            &parent,
+            Some(&parent),
             "the parent's queued tool-hook reply",
             || screen(w, &t, &parent).contains(&want),
         )?;
@@ -254,6 +265,7 @@ fn posture(w: &World, locked: bool) -> Result<(), Outcome> {
         }
     }
 
+    wait_for(w, &t, None, "idle before stop", || t.state().0 == "idle")?;
     let state = state_dir(w, &t);
     let session = std::fs::read_to_string(state.member_session(&t.member()))
         .map_err(|e| Outcome::Fail(e.to_string()))?;

@@ -73,6 +73,7 @@ fn vendor_codex_seating_probe() {
             who: rules::Who::Codex,
             member: "seatprobe",
             locked: false,
+            worktree: false,
             cwd: &work,
             auto_trust: true,
             args: &[],

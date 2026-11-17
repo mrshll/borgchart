@@ -266,12 +266,13 @@ impl World {
         let state = if w.mode == Mode::Live {
             // Real brg refuses age-cleaned state homes. Keep live test state
             // in this run's owned evidence tree, under the same cleanup guard.
-            let state = w.evidence.join("state");
-            w.private.also_remove(&state);
-            state
+            w.evidence.join("state")
         } else {
             w.scratch.join("state")
         };
+        w.private.also_remove(&state);
+        w.private
+            .also_remove(state.with_file_name("state-worktrees"));
         w.env
             .insert("BORGCHART_STATE_HOME".into(), state.display().to_string());
         w.env.insert(
@@ -352,21 +353,29 @@ impl World {
         }
     }
 
-    /// The effective Codex `config.toml` (honouring `CODEX_HOME`) as a
-    /// SHA-256, or `missing`. Its contents are never shown.
-    pub fn codex_config_hash(&self) -> String {
+    /// Trust entries and a fingerprint of the effective Codex config.
+    /// Other settings are never shown.
+    pub fn codex_config_trust(&self) -> (Result<Option<toml::Value>, String>, String) {
         let home = match self.env.get("CODEX_HOME") {
             Some(h) => PathBuf::from(h),
             None => PathBuf::from(self.env.get("HOME").cloned().unwrap_or_default()).join(".codex"),
         };
-        match std::fs::read(home.join("config.toml")) {
-            Ok(bytes) => Sha256::digest(&bytes)
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect(),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => "missing".into(),
-            Err(e) => format!("unreadable ({})", e.kind()),
+        match std::fs::read_to_string(home.join("config.toml")) {
+            Ok(text) => (
+                codex_trust_entries(&text),
+                format!("{:x}", Sha256::digest(text.as_bytes())),
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Ok(None), "missing".into()),
+            Err(e) => (
+                Err(format!("cannot read Codex config.toml: {e}")),
+                "unreadable".into(),
+            ),
         }
+    }
+
+    /// The seating probe still guards the whole config.
+    pub fn codex_config_hash(&self) -> String {
+        self.codex_config_trust().1
     }
 
     /// Dry only: set a member's fake scenario (`ok` clears it).
@@ -399,6 +408,35 @@ impl World {
             .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
             .unwrap_or_default()
     }
+}
+
+fn codex_trust_entries(config: &str) -> Result<Option<toml::Value>, String> {
+    config
+        .parse::<toml::Table>()
+        .map(|mut table| table.remove("projects"))
+        .map_err(|_| "Codex config.toml isn't valid TOML".into())
+}
+
+#[test]
+fn codex_trust_entries_ignore_other_tables() {
+    let base = "model = \"example\"\n";
+    let settings = format!("{base}[tui]\nscreen_reader_detection_done = true\n");
+    assert_eq!(codex_trust_entries(base), codex_trust_entries(&settings));
+    for trust in [
+        "[projects.\"/tmp/x\"]\ntrust_level = \"trusted\"\n",
+        "[\"projects\".\"/tmp/x\"]\ntrust_level = \"trusted\"\n",
+        "projects = { \"/tmp/x\" = { trust_level = \"trusted\" } }\n",
+    ] {
+        assert_ne!(
+            codex_trust_entries(base),
+            codex_trust_entries(&format!("{trust}{settings}"))
+        );
+    }
+    let trust = "[projects.\"/tmp/x\"]\ntrust_level = \"trusted\"\n";
+    assert_eq!(
+        codex_trust_entries(trust),
+        codex_trust_entries(&format!("{trust}# ordinary comment\n"))
+    );
 }
 
 /// Run `cmd` to completion within `limit`, or kill it.
