@@ -16,6 +16,8 @@
 #   trust-unknown show the trust screen briefly, then an unknown screen
 #   late-trust   draw the startup composer before checking session trust
 #   late-trust-no-session ignore session trust after the startup composer
+#   late-idle    queue replies finish later; an interrupted large turn
+#                loses the stored reply on resume
 #   early-turn   `waiter` starts its turn on the message while its wait
 #                still runs, and replies after the wait ends
 #   same-poll    `waiter`, already working, replies just before its wait
@@ -200,6 +202,7 @@ case $member in queue-*)
   sleep 1
   for a in "$@"; do
     case $a in *'brg restarted you'*'msg list --full'*)
+      [ -e "$fake/unfinished-$BORGCHART_MEMBER" ] && continue
       for word in $("$BORGCHART_BIN" msg list --full | sed -n 's/.*nonce \([0-9a-z]*\).*/\1/p'); do
         say "• REPLY-$word"
       done ;;
@@ -247,6 +250,12 @@ case $member in queue-*)
         draw working
         sleep 1
         rm -f "$inbox"/[0-9]*
+      fi
+      if [ "$scenario" = late-idle ] && [ "${#body}" -ge 16000 ]; then
+        touch "$fake/unfinished-$BORGCHART_MEMBER"
+        draw working
+        sleep 1
+        rm "$fake/unfinished-$BORGCHART_MEMBER"
       fi
       draw idle
     done
