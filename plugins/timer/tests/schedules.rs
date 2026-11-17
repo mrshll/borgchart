@@ -17,6 +17,7 @@ fn due_schedule_sends_only_name_and_time_to_the_delivery_target() {
         &json!({"schedules":{"review":{"cron":"0 * * * *","next":"2020-01-01T00:00:00Z"}}})
             .to_string(),
     );
+    let before = time::utc_now();
     let result = f
         .command(&["run", "--once"])
         .env_remove("BORGCHART_MEMBER")
@@ -28,9 +29,13 @@ fn due_schedule_sends_only_name_and_time_to_the_delivery_target() {
     let args = &sends[0];
     assert_eq!(&args[..5], ["msg", "send", "--json", "--external", "timer"]);
     assert_eq!(args[args.len() - 2], "triager-test");
-    assert_eq!(
-        args.last().unwrap(),
-        &format!("review {}:00Z", &time::utc_now()[..13])
+    let after = time::utc_now();
+    assert!(
+        [before, after]
+            .iter()
+            .any(|now| args.last().unwrap() == &format!("review {}:00Z", &now[..13])),
+        "unexpected body: {:?}",
+        args.last()
     );
 }
 
@@ -99,6 +104,23 @@ fn failed_schedule_send_retries_after_restart_and_health_recovers() {
         f.read("health.json")["schedules"]["review"]["pending"],
         serde_json::Value::Null
     );
+}
+#[test]
+fn persisted_attempts_hold_pending_schedules_at_the_cap_after_restart() {
+    let f = Fixture::new();
+    f.write("checks.yaml", "- {name: review, cron: '0 * * * *'}");
+    f.write(
+        "state/checks.json",
+        &json!({
+            "schedules":{"review":{"cron":"0 * * * *", "next":"2099-01-01T00:00:00Z", "pending":"2020-01-01T00:00:00Z"}},
+            "schedule_sends":vec![time::utc_now(); 6]
+        }).to_string(),
+    );
+    f.tick();
+    assert!(f.sends().is_empty());
+    let health = f.read("health.json");
+    assert_eq!(health["ok"], false);
+    assert!(health["detail"].as_str().unwrap().contains("schedule cap"));
 }
 #[test]
 fn removed_schedule_is_pruned() {

@@ -81,8 +81,8 @@ impl Cron {
     }
     pub fn parse(text: &str) -> Result<Self, String> {
         let cron = Self::fields(text)?;
-        if cron.fields[0].count_ones() > 6 {
-            return Err("use at most 6 minute values per hour".into());
+        if cron.fields[0].count_ones() > 5 {
+            return Err("use at most 5 minute values per hour".into());
         }
         let anchor = UNIX_EPOCH + Duration::from_secs(days_from_civil(2000, 1, 1) as u64 * 86400);
         if cron.next(anchor).is_none() {
@@ -207,10 +207,10 @@ mod tests {
     #[test]
     #[rustfmt::skip]
     fn cron_rejects_never_firing_and_overfrequent_expressions() {
-        for bad in ["0 0 30 2 *", "0 0 31 4,6,9,11 *", "* * * * *", "*/5 * * * *"] {
+        for bad in ["0 0 30 2 *", "0 0 31 4,6,9,11 *", "* * * * *", "*/5 * * * *", "0,10,20,30,40,50 * * * *"] {
             assert!(Cron::parse(bad).is_err(), "{bad}");
         }
-        for good in ["0,10,20,30,40,50 * * * *", "0 0 29 2 *", "0 0 30 2 1", "0,0,0 * * * *", "0\t0\t*\t*\t*"] {
+        for good in ["0,12,24,36,48 * * * *", "0 0 29 2 *", "0 0 30 2 1", "0,0,0 * * * *", "0\t0\t*\t*\t*"] {
             assert!(Cron::parse(good).is_ok(), "{good}");
         }
     }

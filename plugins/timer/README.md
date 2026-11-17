@@ -137,8 +137,8 @@ Day matching follows **cronie's star rule**: if either day field begins with
 `*` (including `*/2`), both day fields must match. Otherwise either may match.
 Thus `0 0 1 * 1` fires on the 1st and every Monday, while `0 0 */2 * 1`
 fires only on odd-numbered Mondays. Impossible dates are refused after searching
-one 400-year Gregorian cycle. Expressions with more than six minute values are
-also refused: use at most six, such as `0,10,20,30,40,50`, instead of `*/5`.
+one 400-year Gregorian cycle. Expressions with more than five minute values are
+also refused: use at most five, such as `0,12,24,36,48`, instead of `*/5`.
 
 Schedules require a valid `delivers_to` at startup and on reload. Each occurrence
 sends exactly `<name> <YYYY-MM-DDTHH:MMZ>` as external `timer`, after check

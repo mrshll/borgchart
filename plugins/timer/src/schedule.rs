@@ -278,6 +278,30 @@ mod tests {
         );
     }
     #[test]
+    fn largest_single_schedule_never_reaches_the_cap_with_unaligned_ticks() {
+        let mut t = Timer::new("skip");
+        t.config = config::parse("- {name: review, cron: '0,12,24,36,48 * * * *'}").unwrap();
+        let start = at(0, 0);
+        let tick = Duration::from_millis(30_700);
+        let end = start + Duration::from_secs(48 * 3600);
+        let mut now = start + Duration::from_secs(17);
+        let mut expected = start + Duration::from_secs(12 * 60);
+        while now <= end + tick {
+            let (sent, detail) = t.tick(now, true);
+            assert!(!detail.contains("schedule cap"), "{detail}");
+            for body in sent {
+                assert_eq!(
+                    body,
+                    format!("review {}Z", &time::format_utc(expected)[..16])
+                );
+                assert!(now >= expected && now <= expected + tick);
+                expected += Duration::from_secs(12 * 60);
+            }
+            now += tick;
+        }
+        assert_eq!(expected, end + Duration::from_secs(12 * 60));
+    }
+    #[test]
     fn cap_counts_attempts_releases_in_order_and_expires_after_an_hour() {
         let mut t = Timer::new("skip");
         t.config = config::parse(
@@ -299,9 +323,6 @@ mod tests {
         assert!(failed[1].starts_with("review-0 2024-01-01T01:00"));
         assert!(error.contains("schedule cap"));
         assert!(t.tick(at(1, 59), true).0.is_empty());
-        // Persisted attempts, including failures, continue to hold after a restart.
-        t.state.schedule_sends =
-            serde_json::from_value(serde_json::to_value(&t.state.schedule_sends).unwrap()).unwrap();
         t.started = at(1, 59);
         let (sent, detail) = t.tick(at(2, 0), true);
         assert_eq!(sent.len(), 6);
