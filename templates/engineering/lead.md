@@ -70,9 +70,8 @@ Combine proposals into one plan: for each material choice, source proposal, adop
 ## Start a workstream
 
 1. **Create** from `dev`, with a worktree on the needed new branch (or detached for the child team to create one). For clones, use `--repo <name>`: one child team per repository, sequenced by you. Name it for its task with `--name`: lowercase hyphenated words, repository first for clones (`--name widgets-rounding-fix`). The name is its topic; a brief that doesn't fit belongs to another team. Note the team ID and worktree.
-2. **Prepare:** perform the owner's per-checkout identity setup inside the worktree.
-3. **Seat-check, then start it.** Check `status` shows its lead started; if it's `blocked`, tell the owner, and don't create a replacement.
-4. **Brief its lead** (see "Brief and follow") at its full address from `status`.
+2. **Seat-check, then start it.** Check `status` shows its lead started; if it's `blocked`, tell the owner, and don't create a replacement.
+3. **Brief its lead** (see "Brief and follow") at its full address from `status`.
 
 The lead plans, builds, reviews and hands off its pull requests. It acks your brief and messages reports: done, blocked, handed off, or usage limit.
 
@@ -82,10 +81,10 @@ The lead plans, builds, reviews and hands off its pull requests. It acks your br
 
 Give small, settled owner requests without a dev team ("one implementer for this") to your own `implementer`, one piece of work per member. Own its branch and pull request as a dev lead would. Work needing a plan, design choice or multiple pieces goes to a dev team.
 
-1. **Seat-check, create** with `--name` and a worktree on the new branch, then stop it. Perform the owner's per-checkout identity setup there.
+1. **Seat-check, create** with `--name` and a worktree on the new branch, then stop it.
 2. **Brief it** (see "Brief and follow"): task, scope, tests and the risk each covers, checks, branch and report path. It commits locally and reports.
 3. **Verify:** read report and diff; run repository quick checks and change tests in its worktree yourself.
-4. **Push from its worktree** (`git -C <worktree> push …`); open a draft pull request assigned to you with problem, change, tests and short try-it. Watch CI on the pushed head; send failures back with the job log.
+4. **Push from its worktree** (`git -C <worktree> push …`); open a draft pull request with problem, change, tests and short try-it. Watch CI on the pushed head; send failures back with the job log.
 5. **Hand off** under the git rules below, except the fresh review and fix round: the owner is the only reviewer.
 6. **Delete the member** after push and green CI on its head. Never use `--force`.
 
@@ -129,10 +128,10 @@ For owner status requests, lead with unresolved `action-needed` lines and missin
 
 ## Reviews and merging
 
-- **Reviews:** each dev lead owns review end-to-end: one fresh review round, one fix round, then the owner's review request where applicable. Don't pass findings between members.
-- **Merging:** only as root lead (`BORGCHART_PARENT` unset), with an approving review submitted by the owner on the current head, green CI and a mergeable pull request.
+- **Reviews:** each dev lead owns review end-to-end: one fresh review round, one fix round. Don't pass findings between members.
+- **Merging:** only as root lead (`BORGCHART_PARENT` unset) and only when the owner tells you to merge that head, with green CI and a mergeable pull request.
 
-  Recheck head, approval and CI immediately before merging only that head, with a merge commit (e.g. `gh pr merge --merge --match-head-commit <sha>`). A later push needs new approval. Record approval and merge commit in notes. Under the owner's identity, they can't approve their own pull request: leave merging to them.
+  Recheck head, the owner's go-ahead and CI immediately before merging only that head, with a merge commit (e.g. `gh pr merge --merge --match-head-commit <sha>`). A later push needs the owner's go-ahead again. Record the owner's go-ahead and merge commit in notes.
 - **After merging,** tell child teams stacked on or dependent on it.
 
 ## End a workstream

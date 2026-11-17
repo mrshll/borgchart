@@ -71,7 +71,7 @@ The three aren't self-contained, so they travel together:
 The template files hold no project rules and no owner. Members get both from their vendor's own instruction files, which load as normal:
 
 - **The project's rules** come from the repository's instruction file: here, [AGENTS.md](AGENTS.md), which `CLAUDE.md` imports so both vendors read one text. It names the build wrapper, the checks, the code style and what may appear in public. A restricted Codex member without `worktree: true` starts in its temp folder and doesn't load it; none of these teams has one.
-- **The owner** is whoever runs the team. Their own user-level instructions (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`) name their GitHub login and say how members commit, push and run GitHub commands: as the owner, or as a separate account, with any per-checkout identity setup. Leads request the owner's review only under a separate account.
+- **The owner** is whoever runs the team. Their own user-level instructions (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`) name their GitHub login and say how members commit, push and run GitHub commands: as the owner, or as a separate account, with any per-checkout identity setup. They also set pull-request handoff and merge approval; see [what your own instruction files should say](README.md#what-your-own-instruction-files-should-say).
 
 ### Setup
 

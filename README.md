@@ -19,11 +19,34 @@ brg runs real agents as you. Before your first `brg create`:
 
 Start in a disposable folder, as below, not in a checkout you care about.
 
+## What your own instruction files should say
+
+brg's teams leave personal rules to your `CLAUDE.md` / `AGENTS.md`.
+Before starting a team, cover:
+
+- [ ] Which account members commit, push and run GitHub commands as,
+  including any per-checkout setup.
+- [ ] Who "the owner" is on GitHub and how to hand them a pull request
+  (review request, assignment).
+- [ ] How the owner approves a merge.
+- [ ] How secrets are obtained.
+- [ ] What must stay out of public repositories.
+- [ ] Language and test conventions.
+
+For example, with fictional accounts:
+
+> Act as `sam-example-bot`; configure each checkout's commit identity before work.
+> The owner is `sam-example`; request their review when a pull request is ready.
+> Merge only after they explicitly authorize the current head in a comment.
+> Obtain secrets through the configured secret manager, without printing them.
+> Keep private customer data out of public repositories; use fictional fixtures.
+> For Python, use `uv run`, annotate function types and run the full test suite.
+
 ## Quick start
 
 This runs the example team, [`templates/engineering`](templates/engineering): a Claude lead that starts Codex helpers when its work needs them. You need:
 
-- Rust 1.89 or newer, tmux 3.2 or newer, and git with your name and email set (`git config --global user.name` and `user.email`): members commit as you.
+- Rust 1.89 or newer, tmux 3.2 or newer, and git with a commit name and email set (`git config --global user.name` and `user.email`).
 - The [Claude Code](https://docs.anthropic.com/en/docs/claude-code/getting-started) and [Codex](https://github.com/openai/codex) CLIs, each logged in to a plan that offers the models the role files pin: the `models:` lines at the top of each `templates/engineering/*.md` (the lead runs Claude `fable`, helpers run Codex `gpt-6-astra` and others). Before each launch the lead asks the seating plugin, `brg-seat`, whether that plan has room, and waits when it can't tell.
 
 Install brg and the seating plugin from a clone, which also holds the templates:

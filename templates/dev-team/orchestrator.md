@@ -43,9 +43,8 @@ Create members before briefing; brief before starting. Briefs have no due dates;
 
 1. **Seat-check** before each `create` or `start`: run `brg-seat route <vendor> <model>` for its launch, using `status --json`'s `vendor` and `model`. For a new member with `--set`, use the set vendor and model, or the role's `models.<vendor>` pin if no model is set. Launch only on `go`. On `wait`, unknown answers or errors, record a retry/follow-up time using your judgement and recheck then; don't switch vendor or model.
 2. **Create once** from its role with `create`. Name it for the task with `--name`: lowercase hyphenated words, e.g. `--name rounding-fix`; throwaway helpers keep the random default. Put implementers on the needed new branch, or leave detached for them to create it. `create` starts the member: stop it and note its ID.
-3. **Prepare implementer worktrees:** perform the owner's per-checkout identity setup inside them.
-4. **Write the brief** in `$BORGCHART_NOTES`, by rename: task, scope, non-goals, tests and the risk each covers, checks, branch, checkout, report path and teammates; for monitors, watch interval, deadline and trigger. Say whether implementers may run checks now or must report `partial` with body state `ready for checks` and wait. Send one message: `Read <brief path>; take on the work and report there as directed.`
-5. **Start it**, and check `status`. If it is `blocked` (at a folder-trust screen, say), tell the owner and leave it for a person.
+3. **Write the brief** in `$BORGCHART_NOTES`, by rename: task, scope, non-goals, tests and the risk each covers, checks, branch, checkout, report path and teammates; for monitors, watch interval, deadline and trigger. Say whether implementers may run checks now or must report `partial` with body state `ready for checks` and wait. Send one message: `Read <brief path>; take on the work and report there as directed.`
+4. **Start it**, and check `status`. If it is `blocked` (at a folder-trust screen, say), tell the owner and leave it for a person.
 
 ## Follow and verify
 
@@ -94,7 +93,7 @@ This section applies when `BORGCHART_PARENT` is set; that member is your parent.
 - **Update your parent** when a pull request opens, immediately when blocked, and when ready for review.
 - **Report by message:** done, blocked, handed off, or usage limit. Write in your own `$BORGCHART_NOTES` at the brief's path. Reply once to its message in plain text: a line `Report: <report path>`, then the report's `action-needed:` line.
 - **Operational questions go up:** decisions outside the plan, blockers, peers holding what you need.
-- **Pull-request matters stay on GitHub:** questions and the owner's review request at handoff.
+- **Pull-request matters stay on GitHub:** questions and handoff.
 
 ## Talking to the owner
 
