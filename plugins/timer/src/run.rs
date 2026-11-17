@@ -164,6 +164,7 @@ pub fn run(store: &plugin::State, once: bool) -> Result<(), String> {
             let target = std::env::var("BORGCHART_DELIVER_TO").unwrap_or_default();
             details.push(crate::schedule::send(
                 &mut state,
+                &config,
                 SystemTime::now,
                 |s| {
                     s.save(store)

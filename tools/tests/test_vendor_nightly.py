@@ -80,7 +80,17 @@ def test_seed_keeps_keys_private_and_scrub_blocks_planted_copy(tmp_path: Path) -
     )
     fake.chmod(0o700)
     claude = tmp_path / "claude"
-    claude.write_text("#!/bin/sh\nexit 0\n")
+    # Like Claude, --tools takes every argument after it, so the prompt must come before it.
+    claude.write_text(
+        """#!/bin/sh
+print= prompt=
+while [ $# -gt 0 ] && [ "$1" != --tools ]; do
+  case $1 in -p|--print) print=1 ;; -*) ;; *) prompt=$1 ;; esac
+  shift
+done
+[ -n "$print" ] && [ -n "$prompt" ] && [ "$#" = 2 ] && [ -z "$2" ] || { echo "no prompt" >&2; exit 1; }
+"""
+    )
     claude.chmod(0o700)
     home = tmp_path / "home"
     home.mkdir()
