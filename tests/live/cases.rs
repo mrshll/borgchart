@@ -540,9 +540,15 @@ pub fn claude_add_dir_status(w: &World) -> Outcome {
         return blocked_at(&rule, &folder);
     }
     if state != "blocked" || rule != "add-dir-dialog" {
-        return Outcome::Blocked(format!(
-            "no added-folder dialog (state `{state}`, rule `{rule}`)"
-        ));
+        return match state.as_str() {
+            "idle" | "working" => Outcome::Blocked(
+                "the added folder is already trusted (a trusted parent folder covers it)".into(),
+            ),
+            "blocked" => blocked_at(&rule, &folder),
+            _ => Outcome::Fail(format!(
+                "no added-folder dialog (state `{state}`, rule `{rule}`)"
+            )),
+        };
     }
     let text = match t.brg(&["status", &t.instance()], w.limits.brg) {
         Ok((true, text)) => text,
