@@ -372,17 +372,17 @@ fn members_wait_the_way_their_vendor_allows() {
             }
         }
     }
-    // The lead's design-panel wait, the monitor's watch and the Claude
-    // designer's wait for answers, at least.
+    // Lead seating waits and monitor watches keep their sleep instructions.
     assert!(sleeps >= 3, "{sleeps}");
 
     // A helper waiting for its answer, and a lead between turns, wait the
     // way their vendor allows: Claude in a background wait, Codex with no
-    // message wait at all (brg types new messages in); a designer waits for
+    // message wait at all (brg queues new messages); a designer waits for
     // the lead's answers the same way.
     for file in [
         shared().join("includes/helper.md"),
         dev_team().join("orchestrator.md"),
+        team_dir("dev-design-team").join("designer.md"),
     ] {
         let text = fs::read_to_string(&file).unwrap();
         let line = |vendor: &str| {
@@ -397,15 +397,6 @@ fn members_wait_the_way_their_vendor_allows() {
         );
         assert!(!line("Codex").contains("msg wait"), "{}", file.display());
     }
-    let designer = fs::read_to_string(team_dir("dev-design-team").join("designer.md")).unwrap();
-    assert!(
-        designer.contains("**Claude:** start, with your Bash tool in **background** mode"),
-        "{designer}"
-    );
-    assert!(
-        designer.contains("**Codex:** run the same loop in the **foreground**, at most 10 minutes"),
-        "{designer}"
-    );
 }
 
 fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
