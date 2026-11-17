@@ -931,13 +931,128 @@ fn claude_short_message_is_still_typed_in_full() {
     let e = Env::new(Vendor::Claude);
     e.send_setup(Vendor::Claude, false, false);
     e.control("fold=on");
-    let (code, out) = e.send_message("hello", &[]);
+    let header = "[brg m1 from external:test]\n";
+    let footer = "\n[Ignore duplicate delivery if already acked; otherwise brg msg ack m1 when taking responsibility.]";
+    let body = "x".repeat(800 - header.len() - footer.len());
+    let (code, out) = e.send_message(&body, &[]);
     assert_eq!(code, 0, "{out}");
     assert_eq!(out["delivery"], "typed", "{out}");
     let submitted = e.submissions();
     assert_eq!(submitted.len(), 1);
-    assert!(submitted[0].contains("\nhello\n"));
-    assert!(!submitted[0].contains("msg read"));
+    assert_eq!(submitted[0], format!("{header}{body}{footer}"));
+    assert_eq!(submitted[0].len(), 800);
+}
+
+#[test]
+fn locked_pane_shrinking_after_preflight_does_not_receive_an_unusable_pointer() {
+    let e = Env::new(Vendor::Claude);
+    e.send_setup(Vendor::Claude, true, false);
+    let gate = e.dir.path().join("publish-pause");
+    let mut cmd = common::command(env!("CARGO_BIN_EXE_brg"));
+    cmd.env_clear()
+        .env(
+            "PATH",
+            e.private
+                .path_with(&std::env::var("PATH").unwrap_or_default()),
+        )
+        .env("HOME", e.dir.path())
+        .env("BORGCHART_STATE_HOME", e.dir.path())
+        .env("BORGCHART_CONFIG", e.dir.path().join("unused.yaml"))
+        .env("BORGCHART_TEST_PUBLISH_PAUSE", &gate)
+        .args([
+            "msg",
+            "send",
+            "state/m",
+            &"x".repeat(600),
+            "--external",
+            "test",
+            "--json",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    e.private.brg_env(&mut cmd, &e.socket);
+    let child = cmd.spawn().unwrap();
+    e.wait_for("the completed preflight", |_| {
+        gate.with_extension("waiting").exists()
+    });
+    e.tmux
+        .ok(&["resize-window", "-t", "=brg-state:=m", "-x", "60"])
+        .unwrap();
+    e.wait_for("the smaller composer", |e| {
+        wake::snapshot(&e.tmux, &e.pane()).is_some_and(|s| {
+            s.geometry.width == 60
+                && composer::view(&s.screen, Some(s.geometry))
+                    .is_ok_and(|v| v.reading() == Reading::Empty)
+        })
+    });
+    fs::write(&gate, b"").unwrap();
+    let out = child.wait_with_output().unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(out.status.code(), Some(5), "{value}");
+    assert_eq!(value["delivery"], "recorded-not-delivered", "{value}");
+    assert!(value["id"].is_string(), "{value}");
+    assert!(e.events("paste").is_empty());
+    assert!(e.events("enter").is_empty());
+}
+
+#[test]
+fn claude_queued_placeholder_stays_stored_without_a_blocked_alert_or_paste() {
+    let e = Env::new(Vendor::Claude);
+    e.send_setup(Vendor::Claude, false, false);
+    let placeholder = "Press up to edit queued messages";
+    e.keys(&[placeholder]);
+    e.wait_for("the queued placeholder", |e| {
+        e.screen().contains(placeholder)
+    });
+    let (code, out) = e.send_message("task", &[]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(out["delivery"], "stored", "{out}");
+    assert!(e.events("paste").is_empty());
+    assert!(e.events("enter").is_empty());
+    let status = e.status_row();
+    assert_eq!(status["delivery"]["outcome"], "stored", "{status}");
+    assert!(e.screen().contains(placeholder));
+}
+
+#[test]
+fn claude_empty_normal_mode_stays_stored_without_claiming_a_draft() {
+    let e = Env::new(Vendor::Claude);
+    e.send_setup(Vendor::Claude, false, false);
+    e.keys(&["Escape"]);
+    e.wait_for("normal mode", |e| !e.screen().contains("-- INSERT --"));
+    let (code, out) = e.send_message("task", &[]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(out["delivery"], "stored", "{out}");
+    assert!(e.events("paste").is_empty());
+    assert!(e.events("enter").is_empty());
+    assert_eq!(e.status_row()["delivery"]["outcome"], "stored");
+}
+
+#[test]
+fn claude_acked_block_does_not_hide_the_next_delivery_episode() {
+    let e = Env::new(Vendor::Claude);
+    e.send_setup(Vendor::Claude, false, false);
+    e.control("mode=dialog");
+    let (code, first) = e.send_message("first", &[]);
+    assert_eq!(code, 0, "{first}");
+    assert_eq!(first["delivery"], "blocked", "{first}");
+    assert_eq!(e.status_row()["delivery"]["id"], first["id"]);
+    e.control("mode=idle");
+    let bus = borgchart::bus::store::open(&e.state).unwrap();
+    let actor = borgchart::bus::context::Caller::Member {
+        member: "m".into(),
+        incarnation: "m-1".into(),
+    };
+    borgchart::bus::store::ack(&bus, &actor, &["m1".into()]).unwrap();
+    assert!(e.status_row().get("delivery").is_none());
+    e.keys(&["draft"]);
+    e.wait_for("the new draft", |e| e.screen().contains("draft"));
+    let (code, second) = e.send_message("second", &[]);
+    assert_eq!(code, 0, "{second}");
+    assert_eq!(second["delivery"], "blocked", "{second}");
+    let status = e.status_row();
+    assert_eq!(status["delivery"]["id"], second["id"], "{status}");
+    assert_eq!(status["delivery"]["reason"], second["reason"], "{status}");
 }
 
 #[test]

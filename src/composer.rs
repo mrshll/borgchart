@@ -198,6 +198,10 @@ pub enum Reading {
 }
 
 impl View {
+    pub fn shows_queued_placeholder(&self) -> bool {
+        self.lines == ["Press up to edit queued messages"]
+    }
+
     pub fn reading(&self) -> Reading {
         if self.busy {
             return Reading::Busy;

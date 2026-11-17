@@ -5084,13 +5084,31 @@ pub fn send(
         let mut view = crate::composer::view(&before.screen, Some(before.geometry))
             .map_err(SendError::Refused)?;
         view.busy = false; // Working is allowed; the input box must still be empty.
-        if view.reading() != crate::composer::Reading::Empty {
-            return Err(SendError::Blocked(format!(
-                "input box holds unsent text; typed messages wait until a person submits or clears it: brg attach {}",
-                inst.at(&to)
-            )));
+        if view.shows_queued_placeholder() {
+            return Err(SendError::Refused(
+                "Claude has queued input this turn; the message stays in its inbox".into(),
+            ));
+        }
+        match view.reading() {
+            crate::composer::Reading::Draft => {
+                return Err(SendError::Blocked(format!(
+                    "input box holds unsent text; typed messages wait until a person submits or clears it: brg attach {}",
+                    inst.at(&to)
+                )));
+            }
+            crate::composer::Reading::Unknown(why) => {
+                return Err(SendError::Refused(format!(
+                    "input box can't be read as empty ({why}); draft preserved"
+                )));
+            }
+            _ => {}
         }
         let pointer = !view.can_verify_submission(&envelope, before.screen.lines().count());
+        if pointer && locked {
+            return Err(SendError::Refused(
+                "message exceeds the restricted screen-verification budget; no text pasted".into(),
+            ));
+        }
         let text = if pointer {
             send_pointer(
                 &record.id,
@@ -5103,6 +5121,11 @@ pub fn send(
         } else {
             envelope.clone()
         };
+        if pointer && !view.can_verify_submission(&text, before.screen.lines().count()) {
+            return Err(SendError::Refused(
+                "message pointer exceeds the screen-verification budget; no text pasted".into(),
+            ));
+        }
         paste_send(&tmux, &inst.state, &to, pane, locked, &text)
             .map(|()| if pointer { "pointer" } else { "typed" })
     })();
@@ -5156,6 +5179,7 @@ pub fn send(
             .is_some_and(|d| {
                 d.incarnation == inc.incarnation
                     && matches!(d.outcome.as_str(), "blocked" | "uncertain")
+                    && !target_bus.paths.ack(&d.id).exists()
             })
         {
             Ok(())
@@ -5267,6 +5291,16 @@ fn queue_send(
     }
 }
 
+fn relay_label(from: Option<&str>, peer: bool) -> String {
+    let mut relay = from
+        .map(|from| format!("; relayed for {from}"))
+        .unwrap_or_default();
+    if peer {
+        relay.push_str("; another tree's root member, not the owner");
+    }
+    relay
+}
+
 fn send_envelope(
     id: &str,
     author: &str,
@@ -5275,12 +5309,7 @@ fn send_envelope(
     ack_required: bool,
     peer: bool,
 ) -> String {
-    let mut relay = from
-        .map(|from| format!("; relayed for {from}"))
-        .unwrap_or_default();
-    if peer {
-        relay.push_str("; another tree's root member, not the owner");
-    }
+    let relay = relay_label(from, peer);
     if ack_required {
         format!(
             "[brg {id} from {author}{relay}]\n{body}\n[Ignore duplicate delivery if already acked; otherwise brg msg ack {id} when taking responsibility.]"
@@ -5298,12 +5327,7 @@ fn send_pointer(
     ack_required: bool,
     peer: bool,
 ) -> String {
-    let mut relay = from
-        .map(|from| format!("; relayed for {from}"))
-        .unwrap_or_default();
-    if peer {
-        relay.push_str("; another tree's root member, not the owner");
-    }
+    let relay = relay_label(from, peer);
     let ack = if ack_required {
         ", and ack it when taking responsibility"
     } else {
@@ -5335,9 +5359,10 @@ fn send_snapshot(
     let plain = crate::composer::plain(&crate::composer::parse(&snap.screen));
     match rules.read(&snap.title, &plain).state {
         State::Blocked => {
-            return Err(SendError::Blocked(
-                "recipient is waiting at a dialog; no input sent".into(),
-            ));
+            return Err(SendError::Blocked(format!(
+                "recipient is waiting at a dialog; no input sent: brg attach {}/{member}",
+                state.id
+            )));
         }
         State::Unknown if !force => {
             return Err(SendError::Refused(
@@ -5347,7 +5372,10 @@ fn send_snapshot(
         _ => {}
     }
     if snap.in_mode {
-        return Err(SendError::Blocked("recipient pane is in copy mode".into()));
+        return Err(SendError::Blocked(format!(
+            "recipient pane is in copy mode: {}",
+            tmux::leave_mode_hint(&format!("{}/{member}", state.id))
+        )));
     }
     Ok(snap)
 }

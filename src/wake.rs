@@ -395,9 +395,7 @@ pub fn after_enter(snap: Option<&Snapshot>) -> Result<(), String> {
     }
     let view = composer::view(&snap.screen, Some(snap.geometry))
         .map_err(|why| format!("the input box can't be read after Enter ({why})"))?;
-    if view.lines.iter().all(|l| l.trim().is_empty())
-        || view.lines == ["Press up to edit queued messages"]
-    {
+    if view.lines.iter().all(|l| l.trim().is_empty()) || view.shows_queued_placeholder() {
         Ok(())
     } else if view.holds(REMINDER) {
         Err("Enter was pressed but the reminder is still in the input box".into())
@@ -549,7 +547,7 @@ mod tests {
     #[test]
     fn claude_queued_placeholder_confirms_submission_without_accepting_a_draft() {
         let screen =
-            include_str!("../tests/fixtures/screens/claude-2.1.326-queued-placeholder.txt");
+            include_str!("../tests/fixtures/screens/claude-queued-placeholder-assembled.txt");
         let placeholder = "Press up to edit queued messages";
         let snapshot = |screen: String| Snapshot {
             title: "✳ Example".into(),
