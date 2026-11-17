@@ -323,12 +323,12 @@ fn restored_children_resolve_same_named_secrets_from_their_own_references() {
 fn resolver_failures_leave_no_team_or_settings_and_do_not_relay_child_output() {
     for mode in ["fail", "timeout", "unset", "reference", "empty"] {
         let env = setup("{from: 'fake://root'}");
-        let out = env
-            .cmd(&["create", "oncall", env.path("work/a").to_str().unwrap()])
-            .env("MODE", mode)
-            .env("BORGCHART_TEST_SECRETS_TIMEOUT_MS", "100")
-            .output()
-            .unwrap();
+        let mut cmd = env.cmd(&["create", "oncall", env.path("work/a").to_str().unwrap()]);
+        cmd.env("MODE", mode);
+        if mode == "timeout" {
+            cmd.env("BORGCHART_TEST_SECRETS_TIMEOUT_MS", "1000");
+        }
+        let out = cmd.output().unwrap();
         assert!(!out.status.success(), "{mode}: {}", both(&out));
         clean_output(&out);
         let phrase = match mode {

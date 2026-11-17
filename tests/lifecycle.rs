@@ -261,6 +261,10 @@ impl Env {
         out
     }
 
+    fn kill_server(&self) {
+        self.tmux.kill_server(&self.socket);
+    }
+
     fn tmux(&self, args: &[&str]) -> String {
         let out = self.tmux.tmux(&self.socket).args(args).output().unwrap();
         String::from_utf8_lossy(&out.stdout).to_string()
@@ -1001,7 +1005,7 @@ fn liveness_is_alive_gone_or_unknown() {
     env.ok(&["stop", "helper"]);
     env.up();
     assert_eq!(live(&env.rows(), "lead"), "alive");
-    env.tmux(&["kill-server"]);
+    env.kill_server();
     let deadline = Instant::now() + Duration::from_secs(10);
     while live(&env.rows(), "lead") != "gone" {
         assert!(
@@ -1135,7 +1139,7 @@ fn a_previous_boot_stops_without_tmux_even_with_only_deferred_roles() {
                     .into();
             }
             fs::write(&file, serde_json::to_vec(&inc).unwrap()).unwrap();
-            env.tmux(&["kill-server"]);
+            env.kill_server();
             let args = if only {
                 vec!["stop", "lead"]
             } else {
@@ -1177,7 +1181,7 @@ fn a_member_with_no_live_start_stops_in_the_same_boot_without_tmux() {
                 meta["members"][env.m("helper")]["started"] = false.into();
                 fs::write(&meta_file, serde_json::to_vec(&meta).unwrap()).unwrap();
             }
-            env.tmux(&["kill-server"]);
+            env.kill_server();
             let out = env.brg(&["stop", "helper"]);
             assert_eq!(
                 out.status.success(),
@@ -1207,7 +1211,7 @@ fn boot_evidence_is_conservative_when_the_server_is_unreachable() {
         inc["boot_id"] = recorded.into();
         inc["pane"]["pane_pid"] = std::process::id().into();
         fs::write(&file, serde_json::to_vec(&inc).unwrap()).unwrap();
-        env.tmux(&["kill-server"]);
+        env.kill_server();
         for args in [vec!["stop", "lead"], vec!["stop"]] {
             let out = env
                 .brg_cmd(&args)
@@ -1231,7 +1235,7 @@ fn an_old_boot_releases_the_team_before_an_explicit_stop() {
     inc["boot_id"] = "previous-boot".into();
     inc["pane"]["pane_pid"] = std::process::id().into();
     fs::write(&file, serde_json::to_vec(&inc).unwrap()).unwrap();
-    env.tmux(&["kill-server"]);
+    env.kill_server();
     assert_eq!(env.row("lead")["liveness"], "gone");
     // Delete uses combined runtime liveness, before stopped_at can mask it.
     env.ok(&["delete", &env.inst()]);
@@ -1386,7 +1390,7 @@ fn killed_plugin_only_server_does_not_wedge_stop_or_start() {
         env.wait_for("the plugin's window", |e| {
             e.tmux(&["list-windows", "-a"]).contains("_pager")
         });
-        env.tmux(&["kill-server"]);
+        env.kill_server();
         env.ok(&["stop"]);
         env.ok(&["start"]);
         env.ok(&["stop"]);
@@ -1552,6 +1556,64 @@ fn down_ends_children_that_left_the_pane() {
 
 fn pid_of(child: &std::process::Child) -> String {
     child.id().to_string()
+}
+
+#[test]
+fn a_failed_kill_keeps_an_unreadable_restricted_start_open() {
+    let (env, out) = start_with_unreadable_restricted_pane(true);
+    let inc = read_json(&env.incarnation_file("lead"));
+    assert!(inc.get("ended_at").is_none(), "{inc}");
+    assert_eq!(
+        outcomes(&stdout(&out), &env.m("lead")),
+        [format!(
+            "couldn't stop it: brg couldn't read its pane, so its restricted-access gate couldn't be checked, and tmux refused to stop it (kill refused); stop it once its tmux server can be reached: brg stop {}/{}",
+            env.inst(),
+            env.m("lead")
+        )]
+    );
+}
+
+#[test]
+fn a_successful_kill_ends_an_unreadable_restricted_start() {
+    let (env, out) = start_with_unreadable_restricted_pane(false);
+    let inc = read_json(&env.incarnation_file("lead"));
+    assert!(inc["ended_at"].is_string(), "{inc}");
+    assert_eq!(inc["ended_reason"], "start-failed");
+    assert_eq!(
+        outcomes(&stdout(&out), &env.m("lead")),
+        ["stopped: brg couldn't read its pane, so its restricted-access gate couldn't be checked"]
+    );
+}
+
+fn start_with_unreadable_restricted_pane(kill_fails: bool) -> (Env, Output) {
+    let env = Env::new(false);
+    env.write(
+        "oncall/template.yaml",
+        &TEAM.replace(
+            "    prompt: lead.md\n",
+            "    prompt: lead.md\n    restricted_access: true\n",
+        ),
+    );
+    env.write("home/fake-agent/no-hooks", "");
+    env.script("shim/tmux", &format!(
+        "#!/bin/sh\nfor arg do\ncase \"$arg\" in\n'#{{socket_path}}\t#{{pane_id}}\t#{{pane_pid}}') exit 1 ;;\nkill-window) if {kill_fails}; then echo 'kill refused' >&2; exit 1; fi ;;\nesac\ndone\nexec '{}' \"$@\"\n",
+        env.tmux.guard().display()
+    ));
+    let out = env
+        .brg_cmd(&["start"])
+        .env(
+            "PATH",
+            format!("{}:{}", env.path("shim").display(), env.base_path()),
+        )
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
+    assert_eq!(
+        env.tmux(&["list-windows", "-a", "-F", "#{window_name}"])
+            .contains(&env.m("lead")),
+        kill_fails
+    );
+    (env, out)
 }
 
 #[test]

@@ -198,6 +198,10 @@ impl Env {
         panic!("timed out waiting for {what}");
     }
 
+    pub fn kill_server(&self) {
+        self.tmux.kill_server(&self.socket);
+    }
+
     pub fn tmux(&self, args: &[&str]) -> String {
         let out = self.tmux.tmux(&self.socket).args(args).output().unwrap();
         String::from_utf8_lossy(&out.stdout).to_string()
