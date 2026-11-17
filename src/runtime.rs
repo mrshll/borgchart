@@ -1119,6 +1119,7 @@ fn start_members(
         let id = &s.id;
         let deadline = Instant::now() + gate_wait();
         let mut trusted = false;
+        let mut selecting_trust = false;
         loop {
             if s.locked && state.gate_marker(id).exists() {
                 break;
@@ -1160,7 +1161,8 @@ fn start_members(
                 && !trusted
                 && s.trust_dir.is_some()
                 && trust_dialog_path(&screen).as_deref() == s.trust_dir.as_deref()
-                && has_line(&screen, TRUST_NO_SELECTED);
+                && (has_line(&screen, TRUST_NO_SELECTED)
+                    || (selecting_trust && has_line(&screen, TRUST_YES_SELECTED)));
             if accept {
                 let dir = s
                     .trust_dir
@@ -1220,6 +1222,8 @@ fn start_members(
                 // End selects the last choice, "Yes", however often it is
                 // pressed: Down wraps back to "No".
                 tmux.ok(&["send-keys", "-t", t, "End"])?;
+                // Our previous End may take effect between the retry's reads.
+                selecting_trust = true;
                 std::thread::sleep(Duration::from_millis(250));
                 let after = tmux.capture(&session, id);
                 let same = tmux.pane_in_mode(t) == Some(false)
@@ -1256,6 +1260,8 @@ fn start_members(
                 continue;
             }
             match reading.map(|r| r.state) {
+                // Enter may still be queued behind slow selection keys.
+                Some(State::Blocked) if is_trust && trusted && Instant::now() < deadline => {}
                 // Left for a person, never answered here; a `locked` member's
                 // gate must still report in afterwards (`msg send` checks).
                 Some(State::Blocked) if is_trust => {
