@@ -7,6 +7,12 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+/// Discovery re-lists this far behind its cursor, for `updated_at` that arrives late.
+pub const OVERLAP: Duration = Duration::from_secs(300);
+/// A version younger than this is processed again at the next poll, for a
+/// timeline that lags its item's `updated_at`.
+const SETTLE: Duration = Duration::from_secs(60);
+
 /// Later intake stages add typed events here before delivery.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum PendingEvent {}
@@ -14,61 +20,43 @@ pub enum PendingEvent {}
 #[serde(deny_unknown_fields)]
 pub struct Cursor {
     pub at: SystemTime,
+    /// Nothing before this is discovered: the process start or the entry's addition.
     pub floor: SystemTime,
-    /// Update versions processed in the current pass; cleared once it drains.
-    pub processed: BTreeMap<String, SystemTime>,
+    /// Settled `updated_at` versions inside the overlap, skipped when listed again.
+    pub seen: BTreeMap<String, SystemTime>,
 }
 impl Cursor {
     pub fn new(now: SystemTime) -> Self {
         Self {
             at: now,
             floor: now,
-            processed: BTreeMap::new(),
+            seen: BTreeMap::new(),
         }
     }
-    pub fn mark(&mut self, item: &Changed) {
-        self.at = self.at.max(item.updated_at);
-        self.processed.insert(item.node_id.clone(), item.updated_at);
+    pub fn since(&self) -> SystemTime {
+        self.at.checked_sub(OVERLAP).unwrap_or(UNIX_EPOCH)
     }
-    pub fn prune(&mut self) {
-        let cutoff = self
-            .at
-            .checked_sub(Duration::from_secs(86400))
-            .unwrap_or(UNIX_EPOCH);
-        self.processed.retain(|_, at| *at >= cutoff);
+    pub fn mark(&mut self, item: &Changed, now: SystemTime) {
+        self.at = self.at.max(item.updated_at);
+        if now.duration_since(item.updated_at).unwrap_or_default() >= SETTLE {
+            self.seen.insert(item.node_id.clone(), item.updated_at);
+        }
     }
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Snapshot {
-    pub epoch: SystemTime,
-    pub machine_id: u64,
-    pub owner_id: u64,
     pub cursors: BTreeMap<String, Cursor>,
+    /// Event IDs already admitted, for the timeline stage.
     pub seen: BTreeMap<String, SystemTime>,
     pub pending: Vec<PendingEvent>,
 }
 impl Snapshot {
-    pub fn read(store: &plugin::State) -> Result<Option<Self>, String> {
-        store.read_json_strict("intake.json")
-    }
-    pub fn start(
-        previous: Option<Self>,
-        epoch: SystemTime,
-        machine_id: u64,
-        owner_id: u64,
-    ) -> Self {
-        Self {
-            epoch,
-            machine_id,
-            owner_id,
-            cursors: BTreeMap::new(),
-            seen: previous
-                .as_ref()
-                .map(|s| s.seen.clone())
-                .unwrap_or_default(),
-            pending: previous.map(|s| s.pending).unwrap_or_default(),
-        }
+    /// Cursors start again at each process start (no replay); seen and pending carry over.
+    pub fn start(store: &plugin::State) -> Result<Self, String> {
+        let mut snapshot: Self = store.read_json_strict("intake.json")?.unwrap_or_default();
+        snapshot.cursors.clear();
+        Ok(snapshot)
     }
     pub fn entries(&mut self, entries: &[Entry], now: SystemTime) {
         self.cursors
@@ -85,7 +73,8 @@ impl Snapshot {
             .unwrap_or(UNIX_EPOCH);
         self.seen.retain(|_, at| *at >= cutoff);
         for cursor in self.cursors.values_mut() {
-            cursor.prune();
+            let since = cursor.since();
+            cursor.seen.retain(|_, at| *at >= since);
         }
     }
     pub fn save(&self, store: &plugin::State) -> Result<(), String> {

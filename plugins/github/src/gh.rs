@@ -1,12 +1,15 @@
 //! Bounded gh API calls, pinned to the explicitly configured machine login.
-use crate::config::{Entry, valid_login};
+use crate::config::Entry;
 use borgchart::{bounded_process, bus::time::format_utc};
 use serde_json::Value;
 use std::{
     fmt,
     process::Command,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime},
 };
+
+/// How long a rate-limited answer pauses all polling.
+const RATE_LIMIT_PAUSE: Duration = Duration::from_secs(600);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
@@ -18,11 +21,9 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::RateLimited(reset) => write!(
-                f,
-                "GitHub rate limited until {}; wait for polling to resume",
-                format_utc(*reset)
-            ),
+            Self::RateLimited(retry) => {
+                write!(f, "GitHub rate limited; retrying at {}", format_utc(*retry))
+            }
             Self::NotAuthenticated => f.write_str(
                 "GitHub is not authenticated; configure the machine account's gh login and restart",
             ),
@@ -37,6 +38,7 @@ impl std::error::Error for Error {}
 
 pub enum Rest<'a> {
     Machine,
+    /// A login already checked by `config::owner`.
     Owner(&'a str),
     Issues {
         entry: &'a Entry,
@@ -45,20 +47,16 @@ pub enum Rest<'a> {
     },
 }
 impl Rest<'_> {
-    pub fn path(&self) -> Result<String, Error> {
+    pub fn path(&self) -> String {
         match self {
-            Self::Machine => Ok("user".into()),
-            Self::Owner(login) if valid_login(login) => Ok(format!("users/{login}")),
-            Self::Owner(_) => Err(Error::Other(
-                "set GITHUB_OWNER to a valid GitHub login".into(),
-            )),
-            Self::Issues { entry, since, page } if *page > 0 => Ok(format!(
+            Self::Machine => "user".into(),
+            Self::Owner(login) => format!("users/{login}"),
+            Self::Issues { entry, since, page } => format!(
                 "{}/issues?{}state=all&sort=updated&direction=asc&since={}&per_page=100&page={page}",
                 entry.api_path(),
                 if entry.is_org() { "filter=all&" } else { "" },
                 format_utc(*since)
-            )),
-            _ => Err(Error::Other("use a positive GitHub page number".into())),
+            ),
         }
     }
 }
@@ -114,25 +112,19 @@ impl Gh {
             SystemTime::now(),
         )
     }
-    pub fn graphql(&self, query: &str, variables: &[(&str, &str)]) -> Result<Value, Error> {
+    /// Strings go as `-f`, which gh passes verbatim; only integers use `-F`,
+    /// so gh's file and repository substitutions never apply.
+    pub fn graphql(
+        &self,
+        query: &str,
+        strings: &[(&str, &str)],
+        integers: &[(&str, u64)],
+    ) -> Result<Value, Error> {
         let mut args = vec!["graphql".into(), "-f".into(), format!("query={query}")];
-        for (name, value) in variables {
-            if value.starts_with('@')
-                || ["{owner}", "{repo}", "{branch}"]
-                    .iter()
-                    .any(|pattern| value.contains(pattern))
-            {
-                return Err(Error::Other("pass literal GraphQL values; gh file and repository substitutions are not allowed".into()));
-            }
-            if name.is_empty()
-                || !name.bytes().enumerate().all(|(i, b)| {
-                    b.is_ascii_alphabetic() || b == b'_' || (i > 0 && b.is_ascii_digit())
-                })
-            {
-                return Err(Error::Other(
-                    "use GraphQL variable names containing letters, digits and underscores".into(),
-                ));
-            }
+        for (name, value) in strings {
+            args.extend(["-f".into(), format!("{name}={value}")]);
+        }
+        for (name, value) in integers {
             args.extend(["-F".into(), format!("{name}={value}")]);
         }
         self.call(&args)
@@ -140,53 +132,26 @@ impl Gh {
 }
 impl Api for Gh {
     fn get(&self, request: Rest<'_>) -> Result<Value, Error> {
-        self.call(&["--method".into(), "GET".into(), request.path()?])
+        self.call(&["--method".into(), "GET".into(), request.path()])
     }
 }
 
 fn decode(stdout: &[u8], stderr: &[u8], success: bool, now: SystemTime) -> Result<Value, Error> {
-    let text = String::from_utf8_lossy(stdout);
-    let normalized = text.replace("\r\n", "\n");
-    let (headers, body) = normalized.split_once("\n\n").unwrap_or(("", &normalized));
+    let text = String::from_utf8_lossy(stdout).replace("\r\n", "\n");
+    let (headers, body) = text.split_once("\n\n").unwrap_or(("", &text));
+    let headers = headers.to_ascii_lowercase();
     let status = headers
-        .lines()
-        .next()
-        .and_then(|s| s.split_whitespace().nth(1))
+        .split_whitespace()
+        .nth(1)
         .and_then(|s| s.parse::<u16>().ok());
-    let header = |name: &str| {
-        headers
-            .lines()
-            .filter_map(|line| line.split_once(':'))
-            .find(|(key, _)| key.eq_ignore_ascii_case(name))
-            .map(|(_, value)| value.trim())
-    };
     let value: Value = serde_json::from_str(body).unwrap_or(Value::Null);
-    let graphql_limited = value["errors"].as_array().is_some_and(|errors| {
-        errors
-            .iter()
-            .any(|e| e["type"] == "RATE_LIMITED" || e["extensions"]["type"] == "RATE_LIMITED")
-    });
+    let errors = value["errors"].as_array();
     if status == Some(429)
         || (status == Some(403)
-            && (header("x-ratelimit-remaining") == Some("0") || header("retry-after").is_some()))
-        || graphql_limited
+            && (headers.contains("x-ratelimit-remaining: 0") || headers.contains("retry-after:")))
+        || errors.is_some_and(|e| e.iter().any(|e| e["type"] == "RATE_LIMITED"))
     {
-        let reset = header("x-ratelimit-reset")
-            .and_then(|s| s.parse().ok())
-            .and_then(|seconds| UNIX_EPOCH.checked_add(Duration::from_secs(seconds)))
-            .or_else(|| {
-                value["data"]["rateLimit"]["resetAt"]
-                    .as_str()
-                    .and_then(borgchart::bus::time::parse_utc)
-            })
-            .unwrap_or(
-                now + Duration::from_secs(
-                    header("retry-after")
-                        .and_then(|s| s.parse().ok())
-                        .unwrap_or(60),
-                ),
-            );
-        return Err(Error::RateLimited(reset.max(now + Duration::from_secs(1))));
+        return Err(Error::RateLimited(now + RATE_LIMIT_PAUSE));
     }
     // Stderr is used only for classification when gh failed before an HTTP response.
     let unauthenticated = !success && headers.is_empty() && {
@@ -201,12 +166,7 @@ fn decode(stdout: &[u8], stderr: &[u8], success: bool, now: SystemTime) -> Resul
     if status == Some(404) {
         return Err(Error::NotFound);
     }
-    if !success
-        || status.is_some_and(|s| s >= 400)
-        || value["errors"]
-            .as_array()
-            .is_some_and(|errors| !errors.is_empty())
-    {
+    if !success || status.is_some_and(|s| s >= 400) || errors.is_some_and(|e| !e.is_empty()) {
         return Err(Error::Other("GitHub API request failed; check machine account permissions and connectivity, then retry".into()));
     }
     if value.is_null() {
@@ -220,9 +180,11 @@ fn decode(stdout: &[u8], stderr: &[u8], success: bool, now: SystemTime) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::UNIX_EPOCH;
     #[test]
     fn api_errors_are_actionable_and_never_expose_response_text() {
         let now = UNIX_EPOCH + Duration::from_secs(100);
+        let limited = Error::RateLimited(now + RATE_LIMIT_PAUSE);
         for (response, expected) in [
             (
                 "HTTP/2.0 401 Unauthorized\n\n{\"message\":\"private text\"}",
@@ -230,18 +192,32 @@ mod tests {
             ),
             ("HTTP/2.0 404 Not Found\n\n{}", Error::NotFound),
             (
-                "HTTP/2.0 403 Forbidden\nX-Ratelimit-Remaining: 0\nX-Ratelimit-Reset: 200\n\n{}",
-                Error::RateLimited(UNIX_EPOCH + Duration::from_secs(200)),
+                "HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 0\r\n\r\n{\"message\":\"private text\"}",
+                limited.clone(),
             ),
             (
-                "HTTP/2.0 200 OK\n\n{\"errors\":[{\"type\":\"RATE_LIMITED\"}],\"data\":{\"rateLimit\":{\"resetAt\":\"1970-01-01T00:03:20Z\"}}}",
-                Error::RateLimited(UNIX_EPOCH + Duration::from_secs(200)),
+                "HTTP/2.0 403 Forbidden\nRetry-After: 60\n\n{}",
+                limited.clone(),
+            ),
+            (
+                "HTTP/2.0 200 OK\n\n{\"errors\":[{\"type\":\"RATE_LIMITED\"}]}",
+                limited.clone(),
             ),
         ] {
             let error = decode(response.as_bytes(), b"private text", false, now).unwrap_err();
             assert_eq!(error, expected);
             assert!(!error.to_string().contains("private text"));
         }
+        // A plain permission refusal is not a rate limit.
+        assert!(matches!(
+            decode(
+                b"HTTP/2.0 403 Forbidden\nX-Ratelimit-Remaining: 4999\n\n{}",
+                b"",
+                false,
+                now
+            ),
+            Err(Error::Other(_))
+        ));
         assert!(
             decode(b"bad", b"private text", false, now)
                 .unwrap_err()

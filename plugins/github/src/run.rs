@@ -1,12 +1,15 @@
 //! One guarded polling session, health reporting and the processing seam.
 use crate::{
-    config::{self, Guard, Repositories},
+    config::{self, Guard},
     discover::{self, Changed},
     gh::{Api, Error, Gh},
     state::Snapshot,
 };
 use borgchart::{bus::time::format_utc, plugin};
-use std::time::{Duration, SystemTime};
+use std::{
+    path::PathBuf,
+    time::{Duration, SystemTime},
+};
 
 pub struct Poll {
     pub processed: usize,
@@ -16,78 +19,69 @@ pub struct Session<A: Api> {
     api: A,
     owner: String,
     guard: Option<Guard>,
-    repositories: Repositories,
-    pub snapshot: Option<Snapshot>,
-    previous: Option<Snapshot>,
+    repositories: PathBuf,
+    pub snapshot: Snapshot,
     epoch: SystemTime,
     paused_until: Option<SystemTime>,
-    first_health: bool,
 }
 impl<A: Api> Session<A> {
+    /// Reads state before any API request, and never writes over unreadable state.
     pub fn new(api: A, store: &plugin::State, epoch: SystemTime) -> Result<Self, String> {
-        // Check state before any API request, and never write over unreadable state.
-        let previous = Snapshot::read(store)?;
+        let snapshot = Snapshot::start(store)?;
+        let owner = config::owner().map_err(|e| e.to_string())?;
         Ok(Self::configured(
             api,
-            previous,
+            snapshot,
             epoch,
-            config::owner().map_err(|e| e.to_string())?,
-            Repositories::new(config::path()),
+            owner,
+            config::path(),
         ))
     }
     fn configured(
         api: A,
-        previous: Option<Snapshot>,
+        snapshot: Snapshot,
         epoch: SystemTime,
         owner: String,
-        repositories: Repositories,
+        repositories: PathBuf,
     ) -> Self {
         Self {
             api,
             owner,
             guard: None,
             repositories,
-            snapshot: None,
-            previous,
+            snapshot,
             epoch,
             paused_until: None,
-            first_health: true,
         }
     }
     pub fn poll(&mut self, now: SystemTime) -> Result<Poll, Error> {
-        if let Some(reset) = self.paused_until {
-            if now < reset {
-                return Err(Error::RateLimited(reset));
+        if let Some(retry) = self.paused_until {
+            if now < retry {
+                return Err(Error::RateLimited(retry));
             }
             self.paused_until = None;
         }
         let result = self.collect(now);
-        if let Err(Error::RateLimited(reset)) = &result {
-            self.paused_until = Some(*reset);
+        if let Err(Error::RateLimited(retry)) = &result {
+            self.paused_until = Some(*retry);
         }
         result
     }
     fn collect(&mut self, now: SystemTime) -> Result<Poll, Error> {
+        // Entries listed before the guard first passes start at the epoch.
         let first = self.guard.is_none();
-        if self.guard.is_none() {
-            let guard = Guard::start(&self.api, &self.owner, now)?;
-            self.snapshot = Some(Snapshot::start(
-                self.previous.take(),
-                self.epoch,
-                guard.machine_id,
-                guard.owner_id,
-            ));
-            self.guard = Some(guard);
+        if first {
+            self.guard = Some(Guard::start(&self.api, &self.owner, now)?);
         }
         self.guard.as_mut().unwrap().check(&self.api, now)?;
-        let entries = self.repositories.load().map_err(Error::Other)?;
-        let snapshot = self.snapshot.as_mut().unwrap();
-        snapshot.entries(entries, if first { self.epoch } else { now });
+        let entries = config::load(&self.repositories).map_err(Error::Other)?;
+        let snapshot = &mut self.snapshot;
+        snapshot.entries(&entries, if first { self.epoch } else { now });
         let mut poll = Poll {
             processed: 0,
             errors: Vec::new(),
         };
-        for entry in entries {
+        for entry in &entries {
             if poll.processed == discover::POLL_CAP {
                 break;
             }
@@ -101,17 +95,14 @@ impl<A: Api> Session<A> {
                 Ok(batch) => {
                     for item in &batch.items {
                         process_item(item)?;
-                        cursor.mark(item);
+                        cursor.mark(item, now);
                         poll.processed += 1;
                     }
                     if batch.exhausted {
                         cursor.at = cursor.at.max(now);
-                        // A drained pass starts the overlap again. The timeline
-                        // stage must see repeats even if updated_at stayed equal.
-                        cursor.processed.clear();
                     }
                 }
-                Err(Error::RateLimited(reset)) => return Err(Error::RateLimited(reset)),
+                Err(Error::RateLimited(retry)) => return Err(Error::RateLimited(retry)),
                 Err(Error::NotFound) if entry.is_org() => poll.errors.push(format!(
                     "{} is not an organisation; list its repositories one by one",
                     entry.key()
@@ -124,24 +115,19 @@ impl<A: Api> Session<A> {
     }
     pub fn tick(&mut self, store: &plugin::State, now: SystemTime) -> Result<(), String> {
         let result = self.poll(now);
-        if let Some(snapshot) = &self.snapshot {
-            snapshot.save(store)?;
-        }
-        let (ok, mut detail) = match result {
+        self.snapshot.save(store)?;
+        let (ok, detail) = match result {
             Ok(poll) if poll.errors.is_empty() => (
                 true,
-                format!("{} changed item(s) processed", poll.processed),
+                format!(
+                    "{} changed item(s) processed; activity before {} is not delivered",
+                    poll.processed,
+                    format_utc(self.epoch)
+                ),
             ),
             Ok(poll) => (false, poll.errors.join("; ")),
             Err(error) => (false, error.to_string()),
         };
-        if self.first_health {
-            detail.push_str(&format!(
-                "; activity before {} is not delivered",
-                format_utc(self.epoch)
-            ));
-            self.first_health = false;
-        }
         store.health(ok, &detail).map_err(|_| {
             "cannot write GitHub health; check state directory permissions".to_string()
         })
@@ -212,7 +198,7 @@ mod tests {
     }
     impl Api for ApiFixture {
         fn get(&self, request: Rest<'_>) -> Result<Value, Error> {
-            let path = request.path()?;
+            let path = request.path();
             let mut fake = self.0.borrow_mut();
             fake.calls.push(path.clone());
             if let Some((prefix, error)) = &fake.failure
@@ -235,6 +221,9 @@ mod tests {
     fn now() -> SystemTime {
         parse_utc("2026-01-02T12:00:00Z").unwrap()
     }
+    fn secs(n: u64) -> Duration {
+        Duration::from_secs(n)
+    }
     fn item(number: u64, updated_at: SystemTime) -> Value {
         json!({"node_id":format!("I_{number}"),"number":number,"updated_at":format_utc(updated_at),"repository":{"full_name":"example-org/widgets"}})
     }
@@ -245,104 +234,60 @@ mod tests {
         let api = ApiFixture::new();
         let session = Session::configured(
             api.clone(),
-            None,
+            Snapshot::default(),
             now(),
             "example-owner".into(),
-            Repositories::new(path),
+            path,
         );
         (dir, api, session)
     }
-    fn cursor(session: &Session<ApiFixture>, entry: &str) -> SystemTime {
-        session.snapshot.as_ref().unwrap().cursors[entry].at
+    fn processed(session: &mut Session<ApiFixture>, at: SystemTime) -> usize {
+        session.poll(at).unwrap().processed
     }
 
     #[test]
-    fn numeric_identity_guard_refuses_owner_and_latches_a_machine_change() {
-        let api = ApiFixture::new();
-        api.0.borrow_mut().machine = 202;
-        assert!(
-            Guard::start(&api, "example-owner", now())
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("GH_CONFIG_DIR")
-        );
-        api.0.borrow_mut().machine = 101;
-        // Equal login strings must not affect the numeric comparison.
-        let mut guard = Guard::start(&api, "example-owner", now()).unwrap();
-        api.0.borrow_mut().machine = 303;
-        guard.check(&api, now() + Duration::from_secs(599)).unwrap();
-        let count = api.calls().len();
-        assert!(guard.check(&api, now() + Duration::from_secs(600)).is_err());
-        assert_eq!(api.calls().len(), count + 1);
-        api.0.borrow_mut().machine = 101;
-        assert!(
-            guard
-                .check(&api, now() + Duration::from_secs(1200))
-                .is_err()
-        );
-        assert_eq!(api.calls().len(), count + 1);
-    }
-    #[test]
-    fn changed_identity_stops_discovery_after_ten_minutes() {
+    fn changed_machine_identity_stops_discovery_until_restart() {
         let (_dir, api, mut session) = setup("- example-org/widgets\n");
         session.poll(now()).unwrap();
-        api.0.borrow_mut().machine = 202;
+        api.0.borrow_mut().machine = 303;
+        session.poll(now() + secs(599)).unwrap();
         let calls = api.calls().len();
-        assert!(
-            session
-                .poll(now() + Duration::from_secs(600))
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("GH_CONFIG_DIR")
-        );
+        let error = session.poll(now() + secs(600)).err().unwrap();
+        assert!(error.to_string().contains("GH_CONFIG_DIR"), "{error}");
         assert_eq!(api.calls().len(), calls + 1);
-        assert_eq!(cursor(&session, "example-org/widgets"), now());
+        // Switching back does not resume a session whose identity changed.
+        api.0.borrow_mut().machine = 101;
+        assert!(session.poll(now() + secs(1200)).is_err());
+        assert_eq!(api.calls().len(), calls + 1);
     }
     #[test]
-    fn reload_adds_entries_at_now_and_invalid_yaml_stops_all_discovery() {
+    fn reload_adds_entries_at_now_and_invalid_or_missing_file_stops_all_discovery() {
         let (dir, api, mut session) = setup("- example-org/widgets\n");
         session.poll(now()).unwrap();
-        let later = now() + Duration::from_secs(60);
+        let later = now() + secs(60);
         let path = dir.path().join("github.yaml");
         fs::write(&path, "- example-org/widgets\n- example-org/gadgets\n").unwrap();
+        // The new entry starts when it was added: its older item is skipped.
         api.pages(
             "example-org/gadgets",
             vec![json!([item(1, now()), item(2, later)])],
         );
-        assert_eq!(session.poll(later).unwrap().processed, 1);
-        assert_eq!(
-            session.snapshot.as_ref().unwrap().cursors["example-org/gadgets"].floor,
-            later
-        );
-        fs::write(&path, "- example-org/bad?query\n").unwrap();
-        let calls = api.calls().len();
-        assert!(
-            session
-                .poll(later)
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("example-org/bad?query")
-        );
-        assert_eq!(api.calls().len(), calls);
-        // The cached invalid version must also pause the next poll.
-        assert!(session.poll(later).is_err());
-        assert_eq!(api.calls().len(), calls);
-        fs::write(&path, "- example-org/gadgets\n").unwrap();
-        assert_eq!(session.poll(later).unwrap().processed, 1);
-        assert!(
-            !session
-                .snapshot
-                .as_ref()
-                .unwrap()
-                .cursors
-                .contains_key("example-org/widgets")
-        );
+        assert_eq!(processed(&mut session, later), 1);
+        for bad in ["- example-org/bad?query\n", ""] {
+            fs::write(&path, bad).unwrap();
+            let calls = api.calls().len();
+            let error = session.poll(later).err().unwrap().to_string();
+            assert!(
+                bad.is_empty() || error.contains("example-org/bad?query"),
+                "{error}"
+            );
+            assert_eq!(api.calls().len(), calls);
+        }
         fs::remove_file(&path).unwrap();
         assert!(session.poll(later).is_err());
-        assert_eq!(api.calls().len(), calls + 1);
+        fs::write(&path, "- example-org/gadgets\n").unwrap();
+        session.poll(later).unwrap();
+        assert!(!session.snapshot.cursors.contains_key("example-org/widgets"));
     }
     #[test]
     fn inaccessible_entries_report_the_reason_and_other_entries_continue() {
@@ -364,143 +309,117 @@ mod tests {
                 "{:?}",
                 poll.errors
             );
-            assert_eq!(cursor(&session, bad), now());
         }
     }
     #[test]
-    fn first_start_and_restart_skip_old_activity_but_discovery_overlaps_by_five_minutes() {
+    fn discovery_overlaps_by_five_minutes_but_skips_activity_before_start() {
         let (_dir, api, mut session) = setup("- example-org/widgets\n");
         let mut pr = item(2, now());
         pr["pull_request"] = json!({});
         api.pages(
             "example-org/widgets",
-            vec![json!([item(1, now() - Duration::from_secs(1)), pr])],
+            vec![json!([item(1, now() - secs(1)), pr])],
         );
-        assert_eq!(session.poll(now()).unwrap().processed, 1);
+        assert_eq!(processed(&mut session, now()), 1);
         assert!(
             api.calls()
                 .last()
                 .unwrap()
                 .contains("since=2026-01-02T11:55:00.000Z")
         );
-        // A newly visible earlier update inside the overlap is still processed.
-        let later = now() + Duration::from_secs(60);
+        // An earlier update that becomes visible after the cursor passed it.
+        let later = now() + secs(120);
+        api.pages("example-org/widgets", vec![json!([])]);
         session.poll(later).unwrap();
         api.pages(
             "example-org/widgets",
-            vec![json!([item(3, now() + Duration::from_secs(30))])],
+            vec![json!([item(3, now() + secs(30))])],
         );
-        assert_eq!(session.poll(later).unwrap().processed, 1);
-        let previous = session.snapshot.take();
-        let restarted = Snapshot::start(previous, later, 101, 202);
-        assert_eq!(restarted.epoch, later);
-        assert!(restarted.cursors.is_empty());
+        assert_eq!(processed(&mut session, later), 1);
     }
     #[test]
-    fn drained_scan_revisits_equal_update_versions_for_timeline_seen_checks() {
+    fn relisted_versions_are_processed_until_settled_and_new_versions_always() {
         let (_dir, api, mut session) = setup("- example-org/widgets\n");
-        api.pages("example-org/widgets", vec![json!([item(1, now())])]);
-        assert_eq!(session.poll(now()).unwrap().processed, 1);
-        assert_eq!(
-            session
-                .poll(now() + Duration::from_secs(60))
-                .unwrap()
-                .processed,
-            1
+        let page = json!([item(1, now() + secs(50)), item(2, now() + secs(110))]);
+        api.pages("example-org/widgets", vec![page]);
+        assert_eq!(processed(&mut session, now() + secs(120)), 2);
+        // The young version is queried once more for a lagging timeline; the settled one is not.
+        assert_eq!(processed(&mut session, now() + secs(180)), 1);
+        assert_eq!(processed(&mut session, now() + secs(240)), 0);
+        let page = json!([item(1, now() + secs(150)), item(2, now() + secs(110))]);
+        api.pages("example-org/widgets", vec![page]);
+        assert_eq!(processed(&mut session, now() + secs(300)), 1);
+        // Seen versions last as long as the overlap; admitted events a day.
+        session.snapshot.seen.extend([
+            ("old".into(), now() - secs(86401)),
+            ("recent".into(), now()),
+        ]);
+        api.pages("example-org/widgets", vec![json!([])]);
+        session.poll(now() + secs(600)).unwrap();
+        assert!(
+            session.snapshot.cursors["example-org/widgets"]
+                .seen
+                .is_empty()
         );
+        assert_eq!(session.snapshot.seen.keys().collect::<Vec<_>>(), ["recent"]);
     }
     #[test]
     fn burst_over_twenty_carries_across_pages_equal_times_and_entries_without_loss() {
         let (_dir, api, mut session) = setup("- example-org/widgets\n- example-org/gadgets\n");
-        let values: Vec<_> = (1..=105).map(|number| item(number, now())).collect();
+        let at = now() + secs(1);
+        let values: Vec<_> = (1..=105).map(|number| item(number, at)).collect();
         api.pages(
             "example-org/widgets",
             vec![json!(values[..100]), json!(values[100..])],
         );
-        api.pages("example-org/gadgets", vec![json!([item(106, now())])]);
-        let mut counts = Vec::new();
-        for _ in 0..6 {
-            counts.push(session.poll(now()).unwrap().processed);
-        }
-        assert_eq!(counts, [20, 20, 20, 20, 20, 6]);
-        assert_eq!(
-            session.snapshot.as_ref().unwrap().cursors["example-org/widgets"]
-                .processed
-                .len(),
-            0
-        );
-        assert_eq!(session.poll(now()).unwrap().processed, 20);
+        api.pages("example-org/gadgets", vec![json!([item(106, at)])]);
+        let counts: Vec<_> = (0..7)
+            .map(|_| processed(&mut session, now() + secs(120)))
+            .collect();
+        assert_eq!(counts, [20, 20, 20, 20, 20, 6, 0]);
         assert!(api.calls().iter().any(|s| s.ends_with("page=2")));
-        // The same node updated again must reach the later timeline stage.
-        api.pages(
-            "example-org/widgets",
-            vec![json!([item(1, now() + Duration::from_secs(1))])],
-        );
-        assert_eq!(
-            session
-                .poll(now() + Duration::from_secs(1))
-                .unwrap()
-                .processed,
-            2
-        );
     }
     #[test]
     fn failed_later_page_keeps_the_cursor_and_does_not_commit_a_partial_batch() {
         let (_dir, api, mut session) = setup("- example-org/widgets\n");
         session.poll(now()).unwrap();
+        let key = "example-org/widgets";
         let values: Vec<_> = (1..=100).map(|number| item(number, now())).collect();
-        let entry = Entry::parse("example-org/widgets").unwrap();
         // The first page is already processed except one item; page two fails.
-        let cursor = session
-            .snapshot
-            .as_mut()
-            .unwrap()
-            .cursors
-            .get_mut(&entry.key())
-            .unwrap();
+        let cursor = session.snapshot.cursors.get_mut(key).unwrap();
         for number in 1..=99 {
-            cursor.processed.insert(format!("I_{number}"), now());
+            cursor.seen.insert(format!("I_{number}"), now());
         }
         api.pages(
-            &entry.key(),
+            key,
             vec![json!(values), json!({"message":"private API text"})],
         );
-        let poll = session.poll(now() + Duration::from_secs(60)).unwrap();
-        assert_eq!(poll.processed, 0);
-        assert_eq!(poll.errors.len(), 1);
-        assert_eq!(self::cursor(&session, &entry.key()), now());
-        assert!(
-            !session.snapshot.as_ref().unwrap().cursors[&entry.key()]
-                .processed
-                .contains_key("I_100")
-        );
-        api.pages(&entry.key(), vec![json!(values), json!([item(101, now())])]);
-        assert_eq!(
-            session
-                .poll(now() + Duration::from_secs(60))
-                .unwrap()
-                .processed,
-            2
-        );
+        let poll = session.poll(now() + secs(60)).unwrap();
+        assert_eq!((poll.processed, poll.errors.len()), (0, 1));
+        let cursor = &session.snapshot.cursors[key];
+        assert_eq!(cursor.at, now());
+        assert!(!cursor.seen.contains_key("I_100"));
+        api.pages(key, vec![json!(values), json!([item(101, now())])]);
+        assert_eq!(processed(&mut session, now() + secs(60)), 2);
     }
     #[test]
-    fn rate_limit_pauses_every_entry_until_reset_then_resumes() {
+    fn rate_limit_pauses_every_entry_until_the_retry_time_then_resumes() {
         let (_dir, api, mut session) = setup("- example-org/widgets\n- example-org/gadgets\n");
-        let reset = now() + Duration::from_secs(120);
-        api.fail("repos/example-org/widgets", Error::RateLimited(reset));
-        assert_eq!(session.poll(now()).err(), Some(Error::RateLimited(reset)));
+        let retry = now() + secs(120);
+        api.fail("repos/example-org/widgets", Error::RateLimited(retry));
+        assert_eq!(session.poll(now()).err(), Some(Error::RateLimited(retry)));
         let count = api.calls().len();
         assert_eq!(
-            session.poll(now() + Duration::from_secs(119)).err(),
-            Some(Error::RateLimited(reset))
+            session.poll(now() + secs(119)).err(),
+            Some(Error::RateLimited(retry))
         );
         assert_eq!(api.calls().len(), count);
         api.0.borrow_mut().failure = None;
-        session.poll(reset).unwrap();
+        session.poll(retry).unwrap();
         assert_eq!(api.calls().len(), count + 2);
     }
     #[test]
-    fn organisation_pages_return_validated_repository_names_and_pull_requests() {
+    fn organisation_pages_name_each_item_by_its_validated_repository() {
         let api = ApiFixture::new();
         let entry = Entry::parse("example-org/*").unwrap();
         let mut pr = item(1, now());
@@ -508,48 +427,11 @@ mod tests {
         api.pages(&entry.key(), vec![json!([pr])]);
         let batch = discover::fetch(&api, &entry, &Cursor::new(now()), 20).unwrap();
         assert_eq!(batch.items[0].repository, "example-org/widgets");
-        assert_eq!(batch.items[0].number, 1);
         assert!(batch.items[0].is_pull_request);
-        assert!(api.calls()[0].starts_with(
-            "orgs/example-org/issues?filter=all&state=all&sort=updated&direction=asc"
-        ));
-        api.pages(&entry.key(), vec![json!([{"node_id":"I_1","number":1,"updated_at":format_utc(now()),"repository":{"full_name":"other-org/widgets"}}])]);
+        assert!(api.calls()[0].starts_with("orgs/example-org/issues?filter=all&state=all"));
+        let mut bad = item(1, now());
+        bad["repository"]["full_name"] = json!("example-org/../widgets");
+        api.pages(&entry.key(), vec![json!([bad])]);
         assert!(discover::fetch(&api, &entry, &Cursor::new(now()), 20).is_err());
-    }
-    #[test]
-    fn only_marked_items_advance_a_cursor_and_seen_records_expire_after_a_day() {
-        let api = ApiFixture::new();
-        let entry = Entry::parse("example-org/widgets").unwrap();
-        api.pages(
-            &entry.key(),
-            vec![json!([
-                item(1, now() + Duration::from_secs(1)),
-                item(2, now() + Duration::from_secs(2))
-            ])],
-        );
-        let mut cursor = Cursor::new(now());
-        let batch = discover::fetch(&api, &entry, &cursor, 20).unwrap();
-        assert_eq!(cursor.at, now());
-        cursor.mark(&batch.items[0]);
-        assert_eq!(cursor.at, now() + Duration::from_secs(1));
-        let retry = discover::fetch(&api, &entry, &cursor, 20).unwrap();
-        assert_eq!(retry.items.len(), 1);
-        assert_eq!(retry.items[0].number, 2);
-        let (_dir, _api, mut session) = setup("[]");
-        session.poll(now()).unwrap();
-        session.snapshot.as_mut().unwrap().seen.extend([
-            ("old".into(), now() - Duration::from_secs(86401)),
-            ("recent".into(), now()),
-        ]);
-        session.poll(now()).unwrap();
-        assert_eq!(session.snapshot.as_ref().unwrap().seen.len(), 1);
-        assert!(
-            session
-                .snapshot
-                .as_ref()
-                .unwrap()
-                .seen
-                .contains_key("recent")
-        );
     }
 }

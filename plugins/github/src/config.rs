@@ -1,8 +1,8 @@
-//! Validated repository entries, reloadable YAML and numeric identity guard.
+//! Validated repository entries, the repositories file and numeric identity guard.
 use crate::gh::{Api, Error, Rest};
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Duration, SystemTime},
 };
 
@@ -11,7 +11,7 @@ pub struct Entry {
     owner: String,
     name: String,
 }
-pub fn valid_login(value: &str) -> bool {
+fn valid_login(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 39
         && !value.starts_with('-')
@@ -34,9 +34,6 @@ impl Entry {
     }
     pub fn is_org(&self) -> bool {
         self.name == "*"
-    }
-    pub fn contains(&self, other: &Self) -> bool {
-        self.owner.eq_ignore_ascii_case(&other.owner)
     }
     pub fn api_path(&self) -> String {
         if self.is_org() {
@@ -77,39 +74,12 @@ pub fn owner() -> Result<String, Error> {
         .filter(|s| valid_login(s))
         .ok_or_else(|| Error::Other("set GITHUB_OWNER to the owner's GitHub login".into()))
 }
-pub struct Repositories {
-    path: PathBuf,
-    version: Option<(SystemTime, u64)>,
-    active: Result<Vec<Entry>, String>,
-}
-impl Repositories {
-    pub fn new(path: PathBuf) -> Self {
-        Self {
-            path,
-            version: None,
-            active: Err("repositories file not loaded; retry".into()),
-        }
-    }
-    pub fn load(&mut self) -> Result<&[Entry], String> {
-        let version = fs::metadata(&self.path).and_then(|m| m.modified().map(|t| (t, m.len())));
-        match version {
-            Ok(version) if self.version == Some(version) => {}
-            Ok(version) => {
-                self.version = Some(version);
-                self.active = fs::read_to_string(&self.path)
-                    .map_err(|_| {
-                        "cannot read repositories file; fix GITHUB_REPOS_FILE and retry".into()
-                    })
-                    .and_then(|text| parse(&text));
-            }
-            Err(_) => {
-                self.version = None;
-                self.active =
-                    Err("cannot read repositories file; fix GITHUB_REPOS_FILE and retry".into());
-            }
-        }
-        self.active.as_deref().map_err(Clone::clone)
-    }
+/// Read every poll, so an edit applies at the next poll; an unreadable or
+/// invalid file stops discovery rather than keeping an older list.
+pub fn load(path: &Path) -> Result<Vec<Entry>, String> {
+    let text = fs::read_to_string(path)
+        .map_err(|_| "cannot read repositories file; fix GITHUB_REPOS_FILE and retry")?;
+    parse(&text)
 }
 const GUARD_ERROR: &str = "GitHub identity is unsafe or changed; start brg with GH_CONFIG_DIR naming the machine account's login";
 pub struct Guard {

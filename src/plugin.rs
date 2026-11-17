@@ -131,12 +131,7 @@ impl State {
         };
         let file = match File::open(&path) {
             Ok(file) => file,
-            Err(error)
-                if error.kind() == io::ErrorKind::NotFound
-                    && matches!(fs::symlink_metadata(&path), Err(error) if error.kind() == io::ErrorKind::NotFound) =>
-            {
-                return Ok(None);
-            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(_) => return Err(damaged()),
         };
         serde_json::from_reader(file)
