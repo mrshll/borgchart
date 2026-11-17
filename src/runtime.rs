@@ -196,6 +196,7 @@ fn launched(tmux: &Tmux, session: &str, s: &Started) -> Launched {
 
 /// The id of the rules that recognize each vendor's folder-trust screen.
 const TRUST_RULE: &str = "trust-dialog";
+const ADD_DIR_RULE: &str = "add-dir-dialog";
 const TRUST_NO_SELECTED: &str = " ❯ No, exit";
 const TRUST_YES_SELECTED: &str = " ❯ Yes, I trust this folder";
 
@@ -3761,6 +3762,7 @@ pub fn not_started(start: bool) -> String {
 pub fn state_label(row: &StatusRow) -> String {
     match row.state.as_str() {
         "blocked" if row.rule.as_deref() == Some(TRUST_RULE) => "blocked (folder trust)".into(),
+        "blocked" if row.rule.as_deref() == Some(ADD_DIR_RULE) => "blocked (new folder)".into(),
         NOT_STARTED => not_started(row.start),
         STOPPED if row.expected_running => format!("{STOPPED} (should be running)"),
         s => s.to_string(),
@@ -4094,10 +4096,17 @@ fn status_with_counts(
                     ));
                 }
                 // It waits for a person to answer it.
-                if row.state == "blocked" && row.rule.as_deref() == Some(TRUST_RULE) {
+                let prompt = match row.rule.as_deref() {
+                    Some(TRUST_RULE) => Some("folder trust"),
+                    Some(ADD_DIR_RULE) => Some("Claude's \"Adding a new directory\" prompt"),
+                    _ => None,
+                };
+                if row.state == "blocked"
+                    && let Some(prompt) = prompt
+                {
                     details.insert(
                         0,
-                        format!("waiting at folder trust: `brg attach {}`", inst.at(id)),
+                        format!("waiting at {prompt}: `brg attach {}`", inst.at(id)),
                     );
                 }
                 if posture == Posture::Locked && !state.gate_marker(id).exists() {

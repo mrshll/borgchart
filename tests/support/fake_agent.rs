@@ -30,6 +30,7 @@ enum Mode {
     Mute,
     /// The folder-trust screen; `trust_choice` 0 = "No, exit", 1 = "Yes".
     Trust,
+    AddDir,
     /// Codex's folder-trust screen (0.165.0), "Trust and continue" highlighted.
     CodexTrust,
 }
@@ -136,6 +137,14 @@ fn hooks(vendor: Vendor, args: &[String]) -> (Vec<String>, Vec<String>) {
 impl Agent {
     fn draw(&self) {
         let (title, mut body) = match (self.vendor, self.mode) {
+            (_, Mode::AddDir) => (
+                String::new(),
+                include_str!("../fixtures/screens/claude-2.1.326-add-dir.txt")
+                    .trim_end()
+                    .lines()
+                    .map(str::to_string)
+                    .collect(),
+            ),
             (_, Mode::Mute) => ("plain".to_string(), vec!["$ ".to_string()]),
             (_, Mode::CodexTrust) => (
                 String::new(),
@@ -565,8 +574,13 @@ fn main() {
         vendor == Vendor::Codex && flag("codex-trust") && !codex_trusted_by_config(args);
     // A prompt before the session starts: its SessionStart hook hasn't run.
     let dialog_first = flag("dialog-first");
+    let add_dir = vendor == Vendor::Claude
+        && flag("add-dir")
+        && args
+            .iter()
+            .any(|a| a == "--add-dir" || a.starts_with("--add-dir="));
     let start_hooks = if skip_hooks { Vec::new() } else { start_hooks };
-    if !trust_first && !codex_trust_first && !dialog_first {
+    if !trust_first && !codex_trust_first && !dialog_first && !add_dir {
         run_start_hooks(&log, &start_hooks);
     }
 
@@ -583,7 +597,9 @@ fn main() {
         vendor,
         log,
         pre_hooks: if skip_hooks { Vec::new() } else { pre_hooks },
-        mode: if trust_first {
+        mode: if add_dir {
+            Mode::AddDir
+        } else if trust_first {
             Mode::Trust
         } else if codex_trust_first {
             Mode::CodexTrust
@@ -662,6 +678,13 @@ fn main() {
         loop {
             if pending.is_empty() {
                 break;
+            }
+            if agent.mode == Mode::AddDir {
+                log_event(
+                    &agent.log,
+                    serde_json::json!({"event": "add-dir-key", "byte": pending.remove(0)}),
+                );
+                continue;
             }
             if pending.starts_with(b"\x1b[200~") {
                 in_paste = true;

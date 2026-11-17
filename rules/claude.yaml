@@ -1,7 +1,7 @@
 # State rules for Claude Code, written from screens recorded through tmux
 # (Claude Code 2.1.318; the named-session label on the input box's top rule,
-# `──── name ─`, seen in 2.1.322). Higher priority wins; no match means
-# `unknown`.
+# `──── name ─`, seen in 2.1.322; added-directory dialog in 2.1.326).
+# Higher priority wins; no match means `unknown`.
 # Each rule needs positive evidence, anchored on the UI's own layout.
 vendor: claude
 # What `status` shows a working member doing: Claude Code titles its terminal
@@ -22,6 +22,12 @@ rules:
     priority: 100
     bottom: 30
     all: ['^ +(❯ )?Yes, I trust this folder$', '^ Enter to confirm · Esc to cancel$']
+  - id: add-dir-dialog
+    state: blocked
+    priority: 100
+    bottom: 30
+    all: ['^ Adding a new directory:$', '^ +(❯ )?Yes, add it$']
+    any: ['^ Enter to confirm · Esc to cancel$', '^ Esc to exit · To add it, press ↓ to Yes, then Enter$']
   # The rules below read the input box: its top rule (ending in the
   # session's name when it has one), a `❯` line, indented draft lines, its
   # closing rule, then only indented footer lines to the end of the screen.
