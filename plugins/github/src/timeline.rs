@@ -7,7 +7,7 @@ use crate::{
 };
 use borgchart::bus::time::{format_utc, parse_utc};
 use serde_json::Value;
-use std::time::SystemTime;
+use std::{ops::RangeInclusive, time::SystemTime};
 
 const QUERY: &str = r#"query($owner: String!, $name: String!, $number: Int!, $since: DateTime!, $after: String) {
  repository(owner: $owner, name: $name) { issueOrPullRequest(number: $number) {
@@ -51,97 +51,76 @@ fn string<'a>(value: &'a Value, key: &str) -> Result<&'a str, Error> {
 fn nodes(value: &Value) -> Result<&Vec<Value>, Error> {
     value["nodes"].as_array().ok_or_else(malformed)
 }
+/// Text that goes into a notice: bounded, from a fixed character set.
+fn checked(text: &str, len: RangeInclusive<usize>, allowed: fn(u8) -> bool) -> Result<&str, Error> {
+    (len.contains(&text.len()) && text.bytes().all(allowed))
+        .then_some(text)
+        .ok_or_else(malformed)
+}
 fn node_id(value: &Value) -> Result<&str, Error> {
-    let id = string(value, "id")?;
-    if id.is_empty()
-        || id.len() > 128
-        || !id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
-    {
-        return Err(malformed());
-    }
-    Ok(id)
+    checked(string(value, "id")?, 1..=128, |b| {
+        b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
+    })
 }
 fn oid(value: &Value) -> Result<String, Error> {
     let oid = string(&value["commit"], "oid")?;
-    if !(7..=64).contains(&oid.len()) || !oid.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(malformed());
-    }
-    Ok(oid.into())
+    Ok(checked(oid, 7..=64, |b| b.is_ascii_hexdigit())?.into())
 }
 fn account(value: &Value) -> Option<u64> {
     value["databaseId"].as_u64()
 }
+/// Owner-authored, unedited or last edited by the owner, and mentioning the machine.
 fn mentions(value: &Value, guard: &Guard) -> Result<bool, Error> {
     let body = string(value, "body")?;
-    let edited = value.get("lastEditedAt").ok_or_else(malformed)?;
-    if !edited.is_null() && edited.as_str().and_then(parse_utc).is_none() {
-        return Err(malformed());
-    }
+    let unedited = value.get("lastEditedAt") == Some(&Value::Null);
     Ok(account(&value["author"]) == Some(guard.owner_id)
-        && (edited.is_null() || account(&value["editor"]) == Some(guard.owner_id))
+        && (unedited || account(&value["editor"]) == Some(guard.owner_id))
         && mention(body, &guard.machine_login))
 }
-/// Ignore code spans, fenced blocks and quoted lines before matching login boundaries.
+/// Drop fenced blocks, quoted lines and closed code spans, then match `@login` at
+/// login-character boundaries, case-insensitively.
 fn mention(body: &str, login: &str) -> bool {
-    let needle = format!("@{}", login.to_ascii_lowercase());
-    let login_char = |b: u8| b.is_ascii_alphanumeric() || b == b'-';
-    let mut fence: Option<(u8, usize)> = None;
-    let mut text = String::new();
+    let mut fence: Option<(char, usize)> = None;
+    let mut prose = String::new();
     for line in body.lines() {
-        let trimmed = line.trim_start();
-        let bytes = trimmed.as_bytes();
-        let run = bytes
-            .first()
-            .map_or(0, |b| bytes.iter().take_while(|c| *c == b).count());
+        let t = line.trim_start();
+        let first = t.chars().next().unwrap_or(' ');
+        let run = t.len() - t.trim_start_matches(first).len();
         if let Some((ch, len)) = fence {
-            if bytes.first() == Some(&ch) && run >= len && trimmed[run..].trim().is_empty() {
+            if first == ch && run >= len && t[run..].trim().is_empty() {
                 fence = None;
             }
-            continue;
+        } else if run >= 3 && (first == '`' || first == '~') {
+            fence = Some((first, run));
+        } else if first != '>' {
+            prose.push_str(&line.to_ascii_lowercase());
+            prose.push('\n');
         }
-        if trimmed.starts_with('>') {
-            continue;
-        }
-        if run >= 3 && matches!(bytes.first(), Some(b'`' | b'~')) {
-            fence = Some((bytes[0], run));
-            continue;
-        }
-        text.push_str(line);
-        text.push('\n');
     }
-    let lower = text.to_ascii_lowercase();
-    let bytes = lower.as_bytes();
+    let b = prose.as_bytes();
+    let ticks = |i: usize| b[i..].iter().take_while(|&&c| c == b'`').count();
+    let mut text = Vec::new();
     let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'`' {
-            let count = bytes[i..].iter().take_while(|b| **b == b'`').count();
-            i += count;
-            let mut end = i;
-            while end < bytes.len() {
-                if bytes[end] != b'`' {
-                    end += 1;
-                    continue;
-                }
-                let close = bytes[end..].iter().take_while(|b| **b == b'`').count();
-                end += close;
-                if close == count {
-                    i = end;
-                    break;
-                }
-            }
-            continue;
+    while i < b.len() {
+        let run = ticks(i);
+        let close = (run > 0)
+            .then(|| (i + run..b.len()).find(|&j| b[j - 1] != b'`' && ticks(j) == run))
+            .flatten();
+        if let Some(j) = close {
+            text.push(b' ');
+            i = j + run;
+        } else {
+            text.extend_from_slice(&b[i..i + run.max(1)]);
+            i += run.max(1);
         }
-        if bytes[i..].starts_with(needle.as_bytes())
-            && (i == 0 || !login_char(bytes[i - 1]))
-            && bytes.get(i + needle.len()).is_none_or(|b| !login_char(*b))
-        {
-            return true;
-        }
-        i += 1;
     }
-    false
+    let needle = format!("@{}", login.to_ascii_lowercase());
+    let login_char = |c: Option<&u8>| c.is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'-');
+    let text = String::from_utf8_lossy(&text);
+    text.match_indices(&needle).any(|(i, _)| {
+        !login_char(i.checked_sub(1).and_then(|p| text.as_bytes().get(p)))
+            && !login_char(text.as_bytes().get(i + needle.len()))
+    })
 }
 pub fn fetch(
     api: &impl Api,
@@ -170,81 +149,58 @@ pub fn fetch(
             "PullRequest" => true,
             _ => return Err(malformed()),
         };
-        if pr != item.is_pull_request || node_id(raw)? != item.node_id {
+        if node_id(raw)? != item.node_id {
             return Err(malformed());
         }
         let assigned = nodes(&raw["assignees"])?
             .iter()
             .any(|a| account(a) == Some(guard.machine_id));
         let timeline = &raw["timelineItems"];
-        for value in std::iter::once(raw).chain(nodes(timeline)?.iter()) {
-            let id = node_id(value)?;
+        let body = std::iter::once(raw).filter(|_| after.is_empty());
+        for value in body.chain(nodes(timeline)?) {
             let name = string(value, "__typename")?;
-            if name == "PullRequestReview"
-                && value["state"] == "PENDING"
-                && value.get("submittedAt") == Some(&Value::Null)
-            {
+            let by = account(&value["actor"]).or(account(&value["author"]));
+            if by != Some(guard.owner_id) {
                 continue;
             }
-            let time = string(
-                value,
-                if name == "PullRequestReview" {
-                    "submittedAt"
-                } else {
-                    "createdAt"
-                },
-            )?;
-            let at = parse_utc(time).ok_or_else(malformed)?;
+            let review = name == "PullRequestReview";
+            let time = &value[if review { "submittedAt" } else { "createdAt" }];
+            if review && time.is_null() {
+                continue; // an unsubmitted draft
+            }
+            let at = time.as_str().and_then(parse_utc).ok_or_else(malformed)?;
             if at < floor || at < since {
                 continue;
             }
-            let owner = account(&value["actor"]) == Some(guard.owner_id);
             let kind = match name {
                 "Issue" | "PullRequest" | "IssueComment" => {
                     mentions(value, guard)?.then_some(Kind::Mention)
                 }
-                "AssignedEvent" => {
-                    (!pr && owner && account(&value["assignee"]) == Some(guard.machine_id))
-                        .then_some(Kind::Assigned)
-                }
-                "MergedEvent" => {
-                    let commit = oid(value)?;
-                    (pr && assigned && owner).then_some(Kind::Merged { commit })
-                }
+                "AssignedEvent" => (!pr && account(&value["assignee"]) == Some(guard.machine_id))
+                    .then_some(Kind::Assigned),
+                "MergedEvent" if assigned => Some(Kind::Merged {
+                    commit: oid(value)?,
+                }),
+                "PullRequestReview" if assigned => Some(Kind::Review {
+                    state: checked(string(value, "state")?, 1..=32, |b| {
+                        b.is_ascii_uppercase() || b == b'_'
+                    })?
+                    .into(),
+                    commit: oid(value)?,
+                }),
                 "PullRequestReview" => {
-                    let state = string(value, "state")?;
-                    if ![
-                        "APPROVED",
-                        "CHANGES_REQUESTED",
-                        "COMMENTED",
-                        "DISMISSED",
-                        "PENDING",
-                    ]
-                    .contains(&state)
-                    {
-                        return Err(malformed());
-                    }
-                    let commit = oid(value)?;
                     let mut mentioned = mentions(value, guard)?;
                     for comment in nodes(&value["comments"])? {
                         mentioned |= mentions(comment, guard)?;
                     }
-                    if account(&value["author"]) != Some(guard.owner_id) {
-                        None
-                    } else if pr && assigned {
-                        Some(Kind::Review {
-                            state: state.into(),
-                            commit,
-                        })
-                    } else {
-                        mentioned.then_some(Kind::Mention)
-                    }
+                    mentioned.then_some(Kind::Mention)
                 }
+                "MergedEvent" => None,
                 _ => return Err(malformed()),
             };
             if let Some(kind) = kind {
                 events.push(PendingEvent {
-                    id: id.into(),
+                    id: node_id(value)?.into(),
                     repository: item.repository.clone(),
                     number: item.number,
                     is_pull_request: pr,
@@ -272,8 +228,17 @@ pub fn fetch(
 mod tests {
     use super::mention;
     #[test]
-    fn unmatched_backticks_do_not_hide_mentions_but_closed_spans_and_fences_do() {
+    fn mentions_need_login_boundaries_outside_code_and_quotes() {
         for (body, expected) in [
+            ("@Example-Bot, please look", true),
+            ("plain text", false),
+            ("@example-bot2", false),
+            ("me@example-bot", false),
+            ("```rust\n@example-bot\n```", false),
+            ("~~~\n@example-bot\n~~~", false),
+            ("`@example-bot`", false),
+            ("``@example-bot``", false),
+            ("  > @example-bot", false),
             ("an unmatched ` before @example-bot", true),
             ("`span\n@example-bot`", false),
             ("``a ` and @example-bot``", false),

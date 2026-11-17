@@ -97,36 +97,30 @@ impl<A: Api> Session<A> {
                     let mut failed = false;
                     for item in &batch.items {
                         attempted += 1;
-                        let events = match timeline::fetch(
-                            &self.api,
-                            item,
-                            cursor.floor,
-                            since,
-                            self.guard.as_ref().unwrap(),
-                        ) {
-                            Ok(events) => events,
-                            Err(Error::RateLimited(retry)) => {
+                        let guard = self.guard.as_ref().unwrap();
+                        match timeline::fetch(&self.api, item, cursor.floor, since, guard) {
+                            Ok(events) => {
+                                for mut event in events {
+                                    if !snapshot.seen.contains_key(&event.id) {
+                                        snapshot.seen.insert(event.id.clone(), now);
+                                        (event.recipient, event.reason) = delivery::route(&event);
+                                        snapshot.pending.push(event);
+                                        poll.admitted += 1;
+                                    }
+                                }
+                                cursor.mark(item, now);
+                                poll.processed += 1;
+                            }
+                            Err(error @ Error::RateLimited(_)) => {
                                 cursor.at = original_at;
-                                return Err(Error::RateLimited(retry));
+                                return Err(error);
                             }
                             Err(error) => {
                                 failed = true;
                                 poll.errors
                                     .push(format!("{}#{}: {error}", item.repository, item.number));
-                                continue;
                             }
-                        };
-                        for mut event in events {
-                            if snapshot.seen.contains_key(&event.id) {
-                                continue;
-                            }
-                            (event.recipient, event.reason) = delivery::route(&event);
-                            snapshot.seen.insert(event.id.clone(), now);
-                            snapshot.pending.push(event);
-                            poll.admitted += 1;
                         }
-                        cursor.mark(item, now);
-                        poll.processed += 1;
                     }
                     if failed {
                         cursor.at = original_at;
@@ -242,18 +236,8 @@ mod tests {
             _: &[(&str, &str)],
             integers: &[(&str, u64)],
         ) -> Result<Value, Error> {
-            let number = integers[0].1;
-            let pr = self
-                .0
-                .borrow()
-                .pages
-                .values()
-                .flatten()
-                .filter_map(Value::as_array)
-                .flatten()
-                .any(|v| v["number"] == number && v.get("pull_request").is_some());
             Ok(json!({"data":{"repository":{"issueOrPullRequest":{
-                "__typename":if pr {"PullRequest"} else {"Issue"},"id":format!("I_{number}"),
+                "__typename":"Issue","id":format!("I_{}", integers[0].1),
                 "author":{"databaseId":202},"body":"","createdAt":format_utc(now()),"lastEditedAt":null,
                 "assignees":{"nodes":[]},"timelineItems":{"nodes":[],"pageInfo":{"hasNextPage":false}}
             }}}}))

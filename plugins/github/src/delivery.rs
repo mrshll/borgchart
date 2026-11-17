@@ -27,7 +27,7 @@ fn line(event: &PendingEvent, index: usize) -> String {
         event.id
     )
 }
-fn notice(events: &[&PendingEvent]) -> String {
+fn notice(events: &[PendingEvent]) -> String {
     let lines: Vec<_> = events
         .iter()
         .enumerate()
@@ -44,6 +44,8 @@ pub fn send(
     snapshot: &mut Snapshot,
     store: &plugin::State,
 ) -> Result<(usize, Option<String>), String> {
+    let key = |e: &PendingEvent| (e.recipient.clone(), e.reason.clone());
+    snapshot.pending.sort_by_key(key);
     let mut sent = 0;
     while let Some(first) = snapshot.pending.first() {
         if first.recipient.is_empty() {
@@ -52,32 +54,24 @@ pub fn send(
                 Some("set BORGCHART_DELIVER_TO to the root lead; pending events kept".into()),
             ));
         }
-        let mut indexes = Vec::new();
-        let mut batch = Vec::new();
-        for (index, event) in snapshot.pending.iter().enumerate() {
-            if event.recipient != first.recipient || event.reason != first.reason {
-                continue;
-            }
-            batch.push(event);
-            if batch.len() > 6 || notice(&batch).len() > 900 {
-                batch.pop();
-                break;
-            }
-            indexes.push(index);
-        }
-        if batch.is_empty() {
+        let pending = &snapshot.pending;
+        let n = (1..=pending.len().min(6))
+            .take_while(|&n| {
+                key(&pending[n - 1]) == key(first) && notice(&pending[..n]).len() <= 900
+            })
+            .last()
+            .unwrap_or(0);
+        if n == 0 {
             return Ok((
                 sent,
                 Some("GitHub notice exceeds 900 bytes; pending event kept".into()),
             ));
         }
-        if let Err(error) = plugin::send("github", &first.recipient, &notice(&batch), None) {
+        if let Err(error) = plugin::send("github", &first.recipient, &notice(&pending[..n]), None) {
             return Ok((sent, Some(error)));
         }
-        sent += indexes.len();
-        for index in indexes.into_iter().rev() {
-            snapshot.pending.remove(index);
-        }
+        snapshot.pending.drain(..n);
+        sent += n;
         snapshot.save(store)?;
     }
     Ok((sent, None))

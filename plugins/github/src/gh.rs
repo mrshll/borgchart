@@ -118,9 +118,11 @@ impl Gh {
             SystemTime::now(),
         )
     }
+}
+impl Api for Gh {
     /// Strings go as `-f`, which gh passes verbatim; only integers use `-F`,
     /// so gh's file and repository substitutions never apply.
-    pub fn graphql(
+    fn graphql(
         &self,
         query: &str,
         strings: &[(&str, &str)],
@@ -134,16 +136,6 @@ impl Gh {
             args.extend(["-F".into(), format!("{name}={value}")]);
         }
         self.call(&args)
-    }
-}
-impl Api for Gh {
-    fn graphql(
-        &self,
-        query: &str,
-        strings: &[(&str, &str)],
-        integers: &[(&str, u64)],
-    ) -> Result<Value, Error> {
-        Gh::graphql(self, query, strings, integers)
     }
     fn get(&self, request: Rest<'_>) -> Result<Value, Error> {
         self.call(&["--method".into(), "GET".into(), request.path()])

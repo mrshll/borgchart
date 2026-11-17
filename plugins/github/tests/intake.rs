@@ -1,6 +1,6 @@
 //! Process-boundary tests of the gh profile guard, CLI and strict journal.
 mod support;
-use brg_github::gh::Gh;
+use brg_github::gh::{Api, Gh};
 use serde_json::json;
 use std::{fs, os::unix::fs::PermissionsExt, process::Command};
 use support::Fixture;

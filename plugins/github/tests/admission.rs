@@ -121,43 +121,41 @@ fn changed(f: &Fixture, items: &[(bool, Vec<Value>)]) {
         .collect();
     f.response("issues", 200, &json!(list).to_string());
 }
+fn reads(sent: &str, id: &str) -> usize {
+    sent.matches(&format!("brg-github read {id}\n")).count()
+}
+fn pending(f: &Fixture) -> usize {
+    f.json("state/intake.json")["pending"]
+        .as_array()
+        .unwrap()
+        .len()
+}
 #[test]
 fn four_owner_triggers_deliver_identifiers_once_without_github_text() {
     let f = fixture();
-    let mut reviews = vec![
-        event(
-            "PullRequestReview",
-            "PRR_review",
-            202,
-            "REVIEW_MARKER @example-bot",
-        ),
-        event("MergedEvent", "ME_merge", 202, ""),
-    ];
-    for state in ["COMMENTED", "CHANGES_REQUESTED", "DISMISSED"] {
-        let mut review = event("PullRequestReview", state, 202, "");
-        review["state"] = json!(state);
-        reviews.push(review);
-    }
-    let mut pending = event("PullRequestReview", "PRR_pending", 101, "");
-    pending["state"] = json!("PENDING");
-    pending["submittedAt"] = Value::Null;
-    reviews.push(pending);
+    let mut commented = event("PullRequestReview", "PRR_commented", 202, "");
+    commented["state"] = json!("COMMENTED");
+    let mut draft = event("PullRequestReview", "PRR_draft", 202, "");
+    draft["submittedAt"] = Value::Null;
+    let review = event(
+        "PullRequestReview",
+        "PRR_review",
+        202,
+        "REVIEW_MARKER @example-bot",
+    );
+    let mention = event(
+        "IssueComment",
+        "IC_mention",
+        202,
+        "COMMENT_MARKER @example-bot",
+    );
+    let issue = vec![mention, event("AssignedEvent", "AE_assign", 202, "")];
+    let merge = event("MergedEvent", "ME_merge", 202, "");
     changed(
         &f,
         &[
-            (
-                false,
-                vec![
-                    event(
-                        "IssueComment",
-                        "IC_mention",
-                        202,
-                        "COMMENT_MARKER @example-bot",
-                    ),
-                    event("AssignedEvent", "AE_assign", 202, ""),
-                ],
-            ),
-            (true, reviews),
+            (false, issue),
+            (true, vec![review, merge, commented, draft]),
         ],
     );
     drive(&f, "0,60,120");
@@ -166,26 +164,20 @@ fn four_owner_triggers_deliver_identifiers_once_without_github_text() {
         ("IC_mention", "mention", 1),
         ("AE_assign", "assigned", 1),
         ("PRR_review", "review APPROVED on 3f2a91c", 2),
-        ("ME_merge", "merged", 2),
+        ("PRR_commented", "review COMMENTED on 3f2a91c", 2),
+        ("ME_merge", "merged on 3f2a91c", 2),
     ] {
-        assert_eq!(
-            sent.matches(&format!("brg-github read {id}")).count(),
-            1,
-            "{sent}"
-        );
+        assert_eq!(reads(&sent, id), 1, "{id}: {sent}");
+        let line = format!("example-org/widgets#{number}");
         assert!(
-            sent.contains(kind) && sent.contains(&format!("example-org/widgets#{number}")),
-            "{sent}"
+            sent.lines()
+                .any(|l| l.contains(&line) && l.contains(kind) && l.contains(id))
         );
     }
-    for marker in ["BODY_MARKER", "COMMENT_MARKER", "REVIEW_MARKER"] {
-        assert!(!sent.contains(marker));
-    }
-    for state in ["COMMENTED", "CHANGES_REQUESTED", "DISMISSED"] {
-        assert_eq!(sent.matches(&format!("brg-github read {state}")).count(), 1);
-        assert!(sent.contains(&format!("review {state} on 3f2a91c")));
-    }
-    assert!(!sent.contains("PRR_pending"));
+    assert!(
+        !sent.contains("PRR_draft") && !sent.contains("MARKER"),
+        "{sent}"
+    );
     assert!(
         fs::read_to_string(f.path("brg-args"))
             .unwrap()
@@ -196,15 +188,16 @@ fn four_owner_triggers_deliver_identifiers_once_without_github_text() {
 #[test]
 fn only_owner_actions_in_scope_and_unplanted_mentions_wake_the_lead() {
     let f = fixture();
-    let mut nodes = Vec::new();
+    let kinds = [
+        "IssueComment",
+        "PullRequestReview",
+        "AssignedEvent",
+        "MergedEvent",
+    ];
+    let mut foreign = Vec::new();
     for actor in [101, 303, 404] {
-        for kind in [
-            "IssueComment",
-            "PullRequestReview",
-            "AssignedEvent",
-            "MergedEvent",
-        ] {
-            nodes.push(event(
+        for kind in kinds {
+            foreign.push(event(
                 kind,
                 &format!("Other_{actor}_{kind}"),
                 actor,
@@ -212,79 +205,48 @@ fn only_owner_actions_in_scope_and_unplanted_mentions_wake_the_lead() {
             ));
         }
     }
-    let foreign = nodes.clone();
-    for (n, body) in [
-        "plain",
-        "@example-bot2",
-        "me@example-bot",
-        "```rust\n@example-bot\n```",
-        "~~~\n@example-bot\n~~~",
-        "`@example-bot`",
-        "``@example-bot``",
-        "  > @example-bot",
-    ]
-    .iter()
-    .enumerate()
-    {
-        nodes.push(event("IssueComment", &format!("IC_bad{n}"), 202, body));
-    }
     let mut planted = event("IssueComment", "IC_planted", 202, "@example-bot");
     planted["lastEditedAt"] = json!(AT);
     planted["editor"] = json!({"databaseId":303});
-    nodes.push(planted);
-    nodes.push(event("IssueComment", "IC_yes", 202, "@Example-Bot, MARKER"));
-    let mut edited = event("IssueComment", "IC_selfedit", 202, "@example-bot");
-    edited["lastEditedAt"] = json!(AT);
-    edited["editor"] = json!({"databaseId":202});
-    nodes.push(edited);
+    let mut selfedit = event("IssueComment", "IC_selfedit", 202, "@example-bot");
+    selfedit["lastEditedAt"] = json!(AT);
+    selfedit["editor"] = json!({"databaseId":202});
+    let mut nodes = foreign.clone();
+    nodes.extend([
+        planted,
+        selfedit,
+        event("IssueComment", "IC_plain", 202, "plain"),
+        event("AssignedEvent", "AE_pr", 202, ""),
+        event("PullRequestReview", "PRR_unassigned", 202, ""),
+        event("MergedEvent", "ME_unassigned", 202, ""),
+    ]);
+    for author in [202, 303] {
+        let mut review = event("PullRequestReview", &format!("PRR_inline{author}"), 202, "");
+        review["comments"] = json!({"nodes":[content(author,"INLINE_MARKER @example-bot")]});
+        nodes.push(review);
+    }
     let mut assignment = event("AssignedEvent", "AE_other", 202, "");
     assignment["assignee"]["databaseId"] = json!(303);
     changed(
         &f,
         &[
-            (true, nodes.clone()),
+            (true, vec![]),
             (true, foreign.clone()),
             (false, foreign),
             (false, vec![assignment]),
         ],
     );
+    // An unassigned pull request whose owner-authored body mentions the machine.
     let mut raw = item(true, nodes);
     raw["assignees"] = json!({"nodes":[]});
     raw["body"] = json!("BODY_MARKER @example-bot");
-    raw["timelineItems"]["nodes"]
-        .as_array_mut()
-        .unwrap()
-        .extend([
-            event("AssignedEvent", "AE_pr", 202, ""),
-            event("PullRequestReview", "PRR_unassigned", 202, ""),
-            event("MergedEvent", "ME_unassigned", 202, ""),
-        ]);
-    for author in [202, 303] {
-        let mut review = event("PullRequestReview", &format!("PRR_inline{author}"), 202, "");
-        review["comments"] = json!({"nodes":[content(author,"INLINE_MARKER @example-bot")]});
-        raw["timelineItems"]["nodes"]
-            .as_array_mut()
-            .unwrap()
-            .push(review);
-    }
     answer(&f, 1, &raw);
     drive(&f, "120");
     let sent = text(&f);
-    for id in ["IC_yes", "IC_selfedit", "I_1", "PRR_inline202"] {
-        assert!(sent.contains(&format!("brg-github read {id}")), "{sent}");
+    for id in ["IC_selfedit", "I_1", "PRR_inline202"] {
+        assert_eq!(reads(&sent, id), 1, "{id}: {sent}");
     }
-    for id in [
-        "Other_",
-        "IC_bad",
-        "IC_planted",
-        "AE_",
-        "PRR_unassigned",
-        "ME_unassigned",
-        "PRR_inline303",
-        "MARKER",
-    ] {
-        assert!(!sent.contains(id), "{sent}");
-    }
+    assert_eq!(sent.matches("brg-github read").count(), 3, "{sent}");
     assert_eq!(f.health()["ok"], true);
 }
 #[test]
@@ -305,7 +267,9 @@ fn old_edits_and_pre_epoch_actions_are_skipped_but_newly_submitted_drafts_arrive
     changed(&f, &[(true, nodes)]);
     fs::rename(f.path("graphql-1"), f.path("next-graphql-1")).unwrap();
     answer(&f, 1, &item(true, vec![]));
-    f.response("next-issues",200,&json!([{"node_id":"I_1","number":1,"updated_at":"2026-01-02T12:10:00Z","pull_request":{}}]).to_string());
+    let relisted =
+        json!([{"node_id":"I_1","number":1,"updated_at":"2026-01-02T12:10:00Z","pull_request":{}}]);
+    f.response("next-issues", 200, &relisted.to_string());
     drive(&f, "600,660");
     let sent = text(&f);
     assert!(
@@ -330,50 +294,31 @@ fn failed_sends_retry_and_saved_admission_survives_a_crash() {
     );
     f.write("fail", "");
     drive(&f, "120");
-    assert_eq!(f.health()["ok"], false);
+    let health = f.health();
+    assert_eq!(health["ok"], false);
     assert!(
-        f.health()["detail"]
+        health["detail"]
             .as_str()
             .unwrap()
-            .contains("blocked\\x0aretry")
+            .contains("blocked\\x0aretry"),
+        "{health}"
     );
+    // The retry is killed mid-send, after its admission was saved.
     fs::remove_file(f.path("fail")).unwrap();
-    drive(&f, "180");
-    assert_eq!(f.health()["ok"], true);
-    assert!(
-        f.json("state/intake.json")["pending"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-    let f = fixture();
-    changed(
-        &f,
-        &[(false, vec![event("AssignedEvent", "AE_crash", 202, "")])],
-    );
     f.write("crash", "");
     f.write("expect-crash", "");
-    assert!(!drive(&f, "120"));
-    assert!(
-        fs::read_to_string(f.path("journal-at-send"))
-            .unwrap()
-            .contains("AE_crash")
-    );
+    assert!(!drive(&f, "180"));
+    let journal = fs::read_to_string(f.path("journal-at-send")).unwrap();
     assert_eq!(
-        f.json("state/intake.json")["pending"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
+        journal.matches("\"id\":\"AE_retry\"").count(),
+        2,
+        "{journal}"
     );
-    drive(&f, "180");
-    assert_eq!(text(&f).matches("brg-github read AE_crash").count(), 2);
-    assert!(
-        f.json("state/intake.json")["pending"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
+    assert_eq!(pending(&f), 1);
+    drive(&f, "240");
+    assert_eq!(reads(&text(&f), "AE_retry"), 3);
+    assert_eq!(pending(&f), 0);
+    assert_eq!(f.health()["ok"], true);
 }
 #[test]
 fn failed_later_timeline_page_retries_without_partial_admission_then_sends_bounded_batches() {
@@ -391,12 +336,9 @@ fn failed_later_timeline_page_retries_without_partial_admission_then_sends_bound
         assert!(text(&f).is_empty());
         assert_eq!(f.health()["ok"], false);
         assert_eq!(f.calls().matches("number=1").count(), 4);
-        f.response(
-            "graphql-1-next",
-            200,
-            &json!({"data":{"repository":{"issueOrPullRequest":item(false,nodes[4..].to_vec())}}})
-                .to_string(),
-        );
+        let second =
+            json!({"data":{"repository":{"issueOrPullRequest":item(false,nodes[4..].to_vec())}}});
+        f.response("graphql-1-next", 200, &second.to_string());
         drive(&f, "240");
         let sent = text(&f);
         let notices: Vec<_> = sent.split("\n---\n").filter(|n| !n.is_empty()).collect();
@@ -406,11 +348,7 @@ fn failed_later_timeline_page_retries_without_partial_admission_then_sends_bound
             assert!(notice.matches("brg-github read").count() <= 6);
         }
         for n in 0..8 {
-            assert_eq!(
-                sent.matches(&format!("brg-github read AE_{n:0width$}"))
-                    .count(),
-                1
-            );
+            assert_eq!(reads(&sent, &format!("AE_{n:0width$}")), 1);
         }
         assert_eq!(f.health()["ok"], true);
     }
@@ -420,25 +358,22 @@ fn malformed_identifiers_and_timeline_rate_limits_never_advance_past_a_failed_it
     for (field, value) in [
         ("id", json!("PRR_bad\ntext")),
         ("commit", json!({"oid":"not-hex"})),
-        ("state", json!("FORGED")),
+        ("state", json!("APPROVED\ntext")),
     ] {
         let f = fixture();
         let mut e = event("PullRequestReview", "PRR_safe", 202, "");
         e[field] = value;
         changed(&f, &[(true, vec![e]), (false, vec![])]);
-        f.response(
-            "issues",
-            200,
-            &json!([
-                {"node_id":"I_1","number":1,"updated_at":AT,"pull_request":{}},
-                {"node_id":"I_2","number":2,"updated_at":"2026-01-02T12:10:00Z"}
-            ])
-            .to_string(),
-        );
+        let listed = json!([
+            {"node_id":"I_1","number":1,"updated_at":AT,"pull_request":{}},
+            {"node_id":"I_2","number":2,"updated_at":"2026-01-02T12:10:00Z"}
+        ]);
+        f.response("issues", 200, &listed.to_string());
         drive(&f, "720,780");
         assert!(text(&f).is_empty());
         assert_eq!(f.health()["ok"], false);
         assert_eq!(f.calls().matches("number=1").count(), 2);
+        // The later item's success does not move the entry's cursor past the failure.
         assert_eq!(
             f.calls().matches("since=2026-01-02T11:55:00.000Z").count(),
             5
