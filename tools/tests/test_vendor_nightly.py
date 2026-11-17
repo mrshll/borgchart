@@ -38,6 +38,10 @@ def test_real_green_matrix_opens_qualification_and_matches_claude_prefix(tmp_pat
     assert result.returncode == 0, result.stderr
     assert "passed, not on rules/wake.yaml" in result.stdout and "codex 0.169.0" in result.stdout
     assert "claude 2.1.325 passed" not in result.stdout
+    # A case that doesn't apply to a version neither fails nor withholds qualification.
+    na = tmp_path / "latest/matrix.md"
+    na.write_text(na.read_text().replace("| claude-add-dir-status | PASS |", "| claude-add-dir-status | N/A |"))
+    assert "passed, not on rules/wake.yaml" in report(tmp_path, "success", "skipped", "--dry-run").stdout
     for outcome, version in (("PASS", "2.10.0"), ("SKIP", "2.2.0")):
         matrix(tmp_path / "latest", outcome, version)
         path = tmp_path / "latest/matrix.md"
@@ -48,6 +52,8 @@ def test_real_green_matrix_opens_qualification_and_matches_claude_prefix(tmp_pat
 
 def test_control_pass_requires_different_versions_and_covers_any_latest_failure(tmp_path: Path) -> None:
     matrix(tmp_path / "control", version="2.1.324")
+    na = tmp_path / "control/matrix.md"
+    na.write_text(na.read_text().replace("| claude-add-dir-status | PASS |", "| claude-add-dir-status | N/A |"))
     for outcome in ("FAIL", "BLOCKED", "SKIP"):
         matrix(tmp_path / "latest", outcome)
         assert "breaks claude-wake-matrix" in report(tmp_path, "failure", "success", "--dry-run").stdout
@@ -76,7 +82,7 @@ def test_secret_in_evidence_prevents_any_gh_call(tmp_path: Path) -> None:
 def test_seed_keeps_keys_private_and_scrub_blocks_planted_copy(tmp_path: Path) -> None:
     fake = tmp_path / "codex"
     fake.write_text(
-        '#!/bin/sh\ncase "$1" in\nlogin) cat > "$HOME/.codex/auth.json"; echo "login diagnostic" >&2;;\nexec) exit 0;;\n*) exit 1;;\nesac\n'
+        '#!/bin/sh\ncase "$1" in\nlogin) cat > "$HOME/.codex/auth.json"; echo "login diagnostic" >&2;;\nexec) echo OK;;\n*) exit 1;;\nesac\n'
     )
     fake.chmod(0o700)
     claude = tmp_path / "claude"
@@ -89,6 +95,7 @@ while [ $# -gt 0 ] && [ "$1" != --tools ]; do
   shift
 done
 [ -n "$print" ] && [ -n "$prompt" ] && [ "$#" = 2 ] && [ -z "$2" ] || { echo "no prompt" >&2; exit 1; }
+echo OK
 """
     )
     claude.chmod(0o700)
@@ -123,10 +130,25 @@ done
             [str(seed), "--scrub", str(evidence)], env=env, text=True, capture_output=True, check=False
         )
         assert result.returncode == 1 and planted not in result.stdout + result.stderr
+    good_claude, good_codex = claude.read_text(), fake.read_text()
     claude.write_text('#!/bin/sh\nprintf "Startup banner\\nRequest denied: %s\\n\\n" "$ANTHROPIC_API_KEY" >&2\nexit 1\n')
     result = subprocess.run([str(seed)], env=env, text=True, capture_output=True, check=False)
     assert result.returncode != 0 and "API request refused for claude: Request denied:" in result.stderr
     assert "[redacted]" in result.stderr and env["ANTHROPIC_API_KEY"] not in result.stdout + result.stderr
+    # Refusals as the CLIs print them (recorded against a local server), and an exit 0 without an answer.
+    for vendor, script, message in (
+        ("claude", 'echo "Credit balance is too low"; exit 1', "claude API key is out of credit: Credit balance is too low"),
+        (
+            "codex",
+            'printf "Reply OK.\\nERROR: Quota exceeded. Check your plan and billing details.\\n" >&2; exit 1',
+            "codex API key is out of credit: ERROR: Quota exceeded.",
+        ),
+        ("claude", 'echo "Reply OK." >&2; echo "Hello"', "API request refused for claude: Hello"),
+    ):
+        claude.write_text(f"#!/bin/sh\n{script}\n" if vendor == "claude" else good_claude)
+        fake.write_text(good_codex.replace("echo OK", script) if vendor == "codex" else good_codex)
+        result = subprocess.run([str(seed)], env=env, text=True, capture_output=True, check=False)
+        assert result.returncode == 1 and message in result.stderr, result.stderr
 
 
 def test_repeats_comment_and_cleared_kinds_close_without_creating_duplicates(tmp_path: Path) -> None:

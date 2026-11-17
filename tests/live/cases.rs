@@ -406,6 +406,19 @@ fn codex_trust_screen(screen: &str) -> bool {
 
 /// A member stopped at a prompt: folder trust in a folder that should be
 /// trusted, or anything else (a tool approval). Nothing is answered.
+/// Whether this `claude --version` line shows the added-folder dialog,
+/// new in 2.1.326. A version that doesn't parse runs the case.
+fn has_add_dir_dialog(version: &str) -> bool {
+    let parts: Vec<u32> = version
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .split('.')
+        .map_while(|p| p.parse().ok())
+        .collect();
+    parts.len() != 3 || parts[..] >= [2, 1, 326][..]
+}
+
 fn blocked_at(rule: &str, folder: &Path) -> Outcome {
     if rule == "trust-dialog" {
         return Outcome::Blocked(format!(
@@ -535,6 +548,14 @@ fn claude_trust_case(w: &World, on: bool, id: &str, status: &mut Outcome) -> Out
 /// A role's own added folder waits for a person, with an attach hint.
 pub fn claude_add_dir_status(w: &World) -> Outcome {
     let id = "claude-add-dir-status";
+    if let Some(Ok(version)) = w.versions.get(&Who::Claude)
+        && !has_add_dir_dialog(version)
+    {
+        let number = version.split_whitespace().next().unwrap_or(version);
+        return Outcome::NotApplicable(format!(
+            "Claude {number} has no added-folder dialog (it arrived in 2.1.326)"
+        ));
+    }
     let folder = fresh_dir(&w.trusted, w, "work");
     let added = fresh_dir(&w.scratch, w, "added");
     let t = Team::new(
@@ -1117,5 +1138,23 @@ pub fn background_wait(w: &World) -> Outcome {
             ));
         }
         std::thread::sleep(FINE_POLL);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::has_add_dir_dialog;
+
+    #[test]
+    fn add_dir_case_runs_from_2_1_326_and_on_unparsed_versions() {
+        assert!(!has_add_dir_dialog("2.1.325 (Claude Code)"));
+        for v in [
+            "2.1.326 (Claude Code)",
+            "2.2.0",
+            "3.0.0",
+            "fake claude 0.0.0",
+        ] {
+            assert!(has_add_dir_dialog(v), "{v}");
+        }
     }
 }

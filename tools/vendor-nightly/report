@@ -22,13 +22,17 @@ def scrub(data: bytes) -> None:
         raise SystemExit("Refusing publication: credential pattern in evidence")
 
 
+# N/A: the case's subject is not in that vendor version.
+OK = ("PASS", "N/A")
+
+
 def matrix(folder: Path) -> tuple[dict[str, tuple[str, str]], dict[str, str], bool]:
     files = sorted(folder.rglob("matrix.md"))
     text = files[-1].read_text() if len(files) == 1 else ""
     rows = {
         case: (result, detail)
         for case, result, detail in re.findall(
-            r"^\| ([\w-]+) \| (PASS|FAIL|SKIP|BLOCKED) \| (.*) \|$", text, re.MULTILINE
+            r"^\| ([\w-]+) \| (PASS|FAIL|SKIP|BLOCKED|N/A) \| (.*) \|$", text, re.MULTILINE
         )
     }
     versions = dict(re.findall(r"^- (claude|codex): (?:codex-cli )?(\d+\.\d+\.\d+[^\s]*)", text, re.MULTILINE))
@@ -56,7 +60,7 @@ def main() -> None:
                 scrub(file.read_bytes())
     rows, versions, complete = matrix(args.latest)
     controls, control_versions, control_complete = matrix(args.control)
-    bad = [case for case, (result, _) in rows.items() if result != "PASS"]
+    bad = [case for case, (result, _) in rows.items() if result not in OK]
     wake_skip = bad == ["claude-wake-matrix"] and rows[bad[0]][0] == "SKIP" and "isn't qualified" in rows[bad[0]][1]
     patterns = re.findall(r'- vendor: (\w+)\s+version: "([^"]+)"', (ROOT / "rules/wake.yaml").read_text())
     unknown = [
@@ -74,7 +78,7 @@ def main() -> None:
             versions != control_versions
             and args.control_result == "success"
             and control_complete
-            and all(r == "PASS" for r, _ in controls.values())
+            and all(r in OK for r, _ in controls.values())
         )
         kind = "regression" if regression else "harness"
         desired[kind] = (

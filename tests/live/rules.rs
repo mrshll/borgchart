@@ -67,6 +67,9 @@ pub enum Outcome {
     Fail(String),
     Skip(String),
     Blocked(String),
+    /// The case's subject doesn't exist in this vendor version; it
+    /// neither fails nor withholds qualification.
+    NotApplicable(String),
 }
 
 impl Outcome {
@@ -76,12 +79,17 @@ impl Outcome {
             Outcome::Fail(_) => "FAIL",
             Outcome::Skip(_) => "SKIP",
             Outcome::Blocked(_) => "BLOCKED",
+            Outcome::NotApplicable(_) => "N/A",
         }
     }
 
     pub fn detail(&self) -> &str {
         match self {
-            Outcome::Pass(d) | Outcome::Fail(d) | Outcome::Skip(d) | Outcome::Blocked(d) => d,
+            Outcome::Pass(d)
+            | Outcome::Fail(d)
+            | Outcome::Skip(d)
+            | Outcome::Blocked(d)
+            | Outcome::NotApplicable(d) => d,
         }
     }
 
@@ -212,7 +220,7 @@ pub fn verdict(
         }
         match results.get(*id).cloned().map(Outcome::checked) {
             None => v.missing.push(id.to_string()),
-            Some(Outcome::Pass(_)) => {}
+            Some(Outcome::Pass(_) | Outcome::NotApplicable(_)) => {}
             Some(Outcome::Fail(_)) => v.failed.push(id.to_string()),
             Some(Outcome::Blocked(_)) => v.blocked.push(id.to_string()),
             Some(Outcome::Skip(_)) => v.skipped.push(id.to_string()),
@@ -341,6 +349,17 @@ mod tests {
         let v = verdict(BOTH, &r, false, false);
         assert!(!v.fails() && !v.qualifies(), "{v:?}");
         assert!(v.summary().contains("codex-queue"), "{}", v.summary());
+    }
+
+    #[test]
+    fn not_applicable_neither_fails_nor_withholds_qualification() {
+        let mut r = all(Outcome::Pass("".into()));
+        r.insert(
+            "claude-add-dir-status".into(),
+            Outcome::NotApplicable("no dialog".into()),
+        );
+        let v = verdict(BOTH, &r, false, false);
+        assert!(v.qualifies() && !v.fails(), "{v:?}");
     }
 
     #[test]
