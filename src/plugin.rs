@@ -120,6 +120,29 @@ impl State {
             .and_then(|value| serde_json::from_value(value).ok())
             .unwrap_or_default()
     }
+    /// Missing state is fresh; unreadable or damaged state must be repaired explicitly.
+    pub fn read_json_strict<T: DeserializeOwned>(&self, name: &str) -> Result<Option<T>, String> {
+        let path = self.root.join(name);
+        let damaged = || {
+            format!(
+                "cannot read {} as state; move it aside and restart",
+                path.display()
+            )
+        };
+        let file = match File::open(&path) {
+            Ok(file) => file,
+            Err(error)
+                if error.kind() == io::ErrorKind::NotFound
+                    && matches!(fs::symlink_metadata(&path), Err(error) if error.kind() == io::ErrorKind::NotFound) =>
+            {
+                return Ok(None);
+            }
+            Err(_) => return Err(damaged()),
+        };
+        serde_json::from_reader(file)
+            .map(Some)
+            .map_err(|_| damaged())
+    }
     pub fn lock(&self) -> io::Result<File> {
         self.lock_named("plugin.lock")
     }
