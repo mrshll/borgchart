@@ -246,7 +246,8 @@ mod tests {
             Ok(json!({"data":{"repository":{"issueOrPullRequest":{
                 "__typename":"Issue","id":format!("I_{}", integers[0].1),
                 "author":{"databaseId":202},"body":"","createdAt":format_utc(now()),"lastEditedAt":null,
-                "assignees":{"nodes":[]},"timelineItems":{"nodes":[],"pageInfo":{"hasNextPage":false}}
+                "assignees":{"nodes":[]},"closedByPullRequestsReferences":{"nodes":[]},
+                "timelineItems":{"nodes":[],"pageInfo":{"hasNextPage":false}}
             }}}}))
         }
         fn get(&self, request: Rest<'_>) -> Result<Value, Error> {

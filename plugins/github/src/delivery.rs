@@ -6,7 +6,7 @@ use borgchart::{
 };
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     process::Command,
     time::{Duration, Instant},
 };
@@ -57,23 +57,25 @@ impl Routing {
                     (format!("{team}/{member}"), row["liveness"] == "alive"),
                 );
             }
-            if let Some(path) = row["worktree"].as_str() {
-                let Some(commit) = output(
-                    Command::new("git").args(["-C", path, "rev-parse", "HEAD"]),
-                    10,
-                ) else {
-                    continue;
-                };
-                let branch = output(
-                    Command::new("git").args(["-C", path, "symbolic-ref", "-q", "--short", "HEAD"]),
+            if let Some(path) = row["worktree"].as_str()
+                && let Some(out) = output(
+                    Command::new("git").args([
+                        "-C",
+                        path,
+                        "rev-parse",
+                        "HEAD",
+                        "--abbrev-ref=loose",
+                        "HEAD",
+                    ]),
                     10,
                 )
-                .unwrap_or_default();
-                routing.checkouts.push((
-                    team.into(),
-                    String::from_utf8_lossy(&branch).trim().into(),
-                    String::from_utf8_lossy(&commit).trim().into(),
-                ));
+                && let Some((commit, branch)) =
+                    String::from_utf8_lossy(&out).trim().split_once('\n')
+            {
+                // Detached, the branch reads "HEAD", which no pull request can be named.
+                routing
+                    .checkouts
+                    .push((team.into(), branch.into(), commit.into()));
             }
         }
         Some(routing)
@@ -84,32 +86,26 @@ pub fn route(routing: Option<&Routing>, heads: &Heads) -> (String, String) {
     let Some(routing) = routing else {
         return (root, "routing unavailable".into());
     };
-    let teams: BTreeSet<_> = routing
+    let mut teams: Vec<_> = routing
         .checkouts
         .iter()
         .filter(|(_, branch, commit)| {
-            heads.iter().any(|(name, oid)| {
-                (!name.is_empty() && name == branch) || (!oid.is_empty() && oid == commit)
-            })
+            heads
+                .iter()
+                .any(|(name, oid)| name == branch || oid == commit)
         })
         .map(|(team, _, _)| team.as_str())
         .collect();
-    let reason = match teams.len() {
-        0 => "no team holds the branch".into(),
-        1 => {
-            let team = teams.first().unwrap();
-            match routing.leads.get(*team) {
-                Some((lead, true)) => {
-                    return (lead.clone(), format!("team {team} holds the branch"));
-                }
-                Some((lead, false)) => format!("owning lead is stopped: {lead}"),
-                None => "routing unavailable".into(),
-            }
-        }
-        _ => format!(
-            "several teams hold the branch: {}",
-            teams.into_iter().collect::<Vec<_>>().join(", ")
-        ),
+    teams.sort_unstable();
+    teams.dedup();
+    let reason = match teams[..] {
+        [] => "no team holds the branch".into(),
+        [team] => match routing.leads.get(team) {
+            Some((lead, true)) => return (lead.clone(), format!("team {team} holds the branch")),
+            Some((lead, false)) => format!("owning lead is stopped: {lead}"),
+            None => "routing unavailable".into(),
+        },
+        _ => format!("several teams hold the branch: {}", teams.join(", ")),
     };
     (root, reason)
 }

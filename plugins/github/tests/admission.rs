@@ -413,8 +413,8 @@ fn git(path: &std::path::Path, args: &[&str]) -> String {
     assert!(output.status.success(), "{output:?}");
     String::from_utf8(output.stdout).unwrap().trim().into()
 }
-fn checkout(f: &Fixture, team: &str, kind: &str) -> Vec<Value> {
-    let path = f.path(kind);
+fn checkout(f: &Fixture, team: &str, kind: &str, dir: &str) -> Value {
+    let path = f.path(dir);
     fs::create_dir(&path).unwrap();
     git(&path, &["init", "-b", "example-branch"]);
     git(
@@ -428,10 +428,10 @@ fn checkout(f: &Fixture, team: &str, kind: &str) -> Vec<Value> {
             "Example head",
         ],
     );
-    vec![
-        json!({"kind":kind,"team":team,"worktree":path}),
-        json!({"kind":"member","team":team,"member":"lead","role":"lead","liveness":"alive"}),
-    ]
+    json!({"kind":kind,"team":team,"worktree":path})
+}
+fn lead(team: &str, member: &str) -> Value {
+    json!({"kind":"member","team":team,"member":member,"role":"lead","liveness":"alive"})
 }
 fn deliveries(f: &Fixture) -> Vec<String> {
     fs::read_to_string(f.path("deliveries"))
@@ -445,24 +445,17 @@ fn deliveries(f: &Fixture) -> Vec<String> {
 fn checkout_heads_route_prs_and_linked_issues_and_copy_only_approvals() {
     for mode in ["shared", "member", "detached", "issue", "root", "mention"] {
         let f = fixture();
-        let team = if mode == "root" {
-            "example-team"
-        } else {
-            "example-team/widgets"
+        let (team, kind, member) = match mode {
+            "root" => ("example-team", "member", "root"),
+            "member" => ("example-team/widgets", "member", "lead"),
+            _ => ("example-team/widgets", "team", "lead"),
         };
-        let kind = if mode == "member" || mode == "root" {
-            "member"
-        } else {
-            "team"
-        };
-        let mut rows = checkout(&f, team, kind);
-        if mode == "root" {
-            rows[1]["member"] = json!("root");
-        }
         // Two checkouts in the same team are one owner, not an ambiguity.
-        rows.extend(checkout(&f, team, "second"));
-        rows[2]["kind"] = json!("member");
-        rows.pop();
+        let rows = [
+            checkout(&f, team, kind, "first"),
+            checkout(&f, team, "member", "second"),
+            lead(team, member),
+        ];
         f.write("status", &json!(rows).to_string());
         let mut commented = event("PullRequestReview", "PRR_comment", 202, "");
         commented["state"] = json!("COMMENTED");
@@ -481,8 +474,8 @@ fn checkout_heads_route_prs_and_linked_issues_and_copy_only_approvals() {
             raw["timelineItems"]["nodes"][0]["body"] = json!("@example-bot");
         }
         if mode == "detached" {
-            let oid = git(&f.path(kind), &["rev-parse", "HEAD"]);
-            git(&f.path(kind), &["checkout", "--detach"]);
+            let oid = git(&f.path("first"), &["rev-parse", "HEAD"]);
+            git(&f.path("first"), &["checkout", "--detach"]);
             git(&f.path("second"), &["checkout", "--detach"]);
             raw["headRefName"] = json!("UNTRUSTED_BRANCH_MARKER");
             raw["headRefOid"] = json!(oid);
@@ -540,10 +533,14 @@ fn routing_fallbacks_deliver_and_retry_keeps_the_admitted_recipient() {
         "retry",
     ] {
         let f = fixture();
-        let mut rows = checkout(&f, "example-team/widgets", "team");
+        let widgets = "example-team/widgets";
+        let mut rows = vec![
+            checkout(&f, widgets, "team", "first"),
+            lead(widgets, "lead"),
+        ];
         let reason = match mode {
             "unheld" => {
-                git(&f.path("team"), &["checkout", "-b", "other-branch"]);
+                git(&f.path("first"), &["checkout", "-b", "other-branch"]);
                 "no team holds the branch"
             }
             "missing" => {
@@ -551,7 +548,8 @@ fn routing_fallbacks_deliver_and_retry_keeps_the_admitted_recipient() {
                 "no team holds the branch"
             }
             "several" => {
-                rows.extend(checkout(&f, "example-team/other", "member"));
+                let other = "example-team/other";
+                rows.extend([checkout(&f, other, "member", "second"), lead(other, "lead")]);
                 "several teams hold the branch: example-team/other, example-team/widgets"
             }
             "stopped" => {

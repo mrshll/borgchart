@@ -156,13 +156,10 @@ pub fn fetch(
             return Err(malformed());
         }
         if after.is_empty() {
-            let linked = if pr {
-                vec![raw]
+            let linked: &[Value] = if pr {
+                std::slice::from_ref(raw)
             } else {
-                raw["closedByPullRequestsReferences"]["nodes"]
-                    .as_array()
-                    .map(|nodes| nodes.iter().collect())
-                    .unwrap_or_default()
+                nodes(&raw["closedByPullRequestsReferences"])?
             };
             for head in linked {
                 heads.push((
