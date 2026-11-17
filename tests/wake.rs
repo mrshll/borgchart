@@ -797,18 +797,18 @@ fn unified_send_types_into_working_composers_and_keeps_a_record() {
     let e = Env::new(vendor);
     e.send_setup(vendor, false, false);
     e.control("mode=working");
-    let (code, out) = e.send_message("hello\nsecond line", &[]);
+    let (code, out) = e.send_message("hello", &[]);
     assert_eq!(code, 0, "{out}");
     assert_eq!(out["delivery"], "typed", "{out}");
     let submits = e.events("submit");
     assert_eq!(submits.len(), 1, "{submits:?}");
     let body = submits[0]["text"].as_str().unwrap();
     assert!(body.contains("[brg m1 from external:test]"), "{body}");
-    assert!(body.contains("hello\nsecond line"), "{body}");
+    assert!(body.contains("hello"), "{body}");
     assert!(body.contains("brg msg ack m1"), "{body}");
     let bus = borgchart::bus::store::open(&e.state).unwrap();
     let snap = borgchart::bus::store::snapshot(&bus).unwrap();
-    assert_eq!(snap.records[&1].body, "hello\nsecond line");
+    assert_eq!(snap.records[&1].body, "hello");
     assert!(snap.records[&1].ack_required);
     assert!(snap.acks.is_empty());
 }
@@ -827,11 +827,9 @@ fn claude_wrapped_typed_send_is_submitted_without_uncertainty() {
 }
 
 #[test]
-fn unified_send_preserves_drafts_and_skips_unverifiable_and_interactive_messages() {
+fn unified_send_preserves_drafts_and_skips_interactive_messages() {
     for (interactive, text, draft) in [
         (true, "hello".to_string(), false),
-        (false, "x".repeat(16 * 1024), false),
-        (false, "line\n".repeat(20), false),
         (false, "hello".to_string(), true),
     ] {
         let e = Env::new(Vendor::Claude);
@@ -848,6 +846,50 @@ fn unified_send_preserves_drafts_and_skips_unverifiable_and_interactive_messages
             assert!(e.screen().contains("draft"));
         }
     }
+}
+
+#[test]
+fn claude_long_message_is_typed_as_a_pointer_and_submitted() {
+    for body in ["one\ntwo\nthree\nfour\nfive\nsix".into(), "x".repeat(801)] {
+        let e = Env::new(Vendor::Claude);
+        e.send_setup(Vendor::Claude, false, false);
+        e.control("fold=on");
+        let (code, out) = e.send_message(&body, &[]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(out["delivery"], "typed", "{out}");
+        let submitted = e.submissions();
+        assert_eq!(submitted.len(), 1);
+        assert_eq!(submitted[0].lines().count(), 1);
+        assert!(submitted[0].contains("msg read m1"), "{submitted:?}");
+        assert!(submitted[0].contains("ack it when taking responsibility"));
+        let after = wake::snapshot(&e.tmux, &e.pane()).unwrap();
+        assert!(
+            composer::view(&after.screen, Some(after.geometry))
+                .unwrap()
+                .lines
+                .iter()
+                .all(String::is_empty)
+        );
+        let bus = borgchart::bus::store::open(&e.state).unwrap();
+        assert_eq!(
+            borgchart::bus::store::snapshot(&bus).unwrap().records[&1].body,
+            body
+        );
+    }
+}
+
+#[test]
+fn claude_short_message_is_still_typed_in_full() {
+    let e = Env::new(Vendor::Claude);
+    e.send_setup(Vendor::Claude, false, false);
+    e.control("fold=on");
+    let (code, out) = e.send_message("hello", &[]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(out["delivery"], "typed", "{out}");
+    let submitted = e.submissions();
+    assert_eq!(submitted.len(), 1);
+    assert!(submitted[0].contains("\nhello\n"));
+    assert!(!submitted[0].contains("msg read"));
 }
 
 impl Env {
@@ -1123,7 +1165,7 @@ fn enter_without_observed_submission_is_uncertain_and_never_retried() {
 fn locked_oversize_refuses_before_commit_or_paste() {
     let e = Env::new(Vendor::Claude);
     e.send_setup(Vendor::Claude, true, false);
-    let (code, out) = e.send_message(&"x".repeat(16 * 1024), &[]);
+    let (code, out) = e.send_message("one\ntwo\nthree", &[]);
     assert_eq!(code, 5, "{out}");
     assert!(out.get("id").is_none());
     assert!(e.events("paste").is_empty());

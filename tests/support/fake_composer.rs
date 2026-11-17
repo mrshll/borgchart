@@ -11,6 +11,7 @@
 //! runs: `mode=idle|working|dialog`, `enter=submit|ignore`,
 //! `on_paste=none|dialog|append:<text>` (a person typing during the paste),
 //! `after_enter=garbage` (an unreadable screen after Enter).
+//! `fold=on` folds Claude pastes over 3 lines or 800 characters.
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -41,6 +42,7 @@ struct Fake {
     enter_submits: bool,
     on_paste: String,
     after_enter: String,
+    fold: bool,
     control: String,
     history: Vec<String>,
     width: usize,
@@ -102,6 +104,7 @@ impl Fake {
                 "enter" => self.enter_submits = v != "ignore",
                 "on_paste" => self.on_paste = v.to_string(),
                 "after_enter" => self.after_enter = v.to_string(),
+                "fold" => self.fold = v == "on",
                 _ => {}
             }
         }
@@ -188,6 +191,9 @@ impl Fake {
                     });
                 }
                 lines.push(rule);
+                if self.buffer.starts_with("[Pasted text #") {
+                    lines.push("  paste again to expand".into());
+                }
                 lines.push(if self.insert {
                     "  \x1b[38;5;246m-- INSERT --\x1b[39m ⏵⏵ auto mode on".into()
                 } else {
@@ -247,7 +253,17 @@ impl Fake {
 
     fn paste(&mut self, text: &str) {
         self.log(serde_json::json!({"event": "paste", "text": text}));
-        self.buffer.push_str(text);
+        if self.vendor == Vendor::Claude
+            && self.fold
+            && (text.split('\n').count() > 3 || text.chars().count() > 800)
+        {
+            self.buffer.push_str(&format!(
+                "[Pasted text #1 +{} lines]",
+                text.split('\n').count() - 1
+            ));
+        } else {
+            self.buffer.push_str(text);
+        }
         if self.on_paste == "dialog" {
             self.mode = Mode::Dialog;
         } else if let Some(extra) = self.on_paste.strip_prefix("append:") {
@@ -298,6 +314,7 @@ fn main() {
         enter_submits: true,
         on_paste: String::new(),
         after_enter: String::new(),
+        fold: false,
         control: String::new(),
         history: Vec::new(),
         width: width(),

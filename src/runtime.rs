@@ -5054,15 +5054,25 @@ pub fn send(
                 "input box is not positively empty; draft preserved".into(),
             ));
         }
-        if !view.can_verify_submission(&envelope, before.screen.lines().count()) {
-            return Err(SendError::Refused(
-                "message exceeds the screen-verification budget; no text pasted".into(),
-            ));
-        }
-        paste_send(&tmux, &inst.state, &to, pane, locked, &envelope).map(|()| "typed")
+        let pointer = !view.can_verify_submission(&envelope, before.screen.lines().count());
+        let text = if pointer {
+            send_pointer(
+                &record.id,
+                &record.from,
+                from.as_deref(),
+                &record.body,
+                record.ack_required,
+                peer,
+            )
+        } else {
+            envelope.clone()
+        };
+        paste_send(&tmux, &inst.state, &to, pane, locked, &text)
+            .map(|()| if pointer { "pointer" } else { "typed" })
     })();
     let (delivery, reason) = match &typed {
         Ok("queued") => ("queued", "codex queue: the member's next turn"),
+        Ok("pointer") => ("typed", "message pointer typed and submitted"),
         Ok(delivery) => (*delivery, "submitted"),
         Err(error) => (
             if matches!(error, SendError::Uncertain(_)) {
@@ -5075,7 +5085,6 @@ pub fn send(
     };
     let mut reason = reason.to_string();
     if let Some(inc) = &original
-        && !reason.starts_with("message exceeds the screen-verification budget")
         && lifecycle::load_incarnation(&inst.state, &to)
             .ok()
             .flatten()
@@ -5112,7 +5121,7 @@ pub fn send(
         }
     }
     match typed {
-        Ok(delivery) => {
+        Ok(_) => {
             outcome.delivery = delivery;
             outcome.reason = reason;
             Ok(outcome)
@@ -5231,6 +5240,32 @@ fn send_envelope(
     } else {
         format!("[brg {id} from {author}{relay}; ack not required]\n{body}")
     }
+}
+
+fn send_pointer(
+    id: &str,
+    author: &str,
+    from: Option<&str>,
+    body: &str,
+    ack_required: bool,
+    peer: bool,
+) -> String {
+    let mut relay = from
+        .map(|from| format!("; relayed for {from}"))
+        .unwrap_or_default();
+    if peer {
+        relay.push_str("; another tree's root member, not the owner");
+    }
+    let ack = if ack_required {
+        ", and ack it when taking responsibility"
+    } else {
+        ""
+    };
+    format!(
+        "[brg {id} from {author}{relay}: {} lines, {} bytes; read it with \"$BORGCHART_BIN\" msg read {id}{ack}]",
+        body.split('\n').count(),
+        body.len()
+    )
 }
 
 fn send_snapshot(
