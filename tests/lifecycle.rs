@@ -1555,6 +1555,65 @@ fn pid_of(child: &std::process::Child) -> String {
 }
 
 #[test]
+fn a_failed_kill_keeps_an_unreadable_restricted_start_open() {
+    let (env, out) = start_with_unreadable_restricted_pane(true);
+    let inc = read_json(&env.incarnation_file("lead"));
+    assert!(inc.get("ended_at").is_none(), "{inc}");
+    assert!(inc.get("ended_reason").is_none(), "{inc}");
+    assert_eq!(
+        outcomes(&stdout(&out), &env.m("lead")),
+        [format!(
+            "couldn't stop: brg couldn't read its pane; run `brg stop {}/{}`",
+            env.inst(),
+            env.m("lead")
+        )]
+    );
+}
+
+#[test]
+fn a_successful_kill_ends_an_unreadable_restricted_start() {
+    let (env, out) = start_with_unreadable_restricted_pane(false);
+    let inc = read_json(&env.incarnation_file("lead"));
+    assert!(inc["ended_at"].is_string(), "{inc}");
+    assert_eq!(inc["ended_reason"], "start-failed");
+    assert_eq!(
+        outcomes(&stdout(&out), &env.m("lead")),
+        ["stopped: brg couldn't read its pane, so its restricted-access gate couldn't be checked"]
+    );
+}
+
+fn start_with_unreadable_restricted_pane(kill_fails: bool) -> (Env, Output) {
+    let env = Env::new(false);
+    env.write(
+        "oncall/template.yaml",
+        &TEAM.replace(
+            "    prompt: lead.md\n",
+            "    prompt: lead.md\n    restricted_access: true\n",
+        ),
+    );
+    env.write("home/fake-agent/no-hooks", "");
+    env.script("shim/tmux", &format!(
+        "#!/bin/sh\nfor arg do\ncase \"$arg\" in\n'#{{socket_path}}\t#{{pane_id}}\t#{{pane_pid}}') exit 1 ;;\nkill-window) {kill_fails} && exit 1 ;;\nesac\ndone\nexec '{}' \"$@\"\n",
+        env.tmux.guard().display()
+    ));
+    let out = env
+        .brg_cmd(&["start"])
+        .env(
+            "PATH",
+            format!("{}:{}", env.path("shim").display(), env.base_path()),
+        )
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "{}", both(&out));
+    assert_eq!(
+        env.tmux(&["list-windows", "-a", "-F", "#{window_name}"])
+            .contains(&env.m("lead")),
+        kill_fails
+    );
+    (env, out)
+}
+
+#[test]
 fn a_stale_gate_waiter_leaves_a_replacement_alone() {
     let env = Env::new(false);
     env.write(

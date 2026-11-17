@@ -974,14 +974,17 @@ fn start_members(
             // Without its pane, later checks couldn't tell this member from a
             // replacement, so it couldn't be stopped safely if its gate never
             // reported in. Stop it now, while the locks are held.
-            let _ = tmux.kill_window(&session, id);
-            let _ = lifecycle::end_incarnation(state, id, lifecycle::ENDED_START_FAILED);
-            set(
-                &mut outcomes,
-                id,
+            let outcome = if tmux.kill_window(&session, id).is_ok() {
+                let _ = lifecycle::end_incarnation(state, id, lifecycle::ENDED_START_FAILED);
                 "stopped: brg couldn't read its pane, so its restricted-access gate couldn't be checked"
-                    .to_string(),
-            );
+                    .to_string()
+            } else {
+                format!(
+                    "couldn't stop: brg couldn't read its pane; run `brg stop {}`",
+                    inst.at(id)
+                )
+            };
+            set(&mut outcomes, id, outcome);
             failed = true;
             continue;
         }
