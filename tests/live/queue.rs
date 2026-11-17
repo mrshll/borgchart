@@ -80,7 +80,18 @@ fn send(w: &World, t: &Team<'_>, body: &str, delivery: &str) -> Result<Value, Ou
 fn reply(w: &World, t: &Team<'_>, nonce: &str) -> Result<(), Outcome> {
     let want = format!("REPLY-{nonce}");
     wait_for(w, t, &t.member(), &want, || {
-        screen(w, t, &t.member()).contains(&want)
+        screen(w, t, &t.member())
+            .lines()
+            .scan(false, |assistant, l| {
+                if l.starts_with("• ") {
+                    *assistant = true;
+                }
+                if l.starts_with("› ") {
+                    *assistant = false;
+                }
+                Some(*assistant && l.trim_start_matches("• ").trim() == want)
+            })
+            .any(|matched| matched)
     })
 }
 
@@ -174,6 +185,9 @@ fn posture(w: &World, locked: bool) -> Result<(), Outcome> {
         Ok(())
     })?;
     reply(w, &t, &early)?;
+    wait_for(w, &t, &t.member(), "idle before nonce", || {
+        t.state().0 == "idle"
+    })?;
     let idle = world::nonce();
     send(w, &t, &format!("nonce {idle}"), "queued")?;
     reply(w, &t, &idle)?;

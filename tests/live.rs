@@ -338,6 +338,7 @@ fn case(w: &World, id: &str, submit: bool) -> Vec<(String, Outcome)> {
         "claude-env-colour" => one(cases::env_colour(w, Who::Claude)),
         "codex-env-colour" => one(cases::env_colour(w, Who::Codex)),
         "claude-background-wait" => one(cases::background_wait(w)),
+        "claude-typed-send" => one(cases::typed_send(w)),
         "codex-queue" => one(queue::run(w)),
         "claude-wake-matrix" => one(matrix_case(w, Vendor::Claude, submit)),
         other => one(Outcome::Fail(format!("no such case {other}"))),
@@ -461,6 +462,11 @@ fn live_matrix() {
         env("BORGCHART_LIVE_DRY").as_deref(),
     );
     if mode == Mode::Off {
+        assert_ne!(
+            env("BORGCHART_LIVE_STRICT").as_deref(),
+            Some("1"),
+            "strict nightly requires live mode"
+        );
         eprintln!("set BORGCHART_LIVE=1 to run (or BORGCHART_LIVE_DRY=1 for the fakes)");
         return;
     }
@@ -488,6 +494,13 @@ fn live_matrix() {
     let results = run_cases(&w, &selected, submit, &matrix);
     let v = rules::verdict(&selected, &results, partial, mode == Mode::Dry);
     matrix.finish(&v);
+    if env("BORGCHART_LIVE_STRICT").as_deref() == Some("1") {
+        assert!(
+            !v.partial && v.skipped.is_empty(),
+            "nightly requires every case to pass: {}",
+            v.summary()
+        );
+    }
     assert!(
         !v.fails(),
         "{}\n(see {})",
@@ -538,7 +551,7 @@ fn dry_run_reaches_every_expected_result() {
 
     // Every case, all fakes well behaved.
     let results = run_cases(&w, &both, true, &matrix);
-    let skips = ["claude-trust-on", "claude-wake-matrix"];
+    let skips = ["claude-wake-matrix"];
     for (id, _) in REQUIRED {
         let want = if skips.contains(id) { "SKIP" } else { "PASS" };
         check(id, id, want, results.get(*id));
@@ -683,6 +696,7 @@ fn time_limited_calls_end_their_group_and_never_wait_on_held_pipes() {
 fn codex_queue_dry_run_checks_both_postures_and_post_tool_delivery() {
     let keep = tempfile::tempdir().unwrap();
     let w = World::dry(keep.path());
+    w.scenario("queue-vendor", "late-idle");
     let outcome = queue::run(&w);
     assert!(matches!(outcome, Outcome::Pass(_)), "{outcome:?}");
     // Controls must fail when exit 0 silently loses the turn or the
@@ -700,6 +714,73 @@ fn codex_queue_dry_run_checks_both_postures_and_post_tool_delivery() {
         matches!(outcome, Outcome::Fail(_)),
         "missing post hook: {outcome:?}"
     );
+    w.scenario("queue-vendor", "echo-reply");
+    w.scenario("queue-locked", "ok");
+    assert!(matches!(queue::run(&w), Outcome::Fail(_)));
+}
+
+#[test]
+fn folder_trust_on_and_off_are_checked_in_dry_mode() {
+    let keep = tempfile::tempdir().unwrap();
+    let w = World::dry(keep.path());
+    w.scenario("truster", "trust-drops-key");
+    for id in [
+        "claude-trust-on",
+        "claude-trust-off",
+        "codex-trust-on",
+        "codex-trust-off",
+    ] {
+        for (case, outcome) in case(&w, id, true) {
+            assert!(matches!(outcome, Outcome::Pass(_)), "{case}: {outcome:?}");
+        }
+    }
+    w.scenario("truster", "trust-key");
+    for id in ["claude-trust-off", "codex-trust-off"] {
+        let outcomes = case(&w, id, true);
+        assert!(matches!(outcomes[0].1, Outcome::Fail(_)), "{outcomes:?}");
+        assert!(matches!(outcomes[1].1, Outcome::Pass(_)), "{outcomes:?}");
+    }
+}
+
+#[test]
+fn claude_background_wait_cannot_pass_through_typed_delivery() {
+    if !world::has_proc() {
+        return;
+    }
+    let keep = tempfile::tempdir().unwrap();
+    let w = World::dry(keep.path());
+    let outcome = cases::background_wait(&w);
+    assert!(matches!(outcome, Outcome::Pass(_)), "{outcome:?}");
+    w.scenario("waiter", "early-turn");
+    assert!(matches!(cases::background_wait(&w), Outcome::Fail(_)));
+}
+
+#[test]
+fn nightly_rejects_required_cases_that_do_not_pass() {
+    for strict in ["0", "1"] {
+        let out = common::command(std::env::current_exe().unwrap())
+            .args(["--exact", "live_matrix", "--ignored", "--nocapture"])
+            .env("BORGCHART_LIVE_DRY", "1")
+            .env("BORGCHART_LIVE_STRICT", strict)
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.success(),
+            strict == "0",
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+}
+
+#[test]
+fn claude_message_send_must_start_a_turn_from_idle() {
+    let keep = tempfile::tempdir().unwrap();
+    let w = World::dry(keep.path());
+    let outcome = cases::typed_send(&w);
+    assert!(matches!(outcome, Outcome::Pass(_)), "{outcome:?}");
+    w.scenario("typer", "drop-turn");
+    assert!(matches!(cases::typed_send(&w), Outcome::Fail(_)));
 }
 
 #[test]
