@@ -326,7 +326,7 @@ fn resolver_failures_leave_no_team_or_settings_and_do_not_relay_child_output() {
         let mut cmd = env.cmd(&["create", "oncall", env.path("work/a").to_str().unwrap()]);
         cmd.env("MODE", mode);
         if mode == "timeout" {
-            cmd.env("BORGCHART_TEST_SECRETS_TIMEOUT_MS", "100");
+            cmd.env("BORGCHART_TEST_SECRETS_TIMEOUT_MS", "1000");
         }
         let out = cmd.output().unwrap();
         assert!(!out.status.success(), "{mode}: {}", both(&out));

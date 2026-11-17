@@ -295,7 +295,7 @@ rm -rf -- "$dir"
 
     /// Stop the server and wait until it no longer accepts connections.
     pub fn kill_server(&self, socket: &str) {
-        let _ = self.tmux(socket).arg("kill-server").output().unwrap();
+        self.tmux(socket).arg("kill-server").output().unwrap();
         let path = self.path.join(format!("tmux-{}", self.uid)).join(socket);
         assert!(
             wait_for_server_exit(&path, Duration::from_secs(10)),
@@ -483,10 +483,19 @@ impl Drop for PrivateTmux {
             remove(Path::new(path));
         }
         if let Some(mut watchdog) = self.watchdog.take() {
-            if let Some(group) = rustix::process::Pid::from_raw(watchdog.id() as i32) {
+            let group = rustix::process::Pid::from_raw(watchdog.id() as i32);
+            if let Some(group) = group {
                 let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
             }
             let _ = watchdog.wait();
+            if let Some(group) = group {
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while rustix::process::test_kill_process_group(group).is_ok()
+                    && Instant::now() < deadline
+                {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
         }
         let refused = self.refused();
         if refused.is_empty() {
@@ -500,6 +509,10 @@ impl Drop for PrivateTmux {
     }
 }
 
+/// Wait until connecting to `path` is refused or finds no socket (the server
+/// has closed its listener), for at most `within`. False if it still accepts.
+/// Assumes the server keeps accepting until it exits: a blocking connect to
+/// a listener that stopped accepting could wait past the limit.
 fn wait_for_server_exit(path: &Path, within: Duration) -> bool {
     let deadline = Instant::now() + within;
     loop {
