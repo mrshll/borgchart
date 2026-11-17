@@ -58,7 +58,10 @@ def test_control_pass_requires_different_versions_and_covers_any_latest_failure(
         matrix(tmp_path / "latest", outcome)
         assert "breaks claude-wake-matrix" in report(tmp_path, "failure", "success", "--dry-run").stdout
         assert "harness red" in report(tmp_path, "success", "skipped", "--dry-run").stdout
+    # A case the control version doesn't have can't show a regression.
     path = tmp_path / "latest/matrix.md"
+    path.write_text(path.read_text().replace("| claude-add-dir-status | PASS |", "| claude-add-dir-status | FAIL |"))
+    assert "harness red" in report(tmp_path, "failure", "success", "--dry-run").stdout
     path.write_text(path.read_text().replace("| codex-queue | PASS | test |", ""))
     assert "harness red" in report(tmp_path, "success", "skipped", "--dry-run").stdout
     matrix(tmp_path / "control")

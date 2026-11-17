@@ -409,14 +409,12 @@ fn codex_trust_screen(screen: &str) -> bool {
 /// Whether this `claude --version` line shows the added-folder dialog,
 /// new in 2.1.326. A version that doesn't parse runs the case.
 fn has_add_dir_dialog(version: &str) -> bool {
-    let parts: Vec<u32> = version
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .split('.')
-        .map_while(|p| p.parse().ok())
-        .collect();
-    parts.len() != 3 || parts[..] >= [2, 1, 326][..]
+    let token = version.split_whitespace().next().unwrap_or("");
+    let parts: Option<Vec<u32>> = token.split('.').map(|p| p.parse().ok()).collect();
+    match parts {
+        Some(parts) if parts.len() == 3 => parts[..] >= [2, 1, 326][..],
+        _ => true,
+    }
 }
 
 fn blocked_at(rule: &str, folder: &Path) -> Outcome {
@@ -1153,6 +1151,7 @@ mod tests {
             "2.2.0",
             "3.0.0",
             "fake claude 0.0.0",
+            "2.1.325.extra (Claude Code)",
         ] {
             assert!(has_add_dir_dialog(v), "{v}");
         }

@@ -79,6 +79,8 @@ def main() -> None:
             and args.control_result == "success"
             and control_complete
             and all(r in OK for r, _ in controls.values())
+            # The old version must have run each failing case, not skipped it as N/A.
+            and all(controls.get(case, ("",))[0] == "PASS" for case in bad)
         )
         kind = "regression" if regression else "harness"
         desired[kind] = (
