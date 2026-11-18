@@ -246,10 +246,10 @@ pub fn fetch(
             if let Some(kind) = kind {
                 let mut reaction = None;
                 if review
-                    && string(value, "body")?.is_empty()
+                    && string(value, "body")?.trim().is_empty()
                     && let Some(reply) = nodes(&value["comments"])?.first()
                 {
-                    reaction = Some(node_id(reply)?.into()); // a thread reply
+                    reaction = Some(node_id(reply)?.into()); // no review box; react on its first comment
                 }
                 events.push(PendingEvent {
                     id: node_id(value)?.into(),

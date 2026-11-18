@@ -324,9 +324,11 @@ fn owner_thread_replies_outside_the_timeline_wake_by_assignment_or_unedited_ment
             reply["lastEditedAt"] = json!(AT);
             reply["editor"] = json!({"databaseId":202});
         }
-        let mut review = event("PullRequestReview", "PRR_reply", 202, "");
+        let mut second = content(202, "Another inline comment");
+        second["id"] = json!("PRRC_second");
+        let mut review = event("PullRequestReview", "PRR_reply", 202, "\n");
         review["state"] = json!("COMMENTED");
-        review["comments"] = json!({"nodes":[reply]});
+        review["comments"] = json!({"nodes":[reply, second]});
         changed(&f, &[(true, vec![review.clone()])]);
         let mut raw = item(true, vec![review]);
         if !assigned {
