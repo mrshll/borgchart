@@ -12,6 +12,8 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+/// Received, not acted on: one attempt per committed comment or review.
+const EYES: &str = "mutation($id: ID!) { addReaction(input: {subjectId: $id, content: EYES}) { reaction { content } } }";
 pub struct Poll {
     pub processed: usize,
     pub admitted: usize,
@@ -175,20 +177,15 @@ impl<A: Api> Session<A> {
             ),
             Err(error) => (vec![error.to_string()], format!("{sent} sent")),
         };
-        if may_react && let Some(id) = self.snapshot.reactions.first().cloned() {
-            self.snapshot.reactions.remove(&id);
+        if may_react && let Some(id) = self.snapshot.reactions.pop_first() {
             self.snapshot.save(store)?;
-            let result = self.api.graphql(
-                "mutation($id: ID!) { addReaction(input: {subjectId: $id, content: EYES}) { reaction { content } } }",
-                &[("id", &id)], &[],
-            );
-            if let Err(Error::RateLimited(retry)) = &result {
-                self.paused_until = Some(*retry);
-                self.snapshot.reactions.insert(id.clone());
-                self.snapshot.save(store)?;
-            }
-            if let Err(error) = result {
+            if let Err(error) = self.api.graphql(EYES, &[("id", &id)], &[]) {
                 errors.push(format!("eyes reaction on {id} failed: {error}"));
+                if let Error::RateLimited(retry) = error {
+                    self.paused_until = Some(retry);
+                    self.snapshot.reactions.insert(id);
+                    self.snapshot.save(store)?;
+                }
             }
         }
         if !self.snapshot.pending.is_empty() {
