@@ -1930,6 +1930,29 @@ fn trust_env(config: &str) -> Env {
 }
 
 #[test]
+fn wrapped_folder_trust_is_accepted_without_including_dialog_prose() {
+    let env = trust_env("");
+    let folder = env.path(&format!("work/{}/{}", "a".repeat(150), "b".repeat(150)));
+    fs::create_dir_all(&folder).unwrap();
+    let out = env.brg(&[
+        "create",
+        env.path("team").to_str().unwrap(),
+        folder.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "{}", stdout(&out));
+    assert!(
+        env.events("alpha")
+            .iter()
+            .any(|e| e["event"] == "trust-accepted"),
+        "{}",
+        stdout(&out)
+    );
+    env.wait_for("alpha idle after wrapped trust", |e| {
+        e.state_of("alpha") == "idle"
+    });
+}
+
+#[test]
 fn folder_trust_is_accepted_for_a_locked_members_folder_by_default() {
     let env = trust_env("");
     let out = env.brg(&["start"]);
