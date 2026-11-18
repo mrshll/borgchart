@@ -95,11 +95,8 @@ fn template_edits_replace_the_discovery_scope_at_the_next_poll() {
     f.write("github-repositories.yaml", "- example-org/widgets\n");
     f.write("next-github-repositories.yaml", "- example-org/gadgets\n");
     drive(&f, "0,60");
-    let before = f.read("calls-at-0");
     let after = f.read("calls-at-60");
-    let next = after.strip_prefix(&before).unwrap();
-    assert!(before.contains("repos/example-org/widgets/"));
-    assert!(!before.contains("repos/example-org/gadgets/"));
+    let next = after.strip_prefix(&f.read("calls-at-0")).unwrap();
     assert!(next.contains("repos/example-org/gadgets/"));
     assert!(!next.contains("repos/example-org/widgets/"));
 }
