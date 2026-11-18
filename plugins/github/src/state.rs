@@ -32,6 +32,9 @@ pub struct PendingEvent {
     pub id: String,
     #[serde(default)]
     pub reactable: bool,
+    /// Reaction target; None uses the event ID.
+    #[serde(default)]
+    pub reaction: Option<String>,
     pub repository: String,
     pub number: u64,
     pub is_pull_request: bool,

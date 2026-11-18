@@ -192,7 +192,7 @@ fn text(f: &Fixture) -> String {
     f.read("deliveries")
 }
 fn content(author: u64, body: &str) -> Value {
-    json!({"author":{"databaseId":author},"body":body,"lastEditedAt":null,"editor":null})
+    json!({"id":"PRRC_reply","author":{"databaseId":author},"body":body,"lastEditedAt":null,"editor":null})
 }
 fn event(kind: &str, id: &str, actor: u64, body: &str) -> Value {
     let mut e = content(actor, body);
@@ -340,6 +340,9 @@ fn owner_thread_replies_outside_the_timeline_wake_by_assignment_or_unedited_ment
             "{assigned}/{edited}"
         );
         assert_eq!(eyes(&f.calls()).len(), expected, "{assigned}/{edited}");
+        if expected != 0 {
+            assert_eq!(eyes(&f.calls()), ["PRRC_reply"], "{assigned}/{edited}");
+        }
         assert_eq!(f.health()["ok"], true);
     }
 }
@@ -943,7 +946,7 @@ fn eyes(calls: &str) -> Vec<&str> {
 #[test]
 fn received_comments_and_reviews_get_one_eyes_each_without_bursts() {
     let f = fixture();
-    let mut inline = event("PullRequestReview", "PRR_inline", 202, "");
+    let mut inline = event("PullRequestReview", "PRR_inline", 202, "Review summary");
     inline["comments"] = json!({"nodes":[content(202, "@example-bot")]});
     let comment = event("IssueComment", "IC_received", 202, "@example-bot");
     let assigned = event("AssignedEvent", "AE_received", 202, "");

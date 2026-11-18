@@ -40,7 +40,7 @@ fragment actor on Actor { ... on User { databaseId } ... on Bot { databaseId } }
 fragment comment on IssueComment { id author { ...actor } body createdAt lastEditedAt editor { ...actor } }
 fragment assignment on AssignedEvent { id actor { ...actor } assignee { ... on User { databaseId } } createdAt }
 fragment review on PullRequestReview { id author { ...actor } state submittedAt commit { oid } body lastEditedAt editor { ...actor }
- comments(first: 50) { nodes { author { ...actor } body lastEditedAt editor { ...actor } } } }
+ comments(first: 50) { nodes { id author { ...actor } body lastEditedAt editor { ...actor } } } }
 "#;
 fn malformed() -> Error {
     Error::Other(
@@ -247,6 +247,14 @@ pub fn fetch(
                 events.push(PendingEvent {
                     id: node_id(value)?.into(),
                     reactable: matches!(name, "IssueComment" | "PullRequestReview"),
+                    reaction: if review
+                        && string(value, "body")?.is_empty()
+                        && let Some(comment) = nodes(&value["comments"])?.first()
+                    {
+                        Some(node_id(comment)?.into())
+                    } else {
+                        None
+                    },
                     repository: item.repository.clone(),
                     number: item.number,
                     is_pull_request: pr,
