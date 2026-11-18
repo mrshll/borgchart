@@ -75,10 +75,10 @@ fn fetch(id: &str) -> Result<Option<String>, Error> {
                 .into(),
         ));
     }
-    let path = config::path();
+    let path = borgchart::config::path();
     let config = config::load(&path).map_err(Error::Other)?.ok_or_else(|| {
         Error::Other(format!(
-            "GitHub intake is not configured: no {}",
+            "GitHub intake is not configured: no github section in {}",
             path.display()
         ))
     })?;

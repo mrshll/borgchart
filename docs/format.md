@@ -229,13 +229,18 @@ templates:                    # where template names are looked up, each a folde
 plugins_dir: ~/borgchart-plugins   # where shared:<name> plugins live
 tmux: {user_config: true}     # load your own tmux config on brg's server (default: false)
 secrets: {resolver: [example-secrets, run, "--env-file={file}", "--"]}
+github:
+  owner: example-owner
+  gh_config_dir: ~/.config/gh-example-bot
+  repositories: [example-org/widgets]  # optional fallback to the template list
 ```
 
+- **`github`:** optional; without it GitHub intake is off. `owner` and `gh_config_dir` must be non-empty, and the profile path follows the path rules above. `repositories` is an optional list of strings, used when the template's `github-repositories.yaml` lists none. The plugin rereads this file every poll, so edits need no restart; an invalid file stops discovery. See the [GitHub plugin](../plugins/github/README.md).
 - **`secrets.resolver`:** optional argv, with `{file}` exactly once. brg appends its own helper command; the resolver must run that command with the references resolved into its environment. No shell is used. The resolver inherits brg's environment, has no stdin, and has 120 seconds for approval. Its stdout and stderr are captured; failures show only fixed brg diagnostics. To diagnose a failure, check the resolver separately.
   - The temporary 0600 env-file contains `BORGCHART_SECRET_<n>='<reference>'` lines and is removed when resolution returns. An interrupted start may leave it until the next resolving start. Values return over a pipe and go only to the existing 0600 plugin settings files.
   - Resolution runs once per team starting fresh, before the registry lock. Joining a running team reuses its settings; missing or corrupt settings require a full stop/start. Members cannot trigger resolution: ask the owner to start that team. Each restored child resolves separately; a failed child leaves its already-started parent running.
   - Starts need the owner's resolver reachable and approved. Rotate secrets with a full stop/start; vendor API keys still follow `auth` below.
-- **Settings:** members that start use current `auth`, `auto_trust` and template files. Plugin settings refresh after a full stop/start. A team retains its recorded template folder.
+- **Settings:** members that start use current `auth`, `auto_trust` and template files. Template-declared plugin settings refresh after a full stop/start. A team retains its recorded template folder.
 - **`auth: login`:** brg passes no API-key variables, so a stray key in your shell can't replace your login.
 - **`auth: api_key`:** brg passes each member its own vendor's key by name: `ANTHROPIC_API_KEY` to Claude members, `OPENAI_API_KEY` to Codex members, from the environment `create` or `start` runs in. Nothing stores the key.
 - **`auto_trust`:** trusts each member's folder (the team's working folder, or its own worktree), so the member doesn't stop at its vendor's folder-trust screen. Choosing the folder at `create` is your consent. Each trust is printed and shown in `brg status --json` (`trust_accepted`). Set `auto_trust: false` to attach and answer the screen yourself; `brg status` shows such a member as `blocked (folder trust)` with the `brg attach` command.

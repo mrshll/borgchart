@@ -24,7 +24,7 @@ pub struct Session<A: Api> {
     api: A,
     identity: Option<(String, PathBuf)>,
     guard: Option<Guard>,
-    repositories: PathBuf,
+    config_file: PathBuf,
     note: String,
     idle: bool,
     pub snapshot: Snapshot,
@@ -35,14 +35,19 @@ impl<A: Api> Session<A> {
     /// Reads state before any API request, and never writes over unreadable state.
     pub fn new(api: A, store: &plugin::State, epoch: SystemTime) -> Result<Self, String> {
         let snapshot = Snapshot::start(store)?;
-        Ok(Self::configured(api, snapshot, epoch, config::path()))
+        Ok(Self::configured(
+            api,
+            snapshot,
+            epoch,
+            borgchart::config::path(),
+        ))
     }
-    fn configured(api: A, snapshot: Snapshot, epoch: SystemTime, repositories: PathBuf) -> Self {
+    fn configured(api: A, snapshot: Snapshot, epoch: SystemTime, config_file: PathBuf) -> Self {
         Self {
             api,
             identity: None,
             guard: None,
-            repositories,
+            config_file,
             note: String::new(),
             idle: true,
             snapshot,
@@ -53,8 +58,8 @@ impl<A: Api> Session<A> {
     pub fn poll(&mut self, now: SystemTime) -> Result<Poll, Error> {
         self.idle = true;
         self.note.clear();
-        let Some(mut config) = config::load(&self.repositories).map_err(Error::Other)? else {
-            self.note = format!("off: no {}", self.repositories.display());
+        let Some(mut config) = config::load(&self.config_file).map_err(Error::Other)? else {
+            self.note = format!("off: no github section in {}", self.config_file.display());
             self.guard = None;
             self.identity = None;
             self.epoch = now;
@@ -65,7 +70,7 @@ impl<A: Api> Session<A> {
             if !config.entries.is_empty() {
                 self.note = format!(
                     "repositories from {TEMPLATE}; the list in {} is ignored",
-                    self.repositories.display()
+                    self.config_file.display()
                 );
             }
             config.entries = template;
@@ -348,11 +353,11 @@ mod tests {
         json!({"node_id":format!("I_{number}"),"number":number,"updated_at":format_utc(updated_at),"repository":{"full_name":"example-org/widgets"}})
     }
     fn config(entries: &str) -> String {
-        format!("owner: example-owner\ngh_config_dir: machine-profile\nrepositories:\n{entries}")
+        format!("schema: 1\ngithub:\n  owner: example-owner\n  gh_config_dir: machine-profile\n  repositories:\n{entries}").replace("\n-", "\n  -")
     }
     fn setup(entries: &str) -> (tempfile::TempDir, ApiFixture, Session<ApiFixture>) {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("github.yaml");
+        let path = dir.path().join("config.yaml");
         fs::write(&path, config(entries)).unwrap();
         let api = ApiFixture::new();
         let session = Session::configured(api.clone(), Snapshot::default(), now(), path);
@@ -377,7 +382,7 @@ mod tests {
         assert_eq!(api.calls().len(), calls);
         let owner = config("- example-org/widgets\n").replace("example-owner", "example-next");
         for text in [owner.clone(), owner.replace("machine-profile", "p2")] {
-            fs::write(dir.path().join("github.yaml"), text).unwrap();
+            fs::write(dir.path().join("config.yaml"), text).unwrap();
             api.0.borrow_mut().calls.clear();
             session.poll(now() + secs(1201)).unwrap();
             assert_eq!(&api.calls()[..2], ["user", "users/example-next"]);
@@ -411,7 +416,7 @@ mod tests {
         let (dir, api, mut session) = setup("- example-org/widgets\n");
         session.poll(now()).unwrap();
         let later = now() + secs(60);
-        let path = dir.path().join("github.yaml");
+        let path = dir.path().join("config.yaml");
         let entries = config("- example-org/widgets\n- example-org/gadgets\n");
         fs::write(&path, entries).unwrap();
         // The new entry starts when it was added: its older item is skipped.
@@ -420,7 +425,7 @@ mod tests {
             vec![json!([item(1, now()), item(2, later)])],
         );
         assert_eq!(processed(&mut session, later), 1);
-        for bad in ["- example-org/bad?query\n", ""] {
+        for bad in ["- example-org/bad?query\n", "wrong-shape"] {
             fs::write(&path, config(bad)).unwrap();
             let calls = api.calls().len();
             assert!(session.poll(later).is_err());

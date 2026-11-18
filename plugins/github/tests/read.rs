@@ -129,7 +129,9 @@ fn reads_refuse_nonowner_actions_invalid_ids_and_owner_logins_before_exposing_te
     let (code, _, error) = read(&f, "IC_example", &node("IssueComment"));
     assert_ne!(code, Some(0));
     assert!(!f.calls().contains("graphql"));
-    assert!(error.contains("set gh_config_dir in GITHUB_CONFIG to the machine account's login"));
+    assert!(error.contains(
+        "set gh_config_dir in config.yaml's github section to the machine account's login"
+    ));
 }
 #[test]
 fn events_have_only_verified_facts_and_bodies_are_bounded_without_splitting_utf8() {

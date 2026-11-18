@@ -16,7 +16,7 @@ impl Fixture {
             dir: tempfile::tempdir().unwrap(),
         };
         fs::create_dir(this.path("state")).unwrap();
-        this.write("github.yaml", "owner: example-owner\ngh_config_dir: ~/machine-profile\nrepositories: [example-org/widgets]\n");
+        this.write("config.yaml", "schema: 1\ngithub:\n  owner: example-owner\n  gh_config_dir: ~/machine-profile\n  repositories: [example-org/widgets]\n");
         this.write("gh", r#"#!/bin/sh
 printf '%s\n' "$@" >> "$FIXTURE_DIR/calls"
 printf '%s\n' '--end--' >> "$FIXTURE_DIR/calls"

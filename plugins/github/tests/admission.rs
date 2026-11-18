@@ -26,6 +26,7 @@ if [ -f "$FIXTURE_DIR/crash" ]; then
   /bin/rm "$FIXTURE_DIR/crash"
   kill -KILL "$PPID"
 fi
+if [ -f "$FIXTURE_DIR/fail-once" ]; then /bin/rm "$FIXTURE_DIR/fail-once"; exit 1; fi
 if [ -f "$FIXTURE_DIR/fail" ] || { [ -f "$FIXTURE_DIR/fail-recipient" ] && [ "$recipient" = "$(/bin/cat "$FIXTURE_DIR/fail-recipient")" ]; }; then
   printf '{"message":"blocked\\nretry"}'
   exit 1
@@ -73,7 +74,7 @@ fn drive_fixture() {
             fs::read(dir.join("calls")).unwrap_or_default(),
         )
         .unwrap();
-        if dir.join("next-graphql-1").exists() || dir.join("next-github.yaml").exists() {
+        if dir.join("next-graphql-1").exists() || dir.join("next-config.yaml").exists() {
             fs::copy(
                 dir.join("state/health.json"),
                 dir.join("health-before-repair"),
@@ -83,7 +84,7 @@ fn drive_fixture() {
         for name in [
             "issues",
             "graphql-1",
-            "github.yaml",
+            "config.yaml",
             "github-repositories.yaml",
             "reaction",
         ] {
@@ -104,9 +105,10 @@ fn template_edits_replace_the_discovery_scope_at_the_next_poll() {
     assert!(!next.contains("repos/example-org/widgets/"));
 }
 #[test]
-fn missing_configuration_is_off_until_the_next_poll_after_creation() {
+fn absent_github_section_turns_on_at_the_next_poll_without_restart() {
     let f = fixture();
-    fs::rename(f.path("github.yaml"), f.path("next-github.yaml")).unwrap();
+    fs::rename(f.path("config.yaml"), f.path("next-config.yaml")).unwrap();
+    f.write("config.yaml", "schema: 1\n");
     drive(&f, "0,60");
     let off = f.json("health-before-repair");
     assert_eq!(off["ok"], true);
@@ -118,13 +120,24 @@ fn missing_configuration_is_off_until_the_next_poll_after_creation() {
     assert_eq!(f.health()["ok"], true);
 }
 #[test]
+fn invalid_global_configuration_stops_discovery_at_the_next_poll() {
+    let f = fixture();
+    let invalid = f.read("config.yaml").replace("schema: 1", "unknown: true");
+    f.write("next-config.yaml", &invalid);
+    drive(&f, "0,60");
+    assert_eq!(f.health()["ok"], false);
+    assert!(f.detail().contains("config.yaml"));
+    assert!(!f.read("calls-at-0").is_empty());
+    assert_eq!(f.read("calls-at-60"), f.read("calls-at-0"));
+}
+#[test]
 fn listing_the_first_repository_later_skips_activity_before_the_listing() {
     let f = fixture();
-    let yaml = "owner: example-owner\ngh_config_dir: ~/machine-profile\n";
-    f.write("github.yaml", &format!("{yaml}repositories: []\n"));
+    let yaml = "schema: 1\ngithub:\n  owner: example-owner\n  gh_config_dir: ~/machine-profile\n";
+    f.write("config.yaml", &format!("{yaml}  repositories: []\n"));
     f.write(
-        "next-github.yaml",
-        &format!("{yaml}repositories: [example-org/widgets]\n"),
+        "next-config.yaml",
+        &format!("{yaml}  repositories: [example-org/widgets]\n"),
     );
     // A day after process start, the last idle poll precedes the listing by one minute.
     drive(&f, "86340,86400");
@@ -136,31 +149,39 @@ fn listing_the_first_repository_later_skips_activity_before_the_listing() {
     assert!(since >= idle - brg_github::state::OVERLAP, "{calls}");
 }
 #[test]
-fn pending_events_are_delivered_without_github_calls_while_nothing_is_listed() {
-    for idle in ["repositories: []", "off"] {
+fn pending_comments_deliver_without_reactions_while_off_or_unlisted() {
+    for off in [true, false] {
         let f = fixture();
+        let team = "example-team/widgets";
+        f.write(
+            "status",
+            &json!([checkout(&f, team, "team", "first"), lead(team, "lead")]).to_string(),
+        );
         changed(
             &f,
-            &[(false, vec![event("AssignedEvent", "AE_idle", 202, "")])],
+            &[
+                (
+                    false,
+                    vec![event("IssueComment", "IC_idle", 202, "@example-bot")],
+                ),
+                (
+                    true,
+                    vec![event("IssueComment", "IC_blocked", 202, "@example-bot")],
+                ),
+            ],
         );
-        f.write("fail", "");
-        drive(&f, "120");
-        assert_eq!(pending(&f), 1);
-        fs::remove_file(f.path("fail")).unwrap();
-        fs::remove_file(f.path("calls")).unwrap();
-        if idle == "off" {
-            fs::remove_file(f.path("github.yaml")).unwrap();
-        } else {
-            f.write(
-                "github.yaml",
-                "owner: example-owner\ngh_config_dir: ~/machine-profile\nrepositories: []\n",
-            );
-        }
-        drive(&f, "180");
-        assert_eq!(pending(&f), 0, "{idle}");
-        assert_eq!(reads(&text(&f), "AE_idle"), 2, "{idle}");
-        assert!(f.read("calls-at-180").is_empty(), "{idle}");
-        assert_eq!(f.health()["ok"], true, "{idle}");
+        f.write("fail-once", "");
+        f.write("fail-recipient", "example-team/widgets/lead");
+        let unlisted = f.read("config.yaml").replace("[example-org/widgets]", "[]");
+        f.write(
+            "next-config.yaml",
+            if off { "schema: 1\n" } else { &unlisted },
+        );
+        // The blocked comment keeps a delivery pending, so the tick reaches the reaction gate.
+        drive(&f, "120,180");
+        assert_eq!(pending(&f), 1, "{off}");
+        assert_eq!(reads(&text(&f), "IC_idle"), 2, "{off}");
+        assert_eq!(f.read("calls-at-180"), f.read("calls-at-120"), "{off}");
     }
 }
 /// Every delivery: its recipient line, then the notice.
@@ -806,8 +827,8 @@ fn maximum_identifiers_and_a_long_routing_reason_still_fit_one_notice() {
     let f = fixture();
     let repo = format!("{}/{}", "a".repeat(39), "b".repeat(100));
     let team = format!("example-team/{}", "c".repeat(210));
-    let config = f.read("github.yaml").replace("example-org/widgets", &repo);
-    f.write("github.yaml", &config);
+    let config = f.read("config.yaml").replace("example-org/widgets", &repo);
+    f.write("config.yaml", &config);
     f.write(
         "status",
         &json!([checkout(&f, &team, "team", "first"), lead(&team, "lead")]).to_string(),
@@ -855,9 +876,9 @@ fn short_downtime_replays_once_and_new_repositories_start_at_restart() {
     assert!(f.detail().contains("2026-01-02T12:00:00.000Z"));
 }
 fn add_gadgets(f: &Fixture) {
-    let config = f.read("github.yaml");
+    let config = f.read("config.yaml");
     f.write(
-        "github.yaml",
+        "config.yaml",
         &config.replace("]", ", example-org/gadgets]"),
     );
 }
@@ -889,7 +910,7 @@ fn long_downtime_bounds_replay_and_journals_one_root_notice_on_restart_or_turn_o
         if turn_on {
             // Off until the next poll, which then runs at AT like the restart arm.
             f.write("epoch", "2026-01-02T11:59:00Z");
-            fs::rename(f.path("github.yaml"), f.path("next-github.yaml")).unwrap();
+            fs::rename(f.path("config.yaml"), f.path("next-config.yaml")).unwrap();
         }
         drive(&f, "0,60,120");
         let sent = text(&f);
@@ -940,9 +961,9 @@ fn received_comments_and_reviews_get_one_eyes_each_without_bursts() {
     answer(&f, 4, &body);
     drive(&f, "0");
     assert_eq!(eyes(&f.read("calls-at-0")).len(), 1);
-    fs::rename(f.path("github.yaml"), f.path("disabled")).unwrap();
+    fs::rename(f.path("config.yaml"), f.path("disabled")).unwrap();
     drive(&f, "60");
-    fs::rename(f.path("disabled"), f.path("github.yaml")).unwrap();
+    fs::rename(f.path("disabled"), f.path("config.yaml")).unwrap();
     f.response("machine", 200, r#"{"id":202,"login":"example-owner"}"#);
     drive(&f, "120");
     assert_eq!(eyes(&f.calls()).len(), 1);

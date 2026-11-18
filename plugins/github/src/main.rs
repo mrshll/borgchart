@@ -12,7 +12,7 @@ struct Cli {
 enum Action {
     /// Read an owner action, checking authorship and framing its text
     Read { id: String },
-    /// Poll every 60 seconds; wait while GITHUB_CONFIG is missing
+    /// Poll every 60 seconds; wait while brg has no github configuration
     Run {
         /// Poll once and exit
         #[arg(long)]

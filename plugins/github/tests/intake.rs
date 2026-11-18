@@ -6,7 +6,7 @@ use std::{fs, os::unix::fs::PermissionsExt, process::Command};
 use support::Fixture;
 
 #[test]
-fn template_scope_overrides_private_scope_and_empty_templates_preserve_it() {
+fn relative_profile_follows_configuration_folder_and_template_scope_takes_precedence() {
     for template in [
         None,
         Some("# none\n"),
@@ -14,13 +14,21 @@ fn template_scope_overrides_private_scope_and_empty_templates_preserve_it() {
         Some("- example-org/gadgets\n"),
     ] {
         let f = Fixture::new();
-        let private = f.path("personal/github.yaml");
+        let private = f.path("personal/config.yaml");
         fs::create_dir(f.path("personal")).unwrap();
-        fs::rename(f.path("github.yaml"), &private).unwrap();
+        fs::write(
+            &private,
+            f.read("config.yaml")
+                .replace("~/machine-profile", "machine-profile"),
+        )
+        .unwrap();
         if let Some(text) = template {
             f.write("github-repositories.yaml", text);
         }
-        f.command().env("GITHUB_CONFIG", &private).output().unwrap();
+        f.command()
+            .env("BORGCHART_CONFIG", &private)
+            .output()
+            .unwrap();
         let overridden = template.is_some_and(|t| t.starts_with('-'));
         assert_eq!(f.calls().contains("repos/example-org/gadgets/"), overridden);
         assert_eq!(
@@ -28,14 +36,18 @@ fn template_scope_overrides_private_scope_and_empty_templates_preserve_it() {
             !overridden
         );
         assert_eq!(f.detail().contains("is ignored"), overridden);
+        assert_eq!(
+            f.read("config-dir"),
+            f.path("personal/machine-profile").to_str().unwrap()
+        );
     }
 }
 #[test]
 fn unlisted_repositories_skip_even_the_guard_and_missing_private_config_stays_off() {
     let f = Fixture::new();
     f.write(
-        "github.yaml",
-        "owner: example-owner\ngh_config_dir: machine-profile\n",
+        "config.yaml",
+        "schema: 1\ngithub:\n  owner: example-owner\n  gh_config_dir: machine-profile\n",
     );
     f.run();
     assert_eq!(f.health()["ok"], true);
@@ -46,7 +58,7 @@ fn unlisted_repositories_skip_even_the_guard_and_missing_private_config_stays_of
     assert!(f.calls().contains("repos/example-org/gadgets/"));
     assert!(!f.detail().contains("is ignored"));
     fs::remove_file(f.path("calls")).unwrap();
-    fs::remove_file(f.path("github.yaml")).unwrap();
+    fs::remove_file(f.path("config.yaml")).unwrap();
     f.run();
     assert!(f.detail().starts_with("off: no"));
     assert!(f.calls().is_empty());
@@ -65,10 +77,11 @@ fn invalid_template_scope_stops_discovery_instead_of_using_the_private_list() {
 
 #[test]
 fn missing_or_empty_gh_config_refuses_before_spawning_gh() {
-    for field in ["", "gh_config_dir: \"\"\n"] {
+    for field in ["", "gh_config_dir: \"\"\n  "] {
         let f = Fixture::new();
-        let yaml = format!("owner: example-owner\n{field}repositories: []\n");
-        f.write("github.yaml", &yaml);
+        let yaml =
+            format!("schema: 1\ngithub:\n  owner: example-owner\n  {field}repositories: []\n");
+        f.write("config.yaml", &yaml);
         f.run();
         assert_eq!(f.health()["ok"], false);
         assert!(f.detail().contains("gh_config_dir"));
@@ -105,20 +118,20 @@ fn owner_identity_refuses_discovery_and_reports_the_machine_profile_fix() {
     f.response("machine", 200, "{\"id\":202,\"login\":\"different-name\"}");
     f.run();
     assert_eq!(f.health()["ok"], false);
-    assert!(
-        f.detail()
-            .contains("set gh_config_dir in GITHUB_CONFIG to the machine account's login")
-    );
+    assert!(f.detail().contains(
+        "set gh_config_dir in config.yaml's github section to the machine account's login"
+    ));
     assert!(!f.calls().contains("repos/"));
 }
 #[test]
 fn unset_invalid_or_unknown_owner_refuses_discovery() {
-    for field in ["", "owner: bad/login\n", "owner: example-missing\n"] {
+    for field in ["", "owner: bad/login\n  ", "owner: example-missing\n  "] {
         let f = Fixture::new();
         f.response("owner", 404, "{\"message\":\"private text\"}");
-        let yaml =
-            format!("{field}gh_config_dir: machine-profile\nrepositories: [example-org/widgets]\n");
-        f.write("github.yaml", &yaml);
+        let yaml = format!(
+            "schema: 1\ngithub:\n  {field}gh_config_dir: machine-profile\n  repositories: [example-org/widgets]\n"
+        );
+        f.write("config.yaml", &yaml);
         f.run();
         assert_eq!(f.health()["ok"], false);
         let detail = f.detail();
