@@ -2,6 +2,7 @@
 use crate::{
     config::{self, Entry, Guard},
     gh::{Api, Error, Gh},
+    timeline,
 };
 use borgchart::plugin;
 use serde_json::Value;
@@ -69,12 +70,7 @@ fn body(value: &Value, owner: u64, text: &mut String) -> Result<(), Error> {
     Ok(())
 }
 fn fetch(id: &str) -> Result<Option<String>, Error> {
-    if id.is_empty()
-        || id.len() > 128
-        || !id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
-    {
+    if !timeline::valid_id(id) {
         return Err(Error::Other(
             "invalid action ID; use 1–128 letters, digits, underscores or hyphens from the notice"
                 .into(),
@@ -87,26 +83,24 @@ fn fetch(id: &str) -> Result<Option<String>, Error> {
         return Err(Error::NotFound);
     }
     let kind = string(value, "__typename")?;
-    let (item, actor) = match kind {
-        "IssueComment" => (&value["issue"], "author"),
-        "PullRequestReview" => (&value["pullRequest"], "author"),
-        "Issue" | "PullRequest" => (value, "author"),
-        "AssignedEvent" => (&value["assignable"], "actor"),
-        "MergedEvent" => (&value["pullRequest"], "actor"),
+    let item = match kind {
+        "IssueComment" => &value["issue"],
+        "PullRequestReview" | "MergedEvent" => &value["pullRequest"],
+        "Issue" | "PullRequest" => value,
+        "AssignedEvent" => &value["assignable"],
         _ => return Err(malformed()),
     };
-    if account(&value[actor]) != Some(guard.owner_id) {
+    if account(&value["actor"]).or(account(&value["author"])) != Some(guard.owner_id) {
         return Ok(None);
     }
-    let repo =
-        Entry::parse(string(&item["repository"], "nameWithOwner")?).map_err(|_| malformed())?;
+    let repo = Entry::parse(string(&item["repository"], "nameWithOwner")?)
+        .ok()
+        .filter(|repo| !repo.is_org())
+        .ok_or_else(malformed)?;
     let number = item["number"]
         .as_u64()
         .filter(|n| *n > 0)
         .ok_or_else(malformed)?;
-    if repo.is_org() {
-        return Err(malformed());
-    }
     let mut text = format!("{kind}\n{}#{number}\n", repo.key());
     match kind {
         "AssignedEvent" => {
@@ -119,40 +113,32 @@ fn fetch(id: &str) -> Result<Option<String>, Error> {
             text.push_str("assigned to the machine account\n");
         }
         "MergedEvent" => text.push_str(&format!("merged at {}\n", commit(value)?)),
-        _ => {
-            if kind == "PullRequestReview" {
-                let state = string(value, "state")?;
-                if ![
-                    "APPROVED",
-                    "CHANGES_REQUESTED",
-                    "COMMENTED",
-                    "DISMISSED",
-                    "PENDING",
-                ]
-                .contains(&state)
-                {
-                    return Err(malformed());
-                }
-                text.push_str(&format!("{state} at {}\n", commit(value)?));
+        "PullRequestReview" => {
+            let state = string(value, "state")?;
+            // The timeline's rule for the state a notice carries.
+            if !(1..=32).contains(&state.len())
+                || !state.bytes().all(|b| b.is_ascii_uppercase() || b == b'_')
+            {
+                return Err(malformed());
             }
+            text.push_str(&format!("{state} at {}\n", commit(value)?));
             body(value, guard.owner_id, &mut text)?;
-            if kind == "PullRequestReview" {
-                let comments = value["comments"]["nodes"]
-                    .as_array()
-                    .ok_or_else(malformed)?;
-                let mut hidden = 0;
-                for comment in comments {
-                    if account(&comment["author"]) == Some(guard.owner_id) {
-                        body(comment, guard.owner_id, &mut text)?;
-                    } else {
-                        hidden += 1;
-                    }
+            let comments = value["comments"]["nodes"]
+                .as_array()
+                .ok_or_else(malformed)?;
+            let mut hidden = 0;
+            for comment in comments {
+                if account(&comment["author"]) == Some(guard.owner_id) {
+                    body(comment, guard.owner_id, &mut text)?;
+                } else {
+                    hidden += 1;
                 }
-                text.push_str(&format!(
-                    "{hidden} inline comments by other accounts not shown\n"
-                ));
             }
+            text.push_str(&format!(
+                "{hidden} inline comments by other accounts not shown\n"
+            ));
         }
+        _ => body(value, guard.owner_id, &mut text)?,
     }
     Ok(Some(text))
 }

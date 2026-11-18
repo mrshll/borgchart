@@ -59,10 +59,14 @@ fn checked(text: &str, len: RangeInclusive<usize>, allowed: fn(u8) -> bool) -> R
         .then_some(text)
         .ok_or_else(malformed)
 }
+/// A node ID as notices name it and `read` accepts it.
+pub fn valid_id(id: &str) -> bool {
+    let allowed = |b: u8| b.is_ascii_alphanumeric() || b"_-".contains(&b);
+    checked(id, 1..=128, allowed).is_ok()
+}
 fn node_id(value: &Value) -> Result<&str, Error> {
-    checked(string(value, "id")?, 1..=128, |b| {
-        b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
-    })
+    let id = string(value, "id")?;
+    valid_id(id).then_some(id).ok_or_else(malformed)
 }
 fn oid(value: &Value) -> Result<String, Error> {
     let oid = string(&value["commit"], "oid")?;
