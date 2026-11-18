@@ -1125,6 +1125,7 @@ fn start_members(
         let deadline = Instant::now() + gate_wait();
         let mut trusted = false;
         let mut selecting_trust = false;
+        let mut idle_since = None;
         loop {
             if s.locked && state.gate_marker(id).exists() {
                 break;
@@ -1162,6 +1163,9 @@ fn start_members(
                 .map(|r| r.read(&w.title, &screen))
                 .ok();
             let is_trust = reading.as_ref().and_then(|r| r.rule.as_deref()) == Some(TRUST_RULE);
+            if reading.as_ref().map(|r| r.state) != Some(State::Idle) {
+                idle_since = None;
+            }
             let accept = is_trust
                 && !trusted
                 && s.trust_dir.is_some()
@@ -1313,6 +1317,14 @@ fn start_members(
                         ),
                     );
                     break;
+                }
+                Some(State::Idle) if !s.locked && s.watch_codex_trust => {
+                    // Codex briefly draws its composer before folder trust.
+                    if idle_since.get_or_insert_with(Instant::now).elapsed()
+                        >= Duration::from_secs(2)
+                    {
+                        break;
+                    }
                 }
                 Some(State::Idle) | Some(State::Working) if !s.locked => break,
                 _ => {}

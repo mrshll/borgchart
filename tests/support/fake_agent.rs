@@ -624,6 +624,12 @@ fn main() {
         .unwrap_or(0),
         start_hooks,
     };
+    if codex_trust_first && flag("codex-composer-before-trust") {
+        agent.mode = Mode::Idle;
+        agent.draw();
+        std::thread::sleep(Duration::from_millis(1000));
+        agent.mode = Mode::CodexTrust;
+    }
     agent.draw();
 
     let (tx, rx) = mpsc::channel::<u8>();

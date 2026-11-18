@@ -2228,6 +2228,25 @@ fn codex_auto_trust_trusts_exactly_the_declared_folder_for_the_session() {
 }
 
 #[test]
+fn codex_start_does_not_miss_trust_after_a_brief_composer() {
+    let env = codex_trust_env("auto_trust: false\n", "");
+    env.write("home/fake-agent/codex-composer-before-trust", "");
+    let out = env.brg(&["start"]);
+    assert!(out.status.success(), "{}", stdout(&out));
+    assert!(
+        stdout(&out).contains("waiting at Codex's folder-trust prompt"),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(env.state_of("beta"), "blocked");
+    assert!(
+        !env.events("beta")
+            .iter()
+            .any(|e| e["event"] == "trust-accepted")
+    );
+}
+
+#[test]
 fn codex_trust_screen_is_left_for_a_person_unless_auto_trust_covers_the_folder() {
     // Catches: Codex trust passed without `auto_trust: true` (including the
     // `locked` default that covers Claude), or over the role's own
