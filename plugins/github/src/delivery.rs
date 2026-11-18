@@ -153,6 +153,7 @@ pub fn approval_copy(event: &PendingEvent) -> Option<PendingEvent> {
     {
         let mut copy = event.clone();
         copy.recipient = root;
+        copy.reactable = false; // The owning lead's delivery reacts.
         copy.reason = bounded(&format!("approval copy; owning lead: {}", event.recipient));
         Some(copy)
     } else {
@@ -224,7 +225,11 @@ pub fn send(
             start += group;
             continue;
         }
-        snapshot.pending.drain(start..start + n);
+        for event in snapshot.pending.drain(start..start + n) {
+            if event.reactable {
+                snapshot.reactions.insert(event.id);
+            }
+        }
         sent += n;
         snapshot.save(store)?;
     }

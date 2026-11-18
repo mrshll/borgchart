@@ -12,6 +12,8 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+/// Received, not acted on: one attempt per committed comment or review.
+const EYES: &str = "mutation($id: ID!) { addReaction(input: {subjectId: $id, content: EYES}) { reaction { content } } }";
 #[derive(Default)]
 pub struct Poll {
     pub processed: usize,
@@ -184,6 +186,8 @@ impl<A: Api> Session<A> {
         if result.is_ok() && self.idle && self.snapshot.pending.is_empty() {
             return store.health(true, &self.note).map_err(|e| e.to_string());
         }
+        // No GitHub call while off or with nothing listed, so no reaction either.
+        let may_react = result.is_ok() && !self.idle;
         let (mut errors, counts) = match result {
             Ok(poll) => (
                 poll.errors,
@@ -194,6 +198,17 @@ impl<A: Api> Session<A> {
             ),
             Err(error) => (vec![error.to_string()], format!("{sent} sent")),
         };
+        if may_react && let Some(id) = self.snapshot.reactions.pop_first() {
+            self.snapshot.save(store)?;
+            if let Err(error) = self.api.graphql(EYES, &[("id", &id)], &[]) {
+                errors.push(format!("eyes reaction on {id} failed: {error}"));
+                if let Error::RateLimited(retry) = error {
+                    self.paused_until = Some(retry);
+                    self.snapshot.reactions.insert(id);
+                    self.snapshot.save(store)?;
+                }
+            }
+        }
         if !self.snapshot.pending.is_empty() {
             errors.push(format!(
                 "{} pending event(s): {}",

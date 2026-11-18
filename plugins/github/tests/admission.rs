@@ -84,9 +84,11 @@ fn drive_fixture() {
             "graphql-1",
             "github.yaml",
             "github-repositories.yaml",
+            "reaction",
         ] {
             let _ = fs::rename(dir.join(format!("next-{name}")), dir.join(name));
         }
+        let _ = fs::rename(dir.join("next-reaction-code"), dir.join("reaction-code"));
     }
 }
 #[test]
@@ -794,4 +796,98 @@ fn maximum_identifiers_and_a_long_routing_reason_still_fit_one_notice() {
     assert!(sent[0].split_once('\n').unwrap().1.len() <= 900);
     assert!(sent[0].contains('…'));
     assert_eq!(pending(&f), 0);
+}
+
+const EYES: &str = "query=mutation($id: ID!) { addReaction(input: {subjectId: $id, content: EYES}) { reaction { content } } }\n";
+/// The subject of each eyes reaction, in call order.
+fn eyes(calls: &str) -> Vec<&str> {
+    let ids = calls.split("--end--\n").filter(|call| call.contains(EYES));
+    ids.map(|call| call.lines().find_map(|s| s.strip_prefix("id=")).unwrap())
+        .collect()
+}
+#[test]
+fn received_comments_and_reviews_get_one_eyes_each_without_bursts() {
+    let f = fixture();
+    let mut inline = event("PullRequestReview", "PRR_inline", 202, "");
+    inline["comments"] = json!({"nodes":[content(202, "@example-bot")]});
+    let comment = event("IssueComment", "IC_received", 202, "@example-bot");
+    let assigned = event("AssignedEvent", "AE_received", 202, "");
+    changed(
+        &f,
+        &[
+            (false, vec![comment, assigned]),
+            (true, vec![inline.clone()]),
+            (true, vec![event("MergedEvent", "ME_received", 202, "")]),
+            (false, vec![]),
+        ],
+    );
+    let mut raw = item(true, vec![inline]);
+    raw["id"] = json!("I_2");
+    raw["assignees"] = json!({"nodes":[]});
+    answer(&f, 2, &raw);
+    let mut body = item(false, vec![]);
+    body["id"] = json!("I_4");
+    body["body"] = json!("@example-bot");
+    answer(&f, 4, &body);
+    drive(&f, "0");
+    assert_eq!(eyes(&f.read("calls-at-0")).len(), 1);
+    fs::rename(f.path("github.yaml"), f.path("disabled")).unwrap();
+    drive(&f, "60");
+    fs::rename(f.path("disabled"), f.path("github.yaml")).unwrap();
+    f.response("machine", 200, r#"{"id":202,"login":"example-owner"}"#);
+    drive(&f, "120");
+    assert_eq!(eyes(&f.calls()).len(), 1);
+    f.response("machine", 200, r#"{"id":101,"login":"example-bot"}"#);
+    drive(&f, "180,240"); // Restart retains the second queued reaction.
+    assert_eq!(eyes(&f.calls()), ["IC_received", "PRR_inline"]);
+    drive(&f, "300"); // A wrongly queued merge, assignment or body would react here.
+    assert_eq!(eyes(&f.calls()), ["IC_received", "PRR_inline"]);
+    for id in ["AE_received", "ME_received", "I_4"] {
+        assert_eq!(reads(&text(&f), id), 1, "{id}");
+    }
+}
+#[test]
+fn no_eyes_until_the_owning_leads_notice_commits_and_its_approval_copy_never_reacts() {
+    let f = fixture();
+    let team = "example-team/widgets";
+    f.write(
+        "status",
+        &json!([checkout(&f, team, "team", "first"), lead(team, "lead")]).to_string(),
+    );
+    let review = event("PullRequestReview", "PRR_delayed", 202, "");
+    changed(&f, &[(true, vec![review])]);
+    f.write("fail-recipient", "example-team/widgets/lead");
+    drive(&f, "0,60");
+    assert!(eyes(&f.calls()).is_empty());
+    fs::remove_file(f.path("fail-recipient")).unwrap();
+    drive(&f, "120,180");
+    assert_eq!(eyes(&f.calls()), ["PRR_delayed"]);
+    assert_eq!(pending(&f), 0);
+}
+#[test]
+fn a_failed_eyes_is_visible_without_retrying_or_resending_the_notice() {
+    let f = fixture();
+    let comment = event("IssueComment", "IC_failed", 202, "@example-bot");
+    changed(&f, &[(false, vec![comment])]);
+    f.response("reaction", 403, "{}");
+    drive(&f, "0");
+    assert_eq!(eyes(&f.calls()), ["IC_failed"]);
+    assert_eq!(f.health()["ok"], false);
+    assert!(f.detail().contains("IC_failed"));
+    drive(&f, "60,120");
+    assert_eq!(eyes(&f.calls()), ["IC_failed"]);
+    assert_eq!(reads(&text(&f), "IC_failed"), 1);
+}
+#[test]
+fn rate_limited_eyes_pauses_api_calls_then_retries_without_resending_the_notice() {
+    let f = fixture();
+    let comment = event("IssueComment", "IC_limited", 202, "@example-bot");
+    changed(&f, &[(false, vec![comment])]);
+    f.response("reaction", 429, "{}");
+    f.response("next-reaction", 200, "{}");
+    let resume = parse_utc(AT).unwrap().elapsed().unwrap().as_secs() + 660;
+    drive(&f, &format!("0,60,{resume}"));
+    assert_eq!(f.read("calls-at-0"), f.read("calls-at-60"));
+    assert_eq!(eyes(&f.calls()), ["IC_limited", "IC_limited"]);
+    assert_eq!(reads(&text(&f), "IC_limited"), 1);
 }

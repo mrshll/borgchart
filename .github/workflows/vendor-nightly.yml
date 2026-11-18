@@ -67,6 +67,8 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       - uses: actions/upload-artifact@v4
         if: always() && steps.scrub.outcome == 'success'
+        # A failed upload must not turn a passing matrix into a failed job.
+        continue-on-error: true
         with:
           name: ${{ github.job }}
           path: target/live

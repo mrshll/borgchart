@@ -34,6 +34,7 @@ for arg do
       since=${arg#*since=}; since=${since%%&*}
       if [ -f "$FIXTURE_DIR/issues-split" ] && [ "$since" \> "$(/bin/cat "$FIXTURE_DIR/issues-split")" ]; then response=issues-after; fi ;;
     graphql) response=graphql ;;
+    query=mutation*) response=reaction ;;
     number=*) number=${arg#number=} ;;
     after=*) after=${arg#after=} ;;
   esac
@@ -48,6 +49,11 @@ exit "$(/bin/cat "$FIXTURE_DIR/$response-code")"
         this.response("machine", 200, "{\"id\":101,\"login\":\"example-bot\"}");
         this.response("owner", 200, "{\"id\":202,\"login\":\"example-owner\"}");
         this.response("issues", 200, "[]");
+        this.response(
+            "reaction",
+            200,
+            r#"{"data":{"addReaction":{"reaction":{"content":"EYES"}}}}"#,
+        );
         this.response(
             "graphql",
             200,

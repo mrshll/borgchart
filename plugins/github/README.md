@@ -68,6 +68,10 @@ heads. No match, several matches, a stopped lead or unavailable routing falls
 back to the root lead, with the reason in the notice. Approving reviews routed
 to a child lead also get a root copy. Notices contain IDs, not GitHub bodies;
 failed sends stay journaled and can repeat after an interrupted send.
+After a notice commits to the bus, comments and reviews receive an eyes reaction
+meaning received; at most one per poll, with failures in health and no retry
+except after a rate-limit pause. A root copy gets none: its owning lead's notice
+does. Bodies, assignments and merges get no reaction.
 
 Use `brg-github read <id>` for each notice item. It rechecks identity and
 authorship, prints approval state and commit where applicable, and frames body
