@@ -224,7 +224,17 @@ pub fn send(
             start += group;
             continue;
         }
-        snapshot.pending.drain(start..start + n);
+        for event in snapshot.pending.drain(start..start + n) {
+            if event.reactable {
+                snapshot.reactions.insert(event.id);
+            }
+        }
+        // A later delivery of an approval copy must not queue a second reaction.
+        for event in &mut snapshot.pending {
+            if snapshot.reactions.contains(&event.id) {
+                event.reactable = false;
+            }
+        }
         sent += n;
         snapshot.save(store)?;
     }

@@ -164,6 +164,7 @@ impl<A: Api> Session<A> {
         }
         self.snapshot.save(store)?;
         let (sent, delivery_error) = delivery::send(&mut self.snapshot, store)?;
+        let may_react = result.is_ok();
         let (mut errors, counts) = match result {
             Ok(poll) => (
                 poll.errors,
@@ -174,6 +175,22 @@ impl<A: Api> Session<A> {
             ),
             Err(error) => (vec![error.to_string()], format!("{sent} sent")),
         };
+        if may_react && let Some(id) = self.snapshot.reactions.first().cloned() {
+            self.snapshot.reactions.remove(&id);
+            self.snapshot.save(store)?;
+            let result = self.api.graphql(
+                "mutation($id: ID!) { addReaction(input: {subjectId: $id, content: EYES}) { reaction { content } } }",
+                &[("id", &id)], &[],
+            );
+            if let Err(Error::RateLimited(retry)) = &result {
+                self.paused_until = Some(*retry);
+                self.snapshot.reactions.insert(id.clone());
+                self.snapshot.save(store)?;
+            }
+            if let Err(error) = result {
+                errors.push(format!("eyes reaction on {id} failed: {error}"));
+            }
+        }
         if !self.snapshot.pending.is_empty() {
             errors.push(format!(
                 "{} pending event(s): {}",

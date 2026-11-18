@@ -79,9 +79,10 @@ fn drive_fixture() {
             )
             .unwrap();
         }
-        for name in ["issues", "graphql-1", "github.yaml"] {
+        for name in ["issues", "graphql-1", "github.yaml", "reaction"] {
             let _ = fs::rename(dir.join(format!("next-{name}")), dir.join(name));
         }
+        let _ = fs::rename(dir.join("next-reaction-code"), dir.join("reaction-code"));
     }
 }
 #[test]
@@ -732,4 +733,113 @@ fn maximum_identifiers_and_a_long_routing_reason_still_fit_one_notice() {
     assert!(sent[0].split_once('\n').unwrap().1.len() <= 900);
     assert!(sent[0].contains('…'));
     assert_eq!(pending(&f), 0);
+}
+
+fn eyes(calls: &str) -> Vec<&str> {
+    calls.split("--end--\n").filter_map(|call| {
+        if !call.contains("query=mutation") { return None; }
+        assert!(call.contains("query=mutation($id: ID!) { addReaction(input: {subjectId: $id, content: EYES}) { reaction { content } } }\n"));
+        Some(call.lines().find_map(|s| s.strip_prefix("id=")).unwrap())
+    }).collect()
+}
+#[test]
+fn received_comments_and_reviews_get_one_eyes_each_without_bursts_or_approval_duplicates() {
+    let f = fixture();
+    let team = "example-team/widgets";
+    f.write(
+        "status",
+        &json!([checkout(&f, team, "team", "first"), lead(team, "lead")]).to_string(),
+    );
+    let mut inline = event("PullRequestReview", "PRR_inline", 202, "");
+    inline["comments"] = json!({"nodes":[content(202, "@example-bot")]});
+    let comment = event("IssueComment", "IC_received", 202, "@example-bot");
+    let assigned = event("AssignedEvent", "AE_received", 202, "");
+    changed(
+        &f,
+        &[
+            (false, vec![comment, assigned]),
+            (true, vec![inline.clone()]),
+            (true, vec![event("MergedEvent", "ME_received", 202, "")]),
+            (false, vec![]),
+            (true, vec![]),
+        ],
+    );
+    let mut raw = item(true, vec![inline]);
+    raw["id"] = json!("I_2");
+    raw["assignees"] = json!({"nodes":[]});
+    answer(&f, 2, &raw);
+    for (n, pr) in [(4, false), (5, true)] {
+        let mut raw = item(pr, vec![]);
+        raw["id"] = json!(format!("I_{n}"));
+        raw["body"] = json!("@example-bot");
+        answer(&f, n, &raw);
+    }
+    drive(&f, "0");
+    assert_eq!(eyes(&f.read("calls-at-0")).len(), 1);
+    fs::rename(f.path("github.yaml"), f.path("disabled")).unwrap();
+    drive(&f, "60");
+    fs::rename(f.path("disabled"), f.path("github.yaml")).unwrap();
+    f.response("machine", 200, r#"{"id":202,"login":"example-owner"}"#);
+    drive(&f, "120");
+    assert_eq!(eyes(&f.calls()).len(), 1);
+    f.response("machine", 200, r#"{"id":101,"login":"example-bot"}"#);
+    drive(&f, "180,240"); // Restart retains the second queued reaction.
+    assert_eq!(eyes(&f.calls()), ["IC_received", "PRR_inline"]);
+    assert_eq!(reads(&text(&f), "PRR_inline"), 2);
+    for id in ["IC_received", "AE_received", "ME_received", "I_4", "I_5"] {
+        assert_eq!(reads(&text(&f), id), 1, "{id}");
+    }
+    assert_eq!(f.health()["ok"], true);
+}
+#[test]
+fn failed_sends_claim_no_receipt_and_a_delayed_approval_copy_cannot_react_twice() {
+    let f = fixture();
+    let team = "example-team/widgets";
+    f.write(
+        "status",
+        &json!([checkout(&f, team, "team", "first"), lead(team, "lead")]).to_string(),
+    );
+    let review = event("PullRequestReview", "PRR_delayed", 202, "");
+    changed(&f, &[(true, vec![review])]);
+    f.write("fail", "");
+    f.write("fail-recipient", "example-team/root");
+    drive(&f, "0");
+    assert!(eyes(&f.calls()).is_empty());
+    fs::remove_file(f.path("fail")).unwrap();
+    drive(&f, "60");
+    assert_eq!(eyes(&f.calls()), ["PRR_delayed"]);
+    fs::remove_file(f.path("fail-recipient")).unwrap();
+    drive(&f, "120,180");
+    assert_eq!(eyes(&f.calls()), ["PRR_delayed"]);
+    assert_eq!(pending(&f), 0);
+}
+#[test]
+fn a_failed_eyes_is_visible_without_retrying_or_resending_the_notice() {
+    let f = fixture();
+    let comment = event("IssueComment", "IC_failed", 202, "@example-bot");
+    changed(&f, &[(false, vec![comment])]);
+    f.response("reaction", 403, r#"{"message":"PRIVATE_MARKER"}"#);
+    drive(&f, "0");
+    assert_eq!(eyes(&f.calls()), ["IC_failed"]);
+    assert_eq!(f.health()["ok"], false);
+    assert!(f.detail().contains("IC_failed"));
+    assert!(!f.detail().contains("PRIVATE_MARKER"));
+    drive(&f, "60,120");
+    assert_eq!(eyes(&f.calls()), ["IC_failed"]);
+    assert_eq!(reads(&text(&f), "IC_failed"), 1);
+    assert_eq!(f.health()["ok"], true);
+}
+#[test]
+fn rate_limited_eyes_pauses_api_calls_then_retries_without_resending_the_notice() {
+    let f = fixture();
+    let comment = event("IssueComment", "IC_limited", 202, "@example-bot");
+    changed(&f, &[(false, vec![comment])]);
+    f.response("reaction", 429, "{}");
+    f.response("next-reaction", 200, "{}");
+    let resume = parse_utc(AT).unwrap().elapsed().unwrap().as_secs() + 601;
+    drive(&f, &format!("0,60,{resume}"));
+    assert_eq!(f.read("calls-at-0"), f.read("calls-at-60"));
+    assert_eq!(eyes(&f.calls()), ["IC_limited", "IC_limited"]);
+    assert_eq!(reads(&text(&f), "IC_limited"), 1);
+    assert_eq!(f.health()["ok"], true);
 }

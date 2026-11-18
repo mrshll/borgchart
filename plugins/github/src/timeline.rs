@@ -240,6 +240,7 @@ pub fn fetch(
             if let Some(kind) = kind {
                 events.push(PendingEvent {
                     id: node_id(value)?.into(),
+                    reactable: matches!(name, "IssueComment" | "PullRequestReview"),
                     repository: item.repository.clone(),
                     number: item.number,
                     is_pull_request: pr,
