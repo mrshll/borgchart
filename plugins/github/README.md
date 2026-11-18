@@ -26,7 +26,8 @@ profile path resolves against the configuration file's folder. The plugin pins
 `gh` to that profile and clears token, host, repository and debug overrides.
 Keep owner and profile in this private configuration, out of the repository.
 Move `owner`, `gh_config_dir` and any `repositories` list from `github.yaml`
-under `github:` in `config.yaml`; the separate file is no longer read.
+under `github:` in `config.yaml`, then replace the running poller as described
+below; the separate file is no longer read.
 
 List the repositories to watch in `github-repositories.yaml` in the template
 folder, the plugin's working directory, so they are reviewed with the template.
@@ -42,7 +43,7 @@ template file lists any repositories, they are watched and the section's
 optional `repositories` list is ignored; health says so. The lists are never
 combined. If the template file is absent or lists none, the section's list
 applies. An invalid list in either location stops discovery, even an ignored one.
-With no repositories in either file, health is ok `no repositories listed` and
+With no repositories in either place, health is ok `no repositories listed` and
 no GitHub call is made. The engineering template ships the file with only
 commented-out examples.
 
@@ -102,11 +103,9 @@ the next poll when added while running. Listing a first repository after none
 skips activity before it. Admitted event IDs stay for four
 days to suppress replay duplicates; pending deliveries carry over. Health reports
 the earliest replay floor, before which activity is not delivered.
-For this move, install the updated binaries and templates, move the settings,
-then replace each running GitHub poller. Installing a binary leaves running
-processes on the old binary: end the GitHub plugin process and run
-`brg start <root>` to replace it. Updated role text and action grants need each
-member's next start.
+Installing a binary leaves running processes on the old binary: end the GitHub
+plugin process and run `brg start <root>` to replace it. Updated role text and
+action grants need each member's next start.
 
 Known limits: shared branch names across repositories can misroute a notice;
 indented code and HTML comments can count as mentions; only the first 50 inline

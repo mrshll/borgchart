@@ -24,7 +24,7 @@ pub struct Session<A: Api> {
     api: A,
     identity: Option<(String, PathBuf)>,
     guard: Option<Guard>,
-    repositories: PathBuf,
+    config_file: PathBuf,
     note: String,
     idle: bool,
     pub snapshot: Snapshot,
@@ -42,12 +42,12 @@ impl<A: Api> Session<A> {
             borgchart::config::path(),
         ))
     }
-    fn configured(api: A, snapshot: Snapshot, epoch: SystemTime, repositories: PathBuf) -> Self {
+    fn configured(api: A, snapshot: Snapshot, epoch: SystemTime, config_file: PathBuf) -> Self {
         Self {
             api,
             identity: None,
             guard: None,
-            repositories,
+            config_file,
             note: String::new(),
             idle: true,
             snapshot,
@@ -58,8 +58,8 @@ impl<A: Api> Session<A> {
     pub fn poll(&mut self, now: SystemTime) -> Result<Poll, Error> {
         self.idle = true;
         self.note.clear();
-        let Some(mut config) = config::load(&self.repositories).map_err(Error::Other)? else {
-            self.note = format!("off: no github section in {}", self.repositories.display());
+        let Some(mut config) = config::load(&self.config_file).map_err(Error::Other)? else {
+            self.note = format!("off: no github section in {}", self.config_file.display());
             self.guard = None;
             self.identity = None;
             self.epoch = now;
@@ -70,7 +70,7 @@ impl<A: Api> Session<A> {
             if !config.entries.is_empty() {
                 self.note = format!(
                     "repositories from {TEMPLATE}; the list in {} is ignored",
-                    self.repositories.display()
+                    self.config_file.display()
                 );
             }
             config.entries = template;

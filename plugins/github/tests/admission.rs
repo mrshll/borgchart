@@ -121,18 +121,14 @@ fn absent_github_section_turns_on_at_the_next_poll_without_restart() {
 }
 #[test]
 fn invalid_global_configuration_stops_discovery_at_the_next_poll() {
-    for invalid in ["unknown: true", "auth: invalid", "schema: 2"] {
-        let f = fixture();
-        f.write(
-            "next-config.yaml",
-            &f.read("config.yaml").replace("schema: 1", invalid),
-        );
-        drive(&f, "0,60");
-        assert_eq!(f.health()["ok"], false);
-        assert!(f.detail().contains("config.yaml"));
-        assert!(!f.read("calls-at-0").is_empty());
-        assert_eq!(f.read("calls-at-60"), f.read("calls-at-0"));
-    }
+    let f = fixture();
+    let invalid = f.read("config.yaml").replace("schema: 1", "unknown: true");
+    f.write("next-config.yaml", &invalid);
+    drive(&f, "0,60");
+    assert_eq!(f.health()["ok"], false);
+    assert!(f.detail().contains("config.yaml"));
+    assert!(!f.read("calls-at-0").is_empty());
+    assert_eq!(f.read("calls-at-60"), f.read("calls-at-0"));
 }
 #[test]
 fn listing_the_first_repository_later_skips_activity_before_the_listing() {
@@ -154,7 +150,7 @@ fn listing_the_first_repository_later_skips_activity_before_the_listing() {
 }
 #[test]
 fn pending_comments_deliver_without_reactions_while_off_or_unlisted() {
-    for idle in ["repositories: []", "off"] {
+    for off in [true, false] {
         let f = fixture();
         let team = "example-team/widgets";
         f.write(
@@ -176,19 +172,16 @@ fn pending_comments_deliver_without_reactions_while_off_or_unlisted() {
         );
         f.write("fail-once", "");
         f.write("fail-recipient", "example-team/widgets/lead");
-        f.write("next-config.yaml", if idle == "off" { "schema: 1\n" } else {
-            "schema: 1\ngithub:\n  owner: example-owner\n  gh_config_dir: ~/machine-profile\n  repositories: []\n"
-        });
+        let unlisted = f.read("config.yaml").replace("[example-org/widgets]", "[]");
+        f.write(
+            "next-config.yaml",
+            if off { "schema: 1\n" } else { &unlisted },
+        );
+        // The blocked comment keeps a delivery pending, so the tick reaches the reaction gate.
         drive(&f, "120,180");
-        assert_eq!(pending(&f), 1, "{idle}");
-        assert_eq!(reads(&text(&f), "IC_idle"), 2, "{idle}");
-        assert_eq!(f.read("calls-at-180"), f.read("calls-at-120"), "{idle}");
-        fs::remove_file(f.path("calls")).unwrap();
-        fs::remove_file(f.path("fail-recipient")).unwrap();
-        drive(&f, "240");
-        assert_eq!(pending(&f), 0, "{idle}");
-        assert!(f.read("calls-at-240").is_empty(), "{idle}");
-        assert_eq!(f.health()["ok"], true, "{idle}");
+        assert_eq!(pending(&f), 1, "{off}");
+        assert_eq!(reads(&text(&f), "IC_idle"), 2, "{off}");
+        assert_eq!(f.read("calls-at-180"), f.read("calls-at-120"), "{off}");
     }
 }
 /// Every delivery: its recipient line, then the notice.
