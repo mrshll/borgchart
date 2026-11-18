@@ -191,10 +191,7 @@ mod tests {
             assert!(error.contains(&borgchart::plugin::escape(value)), "{error}");
         }
         for yaml in ["true", "[42]", "[{}]", "{}"] {
-            let text = format!(
-                "owner: example-owner\ngh_config_dir: machine-profile\nrepositories: {yaml}"
-            );
-            assert!(parse(&text).is_err());
+            assert!(parse(&format!("owner: o\ngh_config_dir: p\nrepositories: {yaml}")).is_err());
         }
     }
 }

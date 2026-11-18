@@ -709,12 +709,8 @@ fn maximum_identifiers_and_a_long_routing_reason_still_fit_one_notice() {
     let f = fixture();
     let repo = format!("{}/{}", "a".repeat(39), "b".repeat(100));
     let team = format!("example-team/{}", "c".repeat(210));
-    f.write(
-        "github.yaml",
-        &format!(
-            "owner: example-owner\ngh_config_dir: ~/machine-profile\nrepositories: [{repo}]\n"
-        ),
-    );
+    let config = f.read("github.yaml").replace("example-org/widgets", &repo);
+    f.write("github.yaml", &config);
     f.write(
         "status",
         &json!([checkout(&f, &team, "team", "first"), lead(&team, "lead")]).to_string(),

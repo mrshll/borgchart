@@ -41,7 +41,7 @@ pub struct PendingEvent {
 pub struct Cursor {
     pub at: SystemTime,
     pub drained: SystemTime,
-    /// Nothing before this is discovered: the process start or the entry's addition.
+    /// Nothing before this is discovered: process start, turning intake on, or the entry's addition.
     pub floor: SystemTime,
     /// Settled `updated_at` versions inside the overlap, skipped when listed again.
     pub seen: BTreeMap<String, SystemTime>,

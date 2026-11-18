@@ -47,6 +47,7 @@ impl<A: Api> Session<A> {
         let Some(config) = config::load(&self.repositories).map_err(Error::Other)? else {
             self.guard = None;
             self.identity = None;
+            self.epoch = now;
             return Ok(Poll {
                 processed: 0,
                 admitted: 0,
@@ -321,13 +322,9 @@ mod tests {
         api.0.borrow_mut().machine = 101;
         assert!(session.poll(now() + secs(1200)).is_err());
         assert_eq!(api.calls().len(), calls);
-        let mut text = config("- example-org/widgets\n");
-        for (from, to) in [
-            ("example-owner", "example-next"),
-            ("machine-profile", "new-profile"),
-        ] {
-            text = text.replace(from, to);
-            fs::write(dir.path().join("github.yaml"), &text).unwrap();
+        let owner = config("- example-org/widgets\n").replace("example-owner", "example-next");
+        for text in [owner.clone(), owner.replace("machine-profile", "p2")] {
+            fs::write(dir.path().join("github.yaml"), text).unwrap();
             api.0.borrow_mut().calls.clear();
             session.poll(now() + secs(1201)).unwrap();
             assert_eq!(&api.calls()[..2], ["user", "users/example-next"]);
@@ -355,10 +352,12 @@ mod tests {
         }
         fs::remove_file(&path).unwrap();
         let calls = api.calls().len();
-        session.poll(later).unwrap();
+        session.poll(later + secs(60)).unwrap();
         assert_eq!(api.calls().len(), calls);
-        fs::write(&path, config("- example-org/gadgets\n")).unwrap();
-        session.poll(later).unwrap();
+        // Turning intake on skips activity from before the last poll that found no file.
+        fs::write(&path, config("- example-org/tools\n")).unwrap();
+        api.pages("example-org/tools", vec![json!([item(3, later)])]);
+        assert_eq!(processed(&mut session, later + secs(60)), 0);
         assert!(!session.snapshot.cursors.contains_key("example-org/widgets"));
     }
     #[test]
