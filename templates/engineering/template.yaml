@@ -6,7 +6,6 @@ plugins:
   github:
     process: [brg-github, run]
     delivers_to: lead
-    env: {GITHUB_CONFIG: github.yaml}
     actions:
       read: brg-github read <id>
   timer:

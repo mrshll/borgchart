@@ -876,6 +876,26 @@ fn user_tmux_config_risks_are_warned_with_their_lines() {
 }
 
 #[test]
+fn github_configuration_rejects_unknown_keys_wrong_shapes_and_empty_identity() {
+    let f = Fixture::new();
+    let good = "schema: 1\ngithub: {owner: example-owner, gh_config_dir: profile, repositories: [example-org/widgets]}\n";
+    f.write("config.yaml", good);
+    let (report, validated) = f.run();
+    assert!(validated.is_some(), "{}", errors(&report));
+    for bad in [
+        good.replace("owner:", "unknown: ignored, owner:"),
+        good.replace("[example-org/widgets]", "example-org/widgets"),
+        good.replace("[example-org/widgets]", "[42]"),
+        good.replace("example-owner", "''"),
+        good.replace("profile", "'  '"),
+    ] {
+        f.write("config.yaml", &bad);
+        let (report, validated) = f.run();
+        assert!(validated.is_none() && report.has_errors(), "{bad}");
+    }
+}
+
+#[test]
 fn the_configuration_is_strict() {
     let f = Fixture::new();
     f.edit(

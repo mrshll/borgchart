@@ -78,7 +78,7 @@ impl Gh {
     fn call(&self, args: &[String]) -> Result<Value, Error> {
         if self.0.as_os_str().is_empty() {
             return Err(Error::Other(
-                "set gh_config_dir in GITHUB_CONFIG to the machine account's gh configuration"
+                "set gh_config_dir in config.yaml's github section to the machine account's gh configuration"
                     .into(),
             ));
         }

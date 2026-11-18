@@ -44,6 +44,30 @@ struct ConfigRaw {
     plugins_dir: Option<String>,
     tmux: Option<TmuxRaw>,
     secrets: Option<Secrets>,
+    github: Option<Github>,
+}
+
+/// Personal GitHub intake settings, with the profile path resolved when loaded.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Github {
+    pub owner: String,
+    pub gh_config_dir: PathBuf,
+    #[serde(default, deserialize_with = "github_repositories")]
+    pub repositories: Vec<String>,
+}
+
+fn github_repositories<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    // Inspect scalar types before YAML can coerce numbers into strings.
+    Vec::<serde_json::Value>::deserialize(d)?
+        .into_iter()
+        .map(|v| match v {
+            serde_json::Value::String(s) => Ok(s),
+            _ => Err(serde::de::Error::custom(
+                "`github.repositories` needs a list of strings",
+            )),
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -119,6 +143,7 @@ pub struct Config {
     /// Your own tmux config, loaded on brg's server when you opt in.
     pub tmux_user_config: Option<UserTmuxConfig>,
     pub secrets: Option<Secrets>,
+    pub github: Option<Github>,
 }
 
 fn home() -> Option<PathBuf> {
@@ -151,6 +176,7 @@ impl Default for Config {
             plugins_dir: None,
             tmux_user_config: None,
             secrets: None,
+            github: None,
         }
     }
 }
@@ -182,7 +208,7 @@ pub fn load_file(file: &Path, report: &mut Report) -> Option<Config> {
             return None;
         }
     };
-    let raw: ConfigRaw = match yaml::parse(&text) {
+    let mut raw: ConfigRaw = match yaml::parse(&text) {
         Ok(r) => r,
         Err(e) => {
             report.error(Some(&file), e);
@@ -200,6 +226,18 @@ pub fn load_file(file: &Path, report: &mut Report) -> Option<Config> {
         return None;
     }
     let base = file.parent().unwrap_or(Path::new("."));
+    if let Some(github) = &mut raw.github {
+        if github.owner.trim().is_empty()
+            || github.gh_config_dir.to_string_lossy().trim().is_empty()
+        {
+            report.error(
+                Some(&file),
+                "set non-empty `github.owner` and `github.gh_config_dir`",
+            );
+            return None;
+        }
+        github.gh_config_dir = expand_home(base, &github.gh_config_dir.to_string_lossy());
+    }
     let defaults = Config::default();
     let teams = match raw.teams {
         Some(list) => list.iter().map(|t| expand_home(base, t)).collect(),
@@ -233,6 +271,7 @@ pub fn load_file(file: &Path, report: &mut Report) -> Option<Config> {
         plugins_dir: raw.plugins_dir.as_deref().map(|p| expand_home(base, p)),
         tmux_user_config,
         secrets: raw.secrets,
+        github: raw.github,
     })
 }
 
