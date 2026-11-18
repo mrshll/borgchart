@@ -792,6 +792,8 @@ fn long_downtime_bounds_replay_and_journals_one_root_notice_on_restart_or_turn_o
         let listed = json!({"node_id":"I_1","number":1,"updated_at":AT});
         f.response("issues", 200, &json!(vec![listed; 20]).to_string());
         if turn_on {
+            // Off until the next poll, which then runs at AT like the restart arm.
+            f.write("epoch", "2026-01-02T11:59:00Z");
             fs::rename(f.path("github.yaml"), f.path("next-github.yaml")).unwrap();
         }
         drive(&f, "0,60,120");

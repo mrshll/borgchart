@@ -73,7 +73,8 @@ The private state directory keeps `intake.json`, `health.json` and a lock.
 Removing configuration keeps the journal. Restarting or turning intake back on
 resumes saved cursors, replaying up to 72 hours of downtime. A longer gap sends
 one cut-off notice to the root lead through the journal; check GitHub for earlier
-actions. New repository entries start at now. Admitted event IDs stay for four
+actions. New repository entries start when intake starts or turns on, or at
+the next poll when added while running. Admitted event IDs stay for four
 days to suppress replay duplicates; pending deliveries carry over. Health reports
 the earliest replay floor, before which activity is not delivered.
 Installing a binary leaves running processes on the old binary: end the GitHub

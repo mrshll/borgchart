@@ -88,16 +88,15 @@ impl Snapshot {
                 .or_insert_with(|| Cursor::new(now));
         }
     }
-    /// Bounds replay to 72 hours before `start`. On a cut, returns the earliest
+    /// Bounds replay to 72 hours before `now`. On a cut, returns the earliest
     /// saved position (`at` or `drained`) and the window's edge.
-    pub fn replay(&mut self, start: SystemTime) -> Option<(SystemTime, SystemTime)> {
-        let edge = start
+    pub fn replay(&mut self, now: SystemTime) -> Option<(SystemTime, SystemTime)> {
+        let edge = now
             .checked_sub(Duration::from_secs(72 * 3600))
             .unwrap_or(UNIX_EPOCH);
         let saved = self.cursors.values().map(|c| c.at.min(c.drained)).min()?;
         for cursor in self.cursors.values_mut() {
             cursor.at = cursor.at.max(edge);
-            cursor.drained = cursor.drained.max(edge);
             cursor.floor = cursor.floor.max(edge);
         }
         (saved < edge).then_some((saved, edge))
