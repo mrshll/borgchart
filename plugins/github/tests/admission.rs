@@ -94,6 +94,27 @@ fn drive_fixture() {
     }
 }
 #[test]
+fn template_exclusions_skip_timelines_without_spending_the_poll_cap() {
+    let f = fixture();
+    f.repositories("template.yaml", "example-org/* !EXAMPLE-ORG/Widgets");
+    let list: Vec<_> = (1..=40).map(|n| {
+        let mut raw = item(false, vec![]);
+        raw["id"] = json!(format!("I_{n}"));
+        answer(&f, n, &raw);
+        let repo = if n <= 20 { "example-org/widgets" } else { "example-org/gadgets" };
+        json!({"node_id":format!("I_{n}"),"number":n,"updated_at":AT,"repository":{"full_name":repo}})
+    }).collect();
+    f.response("issues", 200, &json!(list).to_string());
+    drive(&f, "0");
+    let calls = f.calls();
+    assert!(calls.contains("orgs/example-org/issues?"));
+    assert!(!calls.contains("name=widgets\n"), "{calls}");
+    for n in 21..=40 {
+        assert!(calls.contains(&format!("number={n}\n")), "{calls}");
+    }
+    assert_eq!(f.health()["ok"], true, "{}", f.detail());
+}
+#[test]
 fn template_edits_replace_the_discovery_scope_at_the_next_poll() {
     let f = fixture();
     f.repositories("template.yaml", "example-org/widgets");
