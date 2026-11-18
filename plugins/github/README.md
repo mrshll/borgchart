@@ -31,15 +31,16 @@ below; the separate file is no longer read.
 
 In `template.yaml`, list repositories in this plugin's
 `env.GITHUB_REPOSITORIES` (below): `owner/name` or `org/*` separated by spaces
-or newlines. User wildcards are refused. The poller reads from its working directory, the template folder, so
-run `brg-github` from PATH, as shipped. A non-empty template list overrides
-`github.repositories`; health says so. The lists are never combined. An absent
-entry or key, or a blank string (`""`), uses the section's list.
-`GITHUB_REPOSITORIES:` without a value is an error: brg reads the start
-environment, which the poller ignores. Invalid lists stop discovery, even an
-ignored one. With neither list, health is ok `no repositories listed` and no
-GitHub call is made. Engineering ships a commented example. Move any list from
-`github-repositories.yaml` here and delete that file.
+or newlines. User wildcards are refused. The poller reads from its working
+directory, the template folder, so run `brg-github` from PATH, as shipped. A
+non-empty template list overrides `github.repositories`; health says so. The
+lists are never combined. An absent entry or key, or a blank string (`""`),
+uses the section's list. `GITHUB_REPOSITORIES:` without a value is an
+error: brg reads the start environment, which the poller ignores. Invalid
+lists stop discovery, even an ignored one. With neither list, health is ok
+`no repositories listed` and no GitHub call is made. Engineering ships a
+commented example. Move any list from `github-repositories.yaml` here and
+delete that file.
 
 The engineering template runs one poller and grants its lead `read`. The
 dev-team template grants its lead `read` without running another poller. After
