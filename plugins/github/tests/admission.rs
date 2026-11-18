@@ -35,6 +35,7 @@ printf '{"delivery":"stored"}'
     );
     fs::set_permissions(f.path("brg"), fs::Permissions::from_mode(0o755)).unwrap();
     f.write("status", "[]");
+    f.response("issues-gadgets", 200, "[]");
     std::os::unix::fs::symlink("/usr/bin/git", f.path("git")).unwrap();
     f
 }
@@ -60,13 +61,13 @@ fn drive_fixture() {
         return;
     };
     let store = plugin::State::from_env().unwrap();
-    let epoch = parse_utc(AT).unwrap();
+    let dir = std::path::PathBuf::from(std::env::var_os("FIXTURE_DIR").unwrap());
+    let epoch = parse_utc(&fs::read_to_string(dir.join("epoch")).unwrap_or(AT.into())).unwrap();
     let mut session = Session::new(Gh::default(), &store, epoch).unwrap();
     for offset in times.split(',') {
         session
             .tick(&store, epoch + Duration::from_secs(offset.parse().unwrap()))
             .unwrap();
-        let dir = std::path::PathBuf::from(std::env::var_os("FIXTURE_DIR").unwrap());
         fs::write(
             dir.join(format!("calls-at-{offset}")),
             fs::read(dir.join("calls")).unwrap_or_default(),
@@ -732,4 +733,105 @@ fn maximum_identifiers_and_a_long_routing_reason_still_fit_one_notice() {
     assert!(sent[0].split_once('\n').unwrap().1.len() <= 900);
     assert!(sent[0].contains('…'));
     assert_eq!(pending(&f), 0);
+}
+
+#[test]
+fn short_downtime_replays_once_and_new_repositories_start_at_restart() {
+    let f = fixture();
+    let kept = event("AssignedEvent", "AE_kept", 202, "");
+    changed(&f, &[(false, vec![kept.clone()])]);
+    drive(&f, "0");
+    f.write("epoch", "2026-01-02T12:02:00Z");
+    let mut action = event("IssueComment", "IC_downtime", 202, "@example-bot");
+    action["createdAt"] = json!("2026-01-02T12:01:00Z");
+    changed(&f, &[(false, vec![kept, action])]);
+    let mut new = item(false, vec![event("AssignedEvent", "AE_new", 202, "")]);
+    new["id"] = json!("I_2");
+    answer(&f, 2, &new);
+    f.response(
+        "issues-gadgets",
+        200,
+        &json!([{"node_id":"I_2","number":2,"updated_at":AT}]).to_string(),
+    );
+    f.response(
+        "issues",
+        200,
+        &json!([{"node_id":"I_1","number":1,"updated_at":"2026-01-02T12:01:00Z"}]).to_string(),
+    );
+    f.write(
+        "github.yaml",
+        &f.read("github.yaml")
+            .replace("widgets]", "widgets, example-org/gadgets]"),
+    );
+    drive(&f, "0,60");
+    assert_eq!(reads(&text(&f), "AE_kept"), 1);
+    assert_eq!(reads(&text(&f), "IC_downtime"), 1);
+    assert!(!text(&f).contains("example-org/gadgets#"));
+    assert_eq!(deliveries(&f).len(), 2);
+    assert_eq!(f.health()["ok"], true);
+    assert!(f.detail().contains("2026-01-02T12:00:00.000Z"));
+}
+
+#[test]
+fn long_downtime_bounds_replay_and_journals_one_root_notice_on_restart_or_turn_on() {
+    for turn_on in [false, true] {
+        let f = fixture();
+        let old = parse_utc("2025-12-20T12:00:00Z").unwrap();
+        let cursor = brg_github::state::Cursor::new(old);
+        let mut backlog = brg_github::state::Cursor::new(old - Duration::from_secs(86400));
+        backlog.at = parse_utc(AT).unwrap();
+        let admitted = parse_utc("2025-12-30T12:00:00Z").unwrap();
+        f.write("state/intake.json", &json!({"cursors":{"example-org/widgets":cursor,"example-org/gadgets":backlog},"seen":{"IC_kept":admitted},"pending":[]}).to_string());
+        f.write(
+            "github.yaml",
+            &f.read("github.yaml")
+                .replace("widgets]", "widgets, example-org/gadgets]"),
+        );
+        let mut nodes = Vec::new();
+        let window = if turn_on {
+            "2025-12-30T12:01:00Z"
+        } else {
+            "2025-12-30T12:00:00Z"
+        };
+        for (id, at) in [
+            ("IC_old", "2025-12-30T11:59:59Z"),
+            ("IC_window", window),
+            ("IC_kept", "2025-12-30T12:00:00Z"),
+        ] {
+            let mut e = event("IssueComment", id, 202, "PRIVATE_MARKER @example-bot");
+            e["createdAt"] = json!(at);
+            nodes.push(e);
+        }
+        changed(&f, &[(false, nodes)]);
+        // Keep discovery undrained across polls, so replay relists an admitted action.
+        f.response(
+            "issues",
+            200,
+            &json!(vec![
+                json!({"node_id":"I_1","number":1,"updated_at":AT});
+                20
+            ])
+            .to_string(),
+        );
+        if turn_on {
+            fs::rename(f.path("github.yaml"), f.path("next-github.yaml")).unwrap();
+        }
+        drive(&f, if turn_on { "0,60,120" } else { "0,60" });
+        let sent = text(&f);
+        assert_eq!(reads(&sent, "IC_window"), 1);
+        assert_eq!(reads(&sent, "IC_old"), 0);
+        assert_eq!(reads(&sent, "IC_kept"), 0);
+        let notices: Vec<_> = deliveries(&f)
+            .into_iter()
+            .filter(|n| !n.contains("brg-github read"))
+            .collect();
+        assert_eq!(notices.len(), 1, "{sent}");
+        let notice = notices[0].strip_prefix("example-team/root\n").unwrap();
+        assert!(notice.contains("2025-12-19T12:00:00.000Z"));
+        assert!(!sent.contains("PRIVATE_MARKER"));
+        assert!(f.read("journal-at-send").contains(notice));
+        assert!(f.detail().contains(&borgchart::bus::time::format_utc(
+            parse_utc(window).unwrap()
+        )));
+    }
 }

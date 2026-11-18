@@ -3,7 +3,7 @@ use crate::{
     config::{self, Guard},
     delivery, discover,
     gh::{Api, Error, Gh},
-    state::{OVERLAP, Snapshot},
+    state::{Kind, OVERLAP, PendingEvent, Snapshot},
     timeline,
 };
 use borgchart::{bus::time::format_utc, plugin};
@@ -23,7 +23,7 @@ pub struct Session<A: Api> {
     guard: Option<Guard>,
     repositories: PathBuf,
     pub snapshot: Snapshot,
-    epoch: SystemTime,
+    epoch: Option<SystemTime>,
     paused_until: Option<SystemTime>,
 }
 impl<A: Api> Session<A> {
@@ -39,7 +39,7 @@ impl<A: Api> Session<A> {
             guard: None,
             repositories,
             snapshot,
-            epoch,
+            epoch: Some(epoch),
             paused_until: None,
         }
     }
@@ -47,7 +47,7 @@ impl<A: Api> Session<A> {
         let Some(config) = config::load(&self.repositories).map_err(Error::Other)? else {
             self.guard = None;
             self.identity = None;
-            self.epoch = now;
+            self.epoch = None;
             return Ok(Poll {
                 processed: 0,
                 admitted: 0,
@@ -84,7 +84,19 @@ impl<A: Api> Session<A> {
         }
         self.guard.as_mut().unwrap().check(&self.api, now)?;
         let snapshot = &mut self.snapshot;
-        snapshot.entries(entries, if first { self.epoch } else { now });
+        let epoch = *self.epoch.get_or_insert(now);
+        if let Some(saved) = snapshot.entries(entries, if first { epoch } else { now }, first) {
+            let floor = snapshot.cursors.values().map(|c| c.floor).min().unwrap();
+            snapshot.pending.push(PendingEvent {
+                id: "cutoff".into(),
+                repository: String::new(),
+                number: 0,
+                is_pull_request: false,
+                kind: Kind::Cutoff,
+                recipient: delivery::root_lead(),
+                reason: format!("GitHub: intake was not running between {} and {}; owner actions before {} were not delivered; check GitHub for them.", format_utc(saved), format_utc(epoch), format_utc(floor)),
+            });
+        }
         let mut poll = Poll {
             processed: 0,
             admitted: 0,
@@ -183,9 +195,10 @@ impl<A: Api> Session<A> {
         }
         let ok = errors.is_empty();
         errors.insert(0, counts);
+        let floor = self.snapshot.cursors.values().map(|c| c.floor).min();
         errors.push(format!(
             "activity before {} is not delivered",
-            format_utc(self.epoch)
+            format_utc(floor.unwrap_or(self.epoch.unwrap_or(now)))
         ));
         let detail = errors.join("; ");
         store.health(ok, &detail).map_err(|_| {
@@ -354,7 +367,7 @@ mod tests {
         let calls = api.calls().len();
         session.poll(later + secs(60)).unwrap();
         assert_eq!(api.calls().len(), calls);
-        // Turning intake on skips activity from before the last poll that found no file.
+        // A new entry starts when intake is turned on.
         fs::write(&path, config("- example-org/tools\n")).unwrap();
         api.pages("example-org/tools", vec![json!([item(3, later)])]);
         assert_eq!(processed(&mut session, later + secs(60)), 0);
@@ -418,9 +431,9 @@ mod tests {
         let page = json!([item(1, now() + secs(150)), item(2, now() + secs(110))]);
         api.pages("example-org/widgets", vec![page]);
         assert_eq!(processed(&mut session, now() + secs(300)), 1);
-        // Seen versions last as long as the overlap; admitted events a day.
+        // Seen versions last as long as the overlap; admitted events four days.
         session.snapshot.seen.extend([
-            ("old".into(), now() - secs(86401)),
+            ("old".into(), now() - secs(4 * 86400 + 1)),
             ("recent".into(), now()),
         ]);
         api.pages("example-org/widgets", vec![json!([])]);
