@@ -58,7 +58,10 @@ pub fn fetch(api: &impl Api, entry: &Entry, cursor: &Cursor, limit: usize) -> Re
             } else {
                 entry.key()
             };
-            if updated_at < cursor.floor || cursor.seen.get(&raw.node_id) == Some(&updated_at) {
+            if entry.excluded.contains(&repository.to_ascii_lowercase())
+                || updated_at < cursor.floor
+                || cursor.seen.get(&raw.node_id) == Some(&updated_at)
+            {
                 continue;
             }
             items.push(Changed {

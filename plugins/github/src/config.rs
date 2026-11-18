@@ -1,6 +1,7 @@
 //! Private identity, template repository scope and numeric identity guard.
 use crate::gh::{Api, Error, Rest};
 use std::{
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
     time::{Duration, SystemTime},
@@ -10,6 +11,7 @@ use std::{
 pub struct Entry {
     owner: String,
     name: String,
+    pub(crate) excluded: BTreeSet<String>,
 }
 fn valid_login(value: &str) -> bool {
     !value.is_empty()
@@ -48,6 +50,7 @@ impl Entry {
         Ok(Self {
             owner: owner.into(),
             name: name.into(),
+            excluded: BTreeSet::new(),
         })
     }
 }
@@ -57,11 +60,40 @@ pub struct Config {
     pub entries: Vec<Entry>,
 }
 fn entries(values: Vec<String>) -> Result<Vec<Entry>, String> {
+    let (excluded, values): (Vec<_>, Vec<_>) = values.into_iter().partition(|v| v.starts_with('-'));
     let mut entries = Vec::new();
     for value in values {
+        if value.starts_with('!') {
+            return Err(format!(
+                "invalid entry {}; write an exclusion as -owner/name",
+                borgchart::plugin::escape(&value)
+            ));
+        }
         let entry = Entry::parse(&value)?;
         if !entries.contains(&entry) {
             entries.push(entry);
+        }
+    }
+    for value in excluded {
+        let fail = || {
+            format!(
+                "invalid exclusion {}; use -owner/name for a repository under an org/* entry in the same list, and don't also list it",
+                borgchart::plugin::escape(&value)
+            )
+        };
+        let repo = Entry::parse(&value[1..])
+            .ok()
+            .filter(|e| !e.is_org())
+            .ok_or_else(fail)?;
+        let key = repo.key().to_ascii_lowercase();
+        if entries.iter().any(|e| e.key().eq_ignore_ascii_case(&key)) {
+            return Err(fail());
+        }
+        let orgs = entries
+            .iter_mut()
+            .filter(|e| e.is_org() && e.owner.eq_ignore_ascii_case(&repo.owner));
+        if orgs.map(|org| org.excluded.insert(key.clone())).count() == 0 {
+            return Err(fail());
         }
     }
     Ok(entries)
@@ -171,6 +203,25 @@ impl Guard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn exclusions_reject_invalid_targets_missing_orgs_and_explicit_repositories() {
+        let parse = |list: &str| entries(list.split_whitespace().map(str::to_string).collect());
+        assert!(parse("-example-org/widgets EXAMPLE-ORG/* -example-org/widgets").is_ok());
+        for list in [
+            "example-org/* -example-org/*",
+            "example-org/* -",
+            "other-org/* -example-org/widgets",
+            "example-org/* example-org/widgets -EXAMPLE-ORG/Widgets",
+            "-EXAMPLE-ORG/Widgets example-org/widgets example-org/*",
+        ] {
+            assert!(parse(list).is_err(), "{list}");
+        }
+        assert!(
+            parse("example-org/* !example-org/widgets")
+                .unwrap_err()
+                .contains("-owner/name")
+        );
+    }
     #[test]
     fn repository_entries_accept_only_safe_repository_and_org_identifiers() {
         let entries = entries(vec![

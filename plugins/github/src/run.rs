@@ -369,6 +369,25 @@ mod tests {
     }
 
     #[test]
+    fn unquoted_config_exclusions_skip_repositories_in_flow_and_block_lists() {
+        for list in [
+            "[example-org/*, -example-org/widgets]",
+            "\n    - example-org/*\n    - -example-org/widgets",
+        ] {
+            let (dir, api, mut session) = setup("");
+            let text = config("").replace("repositories:\n", &format!("repositories: {list}\n"));
+            fs::write(dir.path().join("config.yaml"), text).unwrap();
+            api.pages("example-org/*", vec![json!([item(1, now())])]);
+            assert_eq!(processed(&mut session, now()), 0);
+            assert!(
+                api.calls()
+                    .iter()
+                    .any(|call| call.starts_with("orgs/example-org/issues?"))
+            );
+        }
+    }
+
+    #[test]
     fn changed_machine_identity_stops_discovery_until_restart_or_reconfiguration() {
         let (dir, api, mut session) = setup("- example-org/widgets\n");
         session.poll(now()).unwrap();
