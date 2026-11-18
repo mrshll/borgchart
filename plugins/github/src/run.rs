@@ -1,6 +1,6 @@
 //! Guarded polling, journal admission before discovery advances, and delivery.
 use crate::{
-    config::{self, Guard},
+    config::{self, Guard, TEMPLATE},
     delivery, discover,
     gh::{Api, Error, Gh},
     state::{OVERLAP, Snapshot},
@@ -8,7 +8,7 @@ use crate::{
 };
 use borgchart::{bus::time::format_utc, plugin};
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     time::{Duration, SystemTime},
 };
 
@@ -58,16 +58,15 @@ impl<A: Api> Session<A> {
             self.epoch = now;
             return Ok(Poll::default());
         };
-        let template = "github-repositories.yaml";
-        if let Some(entries) = config::template(Path::new(template)).map_err(Error::Other)? {
+        let template = config::template().map_err(Error::Other)?;
+        if !template.is_empty() {
             if !config.entries.is_empty() {
                 self.note = format!(
-                    "repositories from {}; the list in {} is ignored",
-                    template,
+                    "repositories from {TEMPLATE}; the list in {} is ignored",
                     self.repositories.display()
                 );
             }
-            config.entries = entries;
+            config.entries = template;
         }
         if config.entries.is_empty() {
             self.note = "no repositories listed".into();

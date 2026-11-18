@@ -93,19 +93,17 @@ fn entries(values: Vec<String>) -> Result<Vec<Entry>, String> {
     }
     Ok(entries)
 }
-pub fn template(path: &Path) -> Result<Option<Vec<Entry>>, String> {
-    let load = || -> Result<_, String> {
-        let text = match fs::read_to_string(path) {
-            Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(_) => return Err("cannot read repository list".into()),
-        };
-        borgchart::yaml::parse::<Option<Vec<String>>>(&text)?
-            .filter(|values| !values.is_empty())
-            .map(entries)
-            .transpose()
+pub const TEMPLATE: &str = "github-repositories.yaml";
+/// The template folder's list, reread every poll; an absent or comments-only file lists none.
+pub fn template() -> Result<Vec<Entry>, String> {
+    let text = match fs::read_to_string(TEMPLATE) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(_) => return Err(format!("cannot read {TEMPLATE}; fix the file and retry")),
     };
-    load().map_err(|e| format!("{}: {e}; fix the file and retry", path.display()))
+    borgchart::yaml::parse::<Option<Vec<String>>>(&text)
+        .and_then(|values| entries(values.unwrap_or_default()))
+        .map_err(|e| format!("{TEMPLATE}: {e}; fix the file and retry"))
 }
 pub fn path() -> PathBuf {
     borgchart::config::path()
