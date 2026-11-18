@@ -51,37 +51,10 @@ impl Entry {
         })
     }
 }
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct File {
-    #[serde(default)]
-    owner: String,
-    #[serde(default)]
-    gh_config_dir: String,
-    #[serde(default)]
-    repositories: Vec<String>,
-}
 pub struct Config {
     pub owner: String,
     pub gh_config_dir: PathBuf,
     pub entries: Vec<Entry>,
-}
-pub fn parse(text: &str) -> Result<Config, String> {
-    let raw: File = borgchart::yaml::parse(text)
-        .map_err(|e| format!("GitHub configuration: {e}; fix GITHUB_CONFIG"))?;
-    if !valid_login(&raw.owner) {
-        return Err("set owner in GITHUB_CONFIG to the owner's GitHub login".into());
-    }
-    if raw.gh_config_dir.trim().is_empty() {
-        return Err(
-            "set gh_config_dir in GITHUB_CONFIG to the machine account's gh configuration".into(),
-        );
-    }
-    Ok(Config {
-        owner: raw.owner,
-        gh_config_dir: borgchart::config::expand_home(Path::new(""), &raw.gh_config_dir),
-        entries: entries(raw.repositories)?,
-    })
 }
 fn entries(values: Vec<String>) -> Result<Vec<Entry>, String> {
     let mut entries = Vec::new();
@@ -105,25 +78,29 @@ pub fn template() -> Result<Vec<Entry>, String> {
         .and_then(|values| entries(values.unwrap_or_default()))
         .map_err(|e| format!("{TEMPLATE}: {e}; fix the file and retry"))
 }
-pub fn path() -> PathBuf {
-    borgchart::config::path()
-        .parent()
-        .unwrap()
-        .join(std::env::var_os("GITHUB_CONFIG").unwrap_or("github.yaml".into()))
-}
-/// Read every poll, so an edit applies at the next poll; an unreadable or
-/// invalid file stops discovery rather than keeping an older list.
+/// Read the shared configuration every poll, retaining only the GitHub section.
 pub fn load(path: &Path) -> Result<Option<Config>, String> {
-    let text = match fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => {
-            return Err("cannot read GitHub configuration; fix GITHUB_CONFIG and retry".into());
-        }
+    let mut report = borgchart::diag::Report::default();
+    let config = borgchart::config::load_file(path, &mut report).ok_or_else(|| {
+        report
+            .errors()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; ")
+    })?;
+    let Some(raw) = config.github else {
+        return Ok(None);
     };
-    parse(&text).map(Some)
+    if !valid_login(&raw.owner) {
+        return Err("set owner in config.yaml's github section to the owner's GitHub login".into());
+    }
+    Ok(Some(Config {
+        owner: raw.owner,
+        gh_config_dir: raw.gh_config_dir,
+        entries: entries(raw.repositories)?,
+    }))
 }
-const GUARD_ERROR: &str = "GitHub identity is unsafe or changed; set gh_config_dir in GITHUB_CONFIG to the machine account's login and restart the plugin";
+const GUARD_ERROR: &str = "GitHub identity is unsafe or changed; set gh_config_dir in config.yaml's github section to the machine account's login and restart the plugin";
 pub struct Guard {
     pub machine_id: u64,
     pub machine_login: String,
@@ -149,7 +126,7 @@ impl Guard {
             .to_string();
         let owner_id = id(&api.get(Rest::Owner(owner)).map_err(|e| match e {
             Error::NotFound => Error::Other(
-                "unknown owner; set owner in GITHUB_CONFIG to the owner's GitHub login".into(),
+                "unknown owner; set owner in config.yaml's github section to the owner's GitHub login".into(),
             ),
             error => error,
         })?)?;
@@ -185,8 +162,12 @@ mod tests {
     use super::*;
     #[test]
     fn repository_entries_accept_only_safe_repository_and_org_identifiers() {
-        let entries =
-            parse("owner: example-owner\ngh_config_dir: machine-profile\nrepositories: [example-org/widgets, example-org/*, example-org/widgets]").unwrap().entries;
+        let entries = entries(vec![
+            "example-org/widgets".into(),
+            "example-org/*".into(),
+            "example-org/widgets".into(),
+        ])
+        .unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].api_path(), "repos/example-org/widgets");
         assert_eq!(entries[1].api_path(), "orgs/example-org");
@@ -205,9 +186,6 @@ mod tests {
         ] {
             let error = Entry::parse(value).unwrap_err();
             assert!(error.contains(&borgchart::plugin::escape(value)), "{error}");
-        }
-        for yaml in ["true", "[42]", "[{}]", "{}"] {
-            assert!(parse(&format!("owner: o\ngh_config_dir: p\nrepositories: {yaml}")).is_err());
         }
     }
 }

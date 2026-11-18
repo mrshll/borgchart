@@ -11,19 +11,22 @@ accounts' actions and edits that add a mention do not wake anyone.
 `gh` on PATH, authenticated as a separate machine account. Numeric account IDs
 must differ from the owner's; an unsafe or changed identity stops discovery.
 
-The private YAML file `GITHUB_CONFIG` defaults to `github.yaml`, beside brg's
-configuration file (`~/.config/borgchart/config.yaml`, or `$BORGCHART_CONFIG`).
-A relative name resolves against that configuration folder; an absolute name
-is used as given. Create it to turn intake on:
+Add a `github:` section to brg's private configuration file
+(`~/.config/borgchart/config.yaml`, or `$BORGCHART_CONFIG`) to turn intake on:
 
 ```yaml
-owner: example-owner
-gh_config_dir: ~/.config/gh-example-bot
+schema: 1
+github:
+  owner: example-owner
+  gh_config_dir: ~/.config/gh-example-bot
 ```
 
-`gh_config_dir` is required and `~/` expands to HOME. The plugin pins `gh` to
-that profile and clears token, host, repository and debug overrides. Keep owner
-and profile only in this private file, out of the repository.
+`owner` and `gh_config_dir` are required. `~/` expands to HOME; a relative
+profile path resolves against the configuration file's folder. The plugin pins
+`gh` to that profile and clears token, host, repository and debug overrides.
+Keep owner and profile in this private configuration, out of the repository.
+Move `owner`, `gh_config_dir` and any `repositories` list from `github.yaml`
+under `github:` in `config.yaml`; the separate file is no longer read.
 
 List the repositories to watch in `github-repositories.yaml` in the template
 folder, the plugin's working directory, so they are reviewed with the template.
@@ -35,10 +38,10 @@ The file holds only a list:
 ```
 
 Entries are `owner/name` or `org/*`; a user wildcard is refused. If the
-template file lists any repositories, they are watched and the private file's
+template file lists any repositories, they are watched and the section's
 optional `repositories` list is ignored; health says so. The lists are never
-combined. If the template file is absent or lists none, the private list
-applies. An invalid list in either file stops discovery, even an ignored one.
+combined. If the template file is absent or lists none, the section's list
+applies. An invalid list in either location stops discovery, even an ignored one.
 With no repositories in either file, health is ok `no repositories listed` and
 no GitHub call is made. The engineering template ships the file with only
 commented-out examples.
@@ -54,7 +57,6 @@ plugins:
   github:
     process: [brg-github, run]
     delivers_to: lead
-    env: {GITHUB_CONFIG: github.yaml}
     actions:
       read: brg-github read <id>
 roles:
@@ -80,13 +82,15 @@ another or unknown editor changed it. Only the root lead merges, after checking
 the owner's approving review against the current head on GitHub and green CI.
 A comment never grants merge approval. Repeated IDs already taken can be skipped.
 
-Health appears under `brg status`. No private file means ok `off: no <path>`,
-regardless of the template list, with no GitHub calls; `read` exits 1 saying
-intake is not configured. Both files are reread every poll: creating or removing
-them, editing either list, or changing owner/profile takes effect at the next
-poll without restart. Identity changes rerun the guard. Invalid files stop
-discovery and mark health not ok; repair the file. Rate limits pause API calls
-for ten minutes. Failed delivery and pending events also mark health not ok.
+Health appears under `brg status`. No `github:` section means ok
+`off: no github section in <path>`, regardless of the template list, with no
+GitHub calls; `read` exits 1 saying intake is not configured. Both brg's
+configuration and the template list are reread every poll: adding or removing
+the section, editing either list, or changing owner/profile takes effect at the
+next poll without restart. Identity changes rerun the guard. An invalid brg
+configuration (including unrelated sections) or template list stops discovery
+and marks health not ok; repair the file. Rate limits pause API calls for ten
+minutes. Failed delivery and pending events also mark health not ok.
 While off or with no repositories listed, pending events are still delivered.
 
 The private state directory keeps `intake.json`, `health.json` and a lock.
@@ -98,9 +102,11 @@ the next poll when added while running. Listing a first repository after none
 skips activity before it. Admitted event IDs stay for four
 days to suppress replay duplicates; pending deliveries carry over. Health reports
 the earliest replay floor, before which activity is not delivered.
-Installing a binary leaves running processes on the old binary: end the GitHub
-plugin process and run `brg start <root>` to replace it. Updated role text and
-action grants need each member's next start.
+For this move, install the updated binaries and templates, move the settings,
+then replace each running GitHub poller. Installing a binary leaves running
+processes on the old binary: end the GitHub plugin process and run
+`brg start <root>` to replace it. Updated role text and action grants need each
+member's next start.
 
 Known limits: shared branch names across repositories can misroute a notice;
 indented code and HTML comments can count as mentions; only the first 50 inline
