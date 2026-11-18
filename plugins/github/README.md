@@ -43,11 +43,12 @@ lists stop discovery, even an ignored one. With neither list, health is ok
 commented example. Move any list from `github-repositories.yaml` here and
 delete that file.
 
-Use `!owner/name` in either list to leave one repository of an `org/*` entry
+Use `-owner/name` in either list to leave one repository of an `org/*` entry
 out. Exclusions must name repositories, have a matching `org/*` in the same
 list, and cannot also be explicitly listed; matching is case-insensitive.
-Two trees listing the same repository both deliver its owner actions; an
-exclusion in one of them is how to avoid it.
+Two trees listing the same repository both deliver its owner actions. An
+exclusion helps the tree that reaches the repository through `org/*`; if
+both trees list it by name, remove it from one.
 
 The engineering template runs one poller and grants its lead `read`. The
 dev-team template grants its lead `read` without running another poller. After

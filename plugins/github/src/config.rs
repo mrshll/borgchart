@@ -60,9 +60,15 @@ pub struct Config {
     pub entries: Vec<Entry>,
 }
 fn entries(values: Vec<String>) -> Result<Vec<Entry>, String> {
-    let (excluded, values): (Vec<_>, Vec<_>) = values.into_iter().partition(|v| v.starts_with('!'));
+    let (excluded, values): (Vec<_>, Vec<_>) = values.into_iter().partition(|v| v.starts_with('-'));
     let mut entries = Vec::new();
     for value in values {
+        if value.starts_with('!') {
+            return Err(format!(
+                "invalid entry {}; write an exclusion as -owner/name",
+                borgchart::plugin::escape(&value)
+            ));
+        }
         let entry = Entry::parse(&value)?;
         if !entries.contains(&entry) {
             entries.push(entry);
@@ -71,7 +77,7 @@ fn entries(values: Vec<String>) -> Result<Vec<Entry>, String> {
     for value in excluded {
         let fail = || {
             format!(
-                "invalid exclusion {}; use !owner/name for a repository under an org/* entry in the same list, and don't also list it",
+                "invalid exclusion {}; use -owner/name for a repository under an org/* entry in the same list, and don't also list it",
                 borgchart::plugin::escape(&value)
             )
         };
@@ -200,16 +206,21 @@ mod tests {
     #[test]
     fn exclusions_reject_invalid_targets_missing_orgs_and_explicit_repositories() {
         let parse = |list: &str| entries(list.split_whitespace().map(str::to_string).collect());
-        assert!(parse("EXAMPLE-ORG/* !example-org/widgets !example-org/widgets").is_ok());
+        assert!(parse("-example-org/widgets EXAMPLE-ORG/* -example-org/widgets").is_ok());
         for list in [
-            "example-org/* !example-org/*",
-            "example-org/* !",
-            "other-org/* !example-org/widgets",
-            "example-org/* example-org/widgets !EXAMPLE-ORG/Widgets",
-            "!EXAMPLE-ORG/Widgets example-org/widgets example-org/*",
+            "example-org/* -example-org/*",
+            "example-org/* -",
+            "other-org/* -example-org/widgets",
+            "example-org/* example-org/widgets -EXAMPLE-ORG/Widgets",
+            "-EXAMPLE-ORG/Widgets example-org/widgets example-org/*",
         ] {
             assert!(parse(list).is_err(), "{list}");
         }
+        assert!(
+            parse("example-org/* !example-org/widgets")
+                .unwrap_err()
+                .contains("-owner/name")
+        );
     }
     #[test]
     fn repository_entries_accept_only_safe_repository_and_org_identifiers() {

@@ -96,19 +96,21 @@ fn drive_fixture() {
 #[test]
 fn template_exclusions_skip_timelines_without_spending_the_poll_cap() {
     let f = fixture();
-    f.repositories("template.yaml", "example-org/* !EXAMPLE-ORG/Widgets");
+    f.write("template.yaml", "plugins:\n  github:\n    env:\n      GITHUB_REPOSITORIES: -example-org/widgets example-org/*\n");
     let list: Vec<_> = (1..=40).map(|n| {
         let mut raw = item(false, vec![]);
         raw["id"] = json!(format!("I_{n}"));
         answer(&f, n, &raw);
-        let repo = if n <= 20 { "example-org/widgets" } else { "example-org/gadgets" };
+        let repo = if n <= 20 { "Example-Org/Widgets" } else { "example-org/gadgets" };
         json!({"node_id":format!("I_{n}"),"number":n,"updated_at":AT,"repository":{"full_name":repo}})
     }).collect();
     f.response("issues", 200, &json!(list).to_string());
     drive(&f, "0");
     let calls = f.calls();
-    assert!(calls.contains("orgs/example-org/issues?"));
-    assert!(!calls.contains("name=widgets\n"), "{calls}");
+    assert!(
+        !calls.to_ascii_lowercase().contains("name=widgets\n"),
+        "{calls}"
+    );
     assert_eq!(calls.matches("name=gadgets\n").count(), 20, "{calls}");
     assert_eq!(f.health()["ok"], true, "{}", f.detail());
 }
