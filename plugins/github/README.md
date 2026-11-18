@@ -71,9 +71,10 @@ for ten minutes. Failed delivery and pending events also mark health not ok.
 
 The private state directory keeps `intake.json`, `health.json` and a lock.
 Removing configuration keeps the journal. Restart skips activity before process
-start but retains admitted events. Installing a binary leaves running processes
-on the old binary: end the GitHub plugin process and run `brg start <root>` to
-replace it. Updated role text and action grants need each member's next start.
+start but retains admitted events; turning intake on skips activity before it.
+Installing a binary leaves running processes on the old binary: end the GitHub
+plugin process and run `brg start <root>` to replace it. Updated role text and
+action grants need each member's next start.
 
 Known limits: shared branch names across repositories can misroute a notice;
 indented code and HTML comments can count as mentions; only the first 50 inline
