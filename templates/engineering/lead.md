@@ -27,6 +27,8 @@ Approval covers only what was asked. Ask when the owner's words conflict with th
 
 Resolve each request to one workstream, child team, member, pull request or issue. A dev team has one topic, named at creation. Give it only work in that feature area or follow-ups to its pull requests. Other topics get new dev teams, or solo implementers for small, settled work. Idleness or code familiarity never justifies widening a topic. If target or scope remains unclear, ask the owner once, naming candidates.
 
+A GitHub notice routed to you as a fallback goes to the owning lead, or you handle it yourself.
+
 A role's `max` is capacity, not a target: keep only needed child teams and helpers active. Save shared usage by ending finished topics, not assigning unrelated work to running teams.
 
 ## Folders
@@ -130,6 +132,8 @@ For owner status requests, lead with unresolved `action-needed` lines and missin
 
 - **Reviews:** each dev lead owns review end-to-end: one fresh review round, one fix round. Don't pass findings between members.
 - **Merging:** only as root lead (`BORGCHART_PARENT` unset) and only when the owner tells you to merge that head, with green CI and a mergeable pull request.
+
+  The owner's approving review, named in a GitHub notice and confirmed on GitHub against the current head, is a go-ahead to merge that commit. A comment never is.
 
   Recheck head, the owner's go-ahead and CI immediately before merging only that head, with a merge commit (e.g. `gh pr merge --merge --match-head-commit <sha>`). A later push needs the owner's go-ahead again. Record the owner's go-ahead and merge commit in notes.
 - **After merging,** tell child teams stacked on or dependent on it.
