@@ -124,6 +124,11 @@ pub fn run(api: &Api, once: bool) -> Result<()> {
         "BORGCHART_STATE_DIR",
     ] {
         if api::var(name).is_empty() {
+            if name == "BORGCHART_DELIVER_TO" {
+                return Err(Error::usage(
+                    "add `delivers_to: <role>` to this plugin in template.yaml (direct runs: set BORGCHART_DELIVER_TO to a member ID)",
+                ));
+            }
             return Err(Error::usage(format!("set {name} before running watch")));
         }
     }
@@ -131,7 +136,7 @@ pub fn run(api: &Api, once: bool) -> Result<()> {
     let target = api::var("BORGCHART_DELIVER_TO");
     if !api::valid_address(&target) || !api::valid_channel(&channel) {
         return Err(Error::usage(
-            "set BORGCHART_DELIVER_TO to a member ID and SLACK_CHANNEL_ID to a channel ID",
+            "add `delivers_to: <role>` to this plugin in template.yaml (direct runs: set BORGCHART_DELIVER_TO to a member ID) and set SLACK_CHANNEL_ID to a channel ID",
         ));
     }
     let window = positive_env("SLACK_WINDOW_HOURS", "24")? * 3600.0;

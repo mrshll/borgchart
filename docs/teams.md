@@ -41,7 +41,7 @@ roles:
 - **Roles** have a role file (`prompt`), an optional `vendor`, a `parent`, and `start`. The key under `roles:` names the role. `start: false` means its members are created on demand. Each role keeps up to `max` members (default 1), running or stopped. Roles also have optional `restricted_access: true` for members that read untrusted text (unrestricted by default) and plugin grants.
 - **`parent`** makes the org chart, and messages follow it: a member writes to its parent or its children. The top member can also write to an outside caller (`external:NAME`).
 - **Plugins** are plain programs, declared under `plugins:` (a folder in the template, or `shared:<name>`, with the variables they receive and the actions members may be granted). brg runs only what `template.yaml` lists. A member can use only the actions it's granted; each granted action appears in its instruction with an absolute path. Secrets reach the plugin through a private file, never the agent's environment.
-  - A plugin may also declare a long-running `process` (a watcher of some outside source) with `delivers_to: <role>`.
+  - A plugin may also declare a long-running `process` (a watcher of some outside source) with `delivers_to: <role>`: a role in this file, not another team's member. Receiving work is separate from holding actions; the program may route further as its README describes.
   - An action that brg runs itself, like a bus `alert` action, gets fixed arguments and never any message text. The alert setting is validated, but neither the watcher nor alert dispatch is wired now; see "Getting a member's attention".
 
 ### Role files

@@ -215,7 +215,7 @@ pub fn send(
         let pending = &snapshot.pending[start..];
         let group = pending.iter().take_while(|e| key(e) == key(first)).count();
         if first.recipient.is_empty() {
-            errors.push("set BORGCHART_DELIVER_TO to the root lead; pending events kept".into());
+            errors.push("add `delivers_to: <role>` to this plugin in template.yaml (direct runs: set BORGCHART_DELIVER_TO to the root lead); pending events kept".into());
             start += group;
             continue;
         }

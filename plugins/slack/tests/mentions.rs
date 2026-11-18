@@ -346,7 +346,12 @@ fn configuration_refuses_missing_or_malformed_allowlists_before_slack_calls() {
         h.env.remove(key);
         let out = h.run(&["mentions", "--once"]);
         assert_eq!(out.status.code(), Some(2));
-        assert!(String::from_utf8_lossy(&out.stderr).contains(key));
+        let setting = if key == "BORGCHART_DELIVER_TO" {
+            "delivers_to"
+        } else {
+            key
+        };
+        assert!(String::from_utf8_lossy(&out.stderr).contains(setting));
         assert!(h.slack.lock().unwrap().calls.is_empty());
     }
 }

@@ -119,6 +119,11 @@ pub fn run(api: &Api, once: bool) -> Result<()> {
         "BORGCHART_STATE_DIR",
     ] {
         if api::var(name).is_empty() {
+            if name == "BORGCHART_DELIVER_TO" {
+                return Err(Error::usage(
+                    "add `delivers_to: <role>` to this plugin in template.yaml (direct runs: set BORGCHART_DELIVER_TO to a member ID)",
+                ));
+            }
             return Err(Error::usage(format!("set {name} before running mentions")));
         }
     }
@@ -132,7 +137,9 @@ pub fn run(api: &Api, once: bool) -> Result<()> {
     let users = api::csv(&allow);
     let target = api::var("BORGCHART_DELIVER_TO");
     if !api::valid_address(&target) {
-        return Err(Error::usage("set BORGCHART_DELIVER_TO to a member ID"));
+        return Err(Error::usage(
+            "add `delivers_to: <role>` to this plugin in template.yaml (direct runs: set BORGCHART_DELIVER_TO to a member ID)",
+        ));
     }
     let files = State::from_env()?;
     let _lock = files.lock()?;
