@@ -57,6 +57,9 @@ Private templates can use the same declarations:
 plugins:
   github:
     process: [brg-github, run]
+    # This team's lead. brg-github sends PR notices to the dev team's lead whose
+    # checkout holds the branch or commit; this lead gets everything else,
+    # a copy of each approval, and intake-gap notices.
     delivers_to: lead
     actions:
       read: brg-github read <id>
@@ -108,6 +111,7 @@ plugin process and run `brg start <root>` to replace it. Updated role text and
 action grants need each member's next start.
 
 Known limits: shared branch names across repositories can misroute a notice;
+child teams are found by a role named `lead`;
 indented code and HTML comments can count as mentions; only the first 50 inline
 review comments are scanned. Two trees listing the same repository both deliver.
 Every tree started with the same brg configuration reads the same `github:`

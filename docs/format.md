@@ -33,7 +33,7 @@ plugins:
   slackbot:
     path: plugins/slackbot      # template-local; catalog:shared/…; shared:<name>; or omit for PATH
     process: [./watch.py]       # optional: a long-running program brg starts and stops
-    delivers_to: triager        # optional: the role whose member the process hands work to
+    delivers_to: triager        # optional: a role in this file; brg gives its member's ID to the process
     env:                        # the only variables the plugin receives
       SLACK_BOT_TOKEN:          # no value: a secret, from the environment brg runs in
       SLACK_CHANNEL_ID: C0000EXAMPLE   # a plain value
@@ -155,6 +155,7 @@ A plugin is a plain script or program, in any language, that members run themsel
   - A full `brg start <team>` (and `create`) starts it and `brg stop` stops it; an already running process is not restarted.
   - On a running team, `brg start <team>` registers newly declared plugins and starts their processes, leaving running members alone; members gain a new plugin's actions at their next start. Changed or removed plugins, and changed values, still need a full stop and start.
   - It gets a small base environment plus the names in `env`, and `BORGCHART_DELIVER_TO` when `delivers_to` is set.
+  - `delivers_to` names a role in this file; it cannot name a member of another team. Holding a plugin's actions and receiving its process's work are separate: two roles may hold the actions while one receives, and a recipient may hold none. A program may route further itself; its README says how.
   - It may write `health.json` (`{"ok": true, "at": "<UTC time>", "detail": "…"}`) in its state directory, which `brg status` shows.
 - **`actions`:** named command lines.
   - **The prompt:** granted lines appear in the member's opening prompt under "Commands you can run".

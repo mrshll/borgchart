@@ -28,7 +28,7 @@ fn deliver(state: &mut Snapshot) -> String {
     }
     let target = std::env::var("BORGCHART_DELIVER_TO").unwrap_or_default();
     if !config::matches("[a-z][a-z0-9_-]{0,79}(?:/[a-z][a-z0-9_-]{0,79})*", &target) {
-        return "set BORGCHART_DELIVER_TO to the intake member's ID".into();
+        return "add `delivers_to: <role>` to this plugin in template.yaml (direct runs: set BORGCHART_DELIVER_TO to a member ID)".into();
     }
     let batch = &state.pending[..state.pending.len().min(6)];
     match plugin::send("timer", &target, &notice(batch), None) {
