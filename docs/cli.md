@@ -53,6 +53,13 @@ brg create <root>/dev --repo gadgets --branch fix-rounding
 
 `--repo` accepts one immediate child name in the tree's top folder. The child and its `.git` must be real directories: paths, symlinks, linked worktrees and bare repositories are refused. brg asks `origin` for its current default branch (including `master` or a renamed default) and fetches it before the registry lock and before issuing anything. Missing origin, unavailable credentials or network failures refuse creation. Fetch uses the caller's credential configuration with terminal prompting disabled. The original clone's working files, index and checked-out branch stay as they are. Creation prints the repository and short commit, for example `· widgets at 3f2a91c`. Without `--repo`, the start remains the working folder's `HEAD`, so an implementer inside a child team inherits that child team's committed work. Clean worktrees delete without `--force`; deletion, cleanup and destroy find their repositories through Git's own records, ignoring child `.git` files and refusing duplicate ownership.
 
+## Copying text from a member
+
+While attached, use the vendor's own copy command for a response (Claude: `/copy`),
+or press your tmux prefix then `[` to select text in copy mode; `q` exits.
+Your terminal's native selection includes the pane's visual line breaks and indentation.
+Copying to the system clipboard needs OSC 52 support and permission in your terminal.
+
 ## Runtime
 
 - **tmux:** brg runs its own tmux server (`tmux -L borgchart`) with its own config; your `~/.tmux.conf` is read only with `tmux.user_config` in brg's configuration. Each team is one session, `brg-<team>`, with one window per member and per plugin process (`_<plugin>`).
