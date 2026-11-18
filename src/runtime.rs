@@ -204,11 +204,14 @@ fn has_line(screen: &str, line: &str) -> bool {
     screen.lines().any(|l| l.trim_end() == line)
 }
 
-/// The folder Claude's trust dialog names: the first non-blank line after "Accessing workspace:".
+/// The folder Claude's trust dialog names, wrapped until the next blank line.
 pub fn trust_dialog_path(screen: &str) -> Option<PathBuf> {
     let mut lines = screen.lines();
     lines.find(|l| l.trim() == "Accessing workspace:")?;
-    let path = lines.find(|l| !l.trim().is_empty())?.trim();
+    let mut path = lines.find(|l| !l.trim().is_empty())?.trim().to_string();
+    for line in lines.take_while(|l| !l.trim().is_empty()) {
+        path.push_str(line.trim());
+    }
     path.starts_with('/').then(|| PathBuf::from(path))
 }
 
