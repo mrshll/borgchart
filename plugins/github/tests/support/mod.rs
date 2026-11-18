@@ -16,7 +16,7 @@ impl Fixture {
             dir: tempfile::tempdir().unwrap(),
         };
         fs::create_dir(this.path("state")).unwrap();
-        this.write("github.yaml", "- example-org/widgets\n");
+        this.write("github.yaml", "owner: example-owner\ngh_config_dir: ~/machine-profile\nrepositories: [example-org/widgets]\n");
         this.write("gh", r#"#!/bin/sh
 printf '%s\n' "$@" >> "$FIXTURE_DIR/calls"
 printf '%s\n' '--end--' >> "$FIXTURE_DIR/calls"
@@ -79,8 +79,8 @@ exit "$(/bin/cat "$FIXTURE_DIR/$response-code")"
             .env("HOME", self.dir.path())
             .env("FIXTURE_DIR", self.dir.path())
             .env("BORGCHART_STATE_DIR", self.path("state"))
-            .env("GH_CONFIG_DIR", self.path("machine-profile"))
-            .env("GITHUB_OWNER", "example-owner");
+            .env("GH_CONFIG_DIR", "ignored-inherited-profile")
+            .env("BORGCHART_CONFIG", self.path("config.yaml"));
     }
     pub fn command(&self) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_brg-github"));
@@ -106,12 +106,5 @@ exit "$(/bin/cat "$FIXTURE_DIR/$response-code")"
     }
     pub fn calls(&self) -> String {
         self.read("calls")
-    }
-    /// Sets the variable, or removes it for `None`.
-    pub fn set(command: &mut Command, name: &str, value: Option<&str>) {
-        match value {
-            Some(value) => command.env(name, value),
-            None => command.env_remove(name),
-        };
     }
 }

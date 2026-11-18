@@ -75,8 +75,16 @@ fn fetch(id: &str) -> Result<Option<String>, Error> {
                 .into(),
         ));
     }
-    let guard = Guard::start(&Gh, &config::owner()?, SystemTime::now())?;
-    let answer = Gh.graphql(QUERY, &[("id", id)], &[])?;
+    let path = config::path();
+    let config = config::load(&path).map_err(Error::Other)?.ok_or_else(|| {
+        Error::Other(format!(
+            "GitHub intake is not configured: no {}",
+            path.display()
+        ))
+    })?;
+    let api = Gh(config.gh_config_dir);
+    let guard = Guard::start(&api, &config.owner, SystemTime::now())?;
+    let answer = api.graphql(QUERY, &[("id", id)], &[])?;
     let value = &answer["data"]["node"];
     if value.is_null() {
         return Err(Error::NotFound);

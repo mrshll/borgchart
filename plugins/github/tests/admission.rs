@@ -61,7 +61,7 @@ fn drive_fixture() {
     };
     let store = plugin::State::from_env().unwrap();
     let epoch = parse_utc(AT).unwrap();
-    let mut session = Session::new(Gh, &store, epoch).unwrap();
+    let mut session = Session::new(Gh::default(), &store, epoch).unwrap();
     for offset in times.split(',') {
         session
             .tick(&store, epoch + Duration::from_secs(offset.parse().unwrap()))
@@ -69,20 +69,34 @@ fn drive_fixture() {
         let dir = std::path::PathBuf::from(std::env::var_os("FIXTURE_DIR").unwrap());
         fs::write(
             dir.join(format!("calls-at-{offset}")),
-            fs::read(dir.join("calls")).unwrap(),
+            fs::read(dir.join("calls")).unwrap_or_default(),
         )
         .unwrap();
-        if dir.join("next-graphql-1").exists() {
+        if dir.join("next-graphql-1").exists() || dir.join("next-github.yaml").exists() {
             fs::copy(
                 dir.join("state/health.json"),
                 dir.join("health-before-repair"),
             )
             .unwrap();
         }
-        for name in ["issues", "graphql-1"] {
+        for name in ["issues", "graphql-1", "github.yaml"] {
             let _ = fs::rename(dir.join(format!("next-{name}")), dir.join(name));
         }
     }
+}
+#[test]
+fn missing_configuration_is_off_until_the_next_poll_after_creation() {
+    let f = fixture();
+    fs::rename(f.path("github.yaml"), f.path("next-github.yaml")).unwrap();
+    drive(&f, "0,60");
+    let off = f.json("health-before-repair");
+    assert_eq!(off["ok"], true);
+    assert!(off["detail"].as_str().unwrap().starts_with("off: no "));
+    assert!(f.read("calls-at-0").is_empty());
+    let calls = f.read("calls-at-60");
+    assert!(calls.contains("\nuser\n") && calls.contains("\nusers/example-owner\n"));
+    assert!(calls.contains("repos/example-org/widgets/issues?"));
+    assert_eq!(f.health()["ok"], true);
 }
 /// Every delivery: its recipient line, then the notice.
 fn text(f: &Fixture) -> String {
@@ -695,7 +709,12 @@ fn maximum_identifiers_and_a_long_routing_reason_still_fit_one_notice() {
     let f = fixture();
     let repo = format!("{}/{}", "a".repeat(39), "b".repeat(100));
     let team = format!("example-team/{}", "c".repeat(210));
-    f.write("github.yaml", &format!("- {repo}\n"));
+    f.write(
+        "github.yaml",
+        &format!(
+            "owner: example-owner\ngh_config_dir: ~/machine-profile\nrepositories: [{repo}]\n"
+        ),
+    );
     f.write(
         "status",
         &json!([checkout(&f, &team, "team", "first"), lead(&team, "lead")]).to_string(),

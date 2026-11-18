@@ -4,6 +4,7 @@ use borgchart::{bounded_process, bus::time::format_utc};
 use serde_json::Value;
 use std::{
     fmt,
+    path::{Path, PathBuf},
     process::Command,
     time::{Duration, Instant, SystemTime},
 };
@@ -38,7 +39,7 @@ impl std::error::Error for Error {}
 
 pub enum Rest<'a> {
     Machine,
-    /// A login already checked by `config::owner`.
+    /// A login already checked by the configuration loader.
     Owner(&'a str),
     Issues {
         entry: &'a Entry,
@@ -62,6 +63,7 @@ impl Rest<'_> {
 }
 /// API boundary for identity, discovery and timelines; process tests exercise Gh itself.
 pub trait Api {
+    fn configure(&mut self, _profile: &Path) {}
     fn get(&self, request: Rest<'_>) -> Result<Value, Error>;
     fn graphql(
         &self,
@@ -70,16 +72,21 @@ pub trait Api {
         integers: &[(&str, u64)],
     ) -> Result<Value, Error>;
 }
-pub struct Gh;
+#[derive(Default)]
+pub struct Gh(pub PathBuf);
 impl Gh {
     fn call(&self, args: &[String]) -> Result<Value, Error> {
-        if std::env::var_os("GH_CONFIG_DIR").is_none_or(|s| s.is_empty()) {
+        if self.0.as_os_str().is_empty() {
             return Err(Error::Other(
-                "set GH_CONFIG_DIR to the machine account's gh configuration and restart".into(),
+                "set gh_config_dir in GITHUB_CONFIG to the machine account's gh configuration"
+                    .into(),
             ));
         }
         let mut command = Command::new("gh");
-        command.args(["api", "--include"]).args(args);
+        command
+            .env("GH_CONFIG_DIR", &self.0)
+            .args(["api", "--include"])
+            .args(args);
         for name in [
             "GH_TOKEN",
             "GITHUB_TOKEN",
@@ -120,6 +127,9 @@ impl Gh {
     }
 }
 impl Api for Gh {
+    fn configure(&mut self, profile: &Path) {
+        self.0 = profile.into();
+    }
     /// Strings go as `-f`, which gh passes verbatim; only integers use `-F`,
     /// so gh's file and repository substitutions never apply.
     fn graphql(

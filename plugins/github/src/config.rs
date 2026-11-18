@@ -1,4 +1,4 @@
-//! Validated repository entries, the repositories file and numeric identity guard.
+//! Private configuration, validated repository entries and numeric identity guard.
 use crate::gh::{Api, Error, Rest};
 use std::{
     fs,
@@ -51,37 +51,63 @@ impl Entry {
         })
     }
 }
-pub fn parse(text: &str) -> Result<Vec<Entry>, String> {
-    let raw: Vec<String> = borgchart::yaml::parse(text)
-        .map_err(|e| format!("repositories file: {e}; fix GITHUB_REPOS_FILE"))?;
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct File {
+    #[serde(default)]
+    owner: String,
+    #[serde(default)]
+    gh_config_dir: String,
+    repositories: Vec<String>,
+}
+pub struct Config {
+    pub owner: String,
+    pub gh_config_dir: PathBuf,
+    pub entries: Vec<Entry>,
+}
+pub fn parse(text: &str) -> Result<Config, String> {
+    let raw: File = borgchart::yaml::parse(text)
+        .map_err(|e| format!("GitHub configuration: {e}; fix GITHUB_CONFIG"))?;
+    if !valid_login(&raw.owner) {
+        return Err("set owner in GITHUB_CONFIG to the owner's GitHub login".into());
+    }
+    if raw.gh_config_dir.trim().is_empty() {
+        return Err(
+            "set gh_config_dir in GITHUB_CONFIG to the machine account's gh configuration".into(),
+        );
+    }
     let mut entries = Vec::new();
-    for value in raw {
+    for value in raw.repositories {
         let entry = Entry::parse(&value)?;
         if !entries.contains(&entry) {
             entries.push(entry);
         }
     }
-    Ok(entries)
+    Ok(Config {
+        owner: raw.owner,
+        gh_config_dir: borgchart::config::expand_home(Path::new(""), &raw.gh_config_dir),
+        entries,
+    })
 }
 pub fn path() -> PathBuf {
-    std::env::var_os("GITHUB_REPOS_FILE")
-        .unwrap_or("github.yaml".into())
-        .into()
-}
-pub fn owner() -> Result<String, Error> {
-    std::env::var("GITHUB_OWNER")
-        .ok()
-        .filter(|s| valid_login(s))
-        .ok_or_else(|| Error::Other("set GITHUB_OWNER to the owner's GitHub login".into()))
+    borgchart::config::path()
+        .parent()
+        .unwrap()
+        .join(std::env::var_os("GITHUB_CONFIG").unwrap_or("github.yaml".into()))
 }
 /// Read every poll, so an edit applies at the next poll; an unreadable or
 /// invalid file stops discovery rather than keeping an older list.
-pub fn load(path: &Path) -> Result<Vec<Entry>, String> {
-    let text = fs::read_to_string(path)
-        .map_err(|_| "cannot read repositories file; fix GITHUB_REPOS_FILE and retry")?;
-    parse(&text)
+pub fn load(path: &Path) -> Result<Option<Config>, String> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => {
+            return Err("cannot read GitHub configuration; fix GITHUB_CONFIG and retry".into());
+        }
+    };
+    parse(&text).map(Some)
 }
-const GUARD_ERROR: &str = "GitHub identity is unsafe or changed; start brg with GH_CONFIG_DIR naming the machine account's login";
+const GUARD_ERROR: &str = "GitHub identity is unsafe or changed; set gh_config_dir in GITHUB_CONFIG to the machine account's login and restart the plugin";
 pub struct Guard {
     pub machine_id: u64,
     pub machine_login: String,
@@ -107,7 +133,7 @@ impl Guard {
             .to_string();
         let owner_id = id(&api.get(Rest::Owner(owner)).map_err(|e| match e {
             Error::NotFound => Error::Other(
-                "unknown GITHUB_OWNER; set it to the owner's GitHub login and restart".into(),
+                "unknown owner; set owner in GITHUB_CONFIG to the owner's GitHub login".into(),
             ),
             error => error,
         })?)?;
@@ -144,7 +170,7 @@ mod tests {
     #[test]
     fn repository_entries_accept_only_safe_repository_and_org_identifiers() {
         let entries =
-            parse("- example-org/widgets\n- example-org/*\n- example-org/widgets\n").unwrap();
+            parse("owner: example-owner\ngh_config_dir: machine-profile\nrepositories: [example-org/widgets, example-org/*, example-org/widgets]").unwrap().entries;
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].api_path(), "repos/example-org/widgets");
         assert_eq!(entries[1].api_path(), "orgs/example-org");
@@ -165,7 +191,10 @@ mod tests {
             assert!(error.contains(&borgchart::plugin::escape(value)), "{error}");
         }
         for yaml in ["true", "[42]", "[{}]", "{}"] {
-            assert!(parse(yaml).is_err());
+            let text = format!(
+                "owner: example-owner\ngh_config_dir: machine-profile\nrepositories: {yaml}"
+            );
+            assert!(parse(&text).is_err());
         }
     }
 }

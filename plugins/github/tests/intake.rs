@@ -7,13 +7,13 @@ use support::Fixture;
 
 #[test]
 fn missing_or_empty_gh_config_refuses_before_spawning_gh() {
-    for value in [None, Some("")] {
+    for field in ["", "gh_config_dir: \"\"\n"] {
         let f = Fixture::new();
-        let mut command = f.command();
-        Fixture::set(&mut command, "GH_CONFIG_DIR", value);
-        command.output().unwrap();
+        let yaml = format!("owner: example-owner\n{field}repositories: []\n");
+        f.write("github.yaml", &yaml);
+        f.run();
         assert_eq!(f.health()["ok"], false);
-        assert!(f.detail().contains("set GH_CONFIG_DIR"));
+        assert!(f.detail().contains("gh_config_dir"));
         assert!(f.calls().is_empty());
     }
 }
@@ -49,24 +49,24 @@ fn owner_identity_refuses_discovery_and_reports_the_machine_profile_fix() {
     assert_eq!(f.health()["ok"], false);
     assert!(
         f.detail()
-            .contains("start brg with GH_CONFIG_DIR naming the machine account's login")
+            .contains("set gh_config_dir in GITHUB_CONFIG to the machine account's login")
     );
     assert!(!f.calls().contains("repos/"));
 }
 #[test]
-fn unset_invalid_or_unknown_owner_names_github_owner_without_discovery() {
-    for value in [None, Some("bad/login"), Some("example-missing")] {
+fn unset_invalid_or_unknown_owner_refuses_discovery() {
+    for field in ["", "owner: bad/login\n", "owner: example-missing\n"] {
         let f = Fixture::new();
         f.response("owner", 404, "{\"message\":\"private text\"}");
-        let mut command = f.command();
-        Fixture::set(&mut command, "GITHUB_OWNER", value);
-        command.output().unwrap();
+        let yaml = format!("{field}gh_config_dir: machine-profile\nrepositories: []\n");
+        f.write("github.yaml", &yaml);
+        f.run();
         assert_eq!(f.health()["ok"], false);
         let detail = f.detail();
-        assert!(detail.contains("GITHUB_OWNER"), "{detail}");
+        assert!(detail.contains("owner"), "{detail}");
         assert!(!detail.contains("private text"));
         assert!(!f.calls().contains("repos/"));
-        if value != Some("example-missing") {
+        if !field.contains("example-missing") {
             assert!(f.calls().is_empty());
         }
     }
@@ -135,7 +135,7 @@ fn graphql_passes_values_literally_without_gh_substitutions() {
     // Run the library call in an isolated child, keeping test environment changes
     // out of the multithreaded parent and preserving the real member's environment.
     if std::env::var_os("FIXTURE_GRAPHQL_CHILD").is_some() {
-        let result = Gh
+        let result = Gh("machine-profile".into())
             .graphql(
                 "query($name: String!, $number: Int!) { viewer { databaseId } }",
                 &[("name", "@credentials {owner}; touch injected")],

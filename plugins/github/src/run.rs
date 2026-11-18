@@ -19,7 +19,7 @@ pub struct Poll {
 }
 pub struct Session<A: Api> {
     api: A,
-    owner: String,
+    identity: Option<(String, PathBuf)>,
     guard: Option<Guard>,
     repositories: PathBuf,
     pub snapshot: Snapshot,
@@ -30,25 +30,12 @@ impl<A: Api> Session<A> {
     /// Reads state before any API request, and never writes over unreadable state.
     pub fn new(api: A, store: &plugin::State, epoch: SystemTime) -> Result<Self, String> {
         let snapshot = Snapshot::start(store)?;
-        let owner = config::owner().map_err(|e| e.to_string())?;
-        Ok(Self::configured(
-            api,
-            snapshot,
-            epoch,
-            owner,
-            config::path(),
-        ))
+        Ok(Self::configured(api, snapshot, epoch, config::path()))
     }
-    fn configured(
-        api: A,
-        snapshot: Snapshot,
-        epoch: SystemTime,
-        owner: String,
-        repositories: PathBuf,
-    ) -> Self {
+    fn configured(api: A, snapshot: Snapshot, epoch: SystemTime, repositories: PathBuf) -> Self {
         Self {
             api,
-            owner,
+            identity: None,
             guard: None,
             repositories,
             snapshot,
@@ -57,28 +44,46 @@ impl<A: Api> Session<A> {
         }
     }
     pub fn poll(&mut self, now: SystemTime) -> Result<Poll, Error> {
+        let Some(config) = config::load(&self.repositories).map_err(Error::Other)? else {
+            self.guard = None;
+            self.identity = None;
+            return Ok(Poll {
+                processed: 0,
+                admitted: 0,
+                errors: Vec::new(),
+            });
+        };
+        let identity = (config.owner, config.gh_config_dir);
+        if self.identity.as_ref() != Some(&identity) {
+            self.guard = None;
+            self.api.configure(&identity.1);
+            self.identity = Some(identity);
+        }
         if let Some(retry) = self.paused_until {
             if now < retry {
                 return Err(Error::RateLimited(retry));
             }
             self.paused_until = None;
         }
-        let result = self.collect(now);
+        let result = self.collect(now, &config.entries);
         if let Err(Error::RateLimited(retry)) = &result {
             self.paused_until = Some(*retry);
         }
         result
     }
-    fn collect(&mut self, now: SystemTime) -> Result<Poll, Error> {
+    fn collect(&mut self, now: SystemTime, entries: &[config::Entry]) -> Result<Poll, Error> {
         // Entries listed before the guard first passes start at the epoch.
         let first = self.guard.is_none();
         if first {
-            self.guard = Some(Guard::start(&self.api, &self.owner, now)?);
+            self.guard = Some(Guard::start(
+                &self.api,
+                &self.identity.as_ref().unwrap().0,
+                now,
+            )?);
         }
         self.guard.as_mut().unwrap().check(&self.api, now)?;
-        let entries = config::load(&self.repositories).map_err(Error::Other)?;
         let snapshot = &mut self.snapshot;
-        snapshot.entries(&entries, if first { self.epoch } else { now });
+        snapshot.entries(entries, if first { self.epoch } else { now });
         let mut poll = Poll {
             processed: 0,
             admitted: 0,
@@ -86,7 +91,7 @@ impl<A: Api> Session<A> {
         };
         let mut attempted = 0;
         let mut routing = None;
-        for entry in &entries {
+        for entry in entries {
             if attempted == discover::POLL_CAP {
                 break;
             }
@@ -151,6 +156,11 @@ impl<A: Api> Session<A> {
     }
     pub fn tick(&mut self, store: &plugin::State, now: SystemTime) -> Result<(), String> {
         let result = self.poll(now);
+        if result.is_ok() && self.guard.is_none() {
+            return store
+                .health(true, &format!("off: no {}", self.repositories.display()))
+                .map_err(|e| e.to_string());
+        }
         self.snapshot.save(store)?;
         let (sent, delivery_error) = delivery::send(&mut self.snapshot, store)?;
         let (mut errors, counts) = match result {
@@ -187,7 +197,7 @@ pub fn run(store: &plugin::State, once: bool) -> Result<(), String> {
         let _lock = store
             .lock()
             .map_err(|_| "cannot lock GitHub state; check directory permissions".to_string())?;
-        let mut session = Session::new(Gh, store, SystemTime::now())?;
+        let mut session = Session::new(Gh::default(), store, SystemTime::now())?;
         loop {
             session.tick(store, SystemTime::now())?;
             if once {
@@ -283,18 +293,15 @@ mod tests {
     fn item(number: u64, updated_at: SystemTime) -> Value {
         json!({"node_id":format!("I_{number}"),"number":number,"updated_at":format_utc(updated_at),"repository":{"full_name":"example-org/widgets"}})
     }
+    fn config(entries: &str) -> String {
+        format!("owner: example-owner\ngh_config_dir: machine-profile\nrepositories:\n{entries}")
+    }
     fn setup(entries: &str) -> (tempfile::TempDir, ApiFixture, Session<ApiFixture>) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("github.yaml");
-        fs::write(&path, entries).unwrap();
+        fs::write(&path, config(entries)).unwrap();
         let api = ApiFixture::new();
-        let session = Session::configured(
-            api.clone(),
-            Snapshot::default(),
-            now(),
-            "example-owner".into(),
-            path,
-        );
+        let session = Session::configured(api.clone(), Snapshot::default(), now(), path);
         (dir, api, session)
     }
     fn processed(session: &mut Session<ApiFixture>, at: SystemTime) -> usize {
@@ -302,26 +309,38 @@ mod tests {
     }
 
     #[test]
-    fn changed_machine_identity_stops_discovery_until_restart() {
-        let (_dir, api, mut session) = setup("- example-org/widgets\n");
+    fn changed_machine_identity_stops_discovery_until_restart_or_reconfiguration() {
+        let (dir, api, mut session) = setup("- example-org/widgets\n");
         session.poll(now()).unwrap();
         api.0.borrow_mut().machine = 303;
         session.poll(now() + secs(599)).unwrap();
         let error = session.poll(now() + secs(600)).err().unwrap();
-        assert!(error.to_string().contains("GH_CONFIG_DIR"), "{error}");
+        assert!(error.to_string().contains("gh_config_dir"), "{error}");
         let calls = api.calls().len();
         // Switching back does not resume a session whose identity changed.
         api.0.borrow_mut().machine = 101;
         assert!(session.poll(now() + secs(1200)).is_err());
         assert_eq!(api.calls().len(), calls);
+        let mut text = config("- example-org/widgets\n");
+        for (from, to) in [
+            ("example-owner", "example-next"),
+            ("machine-profile", "new-profile"),
+        ] {
+            text = text.replace(from, to);
+            fs::write(dir.path().join("github.yaml"), &text).unwrap();
+            api.0.borrow_mut().calls.clear();
+            session.poll(now() + secs(1201)).unwrap();
+            assert_eq!(&api.calls()[..2], ["user", "users/example-next"]);
+        }
     }
     #[test]
-    fn reload_adds_entries_at_now_and_invalid_or_missing_file_stops_all_discovery() {
+    fn reload_adds_entries_at_now_and_invalid_files_stop_discovery() {
         let (dir, api, mut session) = setup("- example-org/widgets\n");
         session.poll(now()).unwrap();
         let later = now() + secs(60);
         let path = dir.path().join("github.yaml");
-        fs::write(&path, "- example-org/widgets\n- example-org/gadgets\n").unwrap();
+        let entries = config("- example-org/widgets\n- example-org/gadgets\n");
+        fs::write(&path, entries).unwrap();
         // The new entry starts when it was added: its older item is skipped.
         api.pages(
             "example-org/gadgets",
@@ -329,18 +348,16 @@ mod tests {
         );
         assert_eq!(processed(&mut session, later), 1);
         for bad in ["- example-org/bad?query\n", ""] {
-            fs::write(&path, bad).unwrap();
+            fs::write(&path, config(bad)).unwrap();
             let calls = api.calls().len();
-            let error = session.poll(later).err().unwrap().to_string();
-            assert!(
-                bad.is_empty() || error.contains("example-org/bad?query"),
-                "{error}"
-            );
+            assert!(session.poll(later).is_err());
             assert_eq!(api.calls().len(), calls);
         }
         fs::remove_file(&path).unwrap();
-        assert!(session.poll(later).is_err());
-        fs::write(&path, "- example-org/gadgets\n").unwrap();
+        let calls = api.calls().len();
+        session.poll(later).unwrap();
+        assert_eq!(api.calls().len(), calls);
+        fs::write(&path, config("- example-org/gadgets\n")).unwrap();
         session.poll(later).unwrap();
         assert!(!session.snapshot.cursors.contains_key("example-org/widgets"));
     }
