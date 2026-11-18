@@ -3,7 +3,7 @@ use crate::{config::Entry, discover::Changed};
 use borgchart::plugin;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -30,6 +30,8 @@ pub enum Kind {
 #[serde(deny_unknown_fields)]
 pub struct PendingEvent {
     pub id: String,
+    #[serde(default)]
+    pub reactable: bool,
     pub repository: String,
     pub number: u64,
     pub is_pull_request: bool,
@@ -73,6 +75,8 @@ pub struct Snapshot {
     /// Event IDs already admitted, for the timeline stage.
     pub seen: BTreeMap<String, SystemTime>,
     pub pending: Vec<PendingEvent>,
+    #[serde(default)]
+    pub reactions: BTreeSet<String>,
 }
 impl Snapshot {
     /// Resume discovery, admitted IDs and pending deliveries across process starts.

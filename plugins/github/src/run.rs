@@ -12,6 +12,8 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+/// Received, not acted on: one attempt per committed comment or review.
+const EYES: &str = "mutation($id: ID!) { addReaction(input: {subjectId: $id, content: EYES}) { reaction { content } } }";
 pub struct Poll {
     pub processed: usize,
     pub admitted: usize,
@@ -92,6 +94,7 @@ impl<A: Api> Session<A> {
                 number: 0,
                 is_pull_request: false,
                 kind: Kind::Cutoff,
+                reactable: false,
                 recipient: delivery::root_lead(),
                 reason: format!("GitHub: intake was not running between {} and {}; owner actions before {} were not delivered; check GitHub for them.", format_utc(saved), format_utc(self.epoch), format_utc(edge)),
             });
@@ -175,6 +178,7 @@ impl<A: Api> Session<A> {
         }
         self.snapshot.save(store)?;
         let (sent, delivery_error) = delivery::send(&mut self.snapshot, store)?;
+        let may_react = result.is_ok();
         let (mut errors, counts) = match result {
             Ok(poll) => (
                 poll.errors,
@@ -185,6 +189,17 @@ impl<A: Api> Session<A> {
             ),
             Err(error) => (vec![error.to_string()], format!("{sent} sent")),
         };
+        if may_react && let Some(id) = self.snapshot.reactions.pop_first() {
+            self.snapshot.save(store)?;
+            if let Err(error) = self.api.graphql(EYES, &[("id", &id)], &[]) {
+                errors.push(format!("eyes reaction on {id} failed: {error}"));
+                if let Error::RateLimited(retry) = error {
+                    self.paused_until = Some(retry);
+                    self.snapshot.reactions.insert(id);
+                    self.snapshot.save(store)?;
+                }
+            }
+        }
         if !self.snapshot.pending.is_empty() {
             errors.push(format!(
                 "{} pending event(s): {}",

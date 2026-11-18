@@ -879,7 +879,7 @@ impl Run {
     fn save(&self, case: &str) {
         let path = root()
             .join("screens")
-            .join(format!("{}-{case}.ansi", self.vendor.as_str()));
+            .join(screen_file(self.vendor.as_str(), case));
         let _ = std::fs::write(path, self.screen());
     }
 
@@ -959,7 +959,12 @@ impl Run {
         };
         std::thread::sleep(Duration::from_millis(300));
         let after = self.snap();
-        let lines = |s: &Snapshot| composer::view(&s.screen, None).ok().map(|v| v.lines);
+        // A box that can't be read is compared by its whole screen instead.
+        let lines = |s: &Snapshot| {
+            composer::view(&s.screen, None)
+                .map(|v| v.lines)
+                .map_err(|_| s.screen.clone())
+        };
         let untouched = lines(&before) == lines(&after)
             && (before.geometry.cursor_x, before.geometry.cursor_y)
                 == (after.geometry.cursor_x, after.geometry.cursor_y);
@@ -1095,7 +1100,12 @@ pub fn qualify(vendor: Vendor, version: Option<String>, submit: bool) -> (Vec<[S
     for _ in 0..25 {
         run.newline();
     }
-    run.draft_case("draft offscreen (blank tail)");
+    // From 2.1.327 the box's prompt line scrolls out of view, so it reads as
+    // uncertain; either way the attempt defers and leaves the draft untouched.
+    run.deferred_case(
+        "draft offscreen (blank tail)",
+        "deferred:draft|deferred:uncertain",
+    );
 
     // Wrapped single line in a narrow pane.
     run.start(60, 50);
@@ -1354,6 +1364,41 @@ pub fn table(vendor: Vendor, rows: &[[String; 4]]) -> String {
 
 /// A row passes when the result has one of the `|`-separated prefixes and
 /// every invariant held, whatever the result text says.
+/// A saved screen's file name. The CI artifact upload refuses `:` and other
+/// characters, which some row labels contain.
+fn screen_file(vendor: &str, case: &str) -> String {
+    let name: String = case
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || "._-".contains(c) {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    format!("{vendor}-{name}.ansi")
+}
+
+#[test]
+fn screen_files_hold_no_character_the_artifact_upload_refuses() {
+    for case in ["attempt: vim normal", "a\"b<c>d|e*f?g\rh\ni", "send-start"] {
+        let file = screen_file("claude", case);
+        assert!(
+            file.starts_with("claude-") && file.ends_with(".ansi"),
+            "{file}"
+        );
+        assert!(
+            !file.contains(['"', ':', '<', '>', '|', '*', '?', '\r', '\n']),
+            "{file}"
+        );
+    }
+    assert_eq!(
+        screen_file("claude", "send-start"),
+        "claude-send-start.ansi"
+    );
+}
+
 fn evaluate(want: &str, got: &str, invariants: &[(&str, bool)]) -> bool {
     want.split('|').any(|w| got.starts_with(w)) && invariants.iter().all(|(_, held)| *held)
 }
