@@ -886,3 +886,59 @@ fn watch_tabs(all: bool) {
     );
     println!("exit: {s}");
 }
+
+#[test]
+fn status_i_clears_old_output_when_alternate_screen_is_disabled() {
+    clears_old_output("-i", "q quit");
+}
+
+#[test]
+fn status_watch_clears_old_output_when_alternate_screen_is_disabled() {
+    clears_old_output("-w", "▸tree");
+}
+
+fn clears_old_output(mode: &str, ready: &str) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let private = common::PrivateTmux::new();
+    let outer = private.socket("old-output");
+    let config = root.join("tmux.conf");
+    fs::write(&config, "set -g alternate-screen off\n").unwrap();
+    let script = root.join("run.sh");
+    fs::write(
+        &script,
+        format!(
+            "printf '\\033[5;5HOLD-OUTPUT\\033[H'\nexec env -i PATH=/usr/bin:/bin HOME={root} TERM=xterm-256color LANG=C.UTF-8 BORGCHART_CONFIG={root}/missing.yaml BORGCHART_STATE_HOME={root}/state {brg} status {mode}\n",
+            root = root.display(),
+            brg = env!("CARGO_BIN_EXE_brg"),
+        ),
+    )
+    .unwrap();
+    let out = private
+        .tmux(&outer)
+        .arg("-f")
+        .arg(config)
+        .args([
+            "new-session",
+            "-d",
+            "-s",
+            "o",
+            "-x",
+            "100",
+            "-y",
+            "30",
+            "sh",
+        ])
+        .arg(script)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let screen = || tmux(&private, &outer, &["capture-pane", "-p", "-t", "=o:"]);
+    wait("status screen", || screen().contains(ready), screen);
+    assert!(
+        !screen().contains("OLD-OUTPUT"),
+        "first frame left old terminal output visible:\n{}",
+        screen()
+    );
+    tmux(&private, &outer, &["send-keys", "-t", "=o:", "q"]);
+}
