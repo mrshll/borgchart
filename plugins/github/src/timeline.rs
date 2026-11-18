@@ -25,12 +25,11 @@ const QUERY: &str = r#"query($owner: String!, $name: String!, $number: Int!, $si
   }
   ... on PullRequest { id author { ...actor } body createdAt lastEditedAt editor { ...actor }
    assignees(first: 20) { nodes { databaseId } } headRefName headRefOid headRepository { nameWithOwner }
-   timelineItems(since: $since, first: 100, after: $after, itemTypes: [ISSUE_COMMENT, PULL_REQUEST_REVIEW, ASSIGNED_EVENT, MERGED_EVENT]) {
+   reviews(last: 100) { nodes { __typename ...review } }
+   timelineItems(since: $since, first: 100, after: $after, itemTypes: [ISSUE_COMMENT, ASSIGNED_EVENT, MERGED_EVENT]) {
     nodes { __typename
      ... on IssueComment { ...comment }
      ... on AssignedEvent { ...assignment }
-     ... on PullRequestReview { id author { ...actor } state submittedAt commit { oid } body lastEditedAt editor { ...actor }
-      comments(first: 50) { nodes { author { ...actor } body lastEditedAt editor { ...actor } } } }
      ... on MergedEvent { id actor { ...actor } commit { oid } createdAt }
     } pageInfo { hasNextPage endCursor }
    }
@@ -40,6 +39,8 @@ const QUERY: &str = r#"query($owner: String!, $name: String!, $number: Int!, $si
 fragment actor on Actor { ... on User { databaseId } ... on Bot { databaseId } }
 fragment comment on IssueComment { id author { ...actor } body createdAt lastEditedAt editor { ...actor } }
 fragment assignment on AssignedEvent { id actor { ...actor } assignee { ... on User { databaseId } } createdAt }
+fragment review on PullRequestReview { id author { ...actor } state submittedAt commit { oid } body lastEditedAt editor { ...actor }
+ comments(first: 50) { nodes { author { ...actor } body lastEditedAt editor { ...actor } } } }
 "#;
 fn malformed() -> Error {
     Error::Other(
@@ -194,7 +195,12 @@ pub fn fetch(
             .any(|a| account(a) == Some(guard.machine_id));
         let timeline = &raw["timelineItems"];
         let body = std::iter::once(raw).filter(|_| after.is_empty());
-        for value in body.chain(nodes(timeline)?) {
+        let reviews: &[Value] = if pr && after.is_empty() {
+            nodes(&raw["reviews"])?
+        } else {
+            &[]
+        };
+        for value in body.chain(nodes(timeline)?).chain(reviews) {
             let name = string(value, "__typename")?;
             let by = account(&value["actor"]).or(account(&value["author"]));
             if by != Some(guard.owner_id) {
