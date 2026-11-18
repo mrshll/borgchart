@@ -114,6 +114,24 @@ fn missing_configuration_is_off_until_the_next_poll_after_creation() {
     assert!(calls.contains("repos/example-org/widgets/issues?"));
     assert_eq!(f.health()["ok"], true);
 }
+#[test]
+fn listing_the_first_repository_later_skips_activity_before_the_listing() {
+    let f = fixture();
+    let yaml = "owner: example-owner\ngh_config_dir: ~/machine-profile\n";
+    f.write("github.yaml", &format!("{yaml}repositories: []\n"));
+    f.write(
+        "next-github.yaml",
+        &format!("{yaml}repositories: [example-org/widgets]\n"),
+    );
+    // A day after process start, the last idle poll precedes the listing by one minute.
+    drive(&f, "86340,86400");
+    assert!(f.read("calls-at-86340").is_empty());
+    let calls = f.read("calls-at-86400");
+    let since = calls.split("since=").nth(1).unwrap();
+    let since = parse_utc(&since[..since.find(['&', '\n']).unwrap()]).unwrap();
+    let idle = parse_utc(AT).unwrap() + Duration::from_secs(86340);
+    assert!(since >= idle - brg_github::state::OVERLAP, "{calls}");
+}
 /// Every delivery: its recipient line, then the notice.
 fn text(f: &Fixture) -> String {
     f.read("deliveries")

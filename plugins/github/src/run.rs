@@ -70,6 +70,9 @@ impl<A: Api> Session<A> {
         }
         if config.entries.is_empty() {
             self.note = "no repositories listed".into();
+            if self.guard.is_none() {
+                self.epoch = now;
+            }
             return Ok(Poll::default());
         }
         self.idle = false;
