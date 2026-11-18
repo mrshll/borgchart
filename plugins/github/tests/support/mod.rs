@@ -29,7 +29,10 @@ for arg do
   case "$arg" in
     user) response=machine ;;
     users/*) response=owner ;;
-    repos/*|orgs/*) response=issues ;;
+    repos/*|orgs/*)
+      response=issues
+      since=${arg#*since=}; since=${since%%&*}
+      if [ -f "$FIXTURE_DIR/issues-split" ] && [ "$since" \> "$(/bin/cat "$FIXTURE_DIR/issues-split")" ]; then response=issues-after; fi ;;
     graphql) response=graphql ;;
     number=*) number=${arg#number=} ;;
     after=*) after=${arg#after=} ;;

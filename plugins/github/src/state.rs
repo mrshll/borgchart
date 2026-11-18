@@ -17,8 +17,13 @@ const SETTLE: Duration = Duration::from_secs(60);
 pub enum Kind {
     Mention,
     Assigned,
-    Review { state: String, commit: String },
-    Merged { commit: String },
+    Review {
+        state: String,
+        commit: Option<String>,
+    },
+    Merged {
+        commit: Option<String>,
+    },
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -35,6 +40,7 @@ pub struct PendingEvent {
 #[serde(deny_unknown_fields)]
 pub struct Cursor {
     pub at: SystemTime,
+    pub drained: SystemTime,
     /// Nothing before this is discovered: the process start or the entry's addition.
     pub floor: SystemTime,
     /// Settled `updated_at` versions inside the overlap, skipped when listed again.
@@ -44,6 +50,7 @@ impl Cursor {
     pub fn new(now: SystemTime) -> Self {
         Self {
             at: now,
+            drained: now,
             floor: now,
             seen: BTreeMap::new(),
         }

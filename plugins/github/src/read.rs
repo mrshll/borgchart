@@ -2,7 +2,7 @@
 use crate::{
     config::{self, Entry, Guard},
     gh::{Api, Error, Gh},
-    timeline,
+    timeline::{self, account, oid, review_state},
 };
 use borgchart::plugin;
 use serde_json::Value;
@@ -15,7 +15,7 @@ const QUERY: &str = r#"query($id: ID!) {
    issue { repository { nameWithOwner } number } }
   ... on PullRequestReview { author { ...actor } state submittedAt commit { oid }
    body lastEditedAt editor { ...actor } pullRequest { repository { nameWithOwner } number }
-   comments(first: 50) { nodes { author { ...actor } body lastEditedAt editor { ...actor } } } }
+   comments(first: 50) { totalCount nodes { author { ...actor } body lastEditedAt editor { ...actor } } } }
   ... on Issue { author { ...actor } body lastEditedAt editor { ...actor }
    repository { nameWithOwner } number }
   ... on PullRequest { author { ...actor } body lastEditedAt editor { ...actor }
@@ -35,16 +35,15 @@ fn malformed() -> Error {
     )
 }
 fn string<'a>(value: &'a Value, key: &str) -> Result<&'a str, Error> {
-    value[key].as_str().ok_or_else(malformed)
+    timeline::string(value, key).map_err(|_| malformed())
 }
-fn account(value: &Value) -> Option<u64> {
-    value["databaseId"].as_u64()
-}
-fn commit(value: &Value) -> Result<&str, Error> {
-    string(&value["commit"], "oid")?
-        .get(..7)
-        .filter(|s| s.bytes().all(|b| b.is_ascii_hexdigit()))
-        .ok_or_else(malformed)
+fn commit(value: &Value) -> Result<String, Error> {
+    Ok(oid(value)
+        .map_err(|_| malformed())?
+        .as_deref()
+        .map(|c| &c[..7])
+        .unwrap_or("unknown commit")
+        .into())
 }
 fn body(value: &Value, owner: u64, text: &mut String) -> Result<(), Error> {
     if value.get("lastEditedAt") == Some(&Value::Null) && value.get("editor") == Some(&Value::Null)
@@ -114,13 +113,7 @@ fn fetch(id: &str) -> Result<Option<String>, Error> {
         }
         "MergedEvent" => text.push_str(&format!("merged at {}\n", commit(value)?)),
         "PullRequestReview" => {
-            let state = string(value, "state")?;
-            // The timeline's rule for the state a notice carries.
-            if !(1..=32).contains(&state.len())
-                || !state.bytes().all(|b| b.is_ascii_uppercase() || b == b'_')
-            {
-                return Err(malformed());
-            }
+            let state = review_state(value).map_err(|_| malformed())?;
             text.push_str(&format!("{state} at {}\n", commit(value)?));
             body(value, guard.owner_id, &mut text)?;
             let comments = value["comments"]["nodes"]
@@ -137,6 +130,13 @@ fn fetch(id: &str) -> Result<Option<String>, Error> {
             text.push_str(&format!(
                 "{hidden} inline comments by other accounts not shown\n"
             ));
+            if value["comments"]["totalCount"]
+                .as_u64()
+                .ok_or_else(malformed)?
+                > 50
+            {
+                text.push_str("more inline comments not shown; read them on GitHub as evidence\n");
+            }
         }
         _ => body(value, guard.owner_id, &mut text)?,
     }

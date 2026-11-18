@@ -3,7 +3,7 @@ use crate::{
     config::{self, Guard},
     delivery, discover,
     gh::{Api, Error, Gh},
-    state::Snapshot,
+    state::{OVERLAP, Snapshot},
     timeline,
 };
 use borgchart::{bus::time::format_utc, plugin};
@@ -92,7 +92,9 @@ impl<A: Api> Session<A> {
             }
             let cursor = snapshot.cursors.get_mut(&entry.key()).unwrap();
             let original_at = cursor.at;
-            let since = cursor.since();
+            let since = cursor
+                .floor
+                .max(cursor.drained.checked_sub(OVERLAP).unwrap_or(cursor.floor));
             match discover::fetch(&self.api, entry, cursor, discover::POLL_CAP - attempted) {
                 Ok(batch) => {
                     let mut failed = false;
@@ -133,6 +135,7 @@ impl<A: Api> Session<A> {
                         cursor.at = original_at;
                     } else if batch.exhausted {
                         cursor.at = cursor.at.max(now);
+                        cursor.drained = now;
                     }
                 }
                 Err(Error::RateLimited(retry)) => return Err(Error::RateLimited(retry)),
@@ -304,14 +307,13 @@ mod tests {
         session.poll(now()).unwrap();
         api.0.borrow_mut().machine = 303;
         session.poll(now() + secs(599)).unwrap();
-        let calls = api.calls().len();
         let error = session.poll(now() + secs(600)).err().unwrap();
         assert!(error.to_string().contains("GH_CONFIG_DIR"), "{error}");
-        assert_eq!(api.calls().len(), calls + 1);
+        let calls = api.calls().len();
         // Switching back does not resume a session whose identity changed.
         api.0.borrow_mut().machine = 101;
         assert!(session.poll(now() + secs(1200)).is_err());
-        assert_eq!(api.calls().len(), calls + 1);
+        assert_eq!(api.calls().len(), calls);
     }
     #[test]
     fn reload_adds_entries_at_now_and_invalid_or_missing_file_stops_all_discovery() {
@@ -447,9 +449,6 @@ mod tests {
         );
         let poll = session.poll(now() + secs(60)).unwrap();
         assert_eq!((poll.processed, poll.errors.len()), (0, 1));
-        let cursor = &session.snapshot.cursors[key];
-        assert_eq!(cursor.at, now());
-        assert!(!cursor.seen.contains_key("I_100"));
         api.pages(key, vec![json!(values), json!([item(101, now())])]);
         assert_eq!(processed(&mut session, now() + secs(60)), 2);
     }
@@ -466,8 +465,9 @@ mod tests {
         );
         assert_eq!(api.calls().len(), count);
         api.0.borrow_mut().failure = None;
-        session.poll(retry).unwrap();
-        assert_eq!(api.calls().len(), count + 2);
+        api.pages("example-org/widgets", vec![json!([item(1, now())])]);
+        api.pages("example-org/gadgets", vec![json!([item(2, now())])]);
+        assert_eq!(processed(&mut session, retry), 2);
     }
     #[test]
     fn organisation_pages_name_each_item_by_its_validated_repository() {

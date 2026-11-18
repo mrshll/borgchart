@@ -97,7 +97,7 @@ fn damaged_or_unreadable_intake_refuses_and_leaves_the_journal_untouched() {
 fn start_and_restart_skip_old_activity_keep_admitted_events_and_say_so() {
     let f = Fixture::new();
     let old = json!({"secs_since_epoch": 1_500_000_000, "nanos_since_epoch": 0});
-    let cursor = json!({"at": old, "floor": old, "seen": {}});
+    let cursor = json!({"at": old, "drained": old, "floor": old, "seen": {}});
     let secs = std::time::UNIX_EPOCH.elapsed().unwrap().as_secs();
     let recent = json!({"secs_since_epoch": secs, "nanos_since_epoch": 0});
     f.write(

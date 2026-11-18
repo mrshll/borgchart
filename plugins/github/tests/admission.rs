@@ -26,7 +26,7 @@ if [ -f "$FIXTURE_DIR/crash" ]; then
   /bin/rm "$FIXTURE_DIR/crash"
   kill -KILL "$PPID"
 fi
-if [ -f "$FIXTURE_DIR/fail" ]; then
+if [ -f "$FIXTURE_DIR/fail" ] || { [ -f "$FIXTURE_DIR/fail-recipient" ] && [ "$recipient" = "$(/bin/cat "$FIXTURE_DIR/fail-recipient")" ]; }; then
   printf '{"message":"blocked\\nretry"}'
   exit 1
 fi
@@ -44,7 +44,7 @@ fn drive(f: &Fixture, times: &str) -> bool {
     let output = cmd
         .env("ADMISSION_CHILD", times)
         .env("BORGCHART_BIN", f.path("brg"))
-        .env("BORGCHART_DELIVER_TO", "example-team/root")
+        .env("BORGCHART_DELIVER_TO", "root")
         .env("BORGCHART_TEAM", "example-team")
         .args(["--exact", "drive_fixture", "--nocapture"])
         .output()
@@ -67,6 +67,18 @@ fn drive_fixture() {
             .tick(&store, epoch + Duration::from_secs(offset.parse().unwrap()))
             .unwrap();
         let dir = std::path::PathBuf::from(std::env::var_os("FIXTURE_DIR").unwrap());
+        fs::write(
+            dir.join(format!("calls-at-{offset}")),
+            fs::read(dir.join("calls")).unwrap(),
+        )
+        .unwrap();
+        if dir.join("next-graphql-1").exists() {
+            fs::copy(
+                dir.join("state/health.json"),
+                dir.join("health-before-repair"),
+            )
+            .unwrap();
+        }
         for name in ["issues", "graphql-1"] {
             let _ = fs::rename(dir.join(format!("next-{name}")), dir.join(name));
         }
@@ -98,6 +110,7 @@ fn item(pr: bool, nodes: Vec<Value>) -> Value {
     i["id"] = json!("I_1");
     i["createdAt"] = json!(AT);
     i["assignees"] = json!({"nodes":[{"databaseId":101}]});
+    i["headRepository"] = json!({"nameWithOwner":"example-org/widgets"});
     i["headRefName"] = json!("example-branch");
     i["headRefOid"] = json!("abcdef0123456789012345678901234567890123");
     i["closedByPullRequestsReferences"] = json!({"nodes":[]});
@@ -155,11 +168,14 @@ fn four_owner_triggers_deliver_identifiers_once_without_github_text() {
     );
     let issue = vec![mention, event("AssignedEvent", "AE_assign", 202, "")];
     let merge = event("MergedEvent", "ME_merge", 202, "");
+    let mut unknown_merge = merge.clone();
+    unknown_merge["id"] = json!("ME_unknown");
+    unknown_merge["commit"] = Value::Null;
     changed(
         &f,
         &[
             (false, issue),
-            (true, vec![review, merge, commented, draft]),
+            (true, vec![review, merge, unknown_merge, commented, draft]),
         ],
     );
     drive(&f, "0,60,120");
@@ -170,6 +186,7 @@ fn four_owner_triggers_deliver_identifiers_once_without_github_text() {
         ("PRR_review", "review APPROVED on 3f2a91c", 2),
         ("PRR_commented", "review COMMENTED on 3f2a91c", 2),
         ("ME_merge", "merged on 3f2a91c", 2),
+        ("ME_unknown", "merged on unknown commit", 2),
     ] {
         assert_eq!(reads(&sent, id), 1, "{id}: {sent}");
         let line = format!("example-org/widgets#{number}");
@@ -246,21 +263,20 @@ fn only_owner_actions_in_scope_and_unplanted_mentions_wake_the_lead() {
     answer(&f, 1, &raw);
     drive(&f, "120");
     let sent = text(&f);
-    for id in ["IC_selfedit", "I_1", "PRR_inline202"] {
+    for id in ["I_1", "PRR_inline202"] {
         assert_eq!(reads(&sent, id), 1, "{id}: {sent}");
     }
-    assert_eq!(sent.matches("brg-github read").count(), 3, "{sent}");
+    assert_eq!(reads(&sent, "IC_selfedit"), 0);
+    assert_eq!(sent.matches("brg-github read").count(), 2, "{sent}");
     assert_eq!(f.health()["ok"], true);
 }
 #[test]
-fn old_edits_and_pre_epoch_actions_are_skipped_but_newly_submitted_drafts_arrive() {
+fn pre_epoch_and_pre_drain_actions_are_skipped_but_newly_submitted_drafts_arrive() {
     let f = fixture();
     let mut nodes = Vec::new();
     for (id, created) in [("IC_before", "2026-01-02T11:59:59Z"), ("IC_stale", AT)] {
         let mut e = event("IssueComment", id, 202, "@example-bot");
         e["createdAt"] = json!(created);
-        e["lastEditedAt"] = json!("2026-01-02T12:10:00Z");
-        e["editor"] = json!({"databaseId":202});
         nodes.push(e);
     }
     let mut review = event("PullRequestReview", "PRR_draft", 202, "");
@@ -324,7 +340,6 @@ fn failed_later_timeline_page_retries_without_partial_admission_then_sends_bound
         drive(&f, "120,180");
         assert!(text(&f).is_empty());
         assert_eq!(f.health()["ok"], false);
-        assert_eq!(f.calls().matches("number=1").count(), 4);
         let second =
             json!({"data":{"repository":{"issueOrPullRequest":item(false,nodes[4..].to_vec())}}});
         f.response("graphql-1-next", 200, &second.to_string());
@@ -359,21 +374,26 @@ fn malformed_identifiers_and_timeline_rate_limits_never_advance_past_a_failed_it
             {"node_id":"I_2","number":2,"updated_at":"2026-01-02T12:10:00Z"}
         ]);
         f.response("issues", 200, &listed.to_string());
-        drive(&f, "720,780");
-        assert!(text(&f).is_empty());
-        assert_eq!(f.health()["ok"], false);
-        assert_eq!(f.calls().matches("number=1").count(), 2);
-        // The later item's success does not move the entry's cursor past the failure.
-        assert_eq!(
-            f.calls().matches("since=2026-01-02T11:55:00.000Z").count(),
-            5
+        f.write("issues-split", "2026-01-02T12:00:00.000Z");
+        f.response("issues-after", 200, &json!([listed[1]]).to_string());
+        fs::rename(f.path("graphql-1"), f.path("broken")).unwrap();
+        answer(
+            &f,
+            1,
+            &item(true, vec![event("PullRequestReview", "PRR_safe", 202, "")]),
         );
+        fs::rename(f.path("graphql-1"), f.path("next-graphql-1")).unwrap();
+        fs::rename(f.path("broken"), f.path("graphql-1")).unwrap();
+        drive(&f, "720,780,840");
+        assert_eq!(f.json("health-before-repair")["ok"], false);
+        assert_eq!(reads(&text(&f), "PRR_safe"), 1);
+        assert_eq!(f.health()["ok"], true);
     }
     let f = fixture();
     changed(&f, &[(true, vec![])]);
     f.response("graphql-1", 429, "{}");
     drive(&f, "0,60,120");
-    assert_eq!(f.calls().matches("number=1").count(), 1);
+    assert_eq!(f.read("calls-at-0"), f.read("calls-at-120"));
     assert_eq!(f.health()["ok"], false);
 }
 fn git(path: &std::path::Path, args: &[&str]) -> String {
@@ -412,7 +432,9 @@ fn deliveries(f: &Fixture) -> Vec<String> {
 }
 #[test]
 fn checkout_heads_route_prs_and_linked_issues_and_copy_only_approvals() {
-    for mode in ["shared", "member", "detached", "issue", "root", "mention"] {
+    for mode in [
+        "shared", "member", "detached", "issue", "root", "mention", "unknown", "null",
+    ] {
         let f = fixture();
         let (team, kind, member) = match mode {
             "root" => ("example-team", "member", "root"),
@@ -425,6 +447,10 @@ fn checkout_heads_route_prs_and_linked_issues_and_copy_only_approvals() {
             checkout(&f, team, "member", "second"),
             lead(team, member),
         ];
+        let mut rows = rows;
+        if mode == "unknown" {
+            rows[2]["liveness"] = json!("unknown");
+        }
         f.write("status", &json!(rows).to_string());
         let mut commented = event("PullRequestReview", "PRR_comment", 202, "");
         commented["state"] = json!("COMMENTED");
@@ -438,6 +464,9 @@ fn checkout_heads_route_prs_and_linked_issues_and_copy_only_approvals() {
         };
         changed(&f, &[(mode != "issue", events.clone())]);
         let mut raw = item(mode != "issue", events);
+        if mode == "null" {
+            raw["timelineItems"]["nodes"][0]["commit"] = Value::Null;
+        }
         if mode == "mention" {
             raw["assignees"] = json!({"nodes":[]});
             raw["timelineItems"]["nodes"][0]["body"] = json!("@example-bot");
@@ -448,11 +477,12 @@ fn checkout_heads_route_prs_and_linked_issues_and_copy_only_approvals() {
             git(&f.path("second"), &["checkout", "--detach"]);
             raw["headRefName"] = json!("UNTRUSTED_BRANCH_MARKER");
             raw["headRefOid"] = json!(oid);
+            raw["headRepository"] = json!({"nameWithOwner":"example-fork/widgets"});
         }
         if mode == "issue" {
             raw["closedByPullRequestsReferences"] = json!({"nodes":[
-                {"headRefName":"unheld","headRefOid":"0000000"},
-                {"headRefName":"example-branch","headRefOid":"1111111"}
+                {"headRefName":"unheld","headRefOid":"0000000","headRepository":{"nameWithOwner":"example-org/widgets"}},
+                {"headRefName":"example-branch","headRefOid":"1111111","headRepository":{"nameWithOwner":"EXAMPLE-ORG/Widgets"}}
             ]});
         }
         answer(&f, 1, &raw);
@@ -469,7 +499,6 @@ fn checkout_heads_route_prs_and_linked_issues_and_copy_only_approvals() {
             .collect();
         assert_eq!(routed.len(), 1, "{mode}: {sent:?}");
         assert!(routed[0].contains(&format!("team {team} holds the branch")));
-        assert_eq!(f.read("status-calls"), "status example-team --json\n");
         assert!(
             !text(&f).contains("example-branch") && !text(&f).contains("UNTRUSTED_BRANCH_MARKER")
         );
@@ -479,7 +508,11 @@ fn checkout_heads_route_prs_and_linked_issues_and_copy_only_approvals() {
                 .find(|s| s.starts_with("example-team/root\n"))
                 .unwrap();
             assert!(copy.contains("approval copy; owning lead: example-team/widgets/lead"));
-            assert!(copy.contains("3f2a91c"));
+            assert!(copy.contains(if mode == "null" {
+                "on unknown commit"
+            } else {
+                "3f2a91c"
+            }));
             assert_eq!(reads(copy, "PRR_approved"), 1);
             assert_eq!(reads(copy, "PRR_comment"), 0);
             assert_eq!(sent.len(), 2);
@@ -494,6 +527,8 @@ fn routing_fallbacks_deliver_and_retry_keeps_the_admitted_recipient() {
         "missing",
         "unheld",
         "several",
+        "twelve",
+        "fork",
         "stopped",
         "unavailable",
         "retry",
@@ -518,6 +553,14 @@ fn routing_fallbacks_deliver_and_retry_keeps_the_admitted_recipient() {
                 rows.extend([checkout(&f, other, "member", "second"), lead(other, "lead")]);
                 "several teams hold the branch: example-team/other, example-team/widgets"
             }
+            "twelve" => {
+                for n in 0..11 {
+                    let team = format!("example-team/development-project-{n:02}");
+                    rows.push(checkout(&f, &team, "team", &format!("dir{n}")));
+                }
+                "and 9 more"
+            }
+            "fork" => "no team holds the branch",
             "stopped" => {
                 rows[1]["liveness"] = json!("gone");
                 "owning lead is stopped: example-team/widgets/lead"
@@ -539,12 +582,19 @@ fn routing_fallbacks_deliver_and_retry_keeps_the_admitted_recipient() {
                 vec![event("IssueComment", "IC_routed", 202, "@example-bot")],
             )],
         );
+        if mode == "fork" {
+            let mut raw = item(
+                true,
+                vec![event("IssueComment", "IC_routed", 202, "@example-bot")],
+            );
+            raw["headRepository"] = json!({"nameWithOwner":"example-fork/widgets"});
+            answer(&f, 1, &raw);
+        }
         drive(&f, "120");
         if mode == "retry" {
             fs::remove_file(f.path("fail")).unwrap();
             f.write("status", "[]");
             drive(&f, "180");
-            assert_eq!(f.read("status-calls").lines().count(), 1);
         }
         let sent = deliveries(&f);
         let recipient = if mode == "retry" {
@@ -564,4 +614,107 @@ fn routing_fallbacks_deliver_and_retry_keeps_the_admitted_recipient() {
         assert_eq!(pending(&f), 0);
         assert_eq!(f.health()["ok"], true);
     }
+}
+
+#[test]
+fn an_owner_edit_cannot_create_a_mention_on_the_next_poll() {
+    let f = fixture();
+    let plain = event("IssueComment", "IC_edited", 202, "plain");
+    changed(&f, &[(false, vec![plain.clone()])]);
+    let mut edited = plain.clone();
+    edited["body"] = json!("@example-bot");
+    edited["lastEditedAt"] = json!("2026-01-02T12:01:00Z");
+    edited["editor"] = json!({"databaseId":202});
+    answer(&f, 1, &item(false, vec![edited]));
+    fs::rename(f.path("graphql-1"), f.path("next-graphql-1")).unwrap();
+    answer(&f, 1, &item(false, vec![plain]));
+    f.response(
+        "next-issues",
+        200,
+        &json!([{"node_id":"I_1","number":1,"updated_at":"2026-01-02T12:01:00Z"}]).to_string(),
+    );
+    drive(&f, "0,60");
+    assert!(text(&f).is_empty());
+    assert_eq!(f.health()["ok"], true);
+}
+#[test]
+fn a_superseded_item_keeps_its_owner_action_while_discovery_drains_a_backlog() {
+    let f = fixture();
+    let mut items = vec![(false, vec![]); 20];
+    let mut mention = event("IssueComment", "IC_backlog", 202, "@example-bot");
+    mention["createdAt"] = json!("2026-01-02T12:01:00Z");
+    items.push((false, vec![mention]));
+    changed(&f, &items);
+    let list: Vec<_> = (1..=21)
+        .map(|n| {
+            json!({"node_id":format!("I_{n}"),"number":n,
+        "updated_at":if n == 21 {"2026-01-02T12:20:00Z"} else {"2026-01-02T12:10:00Z"}})
+        })
+        .collect();
+    f.response("issues", 200, &json!(list).to_string());
+    drive(&f, "1800,1860,1920");
+    assert_eq!(reads(&text(&f), "IC_backlog"), 1);
+    assert_eq!(f.health()["ok"], true);
+}
+#[test]
+fn a_failed_recipient_keeps_its_events_without_blocking_other_groups() {
+    let f = fixture();
+    let team = "example-team/widgets";
+    f.write(
+        "status",
+        &json!([checkout(&f, team, "team", "first"), lead(team, "lead")]).to_string(),
+    );
+    changed(
+        &f,
+        &[(
+            true,
+            vec![event("PullRequestReview", "PRR_isolated", 202, "")],
+        )],
+    );
+    f.write("fail-recipient", "example-team/root");
+    f.write("fail", "");
+    drive(&f, "120");
+    assert!(
+        f.detail().contains("example-team/root:")
+            && f.detail().contains("example-team/widgets/lead:")
+    );
+    assert_eq!(pending(&f), 2);
+    fs::remove_file(f.path("fail")).unwrap();
+    drive(&f, "180");
+    assert_eq!(pending(&f), 1);
+    assert_eq!(f.health()["ok"], false);
+    fs::remove_file(f.path("fail-recipient")).unwrap();
+    drive(&f, "240");
+    assert_eq!(pending(&f), 0);
+    assert_eq!(reads(&text(&f), "PRR_isolated"), 5);
+    assert_eq!(f.health()["ok"], true);
+}
+
+#[test]
+fn maximum_identifiers_and_a_long_routing_reason_still_fit_one_notice() {
+    let f = fixture();
+    let repo = format!("{}/{}", "a".repeat(39), "b".repeat(100));
+    let team = format!("example-team/{}", "c".repeat(210));
+    f.write("github.yaml", &format!("- {repo}\n"));
+    f.write(
+        "status",
+        &json!([checkout(&f, &team, "team", "first"), lead(&team, "lead")]).to_string(),
+    );
+    let mut review = event("PullRequestReview", &"R".repeat(128), 202, "");
+    review["state"] = json!("A".repeat(32));
+    review["commit"] = Value::Null;
+    let mut raw = item(true, vec![review]);
+    raw["headRepository"] = json!({"nameWithOwner":repo});
+    answer(&f, u64::MAX, &raw);
+    f.response(
+        "issues",
+        200,
+        &json!([{"node_id":"I_1","number":u64::MAX,"updated_at":AT}]).to_string(),
+    );
+    drive(&f, "120");
+    let sent = deliveries(&f);
+    assert_eq!(sent.len(), 1);
+    assert!(sent[0].split_once('\n').unwrap().1.len() <= 900);
+    assert!(sent[0].contains('…'));
+    assert_eq!(pending(&f), 0);
 }

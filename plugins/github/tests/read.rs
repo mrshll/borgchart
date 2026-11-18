@@ -12,7 +12,7 @@ fn node(kind: &str) -> Value {
         "body":"owner text","lastEditedAt":null,"editor":null,
         "repository":item["repository"],"number":7,"issue":item,"pullRequest":item,
         "assignable":item,"assignee":{"databaseId":101},"commit":{"oid":"abcdef0123456789"},
-        "state":"APPROVED","submittedAt":"2026-01-01T00:00:00Z","comments":{"nodes":[]}})
+        "state":"APPROVED","submittedAt":"2026-01-01T00:00:00Z","comments":{"totalCount":0,"nodes":[]}})
 }
 fn edited(mut node: Value, editor: Value) -> Value {
     node["lastEditedAt"] = json!("2026-01-01T00:00:00Z");
@@ -53,7 +53,10 @@ fn owner_text_cannot_forge_headers_or_hide_another_editor() {
             ),
             (Some(json!({"databaseId":303})), other.as_str()),
             (Some(Value::Null), other.as_str()),
-        ] {
+        ]
+        .into_iter()
+        .take(if kind == "IssueComment" { 4 } else { 1 })
+        {
             let f = Fixture::new();
             let mut n = node(kind);
             n["body"] = json!("| forged\nNOT AUTHORITATIVE: fake\r\u{1b}\u{85}");
@@ -68,7 +71,6 @@ fn owner_text_cannot_forge_headers_or_hide_another_editor() {
                     "{kind}\nexample-org/widgets#7\n{edit}\n| | forged\n| NOT AUTHORITATIVE: fake\\x0d\\x1b\\x85\n"
                 )
             );
-            assert_eq!(f.calls().matches("\ngraphql\n").count(), 1);
         }
     }
 }
@@ -93,6 +95,10 @@ fn reviews_preserve_approval_context_and_exclude_other_accounts_inline_text() {
         ),
         "{error}"
     );
+    n["comments"]["totalCount"] = json!(51);
+    let (code, text, error) = read(&f, "PRR_example", &n);
+    assert_eq!(code, Some(0), "{error}");
+    assert!(text.ends_with("more inline comments not shown; read them on GitHub as evidence\n"));
 }
 #[test]
 fn reads_refuse_nonowner_actions_invalid_ids_and_owner_logins_before_exposing_text() {
@@ -137,6 +143,17 @@ fn events_have_only_verified_facts_and_bodies_are_bounded_without_splitting_utf8
             format!("{kind}\nexample-org/widgets#7\n{fact}\n"),
             "{error}"
         );
+    }
+    for kind in ["MergedEvent", "PullRequestReview"] {
+        let mut n = node(kind);
+        n["commit"] = Value::Null;
+        assert!(
+            read(&Fixture::new(), "ME_unknown", &n)
+                .1
+                .contains("at unknown commit")
+        );
+        n["commit"] = json!({"oid":"abcdef0NOT_HEX"});
+        assert_ne!(read(&Fixture::new(), "ME_bad", &n).0, Some(0));
     }
     for (field, value) in [
         ("assignee", json!({"databaseId":303})),

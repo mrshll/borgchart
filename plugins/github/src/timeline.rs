@@ -15,7 +15,7 @@ const QUERY: &str = r#"query($owner: String!, $name: String!, $number: Int!, $si
   __typename
   ... on Issue { id author { ...actor } body createdAt lastEditedAt editor { ...actor }
    assignees(first: 20) { nodes { databaseId } }
-   closedByPullRequestsReferences(first: 10) { nodes { headRefName headRefOid } }
+   closedByPullRequestsReferences(first: 10) { nodes { headRefName headRefOid headRepository { nameWithOwner } } }
    timelineItems(since: $since, first: 100, after: $after, itemTypes: [ISSUE_COMMENT, ASSIGNED_EVENT]) {
     nodes { __typename
      ... on IssueComment { ...comment }
@@ -24,7 +24,7 @@ const QUERY: &str = r#"query($owner: String!, $name: String!, $number: Int!, $si
    }
   }
   ... on PullRequest { id author { ...actor } body createdAt lastEditedAt editor { ...actor }
-   assignees(first: 20) { nodes { databaseId } } headRefName headRefOid
+   assignees(first: 20) { nodes { databaseId } } headRefName headRefOid headRepository { nameWithOwner }
    timelineItems(since: $since, first: 100, after: $after, itemTypes: [ISSUE_COMMENT, PULL_REQUEST_REVIEW, ASSIGNED_EVENT, MERGED_EVENT]) {
     nodes { __typename
      ... on IssueComment { ...comment }
@@ -47,14 +47,18 @@ fn malformed() -> Error {
             .into(),
     )
 }
-fn string<'a>(value: &'a Value, key: &str) -> Result<&'a str, Error> {
+pub(crate) fn string<'a>(value: &'a Value, key: &str) -> Result<&'a str, Error> {
     value.get(key).and_then(Value::as_str).ok_or_else(malformed)
 }
 fn nodes(value: &Value) -> Result<&Vec<Value>, Error> {
     value["nodes"].as_array().ok_or_else(malformed)
 }
 /// Text that goes into a notice: bounded, from a fixed character set.
-fn checked(text: &str, len: RangeInclusive<usize>, allowed: fn(u8) -> bool) -> Result<&str, Error> {
+pub(crate) fn checked(
+    text: &str,
+    len: RangeInclusive<usize>,
+    allowed: fn(u8) -> bool,
+) -> Result<&str, Error> {
     (len.contains(&text.len()) && text.bytes().all(allowed))
         .then_some(text)
         .ok_or_else(malformed)
@@ -68,19 +72,29 @@ fn node_id(value: &Value) -> Result<&str, Error> {
     let id = string(value, "id")?;
     valid_id(id).then_some(id).ok_or_else(malformed)
 }
-fn oid(value: &Value) -> Result<String, Error> {
+pub(crate) fn oid(value: &Value) -> Result<Option<String>, Error> {
+    if value.get("commit") == Some(&Value::Null) {
+        return Ok(None);
+    }
     let oid = string(&value["commit"], "oid")?;
-    Ok(checked(oid, 7..=64, |b| b.is_ascii_hexdigit())?.into())
+    Ok(Some(
+        checked(oid, 7..=64, |b| b.is_ascii_hexdigit())?.into(),
+    ))
 }
-fn account(value: &Value) -> Option<u64> {
+pub(crate) fn account(value: &Value) -> Option<u64> {
     value["databaseId"].as_u64()
 }
-/// Owner-authored, unedited or last edited by the owner, and mentioning the machine.
+pub(crate) fn review_state(value: &Value) -> Result<&str, Error> {
+    checked(string(value, "state")?, 1..=32, |b| {
+        b.is_ascii_uppercase() || b == b'_'
+    })
+}
+/// Owner-authored, never edited, and mentioning the machine.
 fn mentions(value: &Value, guard: &Guard) -> Result<bool, Error> {
     let body = string(value, "body")?;
     let unedited = value.get("lastEditedAt") == Some(&Value::Null);
     Ok(account(&value["author"]) == Some(guard.owner_id)
-        && (unedited || account(&value["editor"]) == Some(guard.owner_id))
+        && unedited
         && mention(body, &guard.machine_login))
 }
 /// Drop fenced blocks, quoted lines and closed code spans, then match `@login` at
@@ -169,6 +183,9 @@ pub fn fetch(
                 heads.push((
                     string(head, "headRefName")?.into(),
                     string(head, "headRefOid")?.into(),
+                    head["headRepository"]["nameWithOwner"]
+                        .as_str()
+                        .is_some_and(|repo| repo.eq_ignore_ascii_case(&item.repository)),
                 ));
             }
         }
@@ -210,10 +227,7 @@ pub fn fetch(
                     }
                     if admitted {
                         Some(Kind::Review {
-                            state: checked(string(value, "state")?, 1..=32, |b| {
-                                b.is_ascii_uppercase() || b == b'_'
-                            })?
-                            .into(),
+                            state: review_state(value)?.into(),
                             commit: oid(value)?,
                         })
                     } else {
