@@ -777,6 +777,8 @@ fn received_comments_and_reviews_get_one_eyes_each_without_bursts() {
     f.response("machine", 200, r#"{"id":101,"login":"example-bot"}"#);
     drive(&f, "180,240"); // Restart retains the second queued reaction.
     assert_eq!(eyes(&f.calls()), ["IC_received", "PRR_inline"]);
+    drive(&f, "300"); // A wrongly queued merge, assignment or body would react here.
+    assert_eq!(eyes(&f.calls()), ["IC_received", "PRR_inline"]);
     for id in ["AE_received", "ME_received", "I_4"] {
         assert_eq!(reads(&text(&f), id), 1, "{id}");
     }
