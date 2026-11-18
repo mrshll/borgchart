@@ -149,7 +149,7 @@ fn validate(dir: &Path, config: &Path, team: &str) -> Output {
 }
 
 /// What a reader copies from the guide works as written: the teams
-/// validate by its catalog paths, with only the alarm process warnings.
+/// validate by its catalog paths, with only the expected process warnings.
 #[test]
 fn the_readme_configuration_validates_cleanly() {
     let blocks = readme_configs();
@@ -172,19 +172,19 @@ fn the_readme_configuration_validates_cleanly() {
                 serde_json::json!([]),
                 "block {i} {team}: {report}"
             );
-            alarm_process_warnings(
+            process_warnings(
                 &report,
                 match team.as_str() {
-                    "engineering" => 2,
-                    "dev-team" => 1,
-                    _ => 0,
+                    "engineering" => &ENGINEERING,
+                    "dev-team" => &[TIMER],
+                    _ => &[],
                 },
             );
         }
     }
 }
 /// The department validates from its folder, with the guide's
-/// configuration, with only its own and the child team's alarm process warnings.
+/// configuration, with only its own and the child team's process warnings.
 #[test]
 fn the_parent_template_validates_cleanly() {
     let dir = tempfile::tempdir().unwrap();
@@ -194,24 +194,26 @@ fn the_parent_template_validates_cleanly() {
         .unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&out.stderr)));
     assert!(out.status.success(), "{report}");
     assert_eq!(report["errors"], serde_json::json!([]), "{report}");
-    alarm_process_warnings(&report, 2);
+    process_warnings(&report, &ENGINEERING);
 }
 
-fn alarm_process_warnings(report: &serde_json::Value, count: usize) {
+const TIMER: &str =
+    "role `lead`: is granted `timer`, which runs a background process, but is unrestricted";
+/// The engineering lead's warnings, then its dev-team child lead's.
+const ENGINEERING: [&str; 4] = [
+    "role `lead`: receives work from a plugin process but is unrestricted; text it reads can steer it",
+    "role `lead`: is granted `github`, which runs a background process, but is unrestricted",
+    TIMER,
+    TIMER,
+];
+fn process_warnings(report: &serde_json::Value, expected: &[&str]) {
     let warnings: Vec<_> = report["warnings"]
         .as_array()
         .unwrap()
         .iter()
         .map(|w| w["message"].as_str().unwrap())
         .collect();
-    assert_eq!(
-        warnings,
-        vec![
-            "role `lead`: is granted `timer`, which runs a background process, but is unrestricted";
-            count
-        ],
-        "{report}"
-    );
+    assert_eq!(warnings, expected, "{report}");
 }
 
 /// Each team's member files, by the `prompt:` lines of its `template.yaml`.

@@ -14,6 +14,8 @@ On start and resume:
 
 Roles come from `template.yaml`, not running members. Keep progress and delegation in pull request descriptions and comments.
 
+GitHub notices routed to you concern your pull requests or issues. A misrouted notice goes to your parent.
+
 ## Plan
 
 Before substantial code, put a plan in a draft pull request on its own branch: problem, scope, non-goals, smallest approach, checks, intended tests and the risk each covers. Wait for the owner's go-ahead. Keep the description's plan current. Tiny settled fixes and already-approved plans need no new gate.

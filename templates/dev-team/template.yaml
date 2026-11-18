@@ -3,6 +3,10 @@ default: claude
 includes: catalog:shared/includes
 
 plugins:
+  github:
+    env: {GITHUB_CONFIG: github.yaml}
+    actions:
+      read: brg-github read <id>
   timer:
     process: [brg-timer, run]
     actions:
@@ -15,7 +19,7 @@ plugins:
 
 roles:
   lead:
-    plugins: {seat: [route], timer: [alarm-set, alarm-show, alarm-clear]}
+    plugins: {seat: [route], timer: [alarm-set, alarm-show, alarm-clear], github: [read]}
     prompt: orchestrator.md
     interactive: true
     vendor: claude      # Claude leads end turns with a background msg wait

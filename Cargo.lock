@@ -191,6 +191,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "brg-github"
+version = "0.0.0"
+dependencies = [
+ "borgchart",
+ "clap",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "brg-seat"
 version = "0.0.0"
 dependencies = [
