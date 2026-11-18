@@ -231,7 +231,9 @@ pub fn send(
         }
         for event in snapshot.pending.drain(start..start + n) {
             if event.reactable {
-                snapshot.reactions.insert(event.id);
+                snapshot
+                    .reactions
+                    .insert(event.reaction.unwrap_or(event.id));
             }
         }
         sent += n;

@@ -76,6 +76,8 @@ After a notice commits to the bus, comments and reviews receive an eyes reaction
 meaning received; at most one per poll, with failures in health and no retry
 except after a rate-limit pause. A root copy gets none: its owning lead's notice
 does. Bodies, assignments and merges get no reaction.
+A review with no body but inline comments, such as a thread reply, gets eyes on
+its first inline comment.
 
 Use `brg-github read <id>` for each notice item. It rechecks identity and
 authorship, prints approval state and commit where applicable, and frames body

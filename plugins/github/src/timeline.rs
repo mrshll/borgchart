@@ -40,7 +40,7 @@ fragment actor on Actor { ... on User { databaseId } ... on Bot { databaseId } }
 fragment comment on IssueComment { id author { ...actor } body createdAt lastEditedAt editor { ...actor } }
 fragment assignment on AssignedEvent { id actor { ...actor } assignee { ... on User { databaseId } } createdAt }
 fragment review on PullRequestReview { id author { ...actor } state submittedAt commit { oid } body lastEditedAt editor { ...actor }
- comments(first: 50) { nodes { author { ...actor } body lastEditedAt editor { ...actor } } } }
+ comments(first: 50) { nodes { id author { ...actor } body lastEditedAt editor { ...actor } } } }
 "#;
 fn malformed() -> Error {
     Error::Other(
@@ -244,9 +244,17 @@ pub fn fetch(
                 _ => return Err(malformed()),
             };
             if let Some(kind) = kind {
+                let mut reaction = None;
+                if review
+                    && string(value, "body")?.trim().is_empty()
+                    && let Some(reply) = nodes(&value["comments"])?.first()
+                {
+                    reaction = Some(node_id(reply)?.into()); // no review box; react on its first comment
+                }
                 events.push(PendingEvent {
                     id: node_id(value)?.into(),
                     reactable: matches!(name, "IssueComment" | "PullRequestReview"),
+                    reaction,
                     repository: item.repository.clone(),
                     number: item.number,
                     is_pull_request: pr,

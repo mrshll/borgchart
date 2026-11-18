@@ -122,6 +122,7 @@ impl<A: Api> Session<A> {
                 is_pull_request: false,
                 kind: Kind::Cutoff,
                 reactable: false,
+                reaction: None,
                 recipient: delivery::root_lead(),
                 reason: format!("GitHub: intake was not running between {} and {}; owner actions before {} were not delivered; check GitHub for them.", format_utc(saved), format_utc(self.epoch), format_utc(edge)),
             });
