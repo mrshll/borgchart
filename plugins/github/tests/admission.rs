@@ -820,7 +820,7 @@ fn rate_limited_eyes_pauses_api_calls_then_retries_without_resending_the_notice(
     changed(&f, &[(false, vec![comment])]);
     f.response("reaction", 429, "{}");
     f.response("next-reaction", 200, "{}");
-    let resume = parse_utc(AT).unwrap().elapsed().unwrap().as_secs() + 601;
+    let resume = parse_utc(AT).unwrap().elapsed().unwrap().as_secs() + 660;
     drive(&f, &format!("0,60,{resume}"));
     assert_eq!(f.read("calls-at-0"), f.read("calls-at-60"));
     assert_eq!(eyes(&f.calls()), ["IC_limited", "IC_limited"]);
