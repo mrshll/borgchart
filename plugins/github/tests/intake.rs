@@ -6,6 +6,81 @@ use std::{fs, os::unix::fs::PermissionsExt, process::Command};
 use support::Fixture;
 
 #[test]
+fn template_scope_overrides_private_scope_and_null_templates_preserve_it() {
+    for template in [
+        None,
+        Some(""),
+        Some("# repositories\n"),
+        Some("null"),
+        Some("- example-org/gadgets\n"),
+    ] {
+        let f = Fixture::new();
+        if let Some(text) = template {
+            f.write("github-repositories.yaml", text);
+        }
+        f.run();
+        assert_eq!(f.health()["ok"], true);
+        let overridden = template.is_some_and(|t| t.starts_with('-'));
+        assert_eq!(f.calls().contains("repos/example-org/gadgets/"), overridden);
+        assert_eq!(
+            f.calls().contains("repos/example-org/widgets/"),
+            !overridden
+        );
+        if overridden {
+            assert!(
+                f.detail()
+                    .contains("repositories from github-repositories.yaml; the list in")
+            );
+            assert!(
+                f.detail()
+                    .contains(&format!("{} is ignored", f.path("github.yaml").display()))
+            );
+        }
+    }
+}
+#[test]
+fn unlisted_repositories_skip_even_the_guard_and_missing_private_config_stays_off() {
+    for repositories in ["", "repositories: []\n"] {
+        let f = Fixture::new();
+        f.write(
+            "github.yaml",
+            &format!("owner: example-owner\ngh_config_dir: machine-profile\n{repositories}"),
+        );
+        f.run();
+        assert_eq!(f.health()["ok"], true);
+        assert!(f.detail().contains("no repositories listed"));
+        assert!(f.calls().is_empty());
+        f.write("github-repositories.yaml", "- example-org/gadgets\n");
+        f.run();
+        assert!(f.calls().contains("repos/example-org/gadgets/"));
+        fs::remove_file(f.path("calls")).unwrap();
+        fs::remove_file(f.path("github.yaml")).unwrap();
+        f.run();
+        assert_eq!(f.health()["ok"], true);
+        assert!(f.detail().contains("off: no"));
+        assert!(f.calls().is_empty());
+    }
+}
+#[test]
+fn invalid_template_scope_stops_discovery_instead_of_using_the_private_list() {
+    for text in [
+        "[",
+        "owner: example-owner",
+        "gh_config_dir: profile",
+        "[example-org/bad?query]",
+        "[42]",
+        "[{}]",
+    ] {
+        let f = Fixture::new();
+        f.write("github-repositories.yaml", text);
+        f.run();
+        assert_eq!(f.health()["ok"], false);
+        assert!(f.detail().contains("github-repositories.yaml"));
+        assert!(f.calls().is_empty());
+    }
+}
+
+#[test]
 fn missing_or_empty_gh_config_refuses_before_spawning_gh() {
     for field in ["", "gh_config_dir: \"\"\n"] {
         let f = Fixture::new();

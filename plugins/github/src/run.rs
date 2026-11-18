@@ -12,6 +12,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+#[derive(Default)]
 pub struct Poll {
     pub processed: usize,
     pub admitted: usize,
@@ -22,6 +23,9 @@ pub struct Session<A: Api> {
     identity: Option<(String, PathBuf)>,
     guard: Option<Guard>,
     repositories: PathBuf,
+    template: PathBuf,
+    note: String,
+    idle: bool,
     pub snapshot: Snapshot,
     epoch: SystemTime,
     paused_until: Option<SystemTime>,
@@ -38,22 +42,37 @@ impl<A: Api> Session<A> {
             identity: None,
             guard: None,
             repositories,
+            template: "github-repositories.yaml".into(),
+            note: String::new(),
+            idle: true,
             snapshot,
             epoch,
             paused_until: None,
         }
     }
     pub fn poll(&mut self, now: SystemTime) -> Result<Poll, Error> {
-        let Some(config) = config::load(&self.repositories).map_err(Error::Other)? else {
+        self.idle = true;
+        self.note = format!("off: no {}", self.repositories.display());
+        let Some(mut config) = config::load(&self.repositories).map_err(Error::Other)? else {
             self.guard = None;
             self.identity = None;
             self.epoch = now;
-            return Ok(Poll {
-                processed: 0,
-                admitted: 0,
-                errors: Vec::new(),
-            });
+            return Ok(Poll::default());
         };
+        self.note.clear();
+        if let Some(entries) = config::template(&self.template).map_err(Error::Other)? {
+            config.entries = entries;
+            self.note = format!(
+                "repositories from {}; the list in {} is ignored",
+                self.template.display(),
+                self.repositories.display()
+            );
+        }
+        if config.entries.is_empty() {
+            self.note = format!("no repositories listed; {}", self.note);
+            return Ok(Poll::default());
+        }
+        self.idle = false;
         let identity = (config.owner, config.gh_config_dir);
         if self.identity.as_ref() != Some(&identity) {
             self.guard = None;
@@ -157,10 +176,8 @@ impl<A: Api> Session<A> {
     }
     pub fn tick(&mut self, store: &plugin::State, now: SystemTime) -> Result<(), String> {
         let result = self.poll(now);
-        if result.is_ok() && self.guard.is_none() {
-            return store
-                .health(true, &format!("off: no {}", self.repositories.display()))
-                .map_err(|e| e.to_string());
+        if result.is_ok() && self.idle {
+            return store.health(true, &self.note).map_err(|e| e.to_string());
         }
         self.snapshot.save(store)?;
         let (sent, delivery_error) = delivery::send(&mut self.snapshot, store)?;
@@ -183,6 +200,9 @@ impl<A: Api> Session<A> {
         }
         let ok = errors.is_empty();
         errors.insert(0, counts);
+        if !self.note.is_empty() {
+            errors.push(self.note.clone());
+        }
         errors.push(format!(
             "activity before {} is not delivered",
             format_utc(self.epoch)
@@ -302,13 +322,36 @@ mod tests {
         let path = dir.path().join("github.yaml");
         fs::write(&path, config(entries)).unwrap();
         let api = ApiFixture::new();
-        let session = Session::configured(api.clone(), Snapshot::default(), now(), path);
+        let mut session = Session::configured(api.clone(), Snapshot::default(), now(), path);
+        session.template = dir.path().join("github-repositories.yaml");
         (dir, api, session)
     }
     fn processed(session: &mut Session<ApiFixture>, at: SystemTime) -> usize {
         session.poll(at).unwrap().processed
     }
 
+    #[test]
+    fn template_edits_replace_the_discovery_scope_at_the_next_poll() {
+        let (dir, api, mut session) = setup("- example-org/widgets\n");
+        session.poll(now()).unwrap();
+        fs::write(
+            dir.path().join("github-repositories.yaml"),
+            "- example-org/gadgets\n",
+        )
+        .unwrap();
+        api.0.borrow_mut().calls.clear();
+        session.poll(now() + secs(60)).unwrap();
+        assert!(
+            api.calls()
+                .iter()
+                .any(|c| c.starts_with("repos/example-org/gadgets/"))
+        );
+        assert!(
+            !api.calls()
+                .iter()
+                .any(|c| c.starts_with("repos/example-org/widgets/"))
+        );
+    }
     #[test]
     fn changed_machine_identity_stops_discovery_until_restart_or_reconfiguration() {
         let (dir, api, mut session) = setup("- example-org/widgets\n");

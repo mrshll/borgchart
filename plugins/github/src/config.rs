@@ -58,6 +58,7 @@ struct File {
     owner: String,
     #[serde(default)]
     gh_config_dir: String,
+    #[serde(default)]
     repositories: Vec<String>,
 }
 pub struct Config {
@@ -76,18 +77,34 @@ pub fn parse(text: &str) -> Result<Config, String> {
             "set gh_config_dir in GITHUB_CONFIG to the machine account's gh configuration".into(),
         );
     }
+    Ok(Config {
+        owner: raw.owner,
+        gh_config_dir: borgchart::config::expand_home(Path::new(""), &raw.gh_config_dir),
+        entries: entries(raw.repositories)?,
+    })
+}
+fn entries(values: Vec<String>) -> Result<Vec<Entry>, String> {
     let mut entries = Vec::new();
-    for value in raw.repositories {
+    for value in values {
         let entry = Entry::parse(&value)?;
         if !entries.contains(&entry) {
             entries.push(entry);
         }
     }
-    Ok(Config {
-        owner: raw.owner,
-        gh_config_dir: borgchart::config::expand_home(Path::new(""), &raw.gh_config_dir),
-        entries,
-    })
+    Ok(entries)
+}
+pub fn template(path: &Path) -> Result<Option<Vec<Entry>>, String> {
+    let load = || -> Result<_, String> {
+        let text = match fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err("cannot read repository list".into()),
+        };
+        borgchart::yaml::parse::<Option<Vec<String>>>(&text)?
+            .map(entries)
+            .transpose()
+    };
+    load().map_err(|e| format!("{}: {e}; fix the file and retry", path.display()))
 }
 pub fn path() -> PathBuf {
     borgchart::config::path()
