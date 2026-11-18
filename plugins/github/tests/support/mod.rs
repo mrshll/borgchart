@@ -68,6 +68,15 @@ exit "$(/bin/cat "$FIXTURE_DIR/$response-code")"
     pub fn write(&self, name: &str, text: &str) {
         fs::write(self.path(name), text).unwrap();
     }
+    pub fn repositories(&self, name: &str, entries: &str) {
+        self.write(
+            name,
+            &format!(
+                "plugins:\n  state:\n    env:\n      GITHUB_REPOSITORIES: |\n        {}\n",
+                entries.replace('\n', "\n        ")
+            ),
+        );
+    }
     pub fn response(&self, name: &str, status: u16, body: &str) {
         self.write(
             name,
@@ -87,6 +96,7 @@ exit "$(/bin/cat "$FIXTURE_DIR/$response-code")"
             .env("FIXTURE_DIR", self.dir.path())
             .env("BORGCHART_STATE_DIR", self.path("state"))
             .env("GH_CONFIG_DIR", "ignored-inherited-profile")
+            .env("GITHUB_REPOSITORIES", "example-org/stale")
             .env("BORGCHART_CONFIG", self.path("config.yaml"));
     }
     pub fn command(&self) -> Command {

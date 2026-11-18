@@ -6,6 +6,8 @@ plugins:
   github:
     process: [brg-github, run]
     delivers_to: lead
+    # env:
+    #   GITHUB_REPOSITORIES: example-org/widgets example-org/*
     actions:
       read: brg-github read <id>
   timer:

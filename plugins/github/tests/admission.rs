@@ -85,7 +85,7 @@ fn drive_fixture() {
             "issues",
             "graphql-1",
             "config.yaml",
-            "github-repositories.yaml",
+            "template.yaml",
             "reaction",
         ] {
             let _ = fs::rename(dir.join(format!("next-{name}")), dir.join(name));
@@ -96,8 +96,11 @@ fn drive_fixture() {
 #[test]
 fn template_edits_replace_the_discovery_scope_at_the_next_poll() {
     let f = fixture();
-    f.write("github-repositories.yaml", "- example-org/widgets\n");
-    f.write("next-github-repositories.yaml", "- example-org/gadgets\n");
+    f.repositories("template.yaml", "example-org/widgets");
+    f.repositories(
+        "next-template.yaml",
+        "example-org/gadgets\nexample-org/gadgets",
+    );
     drive(&f, "0,60");
     let after = f.read("calls-at-60");
     let next = after.strip_prefix(&f.read("calls-at-0")).unwrap();

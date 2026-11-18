@@ -66,17 +66,28 @@ fn entries(values: Vec<String>) -> Result<Vec<Entry>, String> {
     }
     Ok(entries)
 }
-pub const TEMPLATE: &str = "github-repositories.yaml";
-/// The template folder's list, reread every poll; an absent or comments-only file lists none.
+/// Read only this plugin's scope; the rest of the template is brg's to validate.
 pub fn template() -> Result<Vec<Entry>, String> {
-    let text = match fs::read_to_string(TEMPLATE) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(_) => return Err(format!("cannot read {TEMPLATE}; fix the file and retry")),
+    let state = PathBuf::from(std::env::var_os("BORGCHART_STATE_DIR").unwrap_or_default());
+    let name = state.file_name().unwrap_or_default().to_string_lossy();
+    let fix = |error| {
+        format!(
+            "template.yaml: plugins.{name}.env.GITHUB_REPOSITORIES: {error}; fix the file and retry"
+        )
     };
-    borgchart::yaml::parse::<Option<Vec<String>>>(&text)
-        .and_then(|values| entries(values.unwrap_or_default()))
-        .map_err(|e| format!("{TEMPLATE}: {e}; fix the file and retry"))
+    let text = match fs::read_to_string("template.yaml") {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err(fix("cannot read template.yaml".to_string())),
+    };
+    let template = borgchart::yaml::parse::<serde_json::Value>(&text).map_err(fix)?;
+    let Some(value) = template.pointer(&format!("/plugins/{name}/env/GITHUB_REPOSITORIES")) else {
+        return Ok(Vec::new());
+    };
+    let text = value
+        .as_str()
+        .ok_or_else(|| fix("use a whitespace-separated string".into()))?;
+    entries(text.split_whitespace().map(str::to_string).collect()).map_err(fix)
 }
 /// Read the shared configuration every poll, retaining only the GitHub section.
 pub fn load(path: &Path) -> Result<Option<Config>, String> {

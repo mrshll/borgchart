@@ -29,23 +29,16 @@ Move `owner`, `gh_config_dir` and any `repositories` list from `github.yaml`
 under `github:` in `config.yaml`, then replace the running poller as described
 below; the separate file is no longer read.
 
-List the repositories to watch in `github-repositories.yaml` in the template
-folder, the plugin's working directory, so they are reviewed with the template.
-The file holds only a list:
+In `template.yaml`, set `plugins.<name>.env.GITHUB_REPOSITORIES`,
+where `<name>` is the plugin. Use whitespace-separated
+`owner/name` or `org/*` entries; YAML block scalars work. A user wildcard
+is refused. Move `github-repositories.yaml` here and delete the old file.
 
-```yaml
-- example-org/widgets
-- example-org/*
-```
-
-Entries are `owner/name` or `org/*`; a user wildcard is refused. If the
-template file lists any repositories, they are watched and the section's
-optional `repositories` list is ignored; health says so. The lists are never
-combined. If the template file is absent or lists none, the section's list
-applies. An invalid list in either location stops discovery, even an ignored one.
-With no repositories in either place, health is ok `no repositories listed` and
-no GitHub call is made. The engineering template ships the file with only
-commented-out examples.
+A non-empty template list overrides `github.repositories`;
+health says so. The lists are never combined. An
+absent or blank value uses the section's list. An invalid list in
+either location stops discovery, even an ignored one. With neither list, health
+is ok `no repositories listed` and no GitHub call is made. Engineering ships a commented example.
 
 The engineering template runs one poller and grants its lead `read`. The
 dev-team template grants its lead `read` without running another poller. After
@@ -58,6 +51,8 @@ plugins:
   github:
     process: [brg-github, run]
     delivers_to: lead
+    env:
+      GITHUB_REPOSITORIES: example-org/widgets example-org/*
     actions:
       read: brg-github read <id>
 roles:
@@ -88,7 +83,9 @@ Health appears under `brg status`. No `github:` section means ok
 GitHub calls; `read` exits 1 saying intake is not configured. Both brg's
 configuration and the template list are reread every poll: adding or removing
 the section, editing either list, or changing owner/profile takes effect at the
-next poll without restart. Identity changes rerun the guard. An invalid brg
+next poll without restart. The poller reads `template.yaml`; the environment's
+`GITHUB_REPOSITORIES` is fixed at registration and unused. Identity changes
+rerun the guard. An invalid brg
 configuration (including unrelated sections) or template list stops discovery
 and marks health not ok; repair the file. Rate limits pause API calls for ten
 minutes. Failed delivery and pending events also mark health not ok.
@@ -112,7 +109,7 @@ indented code and HTML comments can count as mentions; only the first 50 inline
 review comments are scanned. Two trees listing the same repository both deliver.
 Every tree started with the same brg configuration reads the same `github:`
 section, so give each tree its own scope in its template's
-`github-repositories.yaml`; a tree whose template lists nothing watches the
+`template.yaml`; a tree whose template lists nothing watches the
 section's list. A process running as the same user can forge a notice, so merge approval and
 head must be confirmed on GitHub. Bodies are bounded; `read` points to GitHub
 for omitted text. `brg-github run --once` runs one poll for local checks.
