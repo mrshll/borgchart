@@ -11,6 +11,12 @@ activity:
   title: '^\S (.+)$'
   none: ['^Claude Code$']
 rules:
+  - id: question-dialog
+    state: blocked
+    priority: 100
+    bottom: 30
+    # The dialog footer is the last nonblank line, not a transcript quote.
+    all: ['^Enter to select · ↑/↓ to navigate · Esc to cancel[ \t]*\z']
   - id: permission-dialog
     state: blocked
     priority: 100
