@@ -959,7 +959,12 @@ impl Run {
         };
         std::thread::sleep(Duration::from_millis(300));
         let after = self.snap();
-        let lines = |s: &Snapshot| composer::view(&s.screen, None).ok().map(|v| v.lines);
+        // A box that can't be read is compared by its whole screen instead.
+        let lines = |s: &Snapshot| {
+            composer::view(&s.screen, None)
+                .map(|v| v.lines)
+                .map_err(|_| s.screen.clone())
+        };
         let untouched = lines(&before) == lines(&after)
             && (before.geometry.cursor_x, before.geometry.cursor_y)
                 == (after.geometry.cursor_x, after.geometry.cursor_y);
