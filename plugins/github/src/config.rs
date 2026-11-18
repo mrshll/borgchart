@@ -1,4 +1,4 @@
-//! Private configuration, validated repository entries and numeric identity guard.
+//! Private identity, template repository scope and numeric identity guard.
 use crate::gh::{Api, Error, Rest};
 use std::{
     fs,
@@ -101,6 +101,7 @@ pub fn template(path: &Path) -> Result<Option<Vec<Entry>>, String> {
             Err(_) => return Err("cannot read repository list".into()),
         };
         borgchart::yaml::parse::<Option<Vec<String>>>(&text)?
+            .filter(|values| !values.is_empty())
             .map(entries)
             .transpose()
     };

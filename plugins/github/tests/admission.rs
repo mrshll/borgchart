@@ -79,10 +79,29 @@ fn drive_fixture() {
             )
             .unwrap();
         }
-        for name in ["issues", "graphql-1", "github.yaml"] {
+        for name in [
+            "issues",
+            "graphql-1",
+            "github.yaml",
+            "github-repositories.yaml",
+        ] {
             let _ = fs::rename(dir.join(format!("next-{name}")), dir.join(name));
         }
     }
+}
+#[test]
+fn template_edits_replace_the_discovery_scope_at_the_next_poll() {
+    let f = fixture();
+    f.write("github-repositories.yaml", "- example-org/widgets\n");
+    f.write("next-github-repositories.yaml", "- example-org/gadgets\n");
+    drive(&f, "0,60");
+    let before = f.read("calls-at-0");
+    let after = f.read("calls-at-60");
+    let next = after.strip_prefix(&before).unwrap();
+    assert!(before.contains("repos/example-org/widgets/"));
+    assert!(!before.contains("repos/example-org/gadgets/"));
+    assert!(next.contains("repos/example-org/gadgets/"));
+    assert!(!next.contains("repos/example-org/widgets/"));
 }
 #[test]
 fn missing_configuration_is_off_until_the_next_poll_after_creation() {

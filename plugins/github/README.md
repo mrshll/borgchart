@@ -19,15 +19,28 @@ is used as given. Create it to turn intake on:
 ```yaml
 owner: example-owner
 gh_config_dir: ~/.config/gh-example-bot
-repositories:
-  - example-org/widgets
-  - example-org/*
 ```
 
 `gh_config_dir` is required and `~/` expands to HOME. The plugin pins `gh` to
-that profile and clears token, host, repository and debug overrides. Repository
-entries are `owner/name` or `org/*`; a user wildcard is refused. Keep this file
-private and out of the repository. An empty `repositories: []` watches nothing.
+that profile and clears token, host, repository and debug overrides. Keep owner
+and profile only in this private file, out of the repository.
+
+Put the reviewed repository scope in `github-repositories.yaml` in the template
+folder (the plugin process's working directory). It contains only a YAML list:
+
+```yaml
+- example-org/widgets
+- example-org/*
+```
+
+Entries are `owner/name` or `org/*`; a user wildcard is refused. A nonempty
+template list takes precedence over the private file's optional `repositories`
+list. When private repositories are ignored, health names both files. The lists
+are never combined. An absent, empty, comments-only, null or `[]` template file
+falls back to the private list. Both files are validated, including an ignored
+private list. Without repositories in either file, health is ok
+`no repositories listed`, with no GitHub calls, including identity checks.
+The shipped engineering template file contains only commented examples.
 
 The engineering template runs one poller and grants its lead `read`. The
 dev-team template grants its lead `read` without running another poller. After
@@ -62,10 +75,11 @@ another or unknown editor changed it. Only the root lead merges, after checking
 the owner's approving review against the current head on GitHub and green CI.
 A comment never grants merge approval. Repeated IDs already taken can be skipped.
 
-Health appears under `brg status`. No file means ok `off: no <path>`, with no
-GitHub calls; `read` exits 1 saying intake is not configured. Creating or removing
-the file, editing repositories, or changing owner/profile takes effect at the
-next poll without restart. Identity changes rerun the guard. Invalid files stop
+Health appears under `brg status`. No private file means ok `off: no <path>`,
+regardless of the template list, with no GitHub calls; `read` exits 1 saying
+intake is not configured. Both files are reread every poll: creating or removing
+them, editing either list, or changing owner/profile takes effect at the next
+poll without restart. Identity changes rerun the guard. Invalid files stop
 discovery and mark health not ok; repair the file. Rate limits pause API calls
 for ten minutes. Failed delivery and pending events also mark health not ok.
 

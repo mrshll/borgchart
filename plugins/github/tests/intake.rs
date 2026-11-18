@@ -6,36 +6,33 @@ use std::{fs, os::unix::fs::PermissionsExt, process::Command};
 use support::Fixture;
 
 #[test]
-fn template_scope_overrides_private_scope_and_null_templates_preserve_it() {
+fn template_scope_overrides_private_scope_and_empty_templates_preserve_it() {
     for template in [
         None,
         Some(""),
         Some("# repositories\n"),
         Some("null"),
+        Some("[]"),
         Some("- example-org/gadgets\n"),
     ] {
         let f = Fixture::new();
+        let private = f.path("personal/github.yaml");
+        fs::create_dir(private.parent().unwrap()).unwrap();
+        fs::rename(f.path("github.yaml"), &private).unwrap();
         if let Some(text) = template {
             f.write("github-repositories.yaml", text);
         }
-        f.run();
+        f.command().env("GITHUB_CONFIG", &private).output().unwrap();
         assert_eq!(f.health()["ok"], true);
         let overridden = template.is_some_and(|t| t.starts_with('-'));
-        assert_eq!(f.calls().contains("repos/example-org/gadgets/"), overridden);
-        assert_eq!(
-            f.calls().contains("repos/example-org/widgets/"),
-            !overridden
+        let calls = f.calls();
+        assert_eq!(calls.contains("repos/example-org/gadgets/"), overridden);
+        assert_eq!(calls.contains("repos/example-org/widgets/"), !overridden);
+        let note = format!(
+            "repositories from github-repositories.yaml; the list in {} is ignored",
+            private.display()
         );
-        if overridden {
-            assert!(
-                f.detail()
-                    .contains("repositories from github-repositories.yaml; the list in")
-            );
-            assert!(
-                f.detail()
-                    .contains(&format!("{} is ignored", f.path("github.yaml").display()))
-            );
-        }
+        assert_eq!(f.detail().contains(&note), overridden);
     }
 }
 #[test]
@@ -52,7 +49,9 @@ fn unlisted_repositories_skip_even_the_guard_and_missing_private_config_stays_of
         assert!(f.calls().is_empty());
         f.write("github-repositories.yaml", "- example-org/gadgets\n");
         f.run();
+        assert_eq!(f.health()["ok"], true);
         assert!(f.calls().contains("repos/example-org/gadgets/"));
+        assert!(!f.detail().contains("is ignored"));
         fs::remove_file(f.path("calls")).unwrap();
         fs::remove_file(f.path("github.yaml")).unwrap();
         f.run();
@@ -133,7 +132,8 @@ fn unset_invalid_or_unknown_owner_refuses_discovery() {
     for field in ["", "owner: bad/login\n", "owner: example-missing\n"] {
         let f = Fixture::new();
         f.response("owner", 404, "{\"message\":\"private text\"}");
-        let yaml = format!("{field}gh_config_dir: machine-profile\nrepositories: []\n");
+        let yaml =
+            format!("{field}gh_config_dir: machine-profile\nrepositories: [example-org/widgets]\n");
         f.write("github.yaml", &yaml);
         f.run();
         assert_eq!(f.health()["ok"], false);
