@@ -66,14 +66,10 @@ fn entries(values: Vec<String>) -> Result<Vec<Entry>, String> {
     }
     Ok(entries)
 }
-/// This plugin's `env.GITHUB_REPOSITORIES` in the template folder's `template.yaml`,
-/// reread every poll; brg validates the rest of the file.
+/// This plugin's `env.GITHUB_REPOSITORIES` in `template.yaml`, reread every poll; brg checks the rest.
 pub fn template() -> Result<Vec<Entry>, String> {
-    let state = std::env::var_os("BORGCHART_STATE_DIR").unwrap_or_default();
-    let name = Path::new(&state)
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy();
+    let state = PathBuf::from(std::env::var_os("BORGCHART_STATE_DIR").unwrap_or_default());
+    let name = state.file_name().unwrap_or_default().to_string_lossy();
     let fix = |e: String| {
         format!(
             "template.yaml: plugins.{name}.env.GITHUB_REPOSITORIES: {e}; fix the file and retry"
