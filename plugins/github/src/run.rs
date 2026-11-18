@@ -355,11 +355,14 @@ mod tests {
         assert!(session.poll(now()).is_err());
         api.0.borrow_mut().failure = None;
         let resumed = now() + secs(4 * 86400);
-        api.pages("example-org/widgets", vec![json!([item(1, resumed)])]);
+        // An undrained backlog relists the timeline after the old IDs are pruned.
+        let backlog: Vec<_> = (1..=21).map(|n| item(n, resumed)).collect();
+        api.pages("example-org/widgets", vec![json!(backlog)]);
         let assigned = |id: &str, at: SystemTime| json!({"__typename":"AssignedEvent","id":id,"createdAt":format_utc(at),"actor":{"databaseId":202},"assignee":{"databaseId":101}});
         let edge = resumed - secs(72 * 3600);
         api.0.borrow_mut().nodes = vec![assigned("AE_before", stopped), assigned("AE_edge", edge)];
         session.poll(resumed).unwrap();
+        session.poll(resumed + secs(60)).unwrap();
         assert_eq!(session.snapshot.cursors["example-org/widgets"].floor, edge);
         let ids: Vec<_> = session.snapshot.pending.iter().map(|e| &e.id).collect();
         assert_eq!(ids, ["cutoff", "AE_edge"]);
