@@ -23,7 +23,7 @@ pub struct Session<A: Api> {
     guard: Option<Guard>,
     repositories: PathBuf,
     pub snapshot: Snapshot,
-    epoch: Option<SystemTime>,
+    epoch: SystemTime,
     paused_until: Option<SystemTime>,
 }
 impl<A: Api> Session<A> {
@@ -39,7 +39,7 @@ impl<A: Api> Session<A> {
             guard: None,
             repositories,
             snapshot,
-            epoch: Some(epoch),
+            epoch,
             paused_until: None,
         }
     }
@@ -47,7 +47,7 @@ impl<A: Api> Session<A> {
         let Some(config) = config::load(&self.repositories).map_err(Error::Other)? else {
             self.guard = None;
             self.identity = None;
-            self.epoch = None;
+            self.epoch = now;
             return Ok(Poll {
                 processed: 0,
                 admitted: 0,
@@ -84,9 +84,8 @@ impl<A: Api> Session<A> {
         }
         self.guard.as_mut().unwrap().check(&self.api, now)?;
         let snapshot = &mut self.snapshot;
-        let epoch = *self.epoch.get_or_insert(now);
-        if let Some(saved) = snapshot.entries(entries, if first { epoch } else { now }, first) {
-            let floor = snapshot.cursors.values().map(|c| c.floor).min().unwrap();
+        snapshot.entries(entries, if first { self.epoch } else { now });
+        if first && let Some((saved, edge)) = snapshot.replay(self.epoch) {
             snapshot.pending.push(PendingEvent {
                 id: "cutoff".into(),
                 repository: String::new(),
@@ -94,7 +93,7 @@ impl<A: Api> Session<A> {
                 is_pull_request: false,
                 kind: Kind::Cutoff,
                 recipient: delivery::root_lead(),
-                reason: format!("GitHub: intake was not running between {} and {}; owner actions before {} were not delivered; check GitHub for them.", format_utc(saved), format_utc(epoch), format_utc(floor)),
+                reason: format!("GitHub: intake was not running between {} and {}; owner actions before {} were not delivered; check GitHub for them.", format_utc(saved), format_utc(self.epoch), format_utc(edge)),
             });
         }
         let mut poll = Poll {
@@ -198,7 +197,7 @@ impl<A: Api> Session<A> {
         let floor = self.snapshot.cursors.values().map(|c| c.floor).min();
         errors.push(format!(
             "activity before {} is not delivered",
-            format_utc(floor.unwrap_or(self.epoch.unwrap_or(now)))
+            format_utc(floor.unwrap_or(self.epoch))
         ));
         let detail = errors.join("; ");
         store.health(ok, &detail).map_err(|_| {
@@ -367,7 +366,7 @@ mod tests {
         let calls = api.calls().len();
         session.poll(later + secs(60)).unwrap();
         assert_eq!(api.calls().len(), calls);
-        // A new entry starts when intake is turned on.
+        // Turning intake on skips activity from before the last poll that found no file.
         fs::write(&path, config("- example-org/tools\n")).unwrap();
         api.pages("example-org/tools", vec![json!([item(3, later)])]);
         assert_eq!(processed(&mut session, later + secs(60)), 0);

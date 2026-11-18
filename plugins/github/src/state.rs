@@ -79,31 +79,28 @@ impl Snapshot {
     pub fn start(store: &plugin::State) -> Result<Self, String> {
         Ok(store.read_json_strict("intake.json")?.unwrap_or_default())
     }
-    pub fn entries(
-        &mut self,
-        entries: &[Entry],
-        now: SystemTime,
-        resume: bool,
-    ) -> Option<SystemTime> {
+    pub fn entries(&mut self, entries: &[Entry], now: SystemTime) {
         self.cursors
             .retain(|key, _| entries.iter().any(|e| &e.key() == key));
-        let cutoff = now
-            .checked_sub(Duration::from_secs(72 * 3600))
-            .unwrap_or(UNIX_EPOCH);
-        let saved = self.cursors.values().map(|c| c.at.min(c.drained)).min();
-        if resume {
-            for cursor in self.cursors.values_mut() {
-                cursor.at = cursor.at.max(cutoff);
-                cursor.drained = cursor.drained.max(cutoff);
-                cursor.floor = cursor.floor.max(cutoff);
-            }
-        }
         for entry in entries {
             self.cursors
                 .entry(entry.key())
                 .or_insert_with(|| Cursor::new(now));
         }
-        saved.filter(|saved| resume && *saved < cutoff)
+    }
+    /// Bounds replay to 72 hours before `start`. On a cut, returns the earliest
+    /// saved position (`at` or `drained`) and the window's edge.
+    pub fn replay(&mut self, start: SystemTime) -> Option<(SystemTime, SystemTime)> {
+        let edge = start
+            .checked_sub(Duration::from_secs(72 * 3600))
+            .unwrap_or(UNIX_EPOCH);
+        let saved = self.cursors.values().map(|c| c.at.min(c.drained)).min()?;
+        for cursor in self.cursors.values_mut() {
+            cursor.at = cursor.at.max(edge);
+            cursor.drained = cursor.drained.max(edge);
+            cursor.floor = cursor.floor.max(edge);
+        }
+        (saved < edge).then_some((saved, edge))
     }
     pub fn prune(&mut self, now: SystemTime) {
         let cutoff = now
