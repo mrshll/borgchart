@@ -8,9 +8,14 @@ use support::Fixture;
 
 fn node(kind: &str) -> Value {
     let item = json!({"repository":{"nameWithOwner":"example-org/widgets"},"number":7});
+    let context = if kind == "AssignedEvent" {
+        "assignable"
+    } else {
+        "issue"
+    };
     json!({"__typename":kind,"author":{"databaseId":202},"actor":{"databaseId":202},
         "body":"owner text","lastEditedAt":null,"editor":null,
-        "repository":item["repository"],"number":7,"issue":item,"pullRequest":item,
+        "repository":item["repository"],"number":7,(context):item,"pullRequest":item,
         "assignee":{"databaseId":101},"commit":{"oid":"abcdef0123456789"},
         "state":"APPROVED","submittedAt":"2026-01-01T00:00:00Z","comments":{"nodes":[]}})
 }
@@ -168,12 +173,17 @@ fn events_have_only_verified_facts_and_bodies_are_bounded_without_splitting_utf8
         );
         assert!(!text.contains("owner text"));
     }
-    let f = Fixture::new();
-    let mut n = node("AssignedEvent");
-    n["assignee"]["databaseId"] = json!(303);
-    let output = read(&f, "AE_other", &n).output().unwrap();
-    assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
+    for (field, value) in [
+        ("assignee", json!({"databaseId":303})),
+        ("assignable", json!({})),
+    ] {
+        let f = Fixture::new();
+        let mut n = node("AssignedEvent");
+        n[field] = value;
+        let output = read(&f, "AE_other", &n).output().unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+    }
     let f = Fixture::new();
     let mut n = node("IssueComment");
     n["body"] = json!(format!("{}éHIDDEN", "a".repeat((16 << 10) - 1)));

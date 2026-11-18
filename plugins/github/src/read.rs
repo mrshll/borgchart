@@ -20,7 +20,7 @@ const QUERY: &str = r#"query($id: ID!) {
   ... on PullRequest { author { ...actor } body lastEditedAt editor { ...actor }
    repository { nameWithOwner } number }
   ... on AssignedEvent { actor { ...actor } assignee { ... on User { databaseId } }
-   issue { repository { nameWithOwner } number } }
+   assignable { ... on Issue { repository { nameWithOwner } number } } }
   ... on MergedEvent { actor { ...actor } commit { oid }
    pullRequest { repository { nameWithOwner } number } }
  }
@@ -91,7 +91,7 @@ fn fetch(id: &str) -> Result<Option<String>, Error> {
         "IssueComment" => (&value["issue"], "author"),
         "PullRequestReview" => (&value["pullRequest"], "author"),
         "Issue" | "PullRequest" => (value, "author"),
-        "AssignedEvent" => (&value["issue"], "actor"),
+        "AssignedEvent" => (&value["assignable"], "actor"),
         "MergedEvent" => (&value["pullRequest"], "actor"),
         _ => return Err(malformed()),
     };
