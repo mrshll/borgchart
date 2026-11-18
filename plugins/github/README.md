@@ -110,6 +110,9 @@ action grants need each member's next start.
 Known limits: shared branch names across repositories can misroute a notice;
 indented code and HTML comments can count as mentions; only the first 50 inline
 review comments are scanned. Two trees listing the same repository both deliver.
-A process running as the same user can forge a notice, so merge approval and
+Every tree started with the same brg configuration reads the same `github:`
+section, so give each tree its own scope in its template's
+`github-repositories.yaml`; a tree whose template lists nothing watches the
+section's list. A process running as the same user can forge a notice, so merge approval and
 head must be confirmed on GitHub. Bodies are bounded; `read` points to GitHub
 for omitted text. `brg-github run --once` runs one poll for local checks.
