@@ -169,7 +169,7 @@ fn decode(stdout: &[u8], stderr: &[u8], success: bool, now: SystemTime) -> Resul
     if status == Some(401) || unauthenticated {
         return Err(Error::NotAuthenticated);
     }
-    if status == Some(404) {
+    if status == Some(404) || errors.is_some_and(|e| e.iter().any(|e| e["type"] == "NOT_FOUND")) {
         return Err(Error::NotFound);
     }
     if !success || status.is_some_and(|s| s >= 400) || errors.is_some_and(|e| !e.is_empty()) {

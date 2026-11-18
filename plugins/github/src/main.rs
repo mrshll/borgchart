@@ -1,15 +1,17 @@
-//! Poll GitHub as the configured machine account.
+//! Poll and read GitHub as the configured machine account.
 use borgchart::plugin;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(about = "Poll GitHub as the configured machine account")]
+#[command(about = "Poll and read GitHub as the configured machine account")]
 struct Cli {
     #[command(subcommand)]
     command: Action,
 }
 #[derive(Subcommand)]
 enum Action {
+    /// Read an owner action, checking authorship and framing its text
+    Read { id: String },
     /// Poll configured repositories every 60 seconds
     Run {
         /// Poll once and exit
@@ -19,13 +21,15 @@ enum Action {
 }
 fn main() {
     let cli = Cli::parse();
-    let result = plugin::State::from_env()
-        .map_err(|_| "set BORGCHART_STATE_DIR to a private plugin state directory".to_string())
-        .and_then(|store| match cli.command {
-            Action::Run { once } => brg_github::run::run(&store, once),
-        });
-    if let Err(error) = result {
+    let result = match cli.command {
+        Action::Read { id } => brg_github::read::read(&id).map(|text| print!("{text}")),
+        Action::Run { once } => plugin::State::from_env()
+            .map_err(|_| "set BORGCHART_STATE_DIR to a private plugin state directory".to_string())
+            .and_then(|store| brg_github::run::run(&store, once))
+            .map_err(|error| (1, error)),
+    };
+    if let Err((code, error)) = result {
         eprintln!("{}", plugin::escape(&error).replace('\n', " "));
-        std::process::exit(1);
+        std::process::exit(code);
     }
 }
