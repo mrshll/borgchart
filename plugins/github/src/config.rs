@@ -1,4 +1,4 @@
-//! Private configuration, validated repository entries and numeric identity guard.
+//! Private identity, template repository scope and numeric identity guard.
 use crate::gh::{Api, Error, Rest};
 use std::{
     fs,
@@ -58,6 +58,7 @@ struct File {
     owner: String,
     #[serde(default)]
     gh_config_dir: String,
+    #[serde(default)]
     repositories: Vec<String>,
 }
 pub struct Config {
@@ -76,18 +77,33 @@ pub fn parse(text: &str) -> Result<Config, String> {
             "set gh_config_dir in GITHUB_CONFIG to the machine account's gh configuration".into(),
         );
     }
+    Ok(Config {
+        owner: raw.owner,
+        gh_config_dir: borgchart::config::expand_home(Path::new(""), &raw.gh_config_dir),
+        entries: entries(raw.repositories)?,
+    })
+}
+fn entries(values: Vec<String>) -> Result<Vec<Entry>, String> {
     let mut entries = Vec::new();
-    for value in raw.repositories {
+    for value in values {
         let entry = Entry::parse(&value)?;
         if !entries.contains(&entry) {
             entries.push(entry);
         }
     }
-    Ok(Config {
-        owner: raw.owner,
-        gh_config_dir: borgchart::config::expand_home(Path::new(""), &raw.gh_config_dir),
-        entries,
-    })
+    Ok(entries)
+}
+pub const TEMPLATE: &str = "github-repositories.yaml";
+/// The template folder's list, reread every poll; an absent or comments-only file lists none.
+pub fn template() -> Result<Vec<Entry>, String> {
+    let text = match fs::read_to_string(TEMPLATE) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(_) => return Err(format!("cannot read {TEMPLATE}; fix the file and retry")),
+    };
+    borgchart::yaml::parse::<Option<Vec<String>>>(&text)
+        .and_then(|values| entries(values.unwrap_or_default()))
+        .map_err(|e| format!("{TEMPLATE}: {e}; fix the file and retry"))
 }
 pub fn path() -> PathBuf {
     borgchart::config::path()

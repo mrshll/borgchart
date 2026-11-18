@@ -1,6 +1,6 @@
 //! Guarded polling, journal admission before discovery advances, and delivery.
 use crate::{
-    config::{self, Guard},
+    config::{self, Guard, TEMPLATE},
     delivery, discover,
     gh::{Api, Error, Gh},
     state::{Kind, OVERLAP, PendingEvent, Snapshot},
@@ -14,6 +14,7 @@ use std::{
 
 /// Received, not acted on: one attempt per committed comment or review.
 const EYES: &str = "mutation($id: ID!) { addReaction(input: {subjectId: $id, content: EYES}) { reaction { content } } }";
+#[derive(Default)]
 pub struct Poll {
     pub processed: usize,
     pub admitted: usize,
@@ -24,6 +25,8 @@ pub struct Session<A: Api> {
     identity: Option<(String, PathBuf)>,
     guard: Option<Guard>,
     repositories: PathBuf,
+    note: String,
+    idle: bool,
     pub snapshot: Snapshot,
     epoch: SystemTime,
     paused_until: Option<SystemTime>,
@@ -40,22 +43,41 @@ impl<A: Api> Session<A> {
             identity: None,
             guard: None,
             repositories,
+            note: String::new(),
+            idle: true,
             snapshot,
             epoch,
             paused_until: None,
         }
     }
     pub fn poll(&mut self, now: SystemTime) -> Result<Poll, Error> {
-        let Some(config) = config::load(&self.repositories).map_err(Error::Other)? else {
+        self.idle = true;
+        self.note.clear();
+        let Some(mut config) = config::load(&self.repositories).map_err(Error::Other)? else {
+            self.note = format!("off: no {}", self.repositories.display());
             self.guard = None;
             self.identity = None;
             self.epoch = now;
-            return Ok(Poll {
-                processed: 0,
-                admitted: 0,
-                errors: Vec::new(),
-            });
+            return Ok(Poll::default());
         };
+        let template = config::template().map_err(Error::Other)?;
+        if !template.is_empty() {
+            if !config.entries.is_empty() {
+                self.note = format!(
+                    "repositories from {TEMPLATE}; the list in {} is ignored",
+                    self.repositories.display()
+                );
+            }
+            config.entries = template;
+        }
+        if config.entries.is_empty() {
+            self.note = "no repositories listed".into();
+            if self.guard.is_none() {
+                self.epoch = now;
+            }
+            return Ok(Poll::default());
+        }
+        self.idle = false;
         let identity = (config.owner, config.gh_config_dir);
         if self.identity.as_ref() != Some(&identity) {
             self.guard = None;
@@ -171,14 +193,13 @@ impl<A: Api> Session<A> {
     }
     pub fn tick(&mut self, store: &plugin::State, now: SystemTime) -> Result<(), String> {
         let result = self.poll(now);
-        if result.is_ok() && self.guard.is_none() {
-            return store
-                .health(true, &format!("off: no {}", self.repositories.display()))
-                .map_err(|e| e.to_string());
-        }
         self.snapshot.save(store)?;
         let (sent, delivery_error) = delivery::send(&mut self.snapshot, store)?;
-        let may_react = result.is_ok();
+        if result.is_ok() && self.idle && self.snapshot.pending.is_empty() {
+            return store.health(true, &self.note).map_err(|e| e.to_string());
+        }
+        // No GitHub call while off or with nothing listed, so no reaction either.
+        let may_react = result.is_ok() && !self.idle;
         let (mut errors, counts) = match result {
             Ok(poll) => (
                 poll.errors,
@@ -209,6 +230,9 @@ impl<A: Api> Session<A> {
         }
         let ok = errors.is_empty();
         errors.insert(0, counts);
+        if !self.note.is_empty() {
+            errors.push(self.note.clone());
+        }
         let floor = self.snapshot.cursors.values().map(|c| c.floor).min();
         errors.push(format!(
             "activity before {} is not delivered",

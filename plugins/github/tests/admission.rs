@@ -80,11 +80,28 @@ fn drive_fixture() {
             )
             .unwrap();
         }
-        for name in ["issues", "graphql-1", "github.yaml", "reaction"] {
+        for name in [
+            "issues",
+            "graphql-1",
+            "github.yaml",
+            "github-repositories.yaml",
+            "reaction",
+        ] {
             let _ = fs::rename(dir.join(format!("next-{name}")), dir.join(name));
         }
         let _ = fs::rename(dir.join("next-reaction-code"), dir.join("reaction-code"));
     }
+}
+#[test]
+fn template_edits_replace_the_discovery_scope_at_the_next_poll() {
+    let f = fixture();
+    f.write("github-repositories.yaml", "- example-org/widgets\n");
+    f.write("next-github-repositories.yaml", "- example-org/gadgets\n");
+    drive(&f, "0,60");
+    let after = f.read("calls-at-60");
+    let next = after.strip_prefix(&f.read("calls-at-0")).unwrap();
+    assert!(next.contains("repos/example-org/gadgets/"));
+    assert!(!next.contains("repos/example-org/widgets/"));
 }
 #[test]
 fn missing_configuration_is_off_until_the_next_poll_after_creation() {
@@ -99,6 +116,52 @@ fn missing_configuration_is_off_until_the_next_poll_after_creation() {
     assert!(calls.contains("\nuser\n") && calls.contains("\nusers/example-owner\n"));
     assert!(calls.contains("repos/example-org/widgets/issues?"));
     assert_eq!(f.health()["ok"], true);
+}
+#[test]
+fn listing_the_first_repository_later_skips_activity_before_the_listing() {
+    let f = fixture();
+    let yaml = "owner: example-owner\ngh_config_dir: ~/machine-profile\n";
+    f.write("github.yaml", &format!("{yaml}repositories: []\n"));
+    f.write(
+        "next-github.yaml",
+        &format!("{yaml}repositories: [example-org/widgets]\n"),
+    );
+    // A day after process start, the last idle poll precedes the listing by one minute.
+    drive(&f, "86340,86400");
+    assert!(f.read("calls-at-86340").is_empty());
+    let calls = f.read("calls-at-86400");
+    let since = calls.split("since=").nth(1).unwrap();
+    let since = parse_utc(&since[..since.find(['&', '\n']).unwrap()]).unwrap();
+    let idle = parse_utc(AT).unwrap() + Duration::from_secs(86340);
+    assert!(since >= idle - brg_github::state::OVERLAP, "{calls}");
+}
+#[test]
+fn pending_events_are_delivered_without_github_calls_while_nothing_is_listed() {
+    for idle in ["repositories: []", "off"] {
+        let f = fixture();
+        changed(
+            &f,
+            &[(false, vec![event("AssignedEvent", "AE_idle", 202, "")])],
+        );
+        f.write("fail", "");
+        drive(&f, "120");
+        assert_eq!(pending(&f), 1);
+        fs::remove_file(f.path("fail")).unwrap();
+        fs::remove_file(f.path("calls")).unwrap();
+        if idle == "off" {
+            fs::remove_file(f.path("github.yaml")).unwrap();
+        } else {
+            f.write(
+                "github.yaml",
+                "owner: example-owner\ngh_config_dir: ~/machine-profile\nrepositories: []\n",
+            );
+        }
+        drive(&f, "180");
+        assert_eq!(pending(&f), 0, "{idle}");
+        assert_eq!(reads(&text(&f), "AE_idle"), 2, "{idle}");
+        assert!(f.read("calls-at-180").is_empty(), "{idle}");
+        assert_eq!(f.health()["ok"], true, "{idle}");
+    }
 }
 /// Every delivery: its recipient line, then the notice.
 fn text(f: &Fixture) -> String {
