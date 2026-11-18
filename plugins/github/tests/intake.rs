@@ -94,7 +94,7 @@ fn damaged_or_unreadable_intake_refuses_and_leaves_the_journal_untouched() {
     assert!(f.calls().is_empty());
 }
 #[test]
-fn start_and_restart_skip_old_activity_keep_admitted_events_and_say_so() {
+fn a_new_entry_skips_history_while_admitted_events_and_private_journal_survive() {
     let f = Fixture::new();
     let old = json!({"secs_since_epoch": 1_500_000_000, "nanos_since_epoch": 0});
     let cursor = json!({"at": old, "drained": old, "floor": old, "seen": {}});
@@ -102,7 +102,7 @@ fn start_and_restart_skip_old_activity_keep_admitted_events_and_say_so() {
     let recent = json!({"secs_since_epoch": secs, "nanos_since_epoch": 0});
     f.write(
         "state/intake.json",
-        &json!({"cursors": {"example-org/widgets": cursor}, "seen": {"IC_kept": recent}, "pending": []})
+        &json!({"cursors": {"example-org/removed": cursor}, "seen": {"IC_kept": recent}, "pending": [{"id":"IC_pending","repository":"example-org/widgets","number":1,"is_pull_request":false,"kind":"Mention","recipient":"","reason":"routing unavailable"}]})
             .to_string(),
     );
     f.response(
@@ -112,7 +112,7 @@ fn start_and_restart_skip_old_activity_keep_admitted_events_and_say_so() {
     );
     let output = f.run();
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(f.health()["ok"], true);
+    assert_eq!(f.health()["ok"], false);
     let detail = f.detail();
     assert!(
         detail.contains("0 changed item(s) processed;") && detail.contains("is not delivered"),
@@ -120,7 +120,7 @@ fn start_and_restart_skip_old_activity_keep_admitted_events_and_say_so() {
     );
     let state = f.json("state/intake.json");
     assert!(state["seen"]["IC_kept"].is_object(), "{state}");
-    assert_ne!(state["cursors"]["example-org/widgets"]["floor"], old);
+    assert_eq!(state["pending"][0]["id"], "IC_pending");
     assert_eq!(
         fs::metadata(f.path("state/intake.json"))
             .unwrap()

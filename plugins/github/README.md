@@ -74,8 +74,13 @@ discovery and mark health not ok; repair the file. Rate limits pause API calls
 for ten minutes. Failed delivery and pending events also mark health not ok.
 
 The private state directory keeps `intake.json`, `health.json` and a lock.
-Removing configuration keeps the journal. Restart skips activity before process
-start but retains admitted events; turning intake on skips activity before it.
+Removing configuration keeps the journal. Restarting or turning intake back on
+resumes saved cursors, replaying up to 72 hours of downtime. A longer gap sends
+one cut-off notice to the root lead through the journal; check GitHub for earlier
+actions. New repository entries start when intake starts or turns on, or at
+the next poll when added while running. Admitted event IDs stay for four
+days to suppress replay duplicates; pending deliveries carry over. Health reports
+the earliest replay floor, before which activity is not delivered.
 Installing a binary leaves running processes on the old binary: end the GitHub
 plugin process and run `brg start <root>` to replace it. Updated role text and
 action grants need each member's next start.

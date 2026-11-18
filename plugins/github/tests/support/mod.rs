@@ -29,6 +29,7 @@ for arg do
   case "$arg" in
     user) response=machine ;;
     users/*) response=owner ;;
+    repos/example-org/gadgets*) response=issues-gadgets ;;
     repos/*|orgs/*)
       response=issues
       since=${arg#*since=}; since=${since%%&*}

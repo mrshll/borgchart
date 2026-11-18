@@ -15,6 +15,7 @@ const SETTLE: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Kind {
+    Cutoff,
     Mention,
     Assigned,
     Review {
@@ -43,7 +44,7 @@ pub struct PendingEvent {
 pub struct Cursor {
     pub at: SystemTime,
     pub drained: SystemTime,
-    /// Nothing before this is discovered: process start, turning intake on, or the entry's addition.
+    /// Nothing before this replay or entry-addition boundary is discovered.
     pub floor: SystemTime,
     /// Settled `updated_at` versions inside the overlap, skipped when listed again.
     pub seen: BTreeMap<String, SystemTime>,
@@ -78,11 +79,9 @@ pub struct Snapshot {
     pub reactions: BTreeSet<String>,
 }
 impl Snapshot {
-    /// Cursors start again at each process start (no replay); seen and pending carry over.
+    /// Resume discovery, admitted IDs and pending deliveries across process starts.
     pub fn start(store: &plugin::State) -> Result<Self, String> {
-        let mut snapshot: Self = store.read_json_strict("intake.json")?.unwrap_or_default();
-        snapshot.cursors.clear();
-        Ok(snapshot)
+        Ok(store.read_json_strict("intake.json")?.unwrap_or_default())
     }
     pub fn entries(&mut self, entries: &[Entry], now: SystemTime) {
         self.cursors
@@ -93,9 +92,22 @@ impl Snapshot {
                 .or_insert_with(|| Cursor::new(now));
         }
     }
+    /// Bounds replay to 72 hours before `now`. On a cut, returns the earliest
+    /// saved position (`at` or `drained`) and the window's edge.
+    pub fn replay(&mut self, now: SystemTime) -> Option<(SystemTime, SystemTime)> {
+        let edge = now
+            .checked_sub(Duration::from_secs(72 * 3600))
+            .unwrap_or(UNIX_EPOCH);
+        let saved = self.cursors.values().map(|c| c.at.min(c.drained)).min()?;
+        for cursor in self.cursors.values_mut() {
+            cursor.at = cursor.at.max(edge);
+            cursor.floor = cursor.floor.max(edge);
+        }
+        (saved < edge).then_some((saved, edge))
+    }
     pub fn prune(&mut self, now: SystemTime) {
         let cutoff = now
-            .checked_sub(Duration::from_secs(86400))
+            .checked_sub(Duration::from_secs(4 * 86400))
             .unwrap_or(UNIX_EPOCH);
         self.seen.retain(|_, at| *at >= cutoff);
         for cursor in self.cursors.values_mut() {
