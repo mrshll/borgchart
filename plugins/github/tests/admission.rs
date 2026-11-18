@@ -339,10 +339,11 @@ fn owner_thread_replies_outside_the_timeline_wake_by_assignment_or_unedited_ment
             expected,
             "{assigned}/{edited}"
         );
-        assert_eq!(eyes(&f.calls()).len(), expected, "{assigned}/{edited}");
-        if expected != 0 {
-            assert_eq!(eyes(&f.calls()), ["PRRC_reply"], "{assigned}/{edited}");
-        }
+        assert_eq!(
+            eyes(&f.calls()),
+            vec!["PRRC_reply"; expected],
+            "{assigned}/{edited}"
+        );
         assert_eq!(f.health()["ok"], true);
     }
 }

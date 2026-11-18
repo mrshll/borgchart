@@ -244,17 +244,17 @@ pub fn fetch(
                 _ => return Err(malformed()),
             };
             if let Some(kind) = kind {
+                let mut reaction = None;
+                if review
+                    && string(value, "body")?.is_empty()
+                    && let Some(reply) = nodes(&value["comments"])?.first()
+                {
+                    reaction = Some(node_id(reply)?.into()); // a thread reply
+                }
                 events.push(PendingEvent {
                     id: node_id(value)?.into(),
                     reactable: matches!(name, "IssueComment" | "PullRequestReview"),
-                    reaction: if review
-                        && string(value, "body")?.is_empty()
-                        && let Some(comment) = nodes(&value["comments"])?.first()
-                    {
-                        Some(node_id(comment)?.into())
-                    } else {
-                        None
-                    },
+                    reaction,
                     repository: item.repository.clone(),
                     number: item.number,
                     is_pull_request: pr,
