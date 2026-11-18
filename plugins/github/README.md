@@ -25,22 +25,23 @@ gh_config_dir: ~/.config/gh-example-bot
 that profile and clears token, host, repository and debug overrides. Keep owner
 and profile only in this private file, out of the repository.
 
-Put the reviewed repository scope in `github-repositories.yaml` in the template
-folder (the plugin process's working directory). It contains only a YAML list:
+List the repositories to watch in `github-repositories.yaml` in the template
+folder, the plugin's working directory, so they are reviewed with the template.
+The file holds only a list:
 
 ```yaml
 - example-org/widgets
 - example-org/*
 ```
 
-Entries are `owner/name` or `org/*`; a user wildcard is refused. A nonempty
-template list takes precedence over the private file's optional `repositories`
-list. When private repositories are ignored, health names both files. The lists
-are never combined. An absent, empty, comments-only, null or `[]` template file
-falls back to the private list. Both files are validated, including an ignored
-private list. Without repositories in either file, health is ok
-`no repositories listed`, with no GitHub calls, including identity checks.
-The shipped engineering template file contains only commented examples.
+Entries are `owner/name` or `org/*`; a user wildcard is refused. If the
+template file lists any repositories, they are watched and the private file's
+optional `repositories` list is ignored; health says so. The lists are never
+combined. If the template file is absent or lists none, the private list
+applies. An invalid list in either file stops discovery, even an ignored one.
+With no repositories in either file, health is ok `no repositories listed` and
+no GitHub call is made. The engineering template ships the file with only
+commented-out examples.
 
 The engineering template runs one poller and grants its lead `read`. The
 dev-team template grants its lead `read` without running another poller. After
