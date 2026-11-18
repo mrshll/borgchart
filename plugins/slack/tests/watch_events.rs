@@ -481,7 +481,14 @@ fn missing_or_invalid_watch_configuration_fails_before_any_slack_call() {
     ] {
         let mut h = Harness::new();
         h.env.remove(key);
-        assert_eq!(h.run(&["watch", "--once"]).status.code(), Some(2), "{key}");
+        let out = h.run(&["watch", "--once"]);
+        assert_eq!(out.status.code(), Some(2), "{key}");
+        let setting = if key == "BORGCHART_DELIVER_TO" {
+            "delivers_to"
+        } else {
+            key
+        };
+        assert!(String::from_utf8_lossy(&out.stderr).contains(setting));
         assert!(h.slack.lock().unwrap().calls.is_empty());
     }
     for (key, value) in [

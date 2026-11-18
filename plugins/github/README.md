@@ -4,8 +4,9 @@ Wake the owning lead for four actions GitHub's API attributes to the owner:
 an unedited mention of the machine account; assignment of an issue to that
 account; a submitted review on a pull request assigned to that account; or a
 merge of a pull request assigned to that account. Mentions cover issue and pull
-request bodies, comments, reviews and owner inline review comments. Other
-accounts' actions and edits that add a mention do not wake anyone.
+request bodies, comments, reviews and owner inline review comments, including
+replies in existing threads. Other accounts' actions and edits that add a mention
+do not wake anyone.
 
 `make install` installs this Rust workspace plugin alongside `brg`. It needs
 `gh` on PATH, authenticated as a separate machine account. Numeric account IDs
@@ -52,6 +53,9 @@ Private templates can use the same declarations:
 plugins:
   github:
     process: [brg-github, run]
+    # This team's lead. brg-github sends PR notices to the dev team's lead whose
+    # checkout holds the branch or commit; this lead gets everything else,
+    # a copy of each approval, and intake-gap notices.
     delivers_to: lead
     env:
       GITHUB_REPOSITORIES: example-org/widgets example-org/*
@@ -106,8 +110,11 @@ plugin process and run `brg start <root>` to replace it. Updated role text and
 action grants need each member's next start.
 
 Known limits: shared branch names across repositories can misroute a notice;
-indented code and HTML comments can count as mentions; only the first 50 inline
-review comments are scanned. Two trees listing the same repository both deliver.
+child teams are found by a role named `lead`;
+indented code and HTML comments can count as mentions; only a pull request's
+100 most recently started reviews (each thread reply is one) and each review's
+first 50 inline comments are checked. Two trees listing the same repository both
+deliver.
 Every tree started with the same brg configuration reads the same `github:`
 section, so give each tree its own scope in its template's
 `template.yaml`; a tree whose template lists nothing watches the
