@@ -29,16 +29,17 @@ Move `owner`, `gh_config_dir` and any `repositories` list from `github.yaml`
 under `github:` in `config.yaml`, then replace the running poller as described
 below; the separate file is no longer read.
 
-List the repositories to watch in the template's `template.yaml`, as the
-plugin's own `env.GITHUB_REPOSITORIES` (example below): `owner/name` or `org/*`
-entries separated by spaces or newlines. A user wildcard is refused. If the
-template lists any, they are watched and the section's optional `repositories`
-list is ignored; health says so. The lists are never combined. With no value or
-a blank one, the section's list applies. An invalid list in either location
-stops discovery, even an ignored one. With no repositories in either place,
-health is ok `no repositories listed` and no GitHub call is made. The
-engineering template ships a commented-out example. To move a list from
-`github-repositories.yaml`, put it in this value and delete that file.
+In `template.yaml`, list repositories in this plugin's
+`env.GITHUB_REPOSITORIES` (below): `owner/name` or `org/*` separated by spaces
+or newlines. User wildcards are refused. The poller reads from its working directory, the template folder, so
+run `brg-github` from PATH, as shipped. A non-empty template list overrides
+`github.repositories`; health says so. The lists are never combined. An absent
+entry or key, or a blank string (`""`), uses the section's list.
+`GITHUB_REPOSITORIES:` without a value is an error: brg reads the start
+environment, which the poller ignores. Invalid lists stop discovery, even an
+ignored one. With neither list, health is ok `no repositories listed` and no
+GitHub call is made. Engineering ships a commented example. Move any list from
+`github-repositories.yaml` here and delete that file.
 
 The engineering template runs one poller and grants its lead `read`. The
 dev-team template grants its lead `read` without running another poller. After

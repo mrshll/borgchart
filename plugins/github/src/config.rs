@@ -86,7 +86,7 @@ pub fn template() -> Result<Vec<Entry>, String> {
         Some(serde_json::Value::String(list)) => {
             entries(list.split_whitespace().map(str::to_string).collect()).map_err(fix)
         }
-        Some(_) => Err(fix("use a whitespace-separated string".into())),
+        Some(_) => Err(fix("write the list here as a whitespace-separated string; the plugin doesn't read its environment".into())),
     }
 }
 /// Read the shared configuration every poll, retaining only the GitHub section.

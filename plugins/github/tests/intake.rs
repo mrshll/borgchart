@@ -71,7 +71,12 @@ fn another_plugins_repository_list_cannot_override_the_private_list() {
 }
 #[test]
 fn invalid_or_unreadable_template_scope_stops_discovery_instead_of_using_the_private_list() {
-    for value in ["[", "[example-org/widgets]", "example-org/bad?query"] {
+    for value in [
+        "[",
+        "null",
+        "[example-org/widgets]",
+        "example-org/bad?query",
+    ] {
         let f = Fixture::new();
         f.write(
             "template.yaml",

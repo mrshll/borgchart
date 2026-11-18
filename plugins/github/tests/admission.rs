@@ -104,7 +104,7 @@ fn template_edits_replace_the_discovery_scope_at_the_next_poll() {
     drive(&f, "0,60");
     let after = f.read("calls-at-60");
     let next = after.strip_prefix(&f.read("calls-at-0")).unwrap();
-    assert!(next.contains("repos/example-org/gadgets/"));
+    assert_eq!(next.matches("repos/example-org/gadgets/").count(), 1);
     assert!(!next.contains("repos/example-org/widgets/"));
 }
 #[test]
