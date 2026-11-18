@@ -1,0 +1,24 @@
+● The question dialog looks like this:
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Widget                                                                                                
+
+│ Choose a colour for the example widget in this demonstration.                                          
+│ Which colour should the example widget be?                                                      
+               
+❯ 1. Blue                                   
+     Made-up option: a blue example widget.            
+  2. Green
+     Made-up option: a green example widget.                 
+  3. Type something.                                                                                    
+──────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel              
+
+✻ Done for 1s
+
+──────────
+❯ 
+──────────
+  ? for shortcuts

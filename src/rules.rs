@@ -668,6 +668,18 @@ mod tests {
     }
 
     #[test]
+    fn claude_question_dialog_does_not_read_unknown() {
+        let screen = include_str!("../tests/fixtures/screens/claude-question-dialog.txt");
+        assert_eq!(claude().read("", screen).state, State::Blocked);
+    }
+
+    #[test]
+    fn claude_quoted_question_dialog_does_not_block_an_idle_member() {
+        let screen = include_str!("../tests/fixtures/screens/claude-question-dialog-spoof.txt");
+        assert_eq!(claude().read("✳ Example", screen).state, State::Idle);
+    }
+
+    #[test]
     fn claude_external_imports_dialog_is_blocked() {
         let screen = include_str!("../tests/fixtures/screens/claude-2.1.326-imports.txt");
         let reading = claude().read("example-host", screen);
