@@ -126,6 +126,45 @@ fn claude_rgb_busy_prompts_remain_readable_and_idle_stays_empty() {
 }
 
 #[test]
+fn dim_placeholders_do_not_block_an_empty_composer() {
+    // Recorded nightly retry screen; the example variant uses the same SGR
+    // styling recorded in the nightly's wake-matrix failure.
+    let retry = screen!("claude-composer-retry.ansi");
+    let example = retry.replace(
+        "Once fixed, resend your message",
+        "Try \"how do I log an error?\"",
+    );
+    for capture in [retry, example.as_str()] {
+        assert_eq!(composer::read(capture, at(200, 2, 47)), Reading::Empty);
+    }
+}
+
+#[test]
+fn placeholder_recognition_never_hides_typed_or_ambiguous_drafts() {
+    let retry = screen!("claude-composer-retry.ansi");
+    let example = retry.replace(
+        "Once fixed, resend your message",
+        "Try \"how do I log an error?\"",
+    );
+    for capture in [retry, example.as_str()] {
+        let typed = capture.replace("\x1b[2m", "");
+        assert_eq!(composer::read(&typed, at(200, 2, 47)), Reading::Draft);
+        assert_eq!(composer::read(capture, at(200, 3, 47)), Reading::Draft);
+        assert_ne!(composer::read(capture, None), Reading::Empty);
+        let mixed = capture
+            .replace("fixed", "\x1b[22mfixed\x1b[2m")
+            .replace("how", "\x1b[22mhow\x1b[2m");
+        assert_eq!(composer::read(&mixed, at(200, 2, 47)), Reading::Draft);
+        let busy = capture.replace('❯', "\x1b[2m❯");
+        assert_eq!(composer::read(&busy, at(200, 2, 47)), Reading::Busy);
+        let multiline = capture.replace("\x1b[0m\n", "\x1b[0m\n  draft\n");
+        assert_eq!(composer::read(&multiline, at(200, 2, 47)), Reading::Draft);
+    }
+    let unknown = retry.replace("Once fixed, resend your message", "suggested draft");
+    assert_eq!(composer::read(&unknown, at(200, 2, 47)), Reading::Draft);
+}
+
+#[test]
 fn whitespace_only_drafts_are_never_empty() {
     // Claude: three typed spaces look like nothing but move the cursor.
     let spaces = edited(claude("reminder"), "   ");

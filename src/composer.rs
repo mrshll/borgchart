@@ -10,6 +10,8 @@
 //! Recalled history, pasted-image tags, suggestions and multiline boxes read
 //! as drafts, even if visible lines are blank (the rest may be scrolled out
 //! of view). A pane too short to show the layout reads as `Unknown`.
+//! Known dim empty-box hints read as empty only with the cursor at the start
+//! of a single-line box; their text stays available for submission checks.
 
 /// The fewest rows a pane needs for its input box to be read.
 pub const MIN_ROWS: usize = 20;
@@ -175,6 +177,8 @@ pub struct Geometry {
 /// What the input box shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct View {
+    /// A known empty-box hint whose text cells are all dim.
+    pub dim_placeholder: bool,
     /// The box's lines, without the prompt marker or continuation indent.
     /// Leading spaces are kept; trailing spaces can't be seen in a capture
     /// (the cursor stands in for them).
@@ -205,6 +209,9 @@ impl View {
     pub fn reading(&self) -> Reading {
         if self.busy {
             return Reading::Busy;
+        }
+        if self.dim_placeholder && self.lines.len() == 1 && self.cursor == Some((0, 0)) {
+            return Reading::Empty;
         }
         if self.lines.len() != 1 || !self.lines[0].trim().is_empty() {
             return Reading::Draft;
@@ -399,6 +406,10 @@ fn claude_view(lines: &[Line]) -> Result<(usize, View), String> {
     }
     let busy = marker.style.fg != Fg::Default || marker.style.dim;
     let mut text = vec![text_after(first, 2)];
+    // Do not hide arbitrary dim suggestions or any non-dim typed text.
+    let dim_placeholder = (text[0] == "Once fixed, resend your message"
+        || (text[0].starts_with("Try \"") && text[0].ends_with('"')))
+        && first.cells_from(2).iter().all(|c| c.style.dim);
     for row in &rows[1..] {
         text.push(continuation(row).ok_or("an input box line isn't indented")?);
     }
@@ -412,6 +423,7 @@ fn claude_view(lines: &[Line]) -> Result<(usize, View), String> {
     Ok((
         top + 1,
         View {
+            dim_placeholder,
             lines: text,
             busy,
             vim,
@@ -472,6 +484,7 @@ mod tests {
     fn view_of(lines: &[&str], width: usize) -> View {
         let last = lines.len() - 1;
         View {
+            dim_placeholder: false,
             lines: lines.iter().map(|l| l.to_string()).collect(),
             busy: false,
             vim: Some(VimMode::Insert),
