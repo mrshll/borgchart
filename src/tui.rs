@@ -182,6 +182,11 @@ pub fn watch(one: Option<&Instance>, interval: Duration) -> Result<(), String> {
     let mut follower_error = String::new();
     let mut refresh_time = epoch();
     let mut terminal = ratatui::try_init().map_err(|e| format!("cannot start the screen: {e}"))?;
+    // Alternate-screen entry may leave old terminal contents visible.
+    if let Err(e) = terminal.clear() {
+        ratatui::restore();
+        return Err(format!("cannot clear the screen: {e}"));
+    }
     let start = Instant::now();
     let mut refreshed = Instant::now();
     let mut polled = Instant::now() - store::POLL;
@@ -705,6 +710,11 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
     let mut table_state = TableState::default().with_selected(Some(0));
     let mut message = String::new();
     let mut terminal = ratatui::try_init().map_err(|e| format!("cannot start the screen: {e}"))?;
+    // Alternate-screen entry may leave old terminal contents visible.
+    if let Err(e) = terminal.clear() {
+        ratatui::restore();
+        return Err(format!("cannot clear the screen: {e}"));
+    }
     let mut last = Instant::now();
     let mut last_spin = Instant::now();
     let mut spin: usize = 0;
