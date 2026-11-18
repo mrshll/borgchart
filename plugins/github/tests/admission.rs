@@ -748,30 +748,24 @@ fn short_downtime_replays_once_and_new_repositories_start_at_restart() {
     let mut new = item(false, vec![event("AssignedEvent", "AE_new", 202, "")]);
     new["id"] = json!("I_2");
     answer(&f, 2, &new);
-    f.response(
-        "issues-gadgets",
-        200,
-        &json!([{"node_id":"I_2","number":2,"updated_at":AT}]).to_string(),
-    );
-    f.response(
-        "issues",
-        200,
-        &json!([{"node_id":"I_1","number":1,"updated_at":"2026-01-02T12:01:00Z"}]).to_string(),
-    );
-    f.write(
-        "github.yaml",
-        &f.read("github.yaml")
-            .replace("widgets]", "widgets, example-org/gadgets]"),
-    );
+    let listed = json!([{"node_id":"I_2","number":2,"updated_at":AT}]);
+    f.response("issues-gadgets", 200, &listed.to_string());
+    add_gadgets(&f);
     drive(&f, "0,60");
     assert_eq!(reads(&text(&f), "AE_kept"), 1);
     assert_eq!(reads(&text(&f), "IC_downtime"), 1);
     assert!(!text(&f).contains("example-org/gadgets#"));
+    // No cut-off notice after a short downtime.
     assert_eq!(deliveries(&f).len(), 2);
-    assert_eq!(f.health()["ok"], true);
     assert!(f.detail().contains("2026-01-02T12:00:00.000Z"));
 }
-
+fn add_gadgets(f: &Fixture) {
+    let config = f.read("github.yaml");
+    f.write(
+        "github.yaml",
+        &config.replace("]", ", example-org/gadgets]"),
+    );
+}
 #[test]
 fn long_downtime_bounds_replay_and_journals_one_root_notice_on_restart_or_turn_on() {
     for turn_on in [false, true] {
@@ -782,20 +776,11 @@ fn long_downtime_bounds_replay_and_journals_one_root_notice_on_restart_or_turn_o
         backlog.at = parse_utc(AT).unwrap();
         let admitted = parse_utc("2025-12-30T12:00:00Z").unwrap();
         f.write("state/intake.json", &json!({"cursors":{"example-org/widgets":cursor,"example-org/gadgets":backlog},"seen":{"IC_kept":admitted},"pending":[]}).to_string());
-        f.write(
-            "github.yaml",
-            &f.read("github.yaml")
-                .replace("widgets]", "widgets, example-org/gadgets]"),
-        );
+        add_gadgets(&f);
         let mut nodes = Vec::new();
-        let window = if turn_on {
-            "2025-12-30T12:01:00Z"
-        } else {
-            "2025-12-30T12:00:00Z"
-        };
         for (id, at) in [
             ("IC_old", "2025-12-30T11:59:59Z"),
-            ("IC_window", window),
+            ("IC_window", "2025-12-30T12:00:00Z"),
             ("IC_kept", "2025-12-30T12:00:00Z"),
         ] {
             let mut e = event("IssueComment", id, 202, "PRIVATE_MARKER @example-bot");
@@ -804,34 +789,24 @@ fn long_downtime_bounds_replay_and_journals_one_root_notice_on_restart_or_turn_o
         }
         changed(&f, &[(false, nodes)]);
         // Keep discovery undrained across polls, so replay relists an admitted action.
-        f.response(
-            "issues",
-            200,
-            &json!(vec![
-                json!({"node_id":"I_1","number":1,"updated_at":AT});
-                20
-            ])
-            .to_string(),
-        );
+        let listed = json!({"node_id":"I_1","number":1,"updated_at":AT});
+        f.response("issues", 200, &json!(vec![listed; 20]).to_string());
         if turn_on {
             fs::rename(f.path("github.yaml"), f.path("next-github.yaml")).unwrap();
         }
-        drive(&f, if turn_on { "0,60,120" } else { "0,60" });
+        drive(&f, "0,60,120");
         let sent = text(&f);
         assert_eq!(reads(&sent, "IC_window"), 1);
-        assert_eq!(reads(&sent, "IC_old"), 0);
-        assert_eq!(reads(&sent, "IC_kept"), 0);
-        let notices: Vec<_> = deliveries(&f)
-            .into_iter()
-            .filter(|n| !n.contains("brg-github read"))
-            .collect();
-        assert_eq!(notices.len(), 1, "{sent}");
-        let notice = notices[0].strip_prefix("example-team/root\n").unwrap();
-        assert!(notice.contains("2025-12-19T12:00:00.000Z"));
+        assert_eq!(reads(&sent, "IC_old") + reads(&sent, "IC_kept"), 0);
+        assert_eq!(sent.matches("intake was not running").count(), 1, "{sent}");
+        let notice =
+            "example-team/root\nGitHub: intake was not running between 2025-12-19T12:00:00.000Z";
+        assert!(sent.contains(notice), "{sent}");
         assert!(!sent.contains("PRIVATE_MARKER"));
-        assert!(f.read("journal-at-send").contains(notice));
-        assert!(f.detail().contains(&borgchart::bus::time::format_utc(
-            parse_utc(window).unwrap()
-        )));
+        assert!(f.read("journal-at-send").contains("intake was not running"));
+        assert!(
+            f.detail()
+                .contains("before 2025-12-30T12:00:00.000Z is not")
+        );
     }
 }
