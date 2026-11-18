@@ -132,6 +132,34 @@ fn listing_the_first_repository_later_skips_activity_before_the_listing() {
     let idle = parse_utc(AT).unwrap() + Duration::from_secs(86340);
     assert!(since >= idle - brg_github::state::OVERLAP, "{calls}");
 }
+#[test]
+fn pending_events_are_delivered_without_github_calls_while_nothing_is_listed() {
+    for idle in ["repositories: []", "off"] {
+        let f = fixture();
+        changed(
+            &f,
+            &[(false, vec![event("AssignedEvent", "AE_idle", 202, "")])],
+        );
+        f.write("fail", "");
+        drive(&f, "120");
+        assert_eq!(pending(&f), 1);
+        fs::remove_file(f.path("fail")).unwrap();
+        fs::remove_file(f.path("calls")).unwrap();
+        if idle == "off" {
+            fs::remove_file(f.path("github.yaml")).unwrap();
+        } else {
+            f.write(
+                "github.yaml",
+                "owner: example-owner\ngh_config_dir: ~/machine-profile\nrepositories: []\n",
+            );
+        }
+        drive(&f, "180");
+        assert_eq!(pending(&f), 0, "{idle}");
+        assert_eq!(reads(&text(&f), "AE_idle"), 2, "{idle}");
+        assert!(f.read("calls-at-180").is_empty(), "{idle}");
+        assert_eq!(f.health()["ok"], true, "{idle}");
+    }
+}
 /// Every delivery: its recipient line, then the notice.
 fn text(f: &Fixture) -> String {
     f.read("deliveries")

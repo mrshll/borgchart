@@ -179,11 +179,11 @@ impl<A: Api> Session<A> {
     }
     pub fn tick(&mut self, store: &plugin::State, now: SystemTime) -> Result<(), String> {
         let result = self.poll(now);
-        if result.is_ok() && self.idle {
-            return store.health(true, &self.note).map_err(|e| e.to_string());
-        }
         self.snapshot.save(store)?;
         let (sent, delivery_error) = delivery::send(&mut self.snapshot, store)?;
+        if result.is_ok() && self.idle && self.snapshot.pending.is_empty() {
+            return store.health(true, &self.note).map_err(|e| e.to_string());
+        }
         let (mut errors, counts) = match result {
             Ok(poll) => (
                 poll.errors,

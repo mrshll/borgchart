@@ -83,6 +83,7 @@ them, editing either list, or changing owner/profile takes effect at the next
 poll without restart. Identity changes rerun the guard. Invalid files stop
 discovery and mark health not ok; repair the file. Rate limits pause API calls
 for ten minutes. Failed delivery and pending events also mark health not ok.
+While off or with no repositories listed, pending events are still delivered.
 
 The private state directory keeps `intake.json`, `health.json` and a lock.
 Removing configuration keeps the journal. Restart skips activity before process
