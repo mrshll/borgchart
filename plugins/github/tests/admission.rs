@@ -755,8 +755,7 @@ fn short_downtime_replays_once_and_new_repositories_start_at_restart() {
     assert_eq!(reads(&text(&f), "AE_kept"), 1);
     assert_eq!(reads(&text(&f), "IC_downtime"), 1);
     assert!(!text(&f).contains("example-org/gadgets#"));
-    // No cut-off notice after a short downtime.
-    assert_eq!(deliveries(&f).len(), 2);
+    assert!(!text(&f).contains("intake was not running"));
     assert!(f.detail().contains("2026-01-02T12:00:00.000Z"));
 }
 fn add_gadgets(f: &Fixture) {

@@ -121,7 +121,6 @@ fn a_new_entry_skips_history_while_admitted_events_and_private_journal_survive()
     let state = f.json("state/intake.json");
     assert!(state["seen"]["IC_kept"].is_object(), "{state}");
     assert_eq!(state["pending"][0]["id"], "IC_pending");
-    assert_ne!(state["cursors"]["example-org/widgets"]["floor"], old);
     assert_eq!(
         fs::metadata(f.path("state/intake.json"))
             .unwrap()

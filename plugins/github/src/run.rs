@@ -388,7 +388,7 @@ mod tests {
         let calls = api.calls().len();
         session.poll(later + secs(60)).unwrap();
         assert_eq!(api.calls().len(), calls);
-        // Turning intake on skips activity from before the last poll that found no file.
+        // A new entry added at turn-on skips activity from before the last poll that found no file.
         fs::write(&path, config("- example-org/tools\n")).unwrap();
         api.pages("example-org/tools", vec![json!([item(3, later)])]);
         assert_eq!(processed(&mut session, later + secs(60)), 0);
