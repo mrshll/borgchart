@@ -110,8 +110,9 @@ action grants need each member's next start.
 
 Known limits: shared branch names across repositories can misroute a notice;
 indented code and HTML comments can count as mentions; only a pull request's
-latest 100 reviews and each review's first 50 inline comments are checked. Two
-trees listing the same repository both deliver.
+100 most recently started reviews (each thread reply is one) and each review's
+first 50 inline comments are checked. Two trees listing the same repository both
+deliver.
 Every tree started with the same brg configuration reads the same `github:`
 section, so give each tree its own scope in its template's
 `github-repositories.yaml`; a tree whose template lists nothing watches the

@@ -217,7 +217,9 @@ fn item(pr: bool, nodes: Vec<Value>) -> Value {
     i["headRefName"] = json!("example-branch");
     i["headRefOid"] = json!("abcdef0123456789012345678901234567890123");
     i["closedByPullRequestsReferences"] = json!({"nodes":[]});
-    i["reviews"] = json!({"nodes":reviews});
+    if pr {
+        i["reviews"] = json!({"nodes":reviews});
+    }
     i["timelineItems"] = json!({"nodes":nodes,"pageInfo":{"hasNextPage":false,"endCursor":null}});
     i
 }
