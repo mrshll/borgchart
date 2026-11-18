@@ -877,11 +877,9 @@ impl Run {
     }
 
     fn save(&self, case: &str) {
-        let path = root().join("screens").join(format!(
-            "{}-{}.ansi",
-            self.vendor.as_str(),
-            file_name(case)
-        ));
+        let path = root()
+            .join("screens")
+            .join(screen_file(self.vendor.as_str(), case));
         let _ = std::fs::write(path, self.screen());
     }
 
@@ -1361,10 +1359,11 @@ pub fn table(vendor: Vendor, rows: &[[String; 4]]) -> String {
 
 /// A row passes when the result has one of the `|`-separated prefixes and
 /// every invariant held, whatever the result text says.
-/// A row label as a file name the CI artifact upload accepts: it refuses
-/// `:` and other characters, which some labels contain.
-fn file_name(case: &str) -> String {
-    case.chars()
+/// A saved screen's file name. The CI artifact upload refuses `:` and other
+/// characters, which some row labels contain.
+fn screen_file(vendor: &str, case: &str) -> String {
+    let name: String = case
+        .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || "._-".contains(c) {
                 c
@@ -1372,17 +1371,27 @@ fn file_name(case: &str) -> String {
                 '-'
             }
         })
-        .collect()
+        .collect();
+    format!("{vendor}-{name}.ansi")
 }
 
 #[test]
-fn screen_file_names_keep_only_upload_safe_characters() {
-    assert_eq!(file_name("attempt: vim normal"), "attempt--vim-normal");
+fn screen_files_hold_no_character_the_artifact_upload_refuses() {
+    for case in ["attempt: vim normal", "a\"b<c>d|e*f?g\rh\ni", "send-start"] {
+        let file = screen_file("claude", case);
+        assert!(
+            file.starts_with("claude-") && file.ends_with(".ansi"),
+            "{file}"
+        );
+        assert!(
+            !file.contains(['"', ':', '<', '>', '|', '*', '?', '\r', '\n']),
+            "{file}"
+        );
+    }
     assert_eq!(
-        file_name("draft offscreen (blank tail)"),
-        "draft-offscreen--blank-tail-"
+        screen_file("claude", "send-start"),
+        "claude-send-start.ansi"
     );
-    assert_eq!(file_name("send-start"), "send-start");
 }
 
 fn evaluate(want: &str, got: &str, invariants: &[(&str, bool)]) -> bool {
