@@ -15,7 +15,7 @@ impl Fixture {
         let this = Self {
             dir: tempfile::tempdir().unwrap(),
         };
-        fs::create_dir(this.path("state")).unwrap();
+        fs::create_dir_all(this.path("plugins/github")).unwrap();
         this.write("config.yaml", "schema: 1\ngithub:\n  owner: example-owner\n  gh_config_dir: ~/machine-profile\n  repositories: [example-org/widgets]\n");
         this.write("gh", r#"#!/bin/sh
 printf '%s\n' "$@" >> "$FIXTURE_DIR/calls"
@@ -72,7 +72,7 @@ exit "$(/bin/cat "$FIXTURE_DIR/$response-code")"
         self.write(
             name,
             &format!(
-                "plugins:\n  state:\n    env:\n      GITHUB_REPOSITORIES: |\n        {}\n",
+                "plugins:\n  github:\n    env:\n      GITHUB_REPOSITORIES: |\n        {}\n",
                 entries.replace('\n', "\n        ")
             ),
         );
@@ -94,7 +94,7 @@ exit "$(/bin/cat "$FIXTURE_DIR/$response-code")"
             .env("PATH", self.dir.path())
             .env("HOME", self.dir.path())
             .env("FIXTURE_DIR", self.dir.path())
-            .env("BORGCHART_STATE_DIR", self.path("state"))
+            .env("BORGCHART_STATE_DIR", self.path("plugins/github"))
             .env("GH_CONFIG_DIR", "ignored-inherited-profile")
             .env("GITHUB_REPOSITORIES", "example-org/stale")
             .env("BORGCHART_CONFIG", self.path("config.yaml"));
@@ -109,7 +109,7 @@ exit "$(/bin/cat "$FIXTURE_DIR/$response-code")"
         self.command().output().unwrap()
     }
     pub fn health(&self) -> Value {
-        self.json("state/health.json")
+        self.json("plugins/github/health.json")
     }
     pub fn detail(&self) -> String {
         self.health()["detail"].as_str().unwrap().into()

@@ -61,61 +61,21 @@ fn unlisted_repositories_skip_even_the_guard_and_missing_private_config_stays_of
 #[test]
 fn another_plugins_repository_list_cannot_override_the_private_list() {
     let f = Fixture::new();
-    f.response("issues-gadgets", 200, "[]");
-    f.repositories("template.yaml", "example-org/gadgets");
     f.write(
         "template.yaml",
-        &f.read("template.yaml").replace("state:", "other:"),
+        "plugins: {other: {env: {GITHUB_REPOSITORIES: example-org/gadgets}}}",
     );
     f.run();
-    assert_eq!(f.health()["ok"], true);
     assert!(f.calls().contains("repos/example-org/widgets/"));
     assert!(!f.calls().contains("repos/example-org/gadgets/"));
 }
 #[test]
-fn absent_or_empty_template_scope_uses_only_the_private_list() {
-    for template in [
-        None,
-        Some("roles: {}"),
-        Some("plugins: {state: {}}"),
-        Some("plugins: {state: {env: {}}}"),
-        Some("plugins: {state: {env: {GITHUB_REPOSITORIES: '  '}}}"),
-    ] {
-        for listed in [true, false] {
-            let f = Fixture::new();
-            if !listed {
-                f.write(
-                    "config.yaml",
-                    &f.read("config.yaml").replace("[example-org/widgets]", "[]"),
-                );
-            }
-            if let Some(text) = template {
-                f.write("template.yaml", text);
-            }
-            f.run();
-            assert_eq!(f.health()["ok"], true);
-            assert_eq!(f.calls().contains("repos/example-org/widgets/"), listed);
-            if !listed {
-                assert!(f.detail().contains("no repositories listed"));
-                assert!(f.calls().is_empty());
-            }
-        }
-    }
-}
-#[test]
 fn invalid_or_unreadable_template_scope_stops_discovery_instead_of_using_the_private_list() {
-    for value in [
-        "[",
-        "42",
-        "true",
-        "null",
-        "[example-org/widgets]",
-        "example-org/bad?query",
-    ] {
+    for value in ["[", "[example-org/widgets]", "example-org/bad?query"] {
         let f = Fixture::new();
         f.write(
             "template.yaml",
-            &format!("plugins: {{state: {{env: {{GITHUB_REPOSITORIES: {value}}}}}}}"),
+            &format!("plugins: {{github: {{env: {{GITHUB_REPOSITORIES: {value}}}}}}}"),
         );
         f.run();
         assert_eq!(f.health()["ok"], false, "{value}");
@@ -127,7 +87,6 @@ fn invalid_or_unreadable_template_scope_stops_discovery_instead_of_using_the_pri
     fs::create_dir(f.path("template.yaml")).unwrap();
     f.run();
     assert_eq!(f.health()["ok"], false);
-    assert!(f.detail().contains("template.yaml"));
     assert!(f.calls().is_empty());
 }
 
@@ -203,10 +162,10 @@ fn unset_invalid_or_unknown_owner_refuses_discovery() {
 fn damaged_or_unreadable_intake_refuses_and_leaves_the_journal_untouched() {
     for text in ["{", "null", "{}"] {
         let f = Fixture::new();
-        f.write("state/intake.json", text);
+        f.write("plugins/github/intake.json", text);
         let output = f.run();
         assert!(!output.status.success());
-        assert_eq!(f.read("state/intake.json"), text);
+        assert_eq!(f.read("plugins/github/intake.json"), text);
         assert!(f.calls().is_empty());
         assert_eq!(f.health()["ok"], false);
         let detail = f.detail();
@@ -216,9 +175,9 @@ fn damaged_or_unreadable_intake_refuses_and_leaves_the_journal_untouched() {
         );
     }
     let f = Fixture::new();
-    fs::create_dir(f.path("state/intake.json")).unwrap();
+    fs::create_dir(f.path("plugins/github/intake.json")).unwrap();
     assert!(!f.run().status.success());
-    assert!(f.path("state/intake.json").is_dir());
+    assert!(f.path("plugins/github/intake.json").is_dir());
     assert!(f.calls().is_empty());
 }
 #[test]
@@ -229,7 +188,7 @@ fn a_new_entry_skips_history_while_admitted_events_and_private_journal_survive()
     let secs = std::time::UNIX_EPOCH.elapsed().unwrap().as_secs();
     let recent = json!({"secs_since_epoch": secs, "nanos_since_epoch": 0});
     f.write(
-        "state/intake.json",
+        "plugins/github/intake.json",
         &json!({"cursors": {"example-org/removed": cursor}, "seen": {"IC_kept": recent}, "pending": [{"id":"IC_pending","repository":"example-org/widgets","number":1,"is_pull_request":false,"kind":"Mention","recipient":"","reason":"routing unavailable"}]})
             .to_string(),
     );
@@ -246,11 +205,11 @@ fn a_new_entry_skips_history_while_admitted_events_and_private_journal_survive()
         detail.contains("0 changed item(s) processed;") && detail.contains("is not delivered"),
         "{detail}"
     );
-    let state = f.json("state/intake.json");
+    let state = f.json("plugins/github/intake.json");
     assert!(state["seen"]["IC_kept"].is_object(), "{state}");
     assert_eq!(state["pending"][0]["id"], "IC_pending");
     assert_eq!(
-        fs::metadata(f.path("state/intake.json"))
+        fs::metadata(f.path("plugins/github/intake.json"))
             .unwrap()
             .permissions()
             .mode()

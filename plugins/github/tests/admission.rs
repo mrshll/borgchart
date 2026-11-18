@@ -19,7 +19,7 @@ if [ "$1" = status ]; then
   /bin/cat "$FIXTURE_DIR/status"
   exit 0
 fi
-/bin/cat "$FIXTURE_DIR/state/intake.json" >> "$FIXTURE_DIR/journal-at-send"
+/bin/cat "$FIXTURE_DIR/plugins/github/intake.json" >> "$FIXTURE_DIR/journal-at-send"
 for arg do recipient=$text; text=$arg; done
 printf '%s\n%s\n---\n' "$recipient" "$text" >> "$FIXTURE_DIR/deliveries"
 if [ -f "$FIXTURE_DIR/crash" ]; then
@@ -76,7 +76,7 @@ fn drive_fixture() {
         .unwrap();
         if dir.join("next-graphql-1").exists() || dir.join("next-config.yaml").exists() {
             fs::copy(
-                dir.join("state/health.json"),
+                dir.join("plugins/github/health.json"),
                 dir.join("health-before-repair"),
             )
             .unwrap();
@@ -245,7 +245,7 @@ fn reads(sent: &str, id: &str) -> usize {
     sent.matches(&format!("brg-github read {id}\n")).count()
 }
 fn pending(f: &Fixture) -> usize {
-    f.json("state/intake.json")["pending"]
+    f.json("plugins/github/intake.json")["pending"]
         .as_array()
         .unwrap()
         .len()
@@ -862,7 +862,7 @@ fn long_downtime_bounds_replay_and_journals_one_root_notice_on_restart_or_turn_o
         let mut backlog = brg_github::state::Cursor::new(old - Duration::from_secs(86400));
         backlog.at = parse_utc(AT).unwrap();
         let admitted = parse_utc("2025-12-30T12:00:00Z").unwrap();
-        f.write("state/intake.json", &json!({"cursors":{"example-org/widgets":cursor,"example-org/gadgets":backlog},"seen":{"IC_kept":admitted},"pending":[]}).to_string());
+        f.write("plugins/github/intake.json", &json!({"cursors":{"example-org/widgets":cursor,"example-org/gadgets":backlog},"seen":{"IC_kept":admitted},"pending":[]}).to_string());
         add_gadgets(&f);
         let mut nodes = Vec::new();
         for (id, at) in [

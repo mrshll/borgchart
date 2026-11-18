@@ -66,28 +66,32 @@ fn entries(values: Vec<String>) -> Result<Vec<Entry>, String> {
     }
     Ok(entries)
 }
-/// Read only this plugin's scope; the rest of the template is brg's to validate.
+/// This plugin's `env.GITHUB_REPOSITORIES` in the template folder's `template.yaml`,
+/// reread every poll; brg validates the rest of the file.
 pub fn template() -> Result<Vec<Entry>, String> {
-    let state = PathBuf::from(std::env::var_os("BORGCHART_STATE_DIR").unwrap_or_default());
-    let name = state.file_name().unwrap_or_default().to_string_lossy();
-    let fix = |error| {
+    let state = std::env::var_os("BORGCHART_STATE_DIR").unwrap_or_default();
+    let name = Path::new(&state)
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
+    let fix = |e: String| {
         format!(
-            "template.yaml: plugins.{name}.env.GITHUB_REPOSITORIES: {error}; fix the file and retry"
+            "template.yaml: plugins.{name}.env.GITHUB_REPOSITORIES: {e}; fix the file and retry"
         )
     };
     let text = match fs::read_to_string("template.yaml") {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(_) => return Err(fix("cannot read template.yaml".to_string())),
+        Err(_) => return Err(fix("cannot read the file".into())),
     };
-    let template = borgchart::yaml::parse::<serde_json::Value>(&text).map_err(fix)?;
-    let Some(value) = template.pointer(&format!("/plugins/{name}/env/GITHUB_REPOSITORIES")) else {
-        return Ok(Vec::new());
-    };
-    let text = value
-        .as_str()
-        .ok_or_else(|| fix("use a whitespace-separated string".into()))?;
-    entries(text.split_whitespace().map(str::to_string).collect()).map_err(fix)
+    let template: serde_json::Value = borgchart::yaml::parse(&text).map_err(fix)?;
+    match template.pointer(&format!("/plugins/{name}/env/GITHUB_REPOSITORIES")) {
+        None => Ok(Vec::new()),
+        Some(serde_json::Value::String(list)) => {
+            entries(list.split_whitespace().map(str::to_string).collect()).map_err(fix)
+        }
+        Some(_) => Err(fix("use a whitespace-separated string".into())),
+    }
 }
 /// Read the shared configuration every poll, retaining only the GitHub section.
 pub fn load(path: &Path) -> Result<Option<Config>, String> {
