@@ -1,6 +1,6 @@
 //! Guarded polling, journal admission before discovery advances, and delivery.
 use crate::{
-    config::{self, Guard, TEMPLATE},
+    config::{self, Guard},
     delivery, discover,
     gh::{Api, Error, Gh},
     state::{Kind, OVERLAP, PendingEvent, Snapshot},
@@ -69,7 +69,7 @@ impl<A: Api> Session<A> {
         if !template.is_empty() {
             if !config.entries.is_empty() {
                 self.note = format!(
-                    "repositories from {TEMPLATE}; the list in {} is ignored",
+                    "repositories from template.yaml; the list in {} is ignored",
                     self.config_file.display()
                 );
             }

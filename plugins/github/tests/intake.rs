@@ -7,12 +7,7 @@ use support::Fixture;
 
 #[test]
 fn relative_profile_follows_configuration_folder_and_template_scope_takes_precedence() {
-    for template in [
-        None,
-        Some("# none\n"),
-        Some("[]"),
-        Some("- example-org/gadgets\n"),
-    ] {
+    for template in [None, Some(""), Some("example-org/gadgets")] {
         let f = Fixture::new();
         let private = f.path("personal/config.yaml");
         fs::create_dir(f.path("personal")).unwrap();
@@ -23,13 +18,13 @@ fn relative_profile_follows_configuration_folder_and_template_scope_takes_preced
         )
         .unwrap();
         if let Some(text) = template {
-            f.write("github-repositories.yaml", text);
+            f.repositories("template.yaml", text);
         }
         f.command()
             .env("BORGCHART_CONFIG", &private)
             .output()
             .unwrap();
-        let overridden = template.is_some_and(|t| t.starts_with('-'));
+        let overridden = template.is_some_and(|t| !t.is_empty());
         assert_eq!(f.calls().contains("repos/example-org/gadgets/"), overridden);
         assert_eq!(
             f.calls().contains("repos/example-org/widgets/"),
@@ -53,7 +48,7 @@ fn unlisted_repositories_skip_even_the_guard_and_missing_private_config_stays_of
     assert_eq!(f.health()["ok"], true);
     assert!(f.detail().contains("no repositories listed"));
     assert!(f.calls().is_empty());
-    f.write("github-repositories.yaml", "- example-org/gadgets\n");
+    f.repositories("template.yaml", "example-org/gadgets");
     f.run();
     assert!(f.calls().contains("repos/example-org/gadgets/"));
     assert!(!f.detail().contains("is ignored"));
@@ -64,15 +59,40 @@ fn unlisted_repositories_skip_even_the_guard_and_missing_private_config_stays_of
     assert!(f.calls().is_empty());
 }
 #[test]
-fn invalid_template_scope_stops_discovery_instead_of_using_the_private_list() {
-    for text in ["[", "owner: example-owner", "[example-org/bad?query]"] {
+fn another_plugins_repository_list_cannot_override_the_private_list() {
+    let f = Fixture::new();
+    f.write(
+        "template.yaml",
+        "plugins: {other: {env: {GITHUB_REPOSITORIES: example-org/gadgets}}}",
+    );
+    f.run();
+    assert!(f.calls().contains("repos/example-org/widgets/"));
+    assert!(!f.calls().contains("repos/example-org/gadgets/"));
+}
+#[test]
+fn invalid_or_unreadable_template_scope_stops_discovery_instead_of_using_the_private_list() {
+    for value in [
+        "[",
+        "null",
+        "[example-org/widgets]",
+        "example-org/bad?query",
+    ] {
         let f = Fixture::new();
-        f.write("github-repositories.yaml", text);
+        f.write(
+            "template.yaml",
+            &format!("plugins: {{github: {{env: {{GITHUB_REPOSITORIES: {value}}}}}}}"),
+        );
         f.run();
-        assert_eq!(f.health()["ok"], false);
-        assert!(f.detail().contains("github-repositories.yaml"));
+        assert_eq!(f.health()["ok"], false, "{value}");
+        assert!(f.detail().contains("template.yaml"));
+        assert!(f.detail().contains("GITHUB_REPOSITORIES"));
         assert!(f.calls().is_empty());
     }
+    let f = Fixture::new();
+    fs::create_dir(f.path("template.yaml")).unwrap();
+    f.run();
+    assert_eq!(f.health()["ok"], false);
+    assert!(f.calls().is_empty());
 }
 
 #[test]
@@ -147,10 +167,10 @@ fn unset_invalid_or_unknown_owner_refuses_discovery() {
 fn damaged_or_unreadable_intake_refuses_and_leaves_the_journal_untouched() {
     for text in ["{", "null", "{}"] {
         let f = Fixture::new();
-        f.write("state/intake.json", text);
+        f.write("plugins/github/intake.json", text);
         let output = f.run();
         assert!(!output.status.success());
-        assert_eq!(f.read("state/intake.json"), text);
+        assert_eq!(f.read("plugins/github/intake.json"), text);
         assert!(f.calls().is_empty());
         assert_eq!(f.health()["ok"], false);
         let detail = f.detail();
@@ -160,9 +180,9 @@ fn damaged_or_unreadable_intake_refuses_and_leaves_the_journal_untouched() {
         );
     }
     let f = Fixture::new();
-    fs::create_dir(f.path("state/intake.json")).unwrap();
+    fs::create_dir(f.path("plugins/github/intake.json")).unwrap();
     assert!(!f.run().status.success());
-    assert!(f.path("state/intake.json").is_dir());
+    assert!(f.path("plugins/github/intake.json").is_dir());
     assert!(f.calls().is_empty());
 }
 #[test]
@@ -173,7 +193,7 @@ fn a_new_entry_skips_history_while_admitted_events_and_private_journal_survive()
     let secs = std::time::UNIX_EPOCH.elapsed().unwrap().as_secs();
     let recent = json!({"secs_since_epoch": secs, "nanos_since_epoch": 0});
     f.write(
-        "state/intake.json",
+        "plugins/github/intake.json",
         &json!({"cursors": {"example-org/removed": cursor}, "seen": {"IC_kept": recent}, "pending": [{"id":"IC_pending","repository":"example-org/widgets","number":1,"is_pull_request":false,"kind":"Mention","recipient":"","reason":"routing unavailable"}]})
             .to_string(),
     );
@@ -190,11 +210,11 @@ fn a_new_entry_skips_history_while_admitted_events_and_private_journal_survive()
         detail.contains("0 changed item(s) processed;") && detail.contains("is not delivered"),
         "{detail}"
     );
-    let state = f.json("state/intake.json");
+    let state = f.json("plugins/github/intake.json");
     assert!(state["seen"]["IC_kept"].is_object(), "{state}");
     assert_eq!(state["pending"][0]["id"], "IC_pending");
     assert_eq!(
-        fs::metadata(f.path("state/intake.json"))
+        fs::metadata(f.path("plugins/github/intake.json"))
             .unwrap()
             .permissions()
             .mode()

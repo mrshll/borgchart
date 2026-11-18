@@ -19,7 +19,7 @@ if [ "$1" = status ]; then
   /bin/cat "$FIXTURE_DIR/status"
   exit 0
 fi
-/bin/cat "$FIXTURE_DIR/state/intake.json" >> "$FIXTURE_DIR/journal-at-send"
+/bin/cat "$FIXTURE_DIR/plugins/github/intake.json" >> "$FIXTURE_DIR/journal-at-send"
 for arg do recipient=$text; text=$arg; done
 printf '%s\n%s\n---\n' "$recipient" "$text" >> "$FIXTURE_DIR/deliveries"
 if [ -f "$FIXTURE_DIR/crash" ]; then
@@ -76,7 +76,7 @@ fn drive_fixture() {
         .unwrap();
         if dir.join("next-graphql-1").exists() || dir.join("next-config.yaml").exists() {
             fs::copy(
-                dir.join("state/health.json"),
+                dir.join("plugins/github/health.json"),
                 dir.join("health-before-repair"),
             )
             .unwrap();
@@ -85,7 +85,7 @@ fn drive_fixture() {
             "issues",
             "graphql-1",
             "config.yaml",
-            "github-repositories.yaml",
+            "template.yaml",
             "reaction",
         ] {
             let _ = fs::rename(dir.join(format!("next-{name}")), dir.join(name));
@@ -96,12 +96,15 @@ fn drive_fixture() {
 #[test]
 fn template_edits_replace_the_discovery_scope_at_the_next_poll() {
     let f = fixture();
-    f.write("github-repositories.yaml", "- example-org/widgets\n");
-    f.write("next-github-repositories.yaml", "- example-org/gadgets\n");
+    f.repositories("template.yaml", "example-org/widgets");
+    f.repositories(
+        "next-template.yaml",
+        "example-org/gadgets\nexample-org/gadgets",
+    );
     drive(&f, "0,60");
     let after = f.read("calls-at-60");
     let next = after.strip_prefix(&f.read("calls-at-0")).unwrap();
-    assert!(next.contains("repos/example-org/gadgets/"));
+    assert_eq!(next.matches("repos/example-org/gadgets/").count(), 1);
     assert!(!next.contains("repos/example-org/widgets/"));
 }
 #[test]
@@ -248,7 +251,7 @@ fn reads(sent: &str, id: &str) -> usize {
     sent.matches(&format!("brg-github read {id}\n")).count()
 }
 fn pending(f: &Fixture) -> usize {
-    f.json("state/intake.json")["pending"]
+    f.json("plugins/github/intake.json")["pending"]
         .as_array()
         .unwrap()
         .len()
@@ -893,7 +896,7 @@ fn long_downtime_bounds_replay_and_journals_one_root_notice_on_restart_or_turn_o
         let mut backlog = brg_github::state::Cursor::new(old - Duration::from_secs(86400));
         backlog.at = parse_utc(AT).unwrap();
         let admitted = parse_utc("2025-12-30T12:00:00Z").unwrap();
-        f.write("state/intake.json", &json!({"cursors":{"example-org/widgets":cursor,"example-org/gadgets":backlog},"seen":{"IC_kept":admitted},"pending":[]}).to_string());
+        f.write("plugins/github/intake.json", &json!({"cursors":{"example-org/widgets":cursor,"example-org/gadgets":backlog},"seen":{"IC_kept":admitted},"pending":[]}).to_string());
         add_gadgets(&f);
         let mut nodes = Vec::new();
         for (id, at) in [

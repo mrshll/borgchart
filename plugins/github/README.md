@@ -30,23 +30,18 @@ Move `owner`, `gh_config_dir` and any `repositories` list from `github.yaml`
 under `github:` in `config.yaml`, then replace the running poller as described
 below; the separate file is no longer read.
 
-List the repositories to watch in `github-repositories.yaml` in the template
-folder, the plugin's working directory, so they are reviewed with the template.
-The file holds only a list:
-
-```yaml
-- example-org/widgets
-- example-org/*
-```
-
-Entries are `owner/name` or `org/*`; a user wildcard is refused. If the
-template file lists any repositories, they are watched and the section's
-optional `repositories` list is ignored; health says so. The lists are never
-combined. If the template file is absent or lists none, the section's list
-applies. An invalid list in either location stops discovery, even an ignored one.
-With no repositories in either place, health is ok `no repositories listed` and
-no GitHub call is made. The engineering template ships the file with only
-commented-out examples.
+In `template.yaml`, list repositories in this plugin's
+`env.GITHUB_REPOSITORIES` (below): `owner/name` or `org/*` separated by spaces
+or newlines. User wildcards are refused. The poller reads from its working
+directory, the template folder, so run `brg-github` from PATH, as shipped. A
+non-empty template list overrides `github.repositories`; health says so. The
+lists are never combined. An absent entry or key, or a blank string (`""`),
+uses the section's list. `GITHUB_REPOSITORIES:` without a value is an
+error: brg reads the start environment, which the poller ignores. Invalid
+lists stop discovery, even an ignored one. With neither list, health is ok
+`no repositories listed` and no GitHub call is made. Engineering ships a
+commented example. Move any list from `github-repositories.yaml` here and
+delete that file.
 
 The engineering template runs one poller and grants its lead `read`. The
 dev-team template grants its lead `read` without running another poller. After
@@ -62,6 +57,8 @@ plugins:
     # checkout holds the branch or commit; this lead gets everything else,
     # a copy of each approval, and intake-gap notices.
     delivers_to: lead
+    env:
+      GITHUB_REPOSITORIES: example-org/widgets example-org/*
     actions:
       read: brg-github read <id>
 roles:
@@ -92,10 +89,11 @@ Health appears under `brg status`. No `github:` section means ok
 GitHub calls; `read` exits 1 saying intake is not configured. Both brg's
 configuration and the template list are reread every poll: adding or removing
 the section, editing either list, or changing owner/profile takes effect at the
-next poll without restart. Identity changes rerun the guard. An invalid brg
-configuration (including unrelated sections) or template list stops discovery
-and marks health not ok; repair the file. Rate limits pause API calls for ten
-minutes. Failed delivery and pending events also mark health not ok.
+next poll without restart. The copy of `GITHUB_REPOSITORIES` in the plugin's
+environment is set at registration and not used. Identity changes rerun the
+guard. An invalid brg configuration (including unrelated sections) or template
+list stops discovery and marks health not ok; repair the file. Rate limits pause
+API calls for ten minutes. Failed delivery and pending events also mark health not ok.
 While off or with no repositories listed, pending events are still delivered.
 
 The private state directory keeps `intake.json`, `health.json` and a lock.
@@ -119,7 +117,7 @@ first 50 inline comments are checked. Two trees listing the same repository both
 deliver.
 Every tree started with the same brg configuration reads the same `github:`
 section, so give each tree its own scope in its template's
-`github-repositories.yaml`; a tree whose template lists nothing watches the
+`template.yaml`; a tree whose template lists nothing watches the
 section's list. A process running as the same user can forge a notice, so merge approval and
 head must be confirmed on GitHub. Bodies are bounded; `read` points to GitHub
 for omitted text. `brg-github run --once` runs one poll for local checks.

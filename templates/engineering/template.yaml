@@ -9,6 +9,8 @@ plugins:
     # checkout holds the branch or commit; this lead gets everything else,
     # a copy of each approval, and intake-gap notices.
     delivers_to: lead
+    # env:
+    #   GITHUB_REPOSITORIES: example-org/widgets example-org/*
     actions:
       read: brg-github read <id>
   timer:

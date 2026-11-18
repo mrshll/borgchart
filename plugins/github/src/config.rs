@@ -66,17 +66,28 @@ fn entries(values: Vec<String>) -> Result<Vec<Entry>, String> {
     }
     Ok(entries)
 }
-pub const TEMPLATE: &str = "github-repositories.yaml";
-/// The template folder's list, reread every poll; an absent or comments-only file lists none.
+/// This plugin's `env.GITHUB_REPOSITORIES` in `template.yaml`, reread every poll; brg checks the rest.
 pub fn template() -> Result<Vec<Entry>, String> {
-    let text = match fs::read_to_string(TEMPLATE) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(_) => return Err(format!("cannot read {TEMPLATE}; fix the file and retry")),
+    let state = PathBuf::from(std::env::var_os("BORGCHART_STATE_DIR").unwrap_or_default());
+    let name = state.file_name().unwrap_or_default().to_string_lossy();
+    let fix = |e: String| {
+        format!(
+            "template.yaml: plugins.{name}.env.GITHUB_REPOSITORIES: {e}; fix the file and retry"
+        )
     };
-    borgchart::yaml::parse::<Option<Vec<String>>>(&text)
-        .and_then(|values| entries(values.unwrap_or_default()))
-        .map_err(|e| format!("{TEMPLATE}: {e}; fix the file and retry"))
+    let text = match fs::read_to_string("template.yaml") {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err(fix("cannot read the file".into())),
+    };
+    let template: serde_json::Value = borgchart::yaml::parse(&text).map_err(fix)?;
+    match template.pointer(&format!("/plugins/{name}/env/GITHUB_REPOSITORIES")) {
+        None => Ok(Vec::new()),
+        Some(serde_json::Value::String(list)) => {
+            entries(list.split_whitespace().map(str::to_string).collect()).map_err(fix)
+        }
+        Some(_) => Err(fix("write the list here as a whitespace-separated string; the plugin doesn't read its environment".into())),
+    }
 }
 /// Read the shared configuration every poll, retaining only the GitHub section.
 pub fn load(path: &Path) -> Result<Option<Config>, String> {

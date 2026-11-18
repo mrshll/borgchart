@@ -22,13 +22,13 @@ fn edited(mut node: Value, editor: Value) -> Value {
 /// Runs `read` beside a damaged journal, which it must neither load nor change,
 /// and returns the exit code, stdout and stderr. A refusal prints nothing.
 fn run(f: &Fixture, id: &str) -> (Option<i32>, String, String) {
-    f.write("state/intake.json", "damaged");
+    f.write("plugins/github/intake.json", "damaged");
     let mut command = Command::new(env!("CARGO_BIN_EXE_brg-github"));
     f.environment(&mut command);
     let output = command.args(["read", id]).output().unwrap();
-    let journal = fs::read_to_string(f.path("state/intake.json")).unwrap();
+    let journal = fs::read_to_string(f.path("plugins/github/intake.json")).unwrap();
     assert_eq!(journal, "damaged");
-    assert_eq!(fs::read_dir(f.path("state")).unwrap().count(), 1);
+    assert_eq!(fs::read_dir(f.path("plugins/github")).unwrap().count(), 1);
     assert!(output.status.success() || output.stdout.is_empty());
     let text = |bytes| String::from_utf8(bytes).unwrap();
     (
