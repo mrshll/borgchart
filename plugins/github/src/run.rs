@@ -3,7 +3,7 @@ use crate::{
     config::{self, Guard, TEMPLATE},
     delivery, discover,
     gh::{Api, Error, Gh},
-    state::{OVERLAP, Snapshot},
+    state::{Kind, OVERLAP, PendingEvent, Snapshot},
     timeline,
 };
 use borgchart::{bus::time::format_utc, plugin};
@@ -109,6 +109,18 @@ impl<A: Api> Session<A> {
         self.guard.as_mut().unwrap().check(&self.api, now)?;
         let snapshot = &mut self.snapshot;
         snapshot.entries(entries, if first { self.epoch } else { now });
+        if first && let Some((saved, edge)) = snapshot.replay(now) {
+            snapshot.pending.push(PendingEvent {
+                id: "cutoff".into(),
+                repository: String::new(),
+                number: 0,
+                is_pull_request: false,
+                kind: Kind::Cutoff,
+                reactable: false,
+                recipient: delivery::root_lead(),
+                reason: format!("GitHub: intake was not running between {} and {}; owner actions before {} were not delivered; check GitHub for them.", format_utc(saved), format_utc(self.epoch), format_utc(edge)),
+            });
+        }
         let mut poll = Poll {
             processed: 0,
             admitted: 0,
@@ -221,9 +233,10 @@ impl<A: Api> Session<A> {
         if !self.note.is_empty() {
             errors.push(self.note.clone());
         }
+        let floor = self.snapshot.cursors.values().map(|c| c.floor).min();
         errors.push(format!(
             "activity before {} is not delivered",
-            format_utc(self.epoch)
+            format_utc(floor.unwrap_or(self.epoch))
         ));
         let detail = errors.join("; ");
         store.health(ok, &detail).map_err(|_| {
@@ -265,6 +278,7 @@ mod tests {
         calls: Vec<String>,
         pages: BTreeMap<String, Vec<Value>>,
         failure: Option<(String, Error)>,
+        nodes: Vec<Value>,
     }
     #[derive(Clone)]
     struct ApiFixture(Rc<RefCell<Fake>>);
@@ -276,6 +290,7 @@ mod tests {
                 calls: Vec::new(),
                 pages: BTreeMap::new(),
                 failure: None,
+                nodes: Vec::new(),
             })))
         }
         fn pages(&self, entry: &str, values: Vec<Value>) {
@@ -299,7 +314,7 @@ mod tests {
                 "__typename":"Issue","id":format!("I_{}", integers[0].1),
                 "author":{"databaseId":202},"body":"","createdAt":format_utc(now()),"lastEditedAt":null,
                 "assignees":{"nodes":[]},"closedByPullRequestsReferences":{"nodes":[]},
-                "timelineItems":{"nodes":[],"pageInfo":{"hasNextPage":false}}
+                "timelineItems":{"nodes":self.0.borrow().nodes,"pageInfo":{"hasNextPage":false}}
             }}}}))
         }
         fn get(&self, request: Rest<'_>) -> Result<Value, Error> {
@@ -369,6 +384,29 @@ mod tests {
         }
     }
     #[test]
+    fn a_guard_outage_at_start_still_bounds_replay_from_when_intake_resumes() {
+        let (_dir, api, mut session) = setup("- example-org/widgets\n");
+        let stopped = now() - secs(3600);
+        let cursors = [("example-org/widgets".into(), Cursor::new(stopped))];
+        session.snapshot.cursors.extend(cursors);
+        session.snapshot.seen.insert("AE_before".into(), stopped);
+        api.fail("user", Error::Other("unreachable".into()));
+        assert!(session.poll(now()).is_err());
+        api.0.borrow_mut().failure = None;
+        let resumed = now() + secs(4 * 86400);
+        // An undrained backlog relists the timeline after the old IDs are pruned.
+        let backlog: Vec<_> = (1..=21).map(|n| item(n, resumed)).collect();
+        api.pages("example-org/widgets", vec![json!(backlog)]);
+        let assigned = |id: &str, at: SystemTime| json!({"__typename":"AssignedEvent","id":id,"createdAt":format_utc(at),"actor":{"databaseId":202},"assignee":{"databaseId":101}});
+        let edge = resumed - secs(72 * 3600);
+        api.0.borrow_mut().nodes = vec![assigned("AE_before", stopped), assigned("AE_edge", edge)];
+        session.poll(resumed).unwrap();
+        session.poll(resumed + secs(60)).unwrap();
+        assert_eq!(session.snapshot.cursors["example-org/widgets"].floor, edge);
+        let ids: Vec<_> = session.snapshot.pending.iter().map(|e| &e.id).collect();
+        assert_eq!(ids, ["cutoff", "AE_edge"]);
+    }
+    #[test]
     fn reload_adds_entries_at_now_and_invalid_files_stop_discovery() {
         let (dir, api, mut session) = setup("- example-org/widgets\n");
         session.poll(now()).unwrap();
@@ -392,7 +430,7 @@ mod tests {
         let calls = api.calls().len();
         session.poll(later + secs(60)).unwrap();
         assert_eq!(api.calls().len(), calls);
-        // Turning intake on skips activity from before the last poll that found no file.
+        // A new entry added at turn-on skips activity from before the last poll that found no file.
         fs::write(&path, config("- example-org/tools\n")).unwrap();
         api.pages("example-org/tools", vec![json!([item(3, later)])]);
         assert_eq!(processed(&mut session, later + secs(60)), 0);
@@ -456,9 +494,9 @@ mod tests {
         let page = json!([item(1, now() + secs(150)), item(2, now() + secs(110))]);
         api.pages("example-org/widgets", vec![page]);
         assert_eq!(processed(&mut session, now() + secs(300)), 1);
-        // Seen versions last as long as the overlap; admitted events a day.
+        // Seen versions last as long as the overlap; admitted events four days.
         session.snapshot.seen.extend([
-            ("old".into(), now() - secs(86401)),
+            ("old".into(), now() - secs(4 * 86400 + 1)),
             ("recent".into(), now()),
         ]);
         api.pages("example-org/widgets", vec![json!([])]);

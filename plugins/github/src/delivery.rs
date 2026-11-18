@@ -84,7 +84,7 @@ impl Routing {
         Some(routing)
     }
 }
-fn root_lead() -> String {
+pub(crate) fn root_lead() -> String {
     let member = std::env::var("BORGCHART_DELIVER_TO").unwrap_or_default();
     if member.is_empty() || member.contains('/') {
         member
@@ -168,6 +168,7 @@ fn line(event: &PendingEvent, index: usize) -> String {
             .unwrap_or("unknown commit".into())
     };
     let action = match &event.kind {
+        Kind::Cutoff => return event.reason.clone(),
         Kind::Mention => "mention in the owner's content".into(),
         Kind::Assigned => "assigned".into(),
         Kind::Review { state, commit } => format!("review {state} on {}", short(commit)),
@@ -186,6 +187,9 @@ fn line(event: &PendingEvent, index: usize) -> String {
     )
 }
 fn notice(events: &[PendingEvent]) -> String {
+    if matches!(events[0].kind, Kind::Cutoff) {
+        return events[0].reason.clone();
+    }
     let lines: Vec<_> = events
         .iter()
         .enumerate()
