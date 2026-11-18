@@ -877,9 +877,11 @@ impl Run {
     }
 
     fn save(&self, case: &str) {
-        let path = root()
-            .join("screens")
-            .join(format!("{}-{case}.ansi", self.vendor.as_str()));
+        let path = root().join("screens").join(format!(
+            "{}-{}.ansi",
+            self.vendor.as_str(),
+            file_name(case)
+        ));
         let _ = std::fs::write(path, self.screen());
     }
 
@@ -1354,6 +1356,30 @@ pub fn table(vendor: Vendor, rows: &[[String; 4]]) -> String {
 
 /// A row passes when the result has one of the `|`-separated prefixes and
 /// every invariant held, whatever the result text says.
+/// A row label as a file name the CI artifact upload accepts: it refuses
+/// `:` and other characters, which some labels contain.
+fn file_name(case: &str) -> String {
+    case.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || "._-".contains(c) {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn screen_file_names_keep_only_upload_safe_characters() {
+    assert_eq!(file_name("attempt: vim normal"), "attempt--vim-normal");
+    assert_eq!(
+        file_name("draft offscreen (blank tail)"),
+        "draft-offscreen--blank-tail-"
+    );
+    assert_eq!(file_name("send-start"), "send-start");
+}
+
 fn evaluate(want: &str, got: &str, invariants: &[(&str, bool)]) -> bool {
     want.split('|').any(|w| got.starts_with(w)) && invariants.iter().all(|(_, held)| *held)
 }
