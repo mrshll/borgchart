@@ -184,6 +184,9 @@ fn event(kind: &str, id: &str, actor: u64, body: &str) -> Value {
     e
 }
 fn item(pr: bool, nodes: Vec<Value>) -> Value {
+    let (reviews, nodes): (Vec<_>, Vec<_>) = nodes
+        .into_iter()
+        .partition(|node| pr && node["__typename"] == "PullRequestReview");
     let mut i = content(202, "BODY_MARKER");
     i["__typename"] = json!(if pr { "PullRequest" } else { "Issue" });
     i["id"] = json!("I_1");
@@ -193,6 +196,7 @@ fn item(pr: bool, nodes: Vec<Value>) -> Value {
     i["headRefName"] = json!("example-branch");
     i["headRefOid"] = json!("abcdef0123456789012345678901234567890123");
     i["closedByPullRequestsReferences"] = json!({"nodes":[]});
+    i["reviews"] = json!({"nodes":reviews});
     i["timelineItems"] = json!({"nodes":nodes,"pageInfo":{"hasNextPage":false,"endCursor":null}});
     i
 }
@@ -284,6 +288,34 @@ fn four_owner_triggers_deliver_identifiers_once_without_github_text() {
             .all(|d| d.starts_with("example-team/root\n"))
     );
     assert_eq!(f.health()["ok"], true);
+}
+#[test]
+fn owner_thread_replies_outside_the_timeline_wake_by_assignment_or_unedited_mention() {
+    for (assigned, edited, expected) in [(true, false, 1), (false, false, 1), (false, true, 0)] {
+        let f = fixture();
+        let mut reply = content(202, "@example-bot please check this reply");
+        if edited {
+            reply["lastEditedAt"] = json!(AT);
+            reply["editor"] = json!({"databaseId":202});
+        }
+        let mut review = event("PullRequestReview", "PRR_reply", 202, "");
+        review["state"] = json!("COMMENTED");
+        review["comments"] = json!({"nodes":[reply]});
+        changed(&f, &[(true, vec![review.clone()])]);
+        let mut raw = item(true, vec![review]);
+        if !assigned {
+            raw["assignees"] = json!({"nodes":[]});
+        }
+        answer(&f, 1, &raw);
+        drive(&f, "0,60");
+        assert_eq!(
+            reads(&text(&f), "PRR_reply"),
+            expected,
+            "{assigned}/{edited}"
+        );
+        assert_eq!(eyes(&f.calls()).len(), expected, "{assigned}/{edited}");
+        assert_eq!(f.health()["ok"], true);
+    }
 }
 #[test]
 fn only_owner_actions_in_scope_and_unplanted_mentions_wake_the_lead() {
@@ -544,11 +576,11 @@ fn checkout_heads_route_prs_and_linked_issues_and_copy_only_approvals() {
         changed(&f, &[(mode != "issue", events.clone())]);
         let mut raw = item(mode != "issue", events);
         if mode == "null" {
-            raw["timelineItems"]["nodes"][0]["commit"] = Value::Null;
+            raw["reviews"]["nodes"][0]["commit"] = Value::Null;
         }
         if mode == "mention" {
             raw["assignees"] = json!({"nodes":[]});
-            raw["timelineItems"]["nodes"][0]["body"] = json!("@example-bot");
+            raw["reviews"]["nodes"][0]["body"] = json!("@example-bot");
         }
         if mode == "detached" {
             let oid = git(&f.path("first"), &["rev-parse", "HEAD"]);

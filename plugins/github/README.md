@@ -4,8 +4,9 @@ Wake the owning lead for four actions GitHub's API attributes to the owner:
 an unedited mention of the machine account; assignment of an issue to that
 account; a submitted review on a pull request assigned to that account; or a
 merge of a pull request assigned to that account. Mentions cover issue and pull
-request bodies, comments, reviews and owner inline review comments. Other
-accounts' actions and edits that add a mention do not wake anyone.
+request bodies, comments, reviews and owner inline review comments, including
+replies in existing threads. Other accounts' actions and edits that add a mention
+do not wake anyone.
 
 `make install` installs this Rust workspace plugin alongside `brg`. It needs
 `gh` on PATH, authenticated as a separate machine account. Numeric account IDs
@@ -103,8 +104,9 @@ plugin process and run `brg start <root>` to replace it. Updated role text and
 action grants need each member's next start.
 
 Known limits: shared branch names across repositories can misroute a notice;
-indented code and HTML comments can count as mentions; only the first 50 inline
-review comments are scanned. Two trees listing the same repository both deliver.
+indented code and HTML comments can count as mentions; only a pull request's latest
+100 reviews, and each review's first 50 inline comments, are checked.
+Two trees listing the same repository both deliver.
 A process running as the same user can forge a notice, so merge approval and
 head must be confirmed on GitHub. Bodies are bounded; `read` points to GitHub
 for omitted text. `brg-github run --once` runs one poll for local checks.
