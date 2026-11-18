@@ -91,10 +91,24 @@ exit "$(/bin/cat "$FIXTURE_DIR/$response-code")"
     pub fn health(&self) -> Value {
         self.json("state/health.json")
     }
+    pub fn detail(&self) -> String {
+        self.health()["detail"].as_str().unwrap().into()
+    }
     pub fn json(&self, name: &str) -> Value {
         serde_json::from_slice(&fs::read(self.path(name)).unwrap()).unwrap()
     }
+    /// A fixture file's text, empty when it was never written.
+    pub fn read(&self, name: &str) -> String {
+        fs::read_to_string(self.path(name)).unwrap_or_default()
+    }
     pub fn calls(&self) -> String {
-        fs::read_to_string(self.path("calls")).unwrap_or_default()
+        self.read("calls")
+    }
+    /// Sets the variable, or removes it for `None`.
+    pub fn set(command: &mut Command, name: &str, value: Option<&str>) {
+        match value {
+            Some(value) => command.env(name, value),
+            None => command.env_remove(name),
+        };
     }
 }

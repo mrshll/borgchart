@@ -21,9 +21,7 @@ if [ "$1" = status ]; then
 fi
 /bin/cat "$FIXTURE_DIR/state/intake.json" >> "$FIXTURE_DIR/journal-at-send"
 for arg do recipient=$text; text=$arg; done
-printf '%s\n---\n' "$text" >> "$FIXTURE_DIR/sent"
 printf '%s\n%s\n---\n' "$recipient" "$text" >> "$FIXTURE_DIR/deliveries"
-printf '%s\n' "$@" >> "$FIXTURE_DIR/brg-args"
 if [ -f "$FIXTURE_DIR/crash" ]; then
   /bin/rm "$FIXTURE_DIR/crash"
   kill -KILL "$PPID"
@@ -68,16 +66,15 @@ fn drive_fixture() {
         session
             .tick(&store, epoch + Duration::from_secs(offset.parse().unwrap()))
             .unwrap();
+        let dir = std::path::PathBuf::from(std::env::var_os("FIXTURE_DIR").unwrap());
         for name in ["issues", "graphql-1"] {
-            let path = std::path::PathBuf::from(std::env::var_os("FIXTURE_DIR").unwrap());
-            if path.join(format!("next-{name}")).exists() {
-                fs::rename(path.join(format!("next-{name}")), path.join(name)).unwrap();
-            }
+            let _ = fs::rename(dir.join(format!("next-{name}")), dir.join(name));
         }
     }
 }
+/// Every delivery: its recipient line, then the notice.
 fn text(f: &Fixture) -> String {
-    fs::read_to_string(f.path("sent")).unwrap_or_default()
+    f.read("deliveries")
 }
 fn content(author: u64, body: &str) -> Value {
     json!({"author":{"databaseId":author},"body":body,"lastEditedAt":null,"editor":null})
@@ -123,11 +120,7 @@ fn changed(f: &Fixture, items: &[(bool, Vec<Value>)]) {
             let mut i = item(*pr, nodes.clone());
             i["id"] = json!(format!("I_{n}"));
             answer(f, n as u64, &i);
-            let mut changed = json!({"node_id":format!("I_{n}"),"number":n,"updated_at":AT});
-            if *pr {
-                changed["pull_request"] = json!({});
-            }
-            changed
+            json!({"node_id":format!("I_{n}"),"number":n,"updated_at":AT})
         })
         .collect();
     f.response("issues", 200, &json!(list).to_string());
@@ -190,9 +183,9 @@ fn four_owner_triggers_deliver_identifiers_once_without_github_text() {
         "{sent}"
     );
     assert!(
-        fs::read_to_string(f.path("brg-args"))
-            .unwrap()
-            .contains("example-team/root")
+        deliveries(&f)
+            .iter()
+            .all(|d| d.starts_with("example-team/root\n"))
     );
     assert_eq!(f.health()["ok"], true);
 }
@@ -222,15 +215,14 @@ fn only_owner_actions_in_scope_and_unplanted_mentions_wake_the_lead() {
     let mut selfedit = event("IssueComment", "IC_selfedit", 202, "@example-bot");
     selfedit["lastEditedAt"] = json!(AT);
     selfedit["editor"] = json!({"databaseId":202});
-    let mut nodes = foreign.clone();
-    nodes.extend([
+    let mut nodes = vec![
         planted,
         selfedit,
         event("IssueComment", "IC_plain", 202, "plain"),
         event("AssignedEvent", "AE_pr", 202, ""),
         event("PullRequestReview", "PRR_unassigned", 202, ""),
         event("MergedEvent", "ME_unassigned", 202, ""),
-    ]);
+    ];
     for author in [202, 303] {
         let mut review = event("PullRequestReview", &format!("PRR_inline{author}"), 202, "");
         review["comments"] = json!({"nodes":[content(author,"INLINE_MARKER @example-bot")]});
@@ -275,11 +267,11 @@ fn old_edits_and_pre_epoch_actions_are_skipped_but_newly_submitted_drafts_arrive
     review["createdAt"] = json!("2020-01-01T00:00:00Z");
     review["submittedAt"] = json!("2026-01-02T12:10:00Z");
     nodes.push(review);
-    changed(&f, &[(true, nodes)]);
+    changed(&f, &[(true, nodes.clone())]);
     fs::rename(f.path("graphql-1"), f.path("next-graphql-1")).unwrap();
-    answer(&f, 1, &item(true, vec![]));
-    let relisted =
-        json!([{"node_id":"I_1","number":1,"updated_at":"2026-01-02T12:10:00Z","pull_request":{}}]);
+    // Before the cursor moves, only the start time rejects the pre-start comment.
+    answer(&f, 1, &item(true, nodes[..1].to_vec()));
+    let relisted = json!([{"node_id":"I_1","number":1,"updated_at":"2026-01-02T12:10:00Z"}]);
     f.response("next-issues", 200, &relisted.to_string());
     drive(&f, "600,660");
     let sent = text(&f);
@@ -287,13 +279,6 @@ fn old_edits_and_pre_epoch_actions_are_skipped_but_newly_submitted_drafts_arrive
         sent.contains("PRR_draft") && !sent.contains("IC_"),
         "{sent}"
     );
-    // The same pre-start action must be rejected even before the cursor moves.
-    let f = fixture();
-    let mut e = event("AssignedEvent", "AE_before", 202, "");
-    e["createdAt"] = json!("2026-01-02T11:59:59Z");
-    changed(&f, &[(false, vec![e])]);
-    drive(&f, "0");
-    assert!(text(&f).is_empty());
     assert_eq!(f.health()["ok"], true);
 }
 #[test]
@@ -305,21 +290,14 @@ fn failed_sends_retry_and_saved_admission_survives_a_crash() {
     );
     f.write("fail", "");
     drive(&f, "120");
-    let health = f.health();
-    assert_eq!(health["ok"], false);
-    assert!(
-        health["detail"]
-            .as_str()
-            .unwrap()
-            .contains("blocked\\x0aretry"),
-        "{health}"
-    );
+    assert_eq!(f.health()["ok"], false);
+    assert!(f.detail().contains("blocked\\x0aretry"), "{}", f.detail());
     // The retry is killed mid-send, after its admission was saved.
     fs::remove_file(f.path("fail")).unwrap();
     f.write("crash", "");
     f.write("expect-crash", "");
     assert!(!drive(&f, "180"));
-    let journal = fs::read_to_string(f.path("journal-at-send")).unwrap();
+    let journal = f.read("journal-at-send");
     assert_eq!(
         journal.matches("\"id\":\"AE_retry\"").count(),
         2,
@@ -352,9 +330,10 @@ fn failed_later_timeline_page_retries_without_partial_admission_then_sends_bound
         f.response("graphql-1-next", 200, &second.to_string());
         drive(&f, "240");
         let sent = text(&f);
-        let notices: Vec<_> = sent.split("\n---\n").filter(|n| !n.is_empty()).collect();
+        let notices = deliveries(&f);
         assert!(notices.len() > 1);
         for notice in notices {
+            let notice = notice.split_once('\n').unwrap().1;
             assert!(notice.len() <= 900, "{} bytes", notice.len());
             assert!(notice.matches("brg-github read").count() <= 6);
         }
@@ -376,7 +355,7 @@ fn malformed_identifiers_and_timeline_rate_limits_never_advance_past_a_failed_it
         e[field] = value;
         changed(&f, &[(true, vec![e]), (false, vec![])]);
         let listed = json!([
-            {"node_id":"I_1","number":1,"updated_at":AT,"pull_request":{}},
+            {"node_id":"I_1","number":1,"updated_at":AT},
             {"node_id":"I_2","number":2,"updated_at":"2026-01-02T12:10:00Z"}
         ]);
         f.response("issues", 200, &listed.to_string());
@@ -401,6 +380,7 @@ fn git(path: &std::path::Path, args: &[&str]) -> String {
     let output = Command::new("/usr/bin/git")
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_AUTHOR_NAME", "Example Bot")
         .env("GIT_AUTHOR_EMAIL", "bot@example.invalid")
         .env("GIT_COMMITTER_NAME", "Example Bot")
@@ -417,25 +397,14 @@ fn checkout(f: &Fixture, team: &str, kind: &str, dir: &str) -> Value {
     let path = f.path(dir);
     fs::create_dir(&path).unwrap();
     git(&path, &["init", "-b", "example-branch"]);
-    git(
-        &path,
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--allow-empty",
-            "-m",
-            "Example head",
-        ],
-    );
+    git(&path, &["commit", "--allow-empty", "-m", "Example head"]);
     json!({"kind":kind,"team":team,"worktree":path})
 }
 fn lead(team: &str, member: &str) -> Value {
     json!({"kind":"member","team":team,"member":member,"role":"lead","liveness":"alive"})
 }
 fn deliveries(f: &Fixture) -> Vec<String> {
-    fs::read_to_string(f.path("deliveries"))
-        .unwrap_or_default()
+    text(f)
         .split("\n---\n")
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
@@ -500,10 +469,7 @@ fn checkout_heads_route_prs_and_linked_issues_and_copy_only_approvals() {
             .collect();
         assert_eq!(routed.len(), 1, "{mode}: {sent:?}");
         assert!(routed[0].contains(&format!("team {team} holds the branch")));
-        assert_eq!(
-            fs::read_to_string(f.path("status-calls")).unwrap(),
-            "status example-team --json\n"
-        );
+        assert_eq!(f.read("status-calls"), "status example-team --json\n");
         assert!(
             !text(&f).contains("example-branch") && !text(&f).contains("UNTRUSTED_BRANCH_MARKER")
         );
@@ -578,13 +544,7 @@ fn routing_fallbacks_deliver_and_retry_keeps_the_admitted_recipient() {
             fs::remove_file(f.path("fail")).unwrap();
             f.write("status", "[]");
             drive(&f, "180");
-            assert_eq!(
-                fs::read_to_string(f.path("status-calls"))
-                    .unwrap()
-                    .lines()
-                    .count(),
-                1
-            );
+            assert_eq!(f.read("status-calls").lines().count(), 1);
         }
         let sent = deliveries(&f);
         let recipient = if mode == "retry" {

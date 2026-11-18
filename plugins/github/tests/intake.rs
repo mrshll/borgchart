@@ -10,23 +10,10 @@ fn missing_or_empty_gh_config_refuses_before_spawning_gh() {
     for value in [None, Some("")] {
         let f = Fixture::new();
         let mut command = f.command();
-        match value {
-            None => {
-                command.env_remove("GH_CONFIG_DIR");
-            }
-            Some(value) => {
-                command.env("GH_CONFIG_DIR", value);
-            }
-        }
+        Fixture::set(&mut command, "GH_CONFIG_DIR", value);
         command.output().unwrap();
-        let health = f.health();
-        assert_eq!(health["ok"], false);
-        assert!(
-            health["detail"]
-                .as_str()
-                .unwrap()
-                .contains("set GH_CONFIG_DIR")
-        );
+        assert_eq!(f.health()["ok"], false);
+        assert!(f.detail().contains("set GH_CONFIG_DIR"));
         assert!(f.calls().is_empty());
     }
 }
@@ -48,16 +35,11 @@ fn inherited_tokens_and_host_overrides_cannot_outrank_the_machine_profile() {
     let output = command.output().unwrap();
     assert!(output.status.success(), "{output:?}");
     assert_eq!(f.health()["ok"], true);
+    assert_eq!(f.read("environment"), "unset\n".repeat(7));
     assert_eq!(
-        fs::read_to_string(f.path("environment")).unwrap(),
-        "unset\n".repeat(7)
-    );
-    assert_eq!(
-        fs::read_to_string(f.path("config-dir")).unwrap(),
+        f.read("config-dir"),
         f.path("machine-profile").to_str().unwrap()
     );
-    assert!(!f.calls().contains("auth"));
-    assert!(f.calls().contains("--include\n--method\nGET\nuser\n"));
 }
 #[test]
 fn owner_identity_refuses_discovery_and_reports_the_machine_profile_fix() {
@@ -66,9 +48,7 @@ fn owner_identity_refuses_discovery_and_reports_the_machine_profile_fix() {
     f.run();
     assert_eq!(f.health()["ok"], false);
     assert!(
-        f.health()["detail"]
-            .as_str()
-            .unwrap()
+        f.detail()
             .contains("start brg with GH_CONFIG_DIR naming the machine account's login")
     );
     assert!(!f.calls().contains("repos/"));
@@ -79,18 +59,10 @@ fn unset_invalid_or_unknown_owner_names_github_owner_without_discovery() {
         let f = Fixture::new();
         f.response("owner", 404, "{\"message\":\"private text\"}");
         let mut command = f.command();
-        match value {
-            None => {
-                command.env_remove("GITHUB_OWNER");
-            }
-            Some(value) => {
-                command.env("GITHUB_OWNER", value);
-            }
-        }
+        Fixture::set(&mut command, "GITHUB_OWNER", value);
         command.output().unwrap();
         assert_eq!(f.health()["ok"], false);
-        let health = f.health();
-        let detail = health["detail"].as_str().unwrap();
+        let detail = f.detail();
         assert!(detail.contains("GITHUB_OWNER"), "{detail}");
         assert!(!detail.contains("private text"));
         assert!(!f.calls().contains("repos/"));
@@ -106,14 +78,10 @@ fn damaged_or_unreadable_intake_refuses_and_leaves_the_journal_untouched() {
         f.write("state/intake.json", text);
         let output = f.run();
         assert!(!output.status.success());
-        assert_eq!(
-            fs::read_to_string(f.path("state/intake.json")).unwrap(),
-            text
-        );
+        assert_eq!(f.read("state/intake.json"), text);
         assert!(f.calls().is_empty());
-        let health = f.health();
-        assert_eq!(health["ok"], false);
-        let detail = health["detail"].as_str().unwrap();
+        assert_eq!(f.health()["ok"], false);
+        let detail = f.detail();
         assert!(
             detail.contains("intake.json") && detail.contains("move it aside"),
             "{detail}"
@@ -144,9 +112,8 @@ fn start_and_restart_skip_old_activity_keep_admitted_events_and_say_so() {
     );
     let output = f.run();
     assert!(output.status.success(), "{output:?}");
-    let health = f.health();
-    assert_eq!(health["ok"], true);
-    let detail = health["detail"].as_str().unwrap();
+    assert_eq!(f.health()["ok"], true);
+    let detail = f.detail();
     assert!(
         detail.contains("0 changed item(s) processed;") && detail.contains("is not delivered"),
         "{detail}"

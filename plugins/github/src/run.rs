@@ -367,11 +367,9 @@ mod tests {
     #[test]
     fn discovery_overlaps_by_five_minutes_but_skips_activity_before_start() {
         let (_dir, api, mut session) = setup("- example-org/widgets\n");
-        let mut pr = item(2, now());
-        pr["pull_request"] = json!({});
         api.pages(
             "example-org/widgets",
-            vec![json!([item(1, now() - secs(1)), pr])],
+            vec![json!([item(1, now() - secs(1)), item(2, now())])],
         );
         assert_eq!(processed(&mut session, now()), 1);
         assert!(
@@ -475,9 +473,7 @@ mod tests {
     fn organisation_pages_name_each_item_by_its_validated_repository() {
         let api = ApiFixture::new();
         let entry = Entry::parse("example-org/*").unwrap();
-        let mut pr = item(1, now());
-        pr["pull_request"] = json!({});
-        api.pages(&entry.key(), vec![json!([pr])]);
+        api.pages(&entry.key(), vec![json!([item(1, now())])]);
         let batch = discover::fetch(&api, &entry, &Cursor::new(now()), 20).unwrap();
         assert_eq!(batch.items[0].repository, "example-org/widgets");
         assert!(api.calls()[0].starts_with("orgs/example-org/issues?filter=all&state=all"));

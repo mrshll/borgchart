@@ -8,15 +8,10 @@ use support::Fixture;
 
 fn node(kind: &str) -> Value {
     let item = json!({"repository":{"nameWithOwner":"example-org/widgets"},"number":7});
-    let context = if kind == "AssignedEvent" {
-        "assignable"
-    } else {
-        "issue"
-    };
     json!({"__typename":kind,"author":{"databaseId":202},"actor":{"databaseId":202},
         "body":"owner text","lastEditedAt":null,"editor":null,
-        "repository":item["repository"],"number":7,(context):item,"pullRequest":item,
-        "assignee":{"databaseId":101},"commit":{"oid":"abcdef0123456789"},
+        "repository":item["repository"],"number":7,"issue":item,"pullRequest":item,
+        "assignable":item,"assignee":{"databaseId":101},"commit":{"oid":"abcdef0123456789"},
         "state":"APPROVED","submittedAt":"2026-01-01T00:00:00Z","comments":{"nodes":[]}})
 }
 fn edited(mut node: Value, editor: Value) -> Value {
