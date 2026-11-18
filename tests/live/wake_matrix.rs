@@ -1097,7 +1097,12 @@ pub fn qualify(vendor: Vendor, version: Option<String>, submit: bool) -> (Vec<[S
     for _ in 0..25 {
         run.newline();
     }
-    run.draft_case("draft offscreen (blank tail)");
+    // From 2.1.327 the box's prompt line scrolls out of view, so it reads as
+    // uncertain; either way the attempt defers and leaves the draft untouched.
+    run.deferred_case(
+        "draft offscreen (blank tail)",
+        "deferred:draft|deferred:uncertain",
+    );
 
     // Wrapped single line in a narrow pane.
     run.start(60, 50);
