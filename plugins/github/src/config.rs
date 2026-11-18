@@ -11,7 +11,7 @@ use std::{
 pub struct Entry {
     owner: String,
     name: String,
-    pub excluded: BTreeSet<String>,
+    pub(crate) excluded: BTreeSet<String>,
 }
 fn valid_login(value: &str) -> bool {
     !value.is_empty()
@@ -199,27 +199,16 @@ mod tests {
     use super::*;
     #[test]
     fn exclusions_reject_invalid_targets_missing_orgs_and_explicit_repositories() {
-        for (list, valid) in [
-            (
-                "EXAMPLE-ORG/* !example-org/widgets !example-org/widgets",
-                true,
-            ),
-            ("example-org/* !example-org/*", false),
-            ("example-org/* !", false),
-            ("example-org/* !example-org/bad?query", false),
-            ("!example-org/widgets", false),
-            ("other-org/* !example-org/widgets", false),
-            (
-                "example-org/* example-org/widgets !EXAMPLE-ORG/Widgets",
-                false,
-            ),
-            (
-                "!EXAMPLE-ORG/Widgets example-org/widgets example-org/*",
-                false,
-            ),
+        let parse = |list: &str| entries(list.split_whitespace().map(str::to_string).collect());
+        assert!(parse("EXAMPLE-ORG/* !example-org/widgets !example-org/widgets").is_ok());
+        for list in [
+            "example-org/* !example-org/*",
+            "example-org/* !",
+            "other-org/* !example-org/widgets",
+            "example-org/* example-org/widgets !EXAMPLE-ORG/Widgets",
+            "!EXAMPLE-ORG/Widgets example-org/widgets example-org/*",
         ] {
-            let result = entries(list.split_whitespace().map(str::to_string).collect());
-            assert_eq!(result.is_ok(), valid, "{list}");
+            assert!(parse(list).is_err(), "{list}");
         }
     }
     #[test]

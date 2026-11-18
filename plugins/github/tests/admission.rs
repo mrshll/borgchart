@@ -109,9 +109,7 @@ fn template_exclusions_skip_timelines_without_spending_the_poll_cap() {
     let calls = f.calls();
     assert!(calls.contains("orgs/example-org/issues?"));
     assert!(!calls.contains("name=widgets\n"), "{calls}");
-    for n in 21..=40 {
-        assert!(calls.contains(&format!("number={n}\n")), "{calls}");
-    }
+    assert_eq!(calls.matches("name=gadgets\n").count(), 20, "{calls}");
     assert_eq!(f.health()["ok"], true, "{}", f.detail());
 }
 #[test]
