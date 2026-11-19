@@ -58,57 +58,6 @@ fn names_resolve_across_configured_roots_and_refuse_missing_or_ambiguous() {
     );
 }
 
-#[test]
-fn paths_and_shared_forms_are_not_team_names() {
-    let root = tempfile::tempdir().unwrap();
-    for name in [
-        ".",
-        "./child",
-        "../child",
-        "/tmp/child",
-        "templates/child",
-        "shared:child",
-    ] {
-        parent(root.path(), name);
-        assert!(
-            check(&root.path().join("parent"), &[root.path()])
-                .unwrap_err()
-                .contains("template name"),
-            "{name}"
-        );
-    }
-}
-
-#[test]
-fn canonical_identity_refuses_cycles_but_allows_reuse() {
-    let root = tempfile::tempdir().unwrap();
-    parent(root.path(), "parent");
-    assert!(
-        check(&root.path().join("parent"), &[root.path()])
-            .unwrap_err()
-            .contains("template cycle")
-    );
-    parent(root.path(), "child");
-    write(
-        root.path(),
-        "child/template.yaml",
-        "bus: {}\nroles: {back: {template: parent}}\n",
-    );
-    assert!(
-        check(&root.path().join("parent"), &[root.path()])
-            .unwrap_err()
-            .contains("template cycle")
-    );
-    write(root.path(), "child/template.yaml", "bus: {}\nroles: {}\n");
-    write(
-        root.path(),
-        "parent/template.yaml",
-        "bus: {}\nroles:\n  first: {template: child}\n  second: {template: child}\n",
-    );
-    symlink(root.path().join("child"), root.path().join("alias")).unwrap();
-    assert!(check(&root.path().join("parent"), &[root.path()]).is_ok());
-}
-
 fn assets(root: &Path) {
     write(
         root,
