@@ -39,37 +39,17 @@ cd path/to/your/repository
 brg create engineering
 ```
 
-You need tmux 3.2 or newer, git with a commit name and email set, and the [Claude Code](https://docs.anthropic.com/en/docs/claude-code/getting-started) and [Codex](https://github.com/openai/codex) CLIs logged in. Keep `~/.local/bin` on `PATH`.
+You need tmux, git, and the `claude` and `codex` CLIs, logged in.
 
-This starts [the engineering team](templates/engineering) in a git repository you want the team to work on: a Claude lead that starts Codex helpers as needed. Your plans must offer the models pinned in the role files. The included seating plugin checks subscription quota before helpers launch and waits if it cannot establish availability.
-
-The installer configures the bundled templates and `auto_trust: true` when no configuration exists; it preserves an existing config and tells you if you need to add the templates folder. See [configuration](docs/format.md#configyaml).
-
-`create` prints the team's tree. Replace `engineering-k3f9/lead-q8m3` below with your team and lead IDs. Wait for `brg status` to show the lead idle. If blocked at a prompt, use `brg attach engineering-k3f9/lead-q8m3`, answer it yourself, and detach with Ctrl-b, then d.
-
-Send a first task:
+`create` prints your team and its lead, for example `engineering-k3f9/lead-q8m3`. Talk to the lead, watch the team, and stop it:
 
 ```sh
-brg msg send engineering-k3f9/lead-q8m3 "Write HELLO.md in this folder with one line saying hello, then reply to me by message. Do it yourself; start no helpers."
-```
-
-Read the reply, check the result, and acknowledge the message (replace `m2` with its ID):
-
-```sh
-brg msg list --team engineering-k3f9 --full
-cat HELLO.md
-brg msg ack --team engineering-k3f9 m2
-```
-
-The reply appears when the lead finishes; run `msg list` again if it has not arrived. You can also talk to the lead through `brg attach`.
-
-Stop when done:
-
-```sh
+brg attach engineering-k3f9/lead-q8m3
+brg status
 brg stop engineering-k3f9
 ```
 
-`brg start engineering-k3f9` brings it back with its notes and messages.
+See [Install](#install) for supported systems, versions and building from source, and [concepts](docs/concepts.md).
 
 ## Install
 
@@ -80,6 +60,8 @@ curl -fsSL https://borgchart.ai/install.sh | sh
 ```
 
 Linux x86_64 (glibc 2.35+) and aarch64 (glibc 2.39+), and macOS arm64 and x86_64 are supported. The installer needs curl, tar and sha256sum or shasum. Binaries go in `~/.local/share/brg/bin`, with links in `~/.local/bin`; `PREFIX` and `BINDIR` override those locations using absolute paths. It verifies the archive against the release's SHA256SUMS. Set `BRG_VERSION=v0.1.0` on the `sh` command to pin a published version. Reinstalling replaces bundled templates; keep custom templates in a separate catalog.
+
+Keep `~/.local/bin` on `PATH`. Your plans must offer the models pinned in the role files.
 
 ### From source
 
