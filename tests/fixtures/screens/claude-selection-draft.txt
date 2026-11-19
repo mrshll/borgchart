@@ -1,0 +1,7 @@
+● Pick colours in the next message.
+
+──────────
+❯ 1. Blue
+  2. Green
+──────────
+  ? for shortcuts

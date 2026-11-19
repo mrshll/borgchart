@@ -1,0 +1,6 @@
+Choose a sample colour
+
+❯ 1. Blue
+  2. Green
+
+The example ends with an ordinary sentence.

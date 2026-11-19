@@ -271,6 +271,157 @@ mod tests {
     }
 
     #[test]
+    fn claude_selection_dialog_fixture_corpus_preserves_existing_states() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/screens");
+        let mut paths: Vec<_> = std::fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .starts_with("claude-")
+            })
+            .collect();
+        paths.sort();
+        // Recorded captures plus constructed selection/negative cases; idle title held fixed.
+        let expected = [
+            ("claude-2.1.325-busy-rgb.ansi", State::Unknown),
+            ("claude-2.1.325-idle.ansi", State::Idle),
+            ("claude-2.1.325-trust-yes.txt", State::Blocked),
+            ("claude-2.1.326-add-dir-hint.txt", State::Blocked),
+            ("claude-2.1.326-add-dir-yes.txt", State::Blocked),
+            ("claude-2.1.326-add-dir.txt", State::Blocked),
+            ("claude-2.1.326-imports.txt", State::Blocked),
+            ("claude-composer-draft-normal.ansi", State::Idle),
+            ("claude-composer-draft.ansi", State::Idle),
+            ("claude-composer-empty-normal.ansi", State::Idle),
+            ("claude-composer-empty.ansi", State::Idle),
+            ("claude-composer-history-up.ansi", State::Idle),
+            ("claude-composer-long-word-60.ansi", State::Idle),
+            ("claude-composer-long-word-80.ansi", State::Idle),
+            ("claude-composer-multiline.ansi", State::Idle),
+            ("claude-composer-offscreen.ansi", State::Idle),
+            ("claude-composer-reminder-60.ansi", State::Idle),
+            ("claude-composer-reminder-80.ansi", State::Idle),
+            ("claude-composer-reminder-extra.ansi", State::Idle),
+            ("claude-composer-reminder-wrapped.ansi", State::Idle),
+            ("claude-composer-reminder.ansi", State::Idle),
+            ("claude-composer-retry.ansi", State::Unknown),
+            ("claude-composer-small.ansi", State::Idle),
+            ("claude-composer-working.ansi", State::Working),
+            ("claude-composer-wrapped.ansi", State::Idle),
+            ("claude-idle-auto.txt", State::Idle),
+            ("claude-idle-composer-tall-80.txt", State::Idle),
+            ("claude-idle-fresh.txt", State::Idle),
+            ("claude-idle-interrupted-restored.txt", State::Idle),
+            ("claude-idle-plan.txt", State::Idle),
+            ("claude-idle-reduced-motion-80.txt", State::Idle),
+            ("claude-idle-vim-insert-80.txt", State::Idle),
+            ("claude-idle.txt", State::Idle),
+            ("claude-permission.txt", State::Blocked),
+            ("claude-question-dialog-spoof.txt", State::Idle),
+            ("claude-question-dialog-tall-spoof.txt", State::Idle),
+            ("claude-question-dialog-tall.txt", State::Blocked),
+            ("claude-question-dialog.txt", State::Blocked),
+            ("claude-queued-placeholder-assembled.txt", State::Idle),
+            ("claude-selection-draft.txt", State::Idle),
+            ("claude-selection-footer.txt", State::Blocked),
+            ("claude-selection-prose.txt", State::Unknown),
+            ("claude-selection-numbered.txt", State::Blocked),
+            ("claude-selection-quoted.txt", State::Idle),
+            ("claude-selection-unnumbered.txt", State::Blocked),
+            ("claude-selection-working.txt", State::Working),
+            ("claude-spoof.txt", State::Idle),
+            ("claude-trust.txt", State::Blocked),
+            ("claude-working-auto-agent.txt", State::Working),
+            ("claude-working-auto-tool.txt", State::Working),
+            ("claude-working-composer-short-80.txt", State::Working),
+            ("claude-working-composer-tall-80.txt", State::Working),
+            ("claude-working-hook-plan.txt", State::Working),
+            ("claude-working-manual-start.txt", State::Working),
+            ("claude-working-manual.txt", State::Working),
+            ("claude-working-paste-80.txt", State::Working),
+            ("claude-working-reduced-motion-80.txt", State::Working),
+            ("claude-working-vim-insert-80.txt", State::Working),
+            ("claude-working-vim-normal-plan.txt", State::Working),
+            ("claude-working.txt", State::Working),
+        ];
+        for path in paths {
+            let capture = std::fs::read_to_string(&path).unwrap();
+            let screen = crate::composer::plain(&crate::composer::parse(&capture));
+            let reading = claude().read("✳ Example", &screen);
+            let name = path.file_name().unwrap().to_str().unwrap();
+            println!(
+                "CORPUS|{name}|{}|{}",
+                reading.state.as_str(),
+                reading.rule.as_deref().unwrap_or("—")
+            );
+            let want = expected
+                .iter()
+                .find(|(fixture, _)| *fixture == name)
+                .unwrap_or_else(|| panic!("add an expected state for {name}"));
+            assert_eq!(reading.state, want.1, "{name}");
+        }
+    }
+
+    #[test]
+    fn claude_selection_dialog_accepts_only_one_final_key_hint() {
+        let screen = include_str!("../tests/fixtures/screens/claude-selection-footer.txt");
+        for hint in [
+            "Enter to choose · Esc to go back",
+            "  Esc to leave",
+            "    Keys: Enter to choose",
+        ] {
+            let screen = screen.replace("Enter to choose · Esc to go back", hint);
+            assert_eq!(
+                claude().read("", &screen).rule.as_deref(),
+                Some("selection-dialog")
+            );
+            for suffix in [
+                "Esc to leave\n",
+                "  Esc to leave\n",
+                "  More ordinary prose.\n",
+            ] {
+                assert_ne!(
+                    claude().read("", &format!("{screen}{suffix}")).state,
+                    State::Blocked
+                );
+            }
+        }
+        let prose = include_str!("../tests/fixtures/screens/claude-selection-prose.txt");
+        assert_ne!(claude().read("", prose).state, State::Blocked);
+    }
+
+    #[test]
+    fn claude_selection_dialog_does_not_hide_specific_trust_handling() {
+        for screen in [
+            CLAUDE_TRUST,
+            include_str!("../tests/fixtures/screens/claude-2.1.325-trust-yes.txt"),
+        ] {
+            assert_eq!(
+                claude().read("", screen).rule.as_deref(),
+                Some("trust-dialog")
+            );
+        }
+    }
+
+    #[test]
+    fn claude_selection_dialog_recognizes_clipped_options_in_either_position() {
+        // Constructed crops of the option layouts in the question and trust captures.
+        for screen in [
+            "❯ 1. Blue\n     A blue sample.\n  2. Green",
+            "  1. Blue\n     A blue sample.\n❯ 2. Green",
+            " ❯ Blue\n   Green",
+            "   Blue\n ❯ Green",
+        ] {
+            let reading = claude().read("", screen);
+            assert_eq!(reading.state, State::Blocked, "{screen}");
+        }
+    }
+
+    #[test]
     fn activity_comes_from_the_title() {
         let r = claude();
         for title in ["✳ Review open GitHub issues", "⠐ Review open GitHub issues"] {

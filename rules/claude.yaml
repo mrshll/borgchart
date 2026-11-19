@@ -47,6 +47,18 @@ rules:
     bottom: 30
     all: ['^ Adding a new directory:$', '^ +(❯ )?Yes, add it$']
     any: ['^ Enter to confirm · Esc to cancel$', '^ Esc to exit · To add it, press ↓ to Yes, then Enter$']
+  - id: selection-dialog
+    state: blocked
+    priority: 75
+    bottom: 1000
+    # Visible option pairs at the bottom; specific dialogs keep their rule ids.
+    any:
+      - '^ {0,2}❯ [1-9][0-9]*\. \S[^\n]*(?:\n(?: {5,}[^\n]*|[ \t]*))*\n {2,4}[1-9][0-9]*\. \S[^\n]*(?:\n(?:[ \t][^\n]*|─{3,})?)*(?:\n[^\n]*(?:Esc to |Enter to )[^\n]*)?\z'
+      - '^ {2,4}[1-9][0-9]*\. \S[^\n]*(?:\n(?: {5,}[^\n]*|[ \t]*))*\n {0,2}❯ [1-9][0-9]*\. \S[^\n]*(?:\n(?:[ \t][^\n]*|─{3,})?)*(?:\n[^\n]*(?:Esc to |Enter to )[^\n]*)?\z'
+      - '^ {1,2}❯ \S[^\n]*\n {3,4}\S[^\n]*(?:\n(?:[ \t][^\n]*|─{3,})?)*(?:\n[^\n]*(?:Esc to |Enter to )[^\n]*)?\z'
+      - '^ {3,4}\S[^\n]*\n {1,2}❯ \S[^\n]*(?:\n(?:[ \t][^\n]*|─{3,})?)*(?:\n[^\n]*(?:Esc to |Enter to )[^\n]*)?\z'
+    # A key hint after the selected option must be the final nonblank line.
+    none: ['^─{3,}(?: [^\n]*\S ─+)?[ \t]*\n❯[^\n]*\n(?:(?:[ \t][^\n]*)?\n)*─{3,}[ \t]*$', '^ {0,2}❯ [^\n]*\n(?:[^\n]*\n)*[^\n]*(?:Esc to |Enter to )[^\n]*\n(?:[ \t]*\n)*[^\n]*\S']
   # The rules below read the input box: its top rule (ending in the
   # session's name when it has one), a `❯` line, indented draft lines, its
   # closing rule, then only indented footer lines to the end of the screen.
