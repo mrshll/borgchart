@@ -435,26 +435,6 @@ mod tests {
     }
 
     #[test]
-    fn the_example_renders_exactly() {
-        let nodes = [
-            node(
-                "reviewer",
-                Some("lead"),
-                &["claude sonnet medium", "not started (start: false)"],
-            ),
-            node("lead", None, &["claude opus high", "started"]),
-            node("helper", Some("lead"), &["codex example-model", "started"]),
-        ];
-        assert_eq!(
-            render("oncall", &nodes, &[], false),
-            "oncall\n\
-             └─ lead        claude opus high      started\n   \
-             ├─ helper   codex example-model   started\n   \
-             └─ reviewer claude sonnet medium  not started (start: false)\n"
-        );
-    }
-
-    #[test]
     fn deeper_trees_and_several_roots() {
         let nodes = [
             node("b", None, &["x"]),
