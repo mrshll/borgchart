@@ -1857,14 +1857,7 @@ fn launch_arguments_follow_posture() {
         !beta.iter().any(|a| a == "--restricted"),
         "vendor posture is not restricted: {beta:?}"
     );
-    assert!(
-        beta.windows(2)
-            .any(|w| w == ["--sandbox", "danger-full-access"])
-    );
-    assert!(
-        beta.windows(2)
-            .any(|w| w == ["--ask-for-approval", "never"])
-    );
+    assert!(beta.iter().any(|a| a == "--approve-for-me"));
     assert!(
         beta.iter().any(|a| a == "model_reasoning_effort=\"low\""),
         "{beta:?}"
@@ -2799,6 +2792,7 @@ fn assert_resumed(env: &Env, role: &str, session: &str) {
     let argv = latest_argv(env, role);
     if argv[0].ends_with("codex") {
         assert_eq!(argv[1], "resume", "{argv:?}");
+        assert!(argv.iter().any(|a| a == "--approve-for-me"), "{argv:?}");
         let dash = argv.iter().position(|a| a == "--").unwrap();
         assert_eq!(argv[dash + 1], session, "{argv:?}");
         assert!(argv[dash + 2].contains("brg restarted you"), "{argv:?}");

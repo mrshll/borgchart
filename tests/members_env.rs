@@ -68,7 +68,7 @@ impl Env {
 // --- 14. Writable folders ---
 
 #[test]
-fn vendor_codex_has_full_access_and_claude_gets_added_folders() {
+fn vendor_codex_reviews_escalations_without_reviewing_routine_writes() {
     let env = Env::new();
     let a = env.create("oncall", "work/a");
     env.ok(&["create", &format!("{a}/helper")]);
@@ -78,24 +78,26 @@ fn vendor_codex_has_full_access_and_claude_gets_added_folders() {
 
     let helper = env.member(&a, "helper");
     let codex = argv(&env.starts(&helper)[0]);
+    assert!(codex.iter().any(|a| a == "--approve-for-me"), "{codex:?}");
     assert!(
         codex
-            .windows(2)
-            .any(|w| w == ["--sandbox", "danger-full-access"]),
-        "{codex:?}"
-    );
-    assert!(
-        codex
-            .windows(2)
-            .any(|w| w == ["--ask-for-approval", "never"]),
-        "{codex:?}"
-    );
-    assert!(
-        !codex
             .iter()
-            .any(|a| a.starts_with("sandbox_workspace_write.") || a.starts_with("hooks=")),
+            .any(|a| a == "sandbox_workspace_write.network_access=true"),
         "{codex:?}"
     );
+    assert!(
+        !codex.iter().any(|a| matches!(
+            a.as_str(),
+            "--sandbox" | "--ask-for-approval" | "danger-full-access"
+        )),
+        "{codex:?}"
+    );
+    let roots = codex_writable_roots(&codex);
+    for root in [state.join("notes"), state.join(format!("tmp/{helper}"))] {
+        assert!(roots.contains(&root), "missing {root:?}: {roots:?}");
+    }
+    assert!(!roots.contains(&state.join("messages")), "{roots:?}");
+    assert!(!roots.contains(&env.path("home/.cache/borgchart/seat-v2")));
     // Claude: added folders.
     let lead = env.member(&a, "lead");
     let claude = argv(&env.starts(&lead)[0]);
@@ -108,6 +110,67 @@ fn vendor_codex_has_full_access_and_claude_gets_added_folders() {
         json!([messages, notes])
     );
     env.ok(&["stop", &a]);
+}
+
+fn codex_writable_roots(argv: &[String]) -> Vec<std::path::PathBuf> {
+    let roots = argv
+        .iter()
+        .find_map(|arg| arg.strip_prefix("sandbox_workspace_write.writable_roots="))
+        .expect("Codex needs routine writable roots");
+    serde_json::from_str(roots).unwrap()
+}
+
+#[test]
+fn codex_worktree_commits_do_not_grant_shared_git_configuration() {
+    let env = Env::new();
+    let repo = env.checkout("work/repo");
+    env.write("templates/oncall/template.yaml", &format!("plugins:\n  seat:\n    path: plugins/seat\n    actions: {{route: brg-seat route <vendor> <model>}}\n{TEAM}"));
+    fs::create_dir_all(env.path("templates/oncall/plugins/seat")).unwrap();
+    script(
+        &env.path("templates/oncall/plugins/seat/brg-seat"),
+        "#!/bin/sh\necho go\n",
+    );
+    env.role_extra(
+        "helper",
+        "    worktree: true\n    args: [--search]\n    plugins: {seat: [route]}\n",
+    );
+    let out = env
+        .cmd(&["create", "oncall", repo.to_str().unwrap()])
+        .env("XDG_CACHE_HOME", env.path("custom-cache"))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", both(&out));
+    let team = stdout(&out).split_whitespace().next().unwrap().to_string();
+    env.ok(&["create", &format!("{team}/helper")]);
+    let helper = env.member(&team, "helper");
+    let args = argv(&env.starts(&helper)[0]);
+    assert!(args.iter().any(|a| a == "--approve-for-me"));
+    assert!(args.iter().any(|a| a == "--search"));
+    let roots = codex_writable_roots(&args);
+    let git_dir = std::path::PathBuf::from(
+        git(
+            &env.worktree(&format!("{team}/{helper}")),
+            &["rev-parse", "--absolute-git-dir"],
+        )
+        .trim(),
+    );
+    for root in [
+        git_dir,
+        repo.join(".git/objects"),
+        repo.join(".git/refs"),
+        repo.join(".git/logs"),
+        env.path(&format!("state/{team}/plugins/seat")),
+    ] {
+        assert!(roots.contains(&root), "missing {root:?}: {roots:?}");
+    }
+    assert!(!roots.contains(&repo.join(".git")), "{roots:?}");
+    assert!(!roots.contains(&repo.join(".git/hooks")), "{roots:?}");
+    assert!(!roots.contains(&repo.join(".git/config")), "{roots:?}");
+    assert!(
+        !roots.contains(&env.path("custom-cache/borgchart/seat-v2")),
+        "{roots:?}"
+    );
+    env.ok(&["stop", &team]);
 }
 
 #[test]

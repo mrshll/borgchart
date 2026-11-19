@@ -349,11 +349,14 @@ pub fn member_launch(
     let granted = granted(team, member);
     let shim_dir = state.member_bin(member_id);
     // A resumed member keeps its conversation, so it gets only a note.
-    let prompt = match resume {
+    let mut prompt = match resume {
         Some(_) if posture != Posture::Locked => RESUME_NOTE.to_string(),
         Some(_) => LOCKED_RESUME_NOTE.to_string(),
         None => opening_prompt(member, &granted, &shim_dir, posture, help),
     };
+    if member.vendor == Vendor::Codex && posture == Posture::Vendor {
+        prompt.push_str("\n\nRequest sandbox escalation (automatic review) for `brg msg send`, `brg msg ack` and `brg-seat` commands. Message reads and waits need no escalation. A sandboxed seat command can report usage unavailable because its vendor process cannot write its own state; that is not evidence of exhausted quota. Never bypass an automatic-review denial.");
+    }
     let mcp_tools = mcp_tool_names(member.vendor, member);
     let extra_args = member.args.clone();
     let mut argv: Vec<String> = Vec::new();
@@ -476,11 +479,26 @@ pub fn member_launch(
                 gate = Some(gate_rules(&granted, &shim_dir, mcp_tools));
             }
             if posture == Posture::Vendor {
+                let mut roots = writable_roots(state, member_id, &granted);
+                // Codex inserts protected directories into writable roots;
+                // those would invalidate the message store's exact layout.
+                roots.extend(
+                    shared
+                        .iter()
+                        .filter(|p| **p != state.messages_dir())
+                        .cloned(),
+                );
+                roots.sort();
+                roots.dedup();
                 argv.extend([
-                    "--sandbox".into(),
-                    "danger-full-access".into(),
-                    "--ask-for-approval".into(),
-                    "never".into(),
+                    "--approve-for-me".into(),
+                    "-c".into(),
+                    "sandbox_workspace_write.network_access=true".into(),
+                    "-c".into(),
+                    format!(
+                        "sandbox_workspace_write.writable_roots={}",
+                        serde_json::to_string(&roots).unwrap()
+                    ),
                 ]);
                 for value in codex_session_hook_config(brg, state, member_id) {
                     argv.extend(["-c".into(), value]);

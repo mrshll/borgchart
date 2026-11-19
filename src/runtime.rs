@@ -900,6 +900,21 @@ fn start_members(
         };
 
         let settings_path = state.member_dir(id).join("claude-settings.json");
+        let mut member_shared = shared.clone();
+        if member.vendor == Vendor::Codex
+            && posture == Posture::Vendor
+            && (member.worktree || cwd.starts_with(crate::worktree::home()))
+        {
+            let root = crate::worktree::root_folder(&inst.id)?;
+            let (_, admin) = crate::worktree::admin_dir(&root, &cwd)?;
+            let common = admin
+                .parent()
+                .and_then(Path::parent)
+                .ok_or("cannot locate git metadata; repair the worktree before starting")?;
+            // Keep shared hooks, config and other worktrees read-only.
+            member_shared.extend(["objects", "refs", "logs"].map(|p| common.join(p)));
+            member_shared.push(admin);
+        }
         let spec = launch::member_launch(
             &brg,
             state,
@@ -911,7 +926,7 @@ fn start_members(
             &settings_path,
             codex_trust.as_deref(),
             &codex_mcp_servers,
-            &shared,
+            &member_shared,
             sessions.get(id).map(String::as_str),
         );
         if let Some(rules) = &spec.gate {
