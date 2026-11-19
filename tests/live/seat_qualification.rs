@@ -65,7 +65,7 @@ fn vendor_codex_seating_probe() {
             .unwrap()
             .success()
     );
-    let instruction = "This is an isolated diagnostic. Run `/bin/sh ./seat-probe.sh` exactly once using your normal shell tool. Do not request escalation or change environment/settings. Do not run any other command, retry, inspect files, or use brg directly. Report the command's output and stop. If blocked, report BLOCKED and stop.";
+    let instruction = "This is an isolated diagnostic. Run `/bin/sh ./seat-probe.sh` exactly once using sandbox escalation and automatic review. Do not change environment/settings. Do not run any other command, retry, inspect files, or use brg directly. Report the command's output and stop. If denied, report BLOCKED and stop.";
     let t = cases::Team::new(
         &w,
         "seat-diagnostic",
@@ -158,14 +158,11 @@ cat seat-stdout.txt seat-stderr.txt
     );
     let pane = t.pane_pid().expect("owned member pane");
     let processes = world::vendor_procs(pane, rules::Who::Codex);
-    assert!(processes.iter().any(|p| {
-        p.argv
-            .windows(2)
-            .any(|w| w == ["--sandbox", "danger-full-access"])
-            && p.argv
-                .windows(2)
-                .any(|w| w == ["--ask-for-approval", "never"])
-    }));
+    assert!(
+        processes
+            .iter()
+            .any(|p| { p.argv.iter().any(|a| a == "--approve-for-me") })
+    );
     let end = Instant::now() + Duration::from_secs(90);
     let outcome = loop {
         if work.join("seat-exit.txt").exists() {
