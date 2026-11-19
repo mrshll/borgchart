@@ -1,0 +1,11 @@
+● Example options:
+
+❯ 1. Blue
+  2. Green
+
+✻ Done for 1s
+
+──────────
+❯ 
+──────────
+  ? for shortcuts

@@ -1,0 +1,11 @@
+● Example options:
+
+❯ 1. Blue
+  2. Green
+
+✻ Thinking…
+
+──────────
+❯ 
+──────────
+  esc to interrupt
