@@ -17,6 +17,14 @@ rules:
     bottom: 30
     # The dialog footer is the last nonblank line, not a transcript quote.
     all: ['^Enter to select · ↑/↓ to navigate · Esc to cancel[ \t]*\z']
+  - id: question-dialog-header
+    state: blocked
+    priority: 100
+    bottom: 1000
+    # A tall dialog can hide its footer; require its header, body and option.
+    all: ['^─{3,}[ \t]*\n(?:←  ☐ [^\n]+  ✔ Submit  →| ☐ [^\n]+)[ \t]*\n\n│ [^\n]+', '^❯ [1-9][0-9]*\. [^\n]+']
+    # A quoted dialog above an input box is transcript, not a live question.
+    none: ['^─{3,}(?: [^\n]*\S ─+)?[ \t]*\n❯[^\n]*\n(?:(?:[ \t][^\n]*)?\n)*─{3,}[ \t]*$']
   - id: permission-dialog
     state: blocked
     priority: 100

@@ -674,6 +674,28 @@ mod tests {
     }
 
     #[test]
+    fn claude_question_dialog_without_visible_footer_does_not_read_unknown() {
+        let multiple = include_str!("../tests/fixtures/screens/claude-question-dialog-tall.txt");
+        let single = include_str!("../tests/fixtures/screens/claude-question-dialog.txt")
+            .split("  2. Green")
+            .next()
+            .unwrap();
+        for screen in [multiple, single] {
+            assert_eq!(claude().read("", screen).state, State::Blocked);
+        }
+    }
+
+    #[test]
+    fn claude_quoted_footerless_question_dialog_does_not_block_input() {
+        let multiple =
+            include_str!("../tests/fixtures/screens/claude-question-dialog-tall-spoof.txt");
+        let single = multiple.replacen(multiple.lines().nth(3).unwrap(), " ☐ Example", 1);
+        for screen in [multiple, single.as_str()] {
+            assert_eq!(claude().read("✳ Example", screen).state, State::Idle);
+        }
+    }
+
+    #[test]
     fn claude_quoted_question_dialog_does_not_block_an_idle_member() {
         let screen = include_str!("../tests/fixtures/screens/claude-question-dialog-spoof.txt");
         assert_eq!(claude().read("✳ Example", screen).state, State::Idle);
