@@ -67,20 +67,12 @@
 <pre class="block"><span class="faded">$</span> curl -fsSL https://borgchart.ai/install.sh | sh
 <span class="faded">$</span> cd path/to/your/repository
 <span class="faded">$</span> brg create engineering</pre>
-<p>You need tmux 3.2 or newer, git with a commit name and email set, and the <b>claude</b> and <b>codex</b> CLIs logged in. Keep ~/.local/bin on PATH.</p>
-<p>This starts the engineering team in a git repository you want the team to work on: a Claude lead that starts Codex helpers as needed. Your plans must offer the models pinned in the role files. The included seating plugin checks subscription quota before helpers launch and waits if it cannot establish availability.</p>
-<p>The installer configures the bundled templates and auto_trust: true when no configuration exists; it preserves an existing config and tells you if you need to add the templates folder. Set out <a href="https://github.com/mrshll/borgchart/blob/main/README.md#what-your-own-instruction-files-should-say">your own instruction-file rules</a>.</p>
-<p><b>create</b> prints the team's tree. Replace <b>engineering-k3f9/lead-q8m3</b> below with your team and lead IDs. Wait for <b>brg status</b> to show the lead idle. If blocked at a prompt, use <b>brg attach</b> engineering-k3f9/lead-q8m3, answer it yourself, and detach with Ctrl-b, then d.</p>
-<p>Send a first task:</p>
-<pre class="block"><span class="faded">$</span> brg msg send engineering-k3f9/lead-q8m3 "Write HELLO.md in this folder with one line saying hello, then reply to me by message. Do it yourself; start no helpers."</pre>
-<p>Read the reply, check the result, and acknowledge the message (replace m2 with its ID):</p>
-<pre class="block"><span class="faded">$</span> brg msg list --team engineering-k3f9 --full
-<span class="faded">$</span> cat HELLO.md
-<span class="faded">$</span> brg msg ack --team engineering-k3f9 m2</pre>
-<p>The reply appears when the lead finishes; run <b>msg list</b> again if it has not arrived. You can also talk to the lead through <b>brg attach</b>.</p>
-<p>Stop when done:</p>
-<pre class="block"><span class="faded">$</span> brg stop engineering-k3f9</pre>
-<p><b>brg start</b> engineering-k3f9 brings it back with its notes and messages. See <a href="https://github.com/mrshll/borgchart/blob/main/README.md#install">installation</a> for supported systems, paths, pinned versions and building from source.</p>
+<p>You need tmux, git, and the <b>claude</b> and <b>codex</b> CLIs, logged in.</p>
+<p><b>create</b> prints your team and its lead, for example <b>engineering-k3f9/lead-q8m3</b>. Talk to the lead, watch the team, and stop it:</p>
+<pre class="block"><span class="faded">$</span> brg attach engineering-k3f9/lead-q8m3
+<span class="faded">$</span> brg status
+<span class="faded">$</span> brg stop engineering-k3f9</pre>
+<p>See <a href="https://github.com/mrshll/borgchart/blob/main/README.md#install">Install</a> for supported systems, versions and building from source, and <a href="https://github.com/mrshll/borgchart/blob/main/docs/concepts.md">concepts</a>.</p>
 
 <h2>SEE ALSO</h2>
 <p><a href="https://github.com/mrshll/borgchart">github.com/mrshll/borgchart</a>, the source and issues</p>
