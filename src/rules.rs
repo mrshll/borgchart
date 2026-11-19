@@ -327,6 +327,8 @@ mod tests {
             ("claude-question-dialog.txt", State::Blocked),
             ("claude-queued-placeholder-assembled.txt", State::Idle),
             ("claude-selection-draft.txt", State::Idle),
+            ("claude-selection-footer.txt", State::Blocked),
+            ("claude-selection-prose.txt", State::Unknown),
             ("claude-selection-numbered.txt", State::Blocked),
             ("claude-selection-quoted.txt", State::Idle),
             ("claude-selection-unnumbered.txt", State::Blocked),
@@ -362,6 +364,34 @@ mod tests {
                 .unwrap_or_else(|| panic!("add an expected state for {name}"));
             assert_eq!(reading.state, want.1, "{name}");
         }
+    }
+
+    #[test]
+    fn claude_selection_dialog_accepts_only_one_final_key_hint() {
+        let screen = include_str!("../tests/fixtures/screens/claude-selection-footer.txt");
+        for hint in [
+            "Enter to choose · Esc to go back",
+            "  Esc to leave",
+            "    Keys: Enter to choose",
+        ] {
+            let screen = screen.replace("Enter to choose · Esc to go back", hint);
+            assert_eq!(
+                claude().read("", &screen).rule.as_deref(),
+                Some("selection-dialog")
+            );
+            for suffix in [
+                "Esc to leave\n",
+                "  Esc to leave\n",
+                "  More ordinary prose.\n",
+            ] {
+                assert_ne!(
+                    claude().read("", &format!("{screen}{suffix}")).state,
+                    State::Blocked
+                );
+            }
+        }
+        let prose = include_str!("../tests/fixtures/screens/claude-selection-prose.txt");
+        assert_ne!(claude().read("", prose).state, State::Blocked);
     }
 
     #[test]
