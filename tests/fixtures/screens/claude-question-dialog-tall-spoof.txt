@@ -1,0 +1,20 @@
+● An example question dialog:
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Berry orchards  ☐ Garden colours  ☐ Seed type  ☐ Water plants  ✔ Submit  →                                           
+
+│ Choose a design for a fictional garden display. The first question asks how the berry beds should be arranged,       
+│ with several imaginary layouts available for this sample. Consider the paths between the beds and the flower         
+│ borders around the outside. Each layout uses the same number of plants and the same space for the garden,            
+│ so choose whichever arrangement looks best for this made-up demonstration.                                           
+
+❯ 1. Yes, beds in rows  
+     Places the fictional berry plants in straight rows with little paths between each bed.     
+  2. No, circular garden beds                                                                   
+
+✻ Done for 1s
+
+──────────
+❯ 
+──────────
+  ? for shortcuts
