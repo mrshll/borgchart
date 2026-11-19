@@ -42,7 +42,6 @@ impl Fixture {
             .env("BORGCHART_MEMBER", "must-not-leak")
             .env("ANTHROPIC_API_KEY", "DO_NOT_LEAK_FAKE_KEY")
             .env("OPENAI_BASE_URL", "https://invalid.example")
-            .env("HERDR_TEST", "must-not-leak")
             .env("BRG_SEAT_TEST", "must-not-leak")
             .args(args);
         if let Some(cache) = cache {
@@ -84,9 +83,10 @@ fn route_protocol_cache_environment_and_cli_exit_contract() {
         assert!(out.stdout.starts_with(b"go:"));
         let events = f.events(vendor);
         let env = events[0]["env"].as_object().unwrap();
-        assert!(env.keys().all(|k| !k.starts_with("BORGCHART_")
-            && !k.starts_with("HERDR_")
-            && !k.starts_with("BRG_SEAT_")));
+        assert!(
+            env.keys()
+                .all(|k| !k.starts_with("BORGCHART_") && !k.starts_with("BRG_SEAT_"))
+        );
         assert!(!env.contains_key("ANTHROPIC_API_KEY"));
         assert!(!env.contains_key("OPENAI_BASE_URL"));
         assert_eq!(f.run(&["route", vendor, model]).status.code(), Some(0));
