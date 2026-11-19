@@ -106,7 +106,7 @@ main() {
         *) printf 'Add %s to PATH before starting a team.\n' "$bindir" ;;
     esac
     printf 'Installed brg %s. Log in to claude and codex, then run:\n' "$version"
-    printf 'cd <a repository you want the team to work on>\nbrg create engineering\n'
+    printf 'cd path/to/your/repository\nbrg create engineering\n'
 }
 
 main "$@"

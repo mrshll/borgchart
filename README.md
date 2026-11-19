@@ -35,7 +35,7 @@ For example, with fictional accounts:
 
 ```sh
 curl -fsSL https://borgchart.ai/install.sh | sh
-cd <a repository you want the team to work on>
+cd path/to/your/repository
 brg create engineering
 ```
 
