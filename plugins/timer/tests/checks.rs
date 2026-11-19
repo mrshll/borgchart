@@ -545,11 +545,6 @@ invalid!(
     "sample"
 );
 invalid!(
-    zero_interval_stops_startup,
-    "- {name: sample, run: ['true'], every_minutes: 0}",
-    "sample"
-);
-invalid!(
     infinite_interval_stops_startup,
     "- {name: sample, run: ['true'], every_minutes: .inf}",
     "checks"

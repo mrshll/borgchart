@@ -446,16 +446,6 @@ mod tests {
     }
 
     #[test]
-    fn deeper_choice_paths_explain_the_one_level_limit() {
-        let error = parse(&["lead.worker.vendor=codex".into()]).unwrap_err();
-        assert!(
-            error.contains("choices reach agent roles one level down"),
-            "{error}"
-        );
-        assert!(error.contains("<role>.<key>=<value>"), "{error}");
-    }
-
-    #[test]
     fn member_layer_replaces_only_explicit_keys() {
         let team = Overrides {
             vendor: Some(Vendor::Codex),

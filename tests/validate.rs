@@ -277,6 +277,8 @@ fn reused_team_folders_are_not_cycles() {
 #[test]
 fn team_roles_refuse_paths_and_shared_references() {
     for reference in [
+        ".",
+        "../dev",
         "/tmp/dev",
         "dev/../dev",
         "templates/dev",

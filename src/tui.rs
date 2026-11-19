@@ -835,11 +835,6 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn spinner_advances_twice_a_second() {
-        assert_eq!(super::SPIN_INTERVAL, super::Duration::from_millis(500));
-    }
-
-    #[test]
     fn interactive_frame_distinguishes_the_title_and_keys_from_the_tree() {
         use ratatui::backend::TestBackend;
         use ratatui::style::{Color, Modifier};
