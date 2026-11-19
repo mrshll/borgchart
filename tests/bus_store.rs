@@ -51,23 +51,6 @@ fn member_command(env: &Env, instance: &str, member: &str, args: &[&str]) -> std
 }
 
 #[test]
-fn a_store_containing_only_empty_codex_masks_refuses_start() {
-    let env = Env::new();
-    let instance = env.create("oncall", "work/a");
-    env.ok(&["stop", &instance]);
-    let store = env.path(&format!("state/{instance}/messages"));
-    fs::remove_dir_all(&store).unwrap();
-    fs::create_dir(&store).unwrap();
-    fs::set_permissions(&store, fs::Permissions::from_mode(0o700)).unwrap();
-    for name in [".agents", ".aws", ".codex", ".git"] {
-        fs::create_dir(store.join(name)).unwrap();
-    }
-    let error = env.fails(&["start", &instance]);
-    assert!(error.contains("unexpected entry"), "{error}");
-    assert!(!store.join("store.json").exists());
-}
-
-#[test]
 fn unexpected_entries_are_not_accepted_as_codex_masks() {
     for case in [
         "empty-agents",
