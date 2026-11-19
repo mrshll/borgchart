@@ -1,17 +1,12 @@
-# How the watcher may wake a member that has unacked messages, by vendor
-# and CLI version. A version not listed here gets no wake: it needs a person.
-# Turn on a newly tested CLI by adding it here; no code changes.
-# This is also the verified-version list behind status notices.
+# Verified CLI versions behind status notices. An unlisted version gets a
+# notice; message delivery is not disabled by this list.
+# Add newly verified versions after the full live suite passes.
 #
 #   version:    an exact version (`0.165.0`), or a prefix ending in `.*`
 #               (`2.1.*` matches 2.1.318, not 2.10.0). The first match wins.
-#   self_wake:  the member can arm its own wait (`brg msg wait`). An armed
-#               wait counts as awake; unknown wait evidence defers.
-#   methods:    in order of preference. The next one is tried only after
-#               the one before was `rejected` or `unavailable`, never after
-#               an `uncertain` outcome.
-#                 queue: queue a message to the member's live thread.
-#                 typed: Claude's guarded reminder, on an idle, empty screen.
+#   self_wake:  parsed metadata; does not control message delivery.
+#   methods:    validated, nonempty, distinct method names (queue or typed);
+#               does not select or order message delivery methods.
 wake:
   - vendor: claude
     version: "2.1.*"
