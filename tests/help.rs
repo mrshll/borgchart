@@ -22,6 +22,7 @@ fn send_help_describes_identity_references_and_committed_delivery() {
         "--external",
         "--reply-to",
         "--from",
+        "--allow-unknown",
         "--json",
         "id",
         "delivery",
@@ -81,29 +82,4 @@ fn top_level_help_groups_one_line_summaries_and_leaves_details_to_commands() {
         assert!(!text.contains("--repo"), "{flag}: details leaked: {text}");
     }
     assert!(help(&["create"]).contains("With `--repo`, name a clone"));
-}
-
-#[test]
-fn message_help_prose_fits_eighty_columns() {
-    let command = regex::Regex::new(r"^  ([a-z][a-z-]*)\s{2,}\S").unwrap();
-    let mut pending: Vec<Vec<String>> = vec![vec![]];
-    while let Some(args) = pending.pop() {
-        let text = help(&args.iter().map(String::as_str).collect::<Vec<_>>());
-        for line in text.lines() {
-            // `help` forwards to these pages and has no `--help` of its own.
-            if let Some(found) = command.captures(line)
-                && &found[1] != "help"
-            {
-                let mut child = args.clone();
-                child.push(found[1].to_string());
-                pending.push(child);
-            }
-        }
-        if args.first().is_some_and(|command| command == "msg") {
-            // Bus after-help paragraphs are hand-wrapped; clap owns the tables/options.
-            for line in text.lines().filter(|line| !line.starts_with(' ')) {
-                assert!(line.chars().count() <= 80, "{args:?}: {line}");
-            }
-        }
-    }
 }

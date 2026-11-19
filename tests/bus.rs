@@ -1376,25 +1376,6 @@ fn inbox_wait_help_names_the_outcomes_wait_returns() {
 }
 
 #[test]
-fn send_help_names_the_message_inputs() {
-    let out = Command::new(env!("CARGO_BIN_EXE_brg"))
-        .args(["msg", "send", "--help"])
-        .output()
-        .unwrap();
-    assert!(out.status.success());
-    let help = String::from_utf8(out.stdout).unwrap();
-    for flag in [
-        "--external",
-        "--reply-to",
-        "--from",
-        "--allow-unknown",
-        "--json",
-    ] {
-        assert!(help.contains(flag), "{help}");
-    }
-}
-
-#[test]
 fn a_thousand_record_history_keeps_pending_counts_and_next_id() {
     let f = Fixture::new();
     assert_eq!(f.publish(&As::Operator, &note("lead", "history")).code, 0);
