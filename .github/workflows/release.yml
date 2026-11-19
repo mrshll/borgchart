@@ -1,0 +1,76 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check release version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)
+          test "$TAG" = "v$version"
+          for manifest in plugins/*/Cargo.toml; do
+            test "$(sed -n 's/^version = "\(.*\)"/\1/p' "$manifest")" = "$version"
+          done
+      - name: Build
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo build --workspace --bins --locked --release --target "$TARGET"
+      - name: Package
+        env:
+          TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          mkdir -p package/bin dist
+          for name in brg brg-seat brg-slack brg-timer brg-github; do
+            cp "target/$TARGET/release/$name" package/bin/
+          done
+          cp -R templates package/
+          cp LICENSE package/
+          tar -czf "dist/brg-${TAG#v}-$TARGET.tar.gz" -C package bin templates LICENSE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        working-directory: dist
+        run: |
+          sha256sum *.tar.gz > SHA256SUMS
+          gh release create "$TAG" --verify-tag --draft --title "$TAG" --generate-notes ./*.tar.gz SHA256SUMS

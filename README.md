@@ -33,49 +33,27 @@ For example, with fictional accounts:
 
 ## Quick start
 
-This runs the example team, [`templates/engineering`](templates/engineering): a Claude lead that starts Codex helpers when its work needs them. You need:
-
-- Rust 1.89 or newer, tmux 3.2 or newer, and git with a commit name and email set (`git config --global user.name` and `user.email`).
-- The [Claude Code](https://docs.anthropic.com/en/docs/claude-code/getting-started) and [Codex](https://github.com/openai/codex) CLIs, each logged in to a plan that offers the models the role files pin: the `models:` lines at the top of each `templates/engineering/*.md` (the lead runs Claude `fable`, helpers run Codex `gpt-6-astra` and others). Before each launch the lead asks the seating plugin, `brg-seat`, whether that plan has room, and waits when it can't tell.
-
-Install brg and the seating plugin from a clone, which also holds the templates:
-
 ```sh
-git clone https://github.com/mrshll/borgchart ~/borgchart
-cd ~/borgchart
-cargo install --locked --path .
-cargo install --locked --path plugins/seat
-```
-
-Point brg at the clone's templates, and check them:
-
-```sh
-mkdir -p ~/.config/borgchart
-printf 'schema: 1\nauto_trust: true\ntemplates: [~/borgchart/templates]\n' > ~/.config/borgchart/config.yaml
-brg validate engineering
-```
-
-`validate` ends its first line with `ok: 4 role(s), 1 plugin(s)`. `auto_trust: true` has brg trust each member's folder, so a new helper doesn't stop at its CLI's folder-trust screen ([configuration](docs/format.md#configyaml)).
-
-Make a disposable git repository, and start a team in it:
-
-```sh
-mkdir ~/brg-first-team
-cd ~/brg-first-team
-git init
-git commit --allow-empty -m "Start"
+curl -fsSL https://borgchart.ai/install.sh | sh
+cd <a repository you want the team to work on>
 brg create engineering
 ```
 
-`create` prints the team's tree. The team's ID is `engineering-` and four letters or digits, its lead's `lead-` and four more: `engineering-k3f9` and `lead-q8m3` below stand for yours. Run `brg status` until the lead shows `idle`. If it shows `blocked`, at its folder-trust screen or another prompt, open its session with `brg attach engineering-k3f9/lead-q8m3`, answer the prompt yourself, and detach with Ctrl-b, then d.
+You need tmux 3.2 or newer, git with a commit name and email set, and the [Claude Code](https://docs.anthropic.com/en/docs/claude-code/getting-started) and [Codex](https://github.com/openai/codex) CLIs logged in. Keep `~/.local/bin` on `PATH`.
 
-Send the lead a small task:
+This starts [the engineering team](templates/engineering) in a git repository you want the team to work on: a Claude lead that starts Codex helpers as needed. Your plans must offer the models pinned in the role files. The included seating plugin checks subscription quota before helpers launch and waits if it cannot establish availability.
+
+The installer configures the bundled templates and `auto_trust: true` when no configuration exists; it preserves an existing config and tells you if you need to add the templates folder. See [configuration](docs/format.md#configyaml).
+
+`create` prints the team's tree. Replace `engineering-k3f9/lead-q8m3` below with your team and lead IDs. Wait for `brg status` to show the lead idle. If blocked at a prompt, use `brg attach engineering-k3f9/lead-q8m3`, answer it yourself, and detach with Ctrl-b, then d.
+
+Send a first task:
 
 ```sh
 brg msg send engineering-k3f9/lead-q8m3 "Write HELLO.md in this folder with one line saying hello, then reply to me by message. Do it yourself; start no helpers."
 ```
 
-`send` returns at once; the lead works in its own session, and `brg status` shows it `working` meanwhile. Its reply is a message to you, `external:owner`. Run `brg msg list --team engineering-k3f9 --full` until the reply appears, then see the result, and acknowledge the reply by its ID (`m2` here):
+Read the reply, check the result, and acknowledge the message (replace `m2` with its ID):
 
 ```sh
 brg msg list --team engineering-k3f9 --full
@@ -83,30 +61,41 @@ cat HELLO.md
 brg msg ack --team engineering-k3f9 m2
 ```
 
-`brg attach` shows the lead's session at any time, and you can talk to the lead there too.
+The reply appears when the lead finishes; run `msg list` again if it has not arrived. You can also talk to the lead through `brg attach`.
 
-Stop the team when you're done:
+Stop when done:
 
 ```sh
 brg stop engineering-k3f9
 ```
 
-`brg start engineering-k3f9` brings it back, with its notes and messages. `brg destroy engineering-k3f9` stops it and deletes them.
+`brg start engineering-k3f9` brings it back with its notes and messages.
 
 ## Install
 
-The quick start installs from a clone. To install without one:
+Install the latest published release, including all five binaries and the team templates:
 
 ```sh
-cargo install --git https://github.com/mrshll/borgchart --locked --bin brg borgchart
-cargo install --git https://github.com/mrshll/borgchart --locked brg-seat
-cargo install --git https://github.com/mrshll/borgchart --locked brg-slack
-cargo install --git https://github.com/mrshll/borgchart --locked brg-timer
+curl -fsSL https://borgchart.ai/install.sh | sh
 ```
 
-This needs Rust 1.89 or newer and tmux 3.2 or newer, plus the `claude` and/or `codex` CLIs. Building the Slack plugin also needs a C compiler for TLS. Nothing is published to crates.io yet.
+Linux x86_64 (glibc 2.35+) and aarch64 (glibc 2.39+), and macOS arm64 and x86_64 are supported. The installer needs curl, tar and sha256sum or shasum. Binaries go in `~/.local/share/brg/bin`, with links in `~/.local/bin`; `PREFIX` and `BINDIR` override those locations using absolute paths. It verifies the archive against the release's SHA256SUMS. Set `BRG_VERSION=v0.1.0` on the `sh` command to pin a published version. Reinstalling replaces bundled templates; keep custom templates in a separate catalog.
 
-From a checkout, `make install` replaces the binaries; configure template catalogs separately as described in [installing from a checkout](CONTRIBUTING.md#installing-from-a-checkout).
+### From source
+
+With Rust 1.89 or newer and a C compiler, clone the repository and install:
+
+```sh
+git clone https://github.com/mrshll/borgchart
+cd borgchart
+cargo install --locked --path .
+cargo install --locked --path plugins/seat
+cargo install --locked --path plugins/slack
+cargo install --locked --path plugins/timer
+cargo install --locked --path plugins/github
+```
+
+Configure the clone's templates as described in [installing from a checkout](CONTRIBUTING.md#installing-from-a-checkout). Nothing is published to crates.io yet.
 
 For tab completion of commands, teams and members in fish, run this once:
 
@@ -116,5 +105,4 @@ echo 'BRG_COMPLETE=fish brg | source' > ~/.config/fish/completions/brg.fish
 
 Other shells are covered in [completion](docs/cli.md).
 
-
-Seating, [Slack](plugins/slack/README.md) and [timer](plugins/timer/README.md) are optional Rust workspace plugins, declared by teams that need them. To install all four binaries and configure template catalogs, follow [installing from a checkout](CONTRIBUTING.md#installing-from-a-checkout). `cargo install --path .` installs only core; the plugins are `cargo install --path plugins/seat`, `cargo install --path plugins/slack` and `cargo install --path plugins/timer`.
+Seating, [Slack](plugins/slack/README.md), [timer](plugins/timer/README.md) and [GitHub](plugins/github/README.md) are workspace plugins. The engineering team uses seating, timer and GitHub intake; intake stays off until you configure it.
