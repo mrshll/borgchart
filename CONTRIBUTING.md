@@ -112,3 +112,10 @@ templates: [~/workspace/<checkout>/templates, ~/<other>/templates]
 A template name found in two listed catalogs is refused as ambiguous; for a command, name the template by its path instead. A template file's `template: <name>` role takes no path, so the listed catalogs must not share a template name that a template file refers to.
 
 A running tree meets the installed binary and template files at its next brg call or next new member, by design. To move a tree started from an old per-revision directory, use the new binary to run `brg stop <team>`, then `brg start <team> --template "<checkout>/templates/<template>" --resume`. That repoints only the named team: kept child teams retain their recorded template folders and each needs its own full stop and `start --template <new-template-folder> --resume`, working from parent to child; keep the old installation until every child team has moved.
+
+## Cutting a release
+
+Bump all workspace package versions and update Cargo.lock with cargo; run the checks.
+Push a matching `vX.Y.Z` tag to build the release archives and SHA256SUMS.
+The release workflow creates a draft; the owner reviews its artifacts and publishes it.
+The install script's default follows the latest published stable release.
