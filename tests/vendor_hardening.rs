@@ -330,8 +330,8 @@ fn unlisted_versions_are_notices_and_override_versions_are_verified() {
 }
 
 #[test]
-fn wake_qualification_uses_shared_list_and_keeps_input_requirements() {
-    let mode = std::env::var("BRG_TEST_WAKE_QUALIFICATION");
+fn version_verification_uses_the_bundled_or_override_list() {
+    let mode = std::env::var("BRG_TEST_VERSION_VERIFICATION");
     if mode.is_err() {
         for mode in ["bundled", "override"] {
             let dir = tempfile::tempdir().unwrap();
@@ -340,7 +340,7 @@ fn wake_qualification_uses_shared_list_and_keeps_input_requirements() {
                 fs::create_dir_all(&folder).unwrap();
                 fs::write(
                     folder.join("wake.yaml"),
-                    "wake:\n  - vendor: claude\n    version: \"2.1.777\"\n    methods: [typed]\n",
+                    "wake:\n  - vendor: claude\n    version: \"9.9.777\"\n    methods: [typed]\n",
                 )
                 .unwrap();
             }
@@ -348,10 +348,10 @@ fn wake_qualification_uses_shared_list_and_keeps_input_requirements() {
                 .env_clear()
                 .env("HOME", dir.path())
                 .env("XDG_CONFIG_HOME", dir.path())
-                .env("BRG_TEST_WAKE_QUALIFICATION", mode)
+                .env("BRG_TEST_VERSION_VERIFICATION", mode)
                 .args([
                     "--exact",
-                    "wake_qualification_uses_shared_list_and_keeps_input_requirements",
+                    "version_verification_uses_the_bundled_or_override_list",
                     "--nocapture",
                 ])
                 .output()
@@ -361,40 +361,29 @@ fn wake_qualification_uses_shared_list_and_keeps_input_requirements() {
         return;
     }
     let overridden = mode.unwrap() == "override";
-    use borgchart::{
-        team::Vendor,
-        wake::{LaunchFacts, Qualification, qualification},
-    };
-    let mut facts = LaunchFacts {
-        vendor_version: Some("2.1.325 (Claude Code)".into()),
-        editor: Some("vim".into()),
-        suggestions: Some(false),
-        ..LaunchFacts::default()
-    };
-    if overridden {
-        assert!(matches!(
-            qualification(&facts),
-            Qualification::Unqualified(_)
-        ));
-        facts.vendor_version = Some("2.1.777 (Claude Code)".into());
-    }
-    assert_eq!(qualification(&facts), Qualification::Qualified);
+    use borgchart::{team::Vendor, wake::verified};
     let rules = borgchart::watcher::methods::load().unwrap();
     assert_eq!(
-        borgchart::wake::verified(&rules, Vendor::Codex, Some("codex-cli 0.165.0")),
+        verified(&rules, Vendor::Claude, Some("2.1.325 (Claude Code)")),
         !overridden
     );
-    facts.suggestions = Some(true);
-    assert!(matches!(
-        qualification(&facts),
-        Qualification::Unqualified(_)
-    ));
-    facts.suggestions = Some(false);
-    facts.editor = Some("normal".into());
-    assert!(matches!(
-        qualification(&facts),
-        Qualification::Unqualified(_)
-    ));
+    assert_eq!(
+        verified(&rules, Vendor::Claude, Some("9.9.777 (Claude Code)")),
+        overridden
+    );
+    assert_eq!(
+        verified(&rules, Vendor::Codex, Some("codex-cli 0.165.0")),
+        !overridden
+    );
+    for (vendor, version) in [
+        (Vendor::Claude, None),
+        (Vendor::Claude, Some("2.10.0")),
+        (Vendor::Claude, Some("2.1")),
+        (Vendor::Codex, None),
+        (Vendor::Codex, Some("0.165.1")),
+    ] {
+        assert!(!verified(&rules, vendor, version), "{vendor:?} {version:?}");
+    }
 }
 
 #[test]

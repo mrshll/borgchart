@@ -117,12 +117,10 @@ fn send_composer_matrix() {
         limit: std::time::Duration::from_secs(600),
     });
     println!("composer evidence: {}", w.evidence.display());
-    let (rows, qualified) = wake_matrix::qualify(vendor, Some(version), true);
+    let (rows, submitted) = wake_matrix::qualify(vendor, Some(version), true);
     let table = wake_matrix::table(vendor, &rows);
     std::fs::write(w.evidence.join("composer-matrix.md"), &table).unwrap();
-    println!(
-        "{table}\nExisting wake qualification: {qualified}; not a full send-gate qualification"
-    );
+    println!("{table}\nSubmissions enabled: {submitted}; not a full live-tier qualification");
     assert!(rows.iter().all(|r| r[3] != "FAIL"));
 }
 
@@ -370,7 +368,7 @@ fn matrix_case(w: &World, vendor: Vendor, submit: bool) -> Outcome {
         Vendor::Codex => Who::Codex,
     };
     let version = w.versions.get(&who).and_then(|v| v.clone().ok());
-    let (rows, qualified) = wake_matrix::qualify(vendor, version, submit);
+    let (rows, submitted) = wake_matrix::qualify(vendor, version, submit);
     let table = wake_matrix::table(vendor, &rows);
     let _ = std::fs::write(
         w.evidence
@@ -384,12 +382,7 @@ fn matrix_case(w: &World, vendor: Vendor, submit: bool) -> Outcome {
         .collect();
     if !failed.is_empty() {
         Outcome::Fail(format!("rows failed: {}", failed.join(", ")))
-    } else if !qualified {
-        Outcome::Skip(format!(
-            "this {} isn't qualified for typed reminders (see the launch facts row); typed attempts and submissions skipped",
-            vendor.as_str()
-        ))
-    } else if !submit {
+    } else if !submitted {
         Outcome::Skip("submissions turned off (BORGCHART_LIVE_SUBMIT=0)".into())
     } else {
         Outcome::Pass(format!("{} rows ok", rows.len()))
