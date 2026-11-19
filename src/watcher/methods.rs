@@ -1,4 +1,4 @@
-//! Which wake methods each vendor and CLI version allows: the bundled
+//! Verified vendor versions and parsed metadata from the bundled
 //! `rules/wake.yaml`, or your override in
 //! `$XDG_CONFIG_HOME/borgchart/rules/wake.yaml` (as for the screen rules in
 //! [`crate::rules`]).
@@ -15,9 +15,9 @@ const BUNDLED: &str = include_str!("../../rules/wake.yaml");
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Method {
-    /// Queue a message to the member's live thread.
+    /// Queue method metadata.
     Queue,
-    /// The guarded typed reminder, on an idle, empty screen.
+    /// Typed-input method metadata.
     Typed,
 }
 
