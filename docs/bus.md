@@ -6,7 +6,7 @@ This is trusted, same-user operation: callers identify themselves through their 
 
 ## Team settings
 
-No bus opt-in is needed. Use `bus: {alert: {plugin: notify, action: alert}}` only to configure a real alert action; automatic alert dispatch is not wired.
+No bus opt-in is needed. `bus: {alert: {plugin: notify, action: alert}}` validates a plugin/action reference without invoking it.
 
 Unrestricted Codex members have full host access and no tool approvals; unrestricted Claude members get messages and notes as added folders. Restricted recipients get no new bus commands, directories or sandbox grants.
 

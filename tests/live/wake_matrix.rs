@@ -1,9 +1,6 @@
-//! The guarded wake's input-box matrix against Claude Code: how `wake`
-//! reads and treats its input box. Typing without submitting costs nothing;
-//! Claude gets one real reminder submission in vim insert mode, with clients
-//! attached and a resize during the attempt. An empty vim normal-mode box must
-//! defer without typing. Approval prompts are never answered: one that appears
-//! is recorded and left.
+//! Claude's composer matrix at the message-send boundary: draft preservation,
+//! exact payload checks, wrapping, and submission through `brg msg send`.
+//! Approval prompts are never answered: one that appears is recorded and left.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -18,7 +15,8 @@ use borgchart::rules;
 use borgchart::state::StateDir;
 use borgchart::team::Vendor;
 use borgchart::tmux::{self, Tmux};
-use borgchart::wake::{self, Defer, LaunchFacts, Qualification, REMINDER, Snapshot, WakeResult};
+use borgchart::wake::{self, REMINDER, Snapshot};
+use serde_json::{Value, json};
 
 use super::common;
 
@@ -425,25 +423,32 @@ struct Run {
     vendor: Vendor,
     socket: String,
     tmux: Tmux,
-    state: StateDir,
+    work: PathBuf,
+    keep: PathBuf,
     argv: Vec<String>,
-    facts: LaunchFacts,
+    version: Option<String>,
     rows: Vec<[String; 4]>,
-    qualified: bool,
 }
 
-fn show(r: &WakeResult) -> String {
-    match r {
-        WakeResult::Submitted => "submitted".into(),
-        WakeResult::Deferred(Defer::Busy) => "deferred:busy".into(),
-        WakeResult::Deferred(Defer::Draft) => "deferred:draft".into(),
-        WakeResult::Deferred(Defer::Locked) => "deferred:locked".into(),
-        WakeResult::Deferred(Defer::Uncertain(w)) => format!("deferred:uncertain ({w})"),
-        WakeResult::Blocked(rule) => format!("blocked:{rule}"),
-        WakeResult::HumanRequired(w) => format!("human-required ({w})"),
-        WakeResult::AlertOnly(w) => format!("alert-only ({w})"),
-        WakeResult::NotRunning => "not-running".into(),
-    }
+/// A readiness observation, not a second delivery policy.
+fn idle_empty(rules: &rules::RuleSet, snap: &Snapshot) -> bool {
+    !snap.in_mode
+        && rules
+            .read(
+                &snap.title,
+                &composer::plain(&composer::parse(&snap.screen)),
+            )
+            .state
+            == rules::State::Idle
+        && composer::read(&snap.screen, Some(snap.geometry)) == Reading::Empty
+}
+
+fn show(out: &Value) -> String {
+    format!(
+        "{} ({})",
+        out["delivery"].as_str().unwrap(),
+        out["reason"].as_str().unwrap()
+    )
 }
 
 /// Context-only precondition: no wake reminder or inbox command. Actual tool
@@ -520,7 +525,7 @@ pub fn direct_context_probe(vendor: Vendor, version: String) {
                 && !plain.contains("BLOCKED_absolute_"),
             "BLOCKED: tool context mismatch"
         );
-        if start.elapsed() > Duration::from_secs(10) && wake::before_paste(&rules, &s).is_none() {
+        if start.elapsed() > Duration::from_secs(10) && idle_empty(&rules, &s) {
             println!(
                 "Context turn ended; owned session tool output still requires verification. No wake submitted."
             );
@@ -534,7 +539,11 @@ pub fn direct_context_probe(vendor: Vendor, version: String) {
 /// keep timestamped screens so receipt and original completion can be reviewed.
 pub fn send_midturn_probe(vendor: Vendor, version: String) {
     let run = Run::new(vendor, Some(version));
-    std::fs::write(root().join("send-facts.txt"), format!("{:#?}\n", run.facts)).unwrap();
+    std::fs::write(
+        root().join("send-facts.txt"),
+        format!("{:#?}\n", run.version),
+    )
+    .unwrap();
     let started = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run.start(200, 60)));
     run.save("send-start");
     assert!(started.is_ok(), "BLOCKED: startup; see send-start screen");
@@ -573,10 +582,7 @@ pub fn send_midturn_probe(vendor: Vendor, version: String) {
     let view = composer::view(&s.screen, Some(s.geometry)).unwrap();
     std::fs::write(
         root().join("send-mode.txt"),
-        format!(
-            "configured={:?}, observed={:?}\n",
-            run.facts.editor, view.vim
-        ),
+        format!("version={:?}, observed={:?}\n", run.version, view.vim),
     )
     .unwrap();
     let nonce = super::world::nonce();
@@ -718,7 +724,7 @@ pub fn near_limit_probe(vendor: Vendor, version: String) {
     let before = run.snap();
     run.save("near-limit-before");
     assert!(
-        wake::before_paste(&rules, &before).is_none(),
+        idle_empty(&rules, &before),
         "BLOCKED: not positively empty/idle"
     );
     let line = "Synthetic payload line; harmless fixture data only. 0123456789abcdef\n";
@@ -736,7 +742,7 @@ pub fn near_limit_probe(vendor: Vendor, version: String) {
         "body_bytes={} envelope_bytes={}\nlaunch={:?}\nreading={:?}\nview={view:?}\nNO ENTER SENT; no delivery claim\n",
         body.len(),
         text.len(),
-        run.facts,
+        run.version,
         run.reading()
     );
     std::fs::write(root().join("near-limit-result.txt"), &detail).unwrap();
@@ -748,31 +754,41 @@ pub fn near_limit_probe(vendor: Vendor, version: String) {
 
 impl Run {
     fn new(vendor: Vendor, version: Option<String>) -> Run {
+        Self::at(vendor, version, work(), root(), dirs().limit)
+    }
+
+    fn at(
+        vendor: Vendor,
+        version: Option<String>,
+        work: PathBuf,
+        keep: PathBuf,
+        limit: Duration,
+    ) -> Run {
         assert_eq!(
             vendor,
             Vendor::Claude,
             "the composer matrix requires Claude"
         );
-        let private = common::PrivateTmux::with_watchdog(dirs().limit);
+        let private = common::PrivateTmux::with_watchdog(limit);
+        std::fs::write(private.dir().join("audit-input"), "").unwrap();
         let socket = private.socket(&format!("brg-qualify-{}", vendor.as_str()));
-        std::fs::create_dir_all(work()).unwrap();
-        std::fs::create_dir_all(root().join("screens")).unwrap();
-        let conf = root().join(format!("tmux-{}.conf", vendor.as_str()));
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(keep.join("screens")).unwrap();
+        let conf = keep.join(format!("tmux-{}.conf", vendor.as_str()));
         std::fs::write(&conf, tmux::CONFIG).unwrap();
-        let tmux_env = direct_run_env(&private, &socket, &root(), base_env());
+        let tmux_env = direct_run_env(&private, &socket, &keep, base_env());
         let tmux = Tmux::on_socket(&socket, &conf, tmux_env);
         let argv: Vec<String> = vec!["claude".into()];
-        let facts = LaunchFacts::measure(version, &argv, &work(), &base_env());
         Run {
             private,
             vendor,
-            state: StateDir::from_root(&root().join(format!("state-{}", vendor.as_str()))),
+            work,
+            keep,
             socket,
             tmux,
             argv,
-            facts,
+            version,
             rows: Vec::new(),
-            qualified: false,
         }
     }
 
@@ -796,7 +812,7 @@ impl Run {
             .map(|a| borgchart::state::shell_quote(a))
             .collect::<Vec<_>>()
             .join(" ");
-        let cwd = work().display().to_string();
+        let cwd = self.work.display().to_string();
         let (c, r) = (cols.to_string(), rows.to_string());
         let args = [
             "new-session",
@@ -822,9 +838,9 @@ impl Run {
         let startup_rules = rules::load(self.vendor).unwrap();
         while start.elapsed() < Duration::from_secs(30) {
             std::thread::sleep(Duration::from_millis(500));
-            if wake::before_paste(&startup_rules, &self.snap()).is_none() {
+            if idle_empty(&startup_rules, &self.snap()) {
                 std::thread::sleep(Duration::from_millis(1500));
-                if wake::before_paste(&startup_rules, &self.snap()).is_none() {
+                if idle_empty(&startup_rules, &self.snap()) {
                     return;
                 }
             }
@@ -877,7 +893,8 @@ impl Run {
     }
 
     fn save(&self, case: &str) {
-        let path = root()
+        let path = self
+            .keep
             .join("screens")
             .join(screen_file(self.vendor.as_str(), case));
         let _ = std::fs::write(path, self.screen());
@@ -895,20 +912,83 @@ impl Run {
         self.keys(&["S-Enter"]);
     }
 
-    fn attempt(&self) -> (WakeResult, u32) {
-        let mut calls = 0;
-        let r = wake::attempt(
-            &self.tmux,
-            &self.state,
-            WINDOW,
-            &self.pane(),
-            &self.facts,
-            &mut || {
-                calls += 1;
-                Ok(())
-            },
+    fn input_calls(&self) -> String {
+        std::fs::read_to_string(self.private.dir().join("input-calls")).unwrap_or_default()
+    }
+
+    /// Register only this owned pane, then run the same CLI send as a caller.
+    /// The direct-vendor probes keep their identity-free vendor environment.
+    fn send(&self, body: &str) -> Value {
+        let folder = self.keep.join("send-template");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(
+            folder.join("template.yaml"),
+            "roles: {member: {vendor: claude, prompt: member.md}}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            folder.join("member.md"),
+            "---\nmodels: {claude: haiku}\n---\nReply without tools.\n",
+        )
+        .unwrap();
+        let state_home = self.keep.join("isolated-brg-state");
+        let state = StateDir::from_root(&state_home.join("matrix"));
+        let write = |path: &std::path::Path, value: Value| {
+            borgchart::state::write_private(path, &serde_json::to_vec(&value).unwrap()).unwrap();
+        };
+        let at = borgchart::bus::time::utc_now();
+        write(
+            &state_home.join("registry.json"),
+            json!({"schema":2,"teams":{"matrix":{
+            "template":"sample","template_dir":folder,"folder":self.work,"created_at":at
+        }},"issued":{}}),
         );
-        (r, calls)
+        write(
+            &state.instance_file(),
+            json!({"schema":2,"id":"matrix","template":"sample",
+            "template_dir":folder,"folder":self.work,"created_at":at,
+            "members":{"member":{"role":"member"}}}),
+        );
+        write(
+            &state.meta_file(),
+            json!({"template_dir":folder,"folder":self.work,
+            "brg":env!("CARGO_BIN_EXE_brg"),
+            "config":{"version":1,"digest":"00","inputs":{},"template_dirs":{}},
+            "socket":self.socket,"windows_started":true,"base_env":base_env(),"plugins":{},
+            "members":{"member":{"role":"member","vendor":"claude","posture":"vendor",
+                "interactive":false,"started":true,"parent":null,"vendor_version":self.version}}}),
+        );
+        write(
+            &state.current_incarnation(WINDOW),
+            json!({"member":WINDOW,"incarnation":"member-1",
+            "started_at":at,"pane":self.pane()}),
+        );
+        borgchart::bus::layout::StorePaths::new(&state)
+            .initialize(&state)
+            .unwrap();
+        let mut cmd = common::command(env!("CARGO_BIN_EXE_brg"));
+        cmd.env_clear()
+            .envs(base_env())
+            .env(
+                "PATH",
+                self.private
+                    .path_with(&std::env::var("PATH").unwrap_or_default()),
+            )
+            .env("BORGCHART_CONFIG", self.keep.join("isolated-brg.yaml"))
+            .env("BORGCHART_STATE_HOME", &state_home)
+            .args([
+                "msg",
+                "send",
+                "matrix/member",
+                body,
+                "--external",
+                "live-probe",
+                "--json",
+            ]);
+        self.private.brg_env(&mut cmd, &self.socket);
+        let out = super::world::limited(&mut cmd, Duration::from_secs(20)).unwrap();
+        assert!(out.status.success(), "send failed: {out:?}");
+        serde_json::from_slice(&out.stdout).unwrap()
     }
 
     fn record(&mut self, case: &str, want: &str, got: String) {
@@ -933,7 +1013,7 @@ impl Run {
         self.rows.push([case.into(), want.into(), got, ok.into()]);
         if std::env::var("BORGCHART_LIVE_STOP_ON_FAILURE").as_deref() == Ok("1") {
             std::fs::write(
-                root().join("composer-matrix-progress.md"),
+                self.keep.join("composer-matrix-progress.md"),
                 table(self.vendor, &self.rows),
             )
             .unwrap();
@@ -941,25 +1021,17 @@ impl Run {
         }
     }
 
-    /// An attempt on a draft must defer and leave the draft as it was.
+    /// Sending to a draft must leave its contents and cursor untouched.
     fn draft_case(&mut self, case: &str) {
-        self.deferred_case(case, "deferred:draft");
+        self.deferred_case(case, "blocked");
     }
 
-    /// A deferred attempt must preserve the input and record no intent.
     fn deferred_case(&mut self, case: &str, want: &str) {
         std::thread::sleep(Duration::from_millis(500));
         let before = self.snap();
-        let (r, calls) = if self.qualified {
-            self.attempt()
-        } else {
-            let rules = rules::load(self.vendor).unwrap();
-            let r = wake::before_paste(&rules, &before);
-            (r.unwrap_or(WakeResult::Submitted), 0)
-        };
-        std::thread::sleep(Duration::from_millis(300));
+        let input = self.input_calls();
+        let out = self.send("Reply with only RECEIVED. Use no tools.");
         let after = self.snap();
-        // A box that can't be read is compared by its whole screen instead.
         let lines = |s: &Snapshot| {
             composer::view(&s.screen, None)
                 .map(|v| v.lines)
@@ -972,25 +1044,16 @@ impl Run {
         self.record_checked(
             case,
             want,
-            show(&r),
+            show(&out),
             &[
-                ("no intent recorded", calls == 0),
+                ("no input sent", self.input_calls() == input),
                 ("input box untouched", untouched),
             ],
         );
     }
 
-    /// A whitespace draft may read as a draft or as uncertain, never as empty.
     fn draft_or_uncertain(&mut self, case: &str) {
-        std::thread::sleep(Duration::from_millis(500));
-        let rules = rules::load(self.vendor).unwrap();
-        let s = self.snap();
-        self.save(case);
-        let got = match wake::before_paste(&rules, &s) {
-            None => "would paste".to_string(),
-            Some(r) => show(&r),
-        };
-        self.record(case, "deferred:draft|deferred:uncertain", got);
+        self.deferred_case(case, "blocked|stored");
     }
 
     /// Paste text by hand (bracketed), the way the wake does, without Enter.
@@ -1018,9 +1081,14 @@ impl Run {
         let s = self.snap();
         self.save(case);
         let g = s.geometry;
-        let got = match wake::before_enter(&rules, &s) {
-            None => format!("would press Enter (cursor {},{})", g.cursor_x, g.cursor_y),
-            Some(why) => format!("withheld: {why}"),
+        let state = rules
+            .read(&s.title, &composer::plain(&composer::parse(&s.screen)))
+            .state;
+        let exact = composer::view(&s.screen, Some(g)).is_ok_and(|v| v.holds_submission(REMINDER));
+        let got = if !s.in_mode && state != rules::State::Blocked && exact {
+            format!("exact payload (cursor {},{})", g.cursor_x, g.cursor_y)
+        } else {
+            "withheld: payload or pane changed".into()
         };
         self.record(case, want, got);
     }
@@ -1031,52 +1099,34 @@ impl Run {
         let rules = rules::load(self.vendor).unwrap();
         while start.elapsed() < Duration::from_secs(180) {
             std::thread::sleep(Duration::from_secs(2));
-            match wake::before_paste(&rules, &self.snap()) {
-                None => return "idle".into(),
-                Some(WakeResult::Blocked(rule)) => {
-                    return format!("blocked:{rule} (left unanswered)");
-                }
-                Some(_) => {}
+            let snap = self.snap();
+            if idle_empty(&rules, &snap) {
+                return "idle".into();
+            }
+            let reading = rules.read(
+                &snap.title,
+                &composer::plain(&composer::parse(&snap.screen)),
+            );
+            if reading.state == rules::State::Blocked {
+                return format!(
+                    "blocked:{} (left unanswered)",
+                    reading.rule.unwrap_or_default()
+                );
             }
         }
         "still busy after 180 s".into()
     }
 }
 
-/// The matrix's rows for one vendor, and whether its wake qualified (typed
-/// attempts and submissions ran).
+/// The matrix rows and whether submissions were enabled. Read-only payload
+/// checks use the same composer predicate as production's post-paste check.
 pub fn qualify(vendor: Vendor, version: Option<String>, submit: bool) -> (Vec<[String; 4]>, bool) {
     let mut run = Run::new(vendor, version);
-    println!(
-        "\n{}: version {:?}, editor {:?}, suggestions {:?}, qualification {:?}",
-        vendor.as_str(),
-        run.facts.vendor_version,
-        run.facts.editor,
-        run.facts.suggestions,
-        wake::qualification(&run.facts)
-    );
-    let qualified = wake::qualification(&run.facts) == Qualification::Qualified;
-    run.qualified = qualified;
-    let mut facts_row = format!("{:?}", run.facts.vendor_version.as_deref().unwrap_or("?"));
-    let _ = write!(facts_row, " editor={:?}", run.facts.editor);
-    run.record("launch facts", "", facts_row);
-    if !qualified {
-        // Unqualified: the adapter must not type, whatever the screen shows.
-        run.start(200, 50);
-        let (r, _) = run.attempt();
-        run.record("unqualified attempt", "alert-only", show(&r));
-        // The readings below are still measured, without typing.
-    }
-
-    // Empty idle box.
+    run.record("vendor version", "", format!("{:?}", run.version));
     run.start(200, 50);
     run.save("empty");
     let rules = rules::load(vendor).unwrap();
-    let got = match wake::before_paste(&rules, &run.snap()) {
-        None => "would paste".to_string(),
-        Some(r) => show(&r),
-    };
-    run.record("empty idle", "would paste", got);
+    run.record("empty idle", "empty", show_reading(&run.reading()));
 
     // Single-line draft, then vim normal mode with it.
     run.keys(&["-l", "please look at the example widget"]);
@@ -1102,10 +1152,7 @@ pub fn qualify(vendor: Vendor, version: Option<String>, submit: bool) -> (Vec<[S
     }
     // From 2.1.327 the box's prompt line scrolls out of view, so it reads as
     // uncertain; either way the attempt defers and leaves the draft untouched.
-    run.deferred_case(
-        "draft offscreen (blank tail)",
-        "deferred:draft|deferred:uncertain",
-    );
+    run.deferred_case("draft offscreen (blank tail)", "blocked|stored");
 
     // Wrapped single line in a narrow pane.
     run.start(60, 50);
@@ -1121,11 +1168,11 @@ pub fn qualify(vendor: Vendor, version: Option<String>, submit: bool) -> (Vec<[S
     run.draft_case("draft clears: first attempt");
     run.keys(&["C-u"]);
     std::thread::sleep(Duration::from_millis(500));
-    let got = match wake::before_paste(&rules, &run.snap()) {
-        None => "would paste".to_string(),
-        Some(r) => show(&r),
-    };
-    run.record("draft clears: after clearing", "would paste", got);
+    run.record(
+        "draft clears: after clearing",
+        "empty",
+        show_reading(&run.reading()),
+    );
 
     // Whitespace-only drafts: never read as empty.
     run.start(200, 50);
@@ -1139,7 +1186,7 @@ pub fn qualify(vendor: Vendor, version: Option<String>, submit: bool) -> (Vec<[S
     // The Enter check, with the reminder pasted by hand and never submitted.
     run.start(200, 50);
     run.paste(REMINDER);
-    run.enter_case("reminder pasted", "would press Enter");
+    run.enter_case("reminder pasted", "exact payload");
     run.keys(&["-l", " "]);
     run.enter_case("reminder + a typed space", "withheld");
     run.start(200, 50);
@@ -1147,7 +1194,7 @@ pub fn qualify(vendor: Vendor, version: Option<String>, submit: bool) -> (Vec<[S
     run.enter_case("reminder with a space removed", "withheld");
     run.start(60, 50);
     run.paste(REMINDER);
-    run.enter_case("reminder wrapped at 60 columns", "would press Enter");
+    run.enter_case("reminder wrapped at 60 columns", "exact payload");
 
     // A persistent draft keeps deferring, with a resize and attached clients.
     run.start(200, 50);
@@ -1216,24 +1263,19 @@ pub fn qualify(vendor: Vendor, version: Option<String>, submit: bool) -> (Vec<[S
     run.keys(&["C-u"]);
     std::thread::sleep(Duration::from_millis(800));
     run.save("small");
-    let r = if run.qualified {
-        run.attempt().0
-    } else {
-        wake::before_paste(&rules, &run.snap()).unwrap_or(WakeResult::Submitted)
-    };
-    run.record("pane 100x12", "deferred:uncertain", show(&r));
+    run.deferred_case("pane 100x12", "stored");
     let _ = control.kill();
     let _ = control.wait();
     let _ = run.client(&outer).arg("kill-server").output();
 
-    if !qualified || !submit {
+    if !submit {
         run.record(
             "history recall (Up)",
             "unavailable",
-            "unavailable: submissions disabled or unqualified".into(),
+            "unavailable: submissions disabled".into(),
         );
         run.record("submissions", "", "skipped".into());
-        return (std::mem::take(&mut run.rows), qualified);
+        return (std::mem::take(&mut run.rows), submit);
     }
 
     // Insert-mode submission: clients attached, resize during the attempt.
@@ -1264,7 +1306,7 @@ pub fn qualify(vendor: Vendor, version: Option<String>, submit: bool) -> (Vec<[S
         .spawn()
         .unwrap();
     let target = run.target();
-    let (r, _) = std::thread::scope(|scope| {
+    let r = std::thread::scope(|scope| {
         let run = &run;
         scope.spawn(|| {
             for (x, y) in [("190", "50"), ("200", "48"), ("200", "50")] {
@@ -1275,38 +1317,48 @@ pub fn qualify(vendor: Vendor, version: Option<String>, submit: bool) -> (Vec<[S
                     .output();
             }
         });
-        run.attempt()
+        run.send("Reply with only RECEIVED. Use no tools.")
     });
     // A redraw mid-resize can make the box unreadable: that defers, safely.
-    run.record(
-        "attempt during a resize",
-        "submitted|deferred:uncertain",
-        show(&r),
-    );
-    let mut submitted = r == WakeResult::Submitted;
-    if !submitted {
+    run.record("attempt during a resize", "typed|stored", show(&r));
+    let mut submitted = r["delivery"] == "typed";
+    if r["delivery"] == "stored" {
         std::thread::sleep(Duration::from_secs(1));
-        let (r, _) = run.attempt();
-        run.record(
-            "submit: vim insert, 2 clients attached",
-            "submitted",
-            show(&r),
-        );
-        submitted = r == WakeResult::Submitted;
+        let r = run.send("Reply with only RECEIVED. Use no tools.");
+        run.record("submit: vim insert, 2 clients attached", "typed", show(&r));
+        submitted = r["delivery"] == "typed";
     }
     if submitted {
         std::thread::sleep(Duration::from_millis(800));
         run.save("working");
-        let (busy, calls) = run.attempt();
-        run.record(
-            "attempt during the turn",
-            "deferred:busy",
-            format!(
-                "{}{}",
-                show(&busy),
-                if calls > 0 { " (intent recorded!)" } else { "" }
-            ),
-        );
+        let before = run.snap();
+        let view = composer::view(&before.screen, Some(before.geometry)).unwrap();
+        let queued = view.shows_queued_placeholder();
+        let working = rules
+            .read(
+                &before.title,
+                &composer::plain(&composer::parse(&before.screen)),
+            )
+            .state
+            == rules::State::Working;
+        if working {
+            let sent = run.send("Reply with only RECEIVED_AGAIN. Use no tools.");
+            run.record_checked(
+                "send during the turn",
+                "typed|stored",
+                show(&sent),
+                &[(
+                    "stored only behind queued input",
+                    sent["delivery"] == "typed" || queued,
+                )],
+            );
+        } else {
+            run.record(
+                "send during the turn",
+                "working",
+                "turn was not observed".into(),
+            );
+        }
     }
     let end = if submitted {
         run.wait_turn()
@@ -1340,8 +1392,8 @@ pub fn qualify(vendor: Vendor, version: Option<String>, submit: bool) -> (Vec<[S
     let mode = composer::view(&run.screen(), None).ok().and_then(|v| v.vim);
     run.record("normal mode shown", "Some(Normal)", format!("{mode:?}"));
     // Claude can't tell an empty box from one space in normal mode, so it defers.
-    run.deferred_case("attempt: vim normal", "deferred:uncertain");
-    (std::mem::take(&mut run.rows), qualified)
+    run.deferred_case("send: vim normal", "stored");
+    (std::mem::take(&mut run.rows), submit)
 }
 
 /// The rows as a Markdown table.
@@ -1422,4 +1474,100 @@ fn rows_fail_on_any_broken_invariant() {
         "deferred:draft",
         &[("no intent recorded", true), ("input box untouched", false)]
     ));
+}
+
+#[cfg(feature = "test-support")]
+fn fake_run() -> (tempfile::TempDir, Run) {
+    let dir = tempfile::tempdir().unwrap();
+    let run = Run::at(
+        Vendor::Claude,
+        Some("fixture-version".into()),
+        dir.path().join("work"),
+        dir.path().join("evidence"),
+        Duration::from_secs(120),
+    );
+    let fake = run.keep.join("fake");
+    std::fs::create_dir_all(&fake).unwrap();
+    let run = Run {
+        argv: vec![
+            "env".into(),
+            format!("FAKE_COMPOSER_DIR={}", fake.display()),
+            env!("CARGO_BIN_EXE_fake-composer").into(),
+            "claude".into(),
+        ],
+        ..run
+    };
+    (dir, run)
+}
+
+#[cfg(feature = "test-support")]
+fn fake_control(run: &Run, text: &str) {
+    let control = run.keep.join("fake/control");
+    std::fs::write(control.with_extension("tmp"), text).unwrap();
+    std::fs::rename(control.with_extension("tmp"), control).unwrap();
+    let start = Instant::now();
+    loop {
+        let log = std::fs::read_to_string(run.keep.join("fake/log.jsonl")).unwrap_or_default();
+        if log
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .any(|e| e["event"] == "control" && e["text"] == text)
+        {
+            return;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "control not observed: {log}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+#[cfg(feature = "test-support")]
+fn matrix_send_preserves_drafts_and_submits_wrapped_and_working_messages() {
+    let (_dir, mut run) = fake_run();
+    run.start(60, 40);
+    run.keys(&["-l", "an unfinished draft"]);
+    run.draft_case("draft preserved through CLI send");
+    assert!(run.rows.iter().all(|r| r[3] == "ok"), "{:?}", run.rows);
+    run.keys(&["C-u"]);
+    let body = "WRAPPED_RECEIPT a fictional message crossing the narrow composer's line width";
+    let out = run.send(body);
+    assert_eq!(out["delivery"], "typed", "{out}");
+    let log = std::fs::read_to_string(run.keep.join("fake/log.jsonl")).unwrap();
+    assert!(
+        log.lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .any(
+                |e| e["event"] == "submit" && e["text"].as_str().unwrap_or_default().contains(body)
+            ),
+        "{log}"
+    );
+    run.start(120, 40);
+    fake_control(&run, "mode=working");
+    let out = run.send("WORKING_RECEIPT");
+    assert_eq!(out["delivery"], "typed", "{out}");
+}
+
+#[test]
+#[cfg(feature = "test-support")]
+fn matrix_send_withholds_enter_when_pasted_payload_changes() {
+    let (_dir, run) = fake_run();
+    run.start(120, 40);
+    fake_control(&run, "on_paste=append: unexpected");
+    let input = run.input_calls();
+    let out = run.send("EXACT_RECEIPT");
+    assert_eq!(out["delivery"], "uncertain", "{out}");
+    let calls = run.input_calls();
+    let added = calls.strip_prefix(&input).unwrap();
+    assert!(added.contains("paste-buffer"), "{added}");
+    assert!(!added.contains("Enter"), "{added}");
+    let log = std::fs::read_to_string(run.keep.join("fake/log.jsonl")).unwrap();
+    assert!(
+        !log.lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .any(|e| e["event"] == "submit"),
+        "{log}"
+    );
 }

@@ -1,6 +1,5 @@
-//! Guarded wake tests: the input-box reader against screens recorded from
-//! the real CLIs (sanitized), and `wake::attempt` against the `fake-composer`
-//! stand-in on a private tmux socket.
+//! Message delivery: recorded input-box screens and real sends against the
+//! `fake-composer` stand-in on a private tmux socket.
 //!
 //! Run with `cargo test --features test-support --test wake`.
 #![cfg(feature = "test-support")]
@@ -17,7 +16,7 @@ use borgchart::rules;
 use borgchart::state::StateDir;
 use borgchart::team::Vendor;
 use borgchart::tmux::Tmux;
-use borgchart::wake::{self, Defer, LaunchFacts, REMINDER, Snapshot, WakeResult};
+use borgchart::wake::{self, REMINDER, Snapshot};
 
 macro_rules! screen {
     ($name:literal) => {
@@ -170,12 +169,8 @@ fn whitespace_only_drafts_are_never_empty() {
     let spaces = edited(claude("reminder"), "   ");
     assert_eq!(composer::read(&spaces, at(200, 5, 47)), Reading::Draft);
     assert!(!matches!(composer::read(&spaces, None), Reading::Empty));
-    let c = rules::load(Vendor::Claude).unwrap();
     let s = edited(claude("reminder"), " ");
-    assert_eq!(
-        wake::before_paste(&c, &snap("✳ Claude Code", &s, at(200, 3, 47))),
-        Some(WakeResult::Deferred(Defer::Draft))
-    );
+    assert_eq!(composer::read(&s, at(200, 3, 47)), Reading::Draft);
 }
 
 #[test]
@@ -206,21 +201,18 @@ fn only_the_exact_reminder_passes_the_enter_check() {
 
 #[test]
 fn claude_narrow_paste_verifies_exact_payload() {
-    let rules = rules::load(Vendor::Claude).unwrap();
     for (capture, width, cursor_x) in [
         // The 60-column case guards the width fix; 80 columns also cover the negatives.
         (screen!("claude-composer-reminder-60.ansi"), 60, 27),
         (screen!("claude-composer-reminder-80.ansi"), 80, 8),
     ] {
         let snapshot = snap("✳ Fictional session", capture, at(width, cursor_x, 47));
-        assert_eq!(wake::before_enter(&rules, &snapshot), None);
         let view = composer::view(capture, Some(snapshot.geometry)).unwrap();
         assert!(view.holds_submission(REMINDER));
 
         for (from, to) in [("new records", "new  records"), ("msg list", "msglist")] {
             let changed = capture.replace(from, to);
             let snapshot = snap("✳ Fictional session", &changed, at(width, cursor_x, 47));
-            assert!(wake::before_enter(&rules, &snapshot).is_some());
             assert!(
                 !composer::view(&changed, Some(snapshot.geometry))
                     .unwrap()
@@ -229,7 +221,6 @@ fn claude_narrow_paste_verifies_exact_payload() {
         }
         for moved in [cursor_x - 1, cursor_x + 1] {
             let snapshot = snap("✳ Fictional session", capture, at(width, moved, 47));
-            assert!(wake::before_enter(&rules, &snapshot).is_some());
             assert!(
                 !composer::view(capture, Some(snapshot.geometry))
                     .unwrap()
@@ -304,8 +295,7 @@ fn a_newline_inside_a_word_with_space_to_fit_withholds_enter() {
 
 #[test]
 fn blocked_rule_ids_are_shared_with_status() {
-    // `status` reads these screens with the same rules; the wake must report
-    // the same rule ID and type nothing.
+    // Delivery and status read the same dialog rules.
     let cases = [
         (
             Vendor::Claude,
@@ -323,43 +313,7 @@ fn blocked_rule_ids_are_shared_with_status() {
     for (vendor, title, screen, rule) in cases {
         let rules = rules::load(vendor).unwrap();
         assert_eq!(rules.read(title, screen).rule.as_deref(), Some(rule));
-        assert_eq!(
-            wake::before_paste(&rules, &snap(title, screen, None)),
-            Some(WakeResult::Blocked(rule.into()))
-        );
     }
-}
-
-#[test]
-fn pre_paste_decisions_on_real_screens() {
-    let c = rules::load(Vendor::Claude).unwrap();
-    let t = "✳ Claude Code";
-    let paste = |r, s: Snapshot| wake::before_paste(r, &s);
-    assert_eq!(paste(&c, snap(t, claude("empty"), at(200, 2, 47))), None);
-    assert_eq!(
-        paste(&c, snap(t, claude("draft"), None)),
-        Some(WakeResult::Deferred(Defer::Draft))
-    );
-    // The title stays idle while a turn runs; the grey prompt says busy.
-    assert_eq!(
-        paste(&c, snap(t, claude("working"), at(200, 2, 47))),
-        Some(WakeResult::Deferred(Defer::Busy))
-    );
-    // Copy mode over an empty box: keys would go to tmux, not the member.
-    let mut s = snap(t, claude("empty"), at(200, 2, 47));
-    s.in_mode = true;
-    assert!(matches!(
-        wake::before_paste(&c, &s),
-        Some(WakeResult::Deferred(Defer::Uncertain(_)))
-    ));
-    assert_eq!(
-        wake::before_enter(&c, &snap(t, claude("reminder"), at(200, 81, 47))),
-        None
-    );
-    assert!(wake::before_enter(&c, &snap(t, claude("reminder-extra"), at(200, 87, 47))).is_some());
-    let mut s = snap(t, claude("reminder"), at(200, 81, 47));
-    s.in_mode = true;
-    assert!(wake::before_enter(&c, &s).is_some());
 }
 
 #[test]
@@ -378,7 +332,7 @@ fn only_a_seen_empty_box_confirms_a_submission() {
     assert!(wake::after_enter(Some(&s)).is_err());
 }
 
-// ---- attempts against the fake composer ----
+// ---- sends against the fake composer ----
 
 struct Env {
     /// First, so its server stops before the test's directory goes.
@@ -387,15 +341,6 @@ struct Env {
     socket: String,
     tmux: Tmux,
     state: StateDir,
-}
-
-fn qualified() -> LaunchFacts {
-    LaunchFacts {
-        vendor_version: Some("2.1.318 (Claude Code)".into()),
-        editor: Some("vim".into()),
-        suggestions: Some(false),
-        ..LaunchFacts::default()
-    }
 }
 
 impl Env {
@@ -539,22 +484,6 @@ impl Env {
         panic!("timed out waiting for {what}; log: {:?}", self.log());
     }
 
-    fn attempt(&self) -> (WakeResult, usize) {
-        let mut calls = 0;
-        let r = wake::attempt(
-            &self.tmux,
-            &self.state,
-            "m",
-            &self.pane(),
-            &qualified(),
-            &mut || {
-                calls += 1;
-                Ok(())
-            },
-        );
-        (r, calls)
-    }
-
     fn submissions(&self) -> Vec<String> {
         self.events("submit")
             .iter()
@@ -563,216 +492,27 @@ impl Env {
     }
 }
 
-const VENDORS: [Vendor; 1] = [Vendor::Claude];
-
-#[test]
-fn empty_idle_member_gets_exactly_one_reminder() {
-    for v in VENDORS {
-        let e = Env::new(v);
-        assert_eq!(e.attempt(), (WakeResult::Submitted, 1), "{v:?}");
-        assert_eq!(e.submissions(), vec![REMINDER.to_string()]);
-        assert_eq!(e.events("paste").len(), 1);
-    }
-}
-
-#[test]
-fn drafts_defer_without_typing_and_resume_once_cleared() {
-    for v in VENDORS {
-        let e = Env::new(v);
-        e.keys(&["-l", "half a thought"]);
-        // On screen, not just read by the fake: the wake reads the screen.
-        e.wait_for("the draft", |e| e.screen().contains("half a thought"));
-        assert_eq!(e.attempt(), (WakeResult::Deferred(Defer::Draft), 0));
-        assert_eq!(e.attempt(), (WakeResult::Deferred(Defer::Draft), 0));
-        assert!(e.events("paste").is_empty());
-        // The person clears it; the next attempt goes ahead.
-        e.keys(&["C-u"]);
-        e.wait_for("the clear", |e| {
-            !e.events("clear").is_empty() && !e.screen().contains("half a thought")
-        });
-        assert_eq!(e.attempt(), (WakeResult::Submitted, 1), "{v:?}");
-        assert_eq!(e.submissions(), vec![REMINDER.to_string()]);
-    }
-}
-
-#[test]
-fn multiline_and_scrolled_drafts_defer() {
-    for v in VENDORS {
-        let e = Env::new(v);
-        e.keys(&["-l", "first"]);
-        for _ in 0..60 {
-            e.keys(&["C-j"]);
-        }
-        e.wait_for("the newlines", |e| e.events("key").len() >= 61);
-        assert_eq!(
-            e.attempt(),
-            (WakeResult::Deferred(Defer::Draft), 0),
-            "{v:?}"
-        );
-        assert!(e.events("paste").is_empty());
-    }
-}
-
-#[test]
-fn busy_and_blocked_members_get_nothing() {
-    for v in VENDORS {
-        let e = Env::new(v);
-        e.control("mode=working");
-        assert_eq!(e.attempt(), (WakeResult::Deferred(Defer::Busy), 0));
-        e.control("mode=dialog");
-        let (r, calls) = e.attempt();
-        assert!(matches!(r, WakeResult::Blocked(_)), "{v:?}: {r:?}");
-        assert_eq!(calls, 0);
-        assert!(e.events("paste").is_empty());
-        assert!(e.events("enter").is_empty());
-    }
-}
-
-#[test]
-fn a_dialog_after_the_paste_withholds_enter() {
-    for v in VENDORS {
-        let e = Env::new(v);
-        e.control("on_paste=dialog");
-        let (r, calls) = e.attempt();
-        assert!(matches!(r, WakeResult::HumanRequired(_)), "{v:?}: {r:?}");
-        assert_eq!(calls, 1);
-        assert_eq!(e.events("paste").len(), 1);
-        assert!(e.events("enter").is_empty(), "{v:?}");
-    }
-}
-
-#[test]
-fn typing_during_the_paste_withholds_enter() {
-    for v in VENDORS {
-        let e = Env::new(v);
-        e.control("on_paste=append: and more");
-        let (r, _) = e.attempt();
-        assert!(matches!(r, WakeResult::HumanRequired(_)), "{v:?}: {r:?}");
-        assert!(e.events("enter").is_empty());
-        // Nothing was cleared: the text is still there for the person.
-        assert!(e.events("clear").is_empty());
-    }
-}
-
-#[test]
-fn an_enter_that_does_not_submit_is_human_required() {
-    let e = Env::new(Vendor::Claude);
-    e.control("enter=ignore");
-    let (r, _) = e.attempt();
-    assert!(matches!(r, WakeResult::HumanRequired(_)), "{r:?}");
-    assert_eq!(e.events("enter").len(), 1);
-    assert!(e.submissions().is_empty());
-}
-
 #[test]
 fn a_different_pane_is_not_running() {
     let e = Env::new(Vendor::Claude);
-    let mut p = e.pane();
-    p.pane_pid += 1;
-    let r = wake::attempt(&e.tmux, &e.state, "m", &p, &qualified(), &mut || Ok(()));
-    assert_eq!(r, WakeResult::NotRunning);
-    let mut p = e.pane();
-    p.pane_id = "%999".into();
-    let r = wake::attempt(&e.tmux, &e.state, "m", &p, &qualified(), &mut || Ok(()));
-    assert_eq!(r, WakeResult::NotRunning);
+    let mut pane = e.pane();
+    pane.pane_pid += 1;
+    assert!(wake::snapshot(&e.tmux, &pane).is_none());
+    let mut pane = e.pane();
+    pane.pane_id = "%999".into();
+    assert!(wake::snapshot(&e.tmux, &pane).is_none());
     assert!(e.events("paste").is_empty());
-}
-
-#[test]
-fn a_held_send_lock_defers() {
-    let e = Env::new(Vendor::Claude);
-    let lock = borgchart::state::open_lock(&e.state.lock_file("m")).unwrap();
-    lock.lock().unwrap();
-    assert_eq!(e.attempt(), (WakeResult::Deferred(Defer::Locked), 0));
-    drop(lock);
-    assert_eq!(e.attempt(), (WakeResult::Submitted, 1));
-}
-
-#[test]
-fn a_failing_intent_record_types_nothing() {
-    let e = Env::new(Vendor::Claude);
-    let r = wake::attempt(&e.tmux, &e.state, "m", &e.pane(), &qualified(), &mut || {
-        Err(std::io::Error::other("disk full"))
-    });
-    assert!(
-        matches!(r, WakeResult::Deferred(Defer::Uncertain(_))),
-        "{r:?}"
-    );
-    assert!(e.events("paste").is_empty());
-}
-
-#[test]
-fn unqualified_members_get_alerts_only() {
-    let e = Env::new(Vendor::Claude);
-    let mut facts = qualified();
-    facts.vendor_version = Some("9.9.9 (Claude Code)".into());
-    let r = wake::attempt(&e.tmux, &e.state, "m", &e.pane(), &facts, &mut || Ok(()));
-    assert!(matches!(r, WakeResult::AlertOnly(_)), "{r:?}");
-    assert!(e.log().iter().all(|l| l["event"] != "paste"));
-}
-
-#[test]
-fn an_attached_client_and_a_resize_do_not_matter() {
-    let e = Env::new(Vendor::Claude);
-    // A control-mode client stays attached for the attempt.
-    let mut client = e
-        .private
-        .tmux(&e.socket)
-        .args(["-C", "attach", "-t", "brg-state"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
-    e.tmux
-        .ok(&[
-            "resize-window",
-            "-t",
-            "=brg-state:=m",
-            "-x",
-            "90",
-            "-y",
-            "30",
-        ])
-        .unwrap();
-    // Let the program redraw at the new size (mid-redraw reads defer).
-    std::thread::sleep(Duration::from_millis(400));
-    assert_eq!(e.attempt(), (WakeResult::Submitted, 1));
-    let _ = client.kill();
-    let _ = client.wait();
-}
-
-#[test]
-fn an_unreadable_screen_after_enter_is_human_required() {
-    for v in VENDORS {
-        let e = Env::new(v);
-        e.control("after_enter=garbage");
-        let (r, _) = e.attempt();
-        assert!(matches!(r, WakeResult::HumanRequired(_)), "{v:?}: {r:?}");
-        assert_eq!(e.events("enter").len(), 1);
-    }
 }
 
 #[test]
 fn a_pane_is_found_by_its_socket_path() {
     let e = Env::new(Vendor::Claude);
-    let path = e
-        .tmux
-        .ok(&[
-            "display-message",
-            "-p",
-            "-t",
-            "=brg-state:=m",
-            "#{socket_path}",
-        ])
-        .unwrap();
-    let mut p = e.pane();
-    p.socket = path.trim().to_string();
-    assert!(p.socket.starts_with('/'));
-    // The client given names another server; the pane's own socket wins.
-    let other = e.tmux.with_socket("brg-wake-no-such-server");
-    let r = wake::attempt(&other, &e.state, "m", &p, &qualified(), &mut || Ok(()));
-    assert_eq!(r, WakeResult::Submitted);
-    assert_eq!(e.submissions(), vec![REMINDER.to_string()]);
+    let pane = e.pane();
+    assert!(pane.socket.starts_with('/'));
+    let other = e.tmux.with_socket("brg-send-no-such-server");
+    assert!(wake::snapshot(&other, &pane).is_none());
+    assert!(wake::snapshot(&other.with_socket(&pane.socket), &pane).is_some());
+    assert!(e.events("paste").is_empty());
 }
 
 impl Env {
