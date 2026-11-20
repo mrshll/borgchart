@@ -51,6 +51,15 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       - run: codex sandbox -- true
+      - name: Record visible Codex tier models
+        if: github.job == 'latest'
+        shell: bash
+        run: |
+          if timeout 30 codex debug models | jq -er '[.models[] | select(.visibility == "list" and .supported_in_api == true) | .slug | select(test("^gpt-[0-9]+(\\.[0-9]+)*-(astra|sol|terra|luna)$"))] | select(length > 0) | unique[]' > "$RUNNER_TEMP/tier-models"; then
+            mv "$RUNNER_TEMP/tier-models" target/live/tier-models.txt
+          else
+            echo "::warning::Codex tier catalog unavailable; skipping pin comparison"
+          fi
       - name: Full live matrix
         run: cargo test --locked --test live live_matrix -- --ignored --nocapture --test-threads=1
         env:

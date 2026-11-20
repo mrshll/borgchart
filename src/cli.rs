@@ -133,6 +133,7 @@ enum Command {
         #[arg(long)]
         name: Option<String>,
         /// Choose vendor, model, effort or remote_control at create (repeatable; comma lists allowed).
+        /// Codex models accept astra, sol, terra and luna, resolved at each start.
         /// Agent role: --set vendor=codex. Team role: --set lead.vendor=codex.
         /// Other keys follow the current template at every start.
         #[arg(long = "set", value_name = "[ROLE.]KEY=VALUE")]

@@ -899,6 +899,36 @@ fn start_members(
             Default::default()
         };
 
+        let mut launch_role = member.clone();
+        let mut resolved_alias = None;
+        if launch_role.vendor == Vendor::Codex
+            && let Some(model) = &mut launch_role.model
+            && crate::codex_models::alias(&model.name)
+        {
+            let mut picker_env = base.clone();
+            if let Some((key, value)) = keys.get(id) {
+                picker_env.insert(key.clone(), value.clone());
+            }
+            let catalog = crate::codex_models::listed(Path::new("codex"), &picker_env);
+            let Some(slug) = catalog
+                .as_ref()
+                .ok()
+                .and_then(|list| crate::codex_models::newest(&model.name, list))
+            else {
+                set(
+                    &mut outcomes,
+                    id,
+                    format!(
+                        "not started: cannot resolve Codex tier {}; pin a full model name and retry",
+                        model.name
+                    ),
+                );
+                failed = true;
+                continue;
+            };
+            model.name = slug.into();
+            resolved_alias = Some(model.clone());
+        }
         let settings_path = state.member_dir(id).join("claude-settings.json");
         let mut member_shared = shared.clone();
         if member.vendor == Vendor::Codex
@@ -919,7 +949,7 @@ fn start_members(
             &brg,
             state,
             &v.team,
-            member,
+            &launch_role,
             id,
             posture,
             &help,
@@ -953,6 +983,7 @@ fn start_members(
                 incarnation: lifecycle::new_incarnation_id(state, id),
                 started_at: utc_now(),
                 boot_id: lifecycle::boot_id(),
+                resolved_alias,
                 vendor_version: if joining {
                     vendor_version(member.vendor, &base)
                 } else {
@@ -3988,6 +4019,14 @@ fn status_with_counts(
             Ok(Some(_)) | Err(_) => true,
             Ok(None) => meta.members.get(id).is_some_and(|m| m.started),
         };
+        // A template edit applies on the next start. Until then, display the
+        // model and effort selected together for the recorded alias launch.
+        let launched_model = incarnation
+            .as_ref()
+            .ok()
+            .and_then(Option::as_ref)
+            .and_then(|inc| inc.resolved_alias.as_ref());
+        let display_model = choice.and_then(|role| launched_model.or(role.model.as_ref()));
         let mut row = StatusRow {
             name: id.clone(),
             kind: "member",
@@ -4001,14 +4040,17 @@ fn status_with_counts(
                 .map(|i| i.incarnation.clone()),
             role: Some(role.to_string()),
             vendor: choice
-                .map(|m| m.vendor.as_str().into())
+                .map(|role| {
+                    if launched_model.is_some() {
+                        Vendor::Codex
+                    } else {
+                        role.vendor
+                    }
+                })
+                .map(|vendor| vendor.as_str().into())
                 .or_else(|| meta.members.get(id).map(|m| m.vendor.clone())),
-            model: choice
-                .and_then(|m| m.model.as_ref())
-                .map(|m| m.name.clone()),
-            effort: choice
-                .and_then(|m| m.model.as_ref())
-                .and_then(|m| m.effort.clone()),
+            model: display_model.map(|model| model.name.clone()),
+            effort: display_model.and_then(|model| model.effort.clone()),
             overrides: member_overrides(&inst.record, id),
             parent: nodes[i].parent.clone(),
             liveness: incarnation

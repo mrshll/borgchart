@@ -176,3 +176,18 @@ def test_repeats_comment_and_cleared_kinds_close_without_creating_duplicates(tmp
             calls = record.read_text() if record.exists() else ""
             assert "close" not in (calls.replace("close 8", "") if control == "success" else calls)
             assert "cancelled" not in (latest, control) or not calls
+
+
+def test_newer_visible_model_reports_stale_pins_independently_of_matrix(
+    tmp_path: Path,
+) -> None:
+    matrix(tmp_path / "latest")
+    catalog = tmp_path / "latest/tier-models.txt"
+    catalog.write_text("gpt-6.10-terra\n")
+    newer = report(tmp_path, "success", "skipped", "--dry-run")
+    assert newer.returncode == 0, newer.stderr
+    assert "newer Codex models available for pinned tiers" in newer.stdout
+    catalog.write_text("gpt-6-terra\n")
+    current = report(tmp_path, "success", "skipped", "--dry-run")
+    assert current.returncode == 0, current.stderr
+    assert "newer Codex models available for pinned tiers" not in current.stdout

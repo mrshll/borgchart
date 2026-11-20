@@ -190,7 +190,7 @@ pub fn snapshot(
     refresh: bool,
     lock_deadline: Instant,
     mut identity: impl FnMut() -> io::Result<String>,
-    mut probe: impl FnMut() -> io::Result<(serde_json::Value, SystemTime)>,
+    mut probe: impl FnMut() -> (Vec<String>, io::Result<(serde_json::Value, SystemTime)>),
 ) -> Snapshot {
     let result = (|| -> io::Result<Snapshot> {
         let dir = Directory::open(path).inspect_err(|error| diagnostic("directory open", error))?;
@@ -223,8 +223,9 @@ pub fn snapshot(
         {
             return Ok(p.clone());
         }
+        let (models, usage) = probe();
         let success = (|| -> io::Result<Snapshot> {
-            let (data, observed) = probe()?;
+            let (data, observed) = usage?;
             if last_success
                 .as_ref()
                 .and_then(|s| policy::time(&serde_json::Value::String(s.clone())))
@@ -233,10 +234,7 @@ pub fn snapshot(
                 return Err(io::ErrorKind::InvalidData.into());
             }
             let normalized = policy::normalize(provider, &data, observed, previous.as_ref());
-            if identity()? != key
-                || normalized.status != "ok"
-                || !normalized.valid(provider, SystemTime::now())
-            {
+            if normalized.status != "ok" || !normalized.valid(provider, SystemTime::now()) {
                 return Err(unsafe_path());
             }
             Ok(normalized)
@@ -252,6 +250,10 @@ pub fn snapshot(
                     .unwrap_or_default(),
             )
         });
+        if identity()? != key {
+            return Err(unsafe_path());
+        }
+        result.models = models;
         result.last_success_at = if result.status == "ok" {
             Some(result.observed_at.clone())
         } else {
@@ -281,6 +283,18 @@ mod tests {
     use serde_json::json;
     use std::os::unix::fs::{PermissionsExt, symlink};
     use std::sync::{Arc, atomic::AtomicUsize};
+    fn snapshot(
+        path: &Path,
+        provider: Provider,
+        refresh: bool,
+        deadline: Instant,
+        identity: impl FnMut() -> io::Result<String>,
+        mut probe: impl FnMut() -> io::Result<(serde_json::Value, SystemTime)>,
+    ) -> Snapshot {
+        super::snapshot(path, provider, refresh, deadline, identity, || {
+            (Vec::new(), probe())
+        })
+    }
     fn key() -> io::Result<String> {
         Ok("a".repeat(64))
     }

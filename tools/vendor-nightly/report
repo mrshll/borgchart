@@ -46,6 +46,39 @@ def matrix(folder: Path) -> tuple[dict[str, tuple[str, str]], dict[str, str], bo
     return rows, versions, complete
 
 
+SLUG = re.compile(
+    r"(?<![\w.-])gpt-([0-9]+(?:\.[0-9]+)*)-(astra|sol|terra|luna)(?![\w-])"
+)
+
+
+def stale_pins(catalog: Path) -> list[str] | None:
+    if not catalog.is_file():
+        return None
+    latest: dict[str, tuple[tuple[int, ...], str]] = {}
+    for line in catalog.read_text().splitlines():
+        match = SLUG.fullmatch(line)
+        if not match:
+            return None
+        version, tier = match.groups()
+        candidate = (tuple(map(int, version.split("."))), line)
+        latest[tier] = max(candidate, latest.get(tier, candidate))
+    if not latest:
+        return None
+    pins = set()
+    sources = [
+        ROOT / ".github/workflows/vendor-nightly.yml",
+        *(ROOT / "tests/live").rglob("*.rs"),
+        *(ROOT / "templates").rglob("*.md"),
+        *(ROOT / "templates").rglob("*.yaml"),
+    ]
+    for path in sources:
+        for match in SLUG.finditer(path.read_text()):
+            version, tier = match.groups()
+            if tier in latest and tuple(map(int, version.split("."))) < latest[tier][0]:
+                pins.add(f"{path.relative_to(ROOT)}: {match[0]} → {latest[tier][1]}")
+    return sorted(pins)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("latest", "control", "latest_result", "control_result"):
@@ -98,7 +131,11 @@ def main() -> None:
     elif "qualification" in desired:
         entries = ", ".join(f'`version: "{v.split()[1]}"` ({v.split()[0]})' for v in unknown)
         body += f"\nSuggested version lines in rules/wake.yaml: {entries}. Review them and update control pins by hand."
-    scrub(body.encode())
+    pins = stale_pins(args.latest / "tier-models.txt")
+    if pins:
+        desired["model-pins"] = "vendor-nightly: newer Codex models available for pinned tiers"
+    pin_details = "\n\n" + "\n".join(f"- {pin}" for pin in pins) if pins else ""
+    scrub((body + pin_details).encode())
 
     def gh(*parts: str) -> str:
         if args.dry_run:
@@ -109,11 +146,15 @@ def main() -> None:
     existing = json.loads(
         gh("issue", "list", "--label", "vendor-nightly", "--state", "open", "--limit", "100", "--json", "number,body")
     )
-    for kind in ("regression", "harness", "qualification"):
+    for kind in ("regression", "harness", "qualification", "model-pins"):
+        if kind == "model-pins" and pins is None:
+            continue
         marker = f"<!-- vendor-nightly:{kind} -->"
         issues = [i for i in existing if marker in (i.get("body") or "")]
         with tempfile.NamedTemporaryFile(mode="w", suffix=".md") as issue:
             issue.write(marker + "\n" + ("This kind cleared on this run.\n" if kind not in desired else "") + body)
+            if kind == "model-pins" and pins:
+                issue.write(pin_details)
             issue.flush()
             if kind in desired:
                 if issues:
@@ -121,7 +162,7 @@ def main() -> None:
                 else:
                     title = desired[kind]
                     gh("issue", "create", "--label", "vendor-nightly", "--title", title, "--body-file", issue.name)
-            elif conclusive or (kind == "harness" and "regression" in desired):
+            elif kind == "model-pins" or conclusive or (kind == "harness" and "regression" in desired):
                 for old in issues:
                     gh("issue", "comment", str(old["number"]), "--body-file", issue.name)
                     gh("issue", "close", str(old["number"]))

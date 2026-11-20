@@ -116,6 +116,7 @@ You read each new message in the channel and decide whether it needs the lead.
 - The role's name comes from `roles:` in `template.yaml`; frontmatter holds only `models`.
 - **`models`** maps a vendor to `"<model>"` or `"<model> <effort>"`.
   - The effort is one of `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.
+  - Codex accepts the tier aliases `astra`, `sol`, `terra` and `luna`. At each start or resume brg selects the highest numeric version of that tier visible in the Codex model picker. Pin a full slug to keep a specific version or to start without a picker lookup.
   - Only the member's own vendor needs an entry; without one, the vendor's default model is used (with a warning).
   - Every supplied vendor pin is checked, including the other vendor's pin.
   - Model names are passed to the vendor unchanged.

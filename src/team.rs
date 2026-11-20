@@ -359,7 +359,7 @@ pub struct TeamRole {
     pub worktree: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Model {
     pub name: String,
     pub effort: Option<String>,

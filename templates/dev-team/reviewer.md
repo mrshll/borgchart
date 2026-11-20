@@ -1,7 +1,7 @@
 ---
 models:
   claude: opus high
-  codex: gpt-6.2-astra high
+  codex: astra high
 ---
 You are a development team reviewer, started for one review and stopped afterward.
 

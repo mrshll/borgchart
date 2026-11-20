@@ -4,6 +4,7 @@ pub mod context;
 pub mod policy;
 pub mod protocol;
 
+use borgchart::codex_models;
 use clap::Subcommand;
 use policy::Provider;
 use std::path::PathBuf;
@@ -17,7 +18,7 @@ pub enum Command {
         /// Subscription vendor: claude or codex.
         #[arg(value_parser = parse_provider)]
         vendor: Provider,
-        /// Explicit model name without effort; no fallback model is selected.
+        /// Model name or Codex tier alias, without effort.
         #[arg(value_parser = parse_model)]
         model: String,
         /// Refresh a successful reading; failure backoff still applies.
@@ -76,21 +77,46 @@ pub fn run(command: Command) -> ExitCode {
         &path,
         vendor,
         refresh,
-        Instant::now() + Duration::from_secs(22),
+        Instant::now() + Duration::from_secs(30),
         || context.identity(),
         || {
+            let models = if vendor == Provider::Codex {
+                let list =
+                    codex_models::listed(&context.executable, &borgchart::runtime::base_env())
+                        .unwrap_or_default();
+                codex_models::TIERS
+                    .into_iter()
+                    .filter_map(|tier| codex_models::newest(tier, &list).map(str::to_owned))
+                    .collect()
+            } else {
+                Vec::new()
+            };
             let raw = protocol::read(
                 vendor,
                 &context.executable,
                 Instant::now() + Duration::from_secs(20),
             )
-            .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidData));
             // Deliberately trust the returned Claude observation without reading
             // profiles. A silently stale vendor reply remains a documented risk.
-            Ok((raw, SystemTime::now()))
+            (models, raw.map(|value| (value, SystemTime::now())))
         },
     );
-    let assessment = policy::assess(vendor, &model, &reading, SystemTime::now());
+    let mut notice = None;
+    let mut requested = model.as_str();
+    if vendor == Provider::Codex {
+        let newest = codex_models::newest(&model, &reading.models);
+        if codex_models::alias(&model) {
+            let Some(slug) = newest else {
+                return wait("cannot resolve Codex tier; pin a full model name and retry");
+            };
+            requested = slug;
+            notice = Some(format!("{model} resolves to {slug}"));
+        } else if let Some(slug) = newest {
+            notice = Some(format!("newer Codex model available for {model}: {slug}"));
+        }
+    }
+    let assessment = policy::assess(vendor, requested, &reading, SystemTime::now());
     let mut reason = assessment.reason;
     for warning in assessment.warnings {
         reason.push_str("; ");
@@ -99,6 +125,10 @@ pub fn run(command: Command) -> ExitCode {
     if let Some(retry) = assessment.retry_at {
         reason.push_str("; check again at ");
         reason.push_str(&policy::stamp(retry));
+    }
+    if let Some(notice) = notice {
+        reason.push('\n');
+        reason.push_str(&notice);
     }
     if assessment.available {
         println!("go: {reason}");

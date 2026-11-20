@@ -635,3 +635,62 @@ fn remote_control_invalid_choices_refuse_before_creating_members() {
     remote_launch(&env, &child, "worker-local", 1, false);
     env.ok(&["stop", &parent]);
 }
+
+#[test]
+fn codex_alias_uses_the_newest_visible_model_at_each_start() {
+    let (env, parent) = setup();
+    env.write(
+        "templates/child/lead.md",
+        "---\nmodels: {claude: opus low, codex: sol medium}\n---\nWork on the example.\n",
+    );
+    let child = child(&env, &parent, &["--set", "lead.vendor=codex"]);
+    let catalog = |minor: u8| {
+        env.write(
+            "home/fake-usage/codex.json",
+            &json!({"pages":[
+                [{"model":"gpt-6.2-sol","hidden":false},{"model":"gpt-8-sol","hidden":true}],
+                [{"model":format!("gpt-6.{minor}-sol"),"hidden":false}]
+            ]})
+            .to_string(),
+        );
+    };
+    catalog(10);
+    env.ok(&["start", &child]);
+    let id = env.member(&child, "lead");
+    launched(&env, &id, 1, "codex", "gpt-6.10-sol", "medium");
+    catalog(11);
+    env.write(
+        "templates/child/lead.md",
+        "---\nmodels: {claude: opus low, codex: sol high}\n---\nWork on the example.\n",
+    );
+    assert_eq!(env.row(&child, "lead")["model"], "gpt-6.10-sol");
+    assert!(stdout(&env.ok(&["status", &child])).contains("codex gpt-6.10-sol medium"));
+    env.ok(&["stop", &child]);
+    env.ok(&["start", &child]);
+    launched(&env, &id, 2, "codex", "gpt-6.11-sol", "high");
+    env.ok(&["stop", &parent]);
+}
+
+#[test]
+fn unavailable_catalog_blocks_alias_override_but_a_pin_starts() {
+    let (env, parent) = setup();
+    let child = child(
+        &env,
+        &parent,
+        &["--set", "lead.vendor=codex,lead.model=astra"],
+    );
+    env.write("home/fake-usage/codex.json", r#"{"mode":"exit"}"#);
+    assert!(env.fails(&["start", &child]).contains("pin a full"));
+    let id = env.member(&child, "lead");
+    assert!(env.starts(&id).is_empty());
+    env.ok(&[
+        "create",
+        &format!("{child}/worker"),
+        "--name",
+        "pinned",
+        "--set",
+        "vendor=codex,model=gpt-6-astra",
+    ]);
+    launched(&env, "worker-pinned", 1, "codex", "gpt-6-astra", "medium");
+    env.ok(&["stop", &parent]);
+}

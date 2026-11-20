@@ -33,6 +33,9 @@ pub struct Incarnation {
     /// The vendor CLI version measured at this start.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vendor_version: Option<String>,
+    /// Full model selected for a Codex tier at this start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_alias: Option<crate::team::Model>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane: Option<PaneIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
