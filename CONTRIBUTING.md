@@ -32,7 +32,7 @@ The nightly sets `BORGCHART_LIVE_STRICT=1`: a required SKIP or a partial selecti
 
 For local throwaway runs only, `BORGCHART_LIVE_THROWAWAY=1` enables Claude trust saving only when `HOME` and any configured `CLAUDE_CONFIG_DIR` or `CODEX_HOME` are under the canonical system temp directory. `BORGCHART_LIVE_CODEX_MODEL` overrides the queue case's model and effort (default `gpt-6.1-terra low`). Ordinary local live runs retain the defaults above.
 
-The separate cold seating probe runs a real Codex `gpt-6-astra medium` turn and a `brg-seat route` quota/app-server call. It requires that model and an existing `$HOME/.local/state`, where it creates and removes a private temporary cache. Its evidence is outside `matrix.md` and does not qualify the matrix.
+The separate cold seating probe runs a real Codex `gpt-6.2-astra medium` turn and a `brg-seat route` quota/app-server call. It requires that model and an existing `$HOME/.local/state`, where it creates and removes a private temporary cache. Its evidence is outside `matrix.md` and does not qualify the matrix.
 
 A test that starts a process (tmux, `brg`, a child) belongs in a default-tier target, not in `src/` or `tests/validate.rs`. A program run by absolute path gets past the fast tier's stand-ins, so check moved tests by hand.
 

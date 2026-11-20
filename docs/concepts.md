@@ -137,8 +137,8 @@ Two folders with the same name can both run. Their teams are told apart by their
 $ brg status
 dev-team-k3f9                       template ~/.config/borgchart/templates/dev-team/ · folder ~/work/x
 └─ lead-q8m3            claude opus high          working
-   ├─ implementer-x7k2  codex gpt-6.1-sol high    working
-   ├─ implementer-c4nd  codex gpt-6.1-sol high    idle
+   ├─ implementer-x7k2  codex gpt-6.2-sol high    working
+   ├─ implementer-c4nd  codex gpt-6.2-sol high    idle
    ├─ reviewer          not created (start: false)
    └─ researcher        not created (start: false)
 ```

@@ -4,7 +4,7 @@
 
 ```sh
 brg-seat route claude opus            # add --refresh to skip the cache
-brg-seat route codex gpt-6-astra
+brg-seat route codex gpt-6.2-astra
 ```
 
 | Answer | Exit | Meaning |

@@ -48,7 +48,7 @@ roles:
 
 ```markdown
 ---
-models: {claude: opus medium, codex: gpt-6.1-sol high}
+models: {claude: opus medium, codex: gpt-6.2-sol high}
 ---
 You are the implementer on a development team. The lead assigns you one bounded task at a time, in your own checkout.
 

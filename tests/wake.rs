@@ -532,7 +532,7 @@ impl Env {
         .unwrap();
         fs::write(
             folder.join("worker.md"),
-            "---\nmodels: {claude: haiku, codex: gpt-6-astra}\n---\nDo the task.\n",
+            "---\nmodels: {claude: haiku, codex: gpt-6.2-astra}\n---\nDo the task.\n",
         )
         .unwrap();
         write(

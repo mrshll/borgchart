@@ -70,7 +70,7 @@ impl Fixture {
 }
 #[test]
 fn route_protocol_cache_environment_and_cli_exit_contract() {
-    for (vendor, model) in [("codex", "gpt-6-astra"), ("claude", "opus")] {
+    for (vendor, model) in [("codex", "gpt-6.2-astra"), ("claude", "opus")] {
         let f = Fixture::new();
         let out = f.run(&["route", vendor, model]);
         assert_eq!(

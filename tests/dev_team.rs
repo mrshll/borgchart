@@ -841,7 +841,7 @@ mod round {
         assert_eq!(start["cwd"], copy_folder.display().to_string());
         let argv = start["argv"].to_string();
         assert!(
-            argv.starts_with("[\"codex") && argv.contains("gpt-6.1-sol"),
+            argv.starts_with("[\"codex") && argv.contains("gpt-6.2-sol"),
             "{argv}"
         );
 
