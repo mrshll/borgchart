@@ -55,13 +55,15 @@ impl Outcome {
 /// Clean up under `only` and its child teams, or everywhere.
 pub fn cleanup(mut only: Option<Instance>) -> Result<Outcome, String> {
     if only.is_none() && crate::runtime::has_member_context() {
-        return Err("name a team in your subtree: brg cleanup <team>".into());
+        return Err("name your own team or a team in your subtree: brg cleanup <team>".into());
     }
     let lock = registry::lock()?;
-    if let Some(inst) = &mut only {
+    let recursive = if let Some(inst) = &mut only {
         inst.reload()?;
-        crate::runtime::check_instance_authority(inst)?;
-    }
+        crate::runtime::cleanup_recurses(inst)?
+    } else {
+        true
+    };
     let registry = lock.load()?;
     let mut out = Outcome::default();
     let held = held(&registry, |_| true);
@@ -69,8 +71,9 @@ pub fn cleanup(mut only: Option<Instance>) -> Result<Outcome, String> {
         .instances
         .keys()
         .filter(|id| {
-            only.as_ref()
-                .is_none_or(|inst| *id == &inst.id || id.starts_with(&format!("{}/", inst.id)))
+            only.as_ref().is_none_or(|inst| {
+                *id == &inst.id || (recursive && id.starts_with(&format!("{}/", inst.id)))
+            })
         })
         .collect();
     for id in ids {

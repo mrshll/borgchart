@@ -222,7 +222,8 @@ enum Command {
     /// registered. Work folders, kept members' and child teams' worktrees, other
     /// worktrees and messages are never touched.
     Cleanup {
-        /// Only this team and its child teams. Members must name a team in their subtree.
+        /// A member may name its own team to clean only its direct leftovers, or a team
+        /// in its subtree to clean recursively. For a person, scoped cleanup is recursive.
         #[arg(value_name = "TEAM", add = crate::complete::instances())]
         instance: Option<String>,
     },
