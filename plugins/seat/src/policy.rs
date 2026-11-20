@@ -49,6 +49,8 @@ pub struct Snapshot {
     pub included_allowed: Option<bool>,
     pub windows: Vec<Window>,
     pub known_scopes: Vec<String>,
+    #[serde(default)]
+    pub models: Vec<String>,
     pub held_keys: Vec<String>,
     pub denied_scopes: Vec<String>,
     pub timed_denial: bool,
@@ -108,6 +110,7 @@ pub fn unknown(provider: Provider, now: SystemTime, held_keys: Vec<String>) -> S
         included_allowed: None,
         windows: Vec::new(),
         known_scopes: Vec::new(),
+        models: Vec::new(),
         held_keys,
         denied_scopes: Vec::new(),
         timed_denial: false,
@@ -166,6 +169,14 @@ impl Snapshot {
             .last_success_at
             .as_ref()
             .is_some_and(|s| time(&Value::String(s.clone())).is_none_or(|t| t > observed))
+        {
+            return false;
+        }
+        if self.models.len() > 4
+            || self
+                .models
+                .iter()
+                .any(|slug| !borgchart::codex_models::is_tier_slug(slug))
         {
             return false;
         }

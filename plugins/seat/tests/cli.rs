@@ -163,7 +163,8 @@ fn credential_change_during_probe_waits_then_next_identity_can_probe() {
         assert_eq!(
             f.events(vendor)
                 .iter()
-                .filter(|e| e["event"] == "start")
+                .filter(|e| e["request"]["method"] == "account/rateLimits/read"
+                    || e["request"]["request"]["subtype"] == "get_usage")
                 .count(),
             3
         );
@@ -189,4 +190,21 @@ fn invalid_cache_locations_refuse_without_a_probe() {
                 .is_none()
         );
     }
+}
+
+#[test]
+fn codex_route_names_the_alias_target_and_warns_without_switching_a_pin() {
+    let f = Fixture::new();
+    let alias = f.run(&["route", "codex", "astra"]);
+    assert_eq!(alias.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&alias.stdout).contains("gpt-6.2-astra"));
+    let pin = f.run(&["route", "codex", "gpt-6-astra"]);
+    assert_eq!(pin.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&pin.stdout).contains("gpt-6.2-astra"));
+    let latest = f.run(&["route", "codex", "gpt-6.2-astra"]);
+    assert_eq!(String::from_utf8_lossy(&latest.stdout).lines().count(), 1);
+    f.control("codex", json!({"response":{}}));
+    let denied = f.run(&["route", "codex", "gpt-6-astra", "--refresh"]);
+    assert_eq!(denied.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&denied.stdout).contains("gpt-6.2-astra"));
 }

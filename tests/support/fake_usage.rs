@@ -76,7 +76,32 @@ pub fn run(args: &[String]) -> bool {
     if provider == "codex" {
         assert_eq!(read()["method"], "initialized");
     }
-    let usage = read();
+    let mut usage = read();
+    if provider == "codex" && usage["method"] == "model/list" {
+        let defaults = json!([[{"model":"gpt-6.2-astra","hidden":false},{"model":"gpt-6.2-sol","hidden":false},{"model":"gpt-6.1-terra","hidden":false}]]);
+        let pages = control
+            .get("pages")
+            .unwrap_or(&defaults)
+            .as_array()
+            .unwrap();
+        for (i, page) in pages.iter().enumerate() {
+            assert_eq!(usage["method"], "model/list");
+            if i > 0 {
+                assert_eq!(usage["params"]["cursor"], i.to_string());
+            }
+            let next = (i + 1 < pages.len()).then(|| (i + 1).to_string());
+            println!(
+                "{}",
+                json!({"id":usage["id"],"result":{"data":page,"nextCursor":next}})
+            );
+            std::io::stdout().flush().unwrap();
+            if next.is_none() {
+                break;
+            }
+            usage = read();
+        }
+        return true;
+    }
     if provider == "codex" {
         assert_eq!(usage["id"], 2);
         assert_eq!(usage["method"], "account/rateLimits/read");

@@ -1961,6 +1961,7 @@ mod liveness {
         let dir = tempfile::tempdir().unwrap();
         let paths = StateDir::from_root(dir.path());
         let mut inc = Incarnation {
+            resolved_alias: None,
             member: "lead".into(),
             incarnation: "lead.1.abcd".into(),
             started_at: utc_now(),
@@ -2002,6 +2003,7 @@ mod liveness {
             .spawn()
             .unwrap();
         let inc = Incarnation {
+            resolved_alias: None,
             member: "lead".into(),
             incarnation: "lead.1.abcd".into(),
             started_at: utc_now(),

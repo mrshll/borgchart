@@ -1039,7 +1039,8 @@ mod round {
                 .replace("<vendor>", vendor)
                 .replace("<model>", model);
             let (answer, code) = run(&format!("seat-{designer}"), &route);
-            assert_eq!((code, answer.trim()), (0, "go: included quota available"));
+            assert_eq!(code, 0, "{answer}");
+            assert!(answer.starts_with("go:"), "{answer}");
             let events =
                 fs::read_to_string(team.path(&format!("home/fake-usage/{vendor}.jsonl"))).unwrap();
             assert!(
@@ -1290,7 +1291,8 @@ mod round {
             .replace("<vendor>", lead_row["vendor"].as_str().unwrap())
             .replace("<model>", lead_row["model"].as_str().unwrap());
         let (answer, code) = run("dev-seat", &route);
-        assert_eq!((code, answer.trim()), (0, "go: included quota available"));
+        assert_eq!(code, 0, "{answer}");
+        assert!(answer.starts_with("go:"), "{answer}");
 
         let (started, code) = run("dev-start", &format!("\"$BORGCHART_BIN\" start {copy_id}"));
         assert_eq!(code, 0, "{started}");
@@ -1307,7 +1309,8 @@ mod round {
             .replace("<vendor>", "codex")
             .replace("<model>", "astra");
         let (answer, code) = run_in(&copy_id, &dev_lead, "nested-dev-seat", &nested_route);
-        assert_eq!((code, answer.trim()), (0, "go: included quota available"));
+        assert_eq!(code, 0, "{answer}");
+        assert!(answer.starts_with("go:"), "{answer}");
 
         let log = team.path(&format!("home/fake-agent/{dev_lead}.jsonl"));
         let start = first_start(&team, "the dev lead", &log);
