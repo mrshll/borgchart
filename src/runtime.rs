@@ -2063,13 +2063,28 @@ fn check_instance_authority(inst: &Instance) -> Result<(), String> {
     check_subtree_authority(inst.record.parent.clone(), &inst.id)
 }
 
-fn check_subtree_authority(mut parent: Option<String>, target: &str) -> Result<(), String> {
+/// Own-team cleanup stops at the team boundary. Other allowed targets recurse.
+pub(crate) fn cleanup_recurses(inst: &Instance) -> Result<bool, String> {
+    let Some(caller) = latest_member_address()? else {
+        return Ok(true);
+    };
+    if caller
+        .rsplit_once('/')
+        .is_some_and(|(team, _)| team == inst.id)
+    {
+        return Ok(false);
+    }
+    check_ancestor(&caller, inst.record.parent.clone(), &inst.id)?;
+    Ok(true)
+}
+
+fn latest_member_address() -> Result<Option<String>, String> {
     let context::Caller::Member {
         member,
         incarnation,
     } = context::caller(None).map_err(|e| e.message)?
     else {
-        return Ok(());
+        return Ok(None);
     };
     // Targets may cross team boundaries; the caller's start is always
     // checked in its own team, never in the target's store.
@@ -2090,7 +2105,21 @@ fn check_subtree_authority(mut parent: Option<String>, target: &str) -> Result<(
             "`{own}/{member}`'s start is incomplete, replaced or stopped; only its latest running start may manage its subtree"
         ));
     }
-    let caller_address = caller.at(&member);
+    Ok(Some(caller.at(&member)))
+}
+
+fn check_subtree_authority(parent: Option<String>, target: &str) -> Result<(), String> {
+    if let Some(caller) = latest_member_address()? {
+        check_ancestor(&caller, parent, target)?;
+    }
+    Ok(())
+}
+
+fn check_ancestor(
+    caller_address: &str,
+    mut parent: Option<String>,
+    target: &str,
+) -> Result<(), String> {
     let refusal = format!(
         "`{target}` is outside `{caller_address}`'s subtree; ask a person or an ancestor member to manage it"
     );

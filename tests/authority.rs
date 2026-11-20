@@ -521,3 +521,64 @@ fn missing_parent_records_do_not_grant_authority_from_live_config() {
     member_ok(&env, &dept, "lead", &["delete", &target]);
     env.ok(&["stop", &dept]);
 }
+
+#[test]
+fn member_bare_cleanup_preserves_unregistered_team_state() {
+    let env = department();
+    let dept = env.create("oncall", "work/a");
+    let gone = env.create("oncall", "work/b");
+    env.ok(&["stop", &gone]);
+    env.ok(&["delete", &gone]);
+    let notes = env.path("state").join(&gone).join("notes");
+    fs::create_dir_all(&notes).unwrap();
+    let file = notes.join("entry");
+    fs::write(&file, "keep").unwrap();
+
+    let out = member_cmd(&env, &dept, "lead", 0, &["cleanup"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "{}", both(&out));
+    assert!(file.exists());
+    env.ok(&["cleanup"]);
+    assert!(!notes.exists());
+}
+
+#[test]
+fn scoped_cleanup_preserves_leftovers_outside_the_callers_authority() {
+    let env = department();
+    let dept = env.create("oncall", "work/a");
+    let child = prepared_copy(&env, &dept, "dev");
+    env.ok(&["start", &child]);
+    let panel = prepared_copy(&env, &child, "design");
+    env.ok(&["start", &panel]);
+    let scout = env.member(&panel, "scout");
+    let scout_addr = format!("{panel}/{scout}");
+    env.ok(&["stop", &scout_addr]);
+    env.ok(&["delete", &scout_addr]);
+    let nested = env.path("state").join(&panel).join("members").join(scout);
+    fs::create_dir_all(&nested).unwrap();
+    env.ok(&["create", &format!("{child}/helper")]);
+    let helper = env.member(&child, "helper");
+    let addr = format!("{child}/{helper}");
+    env.ok(&["stop", &addr]);
+    env.ok(&["delete", &addr]);
+    let leftover = env.path("state").join(&child).join("members").join(helper);
+    fs::create_dir_all(&leftover).unwrap();
+
+    let sibling = prepared_copy(&env, &dept, "dev");
+    env.ok(&["start", &sibling]);
+    member_refused(&env, &sibling, "lead", &["cleanup", &child]);
+    member_ok(&env, &dept, "lead", &["cleanup", &dept]);
+    assert!(leftover.is_dir());
+    member_ok(&env, &child, "lead", &["cleanup", &child]);
+    assert!(!leftover.exists());
+    assert!(nested.is_dir());
+    fs::create_dir_all(&leftover).unwrap();
+    let lead = format!("{child}/{}", env.member(&child, "lead"));
+    env.ok(&["stop", &lead]);
+    member_refused(&env, &child, "lead", &["cleanup", &child]);
+    assert!(leftover.is_dir());
+    member_ok(&env, &dept, "lead", &["cleanup", &child]);
+    assert!(!leftover.exists());
+    assert!(!nested.exists());
+}
