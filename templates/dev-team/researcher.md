@@ -1,7 +1,7 @@
 ---
 models:
   claude: sonnet medium
-  codex: gpt-6.1-terra medium
+  codex: terra medium
 ---
 {{includes/researcher}}
 

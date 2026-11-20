@@ -1,7 +1,7 @@
 ---
 models:
   claude: sonnet low
-  codex: gpt-6.1-terra low
+  codex: terra low
 ---
 {{includes/monitor}}
 

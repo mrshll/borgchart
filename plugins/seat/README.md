@@ -4,6 +4,7 @@
 
 ```sh
 brg-seat route claude opus            # add --refresh to skip the cache
+brg-seat route codex astra
 brg-seat route codex gpt-6.2-astra
 ```
 
@@ -14,6 +15,8 @@ brg-seat route codex gpt-6.2-astra
 | usage error | 2 | wrong arguments |
 
 Anything else, including an error or a missing executable (127), means wait. A wait never authorizes another vendor or model. The command only checks quota: it launches nothing and changes no settings, and brg's own `create` and `start` don't run it for you.
+
+Codex accepts `astra`, `sol`, `terra` and `luna`. The route answer names the model selected from the visible picker. A member can select a newer version at its next start. For a full model name, a newer visible version in its tier adds an advisory line and the quota decision still applies to the requested model.
 
 ## What it checks
 
@@ -50,7 +53,7 @@ Readings are cached in `$XDG_CACHE_HOME/borgchart/seat-v2` (or `~/.cache/borgcha
 
 - A reading lasts at most 120 seconds, less if a reset comes sooner. `--refresh` skips a cached reading.
 - A failed check is not retried for 30 seconds, even with `--refresh`.
-- Only normalized quota figures are stored: no responses, tokens or profiles.
+- The cache holds normalized quota figures and the newest visible Codex slug for each recognized tier.
 - The cache is disposable. Clear it when no check is running.
 
 ## Limits

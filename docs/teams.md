@@ -48,7 +48,7 @@ roles:
 
 ```markdown
 ---
-models: {claude: opus medium, codex: gpt-6.2-sol high}
+models: {claude: opus medium, codex: sol high}
 ---
 You are the implementer on a development team. The lead assigns you one bounded task at a time, in your own checkout.
 
@@ -56,6 +56,7 @@ You are the implementer on a development team. The lead assigns you one bounded 
 ```
 
 - **`models`:** pins a model, and optionally an effort, per vendor. Only the member's own vendor needs an entry; `templates/dev-team/` names both, so a new member can choose the other vendor with `brg create <team>/<role> --set vendor=codex`, without changing the template. For a child team use `--set lead.vendor=codex`; its role choices appear in `status --json` before start, with separate `vendor`, `model` (name only) and `effort` fields. Only explicit choices are stored; other keys follow the current template at each start.
+- A Codex tier such as `sol` selects the newest visible version at each start. The member’s status shows the full model name.
 - **Body:** the standing instruction. It's sent once, when the member starts.
 - **Includes:** one level deep.
 - **Another template's role file:** a line `{{templates/<template>/<role>}}` takes that role's instruction body wholesale, so a private template can reuse a shared lead and add its own lines ([format](format.md#reusing-a-shared-template)).
