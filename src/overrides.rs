@@ -423,11 +423,11 @@ mod tests {
     #[test]
     fn parser_preserves_model_dots_and_refuses_invalid_or_duplicate_choices() {
         let choices = parse(&[
-            "lead.vendor=codex,lead.model=gpt-6.1-sol".into(),
+            "lead.vendor=codex,lead.model=gpt-6.2-sol".into(),
             "lead.effort=high".into(),
         ])
         .unwrap();
-        assert_eq!(choices["lead"].model.as_deref(), Some("gpt-6.1-sol"));
+        assert_eq!(choices["lead"].model.as_deref(), Some("gpt-6.2-sol"));
         for value in [
             "vendor",
             "vendor=unknown",

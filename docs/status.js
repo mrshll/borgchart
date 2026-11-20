@@ -47,10 +47,10 @@
     researcher: "Λ gpt-6.1-terra medium", // templates/engineering researcher (codex)
     monitor: "§ sonnet low", // templates/engineering monitor
     lead: "§ opus high", // templates/dev-team lead (orchestrator.md)
-    implementer: "Λ gpt-6.1-sol high", // templates/dev-team implementer (codex)
+    implementer: "Λ gpt-6.2-sol high", // templates/dev-team implementer (codex)
     reviewer: "§ opus high", // templates/dev-team reviewer
     designerClaude: "§ fable medium", // templates/dev-design-team designer-claude
-    designerCodex: "Λ gpt-6-astra high", // templates/dev-design-team designer-codex
+    designerCodex: "Λ gpt-6.2-astra high", // templates/dev-design-team designer-codex
   };
   // What the root lead gives out, as `brg create --name` would name it:
   // a dev team's task, with the short word its implementer and reviewer

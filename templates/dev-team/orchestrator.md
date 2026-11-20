@@ -1,7 +1,7 @@
 ---
 models:
   claude: opus high
-  codex: gpt-6-astra medium
+  codex: gpt-6.2-astra medium
 ---
 You lead a development team, owning the task, branches, plan, integration and pull requests. You work for the repository's owner (below, "the owner"), also its reviewer; every other member is your child.
 

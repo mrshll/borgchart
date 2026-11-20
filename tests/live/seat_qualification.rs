@@ -92,7 +92,7 @@ fn vendor_codex_seating_probe() {
     .unwrap();
     fs::write(
         t.dir.join("seatprobe.md"),
-        format!("---\nmodels:\n  codex: gpt-6-astra medium\n---\n{instruction}\n"),
+        format!("---\nmodels:\n  codex: gpt-6.2-astra medium\n---\n{instruction}\n"),
     )
     .unwrap();
     let state = &w.env["BORGCHART_STATE_HOME"];
@@ -115,7 +115,7 @@ shim="$BORGCHART_STATE_HOME/$BORGCHART_TEAM/members/$BORGCHART_MEMBER/bin/brg-se
 (umask 077; : > "$XDG_CACHE_HOME/permission-probe") || blocked cache_unwritable
 /bin/rm "$XDG_CACHE_HOME/permission-probe"
 printf 'CONTEXT_OK\n' 
-"$shim" route codex gpt-6-astra > seat-stdout.txt 2> seat-stderr.txt
+"$shim" route codex gpt-6.2-astra > seat-stdout.txt 2> seat-stderr.txt
 code=$?
 printf '%s\n' "$code" > seat-exit.txt
 printf 'SEAT_EXIT=%s\n' "$code"
