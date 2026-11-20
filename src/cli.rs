@@ -216,12 +216,13 @@ enum Command {
     /// Remove what brg left behind for deleted members and child teams.
     ///
     /// That is the clean git worktrees it added for them, and their leftover
-    /// state. A worktree with work in it is listed and kept. Without a team, also
+    /// state. A worktree with work in it is listed and kept. Only a person may
+    /// omit the team to clean up everywhere. Without a team, also
     /// remove the state of team IDs brg issued that are no longer
     /// registered. Work folders, kept members' and child teams' worktrees, other
     /// worktrees and messages are never touched.
     Cleanup {
-        /// Only this team and its child teams (default: every team).
+        /// Only this team and its child teams. Members must name a team in their subtree.
         #[arg(value_name = "TEAM", add = crate::complete::instances())]
         instance: Option<String>,
     },
@@ -585,7 +586,7 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
                 },
                 None => None,
             };
-            let outcome = or_fail!(crate::cleanup::cleanup(only.as_ref()));
+            let outcome = or_fail!(crate::cleanup::cleanup(only));
             for line in &outcome.lines {
                 println!("{line}");
             }

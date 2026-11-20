@@ -2025,7 +2025,7 @@ fn parent_address(inst: &Instance, parent: &str) -> String {
 }
 
 /// A child team belongs below its recorded parent member, never below its roots.
-fn check_instance_authority(inst: &Instance) -> Result<(), String> {
+pub(crate) fn check_instance_authority(inst: &Instance) -> Result<(), String> {
     if !has_member_context() {
         return Ok(());
     }
