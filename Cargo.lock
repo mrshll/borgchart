@@ -173,7 +173,7 @@ dependencies = [
 
 [[package]]
 name = "borgchart"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "clap_complete",
@@ -192,7 +192,7 @@ dependencies = [
 
 [[package]]
 name = "brg-github"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "borgchart",
  "clap",
@@ -203,7 +203,7 @@ dependencies = [
 
 [[package]]
 name = "brg-seat"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "borgchart",
  "clap",
@@ -217,7 +217,7 @@ dependencies = [
 
 [[package]]
 name = "brg-slack"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "borgchart",
  "clap",
@@ -231,7 +231,7 @@ dependencies = [
 
 [[package]]
 name = "brg-timer"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "borgchart",
  "clap",
