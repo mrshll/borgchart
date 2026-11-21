@@ -193,6 +193,7 @@ pub fn fetch(
         let assigned = nodes(&raw["assignees"])?
             .iter()
             .any(|a| account(a) == Some(guard.machine_id));
+        let machine_authored = pr && account(&raw["author"]) == Some(guard.machine_id);
         let timeline = &raw["timelineItems"];
         let body = std::iter::once(raw).filter(|_| after.is_empty());
         let reviews: &[Value] = if pr && after.is_empty() {
@@ -221,7 +222,7 @@ pub fn fetch(
                 }
                 "AssignedEvent" => (!pr && account(&value["assignee"]) == Some(guard.machine_id))
                     .then_some(Kind::Assigned),
-                "MergedEvent" if assigned => Some(Kind::Merged {
+                "MergedEvent" if assigned || machine_authored => Some(Kind::Merged {
                     commit: oid(value)?,
                 }),
                 "PullRequestReview" => {

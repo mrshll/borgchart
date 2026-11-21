@@ -337,6 +337,36 @@ fn four_owner_triggers_deliver_identifiers_once_without_github_text() {
     assert_eq!(f.health()["ok"], true);
 }
 #[test]
+fn owner_merges_wake_the_lead_once_for_assigned_or_machine_authored_prs() {
+    for (assigned, author, merger, expected) in [
+        (false, 101, 202, 1),
+        (false, 303, 202, 0),
+        (true, 303, 202, 1),
+        (false, 101, 303, 0),
+    ] {
+        let f = fixture();
+        changed(&f, &[(true, vec![])]);
+        let mut raw = item(true, vec![event("MergedEvent", "ME_owner", merger, "")]);
+        raw["author"] = json!({"databaseId":author});
+        if !assigned {
+            raw["assignees"] = json!({"nodes":[]});
+        }
+        answer(&f, 1, &raw);
+        drive(&f, "0,60");
+        assert_eq!(
+            reads(&text(&f), "ME_owner"),
+            expected,
+            "{assigned}/{author}/{merger}"
+        );
+        assert!(
+            deliveries(&f)
+                .iter()
+                .all(|d| d.starts_with("example-team/root\n"))
+        );
+        assert_eq!(f.health()["ok"], true);
+    }
+}
+#[test]
 fn owner_thread_replies_outside_the_timeline_wake_by_assignment_or_unedited_mention() {
     for (assigned, edited, expected) in [(true, false, 1), (false, false, 1), (false, true, 0)] {
         let f = fixture();
