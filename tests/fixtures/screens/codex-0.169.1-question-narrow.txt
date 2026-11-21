@@ -1,0 +1,13 @@
+[ . ] Action Required | Request sample tree and season | example
+  Question 1/2 (2 unanswered)
+  Which sample tree should we use?
+
+  › 1. Cedar              Use Cedar as the sample
+                          tree.
+    2. Birch              Use Birch as the sample
+                          tree.
+    3. None of the above  Optionally, add details in
+                          notes (tab)
+
+  tab to add notes | enter to submit answer
+  ←/→ to navigate questions | esc to interrupt

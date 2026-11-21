@@ -1,8 +1,18 @@
 # State rules for Codex, written from screens recorded through tmux
-# (codex-cli 0.165.0 and 0.169.0). Higher priority wins; no match means `unknown`.
+# (codex-cli 0.165.0, 0.169.0 and 0.169.1). Higher priority wins; no match means `unknown`.
 # The working bullet alternates between • and ◦.
 vendor: codex
 rules:
+  - id: question-prompt
+    # Codex shares its Action Required title with approvals. Require the
+    # question footer at the end of the screen, including when its hints wrap.
+    state: blocked
+    priority: 110
+    bottom: 40
+    all: ['^  Question [0-9]+/[0-9]+(?: |$)']
+    any:
+      - '^  (?:tab to add notes(?: \| |\n  ))?enter to submit (?:answer|all)(?:(?: \| |\n  )(?:←/→ to navigate questions|⌃p / ⌃n change question))?(?: \| |\n  )esc to interrupt[ \t]*\z'
+      - '^  tab or esc to clear notes(?: \| |\n  )enter to submit (?:answer|all)[ \t]*\z'
   - id: approval-title
     state: blocked
     priority: 100

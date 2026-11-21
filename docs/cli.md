@@ -78,7 +78,7 @@ brg create <root>/dev --repo gadgets --branch fix-rounding
 | --- | --- |
 | `idle` | Waiting for input |
 | `working` | In a turn |
-| `blocked` | At a prompt that needs a person (a permission, a question); `blocked (folder trust)` at its vendor's folder-trust screen, with the detail "waiting at folder trust: `brg attach <team>/<member>`" (`--json` keeps `"state": "blocked"` with `"rule": "trust-dialog"`); `blocked (new folder)` at Claude's "Adding a new directory" prompt, with the detail "waiting at Claude's \"Adding a new directory\" prompt: `brg attach <team>/<member>`" (`--json` keeps `"state": "blocked"` with `"rule": "add-dir-dialog"`) |
+| `blocked` | At a prompt that needs a person. For Codex's question panel, status shows `question-prompt` and the `brg attach <team>/<member>` command to open the pane and answer. `blocked (folder trust)` at its vendor's folder-trust screen, with the detail "waiting at folder trust: `brg attach <team>/<member>`" (`--json` keeps `"state": "blocked"` with `"rule": "trust-dialog"`). `blocked (new folder)` at Claude's "Adding a new directory" prompt, with the detail "waiting at Claude's \"Adding a new directory\" prompt: `brg attach <team>/<member>`" (`--json` keeps `"state": "blocked"` with `"rule": "add-dir-dialog"`). |
 | `unknown` | Running, but no rule matched (e.g. after a vendor update changed the screen) |
 | `gate-inactive` | A restricted member whose gate hasn't reported in; it gets no input |
 | `exited` | The program ended (with its status when tmux knows it) |
@@ -89,7 +89,7 @@ brg create <root>/dev --repo gadgets --branch fix-rounding
 | `stopping` | A team or child team has an unfinished stop cascade; run `brg stop <team>` to finish it before creating or starting inside |
 | `unreadable` | A kept child team could not be read; its detail shows the error. Other readable members and child teams remain visible in text, JSON, watch and interactive status |
 
-A `stored` or `uncertain` send to a running recipient adds `delivery <outcome> since HH:MMZ: <reason>` to its row until the next `typed` or `queued` delivery, or until an ordinary member has no unacknowledged messages. Claude sends outside the screen-verification size budget create no alert. `--json` includes `delivery: {outcome, reason, at, id}`. Inbox-only interactive Claude members and stopped recipients create no delivery alert, and a restart ignores the previous start’s record.
+A `blocked`, `stored` or `uncertain` send to a running recipient adds `delivery <outcome> since HH:MMZ: <reason>` to its row until the next `typed` or `queued` delivery, or until an ordinary member has no unacknowledged messages. Claude sends outside the screen-verification size budget create no alert. `--json` includes `delivery: {outcome, reason, at, id}`. Inbox-only interactive Claude members and stopped recipients create no delivery alert, and a restart ignores the previous start’s record.
 
 For a running Codex member, status checks for a session recorded for this start after a 30-second startup grace; a missing session adds `brg can’t deliver to codex <version>: no Codex session recorded for this start`. For a running, non-interactive Claude member that reads `idle`, each status refresh checks the styled input box. An unreadable layout adds `brg can’t read <vendor> <version>’s input box: <reason>`. A readable box in Vim normal mode is fine. Delivery and unreadable-box failures give the row a red `!` and count in “need you”; `blocked`, `exited` and `gate-inactive` keep their own marks.
 
