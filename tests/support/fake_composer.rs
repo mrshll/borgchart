@@ -8,10 +8,11 @@
 //! submission to `$FAKE_COMPOSER_DIR/log.jsonl`.
 //!
 //! `$FAKE_COMPOSER_DIR/control` holds `key=value` lines, re-read while it
-//! runs: `mode=idle|working|dialog`, `enter=submit|ignore`,
+//! runs: `mode=idle|working|dialog|capture`, `enter=submit|ignore`,
 //! `on_paste=none|dialog|append:<text>` (a person typing during the paste),
 //! `after_enter=garbage` (an unreadable screen after Enter).
 //! `fold=on` folds Claude pastes over 3 lines or 800 characters.
+//! `mode=capture` draws the `capture` file, with its pane title on the first line.
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -29,6 +30,7 @@ enum Mode {
     Idle,
     Working,
     Dialog,
+    Capture,
     /// Something unreadable instead of the input box.
     Garbage,
 }
@@ -98,6 +100,7 @@ impl Fake {
                     self.mode = match v {
                         "working" => Mode::Working,
                         "dialog" => Mode::Dialog,
+                        "capture" => Mode::Capture,
                         _ => Mode::Idle,
                     }
                 }
@@ -136,9 +139,16 @@ impl Fake {
         let mut lines: Vec<String> = self.history.iter().map(|h| format!("> {h}")).collect();
         lines.push(String::new());
         let title;
+        let capture;
         // Where the cursor goes: the end of the input box, as the real CLIs do.
         let mut cursor = (0, 0);
         match (self.vendor, self.mode) {
+            (_, Mode::Capture) => {
+                capture = std::fs::read_to_string(self.dir.join("capture")).unwrap();
+                let (pane_title, screen) = capture.split_once('\n').unwrap();
+                title = pane_title;
+                lines = screen.lines().map(String::from).collect();
+            }
             (_, Mode::Garbage) => {
                 title = "fake";
                 lines.push("$ ".into());

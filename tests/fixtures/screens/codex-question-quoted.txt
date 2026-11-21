@@ -1,0 +1,14 @@
+example
+• The question panel looked like this:
+  Question 1/1 (1 unanswered)
+  Which sample tree should we use?
+
+  › 1. Cedar              Use a cedar tree with layered evergreen branches.
+    2. Birch              Use a birch tree with pale bark and delicate leaves.
+    3. None of the above  Optionally, add details in notes (tab)
+
+  tab to add notes | enter to submit answer | esc to interrupt
+
+› Ask Codex to do anything
+
+  ? for shortcuts

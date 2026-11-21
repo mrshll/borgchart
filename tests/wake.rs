@@ -445,6 +445,11 @@ impl Env {
         });
     }
 
+    fn show_capture(&self, capture: &str) {
+        fs::write(self.dir.path().join("fake/capture"), capture).unwrap();
+        self.control("mode=capture");
+    }
+
     fn keys(&self, args: &[&str]) {
         let mut a = vec!["send-keys", "-t", "=brg-state:=m"];
         a.extend_from_slice(args);
@@ -1602,4 +1607,52 @@ fn codex_blocked_pane_queues_and_reports_blocked() {
         e.send_message("unreadable pane", &[]).1["delivery"],
         "queued"
     );
+}
+
+#[test]
+fn codex_question_panel_reports_why_queued_messages_wait() {
+    for capture in [
+        screen!("codex-0.169.1-question-multiple.txt"),
+        screen!("codex-0.169.1-question.txt"),
+        screen!("codex-0.169.1-question-narrow.txt"),
+        screen!("codex-0.169.1-question-notes.txt"),
+    ] {
+        let e = Env::new(Vendor::Codex);
+        e.send_setup(Vendor::Codex, false, false);
+        e.fake_codex("exit 0");
+        e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20");
+        e.show_capture(capture);
+
+        let row = e.status_row();
+        let (code, send) = e.send_message("task", &[]);
+        assert!(
+            row["state"] == "blocked" && code == 0 && send["delivery"] == "blocked",
+            "{capture}\nstatus: {row}\nsend: {send}"
+        );
+        for hint in [&row["detail"], &send["reason"]] {
+            let hint = hint.as_str().unwrap();
+            assert!(
+                hint.contains("question-prompt") && hint.contains("brg attach state/m"),
+                "{hint}"
+            );
+        }
+        assert!(e.codex_args().unwrap()[4].contains("task"));
+        assert!(e.events("enter").is_empty());
+        assert!(e.events("paste").is_empty());
+    }
+}
+
+#[test]
+fn codex_quoted_question_panel_does_not_block_member_or_messages() {
+    let e = Env::new(Vendor::Codex);
+    e.send_setup(Vendor::Codex, false, false);
+    e.fake_codex("exit 0");
+    e.record_session("01a1d300-f48d-7c70-a58a-d5fbea1edd20");
+    e.show_capture(screen!("codex-question-quoted.txt"));
+
+    let row = e.status_row();
+    assert_eq!(row["state"], "idle", "{row}");
+    let (code, send) = e.send_message("task", &[]);
+    assert_eq!(code, 0, "{send}");
+    assert_eq!(send["delivery"], "queued", "{send}");
 }
