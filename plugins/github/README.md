@@ -3,10 +3,10 @@
 Wake the owning lead for four actions GitHub's API attributes to the owner:
 an unedited mention of the machine account; assignment of an issue to that
 account; a submitted review on a pull request assigned to that account; or a
-merge of a pull request assigned to that account. Mentions cover issue and pull
-request bodies, comments, reviews and owner inline review comments, including
-replies in existing threads. Other accounts' actions and edits that add a mention
-do not wake anyone.
+merge of a pull request that account opened or is currently assigned to.
+Mentions cover issue and pull request bodies, comments, reviews and owner inline
+review comments, including replies in existing threads. Other accounts' actions
+and edits that add a mention do not wake anyone.
 
 `make install` installs this Rust workspace plugin alongside `brg`. It needs
 `gh` on PATH, authenticated as a separate machine account. Numeric account IDs
