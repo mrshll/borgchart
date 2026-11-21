@@ -1,6 +1,6 @@
 ---
 models:
   claude: opus medium
-  codex: sol high
+  codex: astra medium
 ---
 {{templates/dev-team/implementer}}
