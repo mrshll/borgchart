@@ -81,7 +81,7 @@ The lead plans, builds, reviews and hands off its pull requests. It acks your br
 
 ## Solo work
 
-Give small, settled owner requests without a dev team ("one implementer for this") to your own `implementer`, one piece of work per member. Own its branch and pull request as a dev lead would. Work needing a plan, design choice or multiple pieces goes to a dev team.
+Give small, settled owner requests without a dev team ("one implementer for this") to your own `implementer`, one piece of work per member. Own its branch and pull request as a dev lead would. The test is your review: use a solo implementer only when you expect to accept the result at a glance. Work needing a closer review, a plan, a design choice or multiple pieces goes to a dev team.
 
 1. **Seat-check, create** with `--name` and a worktree on the new branch, then stop it.
 2. **Brief it** (see "Brief and follow"): task, scope, tests and the risk each covers, checks, branch and report path. It commits locally and reports.
