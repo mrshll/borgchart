@@ -431,6 +431,9 @@ pub fn member_launch(
             if resume.is_some() {
                 argv.push("resume".into());
             }
+            if !extra_args.iter().any(|arg| arg == "--no-daemon") {
+                argv.push("--no-daemon".into());
+            }
             // Session recording and the gate are hooks: turn them on,
             // whatever the installed Codex's own configuration says.
             argv.extend(["-c".into(), "features.hooks=true".into()]);
