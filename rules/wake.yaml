@@ -20,3 +20,7 @@ wake:
     version: "0.170.0"
     self_wake: false
     methods: [queue]
+  - vendor: codex
+    version: "0.171.0"
+    self_wake: false
+    methods: [queue]

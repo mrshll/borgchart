@@ -375,6 +375,10 @@ fn version_verification_uses_the_bundled_or_override_list() {
         verified(&rules, Vendor::Codex, Some("codex-cli 0.165.0")),
         !overridden
     );
+    assert_eq!(
+        verified(&rules, Vendor::Codex, Some("codex-cli 0.171.0")),
+        !overridden
+    );
     for (vendor, version) in [
         (Vendor::Claude, None),
         (Vendor::Claude, Some("2.10.0")),
