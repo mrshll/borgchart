@@ -1,11 +1,11 @@
-//! Run checks and recurring wakes, and read check evidence.
+//! Run checks and schedules, and read evidence and outcomes.
 use borgchart::plugin;
-use brg_timer::{alarm, config, run, state};
+use brg_timer::{alarm, config, run, runs, state};
 use clap::{Parser, Subcommand, error::ErrorKind};
 use state::{Snapshot, one_line};
 
 #[derive(Parser)]
-#[command(about = "Run checks and recurring wakes, and read check evidence")]
+#[command(about = "Run checks and schedules, and read evidence and outcomes")]
 struct Cli {
     #[command(subcommand)]
     command: Action,
@@ -24,8 +24,10 @@ enum Action {
         #[arg(long)]
         once: bool,
     },
-    /// Read the latest and previous evidence without waiting for a check
+    /// Read check evidence or the latest scheduled run outcome
     Last { name: String },
+    /// Tell the timer this scheduled run is finished
+    Done,
     /// Send a check ID and reason (outage, alert, question, other) to your parent
     Promote { name: String, reason: String },
 }
@@ -39,15 +41,27 @@ fn action(action: Action) -> Result<(), (i32, String)> {
         );
         return Ok(());
     }
+    if let Action::Done = action {
+        println!("{}", runs::done()?);
+        return Ok(());
+    }
     let store = plugin::State::from_env().map_err(|e| (1, e.to_string()))?;
     let (name, reason) = match action {
-        Action::Validate { .. } => unreachable!(),
+        Action::Validate { .. } | Action::Done => unreachable!(),
         Action::Alarm { action } => return alarm::action(&store, action).map_err(|e| (1, e)),
         Action::Run { once } => return run::run(&store, once).map_err(|e| (1, e)),
         Action::Last { name } => (name, None),
         Action::Promote { name, reason } => (name, Some(reason)),
     };
     let snapshot = Snapshot::read(&store);
+    if reason.is_none() && snapshot.schedules.get(&name).is_some_and(|s| s.run) {
+        let line = snapshot
+            .outcomes
+            .get(&name)
+            .ok_or((2, format!("no outcome yet for scheduled run {name}")))?;
+        println!("{}", one_line(line));
+        return Ok(());
+    }
     let record = snapshot.checks.get(&name).ok_or_else(|| {
         (
             2,

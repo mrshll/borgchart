@@ -1,7 +1,7 @@
 # Timer — `brg-timer`
 
 Run commands on an interval and wake a member when their output changes, fails,
-or recovers. Schedule recurring UTC wakes in the same file. Check notices contain
+or recovers. Schedule recurring UTC wakes or short-lived members in the same file. Check notices contain
 names and statuses; output stays in local state for `last` to read as untrusted evidence. This is a Rust workspace crate;
 `make install` installs it on PATH alongside `brg-slack`. To install just timer
 from a checkout, use `cargo install --path plugins/timer`.
@@ -22,7 +22,7 @@ The process runs in the team's template folder. `CHECKS_FILE` defaults to
 The top level is a YAML list of check or schedule mappings (`[]` for neither).
 Duplicate keys and merge keys are refused; YAML 1.1 booleans such as `yes` stay strings.
 Names must be unique and
-match `[a-z][a-z0-9-]{0,31}`. `run` is a non-empty string list executed without a
+match `[a-z][a-z0-9-]{0,31}`. In a check, `run` is a non-empty string list executed without a
 shell. Its first argument is a command on PATH or a relative executable containing
 `/` inside the working directory; absolute paths, `..` and symlink escapes are
 refused. Other arguments are passed literally. `every_minutes` must be a finite
@@ -112,7 +112,7 @@ with a stderr hint to reduce the check's output.
 
 ## Recurring schedules
 
-A schedule uses only `name`, `cron` and optional `missed` and `prompt`. Names are unique
+A delivery schedule uses `name`, `cron` and optional `missed` and `prompt`. Names are unique
 across checks and schedules; their fields cannot be mixed:
 
 ```yaml
@@ -146,7 +146,7 @@ fires only on odd-numbered Mondays. Impossible dates are refused after searching
 one 400-year Gregorian cycle. Expressions with more than five minute values are
 also refused: use at most five, such as `0,12,24,36,48`, instead of `*/5`.
 
-Schedules require a valid `delivers_to` at startup and on reload. Each occurrence
+Delivery schedules require a valid `delivers_to` at startup and on reload. Each occurrence
 sends `<name> <YYYY-MM-DDTHH:MMZ>` and, if set, the trimmed prompt on a second line as external `timer`, after check
 notices and before alarms, in time-then-name order. New schedules and edited
 expressions start after the current time and never fire retroactively.
@@ -173,12 +173,71 @@ including future attempts after a clock correction, are discarded.
 `brg-timer validate [path]` parses a file without running commands or sending.
 Without a path it uses `CHECKS_FILE` (default `checks.yaml`). It needs no state
 directory, prints counts on success and exits 0; errors match startup and exit 1.
-Validation cannot know `delivers_to`; startup also requires it for schedules.
+At startup and on reload, the timer also checks `delivers_to` for delivery schedules and `runs` for scheduled runs.
 
 After installing the new binary with `make install`, a running timer keeps its
 old binary. End only its timer process, then run `brg start <team>`: this restarts
 the dead plugin and leaves running members alone. Later valid file edits reload
 without another restart.
+
+## Scheduled runs
+
+A run schedule creates a fresh member for each occurrence and sends it the
+schedule name, UTC minute and optional prompt. Add the schedule to `checks.yaml`.
+
+```yaml
+- name: daily-review
+  cron: '0 13 * * 1-5'
+  run: reviewer
+  timeout_minutes: 45
+  prompt: Review the draft, send your findings to the lead, then run brg-timer done.
+```
+
+`timeout_minutes` is required and must be a whole number from 1 to 1440.
+Runs skip missed occurrences during downtime and refuse the `missed` field.
+A file with only run schedules needs no `delivers_to`.
+
+Grant the role to the timer process and give that role the `done` action.
+
+```yaml
+plugins:
+  timer:
+    process: [brg-timer, run]
+    runs: [reviewer]
+    actions:
+      done: brg-timer done
+      last: brg-timer last <name>
+roles:
+  reviewer:
+    prompt: reviewer.md
+    start: false
+    plugins: {timer: [done]}
+```
+
+Use a dedicated role without a worktree or children. Give it `max` capacity for
+as many concurrent schedules as need it. Set `env: {SEAT: brg-seat}` on the timer
+to check subscription capacity before creation. Run attempts, including seat
+waits and launch failures, share the six-per-hour cap with delivery schedules.
+If the previous run is active, seating says wait, or the cap is full, the
+timer skips the occurrence.
+
+`brg-timer done` marks only the calling member's current scheduled run as
+finished. It exits 2 for another member or an old start. On its next tick the
+timer stops and deletes finished or overdue members. It uses `delete --force`
+so unread messages can't keep a stopped run member around. Cleanup failures
+make health not ok and are retried. Health shows active run member IDs and
+deadlines.
+
+`brg-timer last <name>` prints one outcome line with UTC time and any reason.
+Outcomes are `done`, `timed-out`, `skipped`, `failed-to-start` and
+`interrupted`. A restarted timer adopts a live run with the same start ID and
+original deadline. Other recorded runs are cleaned up as interrupted. The
+timer stores no run output. The role and prompt tell the member where to
+send its findings.
+
+For a deployed team, install the updated brg and timer, add the role, grant
+and action to `template.yaml`, then add the schedule to `checks.yaml`. End only
+the team's `_timer` window and run `brg start <team>` to pick up the grant.
 
 ## Alarms
 
