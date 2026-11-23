@@ -89,6 +89,7 @@ struct PluginRaw {
     command: Option<String>,
     process: Option<Vec<String>>,
     delivers_to: Option<String>,
+    runs: Option<Vec<String>>,
     #[serde(default)]
     env: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
@@ -398,6 +399,8 @@ pub struct Plugin {
     pub command: Option<String>,
     pub process: Option<Vec<String>>,
     pub delivers_to: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runs: Option<Vec<String>>,
     /// Every name the plugin gets, in order.
     pub env: Vec<String>,
     /// The plain values the template gives; every other name is a secret.
@@ -822,6 +825,26 @@ fn load_plugin(
         _ => {}
     }
 
+    if let Some(runs) = &p.runs {
+        if p.process.is_none() && runs.is_empty() {
+            report.error(Some(team_file), at("add a process to use `runs`".into()));
+        }
+        for role in runs {
+            let error = match roles.get(role) {
+                _ if p.process.is_none() => "add a process to use `runs`",
+                None => "name a declared agent role",
+                Some(r) if r.team.is_some() => "name an agent role instead of a team role",
+                Some(r) if r.start != Some(false) => "set `start: false` on the role",
+                Some(r) if r.worktree => "remove `worktree: true` from the role",
+                Some(_) if roles.values().any(|r| r.parent.as_ref() == Some(role)) => {
+                    "choose a role that is not another role's parent"
+                }
+                Some(_) => continue,
+            };
+            report.error(Some(team_file), at(format!("runs: `{role}`: {error}")));
+        }
+    }
+
     // Commands that live in a template-local plugin directory must exist and be executable.
     let local_dir = match &location {
         Some(PluginLocation::Team(rel)) => Some(dir.join(rel)),
@@ -855,6 +878,7 @@ fn load_plugin(
         command: p.command.clone(),
         process: p.process.clone(),
         delivers_to: p.delivers_to.clone(),
+        runs: p.runs.clone(),
         env,
         values,
         sources,

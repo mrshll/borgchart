@@ -238,6 +238,50 @@ fn plugin_delivery_refuses_team_roles() {
 }
 
 #[test]
+fn plugin_run_grants_refuse_roles_that_cannot_be_safely_removed() {
+    let f = nested_team();
+    for (role, process, runner, child) in [
+        ("runner", "", ", start: false", ""),
+        ("missing", ", process: [watch]", "", ""),
+        ("dev", ", process: [watch]", "", ""),
+        ("runner", ", process: [watch]", ", start: true", ""),
+        (
+            "runner",
+            ", process: [watch]",
+            ", start: false, worktree: true",
+            "",
+        ),
+        (
+            "runner",
+            ", process: [watch]",
+            ", start: false",
+            "  child: {template: dev, parent: runner}\n",
+        ),
+        (
+            "runner",
+            ", process: [watch]",
+            ", start: false",
+            "  child: {prompt: lead.md, parent: runner}\n",
+        ),
+        ("runner", ", process: [watch]", ", start: false", ""),
+    ] {
+        f.write("template.yaml", &format!(
+            "plugins: {{timer: {{runs: [{role}]{process}}}}}\nroles:\n  lead: {{prompt: lead.md}}\n  runner: {{prompt: lead.md{runner}}}\n  dev: {{template: dev, start: false}}\n{child}"
+        ));
+        let (report, validated) = f.run();
+        assert_eq!(
+            validated.is_some(),
+            role == "runner"
+                && !process.is_empty()
+                && runner == ", start: false"
+                && child.is_empty(),
+            "{}",
+            errors(&report)
+        );
+    }
+}
+
+#[test]
 fn team_roles_refuse_direct_cycles_through_resolved_folder_aliases() {
     let f = nested_team();
     std::os::unix::fs::symlink(f.dir.path(), f.path("templates/alias")).unwrap();
