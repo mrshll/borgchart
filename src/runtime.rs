@@ -1877,7 +1877,7 @@ pub fn create_member(
         .merge(&overrides)
         .resolve(member, v.auth())?;
     precheck(&v, &[&member])?;
-    let values = (!plugin_context() && !is_running(&inst))
+    let values = (!is_running(&inst))
         .then(|| crate::secrets::values(&v, &inst.id))
         .transpose()?;
     check_parent_authority(&inst, role, Some(&v), None)?;
@@ -2069,7 +2069,7 @@ pub(crate) fn has_member_context() -> bool {
         .any(|key| std::env::var(key).is_ok_and(|value| !value.is_empty()))
 }
 
-fn plugin_context() -> bool {
+pub(crate) fn plugin_context() -> bool {
     !has_member_context() && std::env::var(context::ENV_INSTANCE).is_ok_and(|v| !v.is_empty())
 }
 
@@ -2373,16 +2373,6 @@ fn start_instance(
             .filter(|name| !previous.as_ref().unwrap().plugins.contains_key(*name))
             .cloned()
             .collect::<Vec<_>>();
-        if plugin_context()
-            && names
-                .iter()
-                .any(|name| !v.team.plugins[name].sources.is_empty())
-        {
-            return Err(format!(
-                "ask the owner to run brg start {} to resolve plugin secrets",
-                inst.id
-            ));
-        }
         Some(crate::secrets::values_for(&v, &inst.id, &names)?)
     } else {
         None

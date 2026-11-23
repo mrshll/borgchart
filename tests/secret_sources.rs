@@ -276,6 +276,39 @@ fn plugin_cannot_create_or_start_a_stopped_team_and_prompt_for_secrets() {
 }
 
 #[test]
+fn plugin_cannot_resolve_a_new_plugin_source_on_a_running_team() {
+    let env = setup("{from: 'fake://root'}");
+    let id = env.create("oncall", "work/a");
+    let path = "templates/oncall/template.yaml";
+    let text = fs::read_to_string(env.path(path)).unwrap();
+    env.write(path, &format!("{text}\n  notifier:\n    process: [sleep, '60']\n    env: {{TOKEN: {{from: 'fake://new'}}}}\n"));
+    let before = runs(&env);
+    let out = env
+        .cmd(&["start", &id])
+        .env("BORGCHART_TEAM", &id)
+        .output()
+        .unwrap();
+    env.ok(&["stop", &id]);
+    assert!(!out.status.success());
+    assert_eq!(runs(&env), before);
+}
+
+#[test]
+fn plugin_secrets_check_cannot_invoke_the_resolver() {
+    let env = setup("{from: 'fake://root'}");
+    let id = env.create("oncall", "work/a");
+    let before = runs(&env);
+    let out = env
+        .cmd(&["secrets", "--check", &id])
+        .env("BORGCHART_TEAM", &id)
+        .output()
+        .unwrap();
+    env.ok(&["stop", &id]);
+    assert!(!out.status.success());
+    assert_eq!(runs(&env), before);
+}
+
+#[test]
 fn only_the_granted_plugin_process_receives_the_run_roles() {
     let env = Env::new();
     env.write("templates/oncall/template.yaml", &format!("{TEAM}\nplugins:\n  timer:\n    process: [sh, -c, 'printf %s \"$BORGCHART_RUNS\" > \"$HOME/timer-grant\"; sleep 60']\n    runs: [helper, scout]\n  other:\n    process: [sh, -c, 'printf %s \"${{BORGCHART_RUNS-unset}}\" > \"$HOME/other-grant\"; sleep 60']\n"));
