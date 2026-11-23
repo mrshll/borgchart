@@ -228,6 +228,10 @@ so unread messages can't keep a stopped run member around. Cleanup failures
 make health not ok and are retried. Health shows active run member IDs and
 deadlines.
 
+Members granted timer actions can write timer state and end runs early.
+The timer only stops and deletes members with IDs derived for its granted
+scheduled runs.
+
 `brg-timer last <name>` prints one outcome line with UTC time and any reason.
 Outcomes are `done`, `timed-out`, `skipped`, `failed-to-start` and
 `interrupted`. A restarted timer adopts a live run with the same start ID and

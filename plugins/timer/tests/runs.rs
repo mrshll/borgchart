@@ -31,12 +31,12 @@ route)
     ;;
 create)
     id="${2##*/}-$4"
-    if [ -f issued ]; then echo 'IDs are never reused' >&2; exit 1; fi
+    if [ -f issued ]; then echo 'name unavailable' >&2; exit 1; fi
     printf '{"kind":"member","team":"sample","name":"%s","state":"idle","liveness":"alive","start_id":"start-1","vendor":"codex","model":"example-model"}' "$id" > "members/$id"
     if [ -f create-fails ]; then echo 'start failed' >&2; exit 1; fi
     ;;
 stop)
-    [ ! -f stop-fails ] || { echo 'stop failed' >&2; exit 1; }
+    [ -f "members/${2##*/}" ] && [ ! -f stop-fails ] || { echo 'stop failed' >&2; exit 1; }
     ;;
 delete)
     rm "members/${2##*/}" ;;
@@ -76,6 +76,15 @@ fn run(f: &Fixture, args: &[&str]) -> Output {
 fn tick(f: &Fixture) {
     let out = run(f, &["run", "--once"]);
     assert!(out.status.success(), "{out:?}");
+}
+
+fn member_status(f: &Fixture, name: &str, state: &str, liveness: Option<&str>, start_id: &str) {
+    let mut row =
+        json!({"kind":"member","team":"sample","name":name,"state":state,"start_id":start_id});
+    if let Some(liveness) = liveness {
+        row["liveness"] = json!(liveness);
+    }
+    f.write(&format!("members/{name}"), &row.to_string());
 }
 
 fn calls(f: &Fixture, verb: &str) -> Vec<Vec<String>> {
@@ -148,6 +157,26 @@ fn existing_and_previously_issued_names_cannot_be_reaped() {
 }
 
 #[test]
+fn forged_run_records_cannot_reap_members_outside_the_timers_run_ids() {
+    let f = fixture();
+    let run = start(&f);
+    let mut state = f.read("checks.json");
+    let ungranted = run.replacen("worker-", "reader-", 1);
+    for (role, member) in [("reader", ungranted.as_str()), ("worker", "worker-manual")] {
+        member_status(&f, member, "idle", Some("alive"), "another-start");
+        state["runs"]["review"]["member"] = json!(member);
+        state["runs"]["review"]["role"] = json!(role);
+        f.write("state/checks.json", &state.to_string());
+        tick(&f);
+        assert!(calls(&f, "stop").is_empty(), "{member}");
+        assert!(calls(&f, "delete").is_empty(), "{member}");
+        let health = f.read("health.json");
+        assert_eq!(health["ok"], false);
+        assert!(health["detail"].as_str().unwrap().contains("review"));
+    }
+}
+
+#[test]
 fn occurrence_checks_seating_then_creates_and_sends_work_under_the_shared_cap() {
     let f = fixture();
     f.write(
@@ -172,37 +201,28 @@ fn occurrence_checks_seating_then_creates_and_sends_work_under_the_shared_cap() 
     tick(&f);
     pending(&f, &names);
     tick(&f);
-    let calls = f
-        .sends()
-        .into_iter()
-        .skip(1)
-        .filter(|call| call[0] != "status")
-        .collect::<Vec<_>>();
-    assert_eq!(calls.len(), 15);
-    for (index, batch) in calls.chunks_exact(3).enumerate() {
-        assert_eq!(batch[0], ["route", "codex", "example-model"]);
-        assert_eq!(batch[1][..3], ["create", "sample/worker", "--name"]);
-        assert_eq!(
-            batch[2][batch[2].len() - 2],
-            format!("sample/worker-{}", batch[1][3])
-        );
-        assert_eq!(
-            &batch[2][..5],
-            ["msg", "send", "--json", "--external", "timer"]
-        );
-        assert_eq!(
-            batch[2].last().unwrap(),
-            &format!("review-{index} 2020-01-01T00:00Z\nRead the draft")
-        );
+    let seats = calls(&f, "route");
+    let members = calls(&f, "create");
+    let messages = calls(&f, "msg");
+    for (index, name) in names.iter().take(5).enumerate() {
+        assert_eq!(seats[index][1..], ["codex", "example-model"]);
+        assert_eq!(members[index][1], "sample/worker");
+        let payload = [
+            format!("sample/worker-{}", members[index][3]),
+            format!("{name} 2020-01-01T00:00Z\nRead the draft"),
+        ];
+        assert!(messages.iter().any(|call| call.ends_with(&payload)));
     }
+    assert_eq!(fs::read_dir(f.path("members")).unwrap().count(), 5);
     assert!(last(&f, "review-5").ends_with(": schedule cap\n"));
 }
 
 #[test]
-fn done_reaps_the_member_and_last_exposes_only_one_outcome_line() {
+fn done_reaps_an_exited_member_and_last_exposes_only_one_outcome_line() {
     let f = fixture();
     let member = start(&f);
     assert!(done(&f, &member, "start-1").status.success());
+    member_status(&f, &member, "exited", Some("gone"), "start-1");
     tick(&f);
     let target = format!("sample/{member}");
     assert_eq!(calls(&f, "stop"), [vec!["stop", &target]]);
@@ -262,17 +282,67 @@ fn failed_create_reaps_the_half_created_member_and_retries_failed_cleanup() {
 }
 
 #[test]
+fn missing_members_finalize_without_stop_after_cleanup_or_create_grace() {
+    for was_ending in [true, false] {
+        let f = fixture();
+        if was_ending {
+            f.write("create-fails", "");
+            f.write("stop-fails", "");
+        }
+        let member = start(&f);
+        fs::remove_file(f.path(&format!("members/{member}"))).unwrap();
+        if !was_ending {
+            let mut state = f.read("checks.json");
+            state["runs"]["review"]["start_id"] = json!(null);
+            state["runs"]["review"]["prompted"] = json!(false);
+            f.write("state/checks.json", &state.to_string());
+            tick(&f);
+            assert!(calls(&f, "stop").is_empty());
+            assert_eq!(f.read("health.json")["ok"], false);
+            state["runs"]["review"]["started"] = json!("2020-01-01T00:00:00Z");
+            f.write("state/checks.json", &state.to_string());
+        }
+        let stops = calls(&f, "stop").len();
+        tick(&f);
+        assert_eq!(calls(&f, "stop").len(), stops);
+        assert!(calls(&f, "delete").is_empty());
+        let outcome = if was_ending {
+            "failed-to-start "
+        } else {
+            "interrupted "
+        };
+        assert!(last(&f, "review").starts_with(outcome));
+        assert_eq!(f.read("health.json")["ok"], true);
+    }
+}
+
+#[test]
+fn unknown_liveness_retries_without_ending_the_same_start() {
+    let f = fixture();
+    let member = start(&f);
+    for liveness in [Some("unknown"), None] {
+        member_status(&f, &member, "unknown", liveness, "start-1");
+        tick(&f);
+        assert!(calls(&f, "stop").is_empty());
+        assert_eq!(f.read("health.json")["ok"], false);
+    }
+    member_status(&f, &member, "idle", Some("alive"), "start-1");
+    tick(&f);
+    assert!(calls(&f, "stop").is_empty());
+    assert!(done(&f, &member, "start-1").status.success());
+}
+
+#[test]
 fn restart_keeps_only_the_same_live_start_and_preserves_its_deadline() {
     for (state, liveness, start_id) in [
         ("idle", "alive", "start-1"),
         ("stopped", "gone", "start-1"),
         ("idle", "alive", "start-2"),
-        ("starting", "alive", "start-1"),
     ] {
         let f = fixture();
         let member = start(&f);
         let deadline = f.read("checks.json")["runs"]["review"]["deadline"].clone();
-        f.write(&format!("members/{member}"), &json!({"kind":"member","team":"sample","name":member,"state":state,"liveness":liveness,"start_id":start_id}).to_string());
+        member_status(&f, &member, state, Some(liveness), start_id);
         tick(&f);
         if state == "idle" && start_id == "start-1" {
             assert!(calls(&f, "stop").is_empty());

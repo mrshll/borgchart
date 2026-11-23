@@ -21,6 +21,7 @@ use std::{
 pub struct Record {
     pub member: String,
     role: String,
+    occurrence: Option<String>,
     start_id: Option<String>,
     prompted: bool,
     started: String,
@@ -226,6 +227,7 @@ fn launch(
         Record {
             member: id.clone(),
             role: spec.role.clone(),
+            occurrence: Some(time::format_utc(occurrence)),
             start_id: None,
             prompted: false,
             started: time::format_utc(now),
@@ -234,22 +236,10 @@ fn launch(
         },
     );
     save(state, store)?;
-    if let Err(reason) = brg(
+    brg(
         &["create", &format!("{team}/{}", spec.role), "--name", &name],
         120,
-    ) {
-        if [
-            "IDs are never reused",
-            "is the suffix of",
-            "is the name of a role",
-        ]
-        .iter()
-        .any(|conflict| reason.contains(conflict))
-        {
-            state.runs.remove(key);
-        }
-        return Err(reason);
-    }
+    )?;
     let rows = status(team)?;
     let start_id = member(&rows, &id)
         .and_then(|row| row["start_id"].as_str())
@@ -330,8 +320,17 @@ fn finish(
     rows: &[Value],
 ) -> Result<(), String> {
     let run = &state.runs[key];
-    if !borgchart::registry::is_id_of(&run.member, &run.role) {
-        return Err("invalid member ID in the run record; check timer state".into());
+    let grants = std::env::var("BORGCHART_RUNS").unwrap_or_default();
+    let occurrence = run.occurrence.as_deref().and_then(time::parse_utc);
+    if !grants.split(',').any(|role| role == run.role)
+        || !borgchart::names::is_valid_id(&run.role)
+        || !crate::config::valid_name(key)
+        || !occurrence
+            .is_some_and(|at| run.member == format!("{}-{}", run.role, name(key, &run.role, at)))
+    {
+        return Err(
+            "run record does not name a granted scheduled member; check timer state".into(),
+        );
     }
     let row = member(rows, &run.member);
     if row.is_none()
@@ -345,18 +344,21 @@ fn finish(
     }
     let file = marker(&run.member);
     let done: Value = store.read_json(&file);
-    let same_start = run.start_id.as_deref().is_some_and(|id| {
-        row.is_some_and(|r| {
-            r["start_id"] == id
-                && r["liveness"] == "alive"
-                && !matches!(r["state"].as_str(), Some("starting" | "stopped" | "exited"))
-        })
-    });
-    let marked_done = same_start && run.start_id.as_deref() == done["start_id"].as_str();
-    let kind = if !same_start || (!run.prompted && !marked_done) {
-        "interrupted"
-    } else if marked_done {
+    let start = run.start_id.as_deref();
+    let marked_done = run.prompted && start.is_some_and(|id| done["start_id"] == id);
+    let same_start = start.is_some_and(|id| row.is_some_and(|r| r["start_id"] == id));
+    let liveness = row.and_then(|r| r["liveness"].as_str());
+    if !marked_done && same_start && matches!(liveness, None | Some("unknown")) {
+        return Err(format!("cannot tell whether {} is running", run.member));
+    }
+    let kind = if marked_done {
         "done"
+    } else if !run.prompted
+        || !same_start
+        || liveness != Some("alive")
+        || row.is_some_and(|r| matches!(r["state"].as_str(), Some("stopped" | "exited")))
+    {
+        "interrupted"
     } else if time::parse_utc(&run.deadline).is_some_and(|t| t <= SystemTime::now()) {
         "timed-out"
     } else {
@@ -366,7 +368,6 @@ fn finish(
         return Ok(());
     }
     let id = run.member.clone();
-    let target = format!("{team}/{id}");
     if run.ending.is_none() {
         state.runs.get_mut(key).unwrap().ending = Some(outcome(kind, ""));
         save(state, store)?;
@@ -374,15 +375,10 @@ fn finish(
     if row.is_none() && rows.iter().any(|r| r["kind"] == "team" && r["name"] == id) {
         return Err("run ID belongs to a child team; check timer state".into());
     }
-    match brg(&["stop", &target], 30) {
-        Ok(_) => {
-            brg(&["delete", &target, "--force"], 30)?;
-        }
-        Err(e)
-            if row.is_none()
-                && (e.starts_with(&format!("brg: no member `{id}` in team `{team}`;"))
-                    || e.starts_with(&format!("brg: member `{target}` was deleted;"))) => {}
-        Err(e) => return Err(e),
+    if row.is_some() {
+        let target = format!("{team}/{id}");
+        brg(&["stop", &target], 30)?;
+        brg(&["delete", &target, "--force"], 30)?;
     }
     let path = PathBuf::from(std::env::var_os("BORGCHART_STATE_DIR").unwrap()).join(file);
     match std::fs::remove_file(path) {
