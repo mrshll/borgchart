@@ -132,6 +132,9 @@ enum Command {
         /// team or another ID's suffix.
         #[arg(long)]
         name: Option<String>,
+        /// Mark a scheduled run, for a timer process with a `runs` grant.
+        #[arg(long, value_name = "SCHEDULE")]
+        run: Option<String>,
         /// Choose vendor, model, effort or remote_control at create (repeatable; comma lists allowed).
         /// Codex models accept astra, sol, terra and luna, resolved at each start.
         /// Agent role: --set vendor=codex. Team role: --set lead.vendor=codex.
@@ -143,10 +146,11 @@ enum Command {
     ///
     /// Restore child teams that ran at the last full stop, recursively. Finish
     /// an interrupted cascade with `stop` first. Reuse kept members; never
-    /// fill a role to max. A worktree it adds for a new member is named after
-    /// the tree. With a bus, a member caller may manage only its subtree,
-    /// using its latest running start. Members that start use current files
-    /// and configuration.
+    /// fill a role to max. A full start leaves stopped scheduled run members
+    /// for the timer to clean up. A worktree it adds for a new member is
+    /// named after the tree. With a bus, a member caller may manage only
+    /// its subtree, using its latest running start. Members that start use
+    /// current files and configuration.
     Start {
         /// `<team>`, or `<team>/<member>`.
         #[arg(add = crate::complete::targets())]
@@ -467,6 +471,7 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
             branch,
             repo,
             name,
+            run,
             choices,
         } => {
             let team_like = crate::team::is_path(&target) || !target.contains('/');
@@ -480,6 +485,8 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
                     "`--name` names a new member or child team, not a top-level team: brg create <team>/<role> --name <name>"
                         .to_string(),
                 )
+            } else if team_like && run.is_some() {
+                Err("`--run` needs an agent role: brg create <team>/<role> --run <schedule>".into())
             } else if team_like {
                 match branch
                     .as_ref()
@@ -502,6 +509,7 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
                         name.as_deref(),
                         branch.as_deref(),
                         repo.as_deref(),
+                        run.as_deref(),
                         &choices,
                     ),
                     Ok((inst, Target::Member(m))) => Err(format!(

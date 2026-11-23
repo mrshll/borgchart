@@ -1803,13 +1803,31 @@ pub fn create_member(
     name: Option<&str>,
     branch: Option<&str>,
     repo: Option<&str>,
+    run: Option<&str>,
     choices: &[String],
 ) -> Result<UpOutcome, String> {
     require_running_for_plugin(|| is_running(&inst))?;
     let v = validated(&inst)?;
+    let runs = std::env::var_os("BORGCHART_RUNS");
+    if let Some(schedule) = run {
+        if !plugin_context()
+            || !std::env::var(context::ENV_INSTANCE).is_ok_and(|team| team == inst.id)
+            || !runs
+                .as_deref()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|roles| roles.split(',').any(|r| r == role))
+        {
+            return Err(format!(
+                "`--run` needs a timer process with a `runs` grant for `{role}` in this team; configure the grant and restart the plugin"
+            ));
+        }
+        if !crate::names::is_valid_id(schedule) || schedule.contains('_') {
+            return Err("use a schedule name of 1–32 lowercase letters, digits or hyphens, starting with a letter".into());
+        }
+    }
     // The timer can outlive a template edit that removes its grant.
     if plugin_context()
-        && std::env::var_os("BORGCHART_RUNS").is_some()
+        && runs.is_some()
         && !v
             .team
             .plugins
@@ -1907,11 +1925,9 @@ pub fn create_member(
         ));
     }
     let id = inst.record.issue_member(role, name, |id| is_role(&v, id))?;
-    inst.record
-        .members
-        .get_mut(&id)
-        .expect("issued member")
-        .overrides = overrides;
+    let issued = inst.record.members.get_mut(&id).expect("issued member");
+    issued.overrides = overrides;
+    issued.run = run.map(str::to_string);
     let added: Vec<_> = create_worktree(&inst, &member, &id, branch, start.as_ref())?
         .map(|dir| (id.clone(), dir))
         .into_iter()
@@ -2249,8 +2265,8 @@ fn repoint(inst: &mut Instance, team: &Path) -> Result<(), String> {
 
 /// Which members a full start brings up: the `start: true` roles' members
 /// (issuing one for a role that has none), the members running at the last
-/// stop. Called with the registry lock held; new IDs are saved only after
-/// all start checks pass.
+/// stop, except scheduled run members. Called with the registry lock held;
+/// new IDs are saved only after all start checks pass.
 fn full_start_members(
     _lock: &registry::Lock,
     inst: &mut Instance,
@@ -2283,13 +2299,12 @@ fn full_start_members(
             .filter(|w| !w.dead && inst.record.members.contains_key(&w.name))
             .map(|w| w.name.clone()),
     );
-    // Only members whose role is still in the team.
     Ok(ids
         .into_iter()
         .filter(|id| {
-            inst.record
-                .role_of(id)
-                .is_some_and(|r| v.team.roles.contains_key(r))
+            inst.record.members.get(id).is_some_and(|m| {
+                !m.deleted && m.run.is_none() && v.team.roles.contains_key(&m.role)
+            })
         })
         .collect())
 }
@@ -2394,6 +2409,9 @@ fn start_instance(
             // before any role can issue an ID or add a worktree.
             let windows = tmux_for(&inst.state).windows(&inst.state.session());
             for (id, member) in inst.record.kept_members() {
+                if member.run.is_some() {
+                    continue;
+                }
                 if v.team.roles.get(&member.role).is_some_and(|role| {
                     role.start
                         || inst

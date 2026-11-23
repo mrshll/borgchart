@@ -207,6 +207,7 @@ fn occurrence_checks_seating_then_creates_and_sends_work_under_the_shared_cap() 
     for (index, name) in names.iter().take(5).enumerate() {
         assert_eq!(seats[index][1..], ["codex", "example-model"]);
         assert_eq!(members[index][1], "sample/worker");
+        assert!(members[index].ends_with(&["--run".into(), name.clone()]));
         let payload = [
             format!("sample/worker-{}", members[index][3]),
             format!("{name} 2020-01-01T00:00Z\nRead the draft"),

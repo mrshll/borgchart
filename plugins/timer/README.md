@@ -235,8 +235,9 @@ scheduled runs.
 `brg-timer last <name>` prints one outcome line with UTC time and any reason.
 Outcomes are `done`, `timed-out`, `skipped`, `failed-to-start` and
 `interrupted`. A restarted timer adopts a live run with the same start ID and
-original deadline. Other recorded runs are cleaned up as interrupted. The
-timer stores no run output. The role and prompt tell the member where to
+original deadline. Other recorded runs are cleaned up as interrupted. A full
+team start leaves stopped run members for the timer to remove as interrupted.
+The timer stores no run output. The role and prompt tell the member where to
 send its findings.
 
 For a deployed team, install the updated brg and timer, add the role, grant
