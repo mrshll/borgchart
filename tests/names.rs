@@ -138,8 +138,8 @@ fn a_named_child_team_whose_worktree_fails_keeps_its_name_free() {
 #[test]
 fn named_team_survives_restart_and_cleanup_recognizes_only_its_issued_id() {
     let env = Env::new();
-    let id = "oncall-north-ridge";
-    let out = stdout(&env.ok(&["create", "oncall", "work/a", "--name", "north-ridge"]));
+    let id = "oncall-north-west";
+    let out = stdout(&env.ok(&["create", "oncall", "work/a", "--name", "north-west"]));
     assert_eq!(out.split_whitespace().next(), Some(id));
     env.ok(&["stop", id]);
     env.ok(&["start", id]);
@@ -176,8 +176,6 @@ fn team_names_cannot_reissue_or_disguise_an_issued_team_id() {
             ("a-long-template-for-a-team", "a-long-team-name"),
             ("oncall", "a-name-longer-than-the-limit"),
             ("oncall", "North"),
-            ("oncall", "north-k3f9"),
-            ("oncall", "k3f9"),
         ] {
             env.fails(&["create", template, "work/b", "--name", name]);
         }
@@ -185,4 +183,37 @@ fn team_names_cannot_reissue_or_disguise_an_issued_team_id() {
     }
     let random = env.create("oncall", "work/b");
     env.ok(&["stop", &random]);
+}
+
+#[test]
+fn a_random_draw_skips_a_deleted_team_with_a_chosen_four_character_name() {
+    let env = Env::new();
+    let seeded_create = |env: &Env| {
+        let out = env
+            .cmd(&["create", "oncall", "work/a"])
+            .env("BORGCHART_SUFFIX_SEED", "7")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", both(&out));
+        stdout(&out).split_whitespace().next().unwrap().to_owned()
+    };
+    // Learn the first draw in an independent registry, so it is still
+    // available to choose by name in the registry under test.
+    let control = seeded_create(&env);
+    let name = control.strip_prefix("oncall-").unwrap();
+    env.ok(&["stop", &control]);
+    let named_env = Env::new();
+    let id = format!("oncall-{name}");
+    let out = stdout(&named_env.ok(&["create", "oncall", "work/a", "--name", name]));
+    assert_eq!(out.split_whitespace().next(), Some(id.as_str()));
+    named_env.ok(&["stop", &id]);
+    named_env.ok(&["delete", &id]);
+    let next = seeded_create(&named_env);
+    assert!(well_formed(&next, "oncall"));
+    assert_ne!(next, id);
+    let leftover = named_env.path(&format!("state/{id}"));
+    fs::create_dir(&leftover).unwrap();
+    named_env.ok(&["cleanup"]);
+    assert!(!leftover.exists());
+    named_env.ok(&["stop", &next]);
 }

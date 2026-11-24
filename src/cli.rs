@@ -130,8 +130,7 @@ enum Command {
         /// Use lowercase letters and digits in words joined by hyphens, up to 24
         /// characters (40 for the full ID). Issued IDs stay reserved after delete.
         /// Choose a name distinct from another ID's suffix. A role's new ID
-        /// must also differ from every role name. A top-level name cannot end
-        /// in a word shaped like a four-character random suffix.
+        /// must also differ from every role name.
         #[arg(long)]
         name: Option<String>,
         /// Mark a scheduled run, for a timer process with a `runs` grant.

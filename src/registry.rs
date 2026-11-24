@@ -452,11 +452,6 @@ pub fn create(
     let mut registry = lock.load()?;
     let (id, suffix) = if let Some(name) = name {
         let id = named_id(team, name)?;
-        if split_id(&id).is_some() {
-            return Err(format!(
-                "`{id}` ends in a four-character random suffix; choose a name with a different last word"
-            ));
-        }
         if registry.issued_team_id(&id) || registry.instances.contains_key(&id) {
             return Err(format!("`{id}` was issued before; choose another name"));
         }
