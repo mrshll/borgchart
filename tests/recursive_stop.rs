@@ -77,12 +77,22 @@ fn full_start_does_not_restart_run_members() {
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", both(&out));
+    let helper = env.member(&inst, "helper");
+    env.wait_for("run member started", || !env.starts(&helper).is_empty());
+    let out = env.ok(&["start", &inst]);
+    let text = stdout(&out);
+    assert!(
+        text.lines()
+            .any(|line| line.contains(&helper) && line.ends_with("already running")),
+        "{text}"
+    );
+    assert_eq!(env.starts(&helper).len(), 1);
     env.ok(&["create", &format!("{inst}/scout")]);
     env.ok(&["stop", &inst]);
     env.ok(&["start", &inst]);
     assert_eq!(env.state_of(&inst, "helper"), "stopped");
     assert_eq!(env.row(&inst, "scout")["liveness"], "alive");
-    env.ok(&["start", &format!("{inst}/{}", env.member(&inst, "helper"))]);
+    env.ok(&["start", &format!("{inst}/{helper}")]);
     assert_eq!(env.row(&inst, "helper")["liveness"], "alive");
     env.ok(&["stop", &inst]);
 }
@@ -90,11 +100,12 @@ fn full_start_does_not_restart_run_members() {
 #[test]
 fn run_marks_require_a_plugin_with_a_current_role_grant() {
     let (env, inst) = run_team("helper");
+    let other = env.create("oncall", "work/b");
     let args = ["create", &format!("{inst}/helper"), "--run", "review"];
     let mut member = as_member(&env, &inst, "lead", &args);
     member.env("BORGCHART_RUNS", "helper");
-    let plugin = |role: &str, grant: &str| {
-        let mut cmd = env.cmd(&["create", &format!("{inst}/{role}"), "--run", "review"]);
+    let plugin = |target: &str, role: &str, grant: &str| {
+        let mut cmd = env.cmd(&["create", &format!("{target}/{role}"), "--run", "review"]);
         cmd.env("BORGCHART_TEAM", &inst)
             .env("BORGCHART_RUNS", grant);
         cmd
@@ -102,14 +113,16 @@ fn run_marks_require_a_plugin_with_a_current_role_grant() {
     for (caller, mut cmd) in [
         ("owner", env.cmd(&args)),
         ("member", member),
-        ("different launched grant", plugin("helper", "scout")),
-        ("missing current grant", plugin("scout", "scout")),
+        ("different launched grant", plugin(&inst, "helper", "scout")),
+        ("missing current grant", plugin(&inst, "scout", "scout")),
+        ("different team", plugin(&other, "helper", "helper")),
     ] {
         assert!(
             !cmd.output().unwrap().status.success(),
             "{caller} marked a run"
         );
     }
+    env.ok(&["stop", &other]);
     env.ok(&["stop", &inst]);
 }
 

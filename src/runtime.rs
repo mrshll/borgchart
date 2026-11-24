@@ -2265,8 +2265,8 @@ fn repoint(inst: &mut Instance, team: &Path) -> Result<(), String> {
 
 /// Which members a full start brings up: the `start: true` roles' members
 /// (issuing one for a role that has none), the members running at the last
-/// stop, except scheduled run members. Called with the registry lock held;
-/// new IDs are saved only after all start checks pass.
+/// stop except scheduled run members, and any live members. Called with the
+/// registry lock held; new IDs are saved only after all start checks pass.
 fn full_start_members(
     _lock: &registry::Lock,
     inst: &mut Instance,
@@ -2289,7 +2289,10 @@ fn full_start_members(
         ids.extend(members);
     }
     if let Some(set) = &inst.record.running_at_stop {
-        ids.extend(set.iter().cloned());
+        ids.extend(set.iter().filter_map(|id| {
+            let member = inst.record.members.get(id)?;
+            member.run.is_none().then(|| id.clone())
+        }));
     }
     // Running members are left alone, and shown as running.
     let windows = tmux_for(&inst.state).windows(&inst.state.session());
@@ -2302,9 +2305,10 @@ fn full_start_members(
     Ok(ids
         .into_iter()
         .filter(|id| {
-            inst.record.members.get(id).is_some_and(|m| {
-                !m.deleted && m.run.is_none() && v.team.roles.contains_key(&m.role)
-            })
+            inst.record
+                .members
+                .get(id)
+                .is_some_and(|m| !m.deleted && v.team.roles.contains_key(&m.role))
         })
         .collect())
 }
@@ -2409,7 +2413,8 @@ fn start_instance(
             // before any role can issue an ID or add a worktree.
             let windows = tmux_for(&inst.state).windows(&inst.state.session());
             for (id, member) in inst.record.kept_members() {
-                if member.run.is_some() {
+                let live = windows.iter().any(|w| !w.dead && &w.name == id);
+                if member.run.is_some() && !live {
                     continue;
                 }
                 if v.team.roles.get(&member.role).is_some_and(|role| {
@@ -2419,7 +2424,7 @@ fn start_instance(
                             .running_at_stop
                             .as_ref()
                             .is_some_and(|set| set.contains(id))
-                        || windows.iter().any(|w| !w.dead && &w.name == id)
+                        || live
                 }) {
                     member_role(&v, &inst.record, id)?;
                 }
