@@ -54,6 +54,17 @@ pub fn check_name(name: &str) -> Result<(), String> {
     ))
 }
 
+fn named_id(base: &str, name: &str) -> Result<String, String> {
+    check_name(name)?;
+    let id = format!("{base}-{name}");
+    if !crate::names::is_valid_member_id(&id) {
+        return Err(format!(
+            "`{id}` is longer than 40 characters; choose a shorter name"
+        ));
+    }
+    Ok(id)
+}
+
 /// Whether `id` is one brg issues for `role`: `<role>-<suffix>`, or
 /// `<role>-<name>` from `create --name`.
 pub fn is_id_of(id: &str, role: &str) -> bool {
@@ -310,13 +321,7 @@ impl InstanceRecord {
         name: &str,
         is_role: impl Fn(&str) -> bool,
     ) -> Result<String, String> {
-        check_name(name)?;
-        let id = format!("{role}-{name}");
-        if !crate::names::is_valid_member_id(&id) {
-            return Err(format!(
-                "`{id}` is longer than 40 characters; choose a shorter name"
-            ));
-        }
+        let id = named_id(role, name)?;
         if is_role(&id) {
             return Err(format!(
                 "`{id}` is the name of a role in this team; choose another name"
@@ -421,6 +426,18 @@ pub fn read_instance(state: &StateDir) -> Result<InstanceRecord, String> {
     read_json(&state.instance_file())?.ok_or_else(|| format!("team `{}` has no record", state.id))
 }
 
+impl Registry {
+    /// Both the template and the suffix may contain hyphens. Match the
+    /// recorded pair, kept after deletion, to identify an issued root ID.
+    pub fn issued_team_id(&self, id: &str) -> bool {
+        id.match_indices('-').any(|(i, _)| {
+            self.issued
+                .get(&id[..i])
+                .is_some_and(|names| names.contains(&id[i + 1..]))
+        })
+    }
+}
+
 /// Register a new team from template `team` (its name and folder), working in
 /// `folder`: a fresh suffix, the registry entry, the state folder and its
 /// record. Called with the lock held.
@@ -430,15 +447,37 @@ pub fn create(
     team_dir: &Path,
     folder: &Path,
     created_at: &str,
+    name: Option<&str>,
 ) -> Result<(StateDir, InstanceRecord), String> {
     let mut registry = lock.load()?;
-    let issued = registry.issued.entry(team.to_string()).or_default();
-    let taken: Vec<String> = registry.instances.keys().cloned().collect();
-    let suffix =
-        new_suffix(|s| issued.contains(s) || taken.iter().any(|id| id == &format!("{team}-{s}")))?;
-    // An ID nobody else used, even outside the registry (a stray folder).
-    let id = format!("{team}-{suffix}");
-    issued.insert(suffix);
+    let (id, suffix) = if let Some(name) = name {
+        let id = named_id(team, name)?;
+        if registry.issued_team_id(&id) || registry.instances.contains_key(&id) {
+            return Err(format!("`{id}` was issued before; choose another name"));
+        }
+        if registry.issued.values().any(|names| names.contains(name)) {
+            return Err(format!(
+                "`{name}` is another team's suffix; choose another name"
+            ));
+        }
+        if StateDir::new(&id).root.symlink_metadata().is_ok() {
+            return Err(format!(
+                "the state folder for `{id}` already exists; choose another name"
+            ));
+        }
+        (id, name.to_owned())
+    } else {
+        let suffix = new_suffix(|s| {
+            let id = format!("{team}-{s}");
+            registry.issued_team_id(&id) || registry.instances.contains_key(&id)
+        })?;
+        (format!("{team}-{suffix}"), suffix)
+    };
+    registry
+        .issued
+        .entry(team.to_owned())
+        .or_default()
+        .insert(suffix);
     let record = InstanceRecord {
         schema: SCHEMA,
         id,

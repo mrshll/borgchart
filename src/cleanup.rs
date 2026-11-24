@@ -509,13 +509,7 @@ fn unregistered(registry: &registry::Registry, out: &mut Outcome) {
     };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        let issued = registry::split_id(&name).is_some_and(|(team, suffix)| {
-            registry
-                .issued
-                .get(team)
-                .is_some_and(|suffixes| suffixes.contains(suffix))
-        });
-        if issued
+        if registry.issued_team_id(&name)
             && !registry.instances.contains_key(&name)
             && entry.file_type().is_ok_and(|t| t.is_dir())
         {

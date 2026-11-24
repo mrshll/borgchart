@@ -1,5 +1,4 @@
-//! `create <team>/<role> --name`: member and child team IDs that say what
-//! each one is for.
+//! Named team, member and child team IDs and their lifetime.
 //!
 //! Run with `cargo test --features test-support`.
 #![cfg(feature = "test-support")]
@@ -97,8 +96,6 @@ fn names_that_do_not_fit_are_refused_before_anything_is_issued() {
     let before = env.registry();
     let err = env.fails(&["create", &format!("{inst}/helper"), "--name", "Rounding"]);
     assert!(err.contains("lowercase"), "{err}");
-    let err = env.fails(&["create", "oncall", "work/b", "--name", "widgets"]);
-    assert!(err.contains("<team>/<role> --name"), "{err}");
     assert_eq!(env.registry(), before);
     assert!(
         env.rows(&inst)
@@ -136,4 +133,87 @@ fn a_named_child_team_whose_worktree_fails_keeps_its_name_free() {
             .is_file()
     );
     env.ok(&["stop", &inst]);
+}
+
+#[test]
+fn named_team_survives_restart_and_cleanup_recognizes_only_its_issued_id() {
+    let env = Env::new();
+    let id = "oncall-north-west";
+    let out = stdout(&env.ok(&["create", "oncall", "work/a", "--name", "north-west"]));
+    assert_eq!(out.split_whitespace().next(), Some(id));
+    env.ok(&["stop", id]);
+    env.ok(&["start", id]);
+    env.wait_for("restarted lead", || env.state_of(id, "lead") == "idle");
+    env.ok(&["stop", id]);
+    env.ok(&["delete", id]);
+    let leftover = env.path(&format!("state/{id}"));
+    let unknown = env.path("state/oncall-south-ridge");
+    fs::create_dir(&leftover).unwrap();
+    fs::create_dir(&unknown).unwrap();
+    env.fails(&["create", "oncall", "work/a", "--name", "south-ridge"]);
+    env.ok(&["cleanup"]);
+    assert!(!leftover.exists());
+    assert!(unknown.is_dir());
+}
+
+#[test]
+fn team_names_cannot_reissue_or_disguise_an_issued_team_id() {
+    let env = Env::new();
+    env.team("templates/oncall-north");
+    env.team("templates/a-long-template-for-a-team");
+    let id = "oncall-north-ridge";
+    env.ok(&["create", "oncall", "work/a", "--name", "north-ridge"]);
+    for deleted in [false, true] {
+        if deleted {
+            env.ok(&["stop", id]);
+            env.ok(&["delete", id]);
+        }
+        let before = env.registry();
+        for (template, name) in [
+            ("oncall", "north-ridge"),
+            ("oncall-north", "ridge"),
+            ("oncall-north", "north-ridge"),
+            ("a-long-template-for-a-team", "a-long-team-name"),
+            ("oncall", "a-name-longer-than-the-limit"),
+            ("oncall", "North"),
+        ] {
+            env.fails(&["create", template, "work/b", "--name", name]);
+        }
+        assert_eq!(env.registry(), before);
+    }
+    let random = env.create("oncall", "work/b");
+    env.ok(&["stop", &random]);
+}
+
+#[test]
+fn a_random_draw_skips_a_deleted_team_with_a_chosen_four_character_name() {
+    let env = Env::new();
+    let seeded_create = |env: &Env| {
+        let out = env
+            .cmd(&["create", "oncall", "work/a"])
+            .env("BORGCHART_SUFFIX_SEED", "7")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", both(&out));
+        stdout(&out).split_whitespace().next().unwrap().to_owned()
+    };
+    // Learn the first draw in an independent registry, so it is still
+    // available to choose by name in the registry under test.
+    let control = seeded_create(&env);
+    let name = control.strip_prefix("oncall-").unwrap();
+    env.ok(&["stop", &control]);
+    let named_env = Env::new();
+    let id = format!("oncall-{name}");
+    let out = stdout(&named_env.ok(&["create", "oncall", "work/a", "--name", name]));
+    assert_eq!(out.split_whitespace().next(), Some(id.as_str()));
+    named_env.ok(&["stop", &id]);
+    named_env.ok(&["delete", &id]);
+    let next = seeded_create(&named_env);
+    assert!(well_formed(&next, "oncall"));
+    assert_ne!(next, id);
+    let leftover = named_env.path(&format!("state/{id}"));
+    fs::create_dir(&leftover).unwrap();
+    named_env.ok(&["cleanup"]);
+    assert!(!leftover.exists());
+    named_env.ok(&["stop", &next]);
 }

@@ -1,6 +1,6 @@
 # borgchart
 
-borgchart runs teams of coding agents from plain files: describe each role's model and standing task in a template folder, then `brg create <template> <folder>` starts a team from it, working in that folder, `brg status` shows who is alive, what they are doing and their unacked message counts, `brg attach` drops you into a member's live session, and `brg stop` stops it all (`brg start` brings it back).
+borgchart runs teams of coding agents from plain files: describe each role's model and standing task in a template folder, then `brg create <template> <folder> [--name <name>]` starts a team from it, working in that folder, `brg status` shows who is alive, what they are doing and their unacked message counts, `brg attach` drops you into a member's live session, and `brg stop` stops it all (`brg start` brings it back).
 
 ## Status
 
