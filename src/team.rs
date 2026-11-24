@@ -22,6 +22,30 @@ pub(crate) fn missing_template(dir: &Path) -> String {
     )
 }
 
+/// The most bytes a role's `description` may have, so `status` keeps one
+/// readable line per role.
+pub const DESCRIPTION_MAX: usize = 120;
+
+/// A role's `description`: one non-empty line of at most [`DESCRIPTION_MAX`] bytes.
+fn description(text: Option<&str>) -> Result<Option<String>, String> {
+    let Some(text) = text else {
+        return Ok(None);
+    };
+    if text.trim().is_empty() {
+        return Err("`description` is empty; write what the role is for, or remove it".into());
+    }
+    if text.chars().any(char::is_control) {
+        return Err("`description` must be one line with no control characters".into());
+    }
+    if text.len() > DESCRIPTION_MAX {
+        return Err(format!(
+            "`description` is {} bytes; shorten it to at most {DESCRIPTION_MAX}",
+            text.len()
+        ));
+    }
+    Ok(Some(text.to_string()))
+}
+
 /// Reasoning-effort words accepted after a model name.
 pub const EFFORTS: &[&str] = &["minimal", "low", "medium", "high", "xhigh", "max"];
 
@@ -103,6 +127,7 @@ pub const RESTRICTED_KEY: &str = "restricted_access";
 #[serde(deny_unknown_fields)]
 struct RoleRaw {
     prompt: Option<String>,
+    description: Option<String>,
     #[serde(rename = "template")]
     team: Option<String>,
     vendor: Option<Vendor>,
@@ -300,6 +325,9 @@ pub fn team_name(dir: &Path) -> String {
 #[derive(Debug, Clone, Serialize)]
 pub struct Role {
     pub id: String,
+    /// What the role is for and when to use it, shown by `status`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub vendor: Vendor,
     /// The role file's choices for each vendor, before create-time overrides.
     pub pins: BTreeMap<Vendor, Model>,
@@ -352,6 +380,9 @@ impl RoleSource {
 #[derive(Debug, Clone, Serialize)]
 pub struct TeamRole {
     pub name: String,
+    /// What the role is for and when to use it, shown by `status`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub dir: PathBuf,
     pub parent: Option<String>,
     pub max: usize,
@@ -554,10 +585,19 @@ pub(crate) fn load_with(
                 continue;
             }
             for field in fields.roles[id].keys() {
-                if !["template", "parent", "start", "max", "worktree"].contains(&field.as_str()) {
+                if ![
+                    "template",
+                    "description",
+                    "parent",
+                    "start",
+                    "max",
+                    "worktree",
+                ]
+                .contains(&field.as_str())
+                {
                     report.error(
                         Some(&team_file),
-                        format!("role `{id}`: remove `{field}`; a team role takes only `template`, `parent`, `start`, `max` and `worktree`"),
+                        format!("role `{id}`: remove `{field}`; a team role takes only `template`, `description`, `parent`, `start`, `max` and `worktree`"),
                     );
                 }
             }
@@ -934,6 +974,7 @@ fn load_team_role(
         }
         Ok(TeamRole {
             name: path.to_string(),
+            description: description(role.description.as_deref())?,
             dir,
             parent: role.parent.clone(),
             max: role.max.unwrap_or(1),
@@ -1060,6 +1101,10 @@ fn load_role(
     if max == 0 {
         report.error(Some(team_file), at("`max` must be at least 1".into()));
     }
+    let description = description(m.description.as_deref()).unwrap_or_else(|e| {
+        report.error(Some(team_file), at(e));
+        None
+    });
 
     // Role file.
     let Some(prompt) = m.prompt.as_deref() else {
@@ -1128,6 +1173,7 @@ fn load_role(
     }
     Some(Role {
         id: id.to_string(),
+        description,
         vendor,
         model: pins.get(&vendor).cloned(),
         pins,

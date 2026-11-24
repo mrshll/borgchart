@@ -3836,6 +3836,9 @@ pub struct StatusRow {
     pub start_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// What the role is for, from its `description` in `template.yaml`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub vendor: Option<String>,
     /// Resolved model name, separate from its effort.
     pub model: Option<String>,
@@ -4072,6 +4075,7 @@ fn status_with_counts(
                 run: None,
                 start_id: None,
                 role: Some(id.clone()),
+                description: member.description.clone(),
                 vendor: choice.map(|m| m.vendor.as_str().into()),
                 model: choice
                     .and_then(|m| m.model.as_ref())
@@ -4132,6 +4136,7 @@ fn status_with_counts(
                 .and_then(|i| i.as_ref())
                 .map(|i| i.incarnation.clone()),
             role: Some(role.to_string()),
+            description: member.description.clone(),
             vendor: choice
                 .map(|role| {
                     if launched_model.is_some() {
@@ -4370,6 +4375,7 @@ fn status_with_counts(
             run: None,
             start_id: None,
             role: None,
+            description: None,
             vendor: None,
             model: None,
             effort: None,
@@ -4448,6 +4454,7 @@ fn status_with_counts(
                 run: None,
                 start_id: None,
                 role: Some(role_name.clone()),
+                description: role.description.clone(),
                 vendor: None,
                 model: None,
                 effort: None,
@@ -4506,6 +4513,7 @@ fn status_with_counts(
                 run: None,
                 start_id: None,
                 role: Some(role_name.clone()),
+                description: role.description.clone(),
                 vendor: None,
                 model: None,
                 effort: None,
@@ -4711,9 +4719,60 @@ pub fn render_status_as(
             (status_key(r), name)
         })
         .collect();
-    tree::render_named(header, &nodes, &plugins, colour, spin, short, |id| {
+    let text = tree::render_named(header, &nodes, &plugins, colour, spin, short, |id| {
         names[id].clone()
-    })
+    });
+    if short {
+        text
+    } else {
+        text + &roles_block(rows)
+    }
+}
+
+/// What piped `status` prints after a tree: for each template in it, each
+/// described role and what it is for, in tree order. A child team's row
+/// belongs to its parent's template, which declares its role.
+pub fn roles_block(rows: &[StatusRow]) -> String {
+    let by_key: BTreeMap<String, &StatusRow> = rows.iter().map(|r| (status_key(r), r)).collect();
+    let mut templates: Vec<(&str, Vec<(&str, &str)>)> = Vec::new();
+    for row in rows {
+        let (Some(role), Some(description)) = (row.role.as_deref(), row.description.as_deref())
+        else {
+            continue;
+        };
+        let template = if row.kind == "team" {
+            match parent_key(row).and_then(|p| by_key.get(&p).copied()) {
+                Some(parent) => parent.team.as_str(),
+                None => continue,
+            }
+        } else {
+            row.team.as_str()
+        };
+        let at = match templates.iter().position(|(name, _)| *name == template) {
+            Some(at) => at,
+            None => {
+                templates.push((template, Vec::new()));
+                templates.len() - 1
+            }
+        };
+        let entries = &mut templates[at].1;
+        if !entries.contains(&(role, description)) {
+            entries.push((role, description));
+        }
+    }
+    let mut text = String::new();
+    for (template, entries) in templates {
+        let width = entries
+            .iter()
+            .map(|(role, _)| role.len())
+            .max()
+            .unwrap_or(0);
+        text.push_str(&format!("roles in {template}:\n"));
+        for (role, description) in entries {
+            text.push_str(&format!("  {role:width$}  {description}\n"));
+        }
+    }
+    text
 }
 
 /// A row's identity stays unique when local IDs repeat in different child teams.
@@ -5763,6 +5822,7 @@ mod tests {
             run: None,
             start_id: None,
             role: None,
+            description: None,
             vendor: Some(vendor.into()),
             model: model.map(String::from),
             effort: None,
@@ -5820,6 +5880,7 @@ mod tests {
             run: None,
             start_id: None,
             role: None,
+            description: None,
             vendor: Some("claude".into()),
             model: None,
             effort: None,
@@ -5866,6 +5927,7 @@ mod tests {
             run: None,
             start_id: None,
             role: None,
+            description: None,
             vendor: Some("claude".into()),
             model: None,
             effort: None,
@@ -5925,6 +5987,7 @@ mod tests {
                     run: None,
                     start_id: None,
                     role: None,
+                    description: None,
                     vendor: None,
                     model: None,
                     effort: None,

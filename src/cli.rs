@@ -266,6 +266,9 @@ enum Command {
     /// A role with no member shows only its state; its `--json` row
     /// also gives its vendor and model.
     ///
+    /// Piped text ends each tree with what each role is for, from its
+    /// `description`, under its template (`description` in `--json`).
+    ///
     /// On a terminal, state precedes vendor/model or template. A summary band above
     /// the tree counts working and idle members, rows needing
     /// you and unacked messages. Painted output uses a filled red state label

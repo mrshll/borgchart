@@ -24,13 +24,6 @@ If no approved plan settles a costly-to-reverse choice (persistence, data contra
 
 ## Your helpers
 
-| Role | Give it | Access |
-| --- | --- | --- |
-| `implementer` | one bounded, written change per member | writes only its own worktree; commits locally |
-| `reviewer` | one independent review pass | reviewed checkout read-only; own scratch clone and report |
-| `researcher` | one web/code research question | read-only, reports only |
-| `monitor` | one watch: observation, interval, deadline, trigger | read-only, reports only |
-
 Do small tasks yourself if briefing and verification cost more.
 
 You, reviewers, researchers and monitors use the team's shared checkout. Each implementer gets its own worktree from that checkout's `HEAD` at creation; deletion removes it. Find it in `create` output or `status --json`'s `worktree`.

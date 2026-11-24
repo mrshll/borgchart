@@ -2,10 +2,12 @@
 
 roles:
   designer-claude:
+    description: "Writes one design proposal from the panel's blind brief: the Claude designer."
     prompt: designer.md
     vendor: claude
     start: true
   designer-codex:
+    description: "Writes one design proposal from the panel's blind brief: the Codex designer."
     prompt: designer.md
     vendor: codex
     start: true

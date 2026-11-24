@@ -18,12 +18,14 @@ plugins:
 
 roles:
   lead:
+    description: "Owns the team's task, plan, branches, integration and pull requests."
     plugins: {seat: [route], timer: [alarm-set, alarm-show, alarm-clear], github: [read]}
     prompt: orchestrator.md
     interactive: true
     vendor: claude      # Claude leads end turns with a background msg wait
     start: true
   implementer:
+    description: "One bounded, written change per member; writes only its own worktree and commits locally."
     prompt: implementer.md
     vendor: codex
     parent: lead
@@ -31,18 +33,21 @@ roles:
     max: 4
     worktree: true
   reviewer:
+    description: "One independent review pass; reads the checkout read-only, works in its own scratch clone, writes a report."
     max: 2
     prompt: reviewer.md
     vendor: claude
     parent: lead
     start: false
   researcher:
+    description: "One web or code research question; read-only, reports only."
     prompt: researcher.md
     vendor: codex
     parent: lead
     start: false
     args: [--search]    # Codex's web search
   monitor:
+    description: "One watch (observation, interval, deadline, trigger); read-only, reports only."
     prompt: monitor.md
     vendor: claude
     parent: lead

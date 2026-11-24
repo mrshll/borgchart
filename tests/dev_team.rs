@@ -449,6 +449,34 @@ const PROJECT_WORDS: [&str; 7] = [
     "rust",
 ];
 
+/// Leads learn their roles from `status`, so a role without a description
+/// would reach no lead.
+#[test]
+fn every_shipped_role_says_what_it_is_for() {
+    let config = borgchart::config::Config {
+        teams: vec![catalog()],
+        ..Default::default()
+    };
+    for team in ["engineering", "dev-team", "dev-design-team"] {
+        let (report, validated) =
+            borgchart::validate::validate_with(&team_dir(team), config.clone());
+        let team = validated
+            .unwrap_or_else(|| panic!("{team}: {:?}", report.errors().collect::<Vec<_>>()))
+            .team;
+        let undescribed: Vec<_> = team
+            .roles
+            .iter()
+            .filter_map(|(id, role)| role.description.is_none().then_some(id))
+            .chain(
+                team.team_roles
+                    .iter()
+                    .filter_map(|(id, role)| role.description.is_none().then_some(id)),
+            )
+            .collect();
+        assert!(undescribed.is_empty(), "{}: {undescribed:?}", team.name);
+    }
+}
+
 #[test]
 fn the_team_files_stay_generic() {
     assert!(denied_word("the owner merges").is_none());

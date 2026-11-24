@@ -826,6 +826,7 @@ pub(crate) mod tests {
             run: None,
             start_id: None,
             role: None,
+            description: None,
             vendor: None,
             model: None,
             effort: None,

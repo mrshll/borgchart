@@ -12,6 +12,7 @@ fn member(name: &str, parent: Option<&str>) -> StatusRow {
         run: None,
         start_id: None,
         role: None,
+        description: None,
         vendor: Some("codex".into()),
         model: Some("example-model".into()),
         effort: None,
@@ -174,4 +175,20 @@ fn chosen_empty_roles_stay_visible_and_align_with_members() {
     assert!(worker.contains("example-model medium"), "{worker}");
     let column = |line: &str| line[..line.find('Λ').unwrap()].chars().count();
     assert_eq!(column(worker), column(lead), "{text}");
+}
+
+#[test]
+fn only_piped_text_lists_role_descriptions() {
+    let rows = [StatusRow {
+        role: Some("lead".into()),
+        description: Some("Runs the harbor.".into()),
+        ..member("lead", None)
+    }];
+    let piped = runtime::render_status_as("harbor", &rows, false, false, None);
+    assert!(
+        piped.ends_with("roles in harbor:\n  lead  Runs the harbor.\n"),
+        "{piped}"
+    );
+    let terminal = runtime::render_status_as("harbor", &rows, true, false, None);
+    assert!(!terminal.contains("roles in"), "{terminal}");
 }

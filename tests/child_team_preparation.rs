@@ -210,6 +210,56 @@ fn missing_nested_child_team_reports_kept_alternatives() {
 }
 
 #[test]
+fn status_gives_each_roles_description_under_the_template_that_declares_it() {
+    let env = department();
+    env.write(
+        "templates/oncall/template.yaml",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md, description: Runs on-call.}\n  dev: {template: dev, parent: lead, start: false, max: 2, worktree: true, description: One topic's dev team.}\n",
+    );
+    let dev = fs::read_to_string(env.path("templates/dev/template.yaml")).unwrap();
+    env.write(
+        "templates/dev/template.yaml",
+        &dev.replace(
+            "    prompt: helper.md\n",
+            "    prompt: helper.md\n    description: One small change.\n",
+        ),
+    );
+    let dept = env.create("oncall", "work/a");
+    let (first, _) = create_copy(&env, &dept, "dev");
+    create_copy(&env, &dept, "dev");
+
+    let rows = env.rows(&dept);
+    let row = |kind: &str, team: &str, role: &str| {
+        rows.iter()
+            .find(|r| r["kind"] == kind && r["team"] == team && r["role"] == role)
+            .unwrap_or_else(|| panic!("no {kind} row for {team} {role}"))
+    };
+    assert_eq!(row("member", &dept, "lead")["description"], "Runs on-call.");
+    assert_eq!(
+        row("team", &first, "dev")["description"],
+        "One topic's dev team."
+    );
+    assert_eq!(
+        row("role", &first, "helper")["description"],
+        "One small change."
+    );
+    assert!(row("role", &first, "scout").get("description").is_none());
+
+    let text = stdout(&env.ok(&["status", &dept]));
+    assert!(
+        text.contains("roles in oncall:\n  lead  Runs on-call.\n  dev   One topic's dev team.\n"),
+        "{text}"
+    );
+    assert_eq!(
+        text.matches("roles in dev:\n  helper  One small change.\n")
+            .count(),
+        1,
+        "{text}"
+    );
+    env.ok(&["stop", &dept]);
+}
+
+#[test]
 fn status_nests_child_teams_once_with_full_paths_and_states() {
     let env = department();
     let dev_team = env.path("templates/dev/template.yaml");

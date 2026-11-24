@@ -25,6 +25,7 @@ plugins:
 
 roles:
   lead:
+    description: "The root lead: takes the owner's requests and runs the team's child teams and helpers."
     plugins: {seat: [route], timer: [alarm-set, alarm-show, alarm-clear], github: [read]}
     prompt: lead.md
     interactive: true
@@ -32,17 +33,20 @@ roles:
     remote_control: true
     start: true
   dev:
+    description: "A dev team for one product topic; its lead plans, builds, reviews and hands off pull requests."
     template: dev-team
     parent: lead
     start: false
     max: 6
     worktree: true
   design:
+    description: "A design panel for a costly-to-reverse choice: two designers, one per vendor, propose independently."
     template: dev-design-team
     parent: lead
     start: false
     max: 3
   implementer:
+    description: "One small, settled change you expect to accept at a glance; commits locally in its own worktree."
     prompt: implementer.md
     vendor: codex
     parent: lead
@@ -50,6 +54,7 @@ roles:
     max: 3
     worktree: true
   researcher:
+    description: "One web or code research question; read-only, reports only."
     prompt: researcher.md
     vendor: codex
     parent: lead
@@ -57,6 +62,7 @@ roles:
     max: 6
     args: [--search]        # Codex's web search
   monitor:
+    description: "One watch (observation, interval, deadline, trigger); read-only, reports only."
     prompt: monitor.md
     vendor: claude
     parent: lead
