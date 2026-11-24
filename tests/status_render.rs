@@ -9,6 +9,7 @@ fn member(name: &str, parent: Option<&str>) -> StatusRow {
         instance: "harbor-k3f9".into(),
         team: "harbor".into(),
         member: Some(name.into()),
+        run: None,
         start_id: None,
         role: None,
         vendor: Some("codex".into()),

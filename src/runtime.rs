@@ -3828,6 +3828,9 @@ pub struct StatusRow {
     pub team: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub member: Option<String>,
+    /// The schedule that created this member.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run: Option<String>,
     /// The current start's incarnation ID, retained after a stop.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start_id: Option<String>,
@@ -4066,6 +4069,7 @@ fn status_with_counts(
                 instance: inst.id.clone(),
                 team: inst.record.team.clone(),
                 member: None,
+                run: None,
                 start_id: None,
                 role: Some(id.clone()),
                 vendor: choice.map(|m| m.vendor.as_str().into()),
@@ -4121,6 +4125,7 @@ fn status_with_counts(
             instance: inst.id.clone(),
             team: inst.record.team.clone(),
             member: Some(id.clone()),
+            run: inst.record.members[id].run.clone(),
             start_id: incarnation
                 .as_ref()
                 .ok()
@@ -4362,6 +4367,7 @@ fn status_with_counts(
             instance: inst.id.clone(),
             team: inst.record.team.clone(),
             member: None,
+            run: None,
             start_id: None,
             role: None,
             vendor: None,
@@ -4439,6 +4445,7 @@ fn status_with_counts(
                 instance: inst.id.clone(),
                 team: inst.record.team.clone(),
                 member: None,
+                run: None,
                 start_id: None,
                 role: Some(role_name.clone()),
                 vendor: None,
@@ -4496,6 +4503,7 @@ fn status_with_counts(
                     .map(|copy| copy.record.team.clone())
                     .unwrap_or_else(|| crate::team::team_name(&role.dir)),
                 member: None,
+                run: None,
                 start_id: None,
                 role: Some(role_name.clone()),
                 vendor: None,
@@ -4636,6 +4644,9 @@ pub fn status_cells(r: &StatusRow, short: bool) -> Vec<String> {
     detail.extend(r.detail.clone());
     if let Some(unacked) = r.unacked.filter(|&n| n > 0) {
         detail.push(format!("{unacked} unacked"));
+    }
+    if let Some(schedule) = &r.run {
+        detail.push(format!("run: {schedule}"));
     }
     let vendor = r.vendor.as_deref().unwrap_or("-");
     let model = r.model.as_ref().map(|name| match &r.effort {
@@ -5749,6 +5760,7 @@ mod tests {
             instance: "i".into(),
             team: "t".into(),
             member: None,
+            run: None,
             start_id: None,
             role: None,
             vendor: Some(vendor.into()),
@@ -5805,6 +5817,7 @@ mod tests {
             instance: "i".into(),
             team: "t".into(),
             member: None,
+            run: None,
             start_id: None,
             role: None,
             vendor: Some("claude".into()),
@@ -5850,6 +5863,7 @@ mod tests {
             instance: "i".into(),
             team: "t".into(),
             member: None,
+            run: None,
             start_id: None,
             role: None,
             vendor: Some("claude".into()),
@@ -5908,6 +5922,7 @@ mod tests {
                     instance: instance.into(),
                     team: "t".into(),
                     member: None,
+                    run: None,
                     start_id: None,
                     role: None,
                     vendor: None,

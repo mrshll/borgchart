@@ -823,6 +823,7 @@ pub(crate) mod tests {
             instance: team.into(),
             team: "example".into(),
             member: Some(name.into()),
+            run: None,
             start_id: None,
             role: None,
             vendor: None,
