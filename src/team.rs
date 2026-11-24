@@ -89,7 +89,6 @@ struct PluginRaw {
     command: Option<String>,
     process: Option<Vec<String>>,
     delivers_to: Option<String>,
-    runs: Option<Vec<String>>,
     #[serde(default)]
     env: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
@@ -174,6 +173,45 @@ pub struct Team {
     pub roles: BTreeMap<String, Role>,
     pub team_roles: BTreeMap<String, TeamRole>,
     pub plugins: BTreeMap<String, Plugin>,
+}
+
+impl Team {
+    /// The first change a declared role or plugin needs before it can schedule runs.
+    pub(crate) fn schedulable(&self, role: &Role, plugin: &Plugin) -> Result<(), String> {
+        let name = &plugin.name;
+        match role.grants.get(name) {
+            Some(Grant::All) => {}
+            Some(Grant::Actions(actions)) if actions.iter().any(|a| a == "done") => {}
+            _ => {
+                return Err(format!(
+                    "grant role `{}` plugin `{name}`'s `done` action",
+                    role.id
+                ));
+            }
+        }
+        if !plugin.actions.contains_key("done") {
+            return Err(format!("declare a `done` action on plugin `{name}`"));
+        }
+        if plugin.process.is_none() {
+            return Err(format!("add a `process` to plugin `{name}`"));
+        }
+        if role.start {
+            return Err("set `start: false` on the role".into());
+        }
+        if role.worktree {
+            return Err("remove `worktree: true` from the role".into());
+        }
+        if self
+            .roles
+            .values()
+            .filter_map(|r| r.parent.as_deref())
+            .chain(self.team_roles.values().filter_map(|r| r.parent.as_deref()))
+            .any(|parent| parent == role.id)
+        {
+            return Err("choose a role that is not another role's parent".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -315,8 +353,10 @@ pub struct Role {
     pub posture: Posture,
     pub grants: BTreeMap<String, Grant>,
     pub connectors: Connectors,
-    pub prompt_file: PathBuf,
-    /// SHA-256 of the member file as it was read and parsed.
+    pub prompt_file: Option<PathBuf>,
+    /// The plugin this built-in role serves, if it has no role file.
+    pub built_in_for: Option<String>,
+    /// SHA-256 of the role file as read, or of the built-in instruction.
     pub prompt_sha256: String,
     /// The member body with includes resolved: its standing instruction.
     pub instruction: String,
@@ -399,8 +439,6 @@ pub struct Plugin {
     pub command: Option<String>,
     pub process: Option<Vec<String>>,
     pub delivers_to: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub runs: Option<Vec<String>>,
     /// Every name the plugin gets, in order.
     pub env: Vec<String>,
     /// The plain values the template gives; every other name is a secret.
@@ -414,6 +452,38 @@ impl Plugin {
     /// The names whose values come from the environment or resolver.
     pub fn secrets(&self) -> impl Iterator<Item = &String> {
         self.env.iter().filter(|n| !self.values.contains_key(*n))
+    }
+
+    fn run_role(&self, vendor: Vendor) -> Option<Role> {
+        self.process.as_ref()?;
+        let parent = self.delivers_to.as_ref()?;
+        self.actions.get("done")?;
+        let instruction = include_str!("run_role.md");
+        Some(Role {
+            id: format!("{}-run", self.name),
+            vendor,
+            pins: BTreeMap::new(),
+            model: None,
+            parent: Some(parent.clone()),
+            start: false,
+            interactive: false,
+            remote_control: false,
+            max: usize::MAX,
+            posture: Posture::Vendor,
+            grants: BTreeMap::from([(self.name.clone(), Grant::Actions(vec!["done".into()]))]),
+            connectors: Connectors {
+                declared: true,
+                ..Connectors::default()
+            },
+            prompt_file: None,
+            built_in_for: Some(self.name.clone()),
+            prompt_sha256: crate::config_snapshot::sha256_hex(instruction.as_bytes()),
+            instruction: instruction.into(),
+            sources: Vec::new(),
+            source_tree: Vec::new(),
+            args: Vec::new(),
+            worktree: false,
+        })
     }
 }
 
@@ -618,9 +688,27 @@ pub(crate) fn load_with(
         }
     }
 
+    for plugin in plugins.values() {
+        let Some(role) = plugin.run_role(default_vendor) else {
+            continue;
+        };
+        let id = &role.id;
+        if !is_valid_id(id) {
+            report.error(Some(&team_file), format!("plugin `{}`: shorten its name to 28 characters or fewer to make room for `-run`", plugin.name));
+        } else if raw.roles.contains_key(id) {
+            report.error(
+                Some(&team_file),
+                format!("role `{id}` is built in for scheduled runs; rename the declared role"),
+            );
+        } else {
+            roles.insert(id.clone(), role);
+        }
+    }
     check_parents(&team_file, &raw.roles, report);
     for name in raw.roles.keys() {
-        if crate::names::conflicts_with_member_id(name, |base| raw.roles.contains_key(base)) {
+        if crate::names::conflicts_with_member_id(name, |base| {
+            raw.roles.contains_key(base) || roles.contains_key(base)
+        }) {
             report.error(
                 Some(&team_file),
                 format!(
@@ -825,26 +913,6 @@ fn load_plugin(
         _ => {}
     }
 
-    if let Some(runs) = &p.runs {
-        if p.process.is_none() && runs.is_empty() {
-            report.error(Some(team_file), at("add a process to use `runs`".into()));
-        }
-        for role in runs {
-            let error = match roles.get(role) {
-                _ if p.process.is_none() => "add a process to use `runs`",
-                None => "name a declared agent role",
-                Some(r) if r.team.is_some() => "name an agent role instead of a team role",
-                Some(r) if r.start != Some(false) => "set `start: false` on the role",
-                Some(r) if r.worktree => "remove `worktree: true` from the role",
-                Some(_) if roles.values().any(|r| r.parent.as_ref() == Some(role)) => {
-                    "choose a role that is not another role's parent"
-                }
-                Some(_) => continue,
-            };
-            report.error(Some(team_file), at(format!("runs: `{role}`: {error}")));
-        }
-    }
-
     // Commands that live in a template-local plugin directory must exist and be executable.
     let local_dir = match &location {
         Some(PluginLocation::Team(rel)) => Some(dir.join(rel)),
@@ -878,7 +946,6 @@ fn load_plugin(
         command: p.command.clone(),
         process: p.process.clone(),
         delivers_to: p.delivers_to.clone(),
-        runs: p.runs.clone(),
         env,
         values,
         sources,
@@ -1139,7 +1206,8 @@ fn load_role(
         posture,
         grants,
         connectors,
-        prompt_file: dir.join(prompt),
+        prompt_file: Some(dir.join(prompt)),
+        built_in_for: None,
         prompt_sha256,
         instruction,
         sources,

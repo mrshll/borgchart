@@ -200,6 +200,9 @@ fn cross_check(v: &Validated, report: &mut Report) {
         .collect();
 
     for (id, member) in &v.team.roles {
+        if member.built_in_for.is_some() {
+            continue;
+        }
         let posture = v.posture(id);
         let at = |msg: &str| format!("role `{id}`: {msg}");
 
@@ -299,7 +302,7 @@ fn cross_check(v: &Validated, report: &mut Report) {
             .team
             .roles
             .values()
-            .any(|m| m.grants.contains_key(&plugin.name));
+            .any(|m| m.built_in_for.is_none() && m.grants.contains_key(&plugin.name));
         if !granted || plugin.location.is_none() {
             continue;
         }

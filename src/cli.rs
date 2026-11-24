@@ -133,7 +133,8 @@ enum Command {
         /// must also differ from every role name.
         #[arg(long)]
         name: Option<String>,
-        /// Mark a scheduled run, for a timer process with a `runs` grant.
+        /// Mark a timer's scheduled run. Use a role granted its `done` action
+        /// or the timer's built-in role (requires --set vendor=…,model=…).
         #[arg(long, value_name = "SCHEDULE")]
         run: Option<String>,
         /// Choose vendor, model, effort or remote_control at create (repeatable; comma lists allowed).
@@ -824,7 +825,12 @@ fn run_validate(team: &str, json: bool, probe: bool) -> ExitCode {
             println!("{}", validate_heading(&verdict, colour));
             println!("\n{}", validate_heading("Roles:", colour));
             for (id, role) in &v.team.roles {
-                println!("  {}", validate_heading(id, colour));
+                let name = validate_heading(id, colour);
+                if let Some(plugin) = &role.built_in_for {
+                    println!("  {name}  (built in: scheduled runs of plugin {plugin})");
+                } else {
+                    println!("  {name}");
+                }
                 print_role_sources(&role.source_tree, 2, home.as_deref(), colour);
             }
         }

@@ -293,7 +293,7 @@ pub fn grants(config: &Config) -> Result<(), String> {
             && !grants.split(',').any(|role| role == run.role)
         {
             return Err(format!(
-                "schedule {}: add role `{}` to the timer's `runs` in template.yaml and restart the timer",
+                "schedule {}: role `{}` can't be scheduled by this timer; grant it this plugin's `done` action, with `start: false`, no worktree and no child roles, then restart the timer",
                 schedule.name, run.role
             ));
         }

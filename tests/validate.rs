@@ -238,46 +238,66 @@ fn plugin_delivery_refuses_team_roles() {
 }
 
 #[test]
-fn plugin_run_grants_refuse_roles_that_cannot_be_safely_removed() {
+fn only_plugins_with_process_delivery_and_done_add_a_run_role() {
+    let f = Fixture::new();
+    f.write(
+        "template.yaml",
+        "plugins:
+  clock: {process: [watch], delivers_to: lead, actions: {done: clockctl done}}
+  alarm: {process: [watch], delivers_to: lead}
+  worker: {process: [watch], actions: {done: workerctl done}}
+  manual: {actions: {done: manualctl done}}
+roles:
+  lead: {prompt: lead.md, vendor: codex}
+",
+    );
+    let (report, validated) = f.run();
+    let team = validated
+        .unwrap_or_else(|| panic!("{}", errors(&report)))
+        .team;
+    assert!(team.roles.contains_key("clock-run"));
+    for role in ["alarm-run", "worker-run", "manual-run"] {
+        assert!(!team.roles.contains_key(role), "unexpected role {role}");
+    }
+    assert_eq!(report.warnings().count(), 1, "{}", warnings(&report));
+    assert!(warnings(&report).contains("role `lead`"));
+}
+
+#[test]
+fn built_in_run_roles_refuse_ambiguous_names() {
     let f = nested_team();
-    for (role, process, runner, child) in [
-        ("runner", "", ", start: false", ""),
-        ("missing", ", process: [watch]", "", ""),
-        ("dev", ", process: [watch]", "", ""),
-        ("runner", ", process: [watch]", ", start: true", ""),
-        (
-            "runner",
-            ", process: [watch]",
-            ", start: false, worktree: true",
-            "",
-        ),
-        (
-            "runner",
-            ", process: [watch]",
-            ", start: false",
-            "  child: {template: dev, parent: runner}\n",
-        ),
-        (
-            "runner",
-            ", process: [watch]",
-            ", start: false",
-            "  child: {prompt: lead.md, parent: runner}\n",
-        ),
-        ("runner", ", process: [watch]", ", start: false", ""),
+    for (role, definition, reason) in [
+        ("clock-run", "prompt: lead.md", "built in"),
+        ("clock-run", "template: dev", "built in"),
+        ("clock-run-k3f9", "prompt: lead.md", "names a member"),
     ] {
-        f.write("template.yaml", &format!(
-            "plugins: {{timer: {{runs: [{role}]{process}}}}}\nroles:\n  lead: {{prompt: lead.md}}\n  runner: {{prompt: lead.md{runner}}}\n  dev: {{template: dev, start: false}}\n{child}"
-        ));
-        let (report, validated) = f.run();
-        assert_eq!(
-            validated.is_some(),
-            role == "runner"
-                && !process.is_empty()
-                && runner == ", start: false"
-                && child.is_empty(),
-            "{}",
-            errors(&report)
+        f.write(
+            "template.yaml",
+            &format!(
+                "plugins: {{clock: {{process: [watch], delivers_to: lead, actions: {{done: clockctl done}}}}}}\nroles:\n  lead: {{prompt: lead.md}}\n  {role}: {{{definition}}}\n"
+            ),
         );
+        expect_error(&f, reason);
+    }
+}
+
+#[test]
+fn plugins_that_supply_run_roles_must_leave_room_for_the_suffix() {
+    let f = Fixture::new();
+    for len in [28, 29] {
+        let plugin = "a".repeat(len);
+        f.write(
+            "template.yaml",
+            &format!(
+                "plugins: {{{plugin}: {{process: [watch], delivers_to: lead, actions: {{done: clockctl done}}}}}}\nroles: {{lead: {{prompt: lead.md}}}}\n"
+            ),
+        );
+        if len == 29 {
+            expect_error(&f, "28 characters");
+        } else {
+            let (report, validated) = f.run();
+            assert!(validated.is_some(), "{}", errors(&report));
+        }
     }
 }
 

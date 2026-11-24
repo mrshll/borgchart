@@ -309,15 +309,46 @@ fn plugin_secrets_check_cannot_invoke_the_resolver() {
 }
 
 #[test]
-fn only_the_granted_plugin_process_receives_the_run_roles() {
+fn each_plugin_process_receives_only_its_own_eligible_run_roles() {
     let env = Env::new();
-    env.write("templates/oncall/template.yaml", &format!("{TEAM}\nplugins:\n  timer:\n    process: [sh, -c, 'printf %s \"$BORGCHART_RUNS\" > \"$HOME/timer-grant\"; sleep 60']\n    runs: [helper, scout]\n  other:\n    process: [sh, -c, 'printf %s \"${{BORGCHART_RUNS-unset}}\" > \"$HOME/other-grant\"; sleep 60']\n"));
+    env.team("templates/subteam");
+    env.write(
+        "templates/oncall/template.yaml",
+        r#"roles:
+  lead: {prompt: lead.md}
+  helper: {prompt: lead.md, start: false, plugins: {clock: [done]}}
+  wildcard: {prompt: lead.md, start: false, plugins: {clock: ["*"]}}
+  started: {prompt: lead.md, plugins: {clock: [done]}}
+  checkout: {prompt: lead.md, start: false, worktree: true, plugins: {clock: [done]}}
+  parent: {prompt: lead.md, start: false, plugins: {clock: [done]}}
+  child: {template: subteam, parent: parent}
+  observer: {prompt: lead.md, start: false, plugins: {clock: [last], other: [done]}}
+  no-action: {prompt: lead.md, start: false, plugins: {alarm: ["*"]}}
+plugins:
+  clock:
+    process: [sh, -c, 'printf "%s/%s" "${BORGCHART_RUNS-unset}" "${BORGCHART_RUN_ROLE-unset}" > "$HOME/clock-grant"; sleep 60']
+    delivers_to: lead
+    actions: {done: clockctl done, last: clockctl last}
+  other:
+    process: [sh, -c, 'printf "%s/%s" "${BORGCHART_RUNS-unset}" "${BORGCHART_RUN_ROLE-unset}" > "$HOME/other-grant"; sleep 60']
+    actions: {done: otherctl done}
+  alarm:
+    process: [sh, -c, 'printf "%s/%s" "${BORGCHART_RUNS-unset}" "${BORGCHART_RUN_ROLE-unset}" > "$HOME/alarm-grant"; sleep 60']
+    actions: {last: alarmctl last}
+    env: {BORGCHART_RUNS: stale, BORGCHART_RUN_ROLE: stale-run}
+"#,
+    );
     let id = env.create("oncall", "work/a");
-    for (plugin, expected) in [("timer", "helper,scout"), ("other", "unset")] {
+    for (plugin, expected) in [
+        ("clock", "helper,wildcard/clock-run"),
+        ("other", "observer/unset"),
+        ("alarm", "unset/unset"),
+    ] {
         let path = env.path(&format!("home/{plugin}-grant"));
         env.wait_for("plugin grant", || {
-            fs::read_to_string(&path).is_ok_and(|grant| grant == expected)
+            fs::metadata(&path).is_ok_and(|file| file.len() > 0)
         });
+        assert_eq!(fs::read_to_string(path).unwrap(), expected, "{plugin}");
     }
     env.ok(&["stop", &id]);
 }

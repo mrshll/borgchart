@@ -14,7 +14,7 @@ pub struct ConfigSnapshot {
     pub version: u32,
     pub digest: String,
     /// Input name → SHA-256: `template.yaml`, `members/<role>/prompt` (the
-    /// role file), `members/<role>/instruction` (its body with includes
+    /// role file or built-in text), `members/<role>/instruction` (its body with includes
     /// expanded), and the global settings that reach members:
     /// `config/auth`, `config/auto_trust` and `config/plugins/<name>` (where
     /// a shared plugin resolves), plus `templates/<role>` (the resolved source
