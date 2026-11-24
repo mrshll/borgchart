@@ -5,6 +5,6 @@
 # A fresh member drafts the week's release notes for the lead each Tuesday and is removed.
 - name: release-notes
   cron: '0 14 * * 2'
-  run: release-notes
+  run: task
   timeout_minutes: 30
-  prompt: Draft this week's release notes as your instructions say, message your parent, then run brg-timer done.
+  prompt: Do the release-notes task in your instructions, message your parent, then run brg-timer done.

@@ -1,4 +1,4 @@
-# An owner's engineering team: a root lead with dev child teams, design panels, solo implementers, researchers and monitors, plus a weekly release-notes draft.
+# An owner's engineering team: a root lead with dev child teams, design panels, solo implementers, researchers and monitors, plus scheduled tasks.
 default: claude
 includes: catalog:shared/includes
 
@@ -16,7 +16,7 @@ plugins:
   timer:
     process: [brg-timer, run]
     delivers_to: lead               # check notices; alarms go to whoever set them
-    runs: [release-notes]           # checks.yaml starts a fresh member for each weekly draft
+    runs: [task]                    # checks.yaml starts a fresh member for each scheduled task
     env:
       SEAT: brg-seat                # a run is skipped when the subscription says wait
     actions:
@@ -62,11 +62,12 @@ roles:
     start: false
     max: 6
     args: [--search]        # Codex's web search
-  release-notes:
-    prompt: release-notes.md
+  task:                             # one role for every scheduled task; task.md has a section per schedule
+    prompt: task.md
     vendor: claude
     parent: lead
     start: false
+    max: 3                          # tasks whose runs may overlap
     plugins: {timer: [done]}
   monitor:
     prompt: monitor.md
