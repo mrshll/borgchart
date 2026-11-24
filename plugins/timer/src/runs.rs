@@ -1,5 +1,6 @@
 //! Scheduled member starts, completion and recovery.
 use crate::{
+    config,
     schedule::Schedule,
     state::{Snapshot, one_line},
 };
@@ -12,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
     time::{Duration, Instant, SystemTime},
 };
@@ -78,12 +79,8 @@ fn member<'a>(rows: &'a [Value], id: &str) -> Option<&'a Value> {
     rows.iter()
         .find(|row| row["kind"] == "member" && row["name"] == id)
 }
-fn seat(rows: &[Value], state: &Snapshot, role: &str) -> Result<(), String> {
-    let Some(program) = std::env::var_os("SEAT").filter(|s| !s.is_empty()) else {
-        return Ok(());
-    };
-    let choice = rows
-        .iter()
+fn role_status<'a>(rows: &'a [Value], state: &Snapshot, role: &str) -> Option<&'a Value> {
+    rows.iter()
         .find(|row| row["kind"] == "role" && row["name"] == role)
         .or_else(|| {
             state
@@ -97,7 +94,12 @@ fn seat(rows: &[Value], state: &Snapshot, role: &str) -> Result<(), String> {
                             .is_some_and(|id| row["start_id"] == id)
                     })
                 })
-        });
+        })
+}
+fn seat(choice: Option<&Value>) -> Result<(), String> {
+    let Some(program) = std::env::var_os("SEAT").filter(|s| !s.is_empty()) else {
+        return Ok(());
+    };
     let (vendor, model) = choice
         .and_then(|row| Some((row["vendor"].as_str()?, row["model"].as_str()?)))
         .ok_or("cannot read the role's vendor and model")?;
@@ -159,10 +161,26 @@ pub fn start(
     schedule: &Schedule,
     now: SystemTime,
     occurrence: SystemTime,
-    body: &str,
+    mut body: String,
+    folder: &Path,
 ) -> Result<String, String> {
     let key = &schedule.name;
     state.schedules.get_mut(key).unwrap().pending = None;
+    if let Some(path) = schedule.run.as_ref().unwrap().prompt_file.as_deref() {
+        match config::read_prompt_file(folder, path) {
+            Ok(prompt) => {
+                body.push('\n');
+                body.push_str(&prompt);
+            }
+            Err(reason) => {
+                state
+                    .outcomes
+                    .insert(key.clone(), outcome("failed-to-start", &reason));
+                save(state, store)?;
+                return Ok(String::new());
+            }
+        }
+    }
     let skip = if state.runs.contains_key(key) {
         Some("previous run still going")
     } else if state.schedule_sends.len() >= 6 {
@@ -180,7 +198,7 @@ pub fn start(
     state.schedule_sends.push(time::format_utc(now));
     save(state, store)?;
     let team = std::env::var("BORGCHART_TEAM").unwrap_or_default();
-    if let Err(reason) = launch(store, state, schedule, occurrence, body, &team) {
+    if let Err(reason) = launch(store, state, schedule, occurrence, &body, &team) {
         let line = outcome("failed-to-start", &reason);
         if let Some(run) = state.runs.get_mut(key) {
             run.ending = Some(line);
@@ -215,7 +233,16 @@ fn launch(
             "{id} already exists; choose a different schedule name"
         ));
     }
-    if let Err(reason) = seat(&rows, state, &spec.role) {
+    let role = role_status(&rows, state, &spec.role);
+    if role.is_some_and(|row| row["vendor"] == "claude" && row["restricted_access"] == true)
+        && (body.lines().count() > 2 || body.len() > 700)
+    {
+        return Err(
+            "prompt exceeds the restricted Claude limit; shorten the prompt or use an unrestricted role"
+                .into(),
+        );
+    }
+    if let Err(reason) = seat(role) {
         state
             .outcomes
             .insert(key.clone(), outcome("skipped", &format!("seat: {reason}")));

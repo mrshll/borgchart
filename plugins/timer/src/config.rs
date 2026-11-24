@@ -1,4 +1,4 @@
-//! Strict YAML definitions and executable containment checks.
+//! Strict YAML definitions and executable and prompt file containment checks.
 use regex::bytes::Regex;
 use serde::Deserialize;
 use std::{
@@ -6,6 +6,8 @@ use std::{
     fs,
     path::{Component, Path},
 };
+
+const RUN_PROMPT_BYTES: usize = 16_000;
 
 #[derive(Deserialize)]
 #[serde(untagged)]
@@ -110,9 +112,9 @@ pub fn parse(text: &str) -> Result<Config, String> {
                 names.insert(name.clone());
                 if m.contains_key("cron") {
                     if m.keys()
-                        .any(|k| !["name", "cron", "missed", "prompt", "run", "timeout_minutes"].contains(&k.as_str()))
+                        .any(|k| !["name", "cron", "missed", "prompt", "prompt_file", "run", "timeout_minutes"].contains(&k.as_str()))
                     {
-                        return Err("use only name, cron, missed, prompt, run and timeout_minutes for a schedule".into());
+                        return Err("use only name, cron, missed, prompt, prompt_file, run and timeout_minutes for a schedule".into());
                     }
                     let run = match m.get("run") {
                         Some(role) => {
@@ -129,8 +131,16 @@ pub fn parse(text: &str) -> Result<Config, String> {
                             Some(crate::schedule::Run {
                                 role: role.into(),
                                 timeout: std::time::Duration::from_secs(minutes * 60),
+                                prompt_file: m.get("prompt_file").map(|v| {
+                                    if m.contains_key("prompt") {
+                                        return Err("use either prompt or prompt_file on a run schedule");
+                                    }
+                                    v.text().filter(|s| !s.is_empty()).map(str::to_owned)
+                                        .ok_or("write prompt_file as a relative file path")
+                                }).transpose()?,
                             })
                         }
+                        None if m.contains_key("prompt_file") => return Err("use prompt_file only with run".into()),
                         None if m.contains_key("timeout_minutes") => return Err("use timeout_minutes only with run".into()),
                         None => None,
                     };
@@ -145,9 +155,14 @@ pub fn parse(text: &str) -> Result<Config, String> {
                         _ => return Err("write missed: skip or missed: catch-up".into()),
                     };
                     let prompt = m.get("prompt").map(|v| {
-                        v.text().filter(|s| !s.chars().any(char::is_control))
-                            .map(str::trim).filter(|s| !s.is_empty() && s.len() <= 300)
-                            .map(str::to_owned).ok_or("write prompt as one non-empty string, at most 300 UTF-8 bytes after trimming, without newlines or control characters; point to a file for longer jobs")
+                        let (limit, multiline, error) = if run.is_some() {
+                            (RUN_PROMPT_BYTES, true, "write prompt as non-empty text, at most 16000 UTF-8 bytes after trimming, with no control characters except newlines")
+                        } else {
+                            (300, false, "write prompt as one non-empty string, at most 300 UTF-8 bytes after trimming, without newlines or control characters; point to a file for longer jobs")
+                        };
+                        v.text().filter(|s| !s.chars().any(|c| c.is_control() && !(multiline && c == '\n')))
+                            .map(str::trim).filter(|s| !s.is_empty() && s.len() <= limit)
+                            .map(str::to_owned).ok_or(error)
                     }).transpose()?;
                     schedules.push(crate::schedule::Schedule {
                         name,
@@ -206,12 +221,70 @@ pub fn path() -> std::path::PathBuf {
         .into()
 }
 pub fn load(path: &Path) -> Result<Config, String> {
-    parse_bytes(
+    let config = parse_bytes(
         &fs::read(path).map_err(|_| "checks file: cannot read YAML; fix CHECKS_FILE and retry")?,
-    )
+    )?;
+    prompt_files(&config, folder(path))?;
+    Ok(config)
 }
 pub fn parse_bytes(bytes: &[u8]) -> Result<Config, String> {
     parse(std::str::from_utf8(bytes).map_err(|_| "checks file: write UTF-8 YAML")?)
+}
+pub(crate) fn folder(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
+}
+pub(crate) fn read_prompt_file(folder: &Path, value: &str) -> Result<String, String> {
+    const SIZE_ERROR: &str = "write non-empty prompt_file text of at most 16000 UTF-8 bytes after trimming and 64 KiB on disk";
+    let path = Path::new(value);
+    if path.is_absolute() || path.components().any(|c| c == Component::ParentDir) {
+        return Err("use a relative prompt_file path without ..".into());
+    }
+    let folder = folder
+        .canonicalize()
+        .map_err(|_| "cannot resolve the checks folder; check CHECKS_FILE")?;
+    let path = folder
+        .join(path)
+        .canonicalize()
+        .map_err(|_| "cannot resolve prompt_file; point it to an existing file")?;
+    if !path.starts_with(&folder) {
+        return Err("use a regular prompt_file inside the checks folder".into());
+    }
+    let metadata = fs::metadata(&path)
+        .ok()
+        .filter(fs::Metadata::is_file)
+        .ok_or("use a regular prompt_file inside the checks folder")?;
+    if metadata.len() > 64 * 1024 {
+        return Err(SIZE_ERROR.into());
+    }
+    let text = fs::read_to_string(path).map_err(|_| "use a readable UTF-8 prompt_file")?;
+    let text = text.trim();
+    if text.is_empty() || text.len() > RUN_PROMPT_BYTES {
+        return Err(SIZE_ERROR.into());
+    }
+    if text
+        .chars()
+        .any(|c| c.is_control() && c != '\n' && c != '\t')
+    {
+        return Err(
+            "remove control characters other than newlines and tabs from prompt_file".into(),
+        );
+    }
+    Ok(text.to_owned())
+}
+pub(crate) fn prompt_files(config: &Config, folder: &Path) -> Result<(), String> {
+    for schedule in &config.schedules {
+        if let Some(path) = schedule
+            .run
+            .as_ref()
+            .and_then(|run| run.prompt_file.as_deref())
+        {
+            read_prompt_file(folder, path)
+                .map_err(|e| format!("schedule {}: {e}", schedule.name))?;
+        }
+    }
+    Ok(())
 }
 pub fn grants(config: &Config) -> Result<(), String> {
     let grants = std::env::var("BORGCHART_RUNS").unwrap_or_default();

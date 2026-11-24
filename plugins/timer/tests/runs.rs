@@ -3,11 +3,22 @@
 mod support;
 
 use serde_json::json;
-use std::{fs, process::Output};
+use std::{
+    fs,
+    os::unix::fs::symlink,
+    process::{Command, Output},
+};
+use support::live::{Running, wait_until};
 use support::*;
 
 const CONFIG: &str =
     "- {name: review, cron: '0 * * * *', run: worker, timeout_minutes: 45, prompt: Read the draft}";
+
+fn file_schedule(name: &str, path: &str) -> String {
+    CONFIG
+        .replace("name: review", &format!("name: {name}"))
+        .replace("prompt: Read the draft", &format!("prompt_file: {path}"))
+}
 
 const BRG: &str = r#"#!/bin/sh
 printf '%s\0' "$@" >> state/sends
@@ -17,7 +28,8 @@ status)
     printf '[{}'
     set -- members/*
     if [ ! -f "$1" ]; then
-        printf ',{"kind":"role","team":"sample","name":"worker","vendor":"codex","model":"example-model"}'
+        printf ','
+        cat role.json
     fi
     for row in members/*; do
         [ -f "$row" ] || continue
@@ -50,6 +62,10 @@ fn fixture() -> Fixture {
     let f = Fixture::new();
     f.write("brg", BRG);
     f.write("checks.yaml", CONFIG);
+    f.write(
+        "role.json",
+        r#"{"kind":"role","team":"sample","name":"worker","vendor":"codex","model":"example-model"}"#,
+    );
     fs::create_dir(f.path("members")).unwrap();
     f
 }
@@ -62,15 +78,19 @@ fn pending(f: &Fixture, names: &[String]) {
     f.write("state/checks.json", &state.to_string());
 }
 
-fn run(f: &Fixture, args: &[&str]) -> Output {
-    f.command(args)
+fn run_command(f: &Fixture, args: &[&str]) -> Command {
+    let mut command = f.command(args);
+    command
         .env("BORGCHART_TEAM", "sample")
         .env("BORGCHART_RUNS", "worker")
         .env("SEAT", f.path("brg"))
         .env_remove("BORGCHART_MEMBER")
-        .env_remove("BORGCHART_DELIVER_TO")
-        .output()
-        .unwrap()
+        .env_remove("BORGCHART_DELIVER_TO");
+    command
+}
+
+fn run(f: &Fixture, args: &[&str]) -> Output {
+    run_command(f, args).output().unwrap()
 }
 
 fn tick(f: &Fixture) {
@@ -113,6 +133,177 @@ fn last(f: &Fixture, name: &str) -> String {
     let out = f.run(&["last", name]);
     assert!(out.status.success(), "{out:?}");
     String::from_utf8(out.stdout).unwrap()
+}
+
+#[test]
+fn prompt_file_requires_a_run_and_excludes_inline_prompt() {
+    let f = fixture();
+    let schedule = file_schedule("review", "review.md");
+    f.write("review.md", "Read the draft");
+    f.write("checks.yaml", &schedule);
+    assert!(f.run(&["validate"]).status.success());
+    for invalid in [
+        schedule.replace("run: worker, timeout_minutes: 45, ", ""),
+        schedule.replace("prompt_file:", "prompt: Read the draft, prompt_file:"),
+    ] {
+        f.write("checks.yaml", &invalid);
+        assert_eq!(f.run(&["validate"]).status.code(), Some(1), "{invalid}");
+    }
+}
+
+#[test]
+fn startup_refuses_prompt_file_paths_outside_the_checks_folder() {
+    let f = fixture();
+    fs::create_dir(f.path("config")).unwrap();
+    f.write("outside.md", "Read the draft");
+    f.write("config/review.md", "Review the notes");
+    symlink("../outside.md", f.path("config/link.md")).unwrap();
+    let startup = || {
+        f.command(&["run", "--once"])
+            .env("CHECKS_FILE", "config/checks.yaml")
+            .env("BORGCHART_RUNS", "worker")
+            .output()
+            .unwrap()
+    };
+    f.write("config/checks.yaml", &file_schedule("review", "review.md"));
+    assert!(startup().status.success());
+    for path in [
+        f.path("config/review.md").to_str().unwrap(),
+        "../config/review.md",
+        "link.md",
+    ] {
+        f.write("config/checks.yaml", &file_schedule("review", path));
+        assert_eq!(startup().status.code(), Some(1), "{path}");
+    }
+}
+
+#[test]
+fn prompt_files_reject_invalid_input_and_deliver_the_maximum_with_a_long_name() {
+    let f = fixture();
+    let name = "r".repeat(32);
+    f.write("checks.yaml", &file_schedule(&name, "review.md"));
+    assert_eq!(run(&f, &["run", "--once"]).status.code(), Some(1));
+    for bad in [
+        b"\xff".to_vec(),
+        b" \n\t".to_vec(),
+        b"before\0after".to_vec(),
+        "é".repeat(8001).into_bytes(),
+    ] {
+        fs::write(f.path("review.md"), bad).unwrap();
+        assert_eq!(run(&f, &["run", "--once"]).status.code(), Some(1));
+    }
+    let prompt = "é".repeat(8000);
+    f.write("review.md", &format!(" \n{prompt}\n"));
+    tick(&f);
+    pending(&f, std::slice::from_ref(&name));
+    tick(&f);
+    let messages = calls(&f, "msg");
+    let body = messages[0].last().unwrap();
+    assert!(
+        body == &format!("{name} 2020-01-01T00:00Z\n{prompt}"),
+        "expected the full prompt after the header, got {} bytes",
+        body.len()
+    );
+    assert!(borgchart::runtime::check_text(body).is_ok());
+}
+
+#[test]
+fn changing_a_prompt_file_path_preserves_the_pending_occurrence() {
+    let f = fixture();
+    f.write("checks.yaml", &file_schedule("review", "initial.md"));
+    f.write("initial.md", "Original notes");
+    f.write("review.md", "Review the new notes.");
+    tick(&f);
+    assert!(calls(&f, "create").is_empty());
+    pending(&f, &["review".into()]);
+    f.write("checks.yaml", &file_schedule("review", "review.md"));
+    tick(&f);
+    assert_eq!(
+        calls(&f, "msg")[0].last().unwrap(),
+        "review 2020-01-01T00:00Z\nReview the new notes."
+    );
+}
+
+#[test]
+fn occurrences_read_current_multiline_prompts_and_fail_before_seating_if_removed() {
+    let f = fixture();
+    let config = [("review", "review.md"), ("removed", "removed.md")]
+        .map(|(name, path)| file_schedule(name, path))
+        .join("\n");
+    f.write("checks.yaml", &config);
+    f.write("review.md", "Old draft");
+    f.write("removed.md", "Original text");
+    let _running = Running(run_command(&f, &["run"]).spawn().unwrap());
+    wait_for(&f.path("state/health.json"));
+    let first_tick = f.read("health.json")["at"].clone();
+    f.write("review.md", "  New draft\n\nCheck the figures.\n");
+    fs::remove_file(f.path("removed.md")).unwrap();
+    pending(&f, &["review".into(), "removed".into()]);
+    wait_until(|| f.read("health.json")["at"] != first_tick);
+    let messages = calls(&f, "msg");
+    assert_eq!(messages.len(), 1);
+    assert_eq!(
+        messages[0].last().unwrap(),
+        "review 2020-01-01T00:00Z\nNew draft\n\nCheck the figures."
+    );
+    assert_eq!(calls(&f, "route").len(), 1);
+    assert_eq!(calls(&f, "create").len(), 1);
+    assert!(last(&f, "removed").starts_with("failed-to-start "));
+}
+
+#[test]
+fn inline_run_prompt_delivers_multiline_text() {
+    let f = fixture();
+    f.write(
+        "checks.yaml",
+        "- name: review\n  cron: '0 * * * *'\n  run: worker\n  timeout_minutes: 45\n  prompt: |\n    Review the draft.\n\n    Send a summary.\n",
+    );
+    start(&f);
+    assert_eq!(
+        calls(&f, "msg")[0].last().unwrap(),
+        "review 2020-01-01T00:00Z\nReview the draft.\n\nSend a summary."
+    );
+}
+
+#[test]
+fn inline_run_prompt_refuses_oversize_and_controls_other_than_newline() {
+    let f = fixture();
+    for prompt in [
+        "x".repeat(16001),
+        "first\\tsecond".into(),
+        "first\\rsecond".into(),
+    ] {
+        f.write(
+            "checks.yaml",
+            &CONFIG.replace("Read the draft", &format!("\"{prompt}\"")),
+        );
+        assert_eq!(f.run(&["validate"]).status.code(), Some(1));
+    }
+}
+
+#[test]
+fn restricted_claude_runs_fail_before_create_when_the_prompt_exceeds_the_budget() {
+    let header = "review 2020-01-01T00:00Z\n";
+    for (prompt, allowed) in [
+        ("Line one\nLine two", false),
+        (&"x".repeat(701 - header.len()), false),
+        (&"x".repeat(700 - header.len()), true),
+    ] {
+        let f = fixture();
+        f.write(
+            "role.json",
+            r#"{"kind":"role","team":"sample","name":"worker","vendor":"claude","model":"example-model","restricted_access":true}"#,
+        );
+        f.write("checks.yaml", &file_schedule("review", "review.md"));
+        f.write("review.md", prompt);
+        tick(&f);
+        pending(&f, &["review".into()]);
+        tick(&f);
+        assert_eq!(calls(&f, "create").len(), usize::from(allowed));
+        if !allowed {
+            assert!(last(&f, "review").starts_with("failed-to-start "));
+        }
+    }
 }
 
 #[test]

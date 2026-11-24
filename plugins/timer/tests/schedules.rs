@@ -3,6 +3,7 @@
 mod support;
 use borgchart::bus::time;
 use serde_json::json;
+use support::live::{Running, wait_until};
 use support::*;
 
 #[test]
@@ -194,20 +195,6 @@ fn malformed_schedule_entries_do_not_block_valid_wakes() {
     assert_eq!(f.sends().len(), 1);
 }
 
-struct Running(std::process::Child);
-impl Drop for Running {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-fn wait_until(mut ready: impl FnMut() -> bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(36);
-    while !ready() {
-        assert!(std::time::Instant::now() < deadline, "tick did not finish");
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-}
 #[test]
 #[rustfmt::skip]
 fn invalid_reload_keeps_last_good_configuration_and_health_not_ok() {
@@ -280,5 +267,33 @@ fn live_reload_refuses_an_ungranted_run_role_and_keeps_the_last_schedule() {
     let health = f.read("health.json");
     assert!(!health["schedules"]["review"].is_null());
     assert!(health["schedules"]["other"].is_null());
+    assert!(f.sends().is_empty());
+}
+
+#[test]
+fn fixing_the_prompt_file_retries_a_rejected_reload_without_editing_yaml() {
+    let f = Fixture::new();
+    let schedule = "- {name: review, cron: '0 0 1 1 *', run: worker, timeout_minutes: 45, prompt_file: review.md}";
+    f.write("checks.yaml", schedule);
+    f.write("review.md", "Review the notes");
+    let _running = Running(
+        f.command(&["run"])
+            .env("BORGCHART_RUNS", "worker")
+            .spawn()
+            .unwrap(),
+    );
+    wait_until(|| f.path("state/health.json").exists());
+    assert_eq!(f.read("health.json")["ok"], true);
+    f.write("checks.yaml", &schedule.replace("review", "missing"));
+    wait_until(|| f.read("health.json")["ok"] == false);
+    let health = f.read("health.json");
+    assert!(!health["schedules"]["review"].is_null());
+    assert!(health["schedules"]["missing"].is_null());
+    f.write("missing.md", "Review the new notes");
+    wait_until(|| f.read("health.json")["at"] != health["at"]);
+    let health = f.read("health.json");
+    assert_eq!(health["ok"], true, "{health}");
+    assert!(health["schedules"]["review"].is_null());
+    assert!(health["schedules"]["missing"]["next"].is_string());
     assert!(f.sends().is_empty());
 }

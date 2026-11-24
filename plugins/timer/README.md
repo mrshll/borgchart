@@ -112,8 +112,10 @@ with a stderr hint to reduce the check's output.
 
 ## Recurring schedules
 
-A delivery schedule uses `name`, `cron` and optional `missed` and `prompt`. Names are unique
-across checks and schedules; their fields cannot be mixed:
+A delivery schedule uses `name`, `cron` and optional `missed` and `prompt`. A
+[run schedule](#scheduled-runs) uses `name`, `cron`, `run`, `timeout_minutes`
+and optionally either `prompt` or `prompt_file`. Use unique names across
+checks and schedules.
 
 ```yaml
 - name: daily-review
@@ -124,10 +126,11 @@ across checks and schedules; their fields cannot be mixed:
   prompt: Follow notes/weekly-release.md
 ```
 
-`prompt` is a non-empty string of at most 300 UTF-8 bytes after trimming, with
-no newlines or control characters; point to a file for longer jobs, which the member reads itself.
-The template folder's controller writes this standing instruction from the team's owner;
-check command output remains untrusted evidence.
+On delivery schedules, `prompt` is a non-empty string of at most 300 UTF-8 bytes
+after trimming, with no newlines or control characters. For longer instructions,
+use the notice to tell the member which file to read. The template folder's
+controller writes this standing instruction from the team's owner. Check
+command output remains untrusted evidence.
 
 Cron has exactly five numeric fields, separated by spaces or tabs, in UTC:
 minute 0–59, hour 0–23, day of month 1–31, month 1–12, weekday 0–7.
@@ -170,7 +173,7 @@ cannot repeat an occurrence, but a large correction delays wakes until that mark
 passes. Editing the expression resets it. Send attempts outside the last hour,
 including future attempts after a clock correction, are discarded.
 
-`brg-timer validate [path]` parses a file without running commands or sending.
+`brg-timer validate [path]` checks the YAML and any referenced prompt files.
 Without a path it uses `CHECKS_FILE` (default `checks.yaml`). It needs no state
 directory, prints counts on success and exits 0; errors match startup and exit 1.
 At startup and on reload, the timer also checks `delivers_to` for delivery schedules and `runs` for scheduled runs.
@@ -191,12 +194,29 @@ schedule name, UTC minute and optional prompt. Add the schedule to `checks.yaml`
   cron: '0 13 * * 1-5'
   run: reviewer
   timeout_minutes: 45
-  prompt: Review the draft, send your findings to the lead, then run brg-timer done.
+  prompt_file: jobs/daily-review.md
 ```
 
 `timeout_minutes` is required and must be a whole number from 1 to 1440.
 Runs skip missed occurrences during downtime and refuse the `missed` field.
 A file with only run schedules needs no `delivers_to`.
+
+A run can use an inline `prompt` (use YAML `|` for multiple lines) or
+`prompt_file`. Both must contain non-empty UTF-8 text of at most 16000 bytes
+after trimming. Inline prompts allow newlines. Prompt files allow newlines
+and tabs and may be up to 64 KiB on disk. Remove other control characters.
+A restricted Claude run role takes a one-line prompt, with a 700-byte limit
+including the occurrence header. Pane size can still prevent delivery after
+creation. Use an unrestricted role or a Codex role for longer prompts.
+
+Use a relative `prompt_file` path without `..`. The file must resolve inside
+the folder containing the checks file, including when the path uses symlinks.
+The timer checks it at startup and on reload. A bad reload keeps the last good
+configuration and retries on each tick, so fixing the prompt file is enough to
+complete the reload. The timer reads the file again at each occurrence, so
+edits take effect at the next run. An invalid or missing file at that point records
+`failed-to-start` before seating or creating a member. Changing the path
+preserves schedule timing.
 
 Grant the role to the timer process and give that role the `done` action.
 
