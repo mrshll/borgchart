@@ -3,11 +3,17 @@
 mod support;
 
 use serde_json::json;
-use std::{fs, process::Output};
+use std::{fs, os::unix::fs::symlink, process::Output};
 use support::*;
 
 const CONFIG: &str =
     "- {name: review, cron: '0 * * * *', run: worker, timeout_minutes: 45, prompt: Read the draft}";
+
+fn file_schedule(name: &str, path: &str) -> String {
+    CONFIG
+        .replace("name: review", &format!("name: {name}"))
+        .replace("prompt: Read the draft", &format!("prompt_file: {path}"))
+}
 
 const BRG: &str = r#"#!/bin/sh
 printf '%s\0' "$@" >> state/sends
@@ -41,6 +47,10 @@ stop)
 delete)
     rm "members/${2##*/}" ;;
 msg)
+    if [ -f updated.md ]; then
+        mv updated.md review.md
+        rm removed.md
+    fi
     printf '{"id":"m100"}\n' ;;
 *) exit 2 ;;
 esac
@@ -113,6 +123,146 @@ fn last(f: &Fixture, name: &str) -> String {
     let out = f.run(&["last", name]);
     assert!(out.status.success(), "{out:?}");
     String::from_utf8(out.stdout).unwrap()
+}
+
+#[test]
+fn prompt_file_requires_a_run_and_excludes_inline_prompt() {
+    let f = fixture();
+    let schedule = file_schedule("review", "review.md");
+    f.write("review.md", "Read the draft");
+    f.write("checks.yaml", &schedule);
+    assert!(f.run(&["validate"]).status.success());
+    for invalid in [
+        schedule.replace("run: worker, timeout_minutes: 45, ", ""),
+        schedule.replace("prompt_file:", "prompt: Read the draft, prompt_file:"),
+    ] {
+        f.write("checks.yaml", &invalid);
+        assert_eq!(f.run(&["validate"]).status.code(), Some(1), "{invalid}");
+    }
+}
+
+#[test]
+fn startup_refuses_prompt_file_paths_outside_the_checks_folder() {
+    let f = fixture();
+    fs::create_dir(f.path("config")).unwrap();
+    f.write("outside.md", "Read the draft");
+    f.write("config/review.md", "Review the notes");
+    symlink("../outside.md", f.path("config/link.md")).unwrap();
+    let startup = || {
+        f.command(&["run", "--once"])
+            .env("CHECKS_FILE", "config/checks.yaml")
+            .env("BORGCHART_RUNS", "worker")
+            .output()
+            .unwrap()
+    };
+    f.write("config/checks.yaml", &file_schedule("review", "review.md"));
+    assert!(startup().status.success());
+    for path in [
+        f.path("config/review.md").to_str().unwrap(),
+        "../config/review.md",
+        "link.md",
+    ] {
+        f.write("config/checks.yaml", &file_schedule("review", path));
+        assert_eq!(startup().status.code(), Some(1), "{path}");
+    }
+}
+
+#[test]
+fn prompt_files_reject_invalid_input_and_deliver_the_maximum_with_a_long_name() {
+    let f = fixture();
+    let name = "r".repeat(32);
+    f.write("checks.yaml", &file_schedule(&name, "review.md"));
+    assert_eq!(run(&f, &["run", "--once"]).status.code(), Some(1));
+    for bad in [
+        b"\xff".to_vec(),
+        b" \n\t".to_vec(),
+        b"before\0after".to_vec(),
+        "é".repeat(8001).into_bytes(),
+    ] {
+        fs::write(f.path("review.md"), bad).unwrap();
+        assert_eq!(run(&f, &["run", "--once"]).status.code(), Some(1));
+    }
+    let prompt = "é".repeat(8000);
+    f.write("review.md", &format!(" \n{prompt}\n"));
+    tick(&f);
+    pending(&f, std::slice::from_ref(&name));
+    tick(&f);
+    let messages = calls(&f, "msg");
+    let body = messages[0].last().unwrap();
+    assert!(
+        body == &format!("{name} 2020-01-01T00:00Z\n{prompt}"),
+        "expected the full prompt after the header, got {} bytes",
+        body.len()
+    );
+    assert!(borgchart::runtime::check_text(body).is_ok());
+}
+
+#[test]
+fn occurrences_read_current_multiline_prompts_and_fail_before_seating_if_removed() {
+    let f = fixture();
+    let names = ["first".into(), "review".into(), "zulu".into()];
+    let schedules = [
+        ("first", "first.md"),
+        ("review", "review.md"),
+        ("zulu", "removed.md"),
+    ];
+    let config = schedules
+        .map(|(name, path)| file_schedule(name, path))
+        .join("\n");
+    f.write("checks.yaml", &config.replace("first.md", "initial.md"));
+    f.write("initial.md", "Original notes");
+    f.write("first.md", "  Read the notes.\n\nSend a summary.\n");
+    f.write("review.md", "Old draft");
+    f.write("removed.md", "Original text");
+    tick(&f);
+    assert!(calls(&f, "create").is_empty());
+    pending(&f, &names);
+    f.write("checks.yaml", &config);
+    f.write("updated.md", "New draft\nCheck the figures.");
+    tick(&f);
+    let messages = calls(&f, "msg");
+    assert_eq!(messages.len(), 2);
+    assert_eq!(
+        messages[0].last().unwrap(),
+        "first 2020-01-01T00:00Z\nRead the notes.\n\nSend a summary."
+    );
+    assert_eq!(
+        messages[1].last().unwrap(),
+        "review 2020-01-01T00:00Z\nNew draft\nCheck the figures."
+    );
+    assert_eq!(calls(&f, "route").len(), 2);
+    assert_eq!(calls(&f, "create").len(), 2);
+    assert!(last(&f, "zulu").starts_with("failed-to-start "));
+}
+
+#[test]
+fn inline_run_prompt_delivers_multiline_text() {
+    let f = fixture();
+    f.write(
+        "checks.yaml",
+        "- name: review\n  cron: '0 * * * *'\n  run: worker\n  timeout_minutes: 45\n  prompt: |\n    Review the draft.\n\n    Send a summary.\n",
+    );
+    start(&f);
+    assert_eq!(
+        calls(&f, "msg")[0].last().unwrap(),
+        "review 2020-01-01T00:00Z\nReview the draft.\n\nSend a summary."
+    );
+}
+
+#[test]
+fn inline_run_prompt_refuses_oversize_and_controls_other_than_newline() {
+    let f = fixture();
+    for prompt in [
+        "x".repeat(16001),
+        "first\\tsecond".into(),
+        "first\\rsecond".into(),
+    ] {
+        f.write(
+            "checks.yaml",
+            &CONFIG.replace("Read the draft", &format!("\"{prompt}\"")),
+        );
+        assert_eq!(f.run(&["validate"]).status.code(), Some(1));
+    }
 }
 
 #[test]

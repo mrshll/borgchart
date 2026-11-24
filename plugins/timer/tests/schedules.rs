@@ -282,3 +282,25 @@ fn live_reload_refuses_an_ungranted_run_role_and_keeps_the_last_schedule() {
     assert!(health["schedules"]["other"].is_null());
     assert!(f.sends().is_empty());
 }
+
+#[test]
+fn live_reload_with_a_missing_prompt_file_keeps_the_last_good_schedule() {
+    let f = Fixture::new();
+    let schedule = "- {name: review, cron: '0 0 1 1 *', run: worker, timeout_minutes: 45, prompt_file: review.md}";
+    f.write("checks.yaml", schedule);
+    f.write("review.md", "Review the notes");
+    let _running = Running(
+        f.command(&["run"])
+            .env("BORGCHART_RUNS", "worker")
+            .spawn()
+            .unwrap(),
+    );
+    wait_until(|| f.path("state/health.json").exists());
+    assert_eq!(f.read("health.json")["ok"], true);
+    f.write("checks.yaml", &schedule.replace("review", "missing"));
+    wait_until(|| f.read("health.json")["ok"] == false);
+    let health = f.read("health.json");
+    assert!(!health["schedules"]["review"].is_null());
+    assert!(health["schedules"]["missing"].is_null());
+    assert!(f.sends().is_empty());
+}

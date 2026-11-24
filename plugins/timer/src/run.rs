@@ -97,12 +97,18 @@ fn collect(check: &Check, state: &mut Snapshot, timeout: Duration) {
 }
 pub fn run(store: &plugin::State, once: bool) -> Result<(), String> {
     let started = SystemTime::now();
+    let path = config::path();
+    let folder = config::folder(&path);
+    let validate = |bytes: &[u8]| {
+        let checks = config::parse_bytes(bytes)?;
+        config::grants(&checks)?;
+        config::prompt_files(&checks, folder)?;
+        Ok::<_, String>(checks)
+    };
     let setup = || {
-        let path = config::path();
         let bytes = std::fs::read(&path)
             .map_err(|_| "checks file: cannot read YAML; fix CHECKS_FILE and retry")?;
-        let checks = config::parse_bytes(&bytes)?;
-        config::grants(&checks)?;
+        let checks = validate(&bytes)?;
         let seconds: f64 = std::env::var("CHECKS_TIMEOUT_SECONDS")
             .unwrap_or("60".into())
             .parse()
@@ -126,14 +132,13 @@ pub fn run(store: &plugin::State, once: bool) -> Result<(), String> {
                 .lock()
                 .map_err(|_| "cannot lock plugin state; check permissions")?;
             let mut state = Snapshot::read(store);
-            let current = std::fs::read(config::path()).ok();
+            let current = std::fs::read(&path).ok();
             if current != bytes {
                 bytes = current;
                 match bytes
                     .as_ref()
                     .ok_or("checks file: cannot read YAML; fix CHECKS_FILE and retry".into())
-                    .and_then(|b| config::parse_bytes(b))
-                    .and_then(|c| config::grants(&c).map(|_| c))
+                    .and_then(|b| validate(b))
                 {
                     Ok(updated) => {
                         config = updated;
@@ -182,7 +187,7 @@ pub fn run(store: &plugin::State, once: bool) -> Result<(), String> {
                 },
                 |body| plugin::send("timer", &target, body, None).map(|_| ()),
                 |state, schedule, now, occurrence, body| {
-                    crate::runs::start(store, state, schedule, now, occurrence, body)
+                    crate::runs::start(store, state, schedule, now, occurrence, body, folder)
                 },
             )?);
             let mut detail = details

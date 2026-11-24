@@ -1,5 +1,6 @@
 //! Scheduled member starts, completion and recovery.
 use crate::{
+    config,
     schedule::Schedule,
     state::{Snapshot, one_line},
 };
@@ -12,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
     time::{Duration, Instant, SystemTime},
 };
@@ -159,10 +160,26 @@ pub fn start(
     schedule: &Schedule,
     now: SystemTime,
     occurrence: SystemTime,
-    body: &str,
+    mut body: String,
+    folder: &Path,
 ) -> Result<String, String> {
     let key = &schedule.name;
     state.schedules.get_mut(key).unwrap().pending = None;
+    if let Some(path) = schedule.run.as_ref().unwrap().prompt_file.as_deref() {
+        match config::read_prompt_file(folder, path) {
+            Ok(prompt) => {
+                body.push('\n');
+                body.push_str(&prompt);
+            }
+            Err(reason) => {
+                state
+                    .outcomes
+                    .insert(key.clone(), outcome("failed-to-start", &reason));
+                save(state, store)?;
+                return Ok(String::new());
+            }
+        }
+    }
     let skip = if state.runs.contains_key(key) {
         Some("previous run still going")
     } else if state.schedule_sends.len() >= 6 {
@@ -180,7 +197,7 @@ pub fn start(
     state.schedule_sends.push(time::format_utc(now));
     save(state, store)?;
     let team = std::env::var("BORGCHART_TEAM").unwrap_or_default();
-    if let Err(reason) = launch(store, state, schedule, occurrence, body, &team) {
+    if let Err(reason) = launch(store, state, schedule, occurrence, &body, &team) {
         let line = outcome("failed-to-start", &reason);
         if let Some(run) = state.runs.get_mut(key) {
             run.ending = Some(line);

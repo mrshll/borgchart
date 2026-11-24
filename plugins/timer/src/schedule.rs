@@ -14,6 +14,7 @@ pub struct Schedule {
 pub struct Run {
     pub role: String,
     pub timeout: Duration,
+    pub prompt_file: Option<String>,
 }
 #[derive(Deserialize, Serialize)]
 pub struct Record {
@@ -106,7 +107,7 @@ pub fn send(
         &Schedule,
         SystemTime,
         SystemTime,
-        &str,
+        String,
     ) -> Result<String, String>,
 ) -> Result<String, String> {
     save(state)?;
@@ -132,7 +133,7 @@ pub fn send(
             text.push_str(prompt);
         }
         if schedule.run.is_some() {
-            let detail = run(state, schedule, now, occurrence, &text)?;
+            let detail = run(state, schedule, now, occurrence, text)?;
             if !detail.is_empty() {
                 failures.push(detail);
             }
