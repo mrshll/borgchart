@@ -284,7 +284,7 @@ fn live_reload_refuses_an_ungranted_run_role_and_keeps_the_last_schedule() {
 }
 
 #[test]
-fn live_reload_with_a_missing_prompt_file_keeps_the_last_good_schedule() {
+fn fixing_the_prompt_file_retries_a_rejected_reload_without_editing_yaml() {
     let f = Fixture::new();
     let schedule = "- {name: review, cron: '0 0 1 1 *', run: worker, timeout_minutes: 45, prompt_file: review.md}";
     f.write("checks.yaml", schedule);
@@ -302,5 +302,11 @@ fn live_reload_with_a_missing_prompt_file_keeps_the_last_good_schedule() {
     let health = f.read("health.json");
     assert!(!health["schedules"]["review"].is_null());
     assert!(health["schedules"]["missing"].is_null());
+    f.write("missing.md", "Review the new notes");
+    wait_until(|| f.read("health.json")["at"] != health["at"]);
+    let health = f.read("health.json");
+    assert_eq!(health["ok"], true, "{health}");
+    assert!(health["schedules"]["review"].is_null());
+    assert!(health["schedules"]["missing"]["next"].is_string());
     assert!(f.sends().is_empty());
 }

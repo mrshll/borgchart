@@ -133,7 +133,7 @@ pub fn run(store: &plugin::State, once: bool) -> Result<(), String> {
                 .map_err(|_| "cannot lock plugin state; check permissions")?;
             let mut state = Snapshot::read(store);
             let current = std::fs::read(&path).ok();
-            if current != bytes {
+            if current != bytes || !reload_error.is_empty() {
                 bytes = current;
                 match bytes
                     .as_ref()

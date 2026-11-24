@@ -209,8 +209,9 @@ and tabs. Remove other control characters.
 Use a relative `prompt_file` path without `..`. The file must resolve inside
 the folder containing the checks file, including when the path uses symlinks.
 The timer checks it at startup and on reload. A bad reload keeps the last good
-configuration. The timer reads the file again at each occurrence, so edits take
-effect at the next run. An invalid or missing file at that point records
+configuration and retries on each tick, so fixing the prompt file is enough to
+complete the reload. The timer reads the file again at each occurrence, so
+edits take effect at the next run. An invalid or missing file at that point records
 `failed-to-start` before seating or creating a member. Changing the path
 preserves schedule timing.
 
