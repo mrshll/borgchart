@@ -90,7 +90,7 @@ enum Command {
     /// Make a team from a team template, or a member of a role.
     ///
     /// That is, a team from a template working in a folder
-    /// (`create <template> [folder]`, the current folder by default), or a member
+    /// (`create <template> [folder] [--name <name>]`, the current folder by default), or a member
     /// of a role (`create <team>/<role>`, up to its max of kept members).
     /// Child teams are created stopped; start them with `brg start`.
     /// Agent members and top-level teams are started. With a bus, a child role's parent role must have a member.
@@ -126,10 +126,12 @@ enum Command {
         /// tree's folder and fetch origin's default branch before creating.
         #[arg(long)]
         repo: Option<String>,
-        /// For a role: make the new ID `<role>-<name>`, named for its task,
-        /// instead of a random suffix: lowercase words joined by hyphens, at
-        /// most 24 characters, never a role's name, an ID issued before in the
-        /// team or another ID's suffix.
+        /// Choose the suffix in `<template>-<name>` or `<role>-<name>`.
+        /// Use lowercase letters and digits in words joined by hyphens, up to 24
+        /// characters (40 for the full ID). Issued IDs stay reserved after delete.
+        /// Choose a name distinct from another ID's suffix. A role's new ID
+        /// must also differ from every role name. A top-level name cannot end
+        /// in a word shaped like a four-character random suffix.
         #[arg(long)]
         name: Option<String>,
         /// Mark a scheduled run, for a timer process with a `runs` grant.
@@ -481,11 +483,6 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
                     "`--set` is for a role: brg create <team>/<role> --set [<role>.]<key>=<value>"
                         .into(),
                 )
-            } else if team_like && name.is_some() {
-                Err(
-                    "`--name` names a new member or child team, not a top-level team: brg create <team>/<role> --name <name>"
-                        .to_string(),
-                )
             } else if team_like && run.is_some() {
                 Err("`--run` needs an agent role: brg create <team>/<role> --run <schedule>".into())
             } else if team_like {
@@ -497,7 +494,9 @@ fn run(cli: Cli, started: std::time::Instant) -> ExitCode {
                     Some(flag) => Err(format!(
                         "`{flag}` is for a role's new worktree: brg create <team>/<role> {flag} <name>"
                     )),
-                    None => runtime::create(&target, folder.as_deref().unwrap_or(".")),
+                    None => {
+                        runtime::create(&target, folder.as_deref().unwrap_or("."), name.as_deref())
+                    }
                 }
             } else {
                 match address::resolve(&target) {

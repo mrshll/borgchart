@@ -91,7 +91,7 @@ There's no `up`. `create` always makes something new; `start`, `stop` and `delet
 | What | Name | Example |
 | --- | --- | --- |
 | Template | Its folder's name. There's no `name:` field. | `~/.config/borgchart/templates/dev-team/` is `dev-team` |
-| Team | `<template>-<suffix>`. The suffix is four characters from `23456789abcdefghjkmnpqrstuvwxyz` (no `0 1 i l o`), random, checked against every team brg has registered, and never reused. | `dev-team-k3f9` |
+| Team | `<template>-<suffix>`. By default brg chooses four random characters from `23456789abcdefghjkmnpqrstuvwxyz`. Use `create --name north` to choose the suffix. The full ID stays reserved after deletion. | `dev-team-k3f9`, `dev-team-north` |
 | Member | `<role>-<suffix>`, with the same kind of suffix as teams, never reused within the team | `lead-q8m3`, `implementer-x7k2` |
 | Start | A unique ID for one start of a member (an incarnation), as today | `implementer-x7k2.20261108000000000.ab12` |
 | Member address | `[team/]member` | `dev-team-k3f9/implementer-x7k2` |

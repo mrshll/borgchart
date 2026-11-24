@@ -1664,7 +1664,7 @@ fn precheck(v: &Validated, roles: &[&crate::team::Role]) -> Result<(), String> {
 
 /// `brg create <template> <folder>`: a new team from the template working in
 /// `folder`, with its `start: true` roles' members, started.
-pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
+pub fn create(team_arg: &str, folder: &str, name: Option<&str>) -> Result<UpOutcome, String> {
     require_running_for_plugin(|| false)?;
     let mut report = crate::diag::Report::default();
     let config = crate::config::load(&mut report).ok_or_else(|| {
@@ -1703,7 +1703,7 @@ pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
     let lock = registry::lock()?;
     crate::checkouts::check_folder(&lock, &folder)?;
     let (state, mut record) =
-        registry::create(&lock, &v.team.name, &v.team.dir, &folder, &utc_now())?;
+        registry::create(&lock, &v.team.name, &v.team.dir, &folder, &utc_now(), name)?;
     for role in &starting {
         record.issue_member(&role.id, None, |id| v.team.roles.contains_key(id))?;
     }
