@@ -391,7 +391,18 @@ fn finish(
     let grants = std::env::var("BORGCHART_RUNS").unwrap_or_default();
     let occurrence = run.occurrence.as_deref().and_then(time::parse_utc);
     let base = std::env::var("BORGCHART_RUN_ROLE");
-    if !(grants.split(',').any(|role| role == run.role) || base.is_ok_and(|role| role == run.role))
+    let granted =
+        grants.split(',').any(|role| role == run.role) || base.is_ok_and(|role| role == run.role);
+    let row = member(rows, &run.member);
+    let child_team = rows
+        .iter()
+        .any(|r| r["kind"] == "team" && r["name"] == run.member);
+    let start = run.start_id.as_deref();
+    let role_removed = row.is_none()
+        && !child_team
+        && start.is_some_and(|id| !id.is_empty())
+        && !rows.iter().any(|r| r["role"] == run.role);
+    if (!granted && !role_removed)
         || !borgchart::names::is_valid_id(&run.role)
         || !crate::config::valid_name(key)
         || !occurrence
@@ -401,9 +412,8 @@ fn finish(
             "run record does not name a granted scheduled member; check timer state".into(),
         );
     }
-    let row = member(rows, &run.member);
     if row.is_none()
-        && run.start_id.is_none()
+        && start.is_none()
         && run.ending.is_none()
         && time::parse_utc(&run.started)
             .and_then(|at| at.elapsed().ok())
@@ -413,7 +423,6 @@ fn finish(
     }
     let file = marker(&run.member);
     let done: Value = store.read_json(&file);
-    let start = run.start_id.as_deref();
     let marked_done = run.prompted && start.is_some_and(|id| done["start_id"] == id);
     let same_start = start.is_some_and(|id| row.is_some_and(|r| r["start_id"] == id));
     let liveness = row.and_then(|r| r["liveness"].as_str());
@@ -436,14 +445,12 @@ fn finish(
     if run.ending.is_none() && kind.is_empty() {
         return Ok(());
     }
-    let role_removed =
-        row.is_none() && start.is_some() && !rows.iter().any(|r| r["role"] == run.role);
     let id = run.member.clone();
     if run.ending.is_none() {
         state.runs.get_mut(key).unwrap().ending = Some(outcome(kind, ""));
         save(state, store)?;
     }
-    if row.is_none() && rows.iter().any(|r| r["kind"] == "team" && r["name"] == id) {
+    if row.is_none() && child_team {
         return Err("run ID belongs to a child team; check timer state".into());
     }
     if row.is_some() || role_removed {

@@ -273,8 +273,9 @@ make health not ok and are retried. Health shows active run member IDs and
 deadlines.
 
 Members granted timer actions can write timer state and end runs early.
-The timer only stops and deletes members with IDs derived for its granted
-scheduled runs.
+The timer only stops and deletes members with IDs derived for its scheduled
+runs. It can clean up a previously started run by ID after its role disappears
+from status, even if the grant was removed.
 
 `brg-timer last <name>` prints one outcome line with UTC time and any reason.
 Outcomes are `done`, `timed-out`, `skipped`, `failed-to-start` and
@@ -283,6 +284,8 @@ original deadline. Other recorded runs are cleaned up as interrupted. A full
 team start leaves stopped run members for the timer to remove as interrupted.
 The timer stores no run output.
 
+To remove a declared role or its run grant, remove its schedules and wait for
+their runs to end. Then remove the role or its grant and restart the timer.
 To remove ad-hoc run support, remove the ad-hoc schedules and wait for their
 runs to end. Then remove `delivers_to` or `done` from the timer and restart it.
 

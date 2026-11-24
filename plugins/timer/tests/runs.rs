@@ -26,7 +26,8 @@ printf '\036\n' >> state/sends
 case "$1" in
 status)
     printf '[{}'
-    if [ -f role.json ]; then
+    set -- members/*
+    if [ ! -f "$1" ] && [ -f role.json ]; then
         printf ','
         cat role.json
     fi
@@ -209,13 +210,8 @@ fn ad_hoc_role_without_the_plugins_run_grant_refuses_startup() {
     f.write("checks.yaml", &CONFIG.replace("worker", AD_HOC));
     let out = run(&f, &["run", "checks.yaml", "--once"]);
     assert!(!out.status.success());
-    assert!(
-        f.read("health.json")["detail"]
-            .as_str()
-            .unwrap()
-            .contains("add `delivers_to` and a `done` action")
-    );
-    assert!(f.sends().is_empty());
+    assert_eq!(f.read("health.json")["ok"], false);
+    assert!(calls(&f, "create").is_empty());
 }
 
 #[test]
@@ -732,6 +728,32 @@ fn a_run_with_no_member_row_is_stopped_and_deleted_after_its_role_disappears() {
         vec!["delete".into(), address, "--force".into()],
     ]));
     assert!(!f.path("hidden-member").exists());
+    assert!(last(&f, "review").starts_with("interrupted "));
+}
+
+#[test]
+fn restart_reaps_a_hidden_run_after_its_role_and_grant_are_removed() {
+    let f = fixture();
+    let id = start(&f);
+    let address = format!("sample/{id}");
+    fs::rename(f.path(&format!("members/{id}")), f.path("hidden-member")).unwrap();
+    fs::remove_file(f.path("role.json")).unwrap();
+    f.write(
+        "checks.yaml",
+        &CONFIG.replace("role: worker", "role: reader"),
+    );
+    assert!(!f.run(&["last", "review"]).status.success());
+
+    let out = run_command(&f, &["run", "checks.yaml", "--once"])
+        .env("BORGCHART_RUNS", "reader")
+        .env_remove("BORGCHART_RUN_ROLE")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert!(f.sends().ends_with(&[
+        vec!["stop".into(), address.clone()],
+        vec!["delete".into(), address, "--force".into()],
+    ]));
     assert!(last(&f, "review").starts_with("interrupted "));
 }
 

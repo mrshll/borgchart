@@ -180,12 +180,14 @@ fn main() {
             let detail = if error.kind() == ErrorKind::MissingRequiredArgument
                 && matches!(error.get(ContextKind::InvalidArg), Some(ContextValue::Strings(args)) if args == &["<FILE>"])
             {
-                if std::env::args_os().nth(1).is_some_and(|arg| arg == "run")
-                    && let Ok(store) = plugin::State::from_env()
-                {
-                    run::startup_error(&store, FILE_FIX);
+                if std::env::args_os().nth(1).is_some_and(|arg| arg == "run") {
+                    if let Ok(store) = plugin::State::from_env() {
+                        run::startup_error(&store, FILE_FIX);
+                    }
+                    FILE_FIX.into()
+                } else {
+                    "name the schedule file: brg-timer validate <file>".into()
                 }
-                FILE_FIX.into()
             } else if error.kind() == ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand {
                 "choose a command".into()
             } else {
