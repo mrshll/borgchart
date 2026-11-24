@@ -1,2 +1,10 @@
-# Alarms only; no command checks.
-[]
+# The last finished scheduled (nightly) workflow run of the repository this folder is in; the lead hears when it changes.
+- name: nightly
+  run: [gh, run, list, --event, schedule, --status, completed, --limit, "1", --json, "workflowName,conclusion", --jq, '.[] | "\(.workflowName) \(.conclusion)"']
+  every_minutes: 60
+# A fresh member drafts the week's release notes for the lead each Tuesday and is removed.
+- name: release-notes
+  cron: '0 14 * * 2'
+  run: release-notes
+  timeout_minutes: 30
+  prompt: Draft this week's release notes as your instructions say, message your parent, then run brg-timer done.

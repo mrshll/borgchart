@@ -1,4 +1,4 @@
-# An owner's engineering team: a root lead with dev child teams, design panels, solo implementers, researchers and monitors.
+# An owner's engineering team: a root lead with dev child teams, design panels, solo implementers, researchers and monitors, plus a weekly release-notes draft.
 default: claude
 includes: catalog:shared/includes
 
@@ -15,7 +15,13 @@ plugins:
       read: brg-github read <id>
   timer:
     process: [brg-timer, run]
+    delivers_to: lead               # check notices; alarms go to whoever set them
+    runs: [release-notes]           # checks.yaml starts a fresh member for each weekly draft
+    env:
+      SEAT: brg-seat                # a run is skipped when the subscription says wait
     actions:
+      last: brg-timer last <name>
+      done: brg-timer done
       alarm-set: brg-timer alarm set <when> <note>
       alarm-show: brg-timer alarm show
       alarm-clear: brg-timer alarm clear
@@ -25,7 +31,7 @@ plugins:
 
 roles:
   lead:
-    plugins: {seat: [route], timer: [alarm-set, alarm-show, alarm-clear], github: [read]}
+    plugins: {seat: [route], timer: [alarm-set, alarm-show, alarm-clear, last], github: [read]}
     prompt: lead.md
     interactive: true
     vendor: claude
@@ -56,6 +62,12 @@ roles:
     start: false
     max: 6
     args: [--search]        # Codex's web search
+  release-notes:
+    prompt: release-notes.md
+    vendor: claude
+    parent: lead
+    start: false
+    plugins: {timer: [done]}
   monitor:
     prompt: monitor.md
     vendor: claude

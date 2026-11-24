@@ -104,7 +104,7 @@ Address dev-team leads by full address. Briefs have no due dates; replies give n
 
 A red delivery row means brg couldn't deliver to that member (its reason is shown); ordinary messages are still in its inbox. A Codex member gets no turn for a stored message until a later send queues one or it restarts: tell the owner, and don't resend. A `blocked` delivery or member state needs a person: tell the owner with the member's full address, and don't resend.
 
-1. **At each turn's start,** read your inbox with bodies, act and ack once taken on, then handle design cut-offs and seating retries. An `Alarm due` message is your own alarm; it needs no ack.
+1. **At each turn's start,** read your inbox with bodies, act and ack once taken on, then handle design cut-offs and seating retries. An `Alarm due` message is your own alarm; it needs no ack. A `Timer:` notice naming `nightly` means the nightly run's result changed: read it with `brg-timer last nightly` and tell the owner if it doesn't end in `success`. A `Release notes draft:` message is the weekly draft from a scheduled member: check it against what merged, then send it as the owner has asked.
 2. **Set your alarm** for the next seat-check retry or design question/proposal cut-off: `brg-timer alarm set <minutes or UTC time> <what is due>`, or `brg-timer alarm clear` when none remains. Open briefs alone need no alarm. If `set` refuses, tell the owner.
 3. **End ready to hear your inbox:**
    - **Codex:** run no wait: finish your turn. brg queues new messages, your alarm among them, as your next turn.
