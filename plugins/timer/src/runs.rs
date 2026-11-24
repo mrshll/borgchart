@@ -237,7 +237,14 @@ fn launch(
     );
     save(state, store)?;
     brg(
-        &["create", &format!("{team}/{}", spec.role), "--name", &name],
+        &[
+            "create",
+            &format!("{team}/{}", spec.role),
+            "--name",
+            &name,
+            "--run",
+            key,
+        ],
         120,
     )?;
     let rows = status(team)?;

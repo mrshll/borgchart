@@ -199,6 +199,9 @@ pub struct InstanceRecord {
 #[serde(deny_unknown_fields)]
 pub struct IssuedMember {
     pub role: String,
+    /// The schedule that issued this run member.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<String>,
     #[serde(default, skip_serializing_if = "crate::overrides::Overrides::is_empty")]
     pub overrides: crate::overrides::Overrides,
     /// Deleted members reserve their suffix but have no live state.
@@ -255,6 +258,7 @@ impl InstanceRecord {
             id.clone(),
             IssuedMember {
                 role: role.to_string(),
+                run: None,
                 overrides: Default::default(),
                 deleted: false,
                 cwd: None,
@@ -289,6 +293,7 @@ impl InstanceRecord {
             id.clone(),
             IssuedMember {
                 role: role.to_string(),
+                run: None,
                 overrides: Default::default(),
                 deleted: false,
                 cwd: None,
