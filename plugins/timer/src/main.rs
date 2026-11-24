@@ -1,8 +1,14 @@
 //! Run checks and schedules, and read evidence and outcomes.
 use borgchart::plugin;
 use brg_timer::{alarm, config, run, runs, state};
-use clap::{Parser, Subcommand, error::ErrorKind};
+use clap::{
+    Parser, Subcommand,
+    error::{ContextKind, ContextValue, ErrorKind},
+};
 use state::{Snapshot, one_line};
+use std::path::PathBuf;
+
+const FILE_FIX: &str = "name the schedule file on the process line, for example `process: [brg-timer, run, checks.yaml]`";
 
 #[derive(Parser)]
 #[command(about = "Run checks and schedules, and read evidence and outcomes")]
@@ -18,9 +24,10 @@ enum Action {
         action: alarm::Action,
     },
     /// Validate checks and schedules without running commands or sending
-    Validate { path: Option<std::path::PathBuf> },
+    Validate { file: PathBuf },
     /// Run checks and schedules, waiting 30 seconds between ticks
     Run {
+        file: PathBuf,
         #[arg(long)]
         once: bool,
     },
@@ -32,8 +39,8 @@ enum Action {
     Promote { name: String, reason: String },
 }
 fn action(action: Action) -> Result<(), (i32, String)> {
-    if let Action::Validate { path } = action {
-        let config = config::load(&path.unwrap_or_else(config::path)).map_err(|e| (1, e))?;
+    if let Action::Validate { file } = action {
+        let config = config::load(&file).map_err(|e| (1, e))?;
         println!(
             "valid: {} checks, {} schedules",
             config.checks.len(),
@@ -49,7 +56,7 @@ fn action(action: Action) -> Result<(), (i32, String)> {
     let (name, reason) = match action {
         Action::Validate { .. } | Action::Done => unreachable!(),
         Action::Alarm { action } => return alarm::action(&store, action).map_err(|e| (1, e)),
-        Action::Run { once } => return run::run(&store, once).map_err(|e| (1, e)),
+        Action::Run { file, once } => return run::run(&store, &file, once).map_err(|e| (1, e)),
         Action::Last { name } => (name, None),
         Action::Promote { name, reason } => (name, Some(reason)),
     };
@@ -170,7 +177,16 @@ fn main() {
             return;
         }
         Err(error) => {
-            let detail = if error.kind() == ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand {
+            let detail = if error.kind() == ErrorKind::MissingRequiredArgument
+                && matches!(error.get(ContextKind::InvalidArg), Some(ContextValue::Strings(args)) if args == &["<FILE>"])
+            {
+                if std::env::args_os().nth(1).is_some_and(|arg| arg == "run")
+                    && let Ok(store) = plugin::State::from_env()
+                {
+                    run::startup_error(&store, FILE_FIX);
+                }
+                FILE_FIX.into()
+            } else if error.kind() == ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand {
                 "choose a command".into()
             } else {
                 error

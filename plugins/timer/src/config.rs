@@ -1,32 +1,18 @@
 //! Strict YAML definitions and executable and prompt file containment checks.
+use crate::schedule::{Run, RunRole, Schedule};
+use borgchart::{names::is_valid_id, team::parse_role_frontmatter};
 use regex::bytes::Regex;
-use serde::Deserialize;
+use serde_json::Value;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     fs,
     path::{Component, Path},
 };
 
 const RUN_PROMPT_BYTES: usize = 16_000;
+pub(crate) const READ_ERROR: &str =
+    "checks file: cannot read YAML; check the schedule file on the process line";
 
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum Raw {
-    Number(f64),
-    Text(String),
-    List(Vec<Raw>),
-    Map(BTreeMap<String, Raw>),
-    Other(serde::de::IgnoredAny),
-}
-impl Raw {
-    fn text(&self) -> Option<&str> {
-        if let Self::Text(s) = self {
-            Some(s)
-        } else {
-            None
-        }
-    }
-}
 pub struct Check {
     pub name: String,
     pub run: Vec<String>,
@@ -81,75 +67,102 @@ pub fn command_path(value: &str) -> Result<String, String> {
     }
     Ok(value.to_string())
 }
+fn run_role(value: &Value) -> Result<RunRole, String> {
+    let Value::Object(mut frontmatter) = value.clone() else {
+        return value
+            .as_str()
+            .filter(|role| is_valid_id(role))
+            .map(|role| RunRole::Declared(role.into()))
+            .ok_or_else(|| "write role as a role name or a role frontmatter mapping".into());
+    };
+    let requested = frontmatter.remove("vendor");
+    let pins = parse_role_frontmatter(&Value::Object(frontmatter).to_string())?;
+    if pins.is_empty() {
+        return Err("pin a model in role.models".into());
+    }
+    let (vendor, model) = match requested {
+        Some(v) => pins
+            .into_iter()
+            .find(|(vendor, _)| v.as_str() == Some(vendor.as_str()))
+            .ok_or("set vendor to a vendor pinned in role.models")?,
+        None if pins.len() == 1 => pins.into_iter().next().unwrap(),
+        None => return Err("set vendor to choose a pin in role.models".into()),
+    };
+    if model.name.contains([',', '=']) {
+        return Err("remove commas and equals signs from the model name".into());
+    }
+    Ok(RunRole::AdHoc(vendor, model))
+}
+
 pub struct Config {
     pub checks: Vec<Check>,
-    pub schedules: Vec<crate::schedule::Schedule>,
+    pub schedules: Vec<Schedule>,
 }
 pub fn parse(text: &str) -> Result<Config, String> {
-    let raw: Vec<Raw> = borgchart::yaml::parse(text).map_err(|e| format!("checks file: {e}"))?;
+    let raw: Vec<Value> = borgchart::yaml::parse(text).map_err(|e| format!("checks file: {e}"))?;
     let mut names = BTreeSet::new();
     let mut schedules = Vec::new();
     let checks = raw
         .into_iter()
         .enumerate()
         .map(|(i, raw)| {
-            let label = if let Raw::Map(m) = &raw {
-                m.get("name").and_then(Raw::text).unwrap_or("?")
-            } else {
-                "?"
-            };
+            let label = raw["name"].as_str().unwrap_or("?");
             let label = format!("check {} ({label})", i + 1);
             let validate = || -> Result<Option<Check>, String> {
-                let Raw::Map(m) = raw else {
+                let Value::Object(m) = raw else {
                     return Err("use check mappings".into());
                 };
                 let name = m
                     .get("name")
-                    .and_then(Raw::text)
+                    .and_then(Value::as_str)
                     .filter(|n| valid_name(n) && !names.contains(*n))
                     .ok_or("use a unique name matching [a-z][a-z0-9-]{0,31}")?
                     .to_string();
                 names.insert(name.clone());
                 if m.contains_key("cron") {
                     if m.keys()
-                        .any(|k| !["name", "cron", "missed", "prompt", "prompt_file", "run", "timeout_minutes"].contains(&k.as_str()))
+                        .any(|k| !["name", "cron", "missed", "prompt", "prompt_file", "role", "timeout_minutes"].contains(&k.as_str()))
                     {
-                        return Err("use only name, cron, missed, prompt, prompt_file, run and timeout_minutes for a schedule".into());
+                        return Err("use only name, cron, missed, prompt, prompt_file, role and timeout_minutes for a schedule".into());
                     }
-                    let run = match m.get("run") {
-                        Some(role) => {
+                    let run = match m.get("role") {
+                        Some(value) => {
                             if m.contains_key("missed") {
                                 return Err("remove missed from the run schedule".into());
                             }
-                            let role = role.text()
-                                .filter(|r| borgchart::names::is_valid_id(r))
-                                .ok_or("write run as a role name")?;
-                            let minutes = match m.get("timeout_minutes") {
-                                Some(Raw::Number(n)) if n.fract() == 0.0 && (1.0..=1440.0).contains(n) => *n as u64,
+                            let role = run_role(value)?;
+                            if matches!(role, RunRole::AdHoc(..))
+                                && !m.contains_key("prompt")
+                                && !m.contains_key("prompt_file")
+                            {
+                                return Err("add prompt or prompt_file to the ad-hoc run".into());
+                            }
+                            let minutes = match m.get("timeout_minutes").and_then(Value::as_f64) {
+                                Some(n) if n.fract() == 0.0 && (1.0..=1440.0).contains(&n) => n as u64,
                                 _ => return Err("set timeout_minutes to a whole number from 1 to 1440".into()),
                             };
-                            Some(crate::schedule::Run {
-                                role: role.into(),
+                            Some(Run {
+                                role,
                                 timeout: std::time::Duration::from_secs(minutes * 60),
                                 prompt_file: m.get("prompt_file").map(|v| {
                                     if m.contains_key("prompt") {
                                         return Err("use either prompt or prompt_file on a run schedule");
                                     }
-                                    v.text().filter(|s| !s.is_empty()).map(str::to_owned)
+                                    v.as_str().filter(|s| !s.is_empty()).map(str::to_owned)
                                         .ok_or("write prompt_file as a relative file path")
                                 }).transpose()?,
                             })
                         }
-                        None if m.contains_key("prompt_file") => return Err("use prompt_file only with run".into()),
-                        None if m.contains_key("timeout_minutes") => return Err("use timeout_minutes only with run".into()),
+                        None if m.contains_key("prompt_file") => return Err("use prompt_file only with role".into()),
+                        None if m.contains_key("timeout_minutes") => return Err("use timeout_minutes only with role".into()),
                         None => None,
                     };
                     let cron = crate::cron::Cron::parse(
                         m.get("cron")
-                            .and_then(Raw::text)
+                            .and_then(Value::as_str)
                             .ok_or("write cron as a five-field string")?,
                     )?;
-                    let catch_up = match m.get("missed").map(Raw::text) {
+                    let catch_up = match m.get("missed").map(Value::as_str) {
                         None | Some(Some("skip")) => false,
                         Some(Some("catch-up")) => true,
                         _ => return Err("write missed: skip or missed: catch-up".into()),
@@ -160,11 +173,11 @@ pub fn parse(text: &str) -> Result<Config, String> {
                         } else {
                             (300, false, "write prompt as one non-empty string, at most 300 UTF-8 bytes after trimming, without newlines or control characters; point to a file for longer jobs")
                         };
-                        v.text().filter(|s| !s.chars().any(|c| c.is_control() && !(multiline && c == '\n')))
+                        v.as_str().filter(|s| !s.chars().any(|c| c.is_control() && !(multiline && c == '\n')))
                             .map(str::trim).filter(|s| !s.is_empty() && s.len() <= limit)
                             .map(str::to_owned).ok_or(error)
                     }).transpose()?;
-                    schedules.push(crate::schedule::Schedule {
+                    schedules.push(Schedule {
                         name,
                         cron,
                         catch_up,
@@ -179,22 +192,22 @@ pub fn parse(text: &str) -> Result<Config, String> {
                     return Err("use only name, run, every_minutes and ignore for a check".into());
                 }
                 let run = match m.get("run") {
-                    Some(Raw::List(list)) if !list.is_empty() => list
+                    Some(Value::Array(list)) if !list.is_empty() => list
                         .iter()
-                        .map(|v| v.text().map(str::to_owned))
+                        .map(|v| v.as_str().map(str::to_owned))
                         .collect::<Option<Vec<_>>>(),
                     _ => None,
                 }
                 .ok_or("run must be a non-empty list of strings")?;
                 command_path(&run[0])?;
-                let every_minutes = match m.get("every_minutes") {
-                    Some(Raw::Number(n)) if n.is_finite() && *n > 0.0 => *n,
+                let every_minutes = match m.get("every_minutes").and_then(Value::as_f64) {
+                    Some(n) if n.is_finite() && n > 0.0 => n,
                     _ => return Err("every_minutes must be a finite positive number".into()),
                 };
                 let ignore = m
                     .get("ignore")
                     .map(|v| {
-                        v.text()
+                        v.as_str()
                             .ok_or("ignore must be a regex string")
                             .and_then(|s| Regex::new(s).map_err(|_| "ignore must be a valid regex"))
                     })
@@ -215,15 +228,8 @@ pub fn parse(text: &str) -> Result<Config, String> {
         .collect();
     Ok(Config { checks, schedules })
 }
-pub fn path() -> std::path::PathBuf {
-    std::env::var_os("CHECKS_FILE")
-        .unwrap_or("checks.yaml".into())
-        .into()
-}
 pub fn load(path: &Path) -> Result<Config, String> {
-    let config = parse_bytes(
-        &fs::read(path).map_err(|_| "checks file: cannot read YAML; fix CHECKS_FILE and retry")?,
-    )?;
+    let config = parse_bytes(&fs::read(path).map_err(|_| READ_ERROR)?)?;
     prompt_files(&config, folder(path))?;
     Ok(config)
 }
@@ -243,7 +249,7 @@ pub(crate) fn read_prompt_file(folder: &Path, value: &str) -> Result<String, Str
     }
     let folder = folder
         .canonicalize()
-        .map_err(|_| "cannot resolve the checks folder; check CHECKS_FILE")?;
+        .map_err(|_| "cannot resolve the checks folder; check the schedule file path")?;
     let path = folder
         .join(path)
         .canonicalize()
@@ -288,14 +294,24 @@ pub(crate) fn prompt_files(config: &Config, folder: &Path) -> Result<(), String>
 }
 pub fn grants(config: &Config) -> Result<(), String> {
     let grants = std::env::var("BORGCHART_RUNS").unwrap_or_default();
+    let base = std::env::var("BORGCHART_RUN_ROLE")
+        .ok()
+        .filter(|role| is_valid_id(role));
     for schedule in &config.schedules {
-        if let Some(run) = &schedule.run
-            && !grants.split(',').any(|role| role == run.role)
-        {
-            return Err(format!(
-                "schedule {}: role `{}` can't be scheduled by this timer; grant it this plugin's `done` action, with `start: false`, no worktree and no child roles, then restart the timer",
-                schedule.name, run.role
-            ));
+        match schedule.run.as_ref().map(|run| &run.role) {
+            Some(RunRole::Declared(role)) if !grants.split(',').any(|grant| grant == role) => {
+                return Err(format!(
+                    "schedule {}: role `{role}` can't be scheduled by this timer; grant it this plugin's `done` action, with `start: false`, no worktree and no child roles, then restart the timer",
+                    schedule.name
+                ));
+            }
+            Some(RunRole::AdHoc(..)) if base.is_none() => {
+                return Err(format!(
+                    "schedule {}: add `delivers_to` and a `done` action to this timer plugin in template.yaml, then restart the timer",
+                    schedule.name
+                ));
+            }
+            _ => {}
         }
     }
     if config.schedules.iter().any(|s| s.run.is_none())
@@ -315,7 +331,7 @@ mod tests {
     #[rustfmt::skip]
     fn schedule_entries_reject_mixed_unknown_and_duplicate_fields() {
         for bad in [
-            "- {name: review, cron: '0 0 * * *', run: [printf]}",
+            "- {name: review, cron: '0 0 * * *', role: [reviewer]}",
             "- {name: review, cron: '0 0 * * *', every_minutes: 1}",
             "- {name: review, cron: '0 0 * * *', ignore: x}",
             "- {name: review, cron: '0 0 * * *', at: '00:00'}",

@@ -155,6 +155,22 @@ struct ModelsRaw {
     codex: Option<String>,
 }
 
+impl FrontmatterRaw {
+    fn pins(self) -> impl Iterator<Item = Result<(Vendor, Model), String>> {
+        [
+            (Vendor::Claude, self.models.claude),
+            (Vendor::Codex, self.models.codex),
+        ]
+        .into_iter()
+        .filter_map(|(vendor, value)| value.map(|v| parse_model(&v).map(|model| (vendor, model))))
+    }
+}
+
+/// Parse inline role frontmatter using the same schema and model rules as role files.
+pub fn parse_role_frontmatter(yaml: &str) -> Result<BTreeMap<Vendor, Model>, String> {
+    yaml::parse::<FrontmatterRaw>(yaml)?.pins().collect()
+}
+
 // ---- resolved template ---------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize)]
@@ -1171,17 +1187,12 @@ fn load_role(
                 Vendor::Claude => front.models.claude.is_some(),
                 Vendor::Codex => front.models.codex.is_some(),
             };
-            for (pin_vendor, configured) in [
-                (Vendor::Claude, front.models.claude),
-                (Vendor::Codex, front.models.codex),
-            ] {
-                if let Some(value) = configured {
-                    match parse_model(&value) {
-                        Ok(parsed) => {
-                            pins.insert(pin_vendor, parsed);
-                        }
-                        Err(e) => report.error(Some(&shown), e),
+            for pin in front.pins() {
+                match pin {
+                    Ok((vendor, model)) => {
+                        pins.insert(vendor, model);
                     }
+                    Err(e) => report.error(Some(&shown), e),
                 }
             }
             if !has_vendor_pin {

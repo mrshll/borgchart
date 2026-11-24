@@ -95,10 +95,14 @@ fn collect(check: &Check, state: &mut Snapshot, timeout: Duration) {
         .pending
         .extend(update(record, check, &output, &errors, code));
 }
-pub fn run(store: &plugin::State, once: bool) -> Result<(), String> {
+pub fn startup_error(store: &plugin::State, detail: &str) {
+    let _lock = store.lock();
+    let _ = Snapshot::read(store).health(store, &one_line(detail));
+}
+
+pub fn run(store: &plugin::State, path: &std::path::Path, once: bool) -> Result<(), String> {
     let started = SystemTime::now();
-    let path = config::path();
-    let folder = config::folder(&path);
+    let folder = config::folder(path);
     let validate = |bytes: &[u8]| {
         let checks = config::parse_bytes(bytes)?;
         config::grants(&checks)?;
@@ -106,8 +110,7 @@ pub fn run(store: &plugin::State, once: bool) -> Result<(), String> {
         Ok::<_, String>(checks)
     };
     let setup = || {
-        let bytes = std::fs::read(&path)
-            .map_err(|_| "checks file: cannot read YAML; fix CHECKS_FILE and retry")?;
+        let bytes = std::fs::read(path).map_err(|_| config::READ_ERROR)?;
         let checks = validate(&bytes)?;
         let seconds: f64 = std::env::var("CHECKS_TIMEOUT_SECONDS")
             .unwrap_or("60".into())
@@ -120,10 +123,7 @@ pub fn run(store: &plugin::State, once: bool) -> Result<(), String> {
             .ok_or("set CHECKS_TIMEOUT_SECONDS to a positive finite number (test hook only)")?;
         Ok::<_, String>((checks, timeout, Some(bytes)))
     };
-    let (mut config, timeout, mut bytes) = setup().inspect_err(|e| {
-        let _lock = store.lock();
-        let _ = Snapshot::read(store).health(store, &one_line(e));
-    })?;
+    let (mut config, timeout, mut bytes) = setup().inspect_err(|e| startup_error(store, e))?;
     let mut reload_error = String::new();
     let mut due = BTreeMap::<String, Instant>::new();
     loop {
@@ -132,12 +132,12 @@ pub fn run(store: &plugin::State, once: bool) -> Result<(), String> {
                 .lock()
                 .map_err(|_| "cannot lock plugin state; check permissions")?;
             let mut state = Snapshot::read(store);
-            let current = std::fs::read(&path).ok();
+            let current = std::fs::read(path).ok();
             if current != bytes || !reload_error.is_empty() {
                 bytes = current;
                 match bytes
                     .as_ref()
-                    .ok_or("checks file: cannot read YAML; fix CHECKS_FILE and retry".into())
+                    .ok_or(config::READ_ERROR.into())
                     .and_then(|b| validate(b))
                 {
                     Ok(updated) => {

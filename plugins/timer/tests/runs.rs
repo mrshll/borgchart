@@ -11,8 +11,8 @@ use std::{
 use support::live::{Running, wait_until};
 use support::*;
 
-const CONFIG: &str =
-    "- {name: review, cron: '0 * * * *', run: worker, timeout_minutes: 45, prompt: Read the draft}";
+const CONFIG: &str = "- {name: review, cron: '0 * * * *', role: worker, timeout_minutes: 45, prompt: Read the draft}";
+const AD_HOC: &str = "{models: {claude: sonnet low}}";
 
 fn file_schedule(name: &str, path: &str) -> String {
     CONFIG
@@ -26,8 +26,7 @@ printf '\036\n' >> state/sends
 case "$1" in
 status)
     printf '[{}'
-    set -- members/*
-    if [ ! -f "$1" ]; then
+    if [ -f role.json ]; then
         printf ','
         cat role.json
     fi
@@ -44,13 +43,20 @@ route)
 create)
     id="${2##*/}-$4"
     if [ -f issued ]; then echo 'name unavailable' >&2; exit 1; fi
-    printf '{"kind":"member","team":"sample","name":"%s","state":"idle","liveness":"alive","start_id":"start-1","vendor":"codex","model":"example-model"}' "$id" > "members/$id"
+    parent=',"parent":"editor-2"'
+    [ ! -f parentless ] || parent=''
+    printf '{"kind":"member","team":"%s","name":"%s","role":"%s"%s,"state":"idle","liveness":"alive","start_id":"start-1","vendor":"codex","model":"example-model"}' "$BORGCHART_TEAM" "$id" "${2##*/}" "$parent" > "members/$id"
     if [ -f create-fails ]; then echo 'start failed' >&2; exit 1; fi
     ;;
 stop)
-    [ -f "members/${2##*/}" ] && [ ! -f stop-fails ] || { echo 'stop failed' >&2; exit 1; }
+    if [ -f already-deleted ]; then
+        printf 'brg: member `%s` was deleted; create a new member with `brg create sample/worker`\n' "$2" >&2
+        exit 1
+    fi
+    [ ! -f stop-fails ] && { [ -f "members/${2##*/}" ] || [ -f hidden-member ]; } || { echo 'stop failed' >&2; exit 1; }
     ;;
 delete)
+    if [ -f hidden-member ]; then rm hidden-member; exit; fi
     rm "members/${2##*/}" ;;
 msg)
     printf '{"id":"m100"}\n' ;;
@@ -64,7 +70,7 @@ fn fixture() -> Fixture {
     f.write("checks.yaml", CONFIG);
     f.write(
         "role.json",
-        r#"{"kind":"role","team":"sample","name":"worker","vendor":"codex","model":"example-model"}"#,
+        r#"{"kind":"role","team":"sample","name":"worker","role":"worker","parent":"editor-1","vendor":"codex","model":"example-model"}"#,
     );
     fs::create_dir(f.path("members")).unwrap();
     f
@@ -94,7 +100,7 @@ fn run(f: &Fixture, args: &[&str]) -> Output {
 }
 
 fn tick(f: &Fixture) {
-    let out = run(f, &["run", "--once"]);
+    let out = run(f, &["run", "checks.yaml", "--once"]);
     assert!(out.status.success(), "{out:?}");
 }
 
@@ -136,18 +142,155 @@ fn last(f: &Fixture, name: &str) -> String {
 }
 
 #[test]
+fn ad_hoc_run_uses_the_schedule_pin_and_reports_to_the_created_members_parent() {
+    for (role, vendor, model, settings) in [
+        (
+            AD_HOC,
+            "claude",
+            "sonnet",
+            "vendor=claude,model=sonnet,effort=low",
+        ),
+        (
+            "{vendor: codex, models: {claude: sonnet, codex: example-model}}",
+            "codex",
+            "example-model",
+            "vendor=codex,model=example-model",
+        ),
+    ] {
+        let f = fixture();
+        let tick = || {
+            let out = run_command(&f, &["run", "checks.yaml", "--once"])
+                .env("BORGCHART_RUN_ROLE", "timer-run")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{out:?}");
+        };
+        tick();
+        pending(&f, &["review".into()]);
+        f.write(
+            "checks.yaml",
+            &CONFIG.replace("role: worker", &format!("role: {role}")),
+        );
+        tick();
+        let create = calls(&f, "create");
+        let name = &create[0][3];
+        assert_eq!(
+            create,
+            [vec![
+                "create",
+                "sample/timer-run",
+                "--name",
+                name,
+                "--run",
+                "review",
+                "--set",
+                settings
+            ]]
+        );
+        assert_eq!(calls(&f, "route"), [vec!["route", vendor, model]]);
+        let msg = calls(&f, "msg");
+        assert!(msg[0].ends_with(&[
+            format!("sample/timer-run-{name}"),
+            "review 2020-01-01T00:00Z | Report to sample/editor-2\nRead the draft".into(),
+        ]));
+        assert!(
+            done(&f, &format!("timer-run-{name}"), "start-1")
+                .status
+                .success()
+        );
+        tick();
+        assert!(last(&f, "review").starts_with("done "));
+    }
+}
+
+#[test]
+fn ad_hoc_role_without_the_plugins_run_grant_refuses_startup() {
+    let f = fixture();
+    f.write("checks.yaml", &CONFIG.replace("worker", AD_HOC));
+    let out = run(&f, &["run", "checks.yaml", "--once"]);
+    assert!(!out.status.success());
+    assert!(
+        f.read("health.json")["detail"]
+            .as_str()
+            .unwrap()
+            .contains("add `delivers_to` and a `done` action")
+    );
+    assert!(f.sends().is_empty());
+}
+
+#[test]
+fn ad_hoc_roles_refuse_ambiguous_unpinned_and_missing_vendors() {
+    let f = fixture();
+    for role in [
+        "{models: {claude: sonnet, codex: example-model}}",
+        "{vendor: codex, models: {claude: sonnet}}",
+        "{}",
+    ] {
+        f.write("checks.yaml", &CONFIG.replace("worker", role));
+        assert_eq!(
+            f.run(&["validate", "checks.yaml"]).status.code(),
+            Some(1),
+            "{role}"
+        );
+    }
+}
+
+#[test]
+fn ad_hoc_models_cannot_change_the_create_override_list() {
+    let f = fixture();
+    for model in ["sonnet,other", "sonnet=other"] {
+        f.write(
+            "checks.yaml",
+            &CONFIG.replace("worker", &format!("{{models: {{claude: '{model}'}}}}")),
+        );
+        assert_eq!(
+            f.run(&["validate", "checks.yaml"]).status.code(),
+            Some(1),
+            "{model}"
+        );
+    }
+}
+
+#[test]
+fn ad_hoc_roles_refuse_invalid_frontmatter_and_missing_work() {
+    let f = fixture();
+    for role in [
+        "{models: {claude: sonnet}, typo: true}",
+        "{models: {claude: sonnet wrong-effort}}",
+    ] {
+        f.write("checks.yaml", &CONFIG.replace("worker", role));
+        assert_eq!(
+            f.run(&["validate", "checks.yaml"]).status.code(),
+            Some(1),
+            "{role}"
+        );
+    }
+    f.write(
+        "checks.yaml",
+        &CONFIG
+            .replace("worker", AD_HOC)
+            .replace(", prompt: Read the draft", ""),
+    );
+    assert_eq!(f.run(&["validate", "checks.yaml"]).status.code(), Some(1));
+}
+
+#[test]
 fn prompt_file_requires_a_run_and_excludes_inline_prompt() {
     let f = fixture();
     let schedule = file_schedule("review", "review.md");
     f.write("review.md", "Read the draft");
-    f.write("checks.yaml", &schedule);
-    assert!(f.run(&["validate"]).status.success());
+    f.write("checks.yaml", &schedule.replace("worker", AD_HOC));
+    assert!(f.run(&["validate", "checks.yaml"]).status.success());
     for invalid in [
-        schedule.replace("run: worker, timeout_minutes: 45, ", ""),
+        schedule.replace("role: worker, timeout_minutes: 45, ", ""),
         schedule.replace("prompt_file:", "prompt: Read the draft, prompt_file:"),
     ] {
         f.write("checks.yaml", &invalid);
-        assert_eq!(f.run(&["validate"]).status.code(), Some(1), "{invalid}");
+        assert_eq!(
+            f.run(&["validate", "checks.yaml"]).status.code(),
+            Some(1),
+            "{invalid}"
+        );
     }
 }
 
@@ -159,8 +302,7 @@ fn startup_refuses_prompt_file_paths_outside_the_checks_folder() {
     f.write("config/review.md", "Review the notes");
     symlink("../outside.md", f.path("config/link.md")).unwrap();
     let startup = || {
-        f.command(&["run", "--once"])
-            .env("CHECKS_FILE", "config/checks.yaml")
+        f.command(&["run", "config/checks.yaml", "--once"])
             .env("BORGCHART_RUNS", "worker")
             .output()
             .unwrap()
@@ -182,7 +324,10 @@ fn prompt_files_reject_invalid_input_and_deliver_the_maximum_with_a_long_name() 
     let f = fixture();
     let name = "r".repeat(32);
     f.write("checks.yaml", &file_schedule(&name, "review.md"));
-    assert_eq!(run(&f, &["run", "--once"]).status.code(), Some(1));
+    assert_eq!(
+        run(&f, &["run", "checks.yaml", "--once"]).status.code(),
+        Some(1)
+    );
     for bad in [
         b"\xff".to_vec(),
         b" \n\t".to_vec(),
@@ -190,7 +335,10 @@ fn prompt_files_reject_invalid_input_and_deliver_the_maximum_with_a_long_name() 
         "é".repeat(8001).into_bytes(),
     ] {
         fs::write(f.path("review.md"), bad).unwrap();
-        assert_eq!(run(&f, &["run", "--once"]).status.code(), Some(1));
+        assert_eq!(
+            run(&f, &["run", "checks.yaml", "--once"]).status.code(),
+            Some(1)
+        );
     }
     let prompt = "é".repeat(8000);
     f.write("review.md", &format!(" \n{prompt}\n"));
@@ -200,11 +348,43 @@ fn prompt_files_reject_invalid_input_and_deliver_the_maximum_with_a_long_name() 
     let messages = calls(&f, "msg");
     let body = messages[0].last().unwrap();
     assert!(
-        body == &format!("{name} 2020-01-01T00:00Z\n{prompt}"),
+        body == &format!("{name} 2020-01-01T00:00Z | Report to sample/editor-2\n{prompt}"),
         "expected the full prompt after the header, got {} bytes",
         body.len()
     );
     assert!(borgchart::runtime::check_text(body).is_ok());
+}
+
+#[test]
+fn a_long_parent_address_cannot_push_a_run_message_past_the_bus_limit() {
+    let f = fixture();
+    f.write("checks.yaml", &file_schedule("review", "review.md"));
+    f.write("review.md", &"x".repeat(16_000));
+    tick(&f);
+    pending(&f, &["review".into()]);
+    let out = run_command(&f, &["run", "checks.yaml", "--once"])
+        .env(
+            "BORGCHART_TEAM",
+            format!("{}sample", "department-with-a-long-name/".repeat(15)),
+        )
+        .env_remove("SEAT")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(calls(&f, "create").len(), 1);
+    assert!(calls(&f, "msg").is_empty());
+    assert!(last(&f, "review").starts_with("failed-to-start "));
+}
+
+#[test]
+fn a_parentless_declared_role_receives_its_prompt_without_a_report_address() {
+    let f = fixture();
+    f.write("parentless", "");
+    start(&f);
+    assert_eq!(
+        calls(&f, "msg")[0].last().unwrap(),
+        "review 2020-01-01T00:00Z\nRead the draft"
+    );
 }
 
 #[test]
@@ -220,7 +400,7 @@ fn changing_a_prompt_file_path_preserves_the_pending_occurrence() {
     tick(&f);
     assert_eq!(
         calls(&f, "msg")[0].last().unwrap(),
-        "review 2020-01-01T00:00Z\nReview the new notes."
+        "review 2020-01-01T00:00Z | Report to sample/editor-2\nReview the new notes."
     );
 }
 
@@ -233,7 +413,7 @@ fn occurrences_read_current_multiline_prompts_and_fail_before_seating_if_removed
     f.write("checks.yaml", &config);
     f.write("review.md", "Old draft");
     f.write("removed.md", "Original text");
-    let _running = Running(run_command(&f, &["run"]).spawn().unwrap());
+    let _running = Running(run_command(&f, &["run", "checks.yaml"]).spawn().unwrap());
     wait_for(&f.path("state/health.json"));
     let first_tick = f.read("health.json")["at"].clone();
     f.write("review.md", "  New draft\n\nCheck the figures.\n");
@@ -244,7 +424,7 @@ fn occurrences_read_current_multiline_prompts_and_fail_before_seating_if_removed
     assert_eq!(messages.len(), 1);
     assert_eq!(
         messages[0].last().unwrap(),
-        "review 2020-01-01T00:00Z\nNew draft\n\nCheck the figures."
+        "review 2020-01-01T00:00Z | Report to sample/editor-2\nNew draft\n\nCheck the figures."
     );
     assert_eq!(calls(&f, "route").len(), 1);
     assert_eq!(calls(&f, "create").len(), 1);
@@ -256,12 +436,12 @@ fn inline_run_prompt_delivers_multiline_text() {
     let f = fixture();
     f.write(
         "checks.yaml",
-        "- name: review\n  cron: '0 * * * *'\n  run: worker\n  timeout_minutes: 45\n  prompt: |\n    Review the draft.\n\n    Send a summary.\n",
+        "- name: review\n  cron: '0 * * * *'\n  role: worker\n  timeout_minutes: 45\n  prompt: |\n    Review the draft.\n\n    Send a summary.\n",
     );
     start(&f);
     assert_eq!(
         calls(&f, "msg")[0].last().unwrap(),
-        "review 2020-01-01T00:00Z\nReview the draft.\n\nSend a summary."
+        "review 2020-01-01T00:00Z | Report to sample/editor-2\nReview the draft.\n\nSend a summary."
     );
 }
 
@@ -277,13 +457,13 @@ fn inline_run_prompt_refuses_oversize_and_controls_other_than_newline() {
             "checks.yaml",
             &CONFIG.replace("Read the draft", &format!("\"{prompt}\"")),
         );
-        assert_eq!(f.run(&["validate"]).status.code(), Some(1));
+        assert_eq!(f.run(&["validate", "checks.yaml"]).status.code(), Some(1));
     }
 }
 
 #[test]
 fn restricted_claude_runs_fail_before_create_when_the_prompt_exceeds_the_budget() {
-    let header = "review 2020-01-01T00:00Z\n";
+    let header = "review 2020-01-01T00:00Z | Report to sample/editor-2\n";
     for (prompt, allowed) in [
         ("Line one\nLine two", false),
         (&"x".repeat(701 - header.len()), false),
@@ -292,7 +472,7 @@ fn restricted_claude_runs_fail_before_create_when_the_prompt_exceeds_the_budget(
         let f = fixture();
         f.write(
             "role.json",
-            r#"{"kind":"role","team":"sample","name":"worker","vendor":"claude","model":"example-model","restricted_access":true}"#,
+            r#"{"kind":"role","team":"sample","name":"worker","role":"worker","parent":"editor-2","vendor":"claude","model":"example-model","restricted_access":true}"#,
         );
         f.write("checks.yaml", &file_schedule("review", "review.md"));
         f.write("review.md", prompt);
@@ -300,7 +480,12 @@ fn restricted_claude_runs_fail_before_create_when_the_prompt_exceeds_the_budget(
         pending(&f, &["review".into()]);
         tick(&f);
         assert_eq!(calls(&f, "create").len(), usize::from(allowed));
-        if !allowed {
+        if allowed {
+            let messages = calls(&f, "msg");
+            let body = messages[0].last().unwrap();
+            assert_eq!(body.len(), 700);
+            assert_eq!(body.lines().count(), 2);
+        } else {
             assert!(last(&f, "review").starts_with("failed-to-start "));
         }
     }
@@ -315,14 +500,17 @@ fn cron_entries_refuse_mixed_fields_and_ungranted_roles() {
             "checks.yaml",
             &format!("{}{extra}}}", &CONFIG[..CONFIG.len() - 1]),
         );
-        assert!(!f.run(&["validate"]).status.success());
+        assert!(!f.run(&["validate", "checks.yaml"]).status.success());
     }
     for timeout in ["0", "1441", "1.5", "'45'"] {
         f.write("checks.yaml", &CONFIG.replace("45", timeout));
-        assert!(!f.run(&["validate"]).status.success());
+        assert!(!f.run(&["validate", "checks.yaml"]).status.success());
     }
-    f.write("checks.yaml", &CONFIG.replace("run: worker", "run: reader"));
-    assert!(!run(&f, &["run", "--once"]).status.success());
+    f.write(
+        "checks.yaml",
+        &CONFIG.replace("role: worker", "role: reader"),
+    );
+    assert!(!run(&f, &["run", "checks.yaml", "--once"]).status.success());
     assert!(f.sends().is_empty());
 }
 
@@ -397,11 +585,20 @@ fn occurrence_checks_seating_then_creates_and_sends_work_under_the_shared_cap() 
     let messages = calls(&f, "msg");
     for (index, name) in names.iter().take(5).enumerate() {
         assert_eq!(seats[index][1..], ["codex", "example-model"]);
-        assert_eq!(members[index][1], "sample/worker");
-        assert!(members[index].ends_with(&["--run".into(), name.clone()]));
+        assert_eq!(
+            members[index],
+            [
+                "create",
+                "sample/worker",
+                "--name",
+                &members[index][3],
+                "--run",
+                name
+            ]
+        );
         let payload = [
             format!("sample/worker-{}", members[index][3]),
-            format!("{name} 2020-01-01T00:00Z\nRead the draft"),
+            format!("{name} 2020-01-01T00:00Z | Report to sample/editor-2\nRead the draft"),
         ];
         assert!(messages.iter().any(|call| call.ends_with(&payload)));
     }
@@ -506,6 +703,51 @@ fn missing_members_finalize_without_stop_after_cleanup_or_create_grace() {
         assert!(last(&f, "review").starts_with(outcome));
         assert_eq!(f.read("health.json")["ok"], true);
     }
+}
+
+#[test]
+fn a_run_with_no_member_row_is_stopped_and_deleted_after_its_role_disappears() {
+    let f = fixture();
+    let id = start(&f);
+    fs::rename(f.path(&format!("members/{id}")), f.path("hidden-member")).unwrap();
+    tick(&f);
+    assert!(last(&f, "review").starts_with("interrupted "));
+    assert!(calls(&f, "stop").is_empty());
+    assert!(f.path("hidden-member").exists());
+
+    let f = fixture();
+    let id = start(&f);
+    let address = format!("sample/{id}");
+    fs::rename(f.path(&format!("members/{id}")), f.path("hidden-member")).unwrap();
+    fs::remove_file(f.path("role.json")).unwrap();
+    f.write("stop-fails", "");
+    tick(&f);
+    assert!(!f.run(&["last", "review"]).status.success());
+    assert_eq!(f.read("health.json")["ok"], false);
+    fs::remove_file(f.path("stop-fails")).unwrap();
+    tick(&f);
+    let calls = f.sends();
+    assert!(calls.ends_with(&[
+        vec!["stop".into(), address.clone()],
+        vec!["delete".into(), address, "--force".into()],
+    ]));
+    assert!(!f.path("hidden-member").exists());
+    assert!(last(&f, "review").starts_with("interrupted "));
+}
+
+#[test]
+fn a_run_core_already_deleted_is_finalized_without_retrying() {
+    let f = fixture();
+    let id = start(&f);
+    fs::remove_file(f.path(&format!("members/{id}"))).unwrap();
+    fs::remove_file(f.path("role.json")).unwrap();
+    f.write("already-deleted", "");
+    tick(&f);
+    assert!(last(&f, "review").starts_with("interrupted "));
+    tick(&f);
+    assert_eq!(calls(&f, "stop"), [vec!["stop", &format!("sample/{id}")]]);
+    assert!(calls(&f, "delete").is_empty());
+    assert_eq!(f.read("health.json")["ok"], true);
 }
 
 #[test]

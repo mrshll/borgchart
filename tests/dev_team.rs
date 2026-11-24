@@ -1296,6 +1296,16 @@ mod round {
 
         let (started, code) = run("dev-start", &format!("\"$BORGCHART_BIN\" start {copy_id}"));
         assert_eq!(code, 0, "{started}");
+        for instance in [&dept, &copy_id] {
+            team.wait_for("alarm timer healthy", || {
+                rows(instance).iter().any(|row| {
+                    row["kind"] == "plugin"
+                        && row["name"] == "timer"
+                        && row["state"] == "alive"
+                        && row["detail"] == "ok"
+                })
+            });
+        }
         let dev_lead = team.member_in(&copy_id, "lead");
         let child_meta = team.read(&format!("state/{copy_id}/start.json")).unwrap();
         let parent_shim = team.path(&format!("state/{dept}/members/{dept_lead}/bin"));

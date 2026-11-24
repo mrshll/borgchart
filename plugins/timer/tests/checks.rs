@@ -139,7 +139,10 @@ fn alarm_set_during_a_send_survives_and_does_not_wait_for_the_checks_lock() {
             "while [ ! -f \"$BORGCHART_STATE_DIR/release\" ]; do /bin/sleep 0.01; done\n/bin/cat",
         ),
     );
-    let mut running = f.command(&["run", "--once"]).spawn().unwrap();
+    let mut running = f
+        .command(&["run", "checks.yaml", "--once"])
+        .spawn()
+        .unwrap();
     wait_for(&f.path("state/sends"));
     let before = Instant::now();
     alarm(&f, &["alarm", "set", "2", "new check-in"]);
@@ -218,7 +221,7 @@ fn binary_output_changes_do_not_collapse_to_the_same_utf8_replacement() {
 fn timer_runs_only_due_checks_after_the_first_tick() {
     let f = Fixture::new();
     f.write("checks.yaml", "- name: slow\n  run: [sh, -c, 'echo tick >> slow']\n  every_minutes: 100\n- name: quick\n  run: [sh, -c, 'echo tick >> quick']\n  every_minutes: 0.001\n");
-    let mut process = f.command(&["run"]).spawn().unwrap();
+    let mut process = f.command(&["run", "checks.yaml"]).spawn().unwrap();
     let deadline = Instant::now() + Duration::from_secs(36);
     loop {
         if fs::read_to_string(f.path("quick"))
@@ -248,7 +251,7 @@ fn last_reads_committed_evidence_without_waiting_for_a_running_check() {
     f.tick();
     f.config(&["sh", "-c", "touch started; sleep 3; printf second"], "");
     let mut process = f
-        .command(&["run", "--once"])
+        .command(&["run", "checks.yaml", "--once"])
         .env("CHECKS_TIMEOUT_SECONDS", "5")
         .spawn()
         .unwrap();
@@ -304,7 +307,7 @@ fn output_limit_reports_failure_once_without_retaining_output() {
         let f = Fixture::new();
         let tick = |f: &Fixture| {
             let result = f
-                .command(&["run", "--once"])
+                .command(&["run", "checks.yaml", "--once"])
                 .env("CHECKS_TIMEOUT_SECONDS", "5")
                 .output()
                 .unwrap();
@@ -343,7 +346,7 @@ fn dangling_symlink_executables_stop_startup() {
     let f = Fixture::new();
     std::os::unix::fs::symlink("/nonexistent/check-tool", f.path("dangling")).unwrap();
     f.config(&["./dangling"], "");
-    let result = f.run(&["run", "--once"]);
+    let result = f.run(&["run", "checks.yaml", "--once"]);
     assert_eq!(result.status.code(), Some(1), "{result:?}");
     let error = String::from_utf8(result.stderr).unwrap();
     assert_eq!(error.lines().count(), 1);
@@ -366,13 +369,16 @@ fn startup_error_cannot_overwrite_health_during_an_active_tick() {
         "",
     );
     let mut active = f
-        .command(&["run", "--once"])
+        .command(&["run", "checks.yaml", "--once"])
         .env("CHECKS_TIMEOUT_SECONDS", "5")
         .spawn()
         .unwrap();
     wait_for(&f.path("started"));
     f.write("checks.yaml", "check: wrong");
-    let mut invalid = f.command(&["run", "--once"]).spawn().unwrap();
+    let mut invalid = f
+        .command(&["run", "checks.yaml", "--once"])
+        .spawn()
+        .unwrap();
     std::thread::sleep(Duration::from_millis(500));
     let early_exit = invalid.try_wait().unwrap();
     let health_during_tick = f.read("health.json");
@@ -434,7 +440,10 @@ fn send_outcome(code: i32, delayed: bool) {
     }
     let before = Instant::now();
     if delayed {
-        let mut process = f.command(&["run", "--once"]).spawn().unwrap();
+        let mut process = f
+            .command(&["run", "checks.yaml", "--once"])
+            .spawn()
+            .unwrap();
         wait_for(&f.path("state/sends"));
         let pending_during_send = f.read("checks.json")["pending"].as_array().unwrap().len();
         assert!(process.wait().unwrap().success());
@@ -485,7 +494,7 @@ fn invalid_config(fragment: &str, label: &str) {
     let f = Fixture::new();
     std::os::unix::fs::symlink("/bin/true", f.path("escape")).unwrap();
     f.write("checks.yaml", fragment);
-    let result = f.run(&["run", "--once"]);
+    let result = f.run(&["run", "checks.yaml", "--once"]);
     assert_eq!(result.status.code(), Some(1), "{result:?}");
     let error = String::from_utf8(result.stderr).unwrap();
     assert_eq!(error.lines().count(), 1);
@@ -709,8 +718,7 @@ fn relative_command_uses_template_folder_environment_and_prunes_removed_checks()
     fs::create_dir(f.path("config")).unwrap();
     fs::rename(f.path("checks.yaml"), f.path("config/list.yaml")).unwrap();
     let out = f
-        .command(&["run", "--once"])
-        .env("CHECKS_FILE", "config/list.yaml")
+        .command(&["run", "config/list.yaml", "--once"])
         .env("EXAMPLE_FLAG", "inherited")
         .output()
         .unwrap();
@@ -718,8 +726,7 @@ fn relative_command_uses_template_folder_environment_and_prunes_removed_checks()
     assert!(f.last().contains("| inherited:first"));
     f.write("config/list.yaml", "[]");
     assert!(
-        f.command(&["run", "--once"])
-            .env("CHECKS_FILE", "config/list.yaml")
+        f.command(&["run", "config/list.yaml", "--once"])
             .status()
             .unwrap()
             .success()
@@ -756,7 +763,7 @@ fn timeout_leaves_no_shell_background_or_pipeline_process_running() {
     f.config(&["sh", "-c", "echo $$ > pids; sleep 30 & echo $! >> pids; sh -c 'echo $$ >> pids; exec sleep 30' | sh -c 'echo $$ >> pids; exec cat'; wait"], "");
     let before = Instant::now();
     assert!(
-        f.command(&["run", "--once"])
+        f.command(&["run", "checks.yaml", "--once"])
             .env("CHECKS_TIMEOUT_SECONDS", "1")
             .status()
             .unwrap()
@@ -811,7 +818,7 @@ fn malformed_state(state: serde_json::Value) {
     }
     f.write("state/checks.json", &state.to_string());
     f.write("checks.yaml", "check: wrong");
-    let result = f.run(&["run", "--once"]);
+    let result = f.run(&["run", "checks.yaml", "--once"]);
     assert_eq!(result.status.code(), Some(1));
     let error = String::from_utf8(result.stderr).unwrap();
     assert_eq!(error.lines().count(), 1);
@@ -869,7 +876,7 @@ fn completed_check_updates_evidence_and_health_before_next_check_finishes() {
     let config = fs::read_to_string(f.path("checks.yaml")).unwrap();
     f.write("checks.yaml", &(config + "- name: blocked\n  every_minutes: 1\n  run: [sh, -c, 'touch started; while [ ! -f release ]; do sleep 0.05; done']\n"));
     let mut process = f
-        .command(&["run", "--once"])
+        .command(&["run", "checks.yaml", "--once"])
         .env("CHECKS_TIMEOUT_SECONDS", "5")
         .spawn()
         .unwrap();
@@ -901,7 +908,7 @@ fn timer_without_member_routes_notice_as_external_timer() {
     f.tick();
     f.write("value", "second");
     let result = f
-        .command(&["run", "--once"])
+        .command(&["run", "checks.yaml", "--once"])
         .env_remove("BORGCHART_MEMBER")
         .output()
         .unwrap();
@@ -921,7 +928,7 @@ fn missing_state_directory_cannot_change_the_working_directory_permissions() {
     let f = Fixture::new();
     fs::set_permissions(f.dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
     let result = f
-        .command(&["run", "--once"])
+        .command(&["run", "checks.yaml", "--once"])
         .env_remove("BORGCHART_STATE_DIR")
         .output()
         .unwrap();
