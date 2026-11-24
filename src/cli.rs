@@ -261,7 +261,8 @@ enum Command {
     /// unverified vendor versions show a notice to run the live tier (CONTRIBUTING.md).
     ///
     /// Each member's row shows its ID, vendor and model, state and any unacked
-    /// messages. A role with no member shows only its state; its `--json` row
+    /// messages. Scheduled run members show `run: <schedule>` (`run` in `--json`).
+    /// A role with no member shows only its state; its `--json` row
     /// also gives its vendor and model.
     ///
     /// On a terminal, state precedes vendor/model or template. A summary band above

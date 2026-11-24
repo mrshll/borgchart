@@ -68,7 +68,7 @@ fn run_team(roles: &str) -> (Env, String) {
 }
 
 #[test]
-fn full_start_does_not_restart_run_members() {
+fn full_start_skips_run_members_and_status_distinguishes_them() {
     let (env, inst) = run_team("helper, scout");
     let out = env
         .cmd(&["create", &format!("{inst}/helper"), "--run", "review"])
@@ -79,6 +79,20 @@ fn full_start_does_not_restart_run_members() {
     assert!(out.status.success(), "{}", both(&out));
     let helper = env.member(&inst, "helper");
     env.wait_for("run member started", || !env.starts(&helper).is_empty());
+    let lead = env.row(&inst, "lead");
+    let lead_id = lead["member"].as_str().unwrap();
+    let status = stdout(&env.ok(&["status", &inst]));
+    let line = |id: &str| status.lines().find(|line| line.contains(id)).unwrap();
+    assert_eq!(
+        (
+            env.row(&inst, "helper")["run"].as_str(),
+            line(&helper).contains("run: review"),
+        ),
+        (Some("review"), true),
+        "{status}"
+    );
+    assert!(lead.get("run").is_none());
+    assert!(!line(lead_id).contains("run:"), "{status}");
     let out = env.ok(&["start", &inst]);
     let text = stdout(&out);
     assert!(

@@ -149,7 +149,7 @@ dev-team-k3f9                       template ~/.config/borgchart/templates/dev-t
   - a role with no kept member gets `not created (start: false)` or `not created (start: true)`, following its `start` setting, or a dim `on demand (none created)` for `max > 1`. A created member that isn't running shows on its own line as `stopped`;
   - positive unacked message counts appear beside members, also in `-i`; a zero adds nothing to the tree;
   - child teams nest under their parent member, each with its full team path.
-- **`--json` member rows:** `team`, `template`, `member`, `role`, `parent` (a member ID), `start_id` (the current incarnation, when recorded), and the existing fields. A stop retains `start_id`; restarting changes it. With a readable bus, `unacked` gives each kept member's unacked count, including zero. Without a bus it is absent; if the store cannot be read, counts are absent and status adds a short note. Deleted members have no rows. Plugin-process rows keep `kind: plugin` and their name.
+- **`--json` member rows:** `team`, `template`, `member`, `role`, `parent` (a member ID), `start_id` (the current incarnation, when recorded), `run` (the schedule, for scheduled run members only), and the existing fields. A stop retains `start_id`; restarting changes it. With a readable bus, `unacked` gives each kept member's unacked count, including zero. Without a bus it is absent; if the store cannot be read, counts are absent and status adds a short note. Deleted members have no rows. Plugin-process rows keep `kind: plugin` and their name.
 
 ## Environment variables
 

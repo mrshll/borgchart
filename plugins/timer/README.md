@@ -184,6 +184,7 @@ without another restart.
 
 A run schedule creates a fresh member for each occurrence and sends it the
 schedule name, UTC minute and optional prompt. Add the schedule to `checks.yaml`.
+`brg status` marks each run member with its schedule.
 
 ```yaml
 - name: daily-review
