@@ -1118,17 +1118,33 @@ mod round {
             .unwrap();
             team.run_tool(&member, &script);
         }
+        // The lead's timer may add a check notice where `gh` can't answer;
+        // count only the designers' messages.
+        let from_panel = |r: &serde_json::Value| {
+            r["from"]
+                .as_str()
+                .is_some_and(|from| from.starts_with(&format!("{panel}/")))
+        };
         team.wait_for("the designers' notifications", || {
             let out = team.brg(&["msg", "list", "--team", &inst, "--member", &lead, "--json"]);
             serde_json::from_slice::<serde_json::Value>(&out.stdout)
                 .ok()
-                .and_then(|v| v["records"].as_array().map(Vec::len))
+                .and_then(|v| {
+                    v["records"]
+                        .as_array()
+                        .map(|records| records.iter().filter(|r| from_panel(r)).count())
+                })
                 == Some(4)
         });
         let (inbox, code) = run("panel-files", "\"$BORGCHART_BIN\" msg list --full --json");
         assert_eq!(code, 0, "{inbox}");
         let inbox: serde_json::Value = serde_json::from_str(&inbox).unwrap();
-        let records = inbox["records"].as_array().unwrap();
+        let records: Vec<_> = inbox["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| from_panel(r))
+            .collect();
         assert_eq!(records.len(), 4);
         for name in ["questions", "proposal"] {
             for designer in ["designer-claude", "designer-codex"] {
