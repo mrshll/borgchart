@@ -34,8 +34,13 @@ fn description(text: Option<&str>) -> Result<Option<String>, String> {
     if text.trim().is_empty() {
         return Err("`description` is empty; write what the role is for, or remove it".into());
     }
-    if text.chars().any(char::is_control) {
-        return Err("`description` must be one line with no control characters".into());
+    if text
+        .chars()
+        .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
+    {
+        return Err(
+            "`description` must be one line, with no control characters or line separators".into(),
+        );
     }
     if text.len() > DESCRIPTION_MAX {
         return Err(format!(

@@ -214,7 +214,7 @@ fn status_gives_each_roles_description_under_the_template_that_declares_it() {
     let env = department();
     env.write(
         "templates/oncall/template.yaml",
-        "bus: {}\nroles:\n  lead: {prompt: lead.md, description: Runs on-call.}\n  dev: {template: dev, parent: lead, start: false, max: 2, worktree: true, description: One topic's dev team.}\n",
+        "bus: {}\nroles:\n  lead: {prompt: lead.md, description: Runs on-call.}\n  dev: {template: dev, parent: lead, start: false, max: 2, worktree: true, description: One topic's dev team.}\n  ops: {template: dev, start: false, description: Runs operations.}\n",
     );
     let dev = fs::read_to_string(env.path("templates/dev/template.yaml")).unwrap();
     env.write(
@@ -227,6 +227,16 @@ fn status_gives_each_roles_description_under_the_template_that_declares_it() {
     let dept = env.create("oncall", "work/a");
     let (first, _) = create_copy(&env, &dept, "dev");
     create_copy(&env, &dept, "dev");
+    let block = || {
+        let text = stdout(&env.ok(&["status", &dept]));
+        text[text.find("roles in ").unwrap_or(text.len())..].to_string()
+    };
+    let oncall = "roles in oncall:\n  lead  Runs on-call.\n  dev   One topic's dev team.\n";
+    let ops = "  ops   Runs operations.\n";
+    let dev = "roles in dev:\n  helper  One small change.\n";
+    assert_eq!(block(), format!("{oncall}{ops}{dev}"));
+    create_copy(&env, &dept, "ops");
+    assert_eq!(block(), format!("{oncall}{ops}{dev}"));
 
     let rows = env.rows(&dept);
     let row = |kind: &str, team: &str, role: &str| {
@@ -245,17 +255,6 @@ fn status_gives_each_roles_description_under_the_template_that_declares_it() {
     );
     assert!(row("role", &first, "scout").get("description").is_none());
 
-    let text = stdout(&env.ok(&["status", &dept]));
-    assert!(
-        text.contains("roles in oncall:\n  lead  Runs on-call.\n  dev   One topic's dev team.\n"),
-        "{text}"
-    );
-    assert_eq!(
-        text.matches("roles in dev:\n  helper  One small change.\n")
-            .count(),
-        1,
-        "{text}"
-    );
     env.ok(&["stop", &dept]);
 }
 

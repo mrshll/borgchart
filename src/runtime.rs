@@ -3814,6 +3814,29 @@ pub struct Delivery {
     incarnation: String,
 }
 
+/// A role's `description` and the template folder that declares the role.
+/// `--json` gives only the text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoleDescription {
+    pub text: String,
+    pub template: PathBuf,
+}
+
+impl RoleDescription {
+    fn of(text: &Option<String>, v: &Validated) -> Option<Self> {
+        text.as_ref().map(|text| RoleDescription {
+            text: text.clone(),
+            template: v.team.dir.clone(),
+        })
+    }
+}
+
+impl Serialize for RoleDescription {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.text)
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct StatusRow {
     /// The local member or child team ID, a role with nothing created yet, or
@@ -3838,7 +3861,7 @@ pub struct StatusRow {
     pub role: Option<String>,
     /// What the role is for, from its `description` in `template.yaml`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
+    pub description: Option<RoleDescription>,
     pub vendor: Option<String>,
     /// Resolved model name, separate from its effort.
     pub model: Option<String>,
@@ -4075,7 +4098,7 @@ fn status_with_counts(
                 run: None,
                 start_id: None,
                 role: Some(id.clone()),
-                description: member.description.clone(),
+                description: RoleDescription::of(&member.description, &v),
                 vendor: choice.map(|m| m.vendor.as_str().into()),
                 model: choice
                     .and_then(|m| m.model.as_ref())
@@ -4136,7 +4159,7 @@ fn status_with_counts(
                 .and_then(|i| i.as_ref())
                 .map(|i| i.incarnation.clone()),
             role: Some(role.to_string()),
-            description: member.description.clone(),
+            description: RoleDescription::of(&member.description, &v),
             vendor: choice
                 .map(|role| {
                     if launched_model.is_some() {
@@ -4454,7 +4477,7 @@ fn status_with_counts(
                 run: None,
                 start_id: None,
                 role: Some(role_name.clone()),
-                description: role.description.clone(),
+                description: RoleDescription::of(&role.description, &v),
                 vendor: None,
                 model: None,
                 effort: None,
@@ -4513,7 +4536,7 @@ fn status_with_counts(
                 run: None,
                 start_id: None,
                 role: Some(role_name.clone()),
-                description: role.description.clone(),
+                description: RoleDescription::of(&role.description, &v),
                 vendor: None,
                 model: None,
                 effort: None,
@@ -4729,45 +4752,51 @@ pub fn render_status_as(
     }
 }
 
-/// What piped `status` prints after a tree: for each template in it, each
-/// described role and what it is for, in tree order. A child team's row
-/// belongs to its parent's template, which declares its role.
+/// What piped `status` prints after a tree: for each template folder in it,
+/// each described role and what it is for, in tree order. A child team's row
+/// belongs to the template that declares its role. Two folders with the same
+/// name are told apart by their paths.
 pub fn roles_block(rows: &[StatusRow]) -> String {
-    let by_key: BTreeMap<String, &StatusRow> = rows.iter().map(|r| (status_key(r), r)).collect();
-    let mut templates: Vec<(&str, Vec<(&str, &str)>)> = Vec::new();
+    let mut templates: Vec<(&Path, Vec<(&str, &str)>)> = Vec::new();
     for row in rows {
-        let (Some(role), Some(description)) = (row.role.as_deref(), row.description.as_deref())
+        let (Some(role), Some(description)) = (row.role.as_deref(), row.description.as_ref())
         else {
             continue;
         };
-        let template = if row.kind == "team" {
-            match parent_key(row).and_then(|p| by_key.get(&p).copied()) {
-                Some(parent) => parent.team.as_str(),
-                None => continue,
-            }
-        } else {
-            row.team.as_str()
-        };
-        let at = match templates.iter().position(|(name, _)| *name == template) {
+        let at = match templates
+            .iter()
+            .position(|(dir, _)| *dir == description.template)
+        {
             Some(at) => at,
             None => {
-                templates.push((template, Vec::new()));
+                templates.push((&description.template, Vec::new()));
                 templates.len() - 1
             }
         };
         let entries = &mut templates[at].1;
-        if !entries.contains(&(role, description)) {
-            entries.push((role, description));
+        if !entries.iter().any(|(id, _)| *id == role) {
+            entries.push((role, &description.text));
         }
     }
+    let name = |dir: &Path| crate::team::team_name(dir);
     let mut text = String::new();
-    for (template, entries) in templates {
+    for (dir, entries) in &templates {
+        let shared = templates
+            .iter()
+            .filter(|(d, _)| name(d) == name(dir))
+            .count()
+            > 1;
+        let heading = if shared {
+            format!("{} ({})", name(dir), dir.display())
+        } else {
+            name(dir)
+        };
         let width = entries
             .iter()
             .map(|(role, _)| role.len())
             .max()
             .unwrap_or(0);
-        text.push_str(&format!("roles in {template}:\n"));
+        text.push_str(&format!("roles in {heading}:\n"));
         for (role, description) in entries {
             text.push_str(&format!("  {role:width$}  {description}\n"));
         }

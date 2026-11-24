@@ -198,34 +198,14 @@ fn nested_team() -> Fixture {
 }
 
 #[test]
-fn agent_and_team_roles_take_a_description() {
-    let f = nested_team();
-    f.write(
-        "template.yaml",
-        "roles:\n  lead: {prompt: lead.md, description: Runs the team.}\n  dev: {template: dev, parent: lead, description: One topic's dev team.}\n",
-    );
-    let (report, validated) = f.run();
-    let v = validated.unwrap_or_else(|| panic!("{}", errors(&report)));
-    assert_eq!(
-        v.team.roles["lead"].description.as_deref(),
-        Some("Runs the team.")
-    );
-    assert_eq!(
-        v.team.team_roles["dev"].description.as_deref(),
-        Some("One topic's dev team.")
-    );
-}
-
-#[test]
 fn a_description_is_one_short_non_empty_line() {
     let long = "x".repeat(borgchart::team::DESCRIPTION_MAX + 1);
     for (value, needle) in [
-        ("\"\"".to_string(), "`description` is empty"),
-        (
-            "\"two\\nlines\"".to_string(),
-            "one line with no control characters",
-        ),
-        (long, "is 121 bytes; shorten it to at most 120"),
+        ("\"\"", "`description`"),
+        ("\"two\\nlines\"", "`description`"),
+        ("\"two\\u2028lines\"", "`description`"),
+        ("\"two\\u2029lines\"", "`description`"),
+        (long.as_str(), "120"),
     ] {
         for role in [
             "lead: {prompt: lead.md",

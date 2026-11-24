@@ -1,6 +1,6 @@
 //! Terminal rendering boundaries, using small fictional status trees.
 
-use borgchart::runtime::{self, StatusRow};
+use borgchart::runtime::{self, RoleDescription, StatusRow};
 
 fn member(name: &str, parent: Option<&str>) -> StatusRow {
     StatusRow {
@@ -181,7 +181,7 @@ fn chosen_empty_roles_stay_visible_and_align_with_members() {
 fn only_piped_text_lists_role_descriptions() {
     let rows = [StatusRow {
         role: Some("lead".into()),
-        description: Some("Runs the harbor.".into()),
+        description: described("Runs the harbor.", "/catalog/harbor"),
         ..member("lead", None)
     }];
     let piped = runtime::render_status_as("harbor", &rows, false, false, None);
@@ -191,4 +191,41 @@ fn only_piped_text_lists_role_descriptions() {
     );
     let terminal = runtime::render_status_as("harbor", &rows, true, false, None);
     assert!(!terminal.contains("roles in"), "{terminal}");
+}
+
+fn described(text: &str, template: &str) -> Option<RoleDescription> {
+    Some(RoleDescription {
+        text: text.into(),
+        template: template.into(),
+    })
+}
+
+#[test]
+fn role_descriptions_group_by_template_folder_and_list_each_role_once() {
+    let row = |name: &str, role: &str, text: &str, template: &str| StatusRow {
+        role: Some(role.into()),
+        description: described(text, template),
+        ..member(name, None)
+    };
+    let rows = [
+        row("lead", "lead", "Runs the parent.", "/catalog/oncall"),
+        row(
+            "helper-k3f9",
+            "helper",
+            "One small change.",
+            "/catalog/oncall",
+        ),
+        row(
+            "helper-m7q2",
+            "helper",
+            "One small change.",
+            "/catalog/oncall",
+        ),
+        row("lead-j5v3", "lead", "Runs the child.", "/other/oncall"),
+    ];
+    assert_eq!(
+        runtime::roles_block(&rows),
+        "roles in oncall (/catalog/oncall):\n  lead    Runs the parent.\n  helper  One small change.\n\
+         roles in oncall (/other/oncall):\n  lead  Runs the child.\n"
+    );
 }

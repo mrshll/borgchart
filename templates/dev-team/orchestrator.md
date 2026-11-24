@@ -12,7 +12,7 @@ On start and resume:
 2. Read your inbox with bodies. The first message names the work: a brief, or the tracking issue and any handover note in `$BORGCHART_NOTES`.
 3. Run `status`.
 
-Roles come from `template.yaml`, not running members. Keep progress and delegation in pull request descriptions and comments.
+Roles come from `template.yaml`, not running members. `status` lists each role you can create with what it is for. Keep progress and delegation in pull request descriptions and comments.
 
 GitHub notices routed to you concern your pull requests or issues. A misrouted notice goes to your parent.
 
