@@ -104,3 +104,27 @@ pub fn wait_for(path: &Path) {
         std::thread::sleep(Duration::from_millis(10));
     }
 }
+
+#[allow(dead_code)]
+pub mod live {
+    use std::{
+        process::Child,
+        time::{Duration, Instant},
+    };
+
+    pub struct Running(pub Child);
+    impl Drop for Running {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    pub fn wait_until(mut ready: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(36);
+        while !ready() {
+            assert!(Instant::now() < deadline, "tick did not finish");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}

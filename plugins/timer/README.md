@@ -204,7 +204,10 @@ A file with only run schedules needs no `delivers_to`.
 A run can use an inline `prompt` (use YAML `|` for multiple lines) or
 `prompt_file`. Both must contain non-empty UTF-8 text of at most 16000 bytes
 after trimming. Inline prompts allow newlines. Prompt files allow newlines
-and tabs. Remove other control characters.
+and tabs and may be up to 64 KiB on disk. Remove other control characters.
+A restricted Claude run role takes a one-line prompt, with a 700-byte limit
+including the occurrence header. Pane size can still prevent delivery after
+creation. Use an unrestricted role or a Codex role for longer prompts.
 
 Use a relative `prompt_file` path without `..`. The file must resolve inside
 the folder containing the checks file, including when the path uses symlinks.

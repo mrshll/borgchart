@@ -3,6 +3,7 @@
 mod support;
 use borgchart::bus::time;
 use serde_json::json;
+use support::live::{Running, wait_until};
 use support::*;
 
 #[test]
@@ -194,20 +195,6 @@ fn malformed_schedule_entries_do_not_block_valid_wakes() {
     assert_eq!(f.sends().len(), 1);
 }
 
-struct Running(std::process::Child);
-impl Drop for Running {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-fn wait_until(mut ready: impl FnMut() -> bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(36);
-    while !ready() {
-        assert!(std::time::Instant::now() < deadline, "tick did not finish");
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-}
 #[test]
 #[rustfmt::skip]
 fn invalid_reload_keeps_last_good_configuration_and_health_not_ok() {

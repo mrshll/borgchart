@@ -79,12 +79,8 @@ fn member<'a>(rows: &'a [Value], id: &str) -> Option<&'a Value> {
     rows.iter()
         .find(|row| row["kind"] == "member" && row["name"] == id)
 }
-fn seat(rows: &[Value], state: &Snapshot, role: &str) -> Result<(), String> {
-    let Some(program) = std::env::var_os("SEAT").filter(|s| !s.is_empty()) else {
-        return Ok(());
-    };
-    let choice = rows
-        .iter()
+fn role_status<'a>(rows: &'a [Value], state: &Snapshot, role: &str) -> Option<&'a Value> {
+    rows.iter()
         .find(|row| row["kind"] == "role" && row["name"] == role)
         .or_else(|| {
             state
@@ -98,7 +94,12 @@ fn seat(rows: &[Value], state: &Snapshot, role: &str) -> Result<(), String> {
                             .is_some_and(|id| row["start_id"] == id)
                     })
                 })
-        });
+        })
+}
+fn seat(choice: Option<&Value>) -> Result<(), String> {
+    let Some(program) = std::env::var_os("SEAT").filter(|s| !s.is_empty()) else {
+        return Ok(());
+    };
     let (vendor, model) = choice
         .and_then(|row| Some((row["vendor"].as_str()?, row["model"].as_str()?)))
         .ok_or("cannot read the role's vendor and model")?;
@@ -232,7 +233,16 @@ fn launch(
             "{id} already exists; choose a different schedule name"
         ));
     }
-    if let Err(reason) = seat(&rows, state, &spec.role) {
+    let role = role_status(&rows, state, &spec.role);
+    if role.is_some_and(|row| row["vendor"] == "claude" && row["restricted_access"] == true)
+        && (body.lines().count() > 2 || body.len() > 700)
+    {
+        return Err(
+            "prompt exceeds the restricted Claude limit; shorten the prompt or use an unrestricted role"
+                .into(),
+        );
+    }
+    if let Err(reason) = seat(role) {
         state
             .outcomes
             .insert(key.clone(), outcome("skipped", &format!("seat: {reason}")));

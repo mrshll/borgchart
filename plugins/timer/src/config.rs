@@ -236,6 +236,7 @@ pub(crate) fn folder(path: &Path) -> &Path {
         .unwrap_or(Path::new("."))
 }
 pub(crate) fn read_prompt_file(folder: &Path, value: &str) -> Result<String, String> {
+    const SIZE_ERROR: &str = "write non-empty prompt_file text of at most 16000 UTF-8 bytes after trimming and 64 KiB on disk";
     let path = Path::new(value);
     if path.is_absolute() || path.components().any(|c| c == Component::ParentDir) {
         return Err("use a relative prompt_file path without ..".into());
@@ -247,15 +248,20 @@ pub(crate) fn read_prompt_file(folder: &Path, value: &str) -> Result<String, Str
         .join(path)
         .canonicalize()
         .map_err(|_| "cannot resolve prompt_file; point it to an existing file")?;
-    if !path.starts_with(&folder) || !path.is_file() {
+    if !path.starts_with(&folder) {
         return Err("use a regular prompt_file inside the checks folder".into());
+    }
+    let metadata = fs::metadata(&path)
+        .ok()
+        .filter(fs::Metadata::is_file)
+        .ok_or("use a regular prompt_file inside the checks folder")?;
+    if metadata.len() > 64 * 1024 {
+        return Err(SIZE_ERROR.into());
     }
     let text = fs::read_to_string(path).map_err(|_| "use a readable UTF-8 prompt_file")?;
     let text = text.trim();
     if text.is_empty() || text.len() > RUN_PROMPT_BYTES {
-        return Err(
-            "write non-empty prompt_file text of at most 16000 UTF-8 bytes after trimming".into(),
-        );
+        return Err(SIZE_ERROR.into());
     }
     if text
         .chars()
