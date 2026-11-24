@@ -81,7 +81,7 @@ pub fn values_for(v: &Validated, id: &str, names: &[String]) -> Result<PluginVal
     if sources.is_empty() {
         return Ok(all);
     }
-    if crate::runtime::has_member_context() {
+    if crate::runtime::has_member_context() || crate::runtime::plugin_context() {
         return Err(format!(
             "team {id} takes secrets from the resolver; ask the owner to run brg start {id}"
         ));

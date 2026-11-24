@@ -26,11 +26,17 @@ pub struct Snapshot {
     pub pending: Vec<String>,
     pub schedules: BTreeMap<String, crate::schedule::Record>,
     pub schedule_sends: Vec<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub runs: BTreeMap<String, crate::runs::Record>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub outcomes: BTreeMap<String, String>,
 }
 impl Snapshot {
     pub fn read(store: &plugin::State) -> Self {
         let raw: Value = store.read_json("checks.json");
         Self {
+            runs: serde_json::from_value(raw["runs"].clone()).unwrap_or_default(),
+            outcomes: serde_json::from_value(raw["outcomes"].clone()).unwrap_or_default(),
             checks: raw["checks"]
                 .as_object()
                 .into_iter()
@@ -87,13 +93,16 @@ impl Snapshot {
             .filter(|(_, r)| r.status == "failing")
             .map(|(n, _)| n.as_str())
             .collect();
-        let message = if !detail.is_empty() {
+        let mut message = if !detail.is_empty() {
             detail.to_owned()
         } else if failing.is_empty() {
             "watching".into()
         } else {
             format!("failing: {}", failing.join(", "))
         };
+        for (name, run) in &self.runs {
+            message.push_str(&format!("; {name}: {} until {}", run.member, run.deadline));
+        }
         let checks: BTreeMap<_, _> = self
             .checks
             .iter()

@@ -110,10 +110,30 @@ pub fn parse(text: &str) -> Result<Config, String> {
                 names.insert(name.clone());
                 if m.contains_key("cron") {
                     if m.keys()
-                        .any(|k| !["name", "cron", "missed", "prompt"].contains(&k.as_str()))
+                        .any(|k| !["name", "cron", "missed", "prompt", "run", "timeout_minutes"].contains(&k.as_str()))
                     {
-                        return Err("use only name, cron, missed and prompt for a schedule".into());
+                        return Err("use only name, cron, missed, prompt, run and timeout_minutes for a schedule".into());
                     }
+                    let run = match m.get("run") {
+                        Some(role) => {
+                            if m.contains_key("missed") {
+                                return Err("remove missed from the run schedule".into());
+                            }
+                            let role = role.text()
+                                .filter(|r| borgchart::names::is_valid_id(r))
+                                .ok_or("write run as a role name")?;
+                            let minutes = match m.get("timeout_minutes") {
+                                Some(Raw::Number(n)) if n.fract() == 0.0 && (1.0..=1440.0).contains(n) => *n as u64,
+                                _ => return Err("set timeout_minutes to a whole number from 1 to 1440".into()),
+                            };
+                            Some(crate::schedule::Run {
+                                role: role.into(),
+                                timeout: std::time::Duration::from_secs(minutes * 60),
+                            })
+                        }
+                        None if m.contains_key("timeout_minutes") => return Err("use timeout_minutes only with run".into()),
+                        None => None,
+                    };
                     let cron = crate::cron::Cron::parse(
                         m.get("cron")
                             .and_then(Raw::text)
@@ -134,6 +154,7 @@ pub fn parse(text: &str) -> Result<Config, String> {
                         cron,
                         catch_up,
                         prompt,
+                        run,
                     });
                     return Ok(None);
                 }
@@ -192,8 +213,19 @@ pub fn load(path: &Path) -> Result<Config, String> {
 pub fn parse_bytes(bytes: &[u8]) -> Result<Config, String> {
     parse(std::str::from_utf8(bytes).map_err(|_| "checks file: write UTF-8 YAML")?)
 }
-pub fn delivery(config: &Config) -> Result<(), String> {
-    if !config.schedules.is_empty()
+pub fn grants(config: &Config) -> Result<(), String> {
+    let grants = std::env::var("BORGCHART_RUNS").unwrap_or_default();
+    for schedule in &config.schedules {
+        if let Some(run) = &schedule.run
+            && !grants.split(',').any(|role| role == run.role)
+        {
+            return Err(format!(
+                "schedule {}: add role `{}` to the timer's `runs` in template.yaml and restart the timer",
+                schedule.name, run.role
+            ));
+        }
+    }
+    if config.schedules.iter().any(|s| s.run.is_none())
         && !matches(
             "[a-z][a-z0-9_-]{0,79}(?:/[a-z][a-z0-9_-]{0,79})*",
             &std::env::var("BORGCHART_DELIVER_TO").unwrap_or_default(),

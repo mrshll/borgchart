@@ -102,7 +102,7 @@ pub fn run(store: &plugin::State, once: bool) -> Result<(), String> {
         let bytes = std::fs::read(&path)
             .map_err(|_| "checks file: cannot read YAML; fix CHECKS_FILE and retry")?;
         let checks = config::parse_bytes(&bytes)?;
-        config::delivery(&checks)?;
+        config::grants(&checks)?;
         let seconds: f64 = std::env::var("CHECKS_TIMEOUT_SECONDS")
             .unwrap_or("60".into())
             .parse()
@@ -133,7 +133,7 @@ pub fn run(store: &plugin::State, once: bool) -> Result<(), String> {
                     .as_ref()
                     .ok_or("checks file: cannot read YAML; fix CHECKS_FILE and retry".into())
                     .and_then(|b| config::parse_bytes(b))
-                    .and_then(|c| config::delivery(&c).map(|_| c))
+                    .and_then(|c| config::grants(&c).map(|_| c))
                 {
                     Ok(updated) => {
                         config = updated;
@@ -142,6 +142,16 @@ pub fn run(store: &plugin::State, once: bool) -> Result<(), String> {
                     Err(e) => reload_error = format!("{e}; last good file is still in use"),
                 }
             }
+            let mut details: Vec<_> = [reload_error.clone(), crate::runs::reap(store, &mut state)]
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .collect();
+            state.outcomes.retain(|name, _| {
+                config
+                    .schedules
+                    .iter()
+                    .any(|s| &s.name == name && s.run.is_some())
+            });
             let names: BTreeSet<_> = config.checks.iter().map(|c| c.name.clone()).collect();
             state.prune(&names);
             due.retain(|n, _| names.contains(n));
@@ -154,11 +164,11 @@ pub fn run(store: &plugin::State, once: bool) -> Result<(), String> {
                     due.insert(check.name.clone(), Instant::now());
                     state
                         .save(store)
-                        .and_then(|_| state.health(store, &reload_error))
+                        .and_then(|_| state.health(store, &details.join("; ")))
                         .map_err(|_| "cannot save plugin state; check permissions")?;
                 }
             }
-            let mut details = vec![reload_error.clone(), deliver(&mut state)];
+            details.push(deliver(&mut state));
             let now = SystemTime::now();
             crate::schedule::prepare(&mut state, &config, now, started)?;
             let target = std::env::var("BORGCHART_DELIVER_TO").unwrap_or_default();
@@ -171,6 +181,9 @@ pub fn run(store: &plugin::State, once: bool) -> Result<(), String> {
                         .map_err(|_| "cannot save plugin state; check permissions".into())
                 },
                 |body| plugin::send("timer", &target, body, None).map(|_| ()),
+                |state, schedule, now, occurrence, body| {
+                    crate::runs::start(store, state, schedule, now, occurrence, body)
+                },
             )?);
             let mut detail = details
                 .into_iter()

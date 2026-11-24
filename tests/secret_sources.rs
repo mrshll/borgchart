@@ -260,6 +260,83 @@ fn fresh_and_joining_starts_resolve_only_when_needed_and_keep_values_private() {
 }
 
 #[test]
+fn plugin_cannot_create_or_start_a_stopped_team_and_prompt_for_secrets() {
+    let env = setup("{from: 'fake://root'}");
+    let id = env.create("oncall", "work/a");
+    env.ok(&["stop", &id]);
+    for args in [
+        ["create", &format!("{id}/scout")].as_slice(),
+        ["start", &id].as_slice(),
+        ["create", "oncall", env.path("work/b").to_str().unwrap()].as_slice(),
+    ] {
+        let out = env.cmd(args).env("BORGCHART_TEAM", &id).output().unwrap();
+        assert!(!out.status.success(), "{args:?}");
+        assert_eq!(runs(&env), 1, "{args:?}");
+    }
+}
+
+#[test]
+fn plugin_cannot_resolve_a_new_plugin_source_on_a_running_team() {
+    let env = setup("{from: 'fake://root'}");
+    let id = env.create("oncall", "work/a");
+    let path = "templates/oncall/template.yaml";
+    let text = fs::read_to_string(env.path(path)).unwrap();
+    env.write(path, &format!("{text}\n  notifier:\n    process: [sleep, '60']\n    env: {{TOKEN: {{from: 'fake://new'}}}}\n"));
+    let before = runs(&env);
+    let out = env
+        .cmd(&["start", &id])
+        .env("BORGCHART_TEAM", &id)
+        .output()
+        .unwrap();
+    env.ok(&["stop", &id]);
+    assert!(!out.status.success());
+    assert_eq!(runs(&env), before);
+}
+
+#[test]
+fn plugin_secrets_check_cannot_invoke_the_resolver() {
+    let env = setup("{from: 'fake://root'}");
+    let id = env.create("oncall", "work/a");
+    let before = runs(&env);
+    let out = env
+        .cmd(&["secrets", "--check", &id])
+        .env("BORGCHART_TEAM", &id)
+        .output()
+        .unwrap();
+    env.ok(&["stop", &id]);
+    assert!(!out.status.success());
+    assert_eq!(runs(&env), before);
+}
+
+#[test]
+fn only_the_granted_plugin_process_receives_the_run_roles() {
+    let env = Env::new();
+    env.write("templates/oncall/template.yaml", &format!("{TEAM}\nplugins:\n  timer:\n    process: [sh, -c, 'printf %s \"$BORGCHART_RUNS\" > \"$HOME/timer-grant\"; sleep 60']\n    runs: [helper, scout]\n  other:\n    process: [sh, -c, 'printf %s \"${{BORGCHART_RUNS-unset}}\" > \"$HOME/other-grant\"; sleep 60']\n"));
+    let id = env.create("oncall", "work/a");
+    for (plugin, expected) in [("timer", "helper,scout"), ("other", "unset")] {
+        let path = env.path(&format!("home/{plugin}-grant"));
+        env.wait_for("plugin grant", || {
+            fs::read_to_string(&path).is_ok_and(|grant| grant == expected)
+        });
+    }
+    env.ok(&["stop", &id]);
+}
+
+#[test]
+fn a_running_plugin_cannot_create_roles_from_a_removed_run_grant() {
+    let env = Env::new();
+    let id = env.create("oncall", "work/a");
+    let out = env
+        .cmd(&["create", &format!("{id}/scout"), "--name", "review-run"])
+        .env("BORGCHART_TEAM", &id)
+        .env("BORGCHART_RUNS", "scout")
+        .output()
+        .unwrap();
+    env.ok(&["stop", &id]);
+    assert!(!out.status.success());
+}
+
+#[test]
 fn joining_start_refuses_missing_or_corrupt_plugin_settings() {
     for corrupt in [false, true] {
         let env = setup("");

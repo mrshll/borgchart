@@ -1105,6 +1105,10 @@ fn start_members(
                 .ok_or_else(|| format!("plugin {name}'s settings are missing or corrupt; stop the whole team and start it again"))?;
             let mut env = base.clone();
             env.extend(secrets.env);
+            env.remove("BORGCHART_RUNS");
+            if let Some(roles) = &plugin.runs {
+                env.insert("BORGCHART_RUNS".into(), roles.join(","));
+            }
             env.extend(identity_env(&meta, state, "", None, name));
             if let Some(role) = &plugin.delivers_to
                 && let Some(target) = record.members_of(role).into_iter().next()
@@ -1661,6 +1665,7 @@ fn precheck(v: &Validated, roles: &[&crate::team::Role]) -> Result<(), String> {
 /// `brg create <template> <folder>`: a new team from the template working in
 /// `folder`, with its `start: true` roles' members, started.
 pub fn create(team_arg: &str, folder: &str) -> Result<UpOutcome, String> {
+    require_running_for_plugin(|| false)?;
     let mut report = crate::diag::Report::default();
     let config = crate::config::load(&mut report).ok_or_else(|| {
         report
@@ -1800,7 +1805,23 @@ pub fn create_member(
     repo: Option<&str>,
     choices: &[String],
 ) -> Result<UpOutcome, String> {
+    require_running_for_plugin(|| is_running(&inst))?;
     let v = validated(&inst)?;
+    // The timer can outlive a template edit that removes its grant.
+    if plugin_context()
+        && std::env::var_os("BORGCHART_RUNS").is_some()
+        && !v
+            .team
+            .plugins
+            .values()
+            .filter_map(|p| p.runs.as_ref())
+            .flatten()
+            .any(|r| r == role)
+    {
+        return Err(format!(
+            "role `{role}` no longer has a `runs` grant; update the template and restart the plugin"
+        ));
+    }
     if let Some(name) = name {
         // Refuse a taken name before any fetch; issuing checks again under the lock.
         inst.record.named(role, name, |id| is_role(&v, id))?;
@@ -1867,6 +1888,7 @@ pub fn create_member(
     let lock = registry::lock()?;
     inst.reload()?;
     crate::nesting::check_not_stopping(&inst)?;
+    require_running_for_plugin(|| is_running(&inst))?;
     check_parent_authority(&inst, role, Some(&v), None)?;
     let existing = inst.record.members_of(role);
     if existing.len() >= member.max {
@@ -2045,6 +2067,17 @@ pub(crate) fn has_member_context() -> bool {
     [context::ENV_MEMBER, context::ENV_INCARNATION]
         .iter()
         .any(|key| std::env::var(key).is_ok_and(|value| !value.is_empty()))
+}
+
+pub(crate) fn plugin_context() -> bool {
+    !has_member_context() && std::env::var(context::ENV_INSTANCE).is_ok_and(|v| !v.is_empty())
+}
+
+fn require_running_for_plugin(running: impl FnOnce() -> bool) -> Result<(), String> {
+    if plugin_context() && !running() {
+        return Err("team isn't running; ask the owner to start it".into());
+    }
+    Ok(())
 }
 
 fn parent_address(inst: &Instance, parent: &str) -> String {
@@ -2293,6 +2326,7 @@ fn start_instance(
     restore_copies: bool,
     resume: bool,
 ) -> Result<UpOutcome, String> {
+    require_running_for_plugin(|| is_running(&inst))?;
     if let Some(dir) = team {
         if member.is_some() {
             return Err(
@@ -2323,6 +2357,7 @@ fn start_instance(
         .as_ref()
         .is_none_or(|meta| meta.stopped_at.is_some())
         || !tmux_for(&inst.state).has_session(&inst.state.session());
+    require_running_for_plugin(|| !fresh)?;
     let v = if member.is_none() && (fresh || inst.id.contains('/')) {
         validate_printing(&inst.record.team_dir)?
     } else {
@@ -2345,6 +2380,7 @@ fn start_instance(
     let lock = registry::lock()?;
     inst.reload()?;
     crate::nesting::check_not_stopping(&inst)?;
+    require_running_for_plugin(|| is_running(&inst))?;
     if let Some(id) = &member {
         address::member(&inst, id)?;
         check_parent_authority(&inst, inst.record.role_of(id).unwrap(), Some(&v), Some(id))?;

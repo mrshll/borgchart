@@ -9,6 +9,11 @@ pub struct Schedule {
     pub cron: Cron,
     pub catch_up: bool,
     pub prompt: Option<String>,
+    pub run: Option<Run>,
+}
+pub struct Run {
+    pub role: String,
+    pub timeout: Duration,
 }
 #[derive(Deserialize, Serialize)]
 pub struct Record {
@@ -16,6 +21,8 @@ pub struct Record {
     pub next: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pending: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub run: bool,
 }
 impl Record {
     pub fn valid(&self) -> bool {
@@ -57,22 +64,25 @@ pub fn prepare(
                 .ok_or("schedule has no future date; edit cron".to_owned())
         };
         let record = state.schedules.entry(schedule.name.clone());
+        let run = schedule.run.is_some();
         let record = match record {
             std::collections::btree_map::Entry::Vacant(entry) => {
                 entry.insert(Record {
                     cron: schedule.cron.text.clone(),
                     next: next()?,
                     pending: None,
+                    run,
                 });
                 continue;
             }
             std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
         };
-        if record.cron != schedule.cron.text {
+        if record.cron != schedule.cron.text || record.run != run {
             *record = Record {
                 cron: schedule.cron.text.clone(),
                 next: next()?,
                 pending: None,
+                run,
             };
         } else if time::parse_utc(&record.next).is_some_and(|t| t <= now) {
             if let Some(latest) = schedule.cron.previous(now)
@@ -91,6 +101,13 @@ pub fn send(
     mut clock: impl FnMut() -> SystemTime,
     mut save: impl FnMut(&Snapshot) -> Result<(), String>,
     mut deliver: impl FnMut(&str) -> Result<(), String>,
+    mut run: impl FnMut(
+        &mut Snapshot,
+        &Schedule,
+        SystemTime,
+        SystemTime,
+        &str,
+    ) -> Result<String, String>,
 ) -> Result<String, String> {
     save(state)?;
     let mut pending: Vec<_> = state
@@ -106,8 +123,21 @@ pub fn send(
     pending.sort();
     let mut failures = Vec::new();
     for (occurrence, name) in pending {
+        let schedule = config.schedules.iter().find(|s| s.name == name).unwrap();
         let now = clock();
         prune_attempts(state, now);
+        let mut text = format!("{name} {}Z", &time::format_utc(occurrence)[..16]);
+        if let Some(prompt) = &schedule.prompt {
+            text.push('\n');
+            text.push_str(prompt);
+        }
+        if schedule.run.is_some() {
+            let detail = run(state, schedule, now, occurrence, &text)?;
+            if !detail.is_empty() {
+                failures.push(detail);
+            }
+            continue;
+        }
         if state.schedule_sends.len() >= 6 {
             failures.push(format!(
                 "schedule cap: 6 sends in the last hour; waiting: {name}"
@@ -116,16 +146,6 @@ pub fn send(
         }
         state.schedule_sends.push(time::format_utc(now));
         save(state)?;
-        let mut text = format!("{name} {}Z", &time::format_utc(occurrence)[..16]);
-        if let Some(prompt) = config
-            .schedules
-            .iter()
-            .find(|s| s.name == name)
-            .and_then(|s| s.prompt.as_ref())
-        {
-            text.push('\n');
-            text.push_str(prompt);
-        }
         match deliver(&text) {
             Ok(()) => {
                 state.schedules.get_mut(&name).unwrap().pending = None;
@@ -188,6 +208,7 @@ mod tests {
                         Err("bus unavailable".into())
                     }
                 },
+                |_, _, _, _, _| unreachable!(),
             )
             .unwrap();
             (messages, detail)
@@ -296,6 +317,7 @@ mod tests {
                 clock.set(at(2, 0));
                 Ok(())
             },
+            |_, _, _, _, _| unreachable!(),
         )
         .unwrap();
         assert_eq!(sent, 2);
