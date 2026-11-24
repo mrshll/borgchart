@@ -201,14 +201,25 @@ impl Team {
         if role.worktree {
             return Err("remove `worktree: true` from the role".into());
         }
+        let parent = Some(role.id.as_str());
         if self
             .roles
             .values()
-            .filter_map(|r| r.parent.as_deref())
-            .chain(self.team_roles.values().filter_map(|r| r.parent.as_deref()))
-            .any(|parent| parent == role.id)
+            .any(|r| r.built_in_for.is_none() && r.parent.as_deref() == parent)
+            || self
+                .team_roles
+                .values()
+                .any(|r| r.parent.as_deref() == parent)
         {
             return Err("choose a role that is not another role's parent".into());
+        }
+        if let Some(child) = self.roles.values().find(|r| r.parent.as_deref() == parent)
+            && let Some(plugin) = &child.built_in_for
+        {
+            return Err(format!(
+                "`{}` (built in for plugin `{plugin}`) has it as parent; schedule a different role",
+                child.id
+            ));
         }
         Ok(())
     }

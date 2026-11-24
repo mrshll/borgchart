@@ -128,7 +128,12 @@ fn create_run(env: &Env, inst: &str) -> String {
 fn built_in_run_launches_under_its_recipient_with_only_its_done_grant() {
     let (env, inst) = run_team();
     let validate = env.ok(&["validate", "oncall"]);
-    assert!(stdout(&validate).contains("clock-run  (built in: scheduled runs of plugin clock)"));
+    let text = stdout(&validate);
+    assert!(
+        text.lines()
+            .any(|line| line.contains("clock-run") && line.contains("built in")),
+        "{text}"
+    );
     let member = create_run(&env, &inst);
     let row = env.row(&inst, "clock-run");
     assert_eq!(row["parent"], env.member(&inst, "lead"));
@@ -162,9 +167,8 @@ fn built_in_runs_refuse_creation_outside_the_schedule_and_disallowed_choices() {
     let target = format!("{inst}/clock-run");
     assert!(env.fails(&["create", &target]).contains("schedule file"));
     for (grant, choices, reason) in [
-        ("observer-run", RUN_CHOICES, "restart"),
-        ("clock-run", "vendor=claude", "model"),
-        ("clock-run", "model=example-review", "vendor"),
+        ("observer-run", RUN_CHOICES, "cannot schedule `clock-run`"),
+        ("clock-run", "vendor=claude", "both `--set vendor="),
         (
             "clock-run",
             "vendor=claude,model=example-review,remote_control=true",
@@ -210,7 +214,11 @@ fn stale_run_role_env_cannot_create_a_declared_role_with_the_same_name() {
     )
     .output()
     .unwrap();
-    assert!(!out.status.success(), "{}", both(&out));
+    assert!(
+        !out.status.success() && both(&out).contains("no longer a built-in run role"),
+        "{}",
+        both(&out)
+    );
     env.ok(&["stop", &inst]);
 }
 
@@ -277,8 +285,8 @@ fn run_marks_require_a_plugin_with_a_current_role_grant() {
     let (env, inst) = run_team();
     write_run_team(
         &env,
-        CLOCK,
-        "  reader: {prompt: lead.md, start: false, plugins: {manual: [done]}}\n",
+        &CLOCK.replacen("delivers_to: lead", "delivers_to: recipient", 1),
+        "  reader: {prompt: lead.md, start: false, plugins: {manual: [done]}}\n  recipient: {prompt: lead.md, start: false, plugins: {clock: [done]}}\n",
     );
     let other = env.create("oncall", "work/b");
     let args = ["create", &format!("{inst}/helper"), "--run", "review"];
@@ -301,7 +309,11 @@ fn run_marks_require_a_plugin_with_a_current_role_grant() {
             "{caller} marked a run"
         );
     }
-    for (role, condition) in [("scout", "`done`"), ("reader", "`process`")] {
+    for (role, condition) in [
+        ("scout", "`done`"),
+        ("reader", "`process`"),
+        ("recipient", "`clock-run` (built in for plugin `clock`)"),
+    ] {
         let out = plugin(&inst, role, role).output().unwrap();
         assert!(
             !out.status.success() && both(&out).contains(condition),
