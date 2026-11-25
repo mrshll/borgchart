@@ -184,7 +184,7 @@ impl Bus {
             })
     }
 
-    /// One rule for all parent edges, including edges into child teams.
+    /// Members can reach their tree. Restricted members keep only parent edges.
     fn check_route(&self, actor: &Actor, to: &str) -> Result<Option<state::MemberMeta>, String> {
         match Recipient::parse(to).ok_or_else(|| format!("`{to}` is not a recipient"))? {
             Recipient::External(_) => match actor {
@@ -203,17 +203,33 @@ impl Bus {
             },
             Recipient::Member(_) => {
                 let (recipient, member) = self.member(to)?;
+                let meta = recipient.meta.members.get(&member);
                 if let Actor::Member { member: sender, .. } = actor {
+                    if sender == to {
+                        return Err(format!("`{sender}` cannot send to itself"));
+                    }
                     let local = sender.rsplit('/').next().expect("member");
                     if self.parent(local).as_deref() != Some(to)
                         && recipient.parent(&member).as_deref() != Some(sender)
                     {
-                        return Err(format!(
-                            "`{sender}` can publish only to its parent or children, not `{to}`"
-                        ));
+                        if self
+                            .meta
+                            .members
+                            .get(local)
+                            .is_some_and(|m| m.posture == "locked")
+                        {
+                            return Err(format!(
+                                "`{sender}` is restricted and can send only to its parent or children, not `{to}`"
+                            ));
+                        }
+                        if meta.is_some_and(|m| m.posture == "locked") {
+                            return Err(format!(
+                                "`{to}` is restricted and takes messages only from its parent or children"
+                            ));
+                        }
                     }
                 }
-                Ok(recipient.meta.members.get(&member).cloned())
+                Ok(meta.cloned())
             }
         }
     }

@@ -245,7 +245,7 @@ fn publish_to(tree: &Tree, child: bool, to: &str) -> Output {
 }
 
 #[test]
-fn routing_allows_parent_edges_but_refuses_siblings_cousins_and_deleted_ancestors() {
+fn sibling_child_teams_exchange_messages_unless_restricted_or_deleted() {
     let tree = Tree::new();
     tree.env.ok(&["stop", &tree.parent]);
     let team = tree.env.path("templates/oncall/template.yaml");
@@ -279,25 +279,27 @@ fn routing_allows_parent_edges_but_refuses_siblings_cousins_and_deleted_ancestor
             .output()
             .unwrap()
     };
+    let commits =
+        |out, to: &str| {
+            let sent = value(out);
+            let inbox = value(tree.env.ok(&[
+                "msg",
+                "list",
+                "--team",
+                &tree.parent,
+                "--member",
+                to,
+                "--json",
+                "--full",
+            ]));
+            assert!(
+                inbox["records"].as_array().unwrap().iter().any(|record| {
+                    record["id"] == sent["id"] && record["body"] == "Routing check"
+                })
+            );
+        };
     for (from, to) in [(&parent, &local_child), (&local_child, &parent)] {
-        let sent = value(send(from, to));
-        let inbox = value(tree.env.ok(&[
-            "msg",
-            "list",
-            "--team",
-            &tree.parent,
-            "--member",
-            to,
-            "--json",
-            "--full",
-        ]));
-        assert!(
-            inbox["records"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|record| { record["id"] == sent["id"] && record["body"] == "Routing check" })
-        );
+        commits(send(from, to), to);
     }
     tree.env.ok(&["create", &format!("{}/dev", tree.parent)]);
     let sibling = tree.env.registry()["teams"]
@@ -322,19 +324,41 @@ fn routing_allows_parent_edges_but_refuses_siblings_cousins_and_deleted_ancestor
         let member = tree.env.member(&leaf, "lead");
         leaves.push(format!("{leaf}/{member}"));
     }
-    let cousin = send(&leaves[0], &leaves[1]);
-    assert_eq!(cousin.status.code(), Some(5), "{}", both(&cousin));
+    commits(send(&leaves[0], &leaves[1]), &leaves[1]);
+    let sibling_lead = format!("{sibling}/{}", tree.env.member(&sibling, "lead"));
+    commits(publish_to(&tree, true, &sibling_lead), &sibling_lead);
+
+    let (leaf_team, leaf_member) = leaves[0].rsplit_once('/').unwrap();
+    let leaf_state = borgchart::state::StateDir {
+        id: leaf_team.into(),
+        root: tree.env.path(&format!("state/{leaf_team}")),
+    };
+    let start_path = leaf_state.meta_file();
+    let mut start: Value = serde_json::from_slice(&fs::read(&start_path).unwrap()).unwrap();
+    start["members"][leaf_member]["posture"] = json!("locked");
+    fs::write(start_path, start.to_string()).unwrap();
+    let restricted = send(&leaves[0], &leaves[1]);
+    assert_eq!(restricted.status.code(), Some(5), "{}", both(&restricted));
+
+    // The recipient's gate must be active for delivery preflight to pass.
+    fs::write(leaf_state.gate_marker(leaf_member), "active").unwrap();
+    let restricted = send(&leaves[1], &leaves[0]);
+    assert_eq!(restricted.status.code(), Some(5), "{}", both(&restricted));
+    let refusal = both(&restricted);
+    assert!(
+        refusal.contains("is restricted and takes messages only from its parent or children"),
+        "{refusal}"
+    );
+
     fs::create_dir(tree.env.path("work/b/lead")).unwrap();
     let unlinked = tree.env.create("oncall", "work/b");
-    for receiver in [&sibling, &unlinked] {
-        let member = tree.env.member(receiver, "lead");
-        let out = publish_to(&tree, true, &format!("{receiver}/{member}"));
-        assert_eq!(out.status.code(), Some(5), "{}", both(&out));
-        let inbox = value(tree.env.ok(&[
-            "msg", "list", "--team", receiver, "--member", &member, "--json",
-        ]));
-        assert!(inbox["records"].as_array().unwrap().is_empty());
-    }
+    let member = tree.env.member(&unlinked, "lead");
+    let out = publish_to(&tree, true, &format!("{unlinked}/{member}"));
+    assert_eq!(out.status.code(), Some(5), "{}", both(&out));
+    let inbox = value(tree.env.ok(&[
+        "msg", "list", "--team", &unlinked, "--member", &member, "--json",
+    ]));
+    assert!(inbox["records"].as_array().unwrap().is_empty());
 
     // Model the interval after an ancestor's tombstone is saved and before
     // its state folder is removed: the recipient and its own parent still exist.
@@ -359,17 +383,19 @@ fn routing_allows_parent_edges_but_refuses_siblings_cousins_and_deleted_ancestor
         tree.env
             .ok(&["msg", "integrity-check", "--team", &tree.parent, "--json"]),
     );
-    assert_eq!(checked["records"], 2, "refused routes must not publish");
+    assert_eq!(checked["records"], 4, "refused routes must not publish");
 }
 
-// Coverage only: publish-time routing already enforces the root boundary.
 #[test]
-fn a_child_team_non_root_cannot_bypass_its_root_in_either_direction() {
+fn a_child_team_non_root_can_message_its_grandparent_in_either_direction() {
     let tree = Tree::new();
     tree.env.ok(&["create", &format!("{}/helper", tree.child)]);
     let helper = tree.env.member(&tree.child, "helper");
-    let out = publish_to(&tree, false, &format!("{}/{helper}", tree.child));
-    assert_eq!(out.status.code(), Some(5), "{}", both(&out));
+    let to_helper = value(publish_to(
+        &tree,
+        false,
+        &format!("{}/{helper}", tree.child),
+    ));
     let start: Value = serde_json::from_slice(
         &fs::read(tree.env.path(&format!(
             "state/{}/members/{helper}/incarnation.json",
@@ -378,8 +404,8 @@ fn a_child_team_non_root_cannot_bypass_its_root_in_either_direction() {
         .unwrap(),
     )
     .unwrap();
-    let out = tree
-        .member_cmd(
+    let to_grandparent = value(
+        tree.member_cmd(
             true,
             &[
                 "msg",
@@ -395,9 +421,9 @@ fn a_child_team_non_root_cannot_bypass_its_root_in_either_direction() {
             start["incarnation"].as_str().unwrap(),
         )
         .output()
-        .unwrap();
-    assert_eq!(out.status.code(), Some(5), "{}", both(&out));
-    assert!(tree.inbox(false)["records"].as_array().unwrap().is_empty());
+        .unwrap(),
+    );
+    assert_eq!(tree.inbox(false)["records"][0]["id"], to_grandparent["id"]);
     let inbox = value(tree.env.ok(&[
         "msg",
         "list",
@@ -407,7 +433,7 @@ fn a_child_team_non_root_cannot_bypass_its_root_in_either_direction() {
         &helper,
         "--json",
     ]));
-    assert!(inbox["records"].as_array().unwrap().is_empty());
+    assert_eq!(inbox["records"][0]["id"], to_helper["id"]);
 }
 
 #[test]

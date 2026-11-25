@@ -201,7 +201,7 @@ const TIMER: &str =
     "role `lead`: is granted `timer`, which runs a background process, but is unrestricted";
 /// The engineering lead's warnings, then its dev-team child lead's.
 const ENGINEERING: [&str; 4] = [
-    "role `lead`: receives work from a plugin process but is unrestricted; text it reads can steer it",
+    "role `lead`: receives work from a plugin process but is unrestricted. Text it reads can steer it, and it can message any unrestricted member of its tree",
     "role `lead`: is granted `github`, which runs a background process, but is unrestricted",
     TIMER,
     TIMER,
