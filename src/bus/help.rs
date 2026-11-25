@@ -75,14 +75,14 @@ pub fn send() -> String {
 BORGCHART_INCARNATION, BORGCHART_ROLE, BORGCHART_NOTES and BORGCHART_PARENT
 all unset or empty), outside callers default to external:owner; --external NAME
 overrides it. A plugin process with only BORGCHART_TEAM set must name
---external NAME. Members use their launch identity and can send to any addressable
-member of their tree. If either member is restricted, the route must connect
-a parent and child. Use the full team/member address to reach another team
-in the tree. A child team's roots find their parent's address in
-BORGCHART_PARENT. The tree shares one store and message IDs. Queue, typing and
-restricted delivery depend on the recipient. Only root members of the tree's
-root team may address external:NAME. --from asserts a parent route within a team,
-not authorship. --reply-to takes plain existing IDs such as m1.
+--external NAME. Members use their launch identity and can send to other
+addressable members of their tree. If either member is restricted, the route
+must connect a parent and child. Between teams in the tree, name the full
+team/member address (a child team's roots find their parent's in
+BORGCHART_PARENT). The tree shares one store and message IDs; queue, typing and
+restricted delivery work across edges too. Only root members of the tree's root
+team may address external:NAME. --from asserts a parent route within a team, not
+authorship. --reply-to takes plain existing IDs such as m1.
 This command takes no --team; name the target as <team>/<member>.
 
 Parentless unrestricted members of different top-level teams may send to each

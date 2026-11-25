@@ -33,8 +33,8 @@ Inside a member use `"$BORGCHART_BIN"`, the brg that started it. Its team, membe
 
 Team context means any nonempty `BORGCHART_TEAM`, `BORGCHART_MEMBER`, `BORGCHART_INCARNATION`, `BORGCHART_ROLE`, `BORGCHART_NOTES` or `BORGCHART_PARENT`. Member variables without the complete team, member and start identity are refused as incomplete member context, including when only role, notes or parent remains.
 
-- Members can send to any addressable member of their tree. If either member is restricted, the route must connect a parent and child. Only root members of the tree's root team may also send to `external:NAME`.
-- Use the full `team/member` address to reach a member in another team in the tree. A child team's roots receive their parent's address in `BORGCHART_PARENT`.
+- Members can send to other addressable members of their tree by full member ID. If either member is restricted, the route must connect a parent and child. Only root members of the tree's root team may also send to `external:NAME`.
+- To reach a member in another team in the tree, use the full `team/member` address; a child team's roots receive their parent's address in `BORGCHART_PARENT`.
 - Parentless unrestricted members of different top-level teams may also message one another by full address, for example `msg send product-9x3d/lead-m2c8 'The fix is installed'`. Child-team roots, non-root or restricted members, `--from` and `--allow-unknown` cannot use this route. No opt-in is needed.
 - Outside callers may use `--external NAME` and may send to any kept member in the tree after its first start. Their replies go to `external:NAME` (`external:owner` by default without team context). That flag is refused inside a member.
 - Any caller can read a named member's inbox and individual messages in its own tree, and check that store. A plugin process with no member identity cannot send or ack without `--external NAME`.

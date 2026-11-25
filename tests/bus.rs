@@ -355,6 +355,8 @@ fn invalid_drafts_write_nothing() {
     }
     let out = f.publish(&As::Member("helper"), &note("external:ops", "x"));
     assert_eq!(out.code, 5, "helper -> external:ops: {:?}", out.json);
+    let out = f.publish(&As::Member("helper"), &note("helper", "x"));
+    assert_eq!(out.code, 5, "helper -> helper: {:?}", out.json);
     let out = f.publish(&As::Operator, &note("external:other", "x"));
     assert_eq!(out.code, 5, "external -> external");
     let garbage = f.brg(

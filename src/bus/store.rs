@@ -205,6 +205,9 @@ impl Bus {
                 let (recipient, member) = self.member(to)?;
                 let meta = recipient.meta.members.get(&member);
                 if let Actor::Member { member: sender, .. } = actor {
+                    if sender == to {
+                        return Err(format!("`{sender}` cannot send to itself"));
+                    }
                     let local = sender.rsplit('/').next().expect("member");
                     if self.parent(local).as_deref() != Some(to)
                         && recipient.parent(&member).as_deref() != Some(sender)
