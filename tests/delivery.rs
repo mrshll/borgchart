@@ -329,12 +329,26 @@ fn sibling_child_teams_exchange_messages_unless_restricted_or_deleted() {
     commits(publish_to(&tree, true, &sibling_lead), &sibling_lead);
 
     let (leaf_team, leaf_member) = leaves[0].rsplit_once('/').unwrap();
-    let start_path = tree.env.path(&format!("state/{leaf_team}/start.json"));
+    let leaf_state = borgchart::state::StateDir {
+        id: leaf_team.into(),
+        root: tree.env.path(&format!("state/{leaf_team}")),
+    };
+    let start_path = leaf_state.meta_file();
     let mut start: Value = serde_json::from_slice(&fs::read(&start_path).unwrap()).unwrap();
     start["members"][leaf_member]["posture"] = json!("locked");
     fs::write(start_path, start.to_string()).unwrap();
     let restricted = send(&leaves[0], &leaves[1]);
     assert_eq!(restricted.status.code(), Some(5), "{}", both(&restricted));
+
+    // The recipient's gate must be active for delivery preflight to pass.
+    fs::write(leaf_state.gate_marker(leaf_member), "active").unwrap();
+    let restricted = send(&leaves[1], &leaves[0]);
+    assert_eq!(restricted.status.code(), Some(5), "{}", both(&restricted));
+    let refusal = both(&restricted);
+    assert!(
+        refusal.contains("is restricted and takes messages only from its parent or children"),
+        "{refusal}"
+    );
 
     fs::create_dir(tree.env.path("work/b/lead")).unwrap();
     let unlinked = tree.env.create("oncall", "work/b");

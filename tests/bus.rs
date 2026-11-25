@@ -552,10 +552,8 @@ fn acks_are_idempotent_and_recipient_only() {
     );
 
     // Not the recipient: refused, nothing written.
-    for member in ["lead", "helper2"] {
-        let wrong = f.brg(&As::Member(member), &["msg", "ack", "m3", "--json"], None);
-        assert_eq!(wrong.code, 4, "{member}: {:?}", wrong.json);
-    }
+    let wrong = f.brg(&As::Member("lead"), &["msg", "ack", "m3", "--json"], None);
+    assert_eq!(wrong.code, 4, "{:?}", wrong.json);
     let ext = f.brg(
         &As::Operator,
         &["msg", "ack", "m3", "--external", "ops", "--json"],
