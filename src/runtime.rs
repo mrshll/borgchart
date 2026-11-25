@@ -4884,7 +4884,7 @@ pub fn status_look(r: &StatusRow) -> tree::Look {
         {
             look('!', Tone::Alert)
         }
-        ("plugin", "alive") => look('●', Tone::Plain),
+        ("plugin", "alive") => look('·', Tone::Faded),
         ("member", state)
             if (r.delivery.is_some() || r.input_unreadable)
                 && !matches!(state, "blocked" | "exited" | "gate-inactive") =>

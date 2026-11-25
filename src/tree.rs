@@ -38,6 +38,14 @@ pub struct Look {
     pub italic: bool,
 }
 
+impl Look {
+    pub(crate) fn sorts_last(self) -> bool {
+        // Unmarked and stopping rows follow live rows. Healthy plugins are
+        // faded too, but carry the small live mark.
+        self.tone == Tone::Faded && self.mark != Some('·')
+    }
+}
+
 /// All working rows share one spinner phase; other state marks stay still.
 pub fn state_mark(look: Look, spin: Option<usize>) -> Option<char> {
     const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -60,7 +68,7 @@ pub enum Tone {
     Alert,
     /// State could not be read.
     Odd,
-    /// Not running: never started, stopped, not created, on demand.
+    /// Quiet rows, including healthy plugins and rows that are not running.
     Faded,
 }
 
@@ -168,7 +176,7 @@ fn order_by(nodes: &[Node], live_first: bool) -> Vec<(usize, String)> {
             .collect();
         out.sort_by_key(|&i| {
             (
-                live_first && nodes[i].look.tone == Tone::Faded,
+                live_first && nodes[i].look.sorts_last(),
                 nodes[i].id.as_str(),
             )
         });
@@ -394,7 +402,7 @@ pub fn render_named(
     let mut plugins: Vec<&(String, Vec<String>, Look)> = plugins.iter().collect();
     if terminal {
         // Stable: running plugins first, each group in its given order.
-        plugins.sort_by_key(|p| p.2.tone == Tone::Faded);
+        plugins.sort_by_key(|p| p.2.sorts_last());
     }
     let plugin_rows: Vec<Vec<String>> = plugins
         .iter()

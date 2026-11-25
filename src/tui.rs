@@ -403,7 +403,7 @@ fn live_first(rows: Vec<StatusRow>) -> Vec<StatusRow> {
         .collect();
     // Top-level plugins have no node: running ones first, as `brg status`.
     let mut rest: Vec<StatusRow> = slots.into_iter().flatten().collect();
-    rest.sort_by_key(|r| runtime::status_look(r).tone == tree::Tone::Faded);
+    rest.sort_by_key(|r| runtime::status_look(r).sorts_last());
     out.extend(rest);
     out
 }
