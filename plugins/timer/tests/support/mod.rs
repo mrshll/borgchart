@@ -68,7 +68,7 @@ exit "$(/bin/cat "$BORGCHART_STATE_DIR/code")"
         self.command(args).output().unwrap()
     }
     pub fn tick(&self) {
-        let out = self.run(&["run", "--once"]);
+        let out = self.run(&["run", "checks.yaml", "--once"]);
         assert!(out.status.success(), "{out:?}");
     }
     pub fn read(&self, name: &str) -> Value {

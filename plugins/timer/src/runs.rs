@@ -1,7 +1,7 @@
 //! Scheduled member starts, completion and recovery.
 use crate::{
     config,
-    schedule::Schedule,
+    schedule::{RunRole, Schedule},
     state::{Snapshot, one_line},
 };
 use borgchart::{
@@ -96,13 +96,11 @@ fn role_status<'a>(rows: &'a [Value], state: &Snapshot, role: &str) -> Option<&'
                 })
         })
 }
-fn seat(choice: Option<&Value>) -> Result<(), String> {
+fn seat(choice: Option<(&str, &str)>) -> Result<(), String> {
     let Some(program) = std::env::var_os("SEAT").filter(|s| !s.is_empty()) else {
         return Ok(());
     };
-    let (vendor, model) = choice
-        .and_then(|row| Some((row["vendor"].as_str()?, row["model"].as_str()?)))
-        .ok_or("cannot read the role's vendor and model")?;
+    let (vendor, model) = choice.ok_or("cannot read the role's vendor and model")?;
     call(Command::new(program).args(["route", vendor, model]), 30).map(|_| ())
 }
 
@@ -215,6 +213,26 @@ pub fn start(
     Ok(String::new())
 }
 
+fn run_message(body: &str, team: &str, row: &Value) -> Result<String, String> {
+    let mut message = body.to_owned();
+    if let Some(parent) = row["parent"].as_str() {
+        let end = body.find('\n').unwrap_or(body.len());
+        message.insert_str(end, &format!(" | Report to {team}/{parent}"));
+    }
+    if row["vendor"] == "claude"
+        && row["restricted_access"] == true
+        && (message.lines().count() > 2 || message.len() > 700)
+    {
+        return Err(
+            "prompt exceeds the restricted Claude limit; shorten the prompt or use an unrestricted role"
+                .into(),
+        );
+    }
+    borgchart::runtime::check_text(&message)
+        .map_err(|e| format!("run message: {}; shorten the prompt", e.message()))?;
+    Ok(message)
+}
+
 fn launch(
     store: &plugin::State,
     state: &mut Snapshot,
@@ -225,24 +243,33 @@ fn launch(
 ) -> Result<(), String> {
     let spec = schedule.run.as_ref().unwrap();
     let key = &schedule.name;
+    let base;
+    let (role, pin) = match &spec.role {
+        RunRole::Declared(role) => (role, None),
+        RunRole::AdHoc(vendor, model) => {
+            base = std::env::var("BORGCHART_RUN_ROLE")
+                .map_err(|_| "restart the timer with a run role grant")?;
+            (&base, Some((*vendor, model)))
+        }
+    };
     let rows = status(team)?;
-    let name = name(key, &spec.role, occurrence);
-    let id = format!("{}-{name}", spec.role);
+    let name = name(key, role, occurrence);
+    let id = format!("{role}-{name}");
     if rows.iter().any(|row| row["name"] == id) {
         return Err(format!(
             "{id} already exists; choose a different schedule name"
         ));
     }
-    let role = role_status(&rows, state, &spec.role);
-    if role.is_some_and(|row| row["vendor"] == "claude" && row["restricted_access"] == true)
-        && (body.lines().count() > 2 || body.len() > 700)
-    {
-        return Err(
-            "prompt exceeds the restricted Claude limit; shorten the prompt or use an unrestricted role"
-                .into(),
-        );
+    let role_row = role_status(&rows, state, role);
+    if let Some(row) = role_row {
+        run_message(body, team, row)?;
     }
-    if let Err(reason) = seat(role) {
+    let choice = pin
+        .map(|(vendor, model)| (vendor.as_str(), model.name.as_str()))
+        .or_else(|| {
+            role_row.and_then(|row| Some((row["vendor"].as_str()?, row["model"].as_str()?)))
+        });
+    if let Err(reason) = seat(choice) {
         state
             .outcomes
             .insert(key.clone(), outcome("skipped", &format!("seat: {reason}")));
@@ -253,7 +280,7 @@ fn launch(
         key.clone(),
         Record {
             member: id.clone(),
-            role: spec.role.clone(),
+            role: role.clone(),
             occurrence: Some(time::format_utc(occurrence)),
             start_id: None,
             prompted: false,
@@ -263,25 +290,32 @@ fn launch(
         },
     );
     save(state, store)?;
-    brg(
-        &[
-            "create",
-            &format!("{team}/{}", spec.role),
-            "--name",
-            &name,
-            "--run",
-            key,
-        ],
-        120,
-    )?;
+    let target = format!("{team}/{role}");
+    let mut create = vec!["create", &target, "--name", &name, "--run", key];
+    let settings;
+    if let Some((vendor, model)) = pin {
+        settings = format!(
+            "vendor={},model={}{}",
+            vendor.as_str(),
+            model.name,
+            model
+                .effort
+                .as_ref()
+                .map_or_else(String::new, |e| format!(",effort={e}"))
+        );
+        create.extend(["--set", &settings]);
+    }
+    brg(&create, 120)?;
     let rows = status(team)?;
-    let start_id = member(&rows, &id)
-        .and_then(|row| row["start_id"].as_str())
+    let row = member(&rows, &id).ok_or("cannot read the new member's status row")?;
+    let start_id = row["start_id"]
+        .as_str()
         .filter(|s| !s.is_empty())
         .ok_or("cannot read the member's start ID")?;
     state.runs.get_mut(key).unwrap().start_id = Some(start_id.into());
     save(state, store)?;
-    plugin::send("timer", &format!("{team}/{id}"), body, None)?;
+    let message = run_message(body, team, row)?;
+    plugin::send("timer", &format!("{team}/{id}"), &message, None)?;
     state.runs.get_mut(key).unwrap().prompted = true;
     Ok(())
 }
@@ -356,7 +390,19 @@ fn finish(
     let run = &state.runs[key];
     let grants = std::env::var("BORGCHART_RUNS").unwrap_or_default();
     let occurrence = run.occurrence.as_deref().and_then(time::parse_utc);
-    if !grants.split(',').any(|role| role == run.role)
+    let base = std::env::var("BORGCHART_RUN_ROLE");
+    let granted =
+        grants.split(',').any(|role| role == run.role) || base.is_ok_and(|role| role == run.role);
+    let row = member(rows, &run.member);
+    let child_team = rows
+        .iter()
+        .any(|r| r["kind"] == "team" && r["name"] == run.member);
+    let start = run.start_id.as_deref();
+    let role_removed = row.is_none()
+        && !child_team
+        && start.is_some_and(|id| !id.is_empty())
+        && !rows.iter().any(|r| r["role"] == run.role);
+    if (!granted && !role_removed)
         || !borgchart::names::is_valid_id(&run.role)
         || !crate::config::valid_name(key)
         || !occurrence
@@ -366,9 +412,8 @@ fn finish(
             "run record does not name a granted scheduled member; check timer state".into(),
         );
     }
-    let row = member(rows, &run.member);
     if row.is_none()
-        && run.start_id.is_none()
+        && start.is_none()
         && run.ending.is_none()
         && time::parse_utc(&run.started)
             .and_then(|at| at.elapsed().ok())
@@ -378,7 +423,6 @@ fn finish(
     }
     let file = marker(&run.member);
     let done: Value = store.read_json(&file);
-    let start = run.start_id.as_deref();
     let marked_done = run.prompted && start.is_some_and(|id| done["start_id"] == id);
     let same_start = start.is_some_and(|id| row.is_some_and(|r| r["start_id"] == id));
     let liveness = row.and_then(|r| r["liveness"].as_str());
@@ -406,13 +450,21 @@ fn finish(
         state.runs.get_mut(key).unwrap().ending = Some(outcome(kind, ""));
         save(state, store)?;
     }
-    if row.is_none() && rows.iter().any(|r| r["kind"] == "team" && r["name"] == id) {
+    if row.is_none() && child_team {
         return Err("run ID belongs to a child team; check timer state".into());
     }
-    if row.is_some() {
+    if row.is_some() || role_removed {
         let target = format!("{team}/{id}");
-        brg(&["stop", &target], 30)?;
-        brg(&["delete", &target, "--force"], 30)?;
+        for args in [&["stop", &target][..], &["delete", &target, "--force"]] {
+            if let Err(error) = brg(args, 30) {
+                if role_removed
+                    && error.starts_with(&format!("brg: member `{target}` was deleted;"))
+                {
+                    break;
+                }
+                return Err(error);
+            }
+        }
     }
     let path = PathBuf::from(std::env::var_os("BORGCHART_STATE_DIR").unwrap()).join(file);
     match std::fs::remove_file(path) {

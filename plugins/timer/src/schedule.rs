@@ -1,6 +1,9 @@
 //! Persistent recurring wakes, coalescing and a rolling send-attempt cap.
 use crate::{config::Config, cron::Cron, state::Snapshot};
-use borgchart::bus::time;
+use borgchart::{
+    bus::time,
+    team::{Model, Vendor},
+};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime};
 
@@ -12,9 +15,13 @@ pub struct Schedule {
     pub run: Option<Run>,
 }
 pub struct Run {
-    pub role: String,
+    pub role: RunRole,
     pub timeout: Duration,
     pub prompt_file: Option<String>,
+}
+pub enum RunRole {
+    Declared(String),
+    AdHoc(Vendor, Model),
 }
 #[derive(Deserialize, Serialize)]
 pub struct Record {

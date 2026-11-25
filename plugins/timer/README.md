@@ -6,8 +6,8 @@ names and statuses; output stays in local state for `last` to read as untrusted 
 `make install` installs it on PATH alongside `brg-slack`. To install just timer
 from a checkout, use `cargo install --path plugins/timer`.
 
-The process runs in the team's template folder. `CHECKS_FILE` defaults to
-`checks.yaml`, relative to that working directory:
+Name the schedule file on the timer's process line. Relative paths resolve
+from the team's template folder. For example, `checks.yaml` can contain these checks.
 
 ```yaml
 - name: service-status
@@ -38,10 +38,8 @@ and working directory. Configure the plugin without `path:`:
 ```yaml
 plugins:
   timer:
-    process: [brg-timer, run]
+    process: [brg-timer, run, checks.yaml]
     delivers_to: triager
-    env:
-      CHECKS_FILE: checks.yaml
     actions:
       last: brg-timer last <name>
       promote: brg-timer promote <name> <reason>
@@ -100,7 +98,7 @@ Actions run in the calling member's folder and use the same state directory:
   retrying (see [bus delivery](../../docs/bus.md#attention)). Other failures
   print brg's error and exit 1; inspect any committed ID before retrying.
 
-`brg-timer run --once` runs one tick, useful for testing. It exits nonzero for
+`brg-timer run checks.yaml --once` runs one tick, useful for testing. It exits nonzero for
 invalid startup configuration; check or delivery failures appear in health.
 `CHECKS_TIMEOUT_SECONDS` overrides the command timeout for tests only; production
 uses the fixed 60-second default. A check whose output changes every run wakes
@@ -113,7 +111,7 @@ with a stderr hint to reduce the check's output.
 ## Recurring schedules
 
 A delivery schedule uses `name`, `cron` and optional `missed` and `prompt`. A
-[run schedule](#scheduled-runs) uses `name`, `cron`, `run`, `timeout_minutes`
+[run schedule](#scheduled-runs) uses `name`, `cron`, `role`, `timeout_minutes`
 and optionally either `prompt` or `prompt_file`. Use unique names across
 checks and schedules.
 
@@ -173,42 +171,57 @@ cannot repeat an occurrence, but a large correction delays wakes until that mark
 passes. Editing the expression resets it. Send attempts outside the last hour,
 including future attempts after a clock correction, are discarded.
 
-`brg-timer validate [path]` checks the YAML and any referenced prompt files.
-Without a path it uses `CHECKS_FILE` (default `checks.yaml`). It needs no state
-directory, prints counts on success and exits 0; errors match startup and exit 1.
+`brg-timer validate <file>` checks the YAML and any referenced prompt files.
+It needs no state directory, prints counts on success and exits 0. Invalid
+files exit 1 with the same error as startup.
 At startup and on reload, the timer also checks `delivers_to` for delivery
-schedules and the roles brg supplies in `BORGCHART_RUNS` for scheduled runs.
+schedules, `BORGCHART_RUNS` for declared roles and `BORGCHART_RUN_ROLE` for ad-hoc roles.
 
-After installing the new binary with `make install`, a running timer keeps its
-old binary. End only its timer process, then run `brg start <team>`: this restarts
-the dead plugin and leaves running members alone. Later valid file edits reload
-without another restart.
+To deploy, edit the timer's process line and schedule files, then run
+`make install`. End only the team's timer window and run `brg start <team>`.
+Later valid file edits reload without another restart.
 
 ## Scheduled runs
 
-A run schedule creates a fresh member for each occurrence and sends it the
-schedule name, UTC minute and optional prompt. Add the schedule to `checks.yaml`.
+A run schedule creates a fresh member for each occurrence. Its first message
+includes the schedule name and UTC minute, then `Report to <team>/<parent>` on
+the same line, followed by the prompt if supplied. The address comes from the
+new member's status row. A declared role without a parent receives the schedule
+and prompt and can take its reporting instructions from its role file.
 `brg status` marks each run member with its schedule.
 
 ```yaml
 - name: daily-review
   cron: '0 13 * * 1-5'
-  run: reviewer
+  role: reviewer
   timeout_minutes: 45
   prompt_file: jobs/daily-review.md
+- name: weekly-notes
+  cron: '0 14 * * 2'
+  role: {models: {claude: sonnet low}}
+  timeout_minutes: 30
+  prompt: Summarize the week's changes for the editor.
 ```
+
+A string names a declared role. A mapping defines an ad-hoc role using the same
+frontmatter as a role file. Pin a model and supply `prompt` or `prompt_file` for
+each ad-hoc role. With one model pin, the timer uses that vendor. With multiple
+pins, set `vendor` to one of the pinned vendors. A pin can include an
+effort suffix such as `sonnet low`. Keep commas and equals signs out of the
+model name.
 
 `timeout_minutes` is required and must be a whole number from 1 to 1440.
 Runs skip missed occurrences during downtime and refuse the `missed` field.
-A file with only run schedules needs no `delivers_to`.
 
 A run can use an inline `prompt` (use YAML `|` for multiple lines) or
 `prompt_file`. Both must contain non-empty UTF-8 text of at most 16000 bytes
 after trimming. Inline prompts allow newlines. Prompt files allow newlines
 and tabs and may be up to 64 KiB on disk. Remove other control characters.
-A restricted Claude run role takes a one-line prompt, with a 700-byte limit
-including the occurrence header. Pane size can still prevent delivery after
-creation. Use an unrestricted role or a Codex role for longer prompts.
+A restricted Claude run role takes a one-line prompt. The whole message must
+fit in two lines and 700 bytes, including the header and report address.
+Pane size can still prevent delivery after creation. Use an unrestricted role
+or a Codex role for longer prompts. All run messages must fit the 16384-byte
+message limit, including the header and report address.
 
 Use a relative `prompt_file` path without `..`. The file must resolve inside
 the folder containing the checks file, including when the path uses symlinks.
@@ -217,33 +230,40 @@ configuration and retries on each tick, so fixing the prompt file is enough to
 complete the reload. The timer reads the file again at each occurrence, so
 edits take effect at the next run. An invalid or missing file at that point records
 `failed-to-start` before seating or creating a member. Changing the path
-preserves schedule timing.
+preserves schedule timing, as do prompt-only and role-only edits.
 
-Give the role the timer plugin's `done` action in `template.yaml`, by name
-or with `["*"]`.
+For a declared role, grant the timer plugin's `done` action in `template.yaml`,
+by name or with `["*"]`. For ad-hoc roles, set the timer's `delivers_to` and
+add its `done` action. The timer then runs them on the built-in `<plugin>-run`
+role.
 
 ```yaml
 plugins:
   timer:
-    process: [brg-timer, run]
+    process: [brg-timer, run, checks.yaml]
+    delivers_to: editor
     actions:
       done: brg-timer done
       last: brg-timer last <name>
 roles:
+  editor:
+    prompt: editor.md
   reviewer:
     prompt: reviewer.md
+    parent: editor
     start: false
     plugins: {timer: [done]}
 ```
 
-Use a dedicated role with `start: false`, no worktree and no child roles.
-Restart the timer after changing which roles are eligible. Give the role
+For a declared run, use a dedicated role with `start: false`, no worktree and no child roles.
+Restart the timer after changing which roles are eligible. Give a declared role
 `max` capacity for as many concurrent schedules as need it. Set
 `env: {SEAT: brg-seat}` on the timer to check subscription capacity before
 creation. Run attempts, including seat
 waits and launch failures, share the six-per-hour cap with delivery schedules.
 If the previous run is active, seating says wait, or the cap is full, the
-timer skips the occurrence.
+timer skips the occurrence. A file edit can schedule an expensive model within
+one tick. A model alias such as `sonnet` resolves at each start.
 
 `brg-timer done` marks only the calling member's current scheduled run as
 finished. It exits 2 for another member or an old start. On its next tick the
@@ -253,20 +273,21 @@ make health not ok and are retried. Health shows active run member IDs and
 deadlines.
 
 Members granted timer actions can write timer state and end runs early.
-The timer only stops and deletes members with IDs derived for its granted
-scheduled runs.
+The timer only stops and deletes members with IDs derived for its scheduled
+runs. It can clean up a previously started run by ID after its role disappears
+from status, even if the grant was removed.
 
 `brg-timer last <name>` prints one outcome line with UTC time and any reason.
 Outcomes are `done`, `timed-out`, `skipped`, `failed-to-start` and
 `interrupted`. A restarted timer adopts a live run with the same start ID and
 original deadline. Other recorded runs are cleaned up as interrupted. A full
 team start leaves stopped run members for the timer to remove as interrupted.
-The timer stores no run output. The role and prompt tell the member where to
-send its findings.
+The timer stores no run output.
 
-For a deployed team, install the updated brg and timer, add the role, grant
-and action to `template.yaml`, then add the schedule to `checks.yaml`. End only
-the team's `_timer` window and run `brg start <team>` to pick up the grant.
+To remove a declared role or its run grant, remove its schedules and wait for
+their runs to end. Then remove the role or its grant and restart the timer.
+To remove ad-hoc run support, remove the ad-hoc schedules and wait for their
+runs to end. Then remove `delivers_to` or `done` from the timer and restart it.
 
 ## Alarms
 
@@ -276,7 +297,7 @@ lead, and puts `[]` in `checks.yaml`. It needs no `delivers_to`:
 ```yaml
 plugins:
   timer:
-    process: [brg-timer, run]
+    process: [brg-timer, run, checks.yaml]
     actions:
       alarm-set: brg-timer alarm set <when> <note>
       alarm-show: brg-timer alarm show
@@ -308,7 +329,7 @@ For a local demonstration without a real bus, from the checkout root run these
 single-line commands in the same shell (the sample uses a local file as input):
 
 ```sh
-demo=$(mktemp -d); printf 'first\n' > "$demo/value"; CHECKS_FILE="$PWD/plugins/timer/tests/sample.yaml" BORGCHART_BIN="$PWD/plugins/timer/tests/fake-brg" BORGCHART_STATE_DIR="$demo/state" BORGCHART_DELIVER_TO=triager-test CHECKS_SAMPLE_FILE="$demo/value" CHECKS_SAMPLE_NOTICE="$demo/notice" target/debug/brg-timer run --once
-printf 'second\n' > "$demo/value"; CHECKS_FILE="$PWD/plugins/timer/tests/sample.yaml" BORGCHART_BIN="$PWD/plugins/timer/tests/fake-brg" BORGCHART_STATE_DIR="$demo/state" BORGCHART_DELIVER_TO=triager-test CHECKS_SAMPLE_FILE="$demo/value" CHECKS_SAMPLE_NOTICE="$demo/notice" target/debug/brg-timer run --once && cat "$demo/notice"
+demo=$(mktemp -d); printf 'first\n' > "$demo/value"; BORGCHART_BIN="$PWD/plugins/timer/tests/fake-brg" BORGCHART_STATE_DIR="$demo/state" BORGCHART_DELIVER_TO=triager-test CHECKS_SAMPLE_FILE="$demo/value" CHECKS_SAMPLE_NOTICE="$demo/notice" target/debug/brg-timer run plugins/timer/tests/sample.yaml --once
+printf 'second\n' > "$demo/value"; BORGCHART_BIN="$PWD/plugins/timer/tests/fake-brg" BORGCHART_STATE_DIR="$demo/state" BORGCHART_DELIVER_TO=triager-test CHECKS_SAMPLE_FILE="$demo/value" CHECKS_SAMPLE_NOTICE="$demo/notice" target/debug/brg-timer run plugins/timer/tests/sample.yaml --once && cat "$demo/notice"
 BORGCHART_STATE_DIR="$demo/state" target/debug/brg-timer last sample
 ```

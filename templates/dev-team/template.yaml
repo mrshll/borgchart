@@ -7,7 +7,7 @@ plugins:
     actions:
       read: brg-github read <id>
   timer:
-    process: [brg-timer, run]
+    process: [brg-timer, run, checks.yaml]
     actions:
       alarm-set: brg-timer alarm set <when> <note>
       alarm-show: brg-timer alarm show

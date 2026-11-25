@@ -20,7 +20,7 @@ fn due_schedule_sends_only_name_and_time_to_the_delivery_target() {
     );
     let before = time::utc_now();
     let result = f
-        .command(&["run", "--once"])
+        .command(&["run", "checks.yaml", "--once"])
         .env_remove("BORGCHART_MEMBER")
         .output()
         .unwrap();
@@ -59,16 +59,16 @@ fn validate_and_startup_refuse_invalid_prompts_with_a_fix() {
     let f = Fixture::new();
     for value in ["' '", "null", "42", "true", "[text]", "\"line\\nline\"", "\"\\ttext\"", "\"text\\u007f\"", &format!("'{}'", "é".repeat(151))] {
         f.write("checks.yaml", &format!("- {{name: review, cron: '0 * * * *', prompt: {value}}}"));
-        let result = f.run(&["validate"]);
+        let result = f.run(&["validate", "checks.yaml"]);
         assert_eq!(result.status.code(), Some(1), "{value}");
         assert!(String::from_utf8_lossy(&result.stderr).contains("write prompt as"), "{value}");
-        assert_eq!(result.stderr, f.run(&["run", "--once"]).stderr);
+        assert_eq!(result.stderr, f.run(&["run", "checks.yaml", "--once"]).stderr);
     }
     f.config(&["printf"], "  prompt: text");
-    assert_eq!(f.run(&["validate"]).status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&f.run(&["validate"]).stderr).contains("use only name, run, every_minutes and ignore"));
+    assert_eq!(f.run(&["validate", "checks.yaml"]).status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&f.run(&["validate", "checks.yaml"]).stderr).contains("use only name, run, every_minutes and ignore"));
     f.write("checks.yaml", &format!("- {{name: review, cron: '0 * * * *', prompt: ' {} '}}", "é".repeat(150)));
-    assert!(f.run(&["validate"]).status.success());
+    assert!(f.run(&["validate", "checks.yaml"]).status.success());
 }
 
 #[test]
@@ -76,16 +76,32 @@ fn validate_and_startup_refuse_invalid_prompts_with_a_fix() {
 fn validate_reports_counts_or_the_startup_error_without_running_anything() {
     let f = Fixture::new();
     f.write("checks.yaml", "- {name: probe, run: [touch, executed], every_minutes: 1}\n- {name: review, cron: '0 0 * * *'}");
-    let result = f.command(&["validate"]).env_remove("BORGCHART_STATE_DIR").output().unwrap();
+    let result = f.command(&["validate", "checks.yaml"]).env_remove("BORGCHART_STATE_DIR").output().unwrap();
     assert!(result.status.success(), "{result:?}");
     assert_eq!(String::from_utf8(result.stdout).unwrap(), "valid: 1 checks, 1 schedules\n");
     assert!(!f.path("executed").exists());
     assert!(f.sends().is_empty());
     f.write("other.yaml", "- {name: review, cron: '@daily'}");
     let validate = f.run(&["validate", "other.yaml"]);
-    let startup = f.command(&["run", "--once"]).env("CHECKS_FILE", "other.yaml").output().unwrap();
+    let startup = f.command(&["run", "other.yaml", "--once"]).output().unwrap();
     assert_eq!(validate.status.code(), Some(1));
     assert_eq!(validate.stderr, startup.stderr);
+}
+
+#[test]
+fn run_without_a_file_records_the_process_line_fix_in_health() {
+    let f = Fixture::new();
+    let out = f.run(&["run", "--once"]);
+    assert!(!out.status.success());
+    let fix = "process: [brg-timer, run, checks.yaml]";
+    assert!(String::from_utf8_lossy(&out.stderr).contains(fix));
+    assert!(
+        f.read("health.json")["detail"]
+            .as_str()
+            .unwrap()
+            .contains(fix)
+    );
+    assert!(f.sends().is_empty());
 }
 
 #[test]
@@ -93,7 +109,7 @@ fn schedule_without_delivery_target_stops_startup() {
     let f = Fixture::new();
     f.write("checks.yaml", "- {name: review, cron: '0 0 * * *'}");
     for target in [None, Some("bad target")] {
-        let mut command = f.command(&["run", "--once"]);
+        let mut command = f.command(&["run", "checks.yaml", "--once"]);
         if let Some(target) = target {
             command.env("BORGCHART_DELIVER_TO", target);
         } else {
@@ -203,7 +219,7 @@ fn invalid_reload_keeps_last_good_configuration_and_health_not_ok() {
     let initial = std::fs::read_to_string(f.path("checks.yaml")).unwrap();
     f.write("checks.yaml", &(initial + "\n- {name: probe, run: [cat, value], every_minutes: 0.001}"));
     f.outcome(1, json!({"message":"bus unavailable"}));
-    let _running = Running(f.command(&["run"]).spawn().unwrap());
+    let _running = Running(f.command(&["run", "checks.yaml"]).spawn().unwrap());
     wait_until(|| f.path("state/health.json").exists() && f.read("health.json")["ok"] == false);
     f.write("checks.yaml", "- {name: review, cron: '0 * * * *', prompt: ''}");
     f.write("value", "second");
@@ -223,12 +239,12 @@ fn invalid_reload_keeps_last_good_configuration_and_health_not_ok() {
 fn valid_reload_applies_new_and_removed_entries_without_restart() {
     let no_target = Fixture::new();
     no_target.write("checks.yaml", "[]");
-    let _no_target = Running(no_target.command(&["run"]).env_remove("BORGCHART_DELIVER_TO").spawn().unwrap());
+    let _no_target = Running(no_target.command(&["run", "checks.yaml"]).env_remove("BORGCHART_DELIVER_TO").spawn().unwrap());
     wait_until(|| no_target.path("state/health.json").exists());
     no_target.write("checks.yaml", "- {name: review, cron: '0 0 * * *'}");
     let f = Fixture::new();
     f.write("checks.yaml", "- {name: old, cron: '0 * * * *'}\n- {name: sample, run: [cat, value], every_minutes: 1}");
-    let _running = Running(f.command(&["run"]).spawn().unwrap());
+    let _running = Running(f.command(&["run", "checks.yaml"]).spawn().unwrap());
     wait_until(|| f.path("state/health.json").exists());
     f.write("checks.yaml", "- {name: new, cron: '30 * * * *'}\n- {name: added, run: [touch, added], every_minutes: 1}");
     wait_until(|| f.path("added").exists() && f.read("health.json")["schedules"]["new"]["next"].is_string());
@@ -245,39 +261,42 @@ fn valid_reload_applies_new_and_removed_entries_without_restart() {
 
 #[test]
 fn live_reload_refuses_an_ungranted_run_role_and_keeps_the_last_schedule() {
-    let f = Fixture::new();
-    let schedule = "- {name: review, cron: '0 0 1 1 *', run: worker, timeout_minutes: 45}";
-    f.write("checks.yaml", schedule);
-    let _running = Running(
-        f.command(&["run"])
-            .env("BORGCHART_RUNS", "worker")
-            .env_remove("BORGCHART_DELIVER_TO")
-            .spawn()
-            .unwrap(),
-    );
-    wait_until(|| f.path("state/health.json").exists());
-    assert_eq!(f.read("health.json")["ok"], true);
-    f.write(
-        "checks.yaml",
-        &schedule
-            .replace("review", "other")
-            .replace("worker", "reader"),
-    );
-    wait_until(|| f.read("health.json")["ok"] == false);
-    let health = f.read("health.json");
-    assert!(!health["schedules"]["review"].is_null());
-    assert!(health["schedules"]["other"].is_null());
-    assert!(f.sends().is_empty());
+    let schedule = "- {name: review, cron: '0 0 1 1 *', role: worker, timeout_minutes: 45, prompt: Read notes}";
+    let trials = ["reader", "{models: {claude: sonnet}}"].map(|role| {
+        let f = Fixture::new();
+        f.write("checks.yaml", schedule);
+        let running = Running(
+            f.command(&["run", "checks.yaml"])
+                .env("BORGCHART_RUNS", "worker")
+                .env_remove("BORGCHART_DELIVER_TO")
+                .spawn()
+                .unwrap(),
+        );
+        wait_until(|| f.path("state/health.json").exists());
+        assert_eq!(f.read("health.json")["ok"], true);
+        f.write(
+            "checks.yaml",
+            &schedule.replace("review", "other").replace("worker", role),
+        );
+        (f, running)
+    });
+    for (f, _running) in &trials {
+        wait_until(|| f.read("health.json")["ok"] == false);
+        let health = f.read("health.json");
+        assert!(!health["schedules"]["review"].is_null());
+        assert!(health["schedules"]["other"].is_null());
+        assert!(f.sends().is_empty());
+    }
 }
 
 #[test]
 fn fixing_the_prompt_file_retries_a_rejected_reload_without_editing_yaml() {
     let f = Fixture::new();
-    let schedule = "- {name: review, cron: '0 0 1 1 *', run: worker, timeout_minutes: 45, prompt_file: review.md}";
+    let schedule = "- {name: review, cron: '0 0 1 1 *', role: worker, timeout_minutes: 45, prompt_file: review.md}";
     f.write("checks.yaml", schedule);
     f.write("review.md", "Review the notes");
     let _running = Running(
-        f.command(&["run"])
+        f.command(&["run", "checks.yaml"])
             .env("BORGCHART_RUNS", "worker")
             .spawn()
             .unwrap(),
