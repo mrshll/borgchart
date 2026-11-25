@@ -23,6 +23,10 @@ plugins:
       alarm-set: brg-timer alarm set <when> <note>
       alarm-show: brg-timer alarm show
       alarm-clear: brg-timer alarm clear
+  # The product manager's own timer: what wakes it, and its weekly release and digest.
+  pm-clock:
+    process: [brg-timer, run, pm-schedule.yaml]
+    delivers_to: pm
   seat:
     actions:
       route: brg-seat route <vendor> <model>
@@ -34,6 +38,11 @@ roles:
     interactive: true
     vendor: claude
     remote_control: true
+    start: true
+  pm:
+    prompt: pm.md
+    vendor: claude
+    parent: lead
     start: true
   dev:
     template: dev-team
