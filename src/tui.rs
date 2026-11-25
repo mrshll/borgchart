@@ -17,6 +17,7 @@ use crate::tree;
 
 const REFRESH: Duration = Duration::from_secs(2);
 const SELECTION: &str = "> ";
+const FOLD_INSTANCE: &str = "~";
 
 /// Spinner cadence; data is still read only at the chosen refresh interval.
 pub const SPIN_INTERVAL: Duration = Duration::from_millis(500);
@@ -450,14 +451,20 @@ fn fold(rows: Vec<StatusRow>) -> Vec<StatusRow> {
                 .and_then(Option::as_deref)
                 .filter(|parent| parents.contains_key(*parent));
             if parent.is_none_or(|parent| kept.contains(parent)) {
-                groups.entry(parent).or_default().push(row);
+                // Top-level plugins sit outside the tree, including their fold.
+                let kind = if row.kind == "plugin" && row.parent.is_none() {
+                    "plugin"
+                } else {
+                    "fold"
+                };
+                groups.entry((parent, kind)).or_default().push(row);
             }
         }
     }
-    visible.extend(groups.into_iter().map(|(parent, rows)| StatusRow {
-        kind: "fold",
-        // The key depends only on the parent and sorts after every real sibling.
-        instance: "~".into(),
+    visible.extend(groups.into_iter().map(|((parent, kind), rows)| StatusRow {
+        kind,
+        // The reserved instance keeps each group's key stable and sorts it last.
+        instance: FOLD_INSTANCE.into(),
         name: parent.unwrap_or_default().into(),
         parent: parent.map(str::to_owned),
         state: String::new(),
@@ -470,6 +477,10 @@ fn fold(rows: Vec<StatusRow>) -> Vec<StatusRow> {
         ..rows[0].clone()
     }));
     live_first(visible)
+}
+
+fn is_fold(row: &StatusRow) -> bool {
+    row.instance == FOLD_INSTANCE
 }
 
 fn fold_label(rows: &[StatusRow]) -> String {
@@ -680,7 +691,7 @@ fn draw(
             };
             let r = &sections[s].tree[r];
             let prefix = prefix(s, r);
-            if r.kind == "fold" {
+            if is_fold(r) {
                 return [
                     format!("{prefix}▸"),
                     String::new(),
@@ -820,7 +831,7 @@ fn draw(
                     inner.x,
                 )
             }
-            Some(row) if row.kind == "fold" => (
+            Some(row) if is_fold(row) => (
                 row.detail.clone().unwrap_or_default(),
                 tone_style(tree::Tone::Faded, colour),
                 inner.x + selection_width + prefix(s, row).chars().count() as u16 + 2,
@@ -951,8 +962,8 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
                     message = format!("{} is a team; select one of its members", section.inst.id);
                     continue;
                 };
-                if row.kind == "fold" {
-                    all = !all;
+                if is_fold(row) {
+                    all = true;
                     reload(one, all, headers, &mut sections, &mut table_state);
                     message.clear();
                     continue;
@@ -1781,20 +1792,40 @@ mod fold_tests {
     fn fold_defaults_to_counting_only_the_first_hidden_row_of_each_branch() {
         let screen = watch_frame(&section(fixture(), false), false, false);
         for line in [
-            "│  │  │  └─ ▸ 2 stopped · 1 not started",
-            "│  │  └─ ▸ 1 stopped plugin",
-            "│  └─ ▸ 1 stopped team · 1 on demand · 1 not created",
-            "└─ ▸ 2 stopped plugins",
-            "· plugin github",
+            "│└─ · lead-root",
+            "│   │  │  └─ ▸ 2 stopped · 1 not started",
+            "│   │  └─ ▸ 1 stopped plugin",
+            "│   └─ ▸ 1 stopped team · 1 on demand · 1 not created",
             "3 unacked",
         ] {
             assert!(screen.contains(line), "missing {line:?}:\n{screen}");
         }
+        assert!(
+            screen
+                .lines()
+                .zip(screen.lines().skip(1))
+                .any(|(healthy, fold)| {
+                    healthy.starts_with("│· plugin github")
+                        && fold.starts_with("│▸ 2 stopped plugins")
+                }),
+            "{screen}"
+        );
         for hidden in [
             "worker-a", "worker-b", "worker-c", "clock", "archive", "exporter", "timer",
             "reviewer", "planner", "scout", "mail", "queue",
         ] {
             assert!(!screen.contains(hidden), "visible {hidden:?}:\n{screen}");
+        }
+        let mut rows = fixture();
+        rows.push(status("demo", "spare-root", None, "member", "stopped"));
+        let screen = watch_frame(&section(rows, false), false, false);
+        for line in ["│└─ ▸ 1 stopped", "│▸ 2 stopped plugins"] {
+            assert!(
+                screen
+                    .lines()
+                    .any(|row| row.trim_end_matches('│').trim_end() == line),
+                "{screen}"
+            );
         }
     }
 
