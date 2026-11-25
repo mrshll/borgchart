@@ -176,7 +176,8 @@ including future attempts after a clock correction, are discarded.
 `brg-timer validate [path]` checks the YAML and any referenced prompt files.
 Without a path it uses `CHECKS_FILE` (default `checks.yaml`). It needs no state
 directory, prints counts on success and exits 0; errors match startup and exit 1.
-At startup and on reload, the timer also checks `delivers_to` for delivery schedules and `runs` for scheduled runs.
+At startup and on reload, the timer also checks `delivers_to` for delivery
+schedules and the roles brg supplies in `BORGCHART_RUNS` for scheduled runs.
 
 After installing the new binary with `make install`, a running timer keeps its
 old binary. End only its timer process, then run `brg start <team>`: this restarts
@@ -218,13 +219,13 @@ edits take effect at the next run. An invalid or missing file at that point reco
 `failed-to-start` before seating or creating a member. Changing the path
 preserves schedule timing.
 
-Grant the role to the timer process and give that role the `done` action.
+Give the role the timer plugin's `done` action in `template.yaml`, by name
+or with `["*"]`.
 
 ```yaml
 plugins:
   timer:
     process: [brg-timer, run]
-    runs: [reviewer]
     actions:
       done: brg-timer done
       last: brg-timer last <name>
@@ -235,9 +236,11 @@ roles:
     plugins: {timer: [done]}
 ```
 
-Use a dedicated role without a worktree or children. Give it `max` capacity for
-as many concurrent schedules as need it. Set `env: {SEAT: brg-seat}` on the timer
-to check subscription capacity before creation. Run attempts, including seat
+Use a dedicated role with `start: false`, no worktree and no child roles.
+Restart the timer after changing which roles are eligible. Give the role
+`max` capacity for as many concurrent schedules as need it. Set
+`env: {SEAT: brg-seat}` on the timer to check subscription capacity before
+creation. Run attempts, including seat
 waits and launch failures, share the six-per-hour cap with delivery schedules.
 If the previous run is active, seating says wait, or the cap is full, the
 timer skips the occurrence.

@@ -1106,7 +1106,20 @@ fn start_members(
             let mut env = base.clone();
             env.extend(secrets.env);
             env.remove("BORGCHART_RUNS");
-            if let Some(roles) = &plugin.runs {
+            env.remove("BORGCHART_RUN_ROLE");
+            let mut roles = Vec::new();
+            for role in v.team.roles.values() {
+                match role.built_in_for.as_deref() {
+                    Some(owner) if owner == name => {
+                        env.insert("BORGCHART_RUN_ROLE".into(), role.id.clone());
+                    }
+                    None if v.team.schedulable(role, plugin).is_ok() => {
+                        roles.push(role.id.as_str());
+                    }
+                    _ => {}
+                }
+            }
+            if !roles.is_empty() {
                 env.insert("BORGCHART_RUNS".into(), roles.join(","));
             }
             env.extend(identity_env(&meta, state, "", None, name));
@@ -1808,38 +1821,7 @@ pub fn create_member(
 ) -> Result<UpOutcome, String> {
     require_running_for_plugin(|| is_running(&inst))?;
     let v = validated(&inst)?;
-    let runs = std::env::var_os("BORGCHART_RUNS");
-    if let Some(schedule) = run {
-        if !plugin_context()
-            || !std::env::var(context::ENV_INSTANCE).is_ok_and(|team| team == inst.id)
-            || !runs
-                .as_deref()
-                .and_then(std::ffi::OsStr::to_str)
-                .is_some_and(|roles| roles.split(',').any(|r| r == role))
-        {
-            return Err(format!(
-                "`--run` needs a timer process with a `runs` grant for `{role}` in this team; configure the grant and restart the plugin"
-            ));
-        }
-        if !crate::names::is_valid_id(schedule) || schedule.contains('_') {
-            return Err("use a schedule name of 1–32 lowercase letters, digits or hyphens, starting with a letter".into());
-        }
-    }
-    // The timer can outlive a template edit that removes its grant.
-    if plugin_context()
-        && runs.is_some()
-        && !v
-            .team
-            .plugins
-            .values()
-            .filter_map(|p| p.runs.as_ref())
-            .flatten()
-            .any(|r| r == role)
-    {
-        return Err(format!(
-            "role `{role}` no longer has a `runs` grant; update the template and restart the plugin"
-        ));
-    }
+    let built_in = check_run_create(&inst, &v.team, role, run)?;
     if let Some(name) = name {
         // Refuse a taken name before any fetch; issuing checks again under the lock.
         inst.record.named(role, name, |id| is_role(&v, id))?;
@@ -1886,6 +1868,9 @@ pub fn create_member(
         ));
     };
     let overrides = crate::overrides::agent_choice(choices, &inst.at(role))?;
+    if built_in && (overrides.vendor.is_none() || overrides.model.is_none()) {
+        return Err("give a scheduled run both `--set vendor=<vendor>,model=<model>`".into());
+    }
     let member = inst
         .record
         .overrides
@@ -1949,6 +1934,67 @@ pub fn create_member(
             .collect();
     }
     Ok(name_worktrees(&inst, &added, outcome))
+}
+
+fn check_run_create(
+    inst: &Instance,
+    team: &crate::team::Team,
+    role: &str,
+    run: Option<&str>,
+) -> Result<bool, String> {
+    let member = team.roles.get(role);
+    let built_in = member.is_some_and(|r| r.built_in_for.is_some());
+    let runs = std::env::var("BORGCHART_RUNS").ok();
+    if let Some(schedule) = run {
+        if !plugin_context() || !std::env::var(context::ENV_INSTANCE).is_ok_and(|id| id == inst.id)
+        {
+            return Err("`--run` needs a timer process in the same team; configure the timer's schedule file".into());
+        }
+        if !crate::names::is_valid_id(schedule) || schedule.contains('_') {
+            return Err("use a schedule name of 1–32 lowercase letters, digits or hyphens, starting with a letter".into());
+        }
+        if std::env::var("BORGCHART_RUN_ROLE").is_ok_and(|grant| grant == role) {
+            return if built_in {
+                Ok(true)
+            } else {
+                Err(format!(
+                    "role `{role}` is no longer a built-in run role; update the timer's schedule file and restart the plugin"
+                ))
+            };
+        }
+        if built_in
+            || !runs
+                .as_deref()
+                .is_some_and(|roles| roles.split(',').any(|r| r == role))
+        {
+            return Err(format!(
+                "the timer cannot schedule `{role}`; configure its run role and restart the plugin"
+            ));
+        }
+    } else if built_in {
+        return Err(format!(
+            "role `{role}` is created by the timer; configure the timer's schedule file"
+        ));
+    } else if !plugin_context() || runs.is_none() {
+        return Ok(false);
+    }
+
+    // A process may keep its launch environment after its template changes.
+    let member =
+        member.ok_or_else(|| format!("choose a declared agent role instead of `{role}`"))?;
+    let mut reason = None;
+    for plugin in team.plugins.values() {
+        match team.schedulable(member, plugin) {
+            Ok(()) => return Ok(false),
+            Err(e) if reason.is_none() || member.grants.contains_key(&plugin.name) => {
+                reason = Some(e)
+            }
+            Err(_) => {}
+        }
+    }
+    let reason =
+        reason.unwrap_or_else(|| "declare a plugin with a `process` and a `done` action".into());
+    Err(format!("role `{role}` cannot be scheduled; {reason}"))
 }
 
 /// Pause after the preliminary create check, before taking the registry

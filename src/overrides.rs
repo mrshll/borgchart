@@ -38,6 +38,9 @@ impl Overrides {
     }
 
     pub fn resolve(&self, role: &Role, auth: Auth) -> Result<Role, String> {
+        if role.built_in_for.is_some() && self.remote_control.is_some() {
+            return Err("remove `remote_control`; a scheduled run takes only `vendor`, `model` and `effort`".into());
+        }
         let mut resolved = apply(
             role,
             self.vendor,
