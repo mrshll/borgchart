@@ -38,6 +38,36 @@ fn member(name: &str, parent: Option<&str>) -> StatusRow {
 }
 
 #[test]
+fn healthy_plugins_recede_without_sorting_behind_stopped_plugins() {
+    use borgchart::tree::{alert_chip, ink_text, palette};
+
+    for parent in [None, Some("lead")] {
+        let plugin = |name, state: &str, detail: &str| StatusRow {
+            kind: "plugin",
+            state: state.into(),
+            detail: Some(detail.into()),
+            ..member(name, parent)
+        };
+        let rows = [
+            member("lead", None),
+            plugin("archive", "stopped", ""),
+            plugin("feed", "alive", "listening"),
+            plugin("queue", "alive", "error reading queue"),
+        ];
+        let text = runtime::render_status_as("harbor", &rows, true, true, None);
+        for cell in ["· plugin feed", "  alive", "  listening"] {
+            assert!(
+                text.contains(&ink_text(cell, palette::FADED, false)),
+                "{text:?}"
+            );
+        }
+        let error = text.lines().find(|l| l.contains("! plugin queue")).unwrap();
+        assert!(error.contains(&alert_chip("alive")));
+        assert!(text.find("plugin feed").unwrap() < text.find("plugin archive").unwrap());
+    }
+}
+
+#[test]
 fn nested_plugin_errors_highlight_the_state_instead_of_the_detail() {
     let rows = [
         member("lead", None),
