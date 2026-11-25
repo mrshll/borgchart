@@ -147,6 +147,8 @@ End a team when its topic is merged or the owner ends it; don't keep it for the 
 4. **Stop the child team;** confirm everything in it stopped in `status`.
 5. **Delete kept children,** then the team. Never use `--force`; stop and report if `delete` refuses.
 
+**Sweep.** Once each working day, read `status` for stopped and exited members and child teams in your subtree, and ask each child team's lead to do the same for its own. Delete what is merged or abandoned, restart what still has open work, and tell the owner in one list what you kept or `delete` refused, with the reason for each.
+
 If a member hits a usage limit or its vendor refuses to start, stop it, tell the owner and wait.
 
 ## Talking to the owner outside your session
