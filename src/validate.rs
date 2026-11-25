@@ -265,7 +265,7 @@ fn cross_check(v: &Validated, report: &mut Report) {
             if targets.contains(id.as_str()) {
                 report.warning(
                     team_file,
-                    at("receives work from a plugin process but is unrestricted; text it reads can steer it"),
+                    at("receives work from a plugin process but is unrestricted. Text it reads can steer it, and it can message any unrestricted member of its tree"),
                 );
             }
             let parent_of_target = v
