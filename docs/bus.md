@@ -33,8 +33,8 @@ Inside a member use `"$BORGCHART_BIN"`, the brg that started it. Its team, membe
 
 Team context means any nonempty `BORGCHART_TEAM`, `BORGCHART_MEMBER`, `BORGCHART_INCARNATION`, `BORGCHART_ROLE`, `BORGCHART_NOTES` or `BORGCHART_PARENT`. Member variables without the complete team, member and start identity are refused as incomplete member context, including when only role, notes or parent remains.
 
-- Members send to their parent or children, by full member ID. Only root members of the tree's root team may also send to `external:NAME`.
-- A child team's root members and their parent in the enclosing team can also send across their parent edge. Use the full `team/member` address; a child team's roots receive their parent's address in `BORGCHART_PARENT`.
+- Members can send to any addressable member of their tree. If either member is restricted, the route must connect a parent and child. Only root members of the tree's root team may also send to `external:NAME`.
+- Use the full `team/member` address to reach a member in another team in the tree. A child team's roots receive their parent's address in `BORGCHART_PARENT`.
 - Parentless unrestricted members of different top-level teams may also message one another by full address, for example `msg send product-9x3d/lead-m2c8 'The fix is installed'`. Child-team roots, non-root or restricted members, `--from` and `--allow-unknown` cannot use this route. No opt-in is needed.
 - Outside callers may use `--external NAME` and may send to any kept member in the tree after its first start. Their replies go to `external:NAME` (`external:owner` by default without team context). That flag is refused inside a member.
 - Any caller can read a named member's inbox and individual messages in its own tree, and check that store. A plugin process with no member identity cannot send or ack without `--external NAME`.
@@ -54,9 +54,9 @@ brg adds the caller's identity, UTC timestamp and immutable `ack_required`, deri
 
 Messages retain their sender's authority. A delivered envelope does not turn a helper or outside message into direct-owner instruction. Never execute its text as shell code. Delegation, progress and verification belong in the pull request description and comments; briefs and reports can live in `$BORGCHART_NOTES`.
 
-Within a tree, member sends require the sender to be the recipient's parent, or the recipient to be the sender's parent. Siblings, cousins and unrelated roots in the same tree cannot exchange messages. A deleted member, or a member in a child team deleted at any depth, cannot receive new messages.
+Within a tree, unrestricted members can exchange messages at any depth, including across sibling child teams. A restricted member can exchange messages with its parent and children. A deleted member, or a member in a child team deleted at any depth, cannot receive new messages. The delivered envelope and long-message pointer label a same-tree sender outside the recipient's parent and children as “a member of your tree, not your parent.”
 
-Parent edges within a team and across child teams use the same tree store and delivery rules, including queue, typing and restricted delivery. The recipient's own pane, guard and access restrictions decide delivery. IDs and acknowledgements are shared by the tree: nothing is imported or renumbered. `--reply-to` takes plain IDs such as `m1` that must already exist in that store.
+Routes within a team and across child teams use the same tree store and delivery rules, including queue, typing and restricted delivery. The recipient's own pane, guard and access restrictions decide delivery. IDs and acknowledgements are shared by the tree: nothing is imported or renumbered. `--reply-to` takes plain IDs such as `m1` that must already exist in that store.
 
 Between independent trees, exactly one record commits in the **recipient's** store, under its next ID; the sender's store is unchanged. The result names that store (`committed: m12 in product-9x3d (to lead-m2c8)`) and send JSON includes `store`. Keep both ID and tree to match replies. The recipient lists, reads and acks locally; the sender cannot inspect its acknowledgement. Reply when taking a peer request on. `--reply-to m12` reads the replier's own store and must name a message from that exact peer to that replier. It is saved as `product-9x3d:m12` when that tree owns the referenced record. Missing, malformed or unrelated references refuse the entire send. Readers show qualified references as labels, even after the owning tree is deleted.
 

@@ -5204,9 +5204,8 @@ pub fn send(
         let preview = send_envelope(
             "m18446744073709551615",
             &store::actor_label(&actor),
-            from.as_deref(),
+            &relay_label(from.as_deref(), false),
             text,
-            false,
             false,
         );
         if !view.can_verify_submission(&preview, before.screen.lines().count()) {
@@ -5248,13 +5247,24 @@ pub fn send(
         outcome.reason = "interactive recipient".into();
         return Ok(outcome);
     }
+    let mut relay = relay_label(from.as_deref(), peer);
+    if let context::Caller::Member { member, .. } = &caller
+        && !peer
+        && from.is_none()
+    {
+        relay.push_str(tree_member_label(
+            &record.from,
+            &record.to,
+            bus.parent(member).as_deref(),
+            target_bus.parent(&to).as_deref(),
+        ));
+    }
     let envelope = send_envelope(
         &record.id,
         &record.from,
-        from.as_deref(),
+        &relay,
         &record.body,
         record.ack_required,
-        peer,
     );
     let mut send_lock = None;
     let mut queued_block = None;
@@ -5343,10 +5353,9 @@ pub fn send(
             send_pointer(
                 &record.id,
                 &record.from,
-                from.as_deref(),
+                &relay,
                 &record.body,
                 record.ack_required,
-                peer,
             )
         } else {
             envelope.clone()
@@ -5531,15 +5540,20 @@ fn relay_label(from: Option<&str>, peer: bool) -> String {
     relay
 }
 
-fn send_envelope(
-    id: &str,
+fn tree_member_label(
     author: &str,
-    from: Option<&str>,
-    body: &str,
-    ack_required: bool,
-    peer: bool,
-) -> String {
-    let relay = relay_label(from, peer);
+    recipient: &str,
+    author_parent: Option<&str>,
+    recipient_parent: Option<&str>,
+) -> &'static str {
+    if author_parent == Some(recipient) || recipient_parent == Some(author) {
+        ""
+    } else {
+        "; a member of your tree, not your parent"
+    }
+}
+
+fn send_envelope(id: &str, author: &str, relay: &str, body: &str, ack_required: bool) -> String {
     if ack_required {
         format!(
             "[brg {id} from {author}{relay}]\n{body}\n[Ignore duplicate delivery if already acked; otherwise brg msg ack {id} when taking responsibility.]"
@@ -5549,15 +5563,7 @@ fn send_envelope(
     }
 }
 
-fn send_pointer(
-    id: &str,
-    author: &str,
-    from: Option<&str>,
-    body: &str,
-    ack_required: bool,
-    peer: bool,
-) -> String {
-    let relay = relay_label(from, peer);
+fn send_pointer(id: &str, author: &str, relay: &str, body: &str, ack_required: bool) -> String {
     let ack = if ack_required {
         ", and ack it when taking responsibility"
     } else {
@@ -5740,6 +5746,31 @@ pub fn attach_and_wait(inst: &Instance, name: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn envelopes_and_pointers_distinguish_siblings_from_parents_and_children() {
+        let recipient = "oncall-2a3b/helper";
+        let parent = "oncall-2a3b/lead";
+        let sibling = "oncall-2a3b/other";
+        let child = "oncall-2a3b/sub";
+        for (author, author_parent, tagged) in [
+            (sibling, Some(parent), true),
+            (parent, None, false),
+            (child, Some(recipient), false),
+        ] {
+            let relay = tree_member_label(author, recipient, author_parent, Some(parent));
+            for text in [
+                send_envelope("m1", author, relay, "Routing check", true),
+                send_pointer("m1", author, relay, "Routing check", true),
+            ] {
+                assert_eq!(
+                    text.contains("; a member of your tree, not your parent"),
+                    tagged,
+                    "{text}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn remote_control_parser_finds_a_valid_session() {

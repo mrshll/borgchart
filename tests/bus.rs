@@ -16,6 +16,15 @@ mod common;
 /// The team, as messages name it.
 const TEAM: &str = "oncall-2a3b";
 
+const MEMBERS: [(&str, Option<&str>); 6] = [
+    ("lead", None),
+    ("helper", Some("lead")),
+    ("helper2", Some("lead")),
+    ("sub", Some("helper")),
+    ("locked", Some("helper")),
+    ("locked-child", Some("locked")),
+];
+
 struct Fixture {
     dir: tempfile::TempDir,
 }
@@ -36,15 +45,14 @@ enum As {
 }
 
 impl Fixture {
-    /// A deployment with a bus and a started template: `lead` (the root) with
-    /// children `helper` and `helper2`, and `sub` under `helper`.
+    /// A deployment with a bus and the started members in MEMBERS.
     fn new() -> Self {
         let f = Fixture {
             dir: tempfile::tempdir().unwrap(),
         };
         f.register();
         f.write_store(TEAM);
-        for m in ["lead", "helper", "helper2", "sub"] {
+        for (m, _) in MEMBERS {
             f.write_incarnation(m, &format!("{m}-1"), false);
         }
         f
@@ -61,9 +69,9 @@ impl Fixture {
 
     /// The team in the registry, with its members by bare names.
     fn register(&self) {
-        let members: BTreeMap<&str, Value> = ["lead", "helper", "helper2", "sub"]
+        let members: BTreeMap<&str, Value> = MEMBERS
             .iter()
-            .map(|m| (*m, json!({"role": m})))
+            .map(|(m, _)| (*m, json!({"role": m})))
             .collect();
         self.write_private(
             &self.root().join("registry.json"),
@@ -92,15 +100,10 @@ impl Fixture {
             &self.store_dir().join("store.json"),
             &json!({"format": borgchart::bus::SCHEMA, "root": instance}),
         );
-        let parents = [
-            ("lead", None),
-            ("helper", Some("lead")),
-            ("helper2", Some("lead")),
-            ("sub", Some("helper")),
-        ];
-        let members: BTreeMap<&str, Value> = parents.iter().map(|(m, p)| (*m,
-            json!({"role": m, "vendor": "claude", "posture": "vendor", "interactive": false, "parent": p, "vendor_version": null, "started": true})
-        )).collect();
+        let members: BTreeMap<&str, Value> = MEMBERS.iter().map(|(m, p)| {
+            let posture = if m.starts_with("locked") { "locked" } else { "vendor" };
+            (*m, json!({"role": m, "vendor": "claude", "posture": posture, "interactive": false, "parent": p, "vendor_version": null, "started": true}))
+        }).collect();
         self.write_private(&self.root().join(TEAM).join("start.json"), &json!({
             "template_dir": self.dir.path().join("oncall"), "folder": self.dir.path().join("work"),
             "brg": env!("CARGO_BIN_EXE_brg"), "config": {"version": 1, "digest": "00", "inputs": {}, "template_dirs": {}},
@@ -350,15 +353,8 @@ fn invalid_drafts_write_nothing() {
         );
         assert!(!out.json["ok"].as_bool().unwrap(), "{name}");
     }
-    // Topology: members publish only along parent edges.
-    for (from, to) in [
-        ("helper", "helper2"),
-        ("sub", "lead"),
-        ("helper", "external:ops"),
-    ] {
-        let out = f.publish(&As::Member(from), &note(to, "x"));
-        assert_eq!(out.code, 5, "{from} -> {to}: {:?}", out.json);
-    }
+    let out = f.publish(&As::Member("helper"), &note("external:ops", "x"));
+    assert_eq!(out.code, 5, "helper -> external:ops: {:?}", out.json);
     let out = f.publish(&As::Operator, &note("external:other", "x"));
     assert_eq!(out.code, 5, "external -> external");
     let garbage = f.brg(
@@ -390,6 +386,57 @@ fn invalid_drafts_write_nothing() {
     );
     assert_eq!(huge.code, 2);
     assert_eq!(f.records(), vec!["0000000001.json"]);
+}
+
+#[test]
+fn unrestricted_members_can_message_siblings_and_across_generations() {
+    let f = Fixture::new();
+    for (from, to) in [("helper", "helper2"), ("sub", "lead"), ("sub", "helper2")] {
+        let out = f.publish(&As::Member(from), &note(to, "Routing check"));
+        assert_eq!(out.code, 0, "{from} -> {to}: {:?}", out.json);
+        let inbox = f.inbox(&As::Member(to), &[]);
+        assert!(ids(&inbox).contains(&out.json["id"].as_str().unwrap().to_string()));
+    }
+}
+
+#[test]
+fn restricted_members_exchange_messages_only_with_parents_and_children() {
+    use borgchart::bus::{context::Caller, outcome::Code, store};
+    use borgchart::state::StateDir;
+
+    let f = Fixture::new();
+    let bus = store::open(&StateDir {
+        id: TEAM.into(),
+        root: f.root().join(TEAM),
+    })
+    .unwrap();
+    // Check publication directly so restricted delivery preflight can't
+    // refuse a draft before the route is checked.
+    let send = |from: &str, to: &str| {
+        let caller = Caller::Member {
+            member: from.into(),
+            incarnation: format!("{from}-1"),
+        };
+        store::publish(
+            &bus,
+            &caller,
+            note(to, "Routing check").to_string().as_bytes(),
+        )
+    };
+    for neighbor in ["sub", "lead"] {
+        for (from, to) in [("locked", neighbor), (neighbor, "locked")] {
+            let refused = send(from, to).expect_err("a non-edge route committed");
+            assert_eq!(refused.code, Code::Invalid, "{from} -> {to}: {refused:?}");
+        }
+    }
+    assert!(f.records().is_empty());
+    for neighbor in ["helper", "locked-child"] {
+        for (from, to) in [("locked", neighbor), (neighbor, "locked")] {
+            let sent = send(from, to).unwrap_or_else(|e| panic!("{from} -> {to}: {e:?}"));
+            let read = f.brg(&As::Member(to), &["msg", "read", &sent.id, "--json"], None);
+            assert_eq!(read.code, 0, "{from} -> {to}: {:?}", read.json);
+        }
+    }
 }
 
 #[test]
@@ -503,8 +550,10 @@ fn acks_are_idempotent_and_recipient_only() {
     );
 
     // Not the recipient: refused, nothing written.
-    let wrong = f.brg(&As::Member("lead"), &["msg", "ack", "m3", "--json"], None);
-    assert_eq!(wrong.code, 4, "{:?}", wrong.json);
+    for member in ["lead", "helper2"] {
+        let wrong = f.brg(&As::Member(member), &["msg", "ack", "m3", "--json"], None);
+        assert_eq!(wrong.code, 4, "{member}: {:?}", wrong.json);
+    }
     let ext = f.brg(
         &As::Operator,
         &["msg", "ack", "m3", "--external", "ops", "--json"],
