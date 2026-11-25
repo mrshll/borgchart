@@ -15,7 +15,11 @@ plugins:
       read: brg-github read <id>
   timer:
     process: [brg-timer, run, checks.yaml]
+    delivers_to: lead
+    env: {SEAT: brg-seat}
     actions:
+      last: brg-timer last <name>
+      done: brg-timer done
       alarm-set: brg-timer alarm set <when> <note>
       alarm-show: brg-timer alarm show
       alarm-clear: brg-timer alarm clear
@@ -25,7 +29,7 @@ plugins:
 
 roles:
   lead:
-    plugins: {seat: [route], timer: [alarm-set, alarm-show, alarm-clear], github: [read]}
+    plugins: {seat: [route], timer: [alarm-set, alarm-show, alarm-clear, last], github: [read]}
     prompt: lead.md
     interactive: true
     vendor: claude
