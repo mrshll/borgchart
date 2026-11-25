@@ -199,11 +199,13 @@ fn the_parent_template_validates_cleanly() {
 
 const TIMER: &str =
     "role `lead`: is granted `timer`, which runs a background process, but is unrestricted";
-/// The engineering lead's warnings, then its dev-team child lead's.
-const ENGINEERING: [&str; 4] = [
+/// The engineering lead's and product manager's warnings, then its dev-team child lead's.
+const ENGINEERING: [&str; 6] = [
     "role `lead`: receives work from a plugin process but is unrestricted. Text it reads can steer it, and it can message any unrestricted member of its tree",
+    "role `lead`: is the parent of a member that receives plugin work, but is unrestricted",
     "role `lead`: is granted `github`, which runs a background process, but is unrestricted",
     TIMER,
+    "role `pm`: receives work from a plugin process but is unrestricted. Text it reads can steer it, and it can message any unrestricted member of its tree",
     TIMER,
 ];
 fn process_warnings(report: &serde_json::Value, expected: &[&str]) {
