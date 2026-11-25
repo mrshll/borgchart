@@ -436,10 +436,11 @@ fn nested_status_screens_keep_healthy_members_visible_when_a_child_team_becomes_
         });
         if args.contains(&"-w") {
             env.ok(&["stop", &format!("{copy}/{lead}")]);
-            env.wait_for("watch refresh after nested stop", || {
-                screen()
-                    .lines()
-                    .any(|line| line.contains(&lead) && line.contains("stopped"))
+            env.wait_for("watch folds the stopped child team", || {
+                let text = screen();
+                text.contains("▸ 1 stopped team")
+                    && !text.contains(copy_name)
+                    && text.lines().filter(|line| line.contains(&lead)).count() == 1
             });
             env.ok(&["start", &format!("{copy}/{lead}")]);
         } else {
