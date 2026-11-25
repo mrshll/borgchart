@@ -279,7 +279,7 @@ enum Command {
         /// Print the rows as JSON.
         #[arg(long, conflicts_with_all = ["watch", "interactive"])]
         json: bool,
-        /// Live tree (a shows all or folds quiet rows) and messages (j/k cycle teams); Tab switches, q quits. Plain when piped or NO_COLOR.
+        /// Live tree (a shows all or folds quiet rows) and messages (j/k cycle trees); Tab switches, q quits. Plain when piped or NO_COLOR.
         #[arg(short, long, conflicts_with = "interactive")]
         watch: bool,
         /// Seconds between refreshes with --watch.
