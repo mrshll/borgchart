@@ -1,0 +1,15 @@
+# What wakes the product manager. The check runs in this folder's repository.
+- name: github
+  run: [gh, api, "repos/{owner}/{repo}/issues?state=all&sort=updated&per_page=1", --jq, ".[0].updated_at"]
+  every_minutes: 15
+- name: sweep
+  cron: '0 14 * * 1-5'
+  prompt: Handle issues opened since your last sweep, then stale work, as your role text says. Read the lead's notes for what changed since yesterday.
+- name: release
+  cron: '0 14 * * 2'
+  missed: catch-up
+  prompt: Prepare the week's release as your role text says under Releases.
+- name: digest
+  cron: '0 15 * * 1'
+  missed: catch-up
+  prompt: 'Post the week''s digest as a comment on the issue titled "Weekly digest" (open it if missing), mentioning the owner. Sections: Waiting on you; Shipped; In progress; Decided; Blocked. Plain words, every item linked, only what changed.'
