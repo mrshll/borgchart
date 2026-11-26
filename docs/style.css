@@ -146,7 +146,7 @@ h1 {
    so the whole file shows on a laptop. Like a terminal, nothing in them
    eases or fades: characters and rows appear at once. */
 .stage {
-  --rows: 26; /* the editor shows the whole file */
+  --rows: 28; /* the editor shows the whole file */
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 2ch;
@@ -184,8 +184,9 @@ h1 {
   height: calc(var(--rows) * 1.3em);
   overflow: hidden;
 }
-.file { grid-area: 1 / 1; }
-.file.away { visibility: hidden; }
+/* Not the explorer's .file: no height cap or scroll of its own. */
+.files .file { grid-area: 1 / 1; height: auto; overflow: visible; }
+.files .file.away { visibility: hidden; }
 .ln { height: 1.3em; white-space: pre; overflow: hidden; }
 /* The still frame (reduced motion) marks the lines it added and the rows
    they made. */

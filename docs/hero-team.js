@@ -2,8 +2,9 @@
 // beat's edits are typed in order; tests/site_hero.rs writes the template
 // after the start and after every beat, with the files the editor never
 // shows and the `qa` template beside it, and checks each one validates.
-// `environment` names what a person exports before `brg start` (the Slack
-// tokens and the #ops-high channel ID); the test sets stand-ins for them.
+// The Slack tokens come from the secrets resolver (made-up op:// paths);
+// `environment` names what a person exports before `brg start` (the
+// #ops-high channel ID), and the test sets a stand-in for it.
 // Keep the lines short: the widest has to fit a phone.
 window.HERO_TEAM = {
   "team": "engineering",
@@ -60,7 +61,9 @@ window.HERO_TEAM = {
           "    delivers_to: oncall",
           "    env:",
           "      SLACK_APP_TOKEN:",
+          "        from: \"op://ops/slack/app\"",
           "      SLACK_BOT_TOKEN:",
+          "        from: \"op://ops/slack/bot\"",
           "      SLACK_CHANNEL_ID:  # #ops-high",
           "    actions:",
           "      read: brg-slack read <ts>",
@@ -69,7 +72,7 @@ window.HERO_TEAM = {
       ]
     }
   ],
-  "environment": ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN", "SLACK_CHANNEL_ID"],
+  "environment": ["SLACK_CHANNEL_ID"],
   "unseen": {
     "lead.md": "---\nmodels: {claude: opus high}\n---\nSplit the work and hand it out.\n",
     "coder.md": "---\nmodels: {codex: sol high}\n---\nMake the change the lead hands you.\n",

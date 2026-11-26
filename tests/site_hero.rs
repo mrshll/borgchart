@@ -61,10 +61,15 @@ fn check(data: &Value, shown: &[(String, Vec<String>)], stage: &str) {
             write(&catalog.join(child).join(name), text.as_str().unwrap());
         }
     }
+    // The Slack tokens are `{from:}` references, so validate wants a
+    // resolver configured; it never runs one, so a made-up one will do.
     let config_file = dir.path().join("config.yaml");
     write(
         &config_file,
-        &format!("schema: 1\ntemplates: [{}]\n", catalog.display()),
+        &format!(
+            "schema: 1\ntemplates: [{}]\nsecrets: {{resolver: [fake-resolver, '--env-file={{file}}', '--']}}\n",
+            catalog.display()
+        ),
     );
     let mut report = Report::default();
     let config = config::load_file(&config_file, &mut report).expect("the test's config loads");
@@ -80,8 +85,8 @@ fn check(data: &Value, shown: &[(String, Vec<String>)], stage: &str) {
 #[test]
 fn every_stage_the_first_screen_types_is_a_valid_template() {
     let data = data();
-    // The plugin's secrets come from the start environment, as the page's
-    // reader would export them; without them validate warns. Stand-ins.
+    // The channel ID comes from the start environment, as the page's
+    // reader would export it; without it validate warns. A stand-in.
     for name in data["environment"]
         .as_array()
         .expect("environment is a list of names")
