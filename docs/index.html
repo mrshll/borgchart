@@ -1,24 +1,49 @@
 <!doctype html>
 <!-- borgchart.ai. GitHub Pages serves docs/ on main as it is (CNAME,
-     .nojekyll; no build step). The animated tree is status.js, whose header
-     names the brg source it copies and holds the generator; the palette is
-     style.css; the command text is the COMMANDS section below. -->
+     .nojekyll; no build step). The first screen is hero.js, which types the
+     team in hero-team.js (tests/site_hero.rs checks every stage of it
+     validates); the palette and layout are style.css; the command text is
+     the COMMANDS section below. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>borgchart: teams of coding agents</title>
-<meta name="description" content="borgchart runs teams of coding agents from plain files. brg starts them, shows who is working and what needs you, and stops them again.">
+<title>borgchart: teams of coding agents, defined in plain text files</title>
+<meta name="description" content="Teams of coding agents, defined in plain text files. A folder of YAML and Markdown is the team; brg runs it in tmux.">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<main>
+<header class="hero">
+<h1>Teams of coding agents, defined in plain text files.</h1>
+<p class="sub">A folder of YAML and Markdown is the team. brg runs it in tmux.</p>
 
-<p class="prompt"><span class="faded">$</span> brg status -w</p>
-<div class="stack">
-<pre class="screen ghost" aria-hidden="true"></pre>
-<pre id="status" class="screen" role="img" aria-label="An animated brg status tree of a team of coding agents, its teams and members coming and going">brg status -w draws a live tree of the team here; it needs JavaScript.</pre>
+<div id="hero-stage" class="stage" role="img" aria-label="A team template being edited, beside the team it makes. Typing a reviewer role and its Markdown prompt adds a reviewer; a qa role naming another template adds a whole child team under the lead; an on-call role and the Slack plugin add a member that wakes when an alert lands in #ops-high. Then it starts again.">
+<div class="pane editor" aria-hidden="true">
+<div class="tabs"><span class="faded dir">engineering/</span> <button type="button" class="tab" data-file="template.yaml" tabindex="-1">template.yaml</button> <button type="button" class="tab" data-file="reviewer.md" tabindex="-1">reviewer.md</button></div>
+<div class="body files"></div>
+<div class="body cmd"><span class="faded">$</span> <span class="cmd-text"></span></div>
 </div>
+<div class="pane crew" aria-hidden="true">
+<div class="body">
+<div class="band"></div>
+<div class="head"></div>
+<div class="rows">The team shows here; it needs JavaScript.</div>
+</div>
+</div>
+</div>
+
+<p class="install"><span class="faded">$</span> <code>curl -fsSL https://borgchart.ai/install.sh | sh</code></p>
+</header>
+
+<main>
+<!-- What sets borgchart apart; each claim is checked against the code
+     (src/launch.rs opening_prompt) and docs (format.md, concepts.md). -->
+<section class="claims" aria-label="What makes borgchart different">
+<div><p class="claim">The team is a folder.</p><p>A <code>template.yaml</code> and one Markdown prompt per role. Keep it in git and review it like code.</p></div>
+<div><p class="claim">Every prompt is a file you can read.</p><p>A member opens with its role file. brg appends only the commands it may run and a one-line note; your <code>CLAUDE.md</code> and <code>AGENTS.md</code> load as they always do.</p></div>
+<div><p class="claim">Your own agents, in tmux.</p><p>Members are the <b>claude</b> and <b>codex</b> you already use, with your settings and connectors, signed in as you, on your plans. No API keys needed and no hosted service: each runs in a tmux window on your machine, and <code>brg attach</code> puts you in it.</p></div>
+</section>
+<hr>
 
 <p class="title"><span>BRG(1)</span><span>borgchart manual</span><span>BRG(1)</span></p>
 
@@ -40,7 +65,7 @@
 <dl class="commands">
 <dt>templates</dt><dd>List available team templates and their teams</dd>
 <dt>validate</dt><dd>Check a team template and brg's configuration; starts nothing</dd>
-<dt>secrets</dt><dd>List the secrets a template's plugins need, and whether each is set</dd>
+<dt>secrets</dt><dd>List plugin secrets, or check a registered team's secrets resolve</dd>
 </dl>
 <p class="group">Teams and members</p>
 <dl class="commands">
@@ -95,7 +120,8 @@
 </section>
 
 </main>
-<script src="status.js"></script>
+<script src="hero-team.js"></script>
+<script src="hero.js"></script>
 <script src="teams.js"></script>
 <script src="explorer.js"></script>
 </body>
