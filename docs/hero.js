@@ -2,9 +2,10 @@
 // hand, beside the team it makes. Type a reviewer role and its prompt, run
 // `brg start`: a reviewer joins. Add a role naming another template,
 // create and start it: a child team nests under the lead. Add an on-call
-// role and a chat plugin that delivers to it, run `brg start`: the plugin
-// comes up, an alert lands, and the on-call member wakes. Then it starts
-// again.
+// role and the Slack plugin that delivers to it, run `brg start`: the
+// plugin comes up, an alert lands in #ops-high, and the on-call member
+// wakes. Then it starts again. It draws like a terminal: characters and
+// rows appear at once, and the block cursor blinks only while idle.
 //
 // The team side is simpler than `brg status` (no details column for
 // members, no refresh footer) but keeps its marks, tones, order and
@@ -47,7 +48,7 @@
   // A person's typing: quick within a word, a beat at spaces and
   // punctuation, now and then a longer hesitation.
   function keyDelay(ch, next) {
-    let ms = between(20, 40);
+    let ms = between(18, 34);
     if (ch === " ") ms += between(10, 35);
     if (":,.{[".includes(ch)) ms += between(25, 70);
     if (next === undefined) ms += between(40, 90);
@@ -57,11 +58,25 @@
 
   // ---- the editor ----
   const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  // explorer.js's colouring: keys bold, a prompt's front matter faded.
-  const yamlLine = (s) => esc(s).replace(/^(\s*)([\w.-]+)(:)/, "$1<b>$2</b>$3")
+  // explorer.js's colouring: keys bold, comments and a prompt's front
+  // matter faded.
+  const yamlLine = (s) => {
+    const hash = s.search(/(^|\s)#/);
+    const body = hash < 0 ? s : s.slice(0, hash);
+    const note = hash < 0 ? "" : `<span class="faded">${esc(s.slice(hash))}</span>`;
+    return yamlBody(body) + note;
+  };
+  const yamlBody = (s) => esc(s).replace(/^(\s*)([\w.-]+)(:)/, "$1<b>$2</b>$3")
     .replace(/(\{|, )([\w.-]+)(:)/g, "$1<b>$2</b>$3");
+  // A terminal's block cursor: solid while keys come, blinking when idle.
   const caret = document.createElement("span");
   caret.className = "caret";
+  let idleTimer;
+  function keyed() {
+    caret.classList.remove("idle");
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => caret.classList.add("idle"), 500);
+  }
 
   const files = {};
   function makeFile(name) {
@@ -82,10 +97,10 @@
     ln.tx.innerHTML = html;
     if (ln === caretAt) ln.tx.appendChild(caret);
   }
-  // A line at `at` (the end by default); a fresh one opens, tinted.
-  function addLine(f, text, fresh, at = f.lines.length) {
+  // A line at `at` (the end by default); the lines below move down at once.
+  function addLine(f, text, at = f.lines.length) {
     const div = document.createElement("div");
-    div.className = "ln" + (fresh ? " enter fresh" : "");
+    div.className = "ln";
     const no = document.createElement("span");
     no.className = "no";
     const tx = document.createElement("span");
@@ -95,10 +110,6 @@
     f.lines.splice(at, 0, ln);
     f.lines.forEach((l, i) => (l.no.textContent = String(i + 1).padStart(2) + " "));
     paintLine(f, ln);
-    if (fresh) {
-      requestAnimationFrame(() => requestAnimationFrame(() => div.classList.remove("enter")));
-      setTimeout(() => div.classList.remove("fresh"), 2600);
-    }
     return ln;
   }
   let caretAt = null;
@@ -106,6 +117,7 @@
     const was = caretAt;
     caretAt = ln;
     if (was && was !== ln) was.tx.contains(caret) && caret.remove();
+    keyed();
     if (ln) {
       paintLine(f, ln);
       follow(f, ln);
@@ -114,13 +126,14 @@
   // Keep the caret's line in view where the editor shows fewer lines than
   // the file has (a phone).
   function follow(f, ln) {
-    const h = f.lines[0].div.offsetHeight || 1;
+    // Scroll by whole lines, as a terminal editor does.
+    const h = f.lines[0].div.getBoundingClientRect().height || 1;
+    const shown = Math.max(1, Math.round(filesEl.clientHeight / h));
     const i = f.lines.indexOf(ln);
-    const top = filesEl.scrollTop;
-    let next = top;
-    if ((i + 1) * h > top + filesEl.clientHeight) next = (i + 1) * h - filesEl.clientHeight;
-    if (i * h < top) next = i * h;
-    if (next !== top) filesEl.scrollTo({ top: next, behavior: still ? "auto" : "smooth" });
+    let first = Math.round(filesEl.scrollTop / h);
+    if (i >= first + shown) first = i - shown + 1;
+    if (i < first) first = i;
+    filesEl.scrollTop = first * h;
   }
   function show(name) {
     for (const f of Object.values(files)) f.el.classList.toggle("away", f.name !== name);
@@ -137,7 +150,7 @@
     let at = edit.after === undefined ? f.lines.length : edit.after;
     for (const text of edit.lines) {
       const indent = text.match(/^ */)[0];
-      const ln = addLine(f, indent, true, at++);
+      const ln = addLine(f, indent, at++);
       putCaret(f, ln);
       await sleep(between(70, 130));
       const rest = text.slice(indent.length);
@@ -145,6 +158,7 @@
         if (my !== run) return;
         ln.text += rest[k];
         paintLine(f, ln);
+        keyed();
         await sleep(keyDelay(rest[k], rest[k + 1]));
       }
     }
@@ -156,10 +170,12 @@
     cmdEl.classList.remove("ran");
     cmdEl.textContent = "";
     cmdEl.after(caret);
+    keyed();
     await sleep(between(250, 380));
     for (let k = 0; k < text.length; k++) {
       if (my !== run) return;
       cmdEl.textContent += text[k];
+      keyed();
       await sleep(keyDelay(text[k], text[k + 1]) * 0.6);
     }
     await sleep(280);
@@ -176,7 +192,7 @@
     kind: "child", name, template, children: [], get running() { return live(this.children); },
   });
   let top = []; // the team's top-level members
-  let plugin = null; // the chat plugin's row, once started
+  let plugin = null; // the Slack plugin's row, once started
 
   // src/runtime.rs status_look, for the states shown here.
   function look(node) {
@@ -228,27 +244,24 @@
 
   const rows = new Map();
   let spin = still ? null : 0;
-  function place(key, html, i, fresh) {
+  // Rows appear at once and move to their place in one step, as a
+  // terminal redraw would.
+  function place(key, html, i) {
     let row = rows.get(key);
     if (!row) {
       row = document.createElement("div");
-      row.className = fresh ? "row enter fresh" : "row";
-      row.style.transform = `translateY(${i * 100}%)`;
+      row.className = "row";
       rowsEl.appendChild(row);
       rows.set(key, row);
-      if (fresh) {
-        requestAnimationFrame(() => requestAnimationFrame(() => row.classList.remove("enter")));
-        setTimeout(() => row.classList.remove("fresh"), 2600);
-      }
     }
     row.style.transform = `translateY(${i * 100}%)`;
     row.innerHTML = html;
     return row;
   }
-  function render(fresh = !still) {
+  function render() {
     const ordered = order(top, "", []);
-    ordered.forEach(({ node, prefix }, i) => place(node, paintRow(node, prefix, spin), i, fresh));
-    if (plugin) place(plugin, paintPlugin(plugin), ordered.length, fresh);
+    ordered.forEach(({ node, prefix }, i) => place(node, paintRow(node, prefix, spin), i));
+    if (plugin) place(plugin, paintPlugin(plugin), ordered.length);
     // src/runtime.rs summary_band: working, then idle.
     const members = ordered.map((o) => o.node).filter((n) => n.kind === "member");
     const working = members.filter((n) => n.state === "working").length;
@@ -259,10 +272,6 @@
     bandEl.innerHTML = `<span class="b">borgchart</span>    ` + parts.join("  ");
     headEl.innerHTML = `<span class="b">${TEAM}</span>  <span class="faded">folder ~/src/shop</span>`;
   }
-  const flash = (row) => {
-    row.classList.add("fresh");
-    setTimeout(() => row.classList.remove("fresh"), 1800);
-  };
   // A new member: up and idle, then (unless it waits for work) at work on
   // what its parent hands it.
   async function join(list, node, waits) {
@@ -284,7 +293,7 @@
     for (const k of Object.keys(files)) delete files[k];
     caretAt = null;
     const yaml = makeFile("template.yaml");
-    data.start["template.yaml"].forEach((t) => addLine(yaml, t, false));
+    data.start["template.yaml"].forEach((t) => addLine(yaml, t));
     makeFile("reviewer.md");
     $('.tab[data-file="reviewer.md"]').classList.add("unmade");
     show("template.yaml");
@@ -305,8 +314,7 @@
     const my = run;
     const yaml = files["template.yaml"];
     putCaret(yaml, yaml.lines[yaml.lines.length - 1]);
-    render(false);
-    stage.classList.remove("dim");
+    render();
     stage.dataset.loops = String(Number(stage.dataset.loops || 0) + 1);
     await sleep(1000);
 
@@ -338,7 +346,7 @@
     await join(qa.children, m("lead-h4nw", MODEL.qaLead));
     await sleep(900);
 
-    // An on-call role and the chat plugin that delivers to it. A full
+    // An on-call role and the Slack plugin that delivers to it. A full
     // start runs the plugin's process and gives the role its member, who
     // waits; an alert lands in the channel and it starts work.
     await type(ONCALL[0]);
@@ -346,26 +354,21 @@
     await type(ONCALL[1]);
     await sleep(500);
     await command(`brg start ${TEAM}`);
-    plugin = { name: "chat", detail: "watching #alerts" };
+    plugin = { name: "slack", detail: "watching #ops-high" };
     const oncall = m("oncall-m5rt", MODEL.oncall);
     await join(top, oncall, true);
     await sleep(1400);
     if (my !== run) return;
-    plugin.detail = "1 new in #alerts";
+    plugin.detail = "1 new in #ops-high";
     render();
-    flash(rows.get(plugin));
     await sleep(700);
     oncall.state = "working";
     oncall.since = performance.now();
     render();
-    flash(rows.get(oncall));
     await sleep(1400);
-    plugin.detail = "watching #alerts";
+    plugin.detail = "watching #ops-high";
     render();
     await sleep(2300);
-    if (my !== run) return;
-    stage.classList.add("dim");
-    await sleep(700);
   }
 
   // Members already at work turn idle and back now and then, as they do.
@@ -392,7 +395,7 @@
       const f = files[edit.file];
       let at = edit.after === undefined ? f.lines.length : edit.after;
       for (const t of edit.lines) {
-        const ln = addLine(f, t, false, at++);
+        const ln = addLine(f, t, at++);
         if (f.name.endsWith(".yaml")) ln.div.classList.add("fresh");
       }
     }
@@ -403,8 +406,8 @@
     qa.children.push(m("lead-h4nw", MODEL.qaLead, "working"));
     lead.children.push(m("reviewer-p7xm", MODEL.reviewer, "idle"), qa);
     top.push(m("oncall-m5rt", MODEL.oncall, "working"));
-    plugin = { name: "chat", detail: "1 new in #alerts" };
-    render(false);
+    plugin = { name: "slack", detail: "1 new in #ops-high" };
+    render();
     for (const [node, row] of rows) if (node !== lead && node.name !== "coder-7k2m") row.classList.add("fresh");
   }
 

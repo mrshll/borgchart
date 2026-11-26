@@ -2,9 +2,11 @@
 // beat's edits are typed in order; tests/site_hero.rs writes the template
 // after the start and after every beat, with the files the editor never
 // shows and the `qa` template beside it, and checks each one validates.
+// `environment` names what a person exports before `brg start` (the Slack
+// tokens and the #ops-high channel ID); the test sets stand-ins for them.
 // Keep the lines short: the widest has to fit a phone.
 window.HERO_TEAM = {
-  "team": "my-team",
+  "team": "engineering",
   "start": {
     "template.yaml": [
       "default: claude",
@@ -43,26 +45,31 @@ window.HERO_TEAM = {
       ]
     },
     {
-      "name": "an on-call role woken by a chat plugin",
+      "name": "an on-call role woken by the Slack plugin",
       "edits": [
         {"file": "template.yaml", "lines": [
           "  oncall:",
           "    prompt: oncall.md",
           "    restricted_access: true",
-          "    plugins: {chat: [read, reply]}"
+          "    plugins: {slack: [read, reply]}"
         ]},
         {"file": "template.yaml", "after": 1, "lines": [
           "plugins:",
-          "  chat:",
-          "    process: [chat, watch, alerts]",
+          "  slack:",
+          "    process: [brg-slack, watch]",
           "    delivers_to: oncall",
+          "    env:",
+          "      SLACK_APP_TOKEN:",
+          "      SLACK_BOT_TOKEN:",
+          "      SLACK_CHANNEL_ID:  # #ops-high",
           "    actions:",
-          "      read: chat read <id>",
-          "      reply: chat reply <id> <text>"
+          "      read: brg-slack read <ts>",
+          "      reply: brg-slack reply <ts> <text>"
         ]}
       ]
     }
   ],
+  "environment": ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN", "SLACK_CHANNEL_ID"],
   "unseen": {
     "lead.md": "---\nmodels: {claude: opus high}\n---\nSplit the work and hand it out.\n",
     "coder.md": "---\nmodels: {codex: sol high}\n---\nMake the change the lead hands you.\n",

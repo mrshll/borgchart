@@ -80,6 +80,17 @@ fn check(data: &Value, shown: &[(String, Vec<String>)], stage: &str) {
 #[test]
 fn every_stage_the_first_screen_types_is_a_valid_template() {
     let data = data();
+    // The plugin's secrets come from the start environment, as the page's
+    // reader would export them; without them validate warns. Stand-ins.
+    for name in data["environment"]
+        .as_array()
+        .expect("environment is a list of names")
+    {
+        let name = name.as_str().expect("a variable name");
+        // SAFETY: this binary's only test sets these before validating, and
+        // nothing else reads or writes the environment meanwhile.
+        unsafe { std::env::set_var(name, "stand-in") };
+    }
     let mut shown: Vec<(String, Vec<String>)> = data["start"]
         .as_object()
         .expect("start is a map of files")
