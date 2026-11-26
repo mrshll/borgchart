@@ -401,6 +401,26 @@ fn batch_budget_delivers_pending_notices_oldest_first_without_losing_remainder()
 }
 
 #[test]
+fn batch_a_recipient_refuses_is_delivered_one_item_at_a_time() {
+    let h = Harness::new();
+    fs::write(h.dir.path().join("short"), "").unwrap();
+    let pending: Vec<_> = (0..3)
+        .map(|i| json!({"kind":"post","ts":ts(&post(i))}))
+        .collect();
+    save(&h, json!({"last":ts(&post(2)),"pending":pending}));
+    listen(&h, vec![vec![]]);
+    assert_eq!(
+        h.sends()
+            .iter()
+            .map(|s| s.last().unwrap().lines().count() - 1)
+            .collect::<Vec<_>>(),
+        vec![3, 1, 1, 1]
+    );
+    assert_eq!(h.state("cursor.json")["pending"], json!([]));
+    assert_eq!(h.state("health.json")["ok"], true);
+}
+
+#[test]
 fn slow_timed_out_delivery_keeps_pending_and_cannot_delay_socket_acks() {
     let h = Harness::new();
     save(

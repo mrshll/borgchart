@@ -218,7 +218,9 @@ Watch journals accepted timestamps and pending notices to `cursor.json` before
 acknowledging Slack. Pending intake items are sent oldest first on event or
 catch-up wakes and every 15 seconds, at most six items and 900 UTF-8 bytes per
 batch. Exit 0 from brg means sent: remove exactly that batch and save the cursor.
-Every other result, including a timeout, keeps it for retry. Sending runs off
+Every other result, including a timeout, keeps it for retry; a refused batch of
+several items is first sent again one item at a time, because a restricted
+recipient accepts only a short notice. Sending runs off
 the socket thread and releases the cursor lock, so a slow send cannot delay
 acknowledgements. Health writes `ok`, UTC `at` and `detail` to `health.json`;
 connection, duplicate-listener, delivery and catch-up errors make it not ok.
