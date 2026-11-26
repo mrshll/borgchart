@@ -1,0 +1,130 @@
+/* The prototype first screen (hero-prototype.html), on top of style.css:
+   a headline, a template being edited beside the team it makes, and the
+   install line, all inside one screen at laptop and phone sizes. */
+.hero {
+  max-width: 112ch;
+  min-height: 100vh;
+  min-height: 100svh;
+  margin: 0 auto;
+  padding: 2.4rem 16px 2rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+h1 {
+  font-size: clamp(1.3rem, 3.2vw, 2rem);
+  line-height: 1.2;
+  margin: 0;
+  text-wrap: balance;
+}
+.sub { color: var(--faded); margin: 0.5em 0 1.6em; }
+
+/* Two wells side by side, or one above the other on a phone. Each sizes
+   its text to its own width, so its widest line (53 columns, at 0.6em each) always fits
+   and nothing wraps or scrolls. */
+.stage {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 2ch;
+}
+.pane {
+  background: var(--well);
+  border-radius: 4px;
+  padding: 0.8em 1.5ch;
+  container-type: inline-size;
+  min-width: 0;
+}
+.pane > * { font-size: min(14px, calc(100cqw / 33)); line-height: 1.3; }
+.stage .body, .stage .tabs { transition: opacity 0.6s ease; }
+.stage.dim .body, .stage.dim .tab[data-file="reviewer.md"] { opacity: 0; }
+
+/* The editor: its file tabs, the file, and a shell line under it. */
+.tabs { margin-bottom: 0.6em; white-space: nowrap; }
+.tab {
+  font: inherit;
+  color: var(--faded);
+  background: none;
+  border: 0;
+  padding: 0 0.5ch;
+  cursor: pointer;
+  transition: color 0.3s, background-color 0.3s, opacity 0.4s;
+}
+.tab[aria-pressed="true"] { color: var(--bg); background: var(--ink); }
+.tab.unmade { opacity: 0; pointer-events: none; }
+.files {
+  display: grid;
+  height: calc(15 * 1.3em);
+  overflow: hidden;
+}
+.file { grid-area: 1 / 1; transition: opacity 0.3s ease; }
+.file.away { opacity: 0; }
+.ln {
+  height: 1.3em;
+  white-space: pre;
+  overflow: hidden;
+  transition: height 0.22s ease-out, opacity 0.3s ease-out, background-color 2.4s ease;
+}
+.ln.enter { height: 0; opacity: 0; }
+.ln.fresh, .row.fresh { background-color: color-mix(in srgb, var(--busy) 16%, transparent); }
+.no { color: var(--faded); opacity: 0.6; user-select: none; }
+.caret {
+  display: inline-block;
+  width: 1ch;
+  height: 1.15em;
+  vertical-align: text-bottom;
+  background: var(--ink);
+  opacity: 0.75;
+}
+.cmd {
+  border-top: 1px solid color-mix(in srgb, var(--faded) 35%, transparent);
+  margin-top: 0.6em;
+  padding-top: 0.6em;
+  white-space: pre;
+  height: 1.3em;
+  box-sizing: content-box;
+}
+.cmd-text { transition: color 0.4s; }
+.cmd-text.ran { color: var(--faded); }
+
+/* The team: summary band, header, then the tree, each row placed by its
+   index so rows slide into their order rather than jump. */
+.crew .band, .crew .head { white-space: pre; }
+.crew .head { margin: 1.3em 0 0; }
+.rows {
+  position: relative;
+  height: calc(6 * 1.3em);
+}
+.row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1.3em;
+  white-space: pre;
+  transition: transform 0.5s cubic-bezier(0.2, 0.7, 0.2, 1), opacity 0.5s ease, background-color 2.4s ease;
+}
+.row.enter { opacity: 0; }
+.mark { display: inline-block; width: 1ch; text-align: center; overflow: hidden; vertical-align: top; }
+.row.leave { opacity: 0; }
+
+.install { margin: 1.6em 0 0; white-space: nowrap; font-size: min(1rem, calc((100vw - 32px) / 31)); }
+.install code { user-select: all; }
+
+/* Below the first screen: short claims, side by side where there's room. */
+.claims {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(28ch, 1fr));
+  gap: 1.45em 3ch;
+  margin: 1em 0 1.45em;
+}
+.claims p { margin: 0; }
+.claims .claim { font-weight: bold; margin-bottom: 0.3em; }
+
+@media (max-width: 48rem) {
+  .stage { grid-template-columns: minmax(0, 1fr); gap: 1em; }
+  .sub { margin-bottom: 1.1em; }
+  .install { margin-top: 1.1em; }
+  .hero { padding-top: 1.2rem; padding-bottom: 1.2rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .stage *, .stage { transition: none !important; }
+}

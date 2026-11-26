@@ -1,0 +1,129 @@
+<!doctype html>
+<!-- A prototype first screen for borgchart.ai, to compare with index.html.
+     The hero is hero.js (a made-up template edited beside the team it makes)
+     and hero.css; everything from the man page down is index.html's, as it
+     is. GitHub Pages serves docs/ as it is; no build step. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>borgchart: teams of coding agents, defined in plain text files</title>
+<meta name="description" content="borgchart runs teams of coding agents from plain files. A folder of YAML and Markdown is the team; brg runs it in tmux.">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="hero.css">
+</head>
+<body>
+<header class="hero">
+<h1>Teams of coding agents, defined in plain text files.</h1>
+<p class="sub">A folder of YAML and Markdown is the team. brg runs it in tmux.</p>
+
+<div id="hero-stage" class="stage" role="img" aria-label="A team template being edited, beside the team it makes. Raising the coder role's max adds a second coder; typing a reviewer role and its Markdown prompt adds a reviewer; a qa role naming another template adds a whole child team under the lead. Then it starts again.">
+<div class="pane editor" aria-hidden="true">
+<div class="tabs"><span class="faded">my-team/</span> <button type="button" class="tab" data-file="template.yaml" tabindex="-1">template.yaml</button> <button type="button" class="tab" data-file="reviewer.md" tabindex="-1">reviewer.md</button></div>
+<div class="body files"></div>
+<div class="body cmd"><span class="faded">$</span> <span class="cmd-text"></span></div>
+</div>
+<div class="pane crew" aria-hidden="true">
+<div class="body">
+<div class="band"></div>
+<div class="head"></div>
+<div class="rows">The team shows here; it needs JavaScript.</div>
+</div>
+</div>
+</div>
+
+<p class="install"><span class="faded">$</span> <code>curl -fsSL https://borgchart.ai/install.sh | sh</code></p>
+</header>
+
+<main>
+<!-- Claims for the owner to react to; each is checked against the code or
+     docs named in the brief's report. -->
+<section class="claims" aria-label="What makes borgchart different">
+<div><p class="claim">The team is a folder.</p><p>A <code>template.yaml</code> and one Markdown file per role. Keep it in git; review it like code.</p></div>
+<div><p class="claim">Every prompt is a file you can read.</p><p>A member opens with its role file. brg adds only the commands it was granted and one line saying to read its inbox.</p></div>
+<div><p class="claim">Your own agents, in tmux.</p><p>Each member is a <b>claude</b> or <b>codex</b> session, logged in as you, on a private tmux server. <code>brg attach</code> puts you in any of them.</p></div>
+<div><p class="claim">Messages are files on your disk.</p><p>Every message and every acknowledgement is one JSON file in the team's state folder. Nothing is cleaned up behind you.</p></div>
+<div><p class="claim">Teams nest.</p><p>A role that names another template is a whole team, a member of yours.</p></div>
+</section>
+<hr>
+
+<p class="title"><span>BRG(1)</span><span>borgchart manual</span><span>BRG(1)</span></p>
+
+<h2>NAME</h2>
+<p>brg - run teams of coding agents from plain files</p>
+
+<h2>SYNOPSIS</h2>
+<p><b>brg</b> &lt;COMMAND&gt; [OPTIONS]</p>
+
+<h2>DESCRIPTION</h2>
+<p>Describe each role's model and standing task in a template folder, then <b>brg create</b> &lt;template&gt; &lt;folder&gt; starts a team from it, working in that folder. <b>brg status</b> shows who is alive, what they are doing and their unacked message counts; <b>brg attach</b> drops you into a member's live session; <b>brg stop</b> stops it all, and <b>brg start</b> brings it back.</p>
+<p>Members are <b>claude</b> and <b>codex</b> sessions on a private tmux server. They talk over a message bus of durable plain messages and acknowledgements, and a team can be a member of another team.</p>
+
+<h2>COMMANDS</h2>
+<!-- The commands: the one place to edit when brg's commands change.
+     Grouped and worded as `brg --help` lists them (src/cli.rs GROUPS):
+     each line is the command's one-line summary. -->
+<p class="group">Team templates</p>
+<dl class="commands">
+<dt>templates</dt><dd>List available team templates and their teams</dd>
+<dt>validate</dt><dd>Check a team template and brg's configuration; starts nothing</dd>
+<dt>secrets</dt><dd>List the secrets a template's plugins need, and whether each is set</dd>
+</dl>
+<p class="group">Teams and members</p>
+<dl class="commands">
+<dt>create</dt><dd>Make a team from a team template, or a member of a role</dd>
+<dt>start</dt><dd>Bring a team to what should be running, or start one member</dd>
+<dt>stop</dt><dd>Stop a team and all its child teams deepest first, or one member</dd>
+<dt>delete</dt><dd>Remove a stopped team, or a stopped member</dd>
+<dt>status</dt><dd>Show a team tree, or every top-level one, with nested child teams</dd>
+<dt>attach</dt><dd>Open a member's live session (detach with your tmux prefix, then d)</dd>
+<dt>logs</dt><dd>Show a member's or plugin's recent output</dd>
+</dl>
+<p class="group">Messages</p>
+<dl class="commands">
+<dt>msg</dt><dd>Send, list, read, acknowledge, wait for and check messages</dd>
+</dl>
+<p class="group">Cleanup</p>
+<dl class="commands">
+<dt>cleanup</dt><dd>Remove what brg left behind for deleted members and child teams</dd>
+<dt>destroy</dt><dd>Stop a whole tree and delete its records, notes and messages</dd>
+</dl>
+<p><code>brg help &lt;command&gt;</code> or <code>brg &lt;command&gt; --help</code> gives a command's details.</p>
+
+<h2>QUICK START</h2>
+<pre class="block"><span class="faded">$</span> curl -fsSL https://borgchart.ai/install.sh | sh
+<span class="faded">$</span> cd path/to/your/repository
+<span class="faded">$</span> brg create engineering</pre>
+<p>You need tmux, git, and the <b>claude</b> and <b>codex</b> CLIs, logged in.</p>
+<p><b>create</b> prints your team and its lead, for example <b>engineering-k3f9/lead-q8m3</b>. Talk to the lead, watch the team, and stop it:</p>
+<pre class="block"><span class="faded">$</span> brg attach engineering-k3f9/lead-q8m3
+<span class="faded">$</span> brg status
+<span class="faded">$</span> brg stop engineering-k3f9</pre>
+<p>See <a href="https://github.com/mrshll/borgchart/blob/main/README.md#install">Install</a> for supported systems, versions and building from source, and <a href="https://github.com/mrshll/borgchart/blob/main/docs/concepts.md">concepts</a>.</p>
+
+<h2>SEE ALSO</h2>
+<p><a href="https://github.com/mrshll/borgchart">github.com/mrshll/borgchart</a>, the source and issues</p>
+
+<hr>
+<!-- The template explorer: the repository's own team templates, from
+     teams.js (generated from templates/ by tests/site_teams.rs); explorer.js
+     draws it. -->
+<section aria-label="The files that define a team template">
+<div class="explorer">
+<div>
+<p class="prompt"><span class="faded">$</span> tree templates</p>
+<pre id="team-tree" class="tree">The templates' files show here; they need JavaScript.</pre>
+</div>
+<div hidden>
+<p id="team-cat" class="prompt"></p>
+<pre id="team-file" class="file" role="region" tabindex="0"></pre>
+</div>
+</div>
+</section>
+
+</main>
+<script src="hero.js"></script>
+<script src="teams.js"></script>
+<script src="explorer.js"></script>
+</body>
+</html>
