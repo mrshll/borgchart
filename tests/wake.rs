@@ -614,8 +614,17 @@ impl Env {
             "--json",
         ];
         args.extend_from_slice(extra);
+        let enters = self.events("enter").len();
         let out = self.brg(&args);
-        let value = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{out:?}"));
+        let value: serde_json::Value =
+            serde_json::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{out:?}"));
+        // brg returns once the screen shows the composer empty; the fake
+        // writes its log just after drawing, so wait for the log to catch up.
+        if value["delivery"] == "typed" {
+            self.wait_for("the fake to log the Enter", |e| {
+                e.events("enter").len() > enters
+            });
+        }
         (out.status.code().unwrap(), value)
     }
 }
@@ -1336,11 +1345,15 @@ fn cross_edge_sends_type_and_preflight_locked_recipients_in_their_own_team() {
                 "locked preflight must precede publication"
             );
             e.keys(&["C-u"]);
+            e.wait_for("the draft to clear", |e| !e.events("clear").is_empty());
         }
         let out = send();
         let result: Value = serde_json::from_slice(&out.stdout).unwrap();
         assert!(out.status.success(), "{result}");
         assert_eq!(result["delivery"], "typed", "{result}");
+        e.wait_for("the fake to log the submission", |e| {
+            !e.submissions().is_empty()
+        });
         let submissions = e.submissions();
         assert_eq!(submissions.len(), 1);
         assert!(submissions[0].contains(&format!("[brg m1 from {sender}")));
