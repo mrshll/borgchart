@@ -90,18 +90,28 @@ fn deliver(
         status.delivery.clear();
         return status.write(files);
     }
-    plugin::send("slack", target, &api::message_notice(&batch)?, None).map_err(|message| {
-        Error::failure(format!(
-            "delivery failed: {}; batch kept for retry",
-            api::safe(&message)
-        ))
-    })?;
-    {
+    let send = |items: &[Item]| -> Result<()> {
+        plugin::send("slack", target, &api::message_notice(items)?, None).map_err(|message| {
+            Error::failure(format!(
+                "delivery failed: {}; batch kept for retry",
+                api::safe(&message)
+            ))
+        })?;
         let mut state = cursor.lock().unwrap();
         state
             .pending
-            .retain(|item| !batch.iter().any(|sent| sent.ts == item.ts));
-        files.write_json("cursor.json", &*state)?;
+            .retain(|item| !items.iter().any(|sent| sent.ts == item.ts));
+        Ok(files.write_json("cursor.json", &*state)?)
+    };
+    if let Err(refused) = send(&batch) {
+        // A restricted recipient takes only a short notice, so a batch it
+        // refuses is sent again one item at a time, oldest first.
+        if batch.len() == 1 || send(&batch[..1]).is_err() {
+            return Err(refused);
+        }
+        for item in &batch[1..] {
+            send(std::slice::from_ref(item))?;
+        }
     }
     let mut status = health.lock().unwrap();
     status.delivery.clear();
