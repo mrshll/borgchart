@@ -36,10 +36,11 @@ fn status_i_attaches_detaches_and_quits() {
     };
     write(
         "team/template.yaml",
-        "bus: {}\nplugins:\n  watcher: {path: plugins/watcher, process: [./run.sh]}\nroles:\n  alpha: {prompt: alpha.md}\n  beta: {prompt: beta.md, vendor: codex, parent: alpha}\n  scout: {prompt: scout.md, parent: alpha, start: false}\n",
+        "bus: {}\nplugins:\n  watcher: {path: plugins/watcher, process: [./run.sh]}\nroles:\n  alpha: {prompt: alpha.md}\n  beta: {prompt: beta.md, vendor: codex, parent: alpha}\n  scout: {prompt: scout.md, parent: alpha, start: false}\n  spare: {prompt: spare.md, parent: alpha, start: false}\n",
     );
     write("team/alpha.md", "---\n---\nYou are alpha.\n");
     write("team/scout.md", "---\n---\nYou are scout.\n");
+    write("team/spare.md", "---\n---\nYou are spare.\n");
     write(
         "team/beta.md",
         "---\nmodels: {codex: example-model low}\n---\nYou are beta.\n",
@@ -76,7 +77,7 @@ fn status_i_attaches_detaches_and_quits() {
     fs::write(
         &script,
         format!(
-            "#!/bin/sh\n{env_line}id=$({brg} create {team} {work} | head -n 1 | cut -d' ' -f1) || exit 9\nexec {brg} status \"$id\" -i\n",
+            "#!/bin/sh\n{env_line}id=$({brg} create {team} {work} | head -n 1 | cut -d' ' -f1) || exit 9\n{brg} create \"$id/spare\" --name parked || exit 9\n{brg} stop \"$id/spare-parked\" || exit 9\nexec {brg} status \"$id\" -i\n",
             team = root.join("team").display(),
             work = root.join("work").display(),
         ),
@@ -118,7 +119,7 @@ fn status_i_attaches_detaches_and_quits() {
         || {
             let s = screen();
             s.lines().any(|l| {
-                l.contains("└─ ? beta")
+                l.contains("├─ ? beta")
                     && l.contains("Λ example-model low")
                     && l.contains("blocked (folder trust)")
                     // `brg attach <team>/<beta's member>`
@@ -202,14 +203,26 @@ fn status_i_attaches_detaches_and_quits() {
         dump,
     );
 
-    // scout, a `start: false` role with no member, is hidden (beta above
-    // stays alpha's last row) until `a` shows it, and `a` hides it again,
-    // across a refresh.
-    assert!(!screen().contains("scout"), "{}", dump());
-    assert!(screen().contains("a roles"), "{}", dump());
-    // Select the plugin's row, below where scout appears: the selection
+    let folded = || {
+        let s = screen();
+        s.contains("└─ ▸ 1 stopped")
+            && s.contains("a show all")
+            && !s.contains("scout")
+            && !s.contains("spare-parked")
+    };
+    let expanded = || {
+        let s = screen();
+        s.contains("a fold")
+            && s.lines()
+                .any(|l| l.contains("scout") && l.contains("not created"))
+            && s.lines()
+                .any(|l| l.contains("spare-parked") && l.contains("stopped"))
+            && !s.contains("▸ 1 stopped")
+    };
+    assert!(folded(), "{}", dump());
+    // Select the plugin's row, below the fold line: the selection
     // stays on it as rows come and go.
-    tmux(&private, &outer, &["send-keys", "-t", "=o:", "j"]);
+    tmux(&private, &outer, &["send-keys", "-t", "=o:", "j", "j"]);
     let selected = || {
         screen()
             .lines()
@@ -223,27 +236,27 @@ fn status_i_attaches_detaches_and_quits() {
         dump,
     );
     tmux(&private, &outer, &["send-keys", "-t", "=o:", "a"]);
-    wait(
-        "scout shown",
-        || {
-            let s = screen();
-            s.lines().any(|l| l.contains("├─ ? beta"))
-                && s.lines()
-                    .any(|l| l.contains("└─   scout") && l.contains("not created (start: false)"))
-        },
-        dump,
-    );
+    wait("the hidden role and stopped member shown", expanded, dump);
     // The 2 s refresh keeps it.
     std::thread::sleep(Duration::from_millis(2500));
-    assert!(screen().contains("scout"), "{}", dump());
+    assert!(expanded(), "{}", dump());
     assert!(selected().contains("watcher"), "{}", dump());
     tmux(&private, &outer, &["send-keys", "-t", "=o:", "a"]);
     wait(
-        "scout hidden again",
-        || !screen().contains("scout") && screen().contains("└─ ? beta"),
+        "the role hidden and the stopped member folded",
+        folded,
         dump,
     );
     assert!(selected().contains("watcher"), "{}", dump());
+
+    tmux(&private, &outer, &["send-keys", "-t", "=o:", "k"]);
+    wait(
+        "the fold line selected",
+        || selected().contains("▸ 1 stopped"),
+        dump,
+    );
+    tmux(&private, &outer, &["send-keys", "-t", "=o:", "Enter"]);
+    wait("Enter expands the folded rows", expanded, dump);
 
     tmux(&private, &outer, &["send-keys", "-t", "=o:", "q"]);
     wait(

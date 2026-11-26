@@ -279,13 +279,13 @@ enum Command {
         /// Print the rows as JSON.
         #[arg(long, conflicts_with_all = ["watch", "interactive"])]
         json: bool,
-        /// Live tree and message graph tabs (Tab switches, j/k cycle trees, q quits); plain when piped or NO_COLOR.
+        /// Live tree (a shows all or folds quiet rows) and messages (j/k cycle trees); Tab switches, q quits. Plain when piped or NO_COLOR.
         #[arg(short, long, conflicts_with = "interactive")]
         watch: bool,
         /// Seconds between refreshes with --watch.
         #[arg(long, default_value_t = 2)]
         interval: u64,
-        /// An interactive screen: j/k to move, Enter to attach, q to quit.
+        /// Interactive tree (j/k move, a shows all or folds quiet rows, Enter expands a fold or attaches, q quits).
         #[arg(short, long)]
         interactive: bool,
     },

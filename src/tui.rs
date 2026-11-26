@@ -1,6 +1,7 @@
 //! `brg status -w` (a refreshing table) and `brg status -i` (an interactive
 //! screen), for one team or, with none named, every team.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::time::{Duration, Instant};
 
@@ -15,6 +16,8 @@ use crate::runtime::{self, StatusRow};
 use crate::tree;
 
 const REFRESH: Duration = Duration::from_secs(2);
+const SELECTION: &str = "> ";
+const FOLD_INSTANCE: &str = "~";
 
 /// Spinner cadence; data is still read only at the chosen refresh interval.
 pub const SPIN_INTERVAL: Duration = Duration::from_millis(500);
@@ -32,6 +35,7 @@ fn watch_draw(
     now: Duration,
     errors: [&str; 2],
     refreshed: u64,
+    all: bool,
 ) {
     let Rect { width, height, .. } = frame.area();
     let title = sections.first().map_or("", |s| s.header.as_str());
@@ -87,6 +91,7 @@ fn watch_draw(
             None,
             true,
             working(sections).then(|| (now.as_millis() / SPIN_INTERVAL.as_millis()) as usize),
+            all,
         );
     }
     let rows: Vec<_> = sections.iter().flat_map(|s| s.rows.clone()).collect();
@@ -107,13 +112,18 @@ fn watch_draw(
     frame.render_widget(
         Paragraph::new(if error.is_empty() {
             format!(
-                "{}Tab {} · q quit · refreshed {} UTC",
+                "{}Tab {} · {}q quit · refreshed {} UTC",
                 if messages && headers && sections.len() > 1 {
                     "j/k tree · "
                 } else {
                     ""
                 },
                 if messages { "tree" } else { "messages" },
+                if messages {
+                    String::new()
+                } else {
+                    format!("{} · ", all_hint(all))
+                },
                 clock(refreshed)
             )
         } else {
@@ -128,6 +138,7 @@ fn watch_key(
     sections: &[Section],
     code: KeyCode,
     modifiers: KeyModifiers,
+    all: &mut bool,
 ) -> bool {
     match code {
         KeyCode::Char('j' | 'k') | KeyCode::Down | KeyCode::Up
@@ -147,6 +158,10 @@ fn watch_key(
         }
         KeyCode::Tab => {
             *messages = !*messages;
+            true
+        }
+        KeyCode::Char('a') if !*messages => {
+            *all = !*all;
             true
         }
         KeyCode::Char('q') | KeyCode::Esc => false,
@@ -172,7 +187,8 @@ pub fn watch(one: Option<&Instance>, interval: Duration) -> Result<(), String> {
     if !tree::colour_wanted(std::io::stdout().is_terminal()) {
         return watch_plain(one, interval);
     }
-    let mut sections = load(one, false)?;
+    let mut all = false;
+    let mut sections = load(one, all)?;
     let mut source = None;
     let mut selected = None;
     let mut feed = None;
@@ -189,12 +205,13 @@ pub fn watch(one: Option<&Instance>, interval: Duration) -> Result<(), String> {
     }
     let start = Instant::now();
     let mut refreshed = Instant::now();
+    let mut refresh_now = false;
     let mut polled = Instant::now() - store::POLL;
     let result = (|| {
         loop {
-            let refresh = refreshed.elapsed() >= interval;
+            let refresh = std::mem::take(&mut refresh_now) || refreshed.elapsed() >= interval;
             if refresh {
-                match load(one, false) {
+                match load(one, all) {
                     Ok(new) => {
                         sections = new;
                         error.clear();
@@ -239,6 +256,7 @@ pub fn watch(one: Option<&Instance>, interval: Duration) -> Result<(), String> {
                         start.elapsed(),
                         [&error, &follower_error],
                         refresh_time,
+                        all,
                     )
                 })
                 .map_err(|e| e.to_string())?;
@@ -259,15 +277,19 @@ pub fn watch(one: Option<&Instance>, interval: Duration) -> Result<(), String> {
             if event::poll(timeout).map_err(|e| e.to_string())?
                 && let Event::Key(key) = event::read().map_err(|e| e.to_string())?
                 && key.kind == KeyEventKind::Press
-                && !watch_key(
+            {
+                let was_all = all;
+                if !watch_key(
                     &mut messages,
                     &mut selected,
                     &sections,
                     key.code,
                     key.modifiers,
-                )
-            {
-                return Ok(());
+                    &mut all,
+                ) {
+                    return Ok(());
+                }
+                refresh_now = all != was_all;
             }
         }
     })();
@@ -346,33 +368,45 @@ fn every_text() -> Result<(String, Vec<StatusRow>), String> {
     Ok((text, every))
 }
 
-/// One team on the `-i` screen: its header line and its rows.
+/// One team on the screen, with the full rows and the tree drawn from them.
 struct Section {
     inst: Instance,
     header: String,
     rows: Vec<StatusRow>,
+    tree: Vec<StatusRow>,
+}
+
+impl Section {
+    fn new(inst: Instance, header: String, rows: Vec<StatusRow>, all: bool) -> Self {
+        let rows = live_first(if all {
+            rows
+        } else {
+            runtime::hide_empty_roles(rows)
+        });
+        let tree = if all {
+            rows.clone()
+        } else {
+            fold(rows.clone())
+        };
+        Self {
+            inst,
+            header,
+            rows,
+            tree,
+        }
+    }
 }
 
 /// The named team, or every team read from the registry now. With
 /// every team, one whose status fails shows its error as its header.
-/// `roles` keeps the rows of roles with no member that a terminal hides
-/// ([`runtime::hide_empty_roles`]).
-fn load(one: Option<&Instance>, roles: bool) -> Result<Vec<Section>, String> {
-    let section = |inst: Instance, rows: Result<Vec<StatusRow>, String>| match rows {
-        Ok(rows) => Section {
-            header: runtime::header_as(&inst, true),
-            inst,
-            rows: live_first(if roles {
-                rows
-            } else {
-                runtime::hide_empty_roles(rows)
-            }),
-        },
-        Err(e) => Section {
-            header: format!("{}: {e}", inst.id),
-            inst,
-            rows: Vec::new(),
-        },
+/// `all` shows every row, including roles that a terminal usually hides.
+fn load(one: Option<&Instance>, all: bool) -> Result<Vec<Section>, String> {
+    let section = |inst: Instance, rows: Result<Vec<StatusRow>, String>| {
+        let (header, rows) = match rows {
+            Ok(rows) => (runtime::header_as(&inst, true), rows),
+            Err(e) => (format!("{}: {e}", inst.id), Vec::new()),
+        };
+        Section::new(inst, header, rows, all)
     };
     match one {
         Some(inst) => Ok(vec![section(inst.clone(), Ok(runtime::status(inst)?))]),
@@ -386,12 +420,104 @@ fn load(one: Option<&Instance>, roles: bool) -> Result<Vec<Section>, String> {
     }
 }
 
+/// Keep marked rows and their ancestors, then summarize each parent's hidden children.
+fn fold(rows: Vec<StatusRow>) -> Vec<StatusRow> {
+    let parents: BTreeMap<_, _> = runtime::status_nodes(&rows)
+        .into_iter()
+        .map(|node| (node.id, node.parent))
+        .collect();
+    let mut kept = BTreeSet::new();
+    for row in rows
+        .iter()
+        .filter(|r| runtime::status_look(r).mark.is_some())
+    {
+        let mut key = runtime::status_key(row);
+        while kept.insert(key.clone()) {
+            let Some(Some(parent)) = parents.get(&key) else {
+                break;
+            };
+            key = parent.clone();
+        }
+    }
+    let mut visible = Vec::new();
+    let mut groups = BTreeMap::<_, Vec<_>>::new();
+    for row in rows {
+        let key = runtime::status_key(&row);
+        if kept.contains(&key) {
+            visible.push(row);
+        } else {
+            let parent = parents
+                .get(&key)
+                .and_then(Option::as_deref)
+                .filter(|parent| parents.contains_key(*parent));
+            if parent.is_none_or(|parent| kept.contains(parent)) {
+                // Top-level plugins sit outside the tree, including their fold.
+                let kind = if row.kind == "plugin" && row.parent.is_none() {
+                    "plugin"
+                } else {
+                    "fold"
+                };
+                groups.entry((parent, kind)).or_default().push(row);
+            }
+        }
+    }
+    visible.extend(groups.into_iter().map(|((parent, kind), rows)| StatusRow {
+        kind,
+        // The reserved instance keeps each group's key stable and sorts it last.
+        instance: FOLD_INSTANCE.into(),
+        name: parent.unwrap_or_default().into(),
+        parent: parent.map(str::to_owned),
+        state: String::new(),
+        detail: Some(fold_label(&rows)),
+        unacked: None,
+        delivery: None,
+        running: None,
+        expected_running: false,
+        input_unreadable: false,
+        ..rows[0].clone()
+    }));
+    live_first(visible)
+}
+
+fn is_fold(row: &StatusRow) -> bool {
+    row.instance == FOLD_INSTANCE
+}
+
+fn fold_label(rows: &[StatusRow]) -> String {
+    let mut counts = BTreeMap::new();
+    for row in rows {
+        let (state, _) = row.state.split_once(" (").unwrap_or((&row.state, ""));
+        let bucket = match (row.kind, state) {
+            ("member", runtime::STOPPED) => (0, "stopped"),
+            ("member", runtime::NOT_STARTED) => (1, "not started"),
+            ("team", runtime::STOPPED) => (2, "stopped team"),
+            ("plugin", runtime::STOPPED) => (3, "stopped plugin"),
+            ("role", "on demand") => (4, "on demand"),
+            ("role", "not created") => (5, "not created"),
+            _ => (6, state),
+        };
+        *counts.entry(bucket).or_insert(0) += 1;
+    }
+    counts
+        .into_iter()
+        .map(|((order, label), count)| {
+            let suffix = if count > 1 && matches!(order, 2 | 3) {
+                "s"
+            } else {
+                ""
+            };
+            format!("{count} {label}{suffix}")
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
 /// The rows in the order the screen draws them: as `brg status` on a
 /// terminal, siblings that are not running after the ones that are.
 fn live_first(rows: Vec<StatusRow>) -> Vec<StatusRow> {
     let nodes = runtime::status_nodes(&rows);
     let mut slots: Vec<Option<StatusRow>> = rows.into_iter().map(Some).collect();
-    let mut keyed: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut keyed: BTreeMap<String, usize> = BTreeMap::new();
     for (i, row) in slots.iter().enumerate() {
         if let Some(row) = row {
             keyed.insert(runtime::status_key(row), i);
@@ -414,7 +540,7 @@ fn line_key(sections: &[Section], (s, r): (usize, Option<usize>)) -> (String, Op
     let section = &sections[s];
     (
         section.inst.id.clone(),
-        r.map(|r| runtime::status_key(&section.rows[r])),
+        r.map(|r| runtime::status_key(&section.tree[r])),
     )
 }
 
@@ -422,14 +548,23 @@ fn line_key(sections: &[Section], (s, r): (usize, Option<usize>)) -> (String, Op
 /// that line is still drawn: `a` and a refresh add and remove lines above it.
 fn reload(
     one: Option<&Instance>,
-    roles: bool,
+    all: bool,
     headers: bool,
     sections: &mut Vec<Section>,
     table_state: &mut TableState,
 ) {
-    let Ok(new) = load(one, roles) else {
+    let Ok(new) = load(one, all) else {
         return;
     };
+    replace_sections(new, headers, sections, table_state);
+}
+
+fn replace_sections(
+    new: Vec<Section>,
+    headers: bool,
+    sections: &mut Vec<Section>,
+    table_state: &mut TableState,
+) {
     let selected = table_state
         .selected()
         .and_then(|i| entries(sections, headers).get(i).copied())
@@ -452,7 +587,7 @@ fn entries(sections: &[Section], headers: bool) -> Vec<(usize, Option<usize>)> {
         if headers {
             out.push((s, None));
         }
-        out.extend((0..section.rows.len()).map(|r| (s, Some(r))));
+        out.extend((0..section.tree.len()).map(|r| (s, Some(r))));
     }
     out
 }
@@ -507,6 +642,10 @@ fn summary_line(rows: &[StatusRow], colour: bool) -> Line<'static> {
     Line::from(spans)
 }
 
+fn all_hint(all: bool) -> &'static str {
+    if all { "a fold" } else { "a show all" }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw(
     frame: &mut ratatui::Frame,
@@ -518,6 +657,7 @@ fn draw(
     note: Option<&str>,
     colour: bool,
     spin: Option<usize>,
+    all: bool,
 ) {
     let [band, top, bottom] = Layout::vertical([
         Constraint::Length(2),
@@ -526,16 +666,21 @@ fn draw(
     ])
     .areas(frame.area());
     // The same tree and columns as `brg status`, each team's tree its own.
-    let prefixes: Vec<std::collections::BTreeMap<String, String>> = sections
+    let prefixes: Vec<BTreeMap<String, String>> = sections
         .iter()
         .map(|section| {
-            let nodes = runtime::status_nodes(&section.rows);
+            let nodes = runtime::status_nodes(&section.tree);
             tree::order_live_first(&nodes)
                 .into_iter()
                 .map(|(i, p)| (nodes[i].id.clone(), p))
                 .collect()
         })
         .collect();
+    let prefix = |s: usize, row: &StatusRow| {
+        prefixes[s]
+            .get(&runtime::status_key(row))
+            .map_or("", String::as_str)
+    };
     let lines = entries(sections, headers);
     let cells: Vec<[String; 4]> = lines
         .iter()
@@ -544,13 +689,18 @@ fn draw(
             let Some(r) = r else {
                 return Default::default();
             };
-            let r = &sections[s].rows[r];
+            let r = &sections[s].tree[r];
+            let prefix = prefix(s, r);
+            if is_fold(r) {
+                return [
+                    format!("{prefix}▸"),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                ];
+            }
             let name = format!(
-                "{}{} {}",
-                prefixes[s]
-                    .get(&runtime::status_key(r))
-                    .cloned()
-                    .unwrap_or_default(),
+                "{prefix}{} {}",
                 tree::state_mark(runtime::status_look(r), spin).unwrap_or(' '),
                 runtime::status_name(r)
             );
@@ -589,7 +739,7 @@ fn draw(
         .into_iter()
         .zip(&lines)
         .map(|([name, state, vendor, detail], &(s, r))| {
-            let r = r.map(|r| &sections[s].rows[r]);
+            let r = r.map(|r| &sections[s].tree[r]);
             let style = r.map_or(Style::default(), |r| state_style(r, colour));
             let faded = tone_style(tree::Tone::Faded, colour);
             let row = Row::new(vec![
@@ -643,7 +793,7 @@ fn draw(
         .collect();
     let table = Table::new(body, widths)
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-        .highlight_symbol("> ")
+        .highlight_symbol(SELECTION)
         .block(
             Block::bordered()
                 .border_type(BorderType::Rounded)
@@ -654,35 +804,52 @@ fn draw(
                 )),
         );
     frame.render_stateful_widget(table, top, table_state);
-    // Each visible header line across the whole row, as `brg status` prints it.
+    // Headers and fold labels span the row without affecting the column widths.
     let inner = top.inner(Margin::new(1, 1));
     // Every team, and there are none: say so, as `brg status` does.
     if let Some(note) = note {
         frame.render_widget(Paragraph::new(format!("  {note}")), inner);
     }
     let offset = table_state.offset();
+    let selection_width = if table_state.selected().is_some() {
+        SELECTION.len() as u16
+    } else {
+        0
+    };
     for (i, &(s, r)) in lines.iter().enumerate().skip(offset) {
         let y = inner.y + (i - offset) as u16;
         if y >= inner.bottom() {
             break;
         }
-        if r.is_some() {
-            continue;
-        }
         let selected = table_state.selected() == Some(i);
-        let mut style = Style::default().add_modifier(Modifier::BOLD);
+        let (text, mut style, x) = match r.map(|r| &sections[s].tree[r]) {
+            None => {
+                let symbol = if selected { SELECTION } else { "  " };
+                (
+                    format!("{symbol}{}", sections[s].header),
+                    Style::default().add_modifier(Modifier::BOLD),
+                    inner.x,
+                )
+            }
+            Some(row) if is_fold(row) => (
+                row.detail.clone().unwrap_or_default(),
+                tone_style(tree::Tone::Faded, colour),
+                inner.x + selection_width + prefix(s, row).chars().count() as u16 + 2,
+            ),
+            Some(_) => continue,
+        };
         if selected {
             style = style.add_modifier(Modifier::REVERSED);
         }
-        let symbol = if selected { "> " } else { "  " };
         frame.render_widget(
-            Paragraph::new(format!("{symbol}{}", sections[s].header)).style(style),
-            Rect::new(inner.x, y, inner.width, 1),
+            Paragraph::new(text).style(style),
+            Rect::new(x, y, inner.right().saturating_sub(x), 1),
         );
     }
-    let help = Line::from(
-        "j/k move · enter attach (detach: tmux prefix, then d) · a roles · r refresh · q quit",
-    )
+    let help = Line::from(format!(
+        "j/k move · enter attach/expand (detach: tmux prefix, then d) · {} · r refresh · q quit",
+        all_hint(all),
+    ))
     .style(tone_style(tree::Tone::Faded, colour));
     let every: Vec<StatusRow> = sections.iter().flat_map(|s| s.rows.clone()).collect();
     let summary = summary_line(&every, colour);
@@ -696,10 +863,9 @@ fn draw(
 /// `brg status -i`. With no team, every team, each under its
 /// header line; Enter attaches in the selected member's own team.
 pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
-    // The `a` key shows and hides roles with no member.
     let colour = tree::colour_wanted(true);
-    let mut roles = false;
-    let mut sections = load(one, roles)?;
+    let mut all = false;
+    let mut sections = load(one, all)?;
     let headers = one.is_none();
     // One team: the same header line as `brg status` on a terminal (the
     // team and its working folder) as the title.
@@ -720,7 +886,7 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
     let mut spin: usize = 0;
     let result = loop {
         if last.elapsed() >= REFRESH {
-            reload(one, roles, headers, &mut sections, &mut table_state);
+            reload(one, all, headers, &mut sections, &mut table_state);
             last = Instant::now();
         }
         let animate = colour && working(&sections);
@@ -745,6 +911,7 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
                 note.as_deref(),
                 colour,
                 animate.then_some(spin),
+                all,
             )
         }) {
             break Err(e.to_string());
@@ -778,12 +945,12 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
                 table_state.select(Some(selected.saturating_sub(1)))
             }
             KeyCode::Char('a') => {
-                roles = !roles;
-                reload(one, roles, headers, &mut sections, &mut table_state);
+                all = !all;
+                reload(one, all, headers, &mut sections, &mut table_state);
                 message.clear();
             }
             KeyCode::Char('r') => {
-                reload(one, roles, headers, &mut sections, &mut table_state);
+                reload(one, all, headers, &mut sections, &mut table_state);
                 message.clear();
             }
             KeyCode::Enter => {
@@ -791,10 +958,16 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
                     continue;
                 };
                 let section = &sections[s];
-                let Some(row) = r.map(|r| &section.rows[r]) else {
+                let Some(row) = r.map(|r| &section.tree[r]) else {
                     message = format!("{} is a team; select one of its members", section.inst.id);
                     continue;
                 };
+                if is_fold(row) {
+                    all = true;
+                    reload(one, all, headers, &mut sections, &mut table_state);
+                    message.clear();
+                    continue;
+                }
                 if row.kind != "member" {
                     message = format!("{} is a {}; select one of its members", row.name, row.kind);
                     continue;
@@ -822,7 +995,7 @@ pub fn interactive(one: Option<&Instance>) -> Result<(), String> {
                     Ok(()) => format!("back from {name}"),
                     Err(e) => e,
                 };
-                reload(one, roles, headers, &mut sections, &mut table_state);
+                reload(one, all, headers, &mut sections, &mut table_state);
                 last = Instant::now();
             }
             _ => {}
@@ -852,6 +1025,7 @@ mod tests {
                         None,
                         colour,
                         None,
+                        false,
                     )
                 })
                 .unwrap();
@@ -960,11 +1134,7 @@ mod tests {
             }))
             .unwrap(),
         };
-        let sections = [super::Section {
-            inst,
-            header: "t".into(),
-            rows: vec![role],
-        }];
+        let sections = [super::Section::new(inst, "t".into(), vec![role], true)];
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 12)).unwrap();
         terminal
@@ -979,6 +1149,7 @@ mod tests {
                     None,
                     false,
                     None,
+                    true,
                 )
             })
             .unwrap();
@@ -998,8 +1169,8 @@ mod tests {
 mod watch_tests {
     use super::*;
     fn section() -> Section {
-        Section {
-            inst: Instance {
+        Section::new(
+            Instance {
                 id: "demo".into(),
                 state: crate::state::StateDir::from_root(std::path::Path::new(
                     "/example/state/demo",
@@ -1010,9 +1181,10 @@ mod watch_tests {
                 }))
                 .unwrap(),
             },
-            header: "demo".into(),
-            rows: vec![crate::graph::layout::tests::row("demo", "lead-abcd", None)],
-        }
+            "demo".into(),
+            vec![crate::graph::layout::tests::row("demo", "lead-abcd", None)],
+            false,
+        )
     }
     fn other_section() -> Section {
         let mut other = section();
@@ -1037,7 +1209,8 @@ mod watch_tests {
                 &mut selected,
                 &sections,
                 code,
-                KeyModifiers::NONE
+                KeyModifiers::NONE,
+                &mut false,
             ));
             assert!(selected.is_none());
         }
@@ -1053,7 +1226,8 @@ mod watch_tests {
                 &mut selected,
                 &sections,
                 code,
-                KeyModifiers::NONE
+                KeyModifiers::NONE,
+                &mut false,
             ));
             assert_eq!(selected.as_deref(), Some(expected));
         }
@@ -1069,9 +1243,17 @@ mod watch_tests {
                 &sections[..1],
                 code,
                 KeyModifiers::NONE,
+                &mut false,
             );
             assert_eq!(selected.as_deref(), Some("demo"));
-            watch_key(&mut messages, &mut selected, &[], code, KeyModifiers::NONE);
+            watch_key(
+                &mut messages,
+                &mut selected,
+                &[],
+                code,
+                KeyModifiers::NONE,
+                &mut false,
+            );
         }
     }
     #[test]
@@ -1122,6 +1304,7 @@ mod watch_tests {
                         Duration::ZERO,
                         ["", ""],
                         0,
+                        false,
                     )
                 })
                 .unwrap();
@@ -1180,6 +1363,7 @@ mod watch_tests {
                         Duration::from_millis(milliseconds),
                         ["", ""],
                         0,
+                        false,
                     )
                 })
                 .unwrap();
@@ -1234,6 +1418,7 @@ mod watch_tests {
                         Duration::ZERO,
                         ["", ""],
                         0,
+                        false,
                     )
                 })
                 .unwrap();
@@ -1273,6 +1458,7 @@ mod watch_tests {
                     Duration::ZERO,
                     ["", "cannot follow; repair the message store"],
                     0,
+                    false,
                 )
             })
             .unwrap();
@@ -1293,7 +1479,8 @@ mod watch_tests {
             &mut None,
             &[],
             KeyCode::Tab,
-            KeyModifiers::NONE
+            KeyModifiers::NONE,
+            &mut false,
         ));
         assert!(tab);
         assert!(watch_key(
@@ -1301,7 +1488,8 @@ mod watch_tests {
             &mut None,
             &[],
             KeyCode::Tab,
-            KeyModifiers::NONE
+            KeyModifiers::NONE,
+            &mut false,
         ));
         assert!(!tab);
         assert!(!watch_key(
@@ -1309,21 +1497,24 @@ mod watch_tests {
             &mut None,
             &[],
             KeyCode::Char('q'),
-            KeyModifiers::NONE
+            KeyModifiers::NONE,
+            &mut false,
         ));
         assert!(!watch_key(
             &mut tab,
             &mut None,
             &[],
             KeyCode::Esc,
-            KeyModifiers::NONE
+            KeyModifiers::NONE,
+            &mut false,
         ));
         assert!(!watch_key(
             &mut tab,
             &mut None,
             &[],
             KeyCode::Char('c'),
-            KeyModifiers::CONTROL
+            KeyModifiers::CONTROL,
+            &mut false,
         ));
         let dir = tempfile::tempdir().unwrap();
         let paths = crate::bus::layout::StorePaths::from_root(dir.path());
@@ -1344,6 +1535,7 @@ mod watch_tests {
         feed.poll(Duration::ZERO).unwrap();
         let mut sections = vec![section()];
         sections[0].rows[0].state = "working".into();
+        sections[0].tree = sections[0].rows.clone();
         let mut tree = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
         let mut watch = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
         tree.draw(|f| {
@@ -1357,6 +1549,7 @@ mod watch_tests {
                 None,
                 true,
                 Some(1),
+                false,
             )
         })
         .unwrap();
@@ -1373,6 +1566,7 @@ mod watch_tests {
                     SPIN_INTERVAL,
                     ["", ""],
                     0,
+                    false,
                 )
             })
             .unwrap();
@@ -1409,6 +1603,7 @@ mod watch_tests {
                     Duration::ZERO,
                     ["", ""],
                     0,
+                    false,
                 )
             })
             .unwrap();
@@ -1443,6 +1638,7 @@ mod watch_tests {
                     Duration::ZERO,
                     ["cannot refresh; check the registry", ""],
                     0,
+                    false,
                 )
             })
             .unwrap();
@@ -1470,9 +1666,347 @@ mod watch_tests {
                         Duration::ZERO,
                         ["", ""],
                         0,
+                        false,
                     )
                 })
                 .unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
+mod fold_tests {
+    use super::*;
+    use crate::graph::layout::tests::row;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn status(
+        instance: &str,
+        name: &str,
+        parent: Option<&str>,
+        kind: &'static str,
+        state: &str,
+    ) -> StatusRow {
+        StatusRow {
+            kind,
+            state: state.into(),
+            ..row(instance, name, parent)
+        }
+    }
+
+    fn fixture() -> Vec<StatusRow> {
+        let lead = Some("lead-root");
+        let build = "demo/build";
+        let archive = "demo/archive";
+        let busy = Some("lead-build");
+        let mut team = status(build, "build", Some("demo/lead-root"), "team", "running");
+        team.running = Some(1);
+        let mut worker = status(build, "worker-a", busy, "member", "stopped");
+        worker.unacked = Some(3);
+        let mut reviewer = status("demo", "reviewer", lead, "role", runtime::ON_DEMAND);
+        reviewer.overrides.vendor = Some(crate::team::Vendor::Codex);
+        let mut scout = status("demo", "scout", lead, "role", runtime::NOT_STARTING);
+        scout.start = false;
+        vec![
+            row("demo", "lead-root", None),
+            team,
+            status(build, "lead-build", Some(build), "member", "working"),
+            worker,
+            status(build, "worker-b", busy, "member", "stopped"),
+            status(build, "worker-c", busy, "member", "not started"),
+            status(build, "clock", Some(build), "plugin", "stopped"),
+            status(
+                archive,
+                "archive",
+                Some("demo/lead-root"),
+                "team",
+                "stopped",
+            ),
+            status(archive, "lead-archive", Some(archive), "member", "stopped"),
+            status(
+                archive,
+                "exporter",
+                Some("lead-archive"),
+                "member",
+                "stopped",
+            ),
+            status(archive, "timer", Some(archive), "plugin", "stopped"),
+            reviewer,
+            status("demo", "planner", lead, "role", "not created (start: true)"),
+            scout,
+            status("demo", "mail", None, "plugin", "stopped"),
+            status("demo", "queue", None, "plugin", "stopped"),
+            status("demo", "github", None, "plugin", "alive"),
+        ]
+    }
+
+    fn section(rows: Vec<StatusRow>, all: bool) -> Section {
+        let inst = Instance {
+            id: "demo".into(),
+            state: crate::state::StateDir::from_root(std::path::Path::new("/example/state/demo")),
+            record: serde_json::from_value(serde_json::json!({
+                "schema": 1, "id": "demo", "template": "example", "template_dir": "/example/template",
+                "folder": "/example/work", "created_at": "2026-01-01T00:00:00Z", "members": {}
+            })).unwrap(),
+        };
+        Section::new(inst, "demo  folder /example/work".into(), rows, all)
+    }
+
+    fn paint(
+        terminal: &mut Terminal<TestBackend>,
+        draw: impl FnOnce(&mut ratatui::Frame),
+    ) -> String {
+        terminal.draw(draw).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .chunks(100)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn watch_frame(section: &Section, messages: bool, all: bool) -> String {
+        paint(
+            &mut Terminal::new(TestBackend::new(100, 24)).unwrap(),
+            |frame| {
+                watch_draw(
+                    frame,
+                    std::slice::from_ref(section),
+                    false,
+                    messages,
+                    None,
+                    None,
+                    &mut crate::graph::layout::Motion::default(),
+                    Duration::ZERO,
+                    ["", ""],
+                    0,
+                    all,
+                );
+            },
+        )
+    }
+
+    #[test]
+    fn fold_defaults_to_counting_only_the_first_hidden_row_of_each_branch() {
+        let screen = watch_frame(&section(fixture(), false), false, false);
+        for line in [
+            "│└─ · lead-root",
+            "│   │  │  └─ ▸ 2 stopped · 1 not started",
+            "│   │  └─ ▸ 1 stopped plugin",
+            "│   └─ ▸ 1 stopped team · 1 on demand · 1 not created",
+            "3 unacked",
+        ] {
+            assert!(screen.contains(line), "missing {line:?}:\n{screen}");
+        }
+        assert!(
+            screen
+                .lines()
+                .zip(screen.lines().skip(1))
+                .any(|(healthy, fold)| {
+                    healthy.starts_with("│· plugin github")
+                        && fold.starts_with("│▸ 2 stopped plugins")
+                }),
+            "{screen}"
+        );
+        for hidden in [
+            "worker-a", "worker-b", "worker-c", "clock", "archive", "exporter", "timer",
+            "reviewer", "planner", "scout", "mail", "queue",
+        ] {
+            assert!(!screen.contains(hidden), "visible {hidden:?}:\n{screen}");
+        }
+        let mut rows = fixture();
+        rows.push(status("demo", "spare-root", None, "member", "stopped"));
+        let screen = watch_frame(&section(rows, false), false, false);
+        for line in ["│└─ ▸ 1 stopped", "│▸ 2 stopped plugins"] {
+            assert!(
+                screen
+                    .lines()
+                    .any(|row| row.trim_end_matches('│').trim_end() == line),
+                "{screen}"
+            );
+        }
+    }
+
+    #[test]
+    fn fold_keeps_marked_rows_and_their_path_through_a_stopped_team() {
+        let marked = |kind, state| status("demo", "marked", Some("lead-root"), kind, state);
+        let member = |state| marked("member", state);
+        let plugin = |detail: &str| StatusRow {
+            detail: Some(detail.into()),
+            ..marked("plugin", "alive")
+        };
+        let delivery = serde_json::from_value(serde_json::json!({
+            "outcome": "blocked", "reason": "input busy", "at": "2026-01-01T00:00:00Z",
+            "id": "m1", "incarnation": "example"
+        }))
+        .unwrap();
+        let mut expected_running = member("stopped");
+        expected_running.expected_running = true;
+        let mut undelivered = member("stopped");
+        undelivered.delivery = Some(delivery);
+        let mut unreadable_input = member("stopped");
+        unreadable_input.input_unreadable = true;
+        let cases = [
+            (member("blocked"), '?'),
+            (member("exited"), '✗'),
+            (member("gate-inactive"), '!'),
+            (expected_running, '!'),
+            (undelivered, '!'),
+            (unreadable_input, '!'),
+            (plugin("error: unavailable"), '!'),
+            (plugin("stale (600s since last report)"), '!'),
+            (plugin("ok"), '·'),
+            (member("stopping"), '◌'),
+            (member("unknown"), '◌'),
+            (marked("team", "unreadable"), '◌'),
+        ];
+        for (mut marked, mark) in cases {
+            // Team rows identify themselves by their full paths.
+            if marked.kind == "team" {
+                marked.instance = "demo/marked".into();
+                marked.parent = Some("demo/lead-root".into());
+            }
+            let nested = StatusRow {
+                instance: if marked.kind == "team" {
+                    "demo/archive/marked"
+                } else {
+                    "demo/archive"
+                }
+                .into(),
+                parent: Some("demo/archive/lead-archive".into()),
+                ..marked.clone()
+            };
+            let archive = "demo/archive";
+            let rows = vec![
+                row("demo", "lead-root", None),
+                status("demo", "quiet-root", Some("lead-root"), "member", "stopped"),
+                status(
+                    archive,
+                    "archive",
+                    Some("demo/lead-root"),
+                    "team",
+                    "stopped",
+                ),
+                status(archive, "lead-archive", Some(archive), "member", "stopped"),
+                status(
+                    archive,
+                    "quiet-child",
+                    Some("lead-archive"),
+                    "member",
+                    "stopped",
+                ),
+                marked,
+                nested,
+            ];
+            let screen = watch_frame(&section(rows, false), false, false);
+            for branch in [format!("   ├─ {mark} "), format!("   │     ├─ {mark} ")] {
+                assert!(
+                    screen
+                        .lines()
+                        .any(|line| line.contains(&branch) && line.contains("marked")),
+                    "{screen}"
+                );
+            }
+            assert!(
+                screen.contains("├─   archive") && screen.contains("└─   lead-archive"),
+                "{screen}"
+            );
+            assert_eq!(screen.matches("└─ ▸ 1 stopped").count(), 2, "{screen}");
+            assert!(!screen.contains("quiet-"), "{screen}");
+        }
+    }
+
+    #[test]
+    fn fold_watch_a_shows_all_and_folds_again_across_tab_switches() {
+        let rows = fixture();
+        let mut all = false;
+        let mut messages = false;
+        let press = |code, messages: &mut bool, all: &mut bool| {
+            assert!(watch_key(
+                messages,
+                &mut None,
+                &[],
+                code,
+                KeyModifiers::NONE,
+                all
+            ));
+        };
+        let folded = watch_frame(&section(rows.clone(), all), messages, all);
+        assert!(folded.contains("Tab messages · a show all · q quit"));
+        assert!(folded.contains("▸ 2 stopped"));
+        press(KeyCode::Char('a'), &mut messages, &mut all);
+        let current = section(rows.clone(), all);
+        let expanded = watch_frame(&current, messages, all);
+        assert!(expanded.contains("Tab messages · a fold · q quit"));
+        for r in &rows {
+            assert!(
+                expanded.contains(&r.name),
+                "missing {}:\n{expanded}",
+                r.name
+            );
+        }
+        assert!(!expanded.contains("▸ 2 stopped"));
+        for _ in 0..2 {
+            press(KeyCode::Tab, &mut messages, &mut all);
+            if messages {
+                press(KeyCode::Char('a'), &mut messages, &mut all);
+                assert!(all, "a on the messages tab changed the fold state");
+            }
+            let screen = watch_frame(&current, messages, all);
+            let footer = screen.lines().last().unwrap();
+            assert_eq!(footer.contains("a fold"), !messages, "{footer}");
+        }
+        press(KeyCode::Char('a'), &mut messages, &mut all);
+        assert_eq!(watch_frame(&section(rows, all), messages, all), folded);
+    }
+
+    #[test]
+    fn fold_refresh_keeps_selection_when_a_live_sibling_joins_the_fold() {
+        let mut rows = fixture();
+        rows.push(row("demo", "spare-abcd", Some("lead-root")));
+        let mut stopped = rows.clone();
+        stopped.last_mut().unwrap().state = runtime::STOPPED.into();
+        for label in ["1 stopped team", "plugin github"] {
+            let mut sections = vec![section(rows.clone(), false)];
+            let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+            let frame = watch_frame(&sections[0], false, false);
+            let before = frame.lines().position(|l| l.contains(label)).unwrap();
+            // Rows start below the two-line band and the border.
+            let mut selection = TableState::default().with_selected(Some(before - 3));
+            replace_sections(
+                vec![section(stopped.clone(), false)],
+                false,
+                &mut sections,
+                &mut selection,
+            );
+            let screen = paint(&mut terminal, |frame| {
+                draw(
+                    frame,
+                    "demo",
+                    &sections,
+                    false,
+                    &mut selection,
+                    "",
+                    None,
+                    true,
+                    None,
+                    false,
+                );
+            });
+            let after = screen
+                .lines()
+                .position(|l| l.starts_with("│> ") && l.contains(label))
+                .unwrap_or_else(|| panic!("{screen}"));
+            assert_eq!(after + 1, before, "{screen}");
+            if label == "1 stopped team" {
+                let line = screen.lines().nth(after).unwrap();
+                assert!(line.contains("▸ 1 stopped · 1 stopped team"), "{line}");
+                let x = line.chars().position(|c| c == '▸').unwrap() + 2;
+                let cell = &terminal.backend().buffer()[(x as u16, after as u16)];
+                assert!(cell.modifier.contains(Modifier::REVERSED));
+            }
         }
     }
 }
